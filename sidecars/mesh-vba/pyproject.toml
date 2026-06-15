@@ -1,9 +1,32 @@
 [project]
-name = "volo-sidecar-mesh-vba"
+name = "lmt-vba-sidecar"
 version = "0.1.0"
-description = "Volo mesh-vba sidecar 占位（独立 venv，勿与其他 sidecar 共享解释器）"
-requires-python = ">=3.11"
+description = "Visual back-calculation sidecar for LED Mesh Toolkit (M2)"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "numpy>=1.24,<2.0",
+    "scipy>=1.10,<2.0",
+    "opencv-contrib-python>=4.8,<5.0",
+    "pydantic>=2.0,<3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "pyinstaller>=6.0",
+]
+
+[project.scripts]
+lmt-vba-sidecar = "lmt_vba_sidecar.__main__:main"
 
 [build-system]
-requires = ["setuptools", "wheel"]
+requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

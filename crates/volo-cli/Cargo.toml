@@ -12,6 +12,13 @@ path = "src/main.rs"
 
 [dependencies]
 cache-core = { path = "../cache-core" }
+# step 3c: LMT CLI layer (`lmt` subcommand group). The CLI src references only
+# mesh-app (service helpers) and volo-shared (envelope/dto/data/exit_codes);
+# mesh-core and mesh-adapter-total-station are reached transitively through
+# mesh-app, so they are not direct deps here (the original lmt-cli src likewise
+# never named core/adapter directly).
+mesh-app = { path = "../mesh-app" }
+volo-shared = { path = "../volo-shared" }
 clap.workspace = true
 clap_complete.workspace = true
 serde.workspace = true

@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>拍摄指导卡 · 3D</title>
+<style>
+:root{
+  --ink:#e2e8f0;--sub:#94a3b8;--line:#334155;--bg:#0f172a;
+  --bad:#ef4444;--accent:#3b82f6;--soft:#1e293b;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  font-family:'PingFang SC','Microsoft YaHei','Hiragino Sans GB',sans-serif;
+  line-height:1.75;color:var(--ink);background:var(--bg);
+  max-width:960px;margin:0 auto;padding:1.6em 1.2em 4em;
+}
+h1{font-size:1.5em;border-bottom:2px solid var(--accent);padding-bottom:.3em;margin-bottom:.15em}
+.lead{color:var(--sub);font-size:14px;margin-top:.3em}
+.kpi{display:flex;flex-wrap:wrap;gap:.6em;margin:1em 0}
+.kpi div{flex:1 1 120px;background:var(--soft);border:1px solid var(--line);border-radius:8px;padding:.6em .8em}
+.kpi b{display:block;font-size:1.35em;color:var(--accent)}
+.kpi span{font-size:12px;color:var(--sub)}
+.banner{padding:.7em 1em;border-radius:8px;margin:1em 0;font-weight:600;font-size:14px}
+.banner.pass{background:rgba(34,197,94,.12);color:#4ade80;border:1px solid rgba(34,197,94,.3)}
+.banner.fail{background:rgba(239,68,68,.12);color:#f87171;border:1px solid rgba(239,68,68,.3)}
+table{border-collapse:collapse;width:100%;margin:1em 0;font-size:13px;background:var(--soft)}
+th,td{border:1px solid var(--line);padding:6px 10px;text-align:left}
+th{background:#1a2332;color:var(--sub);font-weight:600}
+td{color:var(--ink)}
+.section-title{font-size:1.15em;margin-top:1.6em;padding-left:.5em;border-left:4px solid var(--accent);color:var(--ink);font-weight:600}
+.warn-box{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.25);border-radius:8px;padding:.8em 1em;margin:.8em 0;font-size:13px;color:#fca5a5}
+.warn-box strong{color:#f87171}
+.note{color:var(--sub);font-size:12px;margin-top:.6em}
+#view3d-wrap{position:relative;width:100%;max-width:960px;margin:1em auto}
+#wall3d{width:100%;height:600px;border-radius:10px;display:block;cursor:grab;background:#0f172a}
+.ovl{position:absolute;background:rgba(15,23,42,.88);color:#fff;padding:10px 14px;border-radius:8px;font-size:12px;line-height:1.7;pointer-events:none;border:1px solid rgba(255,255,255,.12)}
+#legend-box .legend-title{font-weight:700;font-size:13px;margin-bottom:4px}
+.legend-dot{display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:middle;margin-right:6px}
+.legend-swatch{display:inline-block;width:14px;height:10px;border-radius:2px;vertical-align:middle;margin-right:4px}
+#cam-info{display:none;min-width:140px}
+#mini-wrap{display:none;position:absolute;bottom:12px;left:12px;pointer-events:none}
+#mini-inner{width:240px;height:160px;border:1px solid rgba(255,255,255,.25);border-radius:6px;box-shadow:0 2px 12px rgba(0,0,0,.5)}
+#mini-label{font-size:10px;color:rgba(255,255,255,.6);margin-top:3px;text-align:center}
+#hint-bar{position:absolute;bottom:8px;right:12px;background:rgba(15,23,42,.7);color:rgba(255,255,255,.6);padding:4px 10px;border-radius:6px;font-size:11px;pointer-events:none}
+</style>
+</head>
+<body>
+<div id="header"></div>
+<div id="kpi-row" class="kpi"></div>
+<div id="status-banner"></div>
+<div class="section-title" style="margin-top:1.2em">三维交互视图</div>
+<p class="note" style="margin-bottom:.5em">拖拽旋转 · 滚轮缩放 · 右键平移 · 点击机位球体选中查看详情</p>
+<div id="view3d-wrap">
+  <canvas id="wall3d"></canvas>
+  <div id="legend-box" class="ovl" style="top:12px;left:12px"></div>
+  <div id="cam-info" class="ovl" style="top:12px;right:12px"></div>
+  <div id="mini-wrap"><div id="mini-inner"></div><div id="mini-label"></div></div>
+  <div id="hint-bar">点击机位选中 · 拖拽旋转 · 滚轮缩放</div>
+</div>
+<div class="section-title">机位清单</div>
+<div id="station-table"></div>
+<div id="unreachable-section"></div>
+<p class="note" style="margin-top:2em">
+数据来源：<code style="background:var(--soft);padding:1px 6px;border-radius:4px;font-size:12px">lmt visual plan-capture / capture-card</code> 生成。残差为指导性预测（视野感知三角化可行性，非完整 BA）。
+</p>
+<noscript><p style="color:#fca5a5;padding:1em;background:rgba(239,68,68,.15);border-radius:8px">请启用 JavaScript 以查看三维透视图。</p></noscript>
+<script>/*__THREE_BUNDLE__*/</script>
+<script>
+var DATA = /*__DATA__*/;
+(function(){
+var THREE = window.THREE;
+var OrbitControls = window.OrbitControls;
+var $ = function(id){return document.getElementById(id)};
+var esc = function(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML};
+var S = DATA.screen;
+var P = DATA.plan;
+var I = DATA.intrinsics;
+var cols = S.cols, rows = S.rows;
+var cw = S.cabinet_size_mm[0] / 1000;
+var ch = S.cabinet_size_mm[1] / 1000;
+var R = S.radius_mm ? S.radius_mm / 1000 : null;
+var totalW = cols * cw;
+var totalH = rows * ch;
+var hfov = I.hfov_deg * Math.PI / 180;
+var sst = P.stations.slice().sort(function(a, b) { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0; });
+var vfov = I.vfov_deg * Math.PI / 180;
+var passCount = 0, lowObsCount = 0, failCount = 0, totalCabs = P.coverage.length;
+for (var ci = 0; ci < totalCabs; ci++) {
+  var cv = P.coverage[ci];
+  if (!cv.pass) failCount++;
+  else if (cv.low_observation) lowObsCount++;
+  else passCount++;
+}
+var headerEl = $('header');
+var radiusText = R ? (R).toFixed(1) + ' m' : '平面';
+headerEl.innerHTML = '<h1>' + esc(DATA.project_name) + ' · 拍摄指导卡</h1>' +
+  '<p class="lead">屏体 <strong>' + esc(DATA.screen_id) + '</strong>　' +
+  cols + '×' + rows + ' 箱体　' +
+  (S.cabinet_size_mm[0]) + '×' + (S.cabinet_size_mm[1]) + ' mm　' +
+  (R ? '弧半径 ' + radiusText : '平面屏') + '</p>';
+var kpiEl = $('kpi-row');
+kpiEl.innerHTML =
+  '<div><b>' + (totalW).toFixed(1) + ' m</b><span>总宽</span></div>' +
+  '<div><b>' + (totalH).toFixed(1) + ' m</b><span>总高</span></div>' +
+  '<div><b>' + (cols * rows) + '</b><span>箱体</span></div>' +
+  '<div><b>' + sst.length + '</b><span>机位</span></div>' +
+  '<div><b>' + passCount + '/' + totalCabs + '</b><span>达标</span></div>' +
+  (lowObsCount > 0 ? '<div><b>' + lowObsCount + '</b><span>低观测</span></div>' : '') +
+  (failCount > 0 ? '<div><b style="color:var(--bad)">' + failCount + '</b><span>未达标</span></div>' : '');
+var bannerEl = $('status-banner');
+if (P.all_pass) {
+  bannerEl.innerHTML = '<div class="banner pass">全部 ' + totalCabs + ' 块箱体达标（p95 残差 ≤ ' + P.target_p95_residual_mm.toFixed(1) + ' mm）</div>';
+} else {
+  bannerEl.innerHTML = '<div class="banner fail">' + failCount + ' 块箱体未达标（共 ' + totalCabs + '，目标 p95 ≤ ' + P.target_p95_residual_mm.toFixed(1) + ' mm）' +
+    (lowObsCount > 0 ? '，另有 ' + lowObsCount + ' 块低观测' : '') + '</div>';
+}
+var sC = [0x3b82f6, 0x06b6d4, 0x22c55e, 0xeab308, 0xf97316, 0xef4444, 0x8b5cf6, 0xec4899];
+var segPerCol = 20;
+var numSegs = Math.ceil(cols / segPerCol);
+var sT = [];
+for (var si = 0; si < numSegs; si++) sT.push(new THREE.Color(sC[si % sC.length]));
+function cc(col, row) {
+  var xFlat = col * cw;
+  var y = row * ch;
+  if (!R) return new THREE.Vector3(xFlat, y, 0);
+  var chordX = xFlat - totalW / 2;
+  var angle = chordX / R;
+  return new THREE.Vector3(R * Math.sin(angle) + totalW / 2, y, R * (1 - Math.cos(angle)));
+}
+var cv = $('wall3d');
+var W = 960, H = 600;
+cv.width = W * devicePixelRatio; cv.height = H * devicePixelRatio;
+var renderer = new THREE.WebGLRenderer({canvas: cv, antialias: true});
+renderer.setSize(W, H); renderer.setPixelRatio(devicePixelRatio);
+var scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0f172a);
+scene.fog = new THREE.FogExp2(0x0f172a, 0.006);
+var camera = new THREE.PerspectiveCamera(50, W / H, 0.1, 500);
+var maxDim = Math.max(totalW, totalH);
+camera.position.set(totalW / 2, totalH / 2 + maxDim * 0.8, maxDim * 1.8);
+var ctrl = new OrbitControls(camera, cv);
+ctrl.target.set(totalW / 2, totalH / 2, 0);
+ctrl.enableDamping = true; ctrl.dampingFactor = 0.08;
+ctrl.minDistance = 1; ctrl.maxDistance = maxDim * 5; ctrl.update();
+scene.add(new THREE.AmbientLight(0x404060, 0.5));
+var dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
+dirLight.position.set(totalW / 2, totalH + 10, -maxDim);
+scene.add(dirLight);
+scene.add(new THREE.HemisphereLight(0x4488ff, 0x002244, 0.35));
+var pos = [], colArr = [], nrm = [], uvs = [];
+for (var i = 0; i < cols; i++) {
+  var segIdx = Math.min(Math.floor(i / segPerCol), numSegs - 1);
+  var sc = sT[segIdx];
+  for (var j = 0; j < rows; j++) {
+    var p0 = cc(i, j);
+    var p1 = cc(i + 1, j);
+    var p2 = cc(i + 1, j + 1);
+    var p3 = cc(i, j + 1);
+    var e1 = new THREE.Vector3().subVectors(p1, p0);
+    var e2 = new THREE.Vector3().subVectors(p3, p0);
+    var n = new THREE.Vector3().crossVectors(e1, e2).normalize();
+    if (R) n.negate();
+    var u0 = i / cols, u1 = (i + 1) / cols, v0 = j / rows, v1 = (j + 1) / rows;
+    pos.push(p0.x,p0.y,p0.z, p1.x,p1.y,p1.z, p3.x,p3.y,p3.z);
+    pos.push(p1.x,p1.y,p1.z, p2.x,p2.y,p2.z, p3.x,p3.y,p3.z);
+    uvs.push(u0,v0, u1,v0, u0,v1);
+    uvs.push(u1,v0, u1,v1, u0,v1);
+    for (var k = 0; k < 6; k++) { colArr.push(sc.r, sc.g, sc.b); nrm.push(n.x, n.y, n.z); }
+  }
+}
+var gtW = 4096, gtH = 1024;
+var cellW = gtW / cols, cellH = gtH / rows;
+var gtCv = document.createElement('canvas'); gtCv.width = gtW; gtCv.height = gtH;
+var gx = gtCv.getContext('2d');
+gx.strokeStyle = 'rgba(255,255,255,0.2)'; gx.lineWidth = 0.8;
+for (var i = 0; i <= cols; i++) { gx.beginPath(); gx.moveTo(i * cellW, 0); gx.lineTo(i * cellW, gtH); gx.stroke(); }
+for (var j = 0; j <= rows; j++) { gx.beginPath(); gx.moveTo(0, j * cellH); gx.lineTo(gtW, j * cellH); gx.stroke(); }
+gx.strokeStyle = 'rgba(255,255,255,0.5)'; gx.lineWidth = 2;
+for (var i = 0; i <= cols; i += segPerCol) { gx.beginPath(); gx.moveTo(i * cellW, 0); gx.lineTo(i * cellW, gtH); gx.stroke(); }
+var fontSize = Math.min(Math.max(Math.floor(cellW * 0.6), 6), 14);
+gx.font = '300 ' + fontSize + 'px sans-serif';
+gx.fillStyle = 'rgba(255,255,255,0.4)'; gx.textAlign = 'center'; gx.textBaseline = 'middle';
+for (var i = 0; i < cols; i++) {
+  for (var j = 0; j < rows; j++) {
+    gx.fillText((i + 1) + ',' + (j + 1), (i + 0.5) * cellW, gtH - (j + 0.5) * cellH);
+  }
+}
+var gridTex = new THREE.CanvasTexture(gtCv); gridTex.minFilter = THREE.LinearFilter;
+var wallGeo = new THREE.BufferGeometry();
+wallGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+wallGeo.setAttribute('color', new THREE.Float32BufferAttribute(colArr, 3));
+wallGeo.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+wallGeo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+var wallMesh = new THREE.Mesh(wallGeo, new THREE.MeshPhongMaterial({
+  vertexColors: true, side: THREE.DoubleSide, shininess: 15,
+  emissiveMap: gridTex, emissive: new THREE.Color(0xffffff), emissiveIntensity: 0.25
+}));
+scene.add(wallMesh);
+var gridSize = maxDim * 2;
+var grid = new THREE.GridHelper(gridSize, Math.round(gridSize / 2), 0x334155, 0x1e293b);
+grid.layers.set(1); scene.add(grid);
+function mkL(text, fs, color) {
+  var canvas2 = document.createElement('canvas');
+  var s = 4, pad = fs * s * 0.25;
+  canvas2.width = text.length * fs * s * 0.6 + pad * 2;
+  canvas2.height = fs * s * 1.4 + pad * 2;
+  var ctx = canvas2.getContext('2d');
+  ctx.font = '300 ' + (fs * s) + 'px sans-serif';
+  ctx.textBaseline = 'middle';
+  var tx = pad, ty = canvas2.height / 2;
+  ctx.lineWidth = fs * s * 0.35; ctx.strokeStyle = 'rgba(10,15,30,0.85)';
+  ctx.lineJoin = 'round'; ctx.miterLimit = 2;
+  ctx.strokeText(text, tx, ty);
+  ctx.fillStyle = color; ctx.fillText(text, tx, ty);
+  var tex = new THREE.CanvasTexture(canvas2); tex.minFilter = THREE.LinearFilter;
+  var mat = new THREE.SpriteMaterial({map: tex, transparent: true, depthTest: false, depthWrite: false});
+  var sp = new THREE.Sprite(mat);
+  sp.scale.set(canvas2.width / (fs * s) * 0.8, canvas2.height / (fs * s) * 0.8, 1);
+  sp.renderOrder = 999;
+  return sp;
+}
+var rC = {fan: 0xf59e0b, top: 0xef4444, bottom: 0x22c55e, added: 0x8b5cf6, corner: 0xa855f7};
+var rL = {fan: '扇形', top: '顶部', bottom: '底部', corner: '四角桥接', added: '补充'};
+function grc(role, heightM) {
+  if (rC[role] !== undefined) return rC[role];
+  if (heightM > 8) return 0xef4444;
+  if (heightM < 3) return 0x22c55e;
+  return 0xf59e0b;
+}
+var sg = new THREE.SphereGeometry(Math.max(cw, ch) * 0.6, 16, 12);
+var sts = [];
+var s2i = new Map();
+var asph = [];
+for (var ci = 0; ci < sst.length; ci++) {
+  var st = sst[ci];
+  var cPos = new THREE.Vector3(st.position_mm[0] / 1000, st.position_mm[1] / 1000, st.position_mm[2] / 1000);
+  var lookAt = new THREE.Vector3(st.look_at_mm[0] / 1000, st.look_at_mm[1] / 1000, st.look_at_mm[2] / 1000);
+  var dist = cPos.distanceTo(lookAt);
+  var heightM = st.height_mm / 1000;
+  var stColor = grc(st.role, heightM);
+  var mat = new THREE.MeshPhongMaterial({color: stColor, emissive: stColor, emissiveIntensity: 0.6, transparent: true});
+  var sphere = new THREE.Mesh(sg, mat);
+  sphere.position.copy(cPos); scene.add(sphere);
+  s2i.set(sphere, ci);
+  asph.push(sphere);
+  var aim = new THREE.Vector3().subVectors(lookAt, cPos).normalize();
+  var rd = new THREE.Vector3().crossVectors(aim, new THREE.Vector3(0,1,0));
+  if (rd.lengthSq() < 1e-3) rd.set(1,0,0);
+  rd.normalize();
+  var tu = new THREE.Vector3().crossVectors(rd, aim).normalize();
+  var hw = Math.tan(hfov/2)*dist, hh = Math.tan(vfov/2)*dist;
+  var shortFrac = 0.3;
+  function mkFrustum(frac) {
+    var fd = dist * frac;
+    var fhw = Math.tan(hfov/2)*fd, fhh = Math.tan(vfov/2)*fd;
+    var ffc = cPos.clone().add(aim.clone().multiplyScalar(fd));
+    function ffcp(rh,rv){return ffc.clone().add(rd.clone().multiplyScalar(rh*fhw)).add(tu.clone().multiplyScalar(rv*fhh))}
+    return [ffcp(-1,1),ffcp(1,1),ffcp(1,-1),ffcp(-1,-1)];
+  }
+  var shortCorners = mkFrustum(shortFrac);
+  var fullCorners = mkFrustum(1.0);
+  var flp = [];
+  for (var fi = 0; fi < 4; fi++) { flp.push(cPos.x, cPos.y, cPos.z, shortCorners[fi].x, shortCorners[fi].y, shortCorners[fi].z); }
+  for (var fi = 0; fi < 4; fi++) { var a = shortCorners[fi], b = shortCorners[(fi + 1) % 4]; flp.push(a.x, a.y, a.z, b.x, b.y, b.z); }
+  var fLines = new THREE.LineSegments(
+    new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(flp, 3)),
+    new THREE.LineBasicMaterial({color: stColor, opacity: 0.15, transparent: true})
+  );
+  scene.add(fLines);
+  var flpFull = [];
+  for (var fi = 0; fi < 4; fi++) { flpFull.push(cPos.x, cPos.y, cPos.z, fullCorners[fi].x, fullCorners[fi].y, fullCorners[fi].z); }
+  for (var fi = 0; fi < 4; fi++) { var a = fullCorners[fi], b = fullCorners[(fi + 1) % 4]; flpFull.push(a.x, a.y, a.z, b.x, b.y, b.z); }
+  var fLinesFull = new THREE.LineSegments(
+    new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(flpFull, 3)),
+    new THREE.LineBasicMaterial({color: stColor, opacity: 0.5, transparent: true})
+  );
+  fLinesFull.visible = false; scene.add(fLinesFull);
+  var qp = [];
+  [0,1,2,0,2,3].forEach(function(k){qp.push(fullCorners[k].x,fullCorners[k].y,fullCorners[k].z)});
+  var qg = new THREE.BufferGeometry(); qg.setAttribute('position', new THREE.Float32BufferAttribute(qp, 3)); qg.computeVertexNormals();
+  var fQuad = new THREE.Mesh(qg, new THREE.MeshBasicMaterial({color: stColor, opacity: 0.1, transparent: true, side: THREE.DoubleSide, depthWrite: false}));
+  fQuad.visible = false; scene.add(fQuad);
+  var dlg = new THREE.BufferGeometry().setFromPoints([cPos, lookAt]);
+  var dLine = new THREE.Line(dlg, new THREE.LineDashedMaterial({color: 0xffffff, dashSize: 0.6, gapSize: 0.3, opacity: 0, transparent: true}));
+  dLine.computeLineDistances(); scene.add(dLine);
+  var dMid = new THREE.Vector3().lerpVectors(cPos, lookAt, 0.5);
+  var dLabel = mkL(dist.toFixed(1) + ' m', 7, '#ffffff');
+  dLabel.position.copy(dMid); dLabel.visible = false; scene.add(dLabel);
+  var yOff = (ci % 2 === 0) ? 0.7 : -0.6;
+  var lb = mkL(st.id, 7, 'rgba(255,255,255,0.85)');
+  lb.position.set(cPos.x, cPos.y + yOff * Math.max(ch, 0.5), cPos.z); scene.add(lb);
+  [sphere, fLines, fLinesFull, fQuad, lb, dLine, dLabel].forEach(function(o) { o.layers.enable(1); });
+  sts.push({
+    sphere: sphere, fLines: fLines, fLinesFull: fLinesFull, fQuad: fQuad, label: lb, dLine: dLine, dLabel: dLabel,
+    data: {
+      id: st.id, role: rL[st.role] || st.role,
+      height: heightM, standoff: (st.standoff_mm / 1000).toFixed(1),
+      covers: st.covers_cabinets ? st.covers_cabinets.length : 0,
+      color: stColor, cPos: cPos.clone(), wPos: lookAt.clone()
+    }
+  });
+}
+var legendEl = $('legend-box');
+var legendHTML = '<div class="legend-title">图例</div>';
+legendHTML += '<div><span class="legend-swatch" style="background:#3b82f6"></span>LED 墙面（' + numSegs + ' 段分色）</div>';
+var seenRoles = {};
+for (var i = 0; i < sst.length; i++) {
+  var r = sst[i].role;
+  if (seenRoles[r]) continue;
+  seenRoles[r] = true;
+  var rc = grc(r, sst[i].height_mm / 1000);
+  legendHTML += '<div><span class="legend-dot" style="background:#' + rc.toString(16).padStart(6, '0') + '"></span>' + (rL[r] || r) + '机位</div>';
+}
+legendEl.innerHTML = legendHTML;
+var miniCam = new THREE.PerspectiveCamera(I.vfov_deg, 240 / 160, 0.1, maxDim * 3);
+camera.layers.enable(1);
+var selected = -1;
+var raycaster = new THREE.Raycaster(); raycaster.layers.enableAll();
+var pointer = new THREE.Vector2();
+var infoEl = $('cam-info');
+var miniWrap = $('mini-wrap');
+var miniLabel = $('mini-label');
+function sel(idx) {
+  selected = idx;
+  for (var i = 0; i < sts.length; i++) {
+    var s = sts[i];
+    var dim = (idx >= 0 && idx !== i);
+    var sel = (idx === i);
+    s.sphere.material.opacity = dim ? 0.12 : 1;
+    s.fLines.visible = !sel;
+    s.fLines.material.opacity = dim ? 0.03 : 0.15;
+    s.fLinesFull.visible = sel;
+    s.fQuad.visible = sel;
+    s.label.visible = !dim;
+    s.dLine.material.opacity = sel ? 0.7 : 0;
+    s.dLabel.visible = sel;
+  }
+  if (idx >= 0) {
+    var d = sts[idx].data;
+    infoEl.innerHTML = '<b>' + esc(d.id) + '</b> · ' + esc(d.role) + '<br>架高 ' + d.height.toFixed(1) + ' m · 后退 ' + d.standoff + ' m' +
+      (d.covers > 0 ? '<br>覆盖 ' + d.covers + ' 块箱体' : '');
+    infoEl.style.display = 'block';
+    miniCam.position.copy(d.cPos); miniCam.lookAt(d.wPos);
+    miniWrap.style.display = 'block';
+    miniLabel.textContent = d.id + ' 模拟视角';
+  } else {
+    infoEl.style.display = 'none';
+    miniWrap.style.display = 'none';
+  }
+}
+var pointerDown = false, pointerMoved = false;
+cv.addEventListener('pointerdown', function() { pointerDown = true; pointerMoved = false; });
+cv.addEventListener('pointermove', function() { if (pointerDown) pointerMoved = true; });
+cv.addEventListener('pointerup', function(e) {
+  if (pointerMoved) { pointerDown = false; return; }
+  pointerDown = false;
+  var rect = cv.getBoundingClientRect();
+  pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  var hits = raycaster.intersectObjects(asph);
+  if (hits.length > 0) {
+    var idx = s2i.get(hits[0].object);
+    sel(selected === idx ? -1 : idx);
+  } else {
+    sel(-1);
+  }
+});
+function animate() {
+  requestAnimationFrame(animate);
+  ctrl.update();
+  renderer.setScissorTest(true);
+  renderer.setViewport(0, 0, W, H);
+  renderer.setScissor(0, 0, W, H);
+  renderer.render(scene, camera);
+  if (selected >= 0) {
+    var mw = 240, mh = 160, mx = 10, my = 10;
+    renderer.setViewport(mx, my, mw, mh);
+    renderer.setScissor(mx, my, mw, mh);
+    renderer.render(scene, miniCam);
+  }
+  renderer.setScissorTest(false);
+}
+animate();
+window.addEventListener('resize', function() {
+  var wrap = $('view3d-wrap');
+  var w = wrap.clientWidth, h = 600;
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+  W = w; H = h;
+});
+var tableEl = $('station-table');
+var tableHTML = '<table><tr><th>ID</th><th>类型</th><th>后退(m)</th><th>架高(m)</th><th>覆盖数</th></tr>';
+for (var i = 0; i < sst.length; i++) {
+  var st = sst[i];
+  tableHTML += '<tr>' +
+    '<td>' + esc(st.id) + '</td>' +
+    '<td>' + esc(rL[st.role] || st.role) + '</td>' +
+    '<td>' + (st.standoff_mm / 1000).toFixed(1) + '</td>' +
+    '<td>' + (st.height_mm / 1000).toFixed(1) + '</td>' +
+    '<td>' + (st.covers_cabinets ? st.covers_cabinets.length : '-') + '</td>' +
+    '</tr>';
+}
+tableHTML += '</table>';
+tableEl.innerHTML = tableHTML;
+var unreachEl = $('unreachable-section');
+if (P.unreachable_regions && P.unreachable_regions.length > 0) {
+  var html = '<div class="section-title" style="color:var(--bad)">不可达区域警告</div>';
+  for (var i = 0; i < P.unreachable_regions.length; i++) {
+    var ur = P.unreachable_regions[i];
+    var coords = ur.cabinets.slice(0, 12).map(function(c){return '('+c[0]+','+c[1]+')'}).join(' ');
+    if (ur.cabinets.length > 12) coords += ' … 共 ' + ur.cabinets.length + ' 块';
+    html += '<div class="warn-box"><strong>' + ur.cabinets.length + ' 块箱体不可达</strong>：' + esc(ur.reason) + '<br><span style="font-size:11px;opacity:.7">' + esc(coords) + '</span></div>';
+  }
+  unreachEl.innerHTML = html;
+}
+})();
+</script>
+</body>
+</html>

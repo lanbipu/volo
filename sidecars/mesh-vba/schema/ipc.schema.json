@@ -1,0 +1,397 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lmt.local/schema/ipc.schema.json",
+  "title": "lmt-vba-sidecar IPC schema",
+  "description": "Root validates any single IPC message — either an input command (stdin) or an output event (stdout NDJSON line). Use the named $defs directly when you know the direction.",
+  "oneOf": [
+    { "$ref": "#/$defs/ReconstructInput" },
+    { "$ref": "#/$defs/CalibrateInput" },
+    { "$ref": "#/$defs/GeneratePatternInput" },
+    { "$ref": "#/$defs/ProgressEvent" },
+    { "$ref": "#/$defs/WarningEvent" },
+    { "$ref": "#/$defs/ResultEvent" },
+    { "$ref": "#/$defs/ErrorEvent" }
+  ],
+  "$defs": {
+    "Vec3": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "Mat3": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Vec3" },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "CoordinateFrame": {
+      "type": "object",
+      "required": ["origin_world", "basis"],
+      "properties": {
+        "origin_world": { "$ref": "#/$defs/Vec3" },
+        "basis": { "$ref": "#/$defs/Mat3" }
+      }
+    },
+    "CabinetArray": {
+      "type": "object",
+      "required": ["cols", "rows", "cabinet_size_mm"],
+      "properties": {
+        "cols": { "type": "integer", "minimum": 1 },
+        "rows": { "type": "integer", "minimum": 1 },
+        "cabinet_size_mm": {
+          "type": "array",
+          "items": { "type": "number", "exclusiveMinimum": 0 },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "absent_cells": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": { "type": "integer", "minimum": 0 },
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      }
+    },
+    "ShapePrior": {
+      "oneOf": [
+        { "type": "string", "enum": ["flat"] },
+        {
+          "type": "object",
+          "required": ["curved"],
+          "properties": {
+            "curved": {
+              "type": "object",
+              "required": ["radius_mm"],
+              "properties": { "radius_mm": { "type": "number" } }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["folded"],
+          "properties": {
+            "folded": {
+              "type": "object",
+              "required": ["fold_seam_columns"],
+              "properties": {
+                "fold_seam_columns": {
+                  "type": "array",
+                  "items": { "type": "integer", "minimum": 0 }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "FrameAnchor": {
+      "type": "object",
+      "required": ["cabinet_col", "cabinet_row", "aruco_id", "position_world"],
+      "properties": {
+        "cabinet_col": { "type": "integer", "minimum": 0 },
+        "cabinet_row": { "type": "integer", "minimum": 0 },
+        "aruco_id": { "type": "integer", "minimum": 0 },
+        "position_world": { "$ref": "#/$defs/Vec3" }
+      }
+    },
+    "Intrinsics": {
+      "type": "object",
+      "required": ["K", "dist_coeffs", "image_size"],
+      "properties": {
+        "K": { "$ref": "#/$defs/Mat3" },
+        "dist_coeffs": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 4,
+          "maxItems": 8
+        },
+        "image_size": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "minItems": 2,
+          "maxItems": 2
+        }
+      }
+    },
+    "PatternMeta": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "aruco_dict",
+        "cabinets"
+      ],
+      "properties": {
+        "schema_version": { "const": 2 },
+        "aruco_dict": { "type": "string" },
+        "cabinets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "col", "row", "aruco_id_start", "aruco_id_end",
+              "squares_x", "squares_y", "square_px", "pixel_pitch_mm"
+            ],
+            "properties": {
+              "col": { "type": "integer" },
+              "row": { "type": "integer" },
+              "aruco_id_start": { "type": "integer" },
+              "aruco_id_end": { "type": "integer" },
+              "squares_x": { "type": "integer", "minimum": 2 },
+              "squares_y": { "type": "integer", "minimum": 2 },
+              "square_px": { "type": "integer", "exclusiveMinimum": 0 },
+              "pixel_pitch_mm": {
+                "type": "array",
+                "items": { "type": "number", "exclusiveMinimum": 0 },
+                "minItems": 2,
+                "maxItems": 2
+              }
+            }
+          }
+        }
+      }
+    },
+    "ReconstructInput": {
+      "type": "object",
+      "required": [
+        "command",
+        "version",
+        "project",
+        "images",
+        "intrinsics",
+        "pattern_meta"
+      ],
+      "properties": {
+        "command": { "const": "reconstruct" },
+        "version": { "const": 1 },
+        "project": {
+          "type": "object",
+          "required": [
+            "screen_id",
+            "coordinate_frame",
+            "cabinet_array",
+            "shape_prior",
+            "frame_strategy"
+          ],
+          "properties": {
+            "screen_id": { "type": "string" },
+            "coordinate_frame": { "$ref": "#/$defs/CoordinateFrame" },
+            "cabinet_array": { "$ref": "#/$defs/CabinetArray" },
+            "shape_prior": { "$ref": "#/$defs/ShapePrior" },
+            "frame_strategy": {
+              "type": "string",
+              "enum": ["nominal_anchoring", "three_points"]
+            },
+            "frame_anchors": {
+              "oneOf": [
+                { "type": "null" },
+                {
+                  "type": "array",
+                  "items": { "$ref": "#/$defs/FrameAnchor" },
+                  "minItems": 3,
+                  "maxItems": 3
+                }
+              ]
+            }
+          }
+        },
+        "images": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "intrinsics": { "$ref": "#/$defs/Intrinsics" },
+        "pattern_meta": { "$ref": "#/$defs/PatternMeta" }
+      }
+    },
+    "CalibrateInput": {
+      "type": "object",
+      "required": [
+        "command",
+        "version",
+        "checkerboard_images",
+        "inner_corners",
+        "square_size_mm",
+        "output_path"
+      ],
+      "properties": {
+        "command": { "const": "calibrate" },
+        "version": { "const": 1 },
+        "checkerboard_images": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 5
+        },
+        "inner_corners": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 2 },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "square_size_mm": { "type": "number", "exclusiveMinimum": 0 },
+        "output_path": { "type": "string" }
+      }
+    },
+    "GeneratePatternInput": {
+      "type": "object",
+      "required": [
+        "command",
+        "version",
+        "project",
+        "output_dir",
+        "screen_resolution"
+      ],
+      "properties": {
+        "command": { "const": "generate_pattern" },
+        "version": { "const": 1 },
+        "project": {
+          "type": "object",
+          "required": ["screen_id", "cabinet_array"],
+          "properties": {
+            "screen_id": { "type": "string" },
+            "cabinet_array": { "$ref": "#/$defs/CabinetArray" }
+          }
+        },
+        "output_dir": { "type": "string" },
+        "screen_resolution": {
+          "type": "array",
+          "items": { "type": "integer", "exclusiveMinimum": 0 },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "screen_mapping_path": {
+          "oneOf": [{ "type": "null" }, { "type": "string" }]
+        }
+      }
+    },
+    "MeasuredPoint": {
+      "type": "object",
+      "required": ["name", "position", "uncertainty", "source"],
+      "properties": {
+        "name": { "type": "string" },
+        "position": { "$ref": "#/$defs/Vec3" },
+        "uncertainty": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["isotropic"],
+              "properties": { "isotropic": { "type": "number" } }
+            },
+            {
+              "type": "object",
+              "required": ["covariance"],
+              "properties": { "covariance": { "$ref": "#/$defs/Mat3" } }
+            }
+          ]
+        },
+        "source": {
+          "type": "object",
+          "required": ["visual_ba"],
+          "properties": {
+            "visual_ba": {
+              "type": "object",
+              "required": ["camera_count"],
+              "properties": {
+                "camera_count": { "type": "integer", "minimum": 1 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "ProgressEvent": {
+      "type": "object",
+      "required": ["event", "stage", "percent"],
+      "properties": {
+        "event": { "const": "progress" },
+        "stage": {
+          "type": "string",
+          "enum": [
+            "load",
+            "detect_charuco",
+            "detect_vpqsp",
+            "subpixel_refine",
+            "bundle_adjustment",
+            "procrustes_align",
+            "output"
+          ]
+        },
+        "percent": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "message": { "type": "string" }
+      }
+    },
+    "WarningEvent": {
+      "type": "object",
+      "required": ["event", "code", "message"],
+      "properties": {
+        "event": { "const": "warning" },
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "cabinet": { "type": "string" }
+      }
+    },
+    "ResultEvent": {
+      "type": "object",
+      "required": ["event", "data"],
+      "properties": {
+        "event": { "const": "result" },
+        "data": {
+          "type": "object",
+          "required": [
+            "measured_points",
+            "ba_stats",
+            "frame_strategy_used"
+          ],
+          "properties": {
+            "measured_points": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/MeasuredPoint" }
+            },
+            "ba_stats": {
+              "type": "object",
+              "required": ["rms_reprojection_px", "iterations", "converged"],
+              "properties": {
+                "rms_reprojection_px": { "type": "number" },
+                "iterations": { "type": "integer" },
+                "converged": { "type": "boolean" }
+              }
+            },
+            "frame_strategy_used": {
+              "type": "string",
+              "enum": ["nominal_anchoring", "three_points"]
+            },
+            "procrustes_align_rms_m": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Procrustes residual RMS in meters. A mode: misfit to nominal cabinet positions. C mode: residual of 3 anchor centroids."
+            }
+          }
+        }
+      }
+    },
+    "ErrorEvent": {
+      "type": "object",
+      "required": ["event", "code", "message", "fatal"],
+      "properties": {
+        "event": { "const": "error" },
+        "code": {
+          "type": "string",
+          "enum": [
+            "invalid_input",
+            "image_load_failed",
+            "detection_failed",
+            "ba_diverged",
+            "procrustes_failed",
+            "intrinsics_invalid",
+            "internal_error"
+          ]
+        },
+        "message": { "type": "string" },
+        "fatal": { "type": "boolean" }
+      }
+    }
+  }
+}

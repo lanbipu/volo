@@ -1,0 +1,10 @@
+{
+  "screen_id": "MAIN",
+  "coordinate_frame": {"origin_world":[0,0,0],"basis":[[1,0,0],[0,1,0],[0,0,1]]},
+  "cabinet_array": {"cols":2,"rows":2,"cabinet_size_mm":[500,500]},
+  "shape_prior": "flat",
+  "points": [
+    {"name":"WRONG_NAME_FORMAT_A","position":[0.25,0.25,0.0],"uncertainty":{"covariance":[[1e-6,0,0],[0,1e-6,0],[0,0,1e-6]]},"source":{"visual_b_a":{"camera_count":5}}},
+    {"name":"WRONG_NAME_FORMAT_B","position":[0.75,0.25,0.0],"uncertainty":{"covariance":[[1e-6,0,0],[0,1e-6,0],[0,0,1e-6]]},"source":{"visual_b_a":{"camera_count":5}}}
+  ]
+}

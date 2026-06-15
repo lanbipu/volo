@@ -20,15 +20,42 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+# step 3c: mesh `save_instruction_pdf` uses the dialog plugin (migrated from LMT).
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # step 2c: UECM transport layer (commands/) + its core/data/startup/error backend.
 cache-core = { path = "../crates/cache-core" }
+# step 3c: mesh (LMT) transport layer. mesh-app = service helpers; volo-shared =
+# DTO/error/data (mesh DB); mesh-core = MeasuredPoints DTO used by a command shim.
+mesh-app = { path = "../crates/mesh-app" }
+mesh-core = { path = "../crates/mesh-core" }
+volo-shared = { path = "../crates/volo-shared" }
 # commands use tokio::sync::Mutex (UeJobRegistry) and tracing; run() inits tracing-subscriber.
+# mesh save_instruction_pdf also routes through tokio::task::spawn_blocking.
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 # commands/pso.rs timestamps job rows; commands/zen.rs edits the rules YAML.
 chrono = { workspace = true }
 serde_yaml = { workspace = true }
+
+# step 3c: native PDF render backends for mesh save_instruction_pdf, cfg-gated.
+[target.'cfg(target_os = "windows")'.dependencies]
+webview2-com = "0.38"
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSData", "NSString", "NSURL", "NSError", "NSObject", "NSObjCRuntime", "NSGeometry", "NSThread", "NSRunLoop", "NSDate", "NSValue"] }
+objc2-web-kit = { version = "0.3", features = ["WKWebView", "WKWebViewConfiguration", "WKNavigation", "WKPDFConfiguration", "block2"] }
+objc2-core-foundation = { version = "0.3", features = ["CFCGTypes"] }
+block2 = "0.6"
 

@@ -1,0 +1,23 @@
+{
+  "method": "charuco",
+  "intrinsics": "calibration/BENCH_intrinsics.json",
+  "pattern_meta": "patterns/BENCH/pattern_meta.json",
+  "screen_mapping": "screen_mapping.json",
+  "views": [
+    { "view_id": "v001", "images": ["captures/v001.jpg"] },
+    { "view_id": "v002", "images": ["captures/v002.jpg"] },
+    { "view_id": "v003", "images": ["captures/v003.jpg"] },
+    { "view_id": "v004", "images": ["captures/v004.jpg"] },
+    { "view_id": "v005", "images": ["captures/v005.jpg"] },
+    { "view_id": "v006", "images": ["captures/v006.jpg"] },
+    { "view_id": "v007", "images": ["captures/v007.jpg"] },
+    { "view_id": "v008", "images": ["captures/v008.jpg"] },
+    { "view_id": "v009", "images": ["captures/v009.jpg"] },
+    { "view_id": "v010", "images": ["captures/v010.jpg"] },
+    { "view_id": "v011", "images": ["captures/v011.jpg"] },
+    { "view_id": "v012", "images": ["captures/v012.jpg"] },
+    { "view_id": "v013", "images": ["captures/v013.jpg"] },
+    { "view_id": "v014", "images": ["captures/v014.jpg"] },
+    { "view_id": "v015", "images": ["captures/v015.jpg"] }
+  ]
+}

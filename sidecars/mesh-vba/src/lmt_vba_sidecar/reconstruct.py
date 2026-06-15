@@ -1,0 +1,1645 @@
+"""Reconstruct top-level: capture-manifest → detection → model-constrained BA
+→ cabinet pose report + IR MeasuredPoints.
+
+Zero total station. The scale trust is the per-cabinet active-surface size in
+ScreenMapping (local mm); the root cabinet (V000_R000) is the gauge — its
+active-surface frame IS the world frame (R=I, t=0). All other cabinet poses
+and the cameras are solved relative to it, so the result is a self-consistent
+screen-local reconstruction with no anchors / world datum.
+
+Pipeline:
+  1. Load capture manifest (charuco method only this release).
+  2. Load screen_mapping + pattern_meta + intrinsics referenced by the manifest.
+  3. Preflight: hash pattern_meta and check it against screen_mapping.
+  4. Build per-cabinet ChArUco board descriptors + a deterministic cabinet
+     index map (root = index of (0,0)).
+  5. Detect ChArUco corners across all view images; for each corner look up its
+     local mm via screen_mapping, undistort its pixel, and tag it with the
+     view's camera index. → list[Observation].
+  6. Observability gate.
+  7. Init cameras via per-view PnP against the root cabinet (or any seen cabinet
+     composed with that cabinet's nominal pose); init cabinet translations from
+     the nominal grid (root re-centered to origin).
+  8. model_constrained_ba.
+  9. Per-cabinet geometry from solved pose + the 4 active-surface CORNERS.
+ 10. Write cabinet_pose_report.json (if requested).
+ 11. Emit MeasuredPoints (center in meters) + ResultEvent.
+"""
+from __future__ import annotations
+
+from collections.abc import Callable
+
+import hashlib
+import json
+import os
+import pathlib
+import tempfile
+
+import cv2
+import numpy as np
+
+from lmt_vba_sidecar.capture_manifest import load_capture_manifest
+from lmt_vba_sidecar.detect import detect_charuco_corners
+from lmt_vba_sidecar.eval_runner import reconstruct_cabinet_geometry
+from lmt_vba_sidecar.intrinsics_solve import (
+    IntrinsicsRefused,
+    crosscheck_intrinsics,
+    intrinsics_K_problem,
+    solve_sl_intrinsics,
+)
+from lmt_vba_sidecar.io_utils import write_event
+from lmt_vba_sidecar.ipc import (
+    BaStats,
+    CabinetPose,
+    CabinetPoseReport,
+    ErrorEvent,
+    FrameSpec,
+    MeasuredPoint,
+    PatternMeta,
+    PointSource,
+    PointSourceVisualBa,
+    ProgressEvent,
+    ReconstructInput,
+    ResultData,
+    ResultEvent,
+    Uncertainty,
+    VpqspPatternMeta,
+    WarningEvent,
+)
+from lmt_vba_sidecar.model_constrained_ba import (
+    BAResult,
+    Observation,
+    model_constrained_ba,
+    _precompute_obs_arrays,
+    _residuals,
+    _nonroot_cabinets,
+    _pack,
+)
+from lmt_vba_sidecar.nominal import (
+    nominal_cabinet_poses_model_frame,
+)
+from lmt_vba_sidecar.observability import ObservabilityError, check_observability
+from lmt_vba_sidecar.procrustes import procrustes_rigid
+from lmt_vba_sidecar.screen_mapping import ScreenMapping, ScreenMappingError
+
+
+ROOT_CABINET = (0, 0)  # V000_R000 is the gauge cabinet (world == its frame)
+MIN_PNP_CORNERS = 4
+# Stage A PnP-RANSAC: gross-outlier reject threshold + RANSAC config (sidecar
+# internal constants; NOT a CLI knob). 2-3px is below the minimum resolvable
+# inter-dot spacing in the image, so near-neighbor mis-IDs still exceed it.
+PNP_RANSAC_REPROJ_PX = 3.0
+PNP_RANSAC_CONFIDENCE = 0.99
+PNP_RANSAC_ITERS = 100
+FALLBACK_ISOTROPIC_M = 0.005
+
+# --- per-cabinet SOFT quality thresholds (tunable) ---
+# These sit ABOVE the HARD observability gate (min_views=2, min_points=8) in
+# check_observability: a cabinet that clears observability can still be flagged
+# here as a soft warning. A cabinet seen by <2 views never reaches this stage
+# (reconstruct aborts at observability_failed first).
+QUALITY_MIN_VIEWS = 4  # below this (but >=2) -> "low_observation"
+QUALITY_MAX_CABINET_RMS_PX = 2.0  # per-cabinet reproj RMS above this -> "high_residual"
+# align_to_nominal rigid-fit residual above this => the as-built wall deviates from the
+# nominal design by more than reconstruction noise (a clean given-K reconstruction aligns at
+# ~0.2mm; ~1% global pitch scale ~2.5mm, ~2% ~4.9mm). Surfaces the NON-absorbable pitch/shape
+# class (P5) the L1 cross-check (absorbable class) does not cover. SL (align_to_nominal) only.
+NOMINAL_MISFIT_WARN_MM = 3.0
+
+# --- Stage B robust-residual trim (PRIMARY geometric authority) ---
+STAGE_B_MAX_ITERS = 3
+STAGE_B_MAD_K = 3.0
+STAGE_B_ABS_PX_FLOOR = 3.0
+STAGE_B_GROUP_MEDIAN_PX = 4.0  # whole-(cam,cab)-group coherence guard
+BA_RMS_FATAL_PX = 2.0          # FIX-4: converged solutions above this rms are refused
+
+
+def _classify_cabinet_quality(observed_views: int, reproj_rms_px: float) -> str:
+    """Classify a cabinet's soft quality after BA.
+
+    Order: under-observation dominates residual (too few views makes the
+    residual itself untrustworthy), so check views first.
+    """
+    if observed_views < QUALITY_MIN_VIEWS:
+        return "low_observation"
+    if reproj_rms_px > QUALITY_MAX_CABINET_RMS_PX:
+        return "high_residual"
+    return "ok"
+
+
+def _per_cabinet_reproj_rms(
+    K: np.ndarray,
+    camera_poses: list[tuple[np.ndarray, np.ndarray]],
+    cabinet_poses: dict[int, tuple[np.ndarray, np.ndarray]],
+    observations: list[Observation],
+) -> dict[int, float]:
+    """Per-cabinet reprojection RMS (px) using the SAME projection convention as
+    model_constrained_ba._residuals: xc = Rc @ (Rb @ p_local + tb) + tc, then
+    p = K @ xc; residual = p[:2]/p[2] - pixel.
+
+    RMS over a cabinet's observations is sqrt(mean over obs of (dx^2 + dy^2)),
+    matching the BA's global rms = sqrt(mean_obs(dx^2 + dy^2)).
+
+    Precondition: every observation's cabinet_idx must be present in
+    cabinet_poses (guaranteed by check_observability upstream, which aborts
+    reconstruct unless every cabinet has >=2 views / >=8 observations). The
+    returned dict therefore has an entry for every observed cabinet.
+    """
+    sq_sum: dict[int, float] = {}
+    counts: dict[int, int] = {}
+    for o in observations:
+        Rc, tc = camera_poses[o.camera_idx]
+        Rb, tb = cabinet_poses[o.cabinet_idx]
+        xw = Rb @ o.p_local + tb
+        xc = Rc @ xw + tc
+        p = K @ xc
+        d = p[:2] / p[2] - o.pixel
+        sq_sum[o.cabinet_idx] = sq_sum.get(o.cabinet_idx, 0.0) + float(d @ d)
+        counts[o.cabinet_idx] = counts.get(o.cabinet_idx, 0) + 1
+    return {
+        idx: float(np.sqrt(sq_sum[idx] / counts[idx]))
+        for idx in sq_sum
+    }
+
+
+def _obs_residual_norms(K, result, observations, root_idx):
+    """Per-observation reprojection residual norm (px), using the CURRENT
+    iteration's poses (recomputed, not stale sol.fun)."""
+    nonroot = _nonroot_cabinets(
+        max(observations, key=lambda o: o.cabinet_idx).cabinet_idx + 1, root_idx)
+    # Reuse model_constrained_ba._residuals by packing the solved state.
+    cabs = dict(result.cabinet_poses)
+    for j in nonroot:
+        cabs.setdefault(j, (np.eye(3), np.zeros(3)))
+    x = _pack(result.camera_poses, cabs, nonroot)
+    obs_arrays = _precompute_obs_arrays(observations)
+    res = _residuals(x, len(result.camera_poses), nonroot, root_idx, K, obs_arrays)
+    # _residuals returns weighted residuals (r/σ); recover unweighted norms.
+    sigma = obs_arrays[4]
+    r = res.reshape(-1, 2) * sigma[:, None]
+    return np.sqrt((r * r).sum(axis=1))
+
+
+def stage_b_robust_solve(*, K, observations, n_cameras, n_cabinets,
+                         root_cabinet_idx, init_cameras, init_cabinets,
+                         per_cabinet_min_points, max_nfev=200):
+    """Iterative robust-residual trim wrapping model_constrained_ba (PRIMARY
+    geometric authority). Recomputes residuals each iter (sol.fun is stale),
+    drops norm > max(k*MAD, abs_px_floor) plus whole-(cam,cab)-group coherence
+    outliers, re-solves, <=3 iters. Never trims any cabinet below
+    per_cabinet_min_points. Returns (result, rejected_per_cab, total,
+    surviving_observations) where surviving_observations is the trimmed obs list
+    the final solve ran on (caller reuses it for _per_cabinet_reproj_rms,
+    per-cabinet view/point recompute, and the post-trim observability check)."""
+    obs = list(observations)
+    rejected_per_cab: dict[int, int] = {}
+    result = model_constrained_ba(
+        K=K, observations=obs, n_cameras=n_cameras, n_cabinets=n_cabinets,
+        root_cabinet_idx=root_cabinet_idx, init_cameras=init_cameras,
+        init_cabinets=init_cabinets, loss="huber", max_nfev=max_nfev)
+    for _ in range(STAGE_B_MAX_ITERS):
+        norms = _obs_residual_norms(K, result, obs, root_cabinet_idx)
+        mad = float(np.median(np.abs(norms - np.median(norms)))) or 0.0
+        thr = max(STAGE_B_MAD_K * mad, STAGE_B_ABS_PX_FLOOR)
+        # group coherence: median residual per (cam,cab)
+        group_norms: dict[tuple[int, int], list[float]] = {}
+        for o, nrm in zip(obs, norms):
+            group_norms.setdefault((o.camera_idx, o.cabinet_idx), []).append(nrm)
+        group_thr = max(STAGE_B_GROUP_MEDIAN_PX,
+                        min(2.0 * result.rms_reprojection_px, 8.0))
+        bad_groups = {g for g, v in group_norms.items()
+                      if float(np.median(v)) > group_thr}
+        # candidate drops: pointwise OR in a bad group
+        drop = [(nrm > thr) or ((o.camera_idx, o.cabinet_idx) in bad_groups)
+                for o, nrm in zip(obs, norms)]
+        if not any(drop):
+            break
+        # Drop flagged outliers down to a BA-SAFETY floor (MIN_PNP_CORNERS — enough
+        # to keep model_constrained_ba well-defined), deliberately PAST
+        # per_cabinet_min_points. We must NOT retain known-bad observations just to
+        # keep a cabinet at the minimum: that left an over-corrupted cabinet with
+        # high-residual points and shipped a wrong report (Codex P2). When a
+        # cabinet's good points can't sustain >= per_cabinet_min_points, it falls
+        # below the floor here and solve_and_emit's post-trim observability check
+        # (>= per_cabinet_min_points points, >= 2 views) hard-stops it.
+        from collections import Counter
+        safety_floor = min(MIN_PNP_CORNERS, per_cabinet_min_points)
+        kept_counts = Counter(o.cabinet_idx for o, d in zip(obs, drop) if not d)
+        new_obs = []
+        n_dropped_this_iter = 0
+        for o, d in zip(obs, drop):
+            if d and kept_counts.get(o.cabinet_idx, 0) >= safety_floor:
+                rejected_per_cab[o.cabinet_idx] = rejected_per_cab.get(o.cabinet_idx, 0) + 1
+                n_dropped_this_iter += 1
+            else:
+                new_obs.append(o)
+                if d:  # below the BA-safety floor: keep to keep the solve defined
+                    kept_counts[o.cabinet_idx] = kept_counts.get(o.cabinet_idx, 0) + 1
+        if n_dropped_this_iter == 0:
+            break
+        obs = new_obs
+        result = model_constrained_ba(
+            K=K, observations=obs, n_cameras=n_cameras, n_cabinets=n_cabinets,
+            root_cabinet_idx=root_cabinet_idx, init_cameras=init_cameras,
+            init_cabinets=init_cabinets, loss="huber", max_nfev=max_nfev)
+    total = sum(rejected_per_cab.values())
+    return result, rejected_per_cab, total, obs
+
+
+def _undistort_obs(pix: np.ndarray, K: np.ndarray, dist: np.ndarray) -> np.ndarray:
+    """Map a single (x, y) pixel through cv2.undistortPoints to its
+    pinhole-equivalent pixel coordinate. Returns same shape (2,)."""
+    pts = pix.reshape(1, 1, 2).astype(np.float32)
+    undistorted_norm = cv2.undistortPoints(pts, K, dist)  # normalized cam
+    norm = undistorted_norm.reshape(2)
+    out = K @ np.array([norm[0], norm[1], 1.0])
+    return out[:2] / out[2]
+
+
+def pattern_hash(pattern_meta: "PatternMeta | VpqspPatternMeta") -> str:
+    """Deterministic pattern hash scheme.
+
+    SHA-256 over the canonical pydantic JSON dump of pattern_meta, truncated to
+    16 hex chars. The fixture / pattern producer must set
+    ScreenMapping.expected_pattern_hash with this exact scheme. Works for both the
+    ChArUco PatternMeta and the VP-QSP VpqspPatternMeta (any pydantic model).
+    """
+    return hashlib.sha256(pattern_meta.model_dump_json().encode()).hexdigest()[:16]
+
+
+def _cabinet_id(col: int, row: int) -> str:
+    return f"V{col:03d}_R{row:03d}"
+
+
+def _active_surface_corners_mm(screen_mapping: ScreenMapping, cabinet_id: str) -> np.ndarray:
+    """The 4 active-surface CORNERS in local mm (center origin), BL,BR,TR,TL
+    (counter-clockwise starting from bottom-left).
+
+    These are the physical panel corners (±w/2, ±h/2) — NOT the inner ChArUco
+    corners — used to derive cabinet center / normal / corners in the report.
+
+    NOTE: the BL,BR,TR,TL ordering is load-bearing — compare_known derives
+    cabinet size from this order (width=‖c1-c0‖, height=‖c2-c1‖). Do not reorder
+    the array without updating compare_known.compare_known accordingly.
+    """
+    cab = None
+    for c in screen_mapping.cabinets:
+        if c.cabinet_id == cabinet_id:
+            cab = c
+            break
+    if cab is None:
+        raise ScreenMappingError(f"cabinet '{cabinet_id}' not in screen_mapping")
+    w, h = cab.active_size_mm
+    hw, hh = w / 2.0, h / 2.0
+    return np.array(
+        [
+            [-hw, -hh, 0.0],
+            [hw, -hh, 0.0],
+            [hw, hh, 0.0],
+            [-hw, hh, 0.0],
+        ],
+        dtype=float,
+    )
+
+
+def _atomic_write_json(path: str, payload: str) -> None:
+    """Write text to path atomically (temp file + os.replace)."""
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(payload)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+
+def _nominal_world_corners(
+    cr: tuple[int, int],
+    corners_local: np.ndarray,
+    nominal_poses: "dict[tuple[int, int], tuple[np.ndarray, np.ndarray]]",
+) -> np.ndarray:
+    """Nominal design-frame corners (mm) for cabinet `cr`: `R @ corners_local
+    + t_mm`, with (R, t) straight from nominal_cabinet_poses_model_frame (the
+    single SE(3) truth source — no reconstruction of R from a normal). The
+    model frame and the BA world share the SAME recon-native axes (X=cols,
+    Y=up, Z=outward normal — see nominal.py's convention declaration), so
+    aligning BA corners to these is a near-identity rotation — no Y/Z swap,
+    no flip ambiguity.
+    """
+    r_nom, t_m = nominal_poses[cr]
+    return (corners_local @ np.asarray(r_nom, dtype=float).T) + np.asarray(t_m, dtype=float) * 1000.0
+
+
+def run_reconstruct(cmd: ReconstructInput) -> int:
+    write_event(ProgressEvent(event="progress", stage="load", percent=0.0, message="loading capture manifest"))
+
+    # --- 1. capture manifest ---
+    try:
+        manifest = load_capture_manifest(cmd.capture_manifest_path)
+    except Exception as e:  # CaptureManifestError or IO error
+        write_event(ErrorEvent(event="error", code="invalid_input", message=str(e), fatal=True))
+        return 1
+    if manifest.method == "vpqsp":
+        return run_reconstruct_vpqsp(cmd, manifest)
+    if manifest.method != "charuco":
+        write_event(ErrorEvent(
+            event="error", code="invalid_input",
+            message=f"only charuco/vpqsp implemented; structured-light gated (method={manifest.method})",
+            fatal=True,
+        ))
+        return 1
+
+    # --- 2. referenced files ---
+    # screen_mapping: an explicit cmd.screen_mapping_path overrides the
+    # manifest's reference (lets a caller swap in a corrected mapping without
+    # editing the manifest); otherwise use the manifest-resolved path.
+    # intrinsics: cmd.intrinsics_path (CLI override) > manifest reference. The
+    # `auto` self-cal sentinel is vpqsp-only (charuco has no marker-grid target
+    # assembled here), so reject it loud rather than silently loading a file
+    # named "auto".
+    intrinsics_spec = cmd.intrinsics_path or manifest.intrinsics
+    if intrinsics_spec is None:
+        write_event(ErrorEvent(event="error", code="invalid_input",
+            message="no intrinsics: set the capture manifest's `intrinsics` field, or pass "
+                    "--intrinsics <path>", fatal=True))
+        return 1
+    if intrinsics_spec == "auto":
+        write_event(ErrorEvent(event="error", code="invalid_input",
+            message="--intrinsics auto self-calibration is only supported for method=vpqsp; "
+                    "this capture manifest is method=charuco", fatal=True))
+        return 1
+    sm_path = cmd.screen_mapping_path or manifest.screen_mapping
+    try:
+        screen_mapping = ScreenMapping.model_validate(
+            json.loads(pathlib.Path(sm_path).read_text(encoding="utf-8"))
+        )
+        pattern_meta = PatternMeta.model_validate(
+            json.loads(pathlib.Path(manifest.pattern_meta).read_text(encoding="utf-8"))
+        )
+        intr = json.loads(pathlib.Path(intrinsics_spec).read_text(encoding="utf-8"))
+        K = np.array(intr["K"], dtype=float)
+        dist = np.array(intr["dist_coeffs"], dtype=float)
+        image_size = tuple(int(v) for v in intr["image_size"])
+    except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
+        write_event(ErrorEvent(event="error", code="invalid_input", message=f"failed to load manifest references: {e}", fatal=True))
+        return 1
+
+    # --- 3. preflight ---
+    if screen_mapping.expected_pattern_hash is None:
+        write_event(WarningEvent(
+            event="warning", code="pattern_hash_unset",
+            message="screen_mapping.expected_pattern_hash is not set; skipping the "
+                    "capture↔pattern binding check. Set it to the generated pattern's "
+                    "hash to verify the captured pattern matches this config."))
+    try:
+        screen_mapping.preflight(pattern_hash(pattern_meta))
+    except ScreenMappingError as e:
+        write_event(ErrorEvent(event="error", code="invalid_input", message=str(e), fatal=True))
+        return 1
+
+    # Per-cabinet board shape (v2): (col,row) -> (squares_x, squares_y, square_px).
+    shape_by_cr = {(c.col, c.row): (c.squares_x, c.squares_y, c.square_px)
+                   for c in pattern_meta.cabinets}
+
+    # --- 4. boards + deterministic cabinet index map ---
+    present = sorted(
+        ((c.col, c.row) for c in pattern_meta.cabinets),
+        key=lambda cr: (cr[1], cr[0]),  # (row, col) order
+    )
+    if ROOT_CABINET not in present:
+        write_event(ErrorEvent(
+            event="error", code="invalid_input",
+            message=f"root cabinet {_cabinet_id(*ROOT_CABINET)} (0,0) not present in pattern_meta",
+            fatal=True,
+        ))
+        return 1
+    cab_to_idx: dict[tuple[int, int], int] = {cr: i for i, cr in enumerate(present)}
+    root_idx = cab_to_idx[ROOT_CABINET]
+    n_cabinets = len(present)
+
+    boards = [
+        {"cabinet": (c.col, c.row),
+         "aruco_id_start": c.aruco_id_start, "aruco_id_end": c.aruco_id_end,
+         "squares_x": c.squares_x, "squares_y": c.squares_y}
+        for c in pattern_meta.cabinets
+    ]
+
+    # --- 5. detect + build observations ---
+    write_event(ProgressEvent(event="progress", stage="detect_charuco", percent=0.2, message="detecting ChArUco corners"))
+    view_images: list[list[str]] = [list(v.images) for v in manifest.views]
+    all_paths = [p for imgs in view_images for p in imgs]
+    detections = detect_charuco_corners(all_paths, boards=boards)
+
+    observations: list[Observation] = []
+    # camera_idx == view index; aggregate corners per (view, cabinet) for PnP.
+    per_view_cab_corners: dict[tuple[int, int], list[tuple[np.ndarray, np.ndarray]]] = {}
+    per_cabinet_views: dict[int, set[int]] = {}
+    per_cabinet_points: dict[int, int] = {}
+    for cam_idx, imgs in enumerate(view_images):
+        for path in imgs:
+            for det in detections.get(path, []):
+                cab_cr = tuple(det["cabinet"])
+                if cab_cr not in cab_to_idx:
+                    continue
+                cab_idx = cab_to_idx[cab_cr]
+                charuco_id = int(det["charuco_id"])
+                sx, sy, spx = shape_by_cr[cab_cr]
+                p_local = screen_mapping.charuco_corner_local_mm(
+                    _cabinet_id(*cab_cr), charuco_id,
+                    squares_x=sx, squares_y=sy, square_px=spx,
+                )
+                pixel = _undistort_obs(np.array(det["corner_px"], dtype=float), K, dist)
+                observations.append(Observation(
+                    camera_idx=cam_idx, cabinet_idx=cab_idx,
+                    p_local=p_local, pixel=pixel,
+                ))
+                per_view_cab_corners.setdefault((cam_idx, cab_idx), []).append((p_local, pixel))
+                per_cabinet_views.setdefault(cab_idx, set()).add(cam_idx)
+                per_cabinet_points[cab_idx] = per_cabinet_points.get(cab_idx, 0) + 1
+
+    if not observations:
+        write_event(ErrorEvent(
+            event="error", code="detection_failed",
+            message="no ChArUco corners detected across any view",
+            fatal=True,
+        ))
+        return 1
+
+    # --- 5b. Stage A pre-clean: per-(cam,cab) PnP-RANSAC inlier filter ---
+    (observations, per_view_cab_corners, per_cabinet_views, per_cabinet_points,
+     n_rej_stage_a, rej_per_cab_stage_a) = stage_a_prune(observations, per_view_cab_corners, K)
+
+    # --- 6. observability ---
+    try:
+        check_observability(observations, n_cabinets, min_views=2, min_points=8)
+    except ObservabilityError as e:
+        write_event(ErrorEvent(event="error", code="observability_failed", message=str(e), fatal=True))
+        return 1
+
+    # --- 7. nominal model (kept here: needs cmd.project) ---
+    try:
+        nominal_poses = nominal_cabinet_poses_model_frame(cmd.project.cabinet_array, cmd.project.shape_prior)
+    except ValueError as e:
+        write_event(ErrorEvent(event="error", code="invalid_input", message=str(e), fatal=True))
+        return 1
+
+    return solve_and_emit(
+        K=K, observations=observations, per_view_cab_corners=per_view_cab_corners,
+        n_cameras=len(view_images), cab_to_idx=cab_to_idx, root_idx=root_idx,
+        n_cabinets=n_cabinets, nominal_poses=nominal_poses,
+        per_cabinet_views=per_cabinet_views, per_cabinet_points=per_cabinet_points,
+        corners_local_provider=lambda cid: _active_surface_corners_mm(screen_mapping, cid),
+        pose_report_path=cmd.pose_report_path,
+        n_rejected_pre=n_rej_stage_a, rejected_per_cab_pre=rej_per_cab_stage_a,
+        gauge_strategy="fix_root_cabinet",  # charuco unchanged; output stays in BA-local frame
+    )
+
+
+def _validated_image_size(view_images) -> tuple[int, int] | None:
+    """(width, height) validated across ALL views (one frame per view sampled).
+    Raises IntrinsicsRefused if views disagree on frame size — mixed resolution /
+    landscape-portrait mix corrupts the principal-point origin and coverage
+    normalisation silently (FIX-20, mirrors SL path sl_reconstruct.py:89-91)."""
+    sizes: set[tuple[int, int]] = set()
+    for imgs in view_images:
+        for p in imgs:
+            img = cv2.imread(p, cv2.IMREAD_GRAYSCALE)
+            if img is not None:
+                sizes.add((int(img.shape[1]), int(img.shape[0])))
+                break  # one readable frame per view is enough
+    if not sizes:
+        return None
+    if len(sizes) != 1:
+        raise IntrinsicsRefused(
+            "invalid_input",
+            f"capture views disagree on frame size: {sorted(sizes)}; "
+            "all views must use the same camera resolution and orientation")
+    return sizes.pop()
+
+
+def _self_calibrate_vpqsp(meta, detections, view_images, image_size, cmd):
+    """Inline self-cal for VP-QSP `--intrinsics auto`. Each captured view is a
+    photo of the KNOWN VP-QSP marker wall — a planar (flat) or per-cabinet-tilted
+    (curved) calibration target whose metric geometry comes from the displayed
+    pixel pitch. Assemble per-view (nominal world 3D, image px) from the SAME
+    detections the reconstruction uses (frame-matched), then solve K + distortion
+    via the shared Zhang solver (cv2.calibrateCamera).
+
+    Unlike the SL path (sl_reconstruct._self_calibrate_inline), a FLAT wall WITHOUT
+    an anchor is ADMITTED here, not refused: the provided pixel pitch IS the metric
+    scale that fixes the focal/scale ambiguity, so a known flat target + angularly
+    diverse shots is a well-posed Zhang problem. solve_sl_intrinsics's own
+    conditioning gates (>=5deg rotation diversity, >=20% coverage, focal/principal-
+    point stddev caps) still refuse an ill-posed capture (e.g. all shots fronto-
+    parallel) with a clear message. The unguarded residual — anisotropic screen
+    pitch / a non-1:1-driven wall corrupting fx/fy aspect — is surfaced as a
+    no_intrinsics_anchor warning; pass --intrinsics-crosscheck to validate it.
+
+    Returns (K, dist) or raises IntrinsicsRefused (code maps to the error event).
+    """
+    from lmt_vba_sidecar.vpqsp_layout import marker_local_mm
+
+    grid_by_cr = {
+        (c.col, c.row): (c.markers_x, c.markers_y, c.marker_px,
+                         (c.resolution_px[0], c.resolution_px[1]),
+                         (c.pixel_pitch_mm[0], c.pixel_pitch_mm[1]))
+        for c in meta.cabinets
+    }
+
+    # One calibrateCamera "pose" per (VIEW, CABINET). Each cabinet is a genuine
+    # flat plane; grouping by cabinet avoids assuming cabinets are coplanar (they
+    # aren't for a desktop dual-monitor test setup, and may tilt on curved walls).
+    # Use LOCAL mm coords (z=0, center-origin) — world coords would bake in the
+    # flat-wall layout assumption, which is irrelevant for intrinsics.
+    object_points, image_points = [], []
+    for imgs in view_images:
+        per_cab: dict[tuple[int, int], tuple[list, list]] = {}
+        for path in imgs:
+            for det in detections.get(path, []):
+                cab_cr = (int(det["cabinet"][0]), int(det["cabinet"][1]))
+                if cab_cr not in grid_by_cr:
+                    continue
+                mx, my, mpx, res_px, pitch = grid_by_cr[cab_cr]
+                p_local = marker_local_mm(
+                    int(det["local_id"]), markers_x=mx, markers_y=my, marker_px=mpx,
+                    resolution_px=res_px, pixel_pitch_mm=pitch)
+                per_cab.setdefault(cab_cr, ([], []))
+                per_cab[cab_cr][0].append(p_local)
+                per_cab[cab_cr][1].append([det["corner_px"][0], det["corner_px"][1]])
+        for objp, imgp in per_cab.values():
+            # FIX-21: require ≥8 points per pose (4 is barely determined for
+            # a planar target's 6 DOF — 8 gives 16 constraints, much stabler).
+            if len(objp) >= 8:
+                object_points.append(np.asarray(objp, dtype=np.float32))
+                image_points.append(np.asarray(imgp, dtype=np.float32))
+
+    # FIX-21: cap pose count to avoid minute-level calibrateCamera on large walls.
+    MAX_CAL_POSES = 200
+    if len(object_points) > MAX_CAL_POSES:
+        rng = np.random.default_rng(0)
+        idx = rng.choice(len(object_points), MAX_CAL_POSES, replace=False)
+        idx.sort()
+        object_points = [object_points[i] for i in idx]
+        image_points = [image_points[i] for i in idx]
+
+    has_anchor = bool(cmd.crosscheck_intrinsics_path)
+    # Per-cabinet poses have fewer points than full-view poses, so pp uncertainty
+    # is slightly higher. Scale the pp gate by image size (default 3px @ 4000px).
+    pp_gate = max(5.0, 3.0 * max(image_size) / 4000)
+    res = solve_sl_intrinsics(object_points, image_points, image_size,
+                              max_rms_px=1.5, allow_full_distortion=has_anchor,
+                              max_pp_std_px=pp_gate, try_zero_distortion=True)
+    if has_anchor:
+        try:
+            anchor = json.loads(pathlib.Path(cmd.crosscheck_intrinsics_path).read_text())
+            anchor_K = np.array(anchor["K"], float)
+            anchor_dist = np.array(anchor.get("dist_coeffs", [0, 0, 0, 0, 0]), float)
+        except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
+            raise IntrinsicsRefused("invalid_input", f"crosscheck intrinsics load failed: {e}")
+        refusal = crosscheck_intrinsics(res, anchor_K=anchor_K, anchor_dist=anchor_dist)
+        if refusal is not None:
+            raise refusal
+    else:
+        # No anchor: trust the displayed screen geometry as the metric target (the
+        # flat-wall conditioning is already guarded by solve_sl_intrinsics). Warn
+        # that anisotropic pitch / non-1:1 drive is unvalidated.
+        write_event(WarningEvent(event="warning", code="no_intrinsics_anchor",
+            message="VP-QSP auto intrinsics solved from the displayed marker wall without an "
+                    "independent anchor; assumes the screen is driven pixel-exact (1:1). "
+                    "Anisotropic pitch / non-1:1 scaling is unguarded — pass "
+                    "--intrinsics-crosscheck <anchor.json> to validate."))
+    return res.K, res.dist
+
+
+def run_reconstruct_vpqsp(cmd: ReconstructInput, manifest) -> int:
+    """VP-QSP reconstruct front-end: self-encoding marker detect → Observation →
+    shared solve_and_emit. Mirrors run_reconstruct (charuco) but the marker
+    decode yields (screen_id, col, row, local_id) directly — no ArUco routing
+    table — and p_local comes from the VP-QSP marker grid (vpqsp pattern_meta),
+    +y-up center-origin mm. Intrinsics come from a file OR `--intrinsics auto`
+    self-calibration (the captured markers are themselves the calibration target);
+    everything from observability onward is shared.
+    """
+    from lmt_vba_sidecar.vpqsp_detect import detect_vpqsp_markers
+    from lmt_vba_sidecar.vpqsp_layout import marker_local_mm
+
+    # --- 2. referenced files (screen_mapping reused for active-surface corners).
+    #         Intrinsics are resolved AFTER detection (step 3c) so `--intrinsics
+    #         auto` can self-calibrate from the same detected markers. ---
+    sm_path = cmd.screen_mapping_path or manifest.screen_mapping
+    try:
+        screen_mapping = ScreenMapping.model_validate(
+            json.loads(pathlib.Path(sm_path).read_text(encoding="utf-8"))
+        )
+        meta = VpqspPatternMeta.model_validate(
+            json.loads(pathlib.Path(manifest.pattern_meta).read_text(encoding="utf-8"))
+        )
+    except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
+        write_event(ErrorEvent(event="error", code="invalid_input",
+            message=f"failed to load manifest references: {e}", fatal=True))
+        return 1
+
+    # --- 3. preflight (pattern hash ties screen_mapping to this exact pattern) ---
+    if screen_mapping.expected_pattern_hash is None:
+        write_event(WarningEvent(
+            event="warning", code="pattern_hash_unset",
+            message="screen_mapping.expected_pattern_hash is not set; skipping the "
+                    "capture↔pattern binding check. Set it to the generated pattern's "
+                    "hash to verify the captured pattern matches this config."))
+    try:
+        screen_mapping.preflight(pattern_hash(meta))
+    except ScreenMappingError as e:
+        write_event(ErrorEvent(event="error", code="invalid_input", message=str(e), fatal=True))
+        return 1
+
+    # Per-cabinet VP-QSP grid: (col,row) -> (markers_x, markers_y, resolution_px, pitch).
+    # The displayed pattern is the single source of truth for marker positions.
+    grid_by_cr = {
+        (c.col, c.row): (c.markers_x, c.markers_y, c.marker_px,
+                         (c.resolution_px[0], c.resolution_px[1]),
+                         (c.pixel_pitch_mm[0], c.pixel_pitch_mm[1]))
+        for c in meta.cabinets
+    }
+
+    # --- 3b. cross-source consistency preflight ---
+    # The charuco path gets two guards for free via screen_mapping.charuco_corner_local_mm:
+    # (a) it fails loud on rotation/mirror, (b) ScreenMappingCabinet enforces
+    # resolution_px*pixel_pitch_mm ~= active_size_mm. VP-QSP sources p_local's metric
+    # scale from the pattern_meta (resolution_px x pixel_pitch_mm) but the pose-report
+    # corners from screen_mapping.active_size_mm, so neither guard applies automatically.
+    # Re-assert both here, or a swapped/edited screen_mapping (even with the correct
+    # pattern_hash) would silently mix scales / drop a rotation.
+    sm_by_id = {c.cabinet_id: c for c in screen_mapping.cabinets}
+    for c in meta.cabinets:
+        cid = _cabinet_id(c.col, c.row)
+        sm_cab = sm_by_id.get(cid)
+        if sm_cab is None:
+            continue  # unmapped cabinet (handled later by cab_to_idx routing)
+        if sm_cab.rotation != 0 or sm_cab.mirror_x or sm_cab.mirror_y:
+            write_event(ErrorEvent(event="error", code="invalid_input",
+                message=(f"cabinet '{cid}' has rotation={sm_cab.rotation}, "
+                         f"mirror_x={sm_cab.mirror_x}, mirror_y={sm_cab.mirror_y}; "
+                         "rotation/mirror not yet supported in VP-QSP local-mm mapping "
+                         "(fail loud, not silent)"), fatal=True))
+            return 1
+        # The VP-QSP marker grid's implied physical extent (resolution_px x pitch, the
+        # BA scale) must match active_size_mm (the pose-report corner scale) within the
+        # same 1% tolerance ScreenMappingCabinet uses, or the recovered geometry and the
+        # BA point cloud are at different scales.
+        for axis, name in ((0, "width"), (1, "height")):
+            implied = c.resolution_px[axis] * c.pixel_pitch_mm[axis]
+            active = sm_cab.active_size_mm[axis]
+            if abs(implied - active) > 0.01 * active:
+                write_event(ErrorEvent(event="error", code="invalid_input",
+                    message=(f"cabinet '{cid}' {name} scale mismatch: vpqsp pattern_meta "
+                             f"resolution_px {c.resolution_px[axis]} x pixel_pitch_mm "
+                             f"{c.pixel_pitch_mm[axis]} = {implied:.3f}mm, but screen_mapping "
+                             f"active_size_mm = {active}mm (>1% apart). These set the BA scale "
+                             "and the pose-report corner scale respectively and must agree."),
+                    fatal=True))
+                return 1
+
+    # --- 4. deterministic cabinet index map ---
+    present = sorted(((c.col, c.row) for c in meta.cabinets), key=lambda cr: (cr[1], cr[0]))
+    if ROOT_CABINET not in present:
+        write_event(ErrorEvent(event="error", code="invalid_input",
+            message=f"root cabinet {_cabinet_id(*ROOT_CABINET)} (0,0) not present in pattern_meta",
+            fatal=True))
+        return 1
+    cab_to_idx: dict[tuple[int, int], int] = {cr: i for i, cr in enumerate(present)}
+    root_idx = cab_to_idx[ROOT_CABINET]
+    n_cabinets = len(present)
+
+    # --- 5. detect + build observations ---
+    write_event(ProgressEvent(event="progress", stage="detect_vpqsp", percent=0.2,
+                              message="detecting VP-QSP markers"))
+    view_images: list[list[str]] = [list(v.images) for v in manifest.views]
+    all_paths = [p for imgs in view_images for p in imgs]
+    detections = detect_vpqsp_markers(all_paths, screen_id_code=meta.screen_id_code)
+
+    # --- 3c. resolve intrinsics: CLI override (cmd.intrinsics_path) > manifest
+    #         reference. The reserved value "auto" self-calibrates K + distortion
+    #         from the SAME detected markers (frame-matched); else load a file. ---
+    intrinsics_spec = cmd.intrinsics_path or manifest.intrinsics
+    if intrinsics_spec is None:
+        write_event(ErrorEvent(event="error", code="invalid_input",
+            message="no intrinsics: set the capture manifest's `intrinsics` field, or pass "
+                    "--intrinsics <path|auto>", fatal=True))
+        return 1
+    if intrinsics_spec == "auto":
+        try:
+            image_size = _validated_image_size(view_images)
+        except IntrinsicsRefused as e:
+            write_event(ErrorEvent(event="error", code=e.code, message=e.message, fatal=True))
+            return 1
+        if image_size is None:
+            write_event(ErrorEvent(event="error", code="invalid_input",
+                message="--intrinsics auto: cannot read any capture image to determine frame size",
+                fatal=True))
+            return 1
+        try:
+            K, dist = _self_calibrate_vpqsp(meta, detections, view_images, image_size, cmd)
+            intrinsics_source = "auto_self_calibrated"
+        except IntrinsicsRefused as e:
+            write_event(ErrorEvent(event="error", code=e.code, message=e.message, fatal=True))
+            return 1
+    else:
+        try:
+            intr = json.loads(pathlib.Path(intrinsics_spec).read_text(encoding="utf-8"))
+            K = np.array(intr["K"], dtype=float)
+            prob = intrinsics_K_problem(K)
+            if prob is not None:
+                raise ValueError(prob)
+            dist = np.array(intr["dist_coeffs"], dtype=float)
+            intrinsics_source = "file"
+        except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
+            write_event(ErrorEvent(event="error", code="intrinsics_invalid",
+                message=f"intrinsics load failed: {e}", fatal=True))
+            return 1
+
+    observations: list[Observation] = []
+    per_view_cab_corners: dict[tuple[int, int], list[tuple[np.ndarray, np.ndarray]]] = {}
+    per_cabinet_views: dict[int, set[int]] = {}
+    per_cabinet_points: dict[int, int] = {}
+    for cam_idx, imgs in enumerate(view_images):
+        for path in imgs:
+            for det in detections.get(path, []):
+                cab_cr = tuple(det["cabinet"])
+                if cab_cr not in cab_to_idx or cab_cr not in grid_by_cr:
+                    continue
+                cab_idx = cab_to_idx[cab_cr]
+                mx, my, mpx, res_px, pitch = grid_by_cr[cab_cr]
+                p_local = marker_local_mm(
+                    int(det["local_id"]), markers_x=mx, markers_y=my, marker_px=mpx,
+                    resolution_px=res_px, pixel_pitch_mm=pitch,
+                )
+                pixel = _undistort_obs(np.array(det["corner_px"], dtype=float), K, dist)
+                sigma = float(det.get("sigma_px", 1.0))
+                observations.append(Observation(
+                    camera_idx=cam_idx, cabinet_idx=cab_idx, p_local=p_local, pixel=pixel,
+                    sigma_px=sigma))
+                per_view_cab_corners.setdefault((cam_idx, cab_idx), []).append((p_local, pixel))
+                per_cabinet_views.setdefault(cab_idx, set()).add(cam_idx)
+                per_cabinet_points[cab_idx] = per_cabinet_points.get(cab_idx, 0) + 1
+
+    if not observations:
+        write_event(ErrorEvent(event="error", code="detection_failed",
+            message="no VP-QSP markers detected across any view", fatal=True))
+        return 1
+
+    # --- 5b. Stage A pre-clean (shared) ---
+    (observations, per_view_cab_corners, per_cabinet_views, per_cabinet_points,
+     n_rej_stage_a, rej_per_cab_stage_a) = stage_a_prune(observations, per_view_cab_corners, K)
+
+    # --- 6. observability (shared) ---
+    try:
+        check_observability(observations, n_cabinets, min_views=2, min_points=8)
+    except ObservabilityError as e:
+        write_event(ErrorEvent(event="error", code="observability_failed", message=str(e), fatal=True))
+        return 1
+
+    # --- 7. nominal model (shared) ---
+    try:
+        nominal_poses = nominal_cabinet_poses_model_frame(cmd.project.cabinet_array, cmd.project.shape_prior)
+    except ValueError as e:
+        write_event(ErrorEvent(event="error", code="invalid_input", message=str(e), fatal=True))
+        return 1
+
+    return solve_and_emit(
+        K=K, observations=observations, per_view_cab_corners=per_view_cab_corners,
+        n_cameras=len(view_images), cab_to_idx=cab_to_idx, root_idx=root_idx,
+        n_cabinets=n_cabinets, nominal_poses=nominal_poses,
+        per_cabinet_views=per_cabinet_views, per_cabinet_points=per_cabinet_points,
+        corners_local_provider=lambda cid: _active_surface_corners_mm(screen_mapping, cid),
+        pose_report_path=cmd.pose_report_path,
+        n_rejected_pre=n_rej_stage_a, rejected_per_cab_pre=rej_per_cab_stage_a,
+        gauge_strategy="fix_root_cabinet",  # fast-mode marker, same gauge as charuco
+        intrinsics_source=intrinsics_source,
+    )
+
+
+def _reexpress_result_in_cabinet_frame(result: "BAResult", frame_idx: int) -> "BAResult":
+    """Rigidly re-express a BAResult in cabinet `frame_idx`'s frame (FIX-3.3:
+    the BA gauge sits at the wall-center cabinet for conditioning, but reports
+    keep the external root cabinet's frame). x_new = R0.T @ (x_old - t0) with
+    (R0, t0) = the frame cabinet's solved pose. Cameras compose the inverse
+    change (reprojection invariant); translation covariances rotate R0.T S R0
+    so the uncertainty ellipsoids stay attached to their cabinets."""
+    R0, t0 = result.cabinet_poses[frame_idx]
+    return BAResult(
+        camera_poses=[(Rc @ R0, tc + Rc @ t0) for Rc, tc in result.camera_poses],
+        cabinet_poses={j: (R0.T @ Rj, R0.T @ (tj - t0))
+                       for j, (Rj, tj) in result.cabinet_poses.items()},
+        rms_reprojection_px=result.rms_reprojection_px,
+        iterations=result.iterations,
+        converged=result.converged,
+        cabinet_covariances={
+            j: (R0.T @ np.asarray(S, dtype=float) @ R0
+                if S is not None and np.ndim(S) == 2 else S)
+            for j, S in result.cabinet_covariances.items()},
+    )
+
+
+def _nominal_init_root_frame(
+    nominal_poses: "dict[tuple[int, int], tuple[np.ndarray, np.ndarray]]",
+    root_cr: tuple[int, int],
+    cr: tuple[int, int],
+) -> tuple[np.ndarray, np.ndarray]:
+    """world_from_cab init for `cr` from the nominal wall, expressed in the
+    ROOT cabinet's frame (= the BA world): T_root^-1 . T_cr, i.e.
+    R = R_root.T @ R_cr and t_mm = R_root.T @ (t_cr - t_root).
+
+    FIX-3: the pre-fix fallback used identity rotation and an UNROTATED
+    model-frame translation delta — at the far end of a long arc that is up to
+    a ~90 deg rotation error plus a bent translation, which BA cannot recover
+    from (divergence or the mirror local minimum)."""
+    R_root, t_root = nominal_poses[root_cr]
+    R_cr, t_cr = nominal_poses[cr]
+    R_root = np.asarray(R_root, dtype=float)
+    R = R_root.T @ np.asarray(R_cr, dtype=float)
+    t_mm = R_root.T @ ((np.asarray(t_cr, dtype=float) - np.asarray(t_root, dtype=float)) * 1000.0)
+    return R, t_mm
+
+
+def solve_and_emit(
+    *,
+    K: np.ndarray,
+    observations: list[Observation],
+    per_view_cab_corners: dict[tuple[int, int], list[tuple[np.ndarray, np.ndarray]]],
+    n_cameras: int,
+    cab_to_idx: dict[tuple[int, int], int],
+    root_idx: int,
+    n_cabinets: int,
+    nominal_poses: "dict[tuple[int, int], tuple[np.ndarray, np.ndarray]]",
+    per_cabinet_views: dict[int, set[int]],
+    per_cabinet_points: dict[int, int],
+    corners_local_provider: Callable[[str], np.ndarray],
+    pose_report_path: str | None,
+    n_rejected_pre: int = 0,
+    rejected_per_cab_pre: dict[int, int] | None = None,
+    gauge_strategy: str = "fix_root_cabinet",
+    intrinsics_source: str = "file",
+) -> int:
+    """Shared init -> model_constrained_ba -> per-cabinet geometry -> report ->
+    ResultEvent. Used by both run_reconstruct (charuco) and
+    sl_reconstruct.run_reconstruct_structured_light. corners_local_provider maps
+    a cabinet_id string to its (4,3) active-surface corners in local mm.
+
+    gauge_strategy:
+      - "fix_root_cabinet" (default): world frame = root cabinet's frame (R=I,t=0).
+        Output geometry is left in that BA-local frame. Charuco path uses this;
+        its report/measured.yaml are byte-identical to before.
+      - "align_to_nominal": after BA, a SINGLE rigid transform (Procrustes over
+        ALL cabinet corners vs the nominal design grid) places the whole wall into
+        the nominal design frame, so downstream export lands drop-in without
+        guessing orientation. Recon-native axes match nominal, so this never flips.
+    """
+    # --- 7. init ---
+    write_event(ProgressEvent(event="progress", stage="bundle_adjustment", percent=0.5, message="initializing"))
+    if ROOT_CABINET not in nominal_poses:
+        write_event(ErrorEvent(
+            event="error", code="invalid_input",
+            message="root cabinet (0,0) missing from nominal model (absent_cells?)",
+            fatal=True,
+        ))
+        return 1
+    idx_to_cab = {idx: cr for cr, idx in cab_to_idx.items()}
+    # idx-keyed nominal SE(3) poses for branch disambiguation.
+    nominal_poses_idx = {cab_to_idx[cr]: rt for cr, rt in nominal_poses.items()
+                         if cr in cab_to_idx}
+    # BA gauge = the CENTER-most cabinet (FIX-3.3): on a wide segmented wall this
+    # halves the transitive-bridging chain length (and so the init drift) vs the
+    # corner root. OUTPUT frame semantics are unchanged: after the solve the whole
+    # solution is rigidly re-expressed in the external root cabinet's frame.
+    center_m = np.mean([np.asarray(nominal_poses[cr][1], dtype=float)
+                        for cr in cab_to_idx], axis=0)
+    gauge_idx = min(
+        cab_to_idx.values(),
+        key=lambda i: (float(np.linalg.norm(np.asarray(nominal_poses[idx_to_cab[i]][1], dtype=float) - center_m)),
+                       idx_to_cab[i][1], idx_to_cab[i][0]))
+    gauge_cr = idx_to_cab[gauge_idx]
+    # Bridge-camera init: estimate each non-gauge cabinet's world pose from view
+    # chains that connect it to the gauge (transitive co-visibility), resolving the
+    # IPPE convex/concave mirror against nominal model-frame normals. Cabinets with
+    # no chain fall back to the nominal pose rotated into the gauge frame (warned).
+    bridge, undecidable_cabs = estimate_nonroot_cabinet_init(
+        per_view_cab_corners, gauge_idx, K,
+        nominal_poses=nominal_poses_idx,
+    )
+    if undecidable_cabs:
+        ids = sorted(_cabinet_id(*idx_to_cab[j]) for j in undecidable_cabs)
+        write_event(ErrorEvent(
+            event="error", code="observability_failed",
+            message=(f"convex/concave undecidable for cabinet(s) {ids}: planar-PnP "
+                     f"mirror branches equally match nominal and no redundant view "
+                     f"breaks the tie; add a camera that sees these cabinets"),
+            fatal=True))
+        return 1
+    init_cabinets: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    fallback_ids: list[str] = []
+    for cr, idx in cab_to_idx.items():
+        if idx == gauge_idx:
+            init_cabinets[idx] = (np.eye(3), np.zeros(3))
+        elif idx in bridge:
+            init_cabinets[idx] = bridge[idx]
+        elif cr in nominal_poses:
+            init_cabinets[idx] = _nominal_init_root_frame(nominal_poses, gauge_cr, cr)
+            fallback_ids.append(_cabinet_id(*cr))
+        else:
+            init_cabinets[idx] = (np.eye(3), np.zeros(3))
+            fallback_ids.append(_cabinet_id(*cr))
+    if fallback_ids:
+        write_event(WarningEvent(
+            event="warning", code="init_fallback_nominal",
+            message=(f"{len(fallback_ids)} cabinet(s) share no bridged view chain with the "
+                     f"root; initialized from the nominal model (BA must absorb any "
+                     f"as-built deviation): {', '.join(sorted(fallback_ids))}")))
+
+    # Camera init via PnP. Object points are local mm; the root cabinet frame is
+    # world, so PnP against the root gives camera_from_world directly. For views
+    # that don't see the root well, PnP against any seen cabinet, then compose
+    # with that cabinet's nominal world pose: T_cam_world = T_cam_cab @ T_cab_world.
+    init_cameras: list[tuple[np.ndarray, np.ndarray]] = []
+    for cam_idx in range(n_cameras):
+        pose = _pnp_camera(cam_idx, gauge_idx, init_cabinets, per_view_cab_corners, K)
+        init_cameras.append(pose)
+
+    # --- 8. BA (Stage B robust-residual trim — PRIMARY geometric authority) ---
+    result, rejected_per_cab_stage_b, n_rej_stage_b, surviving_observations = \
+        stage_b_robust_solve(
+            K=K, observations=observations, n_cameras=n_cameras,
+            n_cabinets=n_cabinets, root_cabinet_idx=gauge_idx,
+            init_cameras=init_cameras, init_cabinets=init_cabinets,
+            per_cabinet_min_points=8,
+            max_nfev=max(200, 50 * n_cabinets * n_cameras))
+    # Re-express the solution in the EXTERNAL root cabinet's frame (the gauge sat
+    # at the wall center purely for conditioning; reports keep V000_R000 frame
+    # semantics).
+    if gauge_idx != root_idx:
+        result = _reexpress_result_in_cabinet_frame(result, root_idx)
+    # Rejection accounting: Stage A removed n_rejected_pre observations before
+    # this function got `observations`; Stage B trimmed n_rej_stage_b more.
+    # n_used = surviving obs the final solve ran on; n_total folds both stages.
+    rejected_per_cab_pre = rejected_per_cab_pre or {}
+    n_used = len(surviving_observations)
+    n_rej = n_rejected_pre + n_rej_stage_b
+    n_total = n_used + n_rej
+
+    # --- 9. per-cabinet geometry ---
+    write_event(ProgressEvent(event="progress", stage="output", percent=0.9, message="building pose report"))
+    # recompute per-cabinet indices from the trimmed (surviving) observations
+    per_cabinet_views = {}
+    per_cabinet_points = {}
+    for o in surviving_observations:
+        per_cabinet_views.setdefault(o.cabinet_idx, set()).add(o.camera_idx)
+        per_cabinet_points[o.cabinet_idx] = per_cabinet_points.get(o.cabinet_idx, 0) + 1
+    # post-trim observability: trimming an outlier-heavy cabinet below the floor
+    # is a hard stop (no silent wrong measured.yaml). Re-enforce BOTH dimensions
+    # of the pre-trim check_observability(min_views=2, min_points=8): a coherent
+    # mis-decode in one of only two views gets its (cam,cab) group trimmed,
+    # leaving the cabinet with a single view — geometrically under-determined, so
+    # this must hard-stop rather than emit a 1-view "result".
+    for idx in range(n_cabinets):
+        n_pts = per_cabinet_points.get(idx, 0)
+        n_views = len(per_cabinet_views.get(idx, set()))
+        if n_pts < 8 or n_views < 2:
+            cid = _cabinet_id(*idx_to_cab[idx])
+            write_event(ErrorEvent(
+                event="error", code="observability_failed",
+                message=(f"after rejecting {n_rej_stage_b} outliers, cabinet {cid} "
+                         f"has only {n_pts} observations across {n_views} view(s) "
+                         f"(needs >=8 points and >=2 views)"),
+                fatal=True))
+            return 1
+    # FIX-4: single-condition acceptance gates (the old AND-gate required BOTH
+    # non-convergence and high RMS to refuse, shipping non-converged-but-low-RMS
+    # and converged-but-high-RMS solutions alike). Strict by default. Runs AFTER
+    # the post-trim observability re-check so an amputated cabinet surfaces as
+    # the more actionable observability_failed ("add a camera"), not a generic
+    # divergence.
+    if not result.converged:
+        write_event(ErrorEvent(
+            event="error", code="ba_diverged",
+            message=f"BA did not converge (rms={result.rms_reprojection_px:.2f}px after {result.iterations} iters)",
+            fatal=True,
+        ))
+        return 1
+    if result.rms_reprojection_px > BA_RMS_FATAL_PX:
+        write_event(ErrorEvent(
+            event="error", code="ba_diverged",
+            message=(f"BA converged but reprojection rms {result.rms_reprojection_px:.2f}px "
+                     f"exceeds {BA_RMS_FATAL_PX}px: the model does not explain the "
+                     f"observations (wrong shape_prior / intrinsics / capture geometry)"),
+            fatal=True,
+        ))
+        return 1
+    # Per-cabinet reprojection RMS from the solved poses (same projection as BA).
+    # NOTE: computed from the ORIGINAL BA poses, before any align_to_nominal rigid
+    # transform — reprojection is invariant under a world rigid motion, and the
+    # camera poses are not transformed, so this stays correct.
+    per_cabinet_rms = _per_cabinet_reproj_rms(
+        K, result.camera_poses, result.cabinet_poses, surviving_observations
+    )
+
+    # --- 9a. align_to_nominal: one rigid transform (BA world -> nominal design
+    #         frame) fitted over ALL cabinet corners (√N robust). ---
+    align_r = np.eye(3)
+    align_t = np.zeros(3)
+    align_rms_mm = 0.0
+    if gauge_strategy == "align_to_nominal":
+        src_rows: list[np.ndarray] = []
+        dst_rows: list[np.ndarray] = []
+        for idx in range(n_cabinets):
+            cr = idx_to_cab[idx]
+            cid = _cabinet_id(*cr)
+            r_idx, t_idx = result.cabinet_poses[idx]
+            corners_local = corners_local_provider(cid)
+            _c, _n, _s, world_corners = reconstruct_cabinet_geometry(r_idx, t_idx, corners_local)
+            src_rows.append(world_corners)
+            dst_rows.append(_nominal_world_corners(cr, corners_local, nominal_poses))
+        try:
+            align_r, align_t, align_rms_mm = procrustes_rigid(np.vstack(src_rows), np.vstack(dst_rows))
+        except ValueError as e:
+            write_event(ErrorEvent(
+                event="error", code="procrustes_failed",
+                message=f"align_to_nominal alignment failed: {e}", fatal=True))
+            return 1
+        # A large rigid-fit residual is the NON-absorbable pitch/shape class (P5): a global
+        # isotropic pitch scale or genuine shape deviation rigid Procrustes cannot absorb.
+        # Warn (not refuse) — the model is still emitted, but the as-built ≠ nominal signal
+        # matters. (fix_root_cabinet/charuco keeps align_rms_mm == 0, so it never triggers.)
+        if align_rms_mm > NOMINAL_MISFIT_WARN_MM:
+            write_event(WarningEvent(
+                event="warning", code="nominal_misfit",
+                message=(f"align_to_nominal residual {align_rms_mm:.1f}mm > {NOMINAL_MISFIT_WARN_MM}mm: "
+                         "suspected screen pitch scale / shape deviation, NOT a pose error")))
+
+    cabinet_poses: list[CabinetPose] = []
+    measured_points: list[MeasuredPoint] = []
+    for idx in range(n_cabinets):
+        col, row = idx_to_cab[idx]
+        cid = _cabinet_id(col, row)
+        R, t = result.cabinet_poses[idx]
+        corners_local = corners_local_provider(cid)
+        center, normal, _size, world_corners = reconstruct_cabinet_geometry(R, t, corners_local)
+        if gauge_strategy == "align_to_nominal":
+            center = align_r @ center + align_t
+            normal = align_r @ normal
+            world_corners = (world_corners @ align_r.T) + align_t
+            R = align_r @ R  # rotation_matrix expressed in the aligned (design) frame
+        n_views = len(per_cabinet_views.get(idx, set()))
+        n_points = per_cabinet_points.get(idx, 0)
+        # Direct index (not .get): observability upstream guarantees every
+        # cabinet has observations, so a missing entry is a broken invariant we
+        # want surfaced as a loud KeyError, not masked as a fake 0.0 RMS.
+        cab_rms = per_cabinet_rms[idx]
+        quality = _classify_cabinet_quality(n_views, cab_rms)
+        rejected_points = rejected_per_cab_pre.get(idx, 0) + rejected_per_cab_stage_b.get(idx, 0)
+
+        # FIX-13 ④: 协方差迁移进 pose report 持久化（mm²，原样不换单位）。
+        cov_mm = result.cabinet_covariances.get(idx)
+        # FIX-19②: align_to_nominal rotates geometry; covariance must follow.
+        if gauge_strategy == "align_to_nominal" and cov_mm is not None and np.ndim(cov_mm) == 2:
+            cov_mm = align_r @ np.asarray(cov_mm, dtype=float) @ align_r.T
+        cov_ok = cov_mm is not None and np.isfinite(cov_mm).all()
+        cabinet_poses.append(CabinetPose(
+            cabinet_id=cid,
+            position_mm=center.tolist(),
+            rotation_matrix=R.tolist(),
+            normal=normal.tolist(),
+            corners_mm=[c.tolist() for c in world_corners],
+            reprojection_rms_px=cab_rms,
+            observed_views=n_views,
+            observed_points=n_points,
+            rejected_points=rejected_points,
+            quality=quality,
+            covariance_mm2=np.asarray(cov_mm, dtype=float).tolist() if cov_ok else None,
+        ))
+        if quality != "ok":
+            write_event(WarningEvent(
+                event="warning", code="cabinet_quality",
+                message=f"cabinet {cid}: {quality} (views={n_views}, rms={cab_rms:.2f}px)",
+                cabinet=cid,
+            ))
+        if rejected_points and rejected_points / (rejected_points + n_points) > 0.30:
+            write_event(WarningEvent(
+                event="warning", code="high_rejection",
+                message=f"cabinet {cid}: rejected {rejected_points}/{rejected_points+n_points} observations",
+                cabinet=cid,
+            ))
+
+        # MeasuredPoint position is in METERS.
+        if cov_ok:
+            cov_m = np.asarray(cov_mm, dtype=float) / 1.0e6  # mm^2 -> m^2
+            uncertainty = Uncertainty(covariance=cov_m.tolist())
+        else:
+            write_event(WarningEvent(
+                event="warning", code="missing_covariance",
+                message=f"cabinet {cid} has no usable BA covariance; falling back to isotropic 5mm",
+                cabinet=cid,
+            ))
+            uncertainty = Uncertainty(isotropic=FALLBACK_ISOTROPIC_M)
+        measured_points.append(MeasuredPoint(
+            name=f"MAIN_{cid}",
+            position=(center / 1000.0).tolist(),
+            uncertainty=uncertainty,
+            source=PointSource(visual_ba=PointSourceVisualBa(camera_count=max(1, n_views))),
+        ))
+
+    # --- 10. write pose report ---
+    if pose_report_path:
+        report = CabinetPoseReport(
+            schema_version="visual_pose_report.v1",
+            frame=FrameSpec(gauge_strategy=gauge_strategy, root_cabinet=list(ROOT_CABINET)),
+            cabinet_poses=cabinet_poses,
+        )
+        _atomic_write_json(pose_report_path, report.model_dump_json(indent=2))
+
+    # --- 11. result ---
+    write_event(ResultEvent(
+        event="result",
+        data=ResultData(
+            measured_points=measured_points,
+            ba_stats=BaStats(
+                rms_reprojection_px=float(result.rms_reprojection_px),
+                iterations=int(result.iterations),
+                converged=bool(result.converged),  # FIX-4: report truthfully (was hardcoded True)
+                n_observations_total=n_total,
+                n_observations_used=n_used,
+                n_rejected=n_rej,
+            ),
+            frame_strategy_used="nominal_anchoring",  # vestigial label; see gauge_strategy
+            procrustes_align_rms_m=align_rms_mm / 1000.0,  # mm -> m (0.0 for fix_root_cabinet)
+            intrinsics_source=intrinsics_source,
+        ),
+    ))
+    return 0
+
+
+def _solve_pnp_branches(corners, K):
+    """corners: list[(p_local_mm, pixel_undistorted)] ->
+    (branches, inlier_mask) or None.
+
+    branches: list of 1-2 (R, t) camera_from_obj poses. The planar PnP mirror
+    ambiguity (IPPE) yields up to two near-equal-reprojection branches; both
+    are returned so the model-frame assembly can disambiguate (Part C). Branch
+    order is OpenCV's (ascending reprojection error).
+    inlier_mask: bool ndarray (len(corners),) from solvePnPRansac — gross
+    outliers are False (Part C disambiguation + Stage A both consume this).
+
+    Returns None for < 4 correspondences and for geometrically degenerate sets
+    (near-collinear -> cv2.error). tvec is reshaped to (3,).
+    """
+    if len(corners) < MIN_PNP_CORNERS:
+        return None
+    obj = np.array([p for p, _ in corners], dtype=np.float64)
+    img = np.array([px for _, px in corners], dtype=np.float64)
+    # Primary path: solvePnP(ITERATIVE) on all points. DLT with many well-
+    # distributed coplanar points overwhelms the planar mirror ambiguity that
+    # causes RANSAC's 4-point subsets to consistently pick the wrong branch.
+    mask = np.zeros(len(corners), dtype=bool)
+    try:
+        ok, rvec, tvec = cv2.solvePnP(
+            obj, img, K, None, flags=cv2.SOLVEPNP_ITERATIVE)
+    except cv2.error:
+        ok = False
+    if ok:
+        projected, _ = cv2.projectPoints(obj, rvec, tvec, K, None)
+        errors = np.linalg.norm(projected.reshape(-1, 2) - img, axis=1)
+        mask = errors < PNP_RANSAC_REPROJ_PX
+    # Fallback to RANSAC when solvePnP fails or finds few inliers (e.g., true
+    # outlier contamination where RANSAC's subset sampling is correct).
+    if int(mask.sum()) < MIN_PNP_CORNERS:
+        try:
+            ok_r, _rv, _tv, inliers = cv2.solvePnPRansac(
+                obj, img, K, None, iterationsCount=PNP_RANSAC_ITERS,
+                reprojectionError=PNP_RANSAC_REPROJ_PX,
+                confidence=PNP_RANSAC_CONFIDENCE,
+                flags=cv2.SOLVEPNP_ITERATIVE)
+        except cv2.error:
+            return None
+        if not ok_r:
+            return None
+        mask[:] = False
+        if inliers is not None:
+            mask[inliers.reshape(-1)] = True
+        else:
+            mask[:] = True
+    if int(mask.sum()) < MIN_PNP_CORNERS:
+        return None
+    in_obj = obj[mask]
+    in_img = img[mask]
+    # Two-branch planar solve on the inliers (IPPE needs coplanar z=0 points).
+    try:
+        retval, rvecs, tvecs = cv2.solvePnPGeneric(
+            in_obj, in_img, K, None, flags=cv2.SOLVEPNP_IPPE
+        )[:3]
+    except cv2.error:
+        return None
+    if retval < 1:
+        return None
+    branches = []
+    for i in range(retval):
+        rvec = np.asarray(rvecs[i], dtype=float)
+        tvec = np.asarray(tvecs[i], dtype=float).reshape(3)
+        # Near-collinear / degenerate inputs let solvePnPRansac "succeed" but make
+        # solvePnPGeneric(IPPE) emit NaN poses; reject those to preserve the
+        # degenerate -> None contract (legacy _solve_pnp returned None here).
+        if not (np.isfinite(rvec).all() and np.isfinite(tvec).all()):
+            continue
+        R, _ = cv2.Rodrigues(rvec)
+        branches.append((R, tvec))
+    if not branches:
+        return None
+    return branches, mask
+
+
+def _solve_pnp(corners, K):
+    """corners: list[(p_local_mm, pixel_undistorted)] -> (R, t) or None.
+
+    Backward-compatible single-pose form: the RANSAC+IPPE best branch (branch 0,
+    lowest reprojection). Used by callers that don't disambiguate (camera init).
+    Returns None on the same degenerate / too-few conditions as
+    _solve_pnp_branches.
+    """
+    res = _solve_pnp_branches(corners, K)
+    if res is None:
+        return None
+    branches, _mask = res
+    return branches[0]
+
+
+def stage_a_prune(observations, per_view_cab_corners, K):
+    """Stage A pre-clean: per-(cam,cab) PnP-RANSAC inlier filter. Drops gross /
+    random-far and independent near-neighbor mis-IDs whose reprojection exceeds
+    PNP_RANSAC_REPROJ_PX. NOT authoritative for coherent shifts (those pass to
+    Stage B). Groups with < MIN_PNP_CORNERS are kept whole. Rebuilds the
+    observation list + per_view_cab_corners + per-cabinet view/point indices
+    from the inliers. Returns (obs_out, pvcc_out, per_cabinet_views,
+    per_cabinet_points, n_rejected_total, rejected_per_cab) where
+    rejected_per_cab: dict[int,int] is the per-cabinet Stage-A reject count
+    (Task 6 stats + Task 7 tests consume it)."""
+    # Map each (cam,cab) corner index back to its source so we can keep aligned
+    # Observation objects (assembly appends to both lists in lockstep).
+    keep_mask: dict[tuple[int, int], list[bool]] = {}
+    n_rejected_total = 0
+    rejected_per_cab: dict[int, int] = {}
+    for key, corners in per_view_cab_corners.items():
+        _cam_idx, cab_idx = key
+        if len(corners) < MIN_PNP_CORNERS:
+            keep_mask[key] = [True] * len(corners)
+            continue
+        res = _solve_pnp_branches(corners, K)
+        if res is None:
+            keep_mask[key] = [True] * len(corners)  # degenerate -> defer to Stage B
+            continue
+        _branches, mask = res
+        keep_mask[key] = list(mask)
+        n_rej = int((~mask).sum())
+        n_rejected_total += n_rej
+        if n_rej:
+            rejected_per_cab[cab_idx] = rejected_per_cab.get(cab_idx, 0) + n_rej
+
+    # Rebuild aligned outputs. Walk observations in order, consuming each
+    # group's mask in the same append order assembly used.
+    cursor: dict[tuple[int, int], int] = {}
+    obs_out = []
+    pvcc_out: dict[tuple[int, int], list] = {}
+    views_out: dict[int, set] = {}
+    pts_out: dict[int, int] = {}
+    for o in observations:
+        key = (o.camera_idx, o.cabinet_idx)
+        i = cursor.get(key, 0)
+        cursor[key] = i + 1
+        if not keep_mask[key][i]:
+            continue
+        obs_out.append(o)
+        pvcc_out.setdefault(key, []).append((o.p_local, o.pixel))
+        views_out.setdefault(o.cabinet_idx, set()).add(o.camera_idx)
+        pts_out[o.cabinet_idx] = pts_out.get(o.cabinet_idx, 0) + 1
+    return obs_out, pvcc_out, views_out, pts_out, n_rejected_total, rejected_per_cab
+
+
+def _avg_rotation(rotations):
+    """SVD-average a set of rotation matrices; result is orthonormal with det=+1."""
+    if not rotations:
+        raise ValueError("_avg_rotation needs at least one rotation")
+    S = sum(rotations)
+    U, _, Vt = np.linalg.svd(S)
+    R = U @ Vt
+    if np.linalg.det(R) < 0:
+        U[:, -1] *= -1
+        R = U @ Vt
+    return R
+
+
+# Branch disambiguation thresholds (sidecar internal): a branch is "well
+# separated" only when its model-frame normal is meaningfully closer to nominal
+# than the other; reproj ratio is the secondary tiebreak.
+DISAMBIG_NORMAL_MARGIN_RAD = np.deg2rad(8.0)
+
+
+def _disambiguate_world_branch(world_branches, nominal_normal):
+    """world_branches: list of (R_world_from_cab, t) candidate poses.
+    nominal_normal: (3,) expected model-frame surface normal.
+    Returns the chosen (R, t), or the string "undecidable" when the two
+    branches are equally consistent with nominal (no redundancy to break it)."""
+    nn = np.asarray(nominal_normal, dtype=float)
+    nn = nn / (np.linalg.norm(nn) + 1e-12)
+    angs = []
+    for R, _t in world_branches:
+        n = R @ np.array([0.0, 0.0, 1.0])
+        angs.append(float(np.arccos(np.clip(n @ nn, -1.0, 1.0))))
+    order = np.argsort(angs)
+    if len(world_branches) == 1:
+        return world_branches[0]
+    best, second = order[0], order[1]
+    if angs[second] - angs[best] < DISAMBIG_NORMAL_MARGIN_RAD:
+        return "undecidable"
+    return world_branches[best]
+
+
+def estimate_nonroot_cabinet_init(
+    per_view_cab_corners: dict[tuple[int, int], list[tuple[np.ndarray, np.ndarray]]],
+    root_idx: int,
+    K: np.ndarray,
+    *,
+    nominal_poses: "dict[int, tuple[np.ndarray, np.ndarray]]",
+    min_corners: int = MIN_PNP_CORNERS,
+) -> tuple[dict[int, tuple[np.ndarray, np.ndarray]], set[int]]:
+    """Non-root cabinet_idx -> (R_world_from_cab, t_mm) via TRANSITIVE bridge
+    cameras (co-visibility waves out from the root), with IPPE two-branch
+    disambiguation against nominal model-frame normals.
+
+    Any view that sees an already-bridged cabinet (an ANCHOR — the root in wave
+    one) together with unknown cabinets extends the chain (FIX-3; pre-fix only
+    direct root<->non-root bridging existed, so on a segmented wide-wall capture
+    everything beyond the root's own views fell into the nominal fallback):
+
+    1. The view's camera pose comes from its anchors: every IPPE branch of every
+       anchor yields a camera_from_world candidate (cam_from_anchor composed
+       with the anchor's known world pose); the candidate that best reprojects
+       ALL anchors in the view wins (with one near-fronto-parallel anchor the
+       branches tie harmlessly — they differ by a tilt that small).
+    2. Each unknown cabinet's two IPPE branches compose to world_from_cab
+       candidates via that camera pose:
+           R = R_cw.T @ Rc1 ,  t = R_cw.T @ (tc1 - t_cw)
+       When reprojection clearly separates the branches it decides; otherwise
+       the branch whose model-frame normal (R @ [0,0,1]) best matches the
+       cabinet's nominal arc normal (expressed in the ROOT frame) is kept.
+    3. Newly bridged cabinets become anchors; waves repeat until no view gains
+       an anchor. Estimates accumulate per cabinet across all processed views:
+       rotations SVD-averaged, translation component-wise median.
+
+    Returns (out, undecidable): `out` maps each bridged cabinet to its chosen
+    world pose; `undecidable` is the set of cabinet_idx whose convex/concave
+    branch could not be resolved from nominal (no redundant view broke the tie)
+    so the caller must hard-stop. A cabinet resolved by at least one view is
+    removed from `undecidable`. Cabinets with no view chain to the root are
+    absent from both (caller falls back to the nominal init, rotated into the
+    root frame, with a WarningEvent).
+    """
+    by_view: dict[int, dict[int, list]] = {}
+    for (cam_idx, cab_idx), corners in per_view_cab_corners.items():
+        by_view.setdefault(cam_idx, {})[cab_idx] = corners
+
+    # The reconstruction world frame is the ROOT cabinet's frame (root fixed at
+    # identity), but `nominal_poses` are in the global nominal MODEL frame. For a
+    # curved arc whose root is NOT at the arc centre, the two frames differ by the
+    # root's nominal rotation, so disambiguating a non-root branch against an
+    # untransformed model-frame nominal can select the IPPE mirror (the convex/
+    # concave flip). Take the root's nominal rotation straight from its SE(3)
+    # pose (flat -> identity) and express every cabinet's nominal normal in the
+    # root frame before comparing.
+    root_pose = nominal_poses.get(root_idx) if nominal_poses else None
+    R_root_nominal = np.asarray(root_pose[0], dtype=float) if root_pose is not None else np.eye(3)
+
+    branch_cache: dict[tuple[int, int], "tuple[list, np.ndarray] | None"] = {}
+
+    def _branches(cam_idx: int, cab_idx: int):
+        key = (cam_idx, cab_idx)
+        if key not in branch_cache:
+            corners = by_view[cam_idx][cab_idx]
+            branch_cache[key] = (_solve_pnp_branches(corners, K)
+                                 if len(corners) >= min_corners else None)
+        return branch_cache[key]
+
+    def _iterative_pose(corners):
+        """Plain all-points ITERATIVE PnP. For a near-fronto-parallel ANCHOR the
+        two IPPE branches are both small-tilt-wrong (degenerate zone) while the
+        homography-initialised iterative solve stays exact — and since the
+        anchor's world pose is already known, no branch disambiguation is needed
+        here, only accuracy."""
+        obj = np.array([p for p, _ in corners], dtype=np.float64)
+        img = np.array([px for _, px in corners], dtype=np.float64)
+        try:
+            ok, rvec, tvec = cv2.solvePnP(obj, img, K, None, flags=cv2.SOLVEPNP_ITERATIVE)
+        except cv2.error:
+            return None
+        if not ok:
+            return None
+        rvec = np.asarray(rvec, dtype=float)
+        tvec = np.asarray(tvec, dtype=float).reshape(3)
+        if not (np.isfinite(rvec).all() and np.isfinite(tvec).all()):
+            return None
+        return cv2.Rodrigues(rvec)[0], tvec
+
+    def _rms_via_campose(R_cw, t_cw, world_pose, corners):
+        """Mean reprojection RMS of a KNOWN cabinet through a candidate camera."""
+        R_w, t_w = world_pose
+        obj = np.array([p for p, _ in corners], dtype=np.float64)
+        img = np.array([px for _, px in corners], dtype=np.float64)
+        xc = (obj @ R_w.T + t_w) @ R_cw.T + t_cw
+        if np.any(xc[:, 2] <= 1e-6):
+            return np.inf
+        uv = xc @ K.T
+        uv = uv[:, :2] / uv[:, 2:3]
+        return float(np.sqrt(((uv - img) ** 2).sum(axis=1).mean()))
+
+    known: dict[int, tuple[np.ndarray, np.ndarray]] = {root_idx: (np.eye(3), np.zeros(3))}
+    est_R: dict[int, list] = {}
+    est_t: dict[int, list] = {}
+    undecidable: set[int] = set()
+    processed: set[int] = set()
+
+    while True:
+        progressed = False
+        for cam_idx, cabs in by_view.items():
+            if cam_idx in processed:
+                continue
+            anchors = [ci for ci in cabs
+                       if ci in known and len(cabs[ci]) >= min_corners
+                       and _branches(cam_idx, ci) is not None]
+            if not anchors:
+                continue
+            # Camera pose: candidates are, per anchor, the all-points ITERATIVE
+            # pose first and then the IPPE branches; scored by total reprojection
+            # over all anchors. Strict-improvement comparison keeps the iterative
+            # candidate on ties (IPPE's fronto-parallel degenerate zone reprojects
+            # its small-tilt-wrong branches just as well).
+            best = None
+            for ci in anchors:
+                cand = []
+                it_pose = _iterative_pose(cabs[ci])
+                if it_pose is not None:
+                    cand.append(it_pose)
+                branches_a, _m = _branches(cam_idx, ci)
+                cand.extend(branches_a)
+                for Rb, tb in cand:
+                    R_cw = Rb @ known[ci][0].T
+                    t_cw = tb - R_cw @ known[ci][1]
+                    score = sum(_rms_via_campose(R_cw, t_cw, known[ck], cabs[ck])
+                                for ck in anchors)
+                    if best is None or score < best[0] - 1e-9:
+                        best = (score, R_cw, t_cw)
+            # Joint multi-anchor refinement: stack every anchor's (world, pixel)
+            # correspondences (world = the anchor's known pose applied to its
+            # locals) and solve ONE PnP over the combined — wider, generally
+            # non-planar — target. On a curved wall two adjacent anchors already
+            # break planarity, pinning the camera far better than any single
+            # cabinet; this keeps chained init drift from compounding into a BA
+            # local minimum on long segmented captures.
+            obj_w: list[np.ndarray] = []
+            img_w: list[np.ndarray] = []
+            for ck in anchors:
+                R_w, t_w = known[ck]
+                for p_l, px in cabs[ck]:
+                    obj_w.append(R_w @ p_l + t_w)
+                    img_w.append(px)
+            if len(obj_w) >= 6:
+                try:
+                    ok_j, rvec_j, tvec_j = cv2.solvePnP(
+                        np.asarray(obj_w, dtype=np.float64),
+                        np.asarray(img_w, dtype=np.float64),
+                        K, None, flags=cv2.SOLVEPNP_SQPNP)
+                except cv2.error:
+                    ok_j = False
+                if ok_j and np.isfinite(rvec_j).all() and np.isfinite(tvec_j).all():
+                    R_cw_j = cv2.Rodrigues(np.asarray(rvec_j, dtype=float))[0]
+                    t_cw_j = np.asarray(tvec_j, dtype=float).reshape(3)
+                    score = sum(_rms_via_campose(R_cw_j, t_cw_j, known[ck], cabs[ck])
+                                for ck in anchors)
+                    if best is None or score < best[0] - 1e-9:
+                        best = (score, R_cw_j, t_cw_j)
+            if best is None or not np.isfinite(best[0]):
+                continue
+            processed.add(cam_idx)
+            progressed = True
+            _score, R_cw, t_cw = best
+            for cab_idx, corners in cabs.items():
+                # Skip cabinets already promoted to anchors (their pose is set);
+                # same-wave views still accumulate freely so the SVD-average /
+                # median aggregation keeps its multi-view redundancy.
+                if cab_idx in known or len(corners) < min_corners:
+                    continue
+                res = _branches(cam_idx, cab_idx)
+                if res is None:
+                    continue
+                branches, _mask = res
+                world_branches = [(R_cw.T @ Rc1, R_cw.T @ (tc1 - t_cw)) for Rc1, tc1 in branches]
+                # When branches have very different reprojection quality (one is the
+                # correct pose, the other the IPPE mirror), reprojection dominates the
+                # nominal-normal angle check.  Project inlier corners through each
+                # camera_from_cab branch: the correct one reprojects well, the mirror
+                # has ~100px error.  Skip the normal-based disambiguation (which can
+                # fail when the cabinet is far from nominal, e.g. desktop monitors at
+                # arbitrary angles) when reproj clearly resolves the ambiguity.
+                obj_in = np.array([p for p, _ in corners], dtype=np.float64)[_mask]
+                img_in = np.array([px for _, px in corners], dtype=np.float64)[_mask]
+                branch_rms = []
+                for Rc1, tc1 in branches:
+                    proj, _ = cv2.projectPoints(obj_in, *cv2.Rodrigues(Rc1)[0:1],
+                                                tc1.reshape(3,1), K, None)
+                    branch_rms.append(float(np.sqrt(
+                        ((proj.reshape(-1,2) - img_in)**2).sum(axis=1).mean())))
+                if len(branch_rms) >= 2 and max(branch_rms) - min(branch_rms) > 10.0:
+                    chosen = world_branches[int(np.argmin(branch_rms))]
+                else:
+                    n_nominal = np.asarray(nominal_poses[cab_idx][0], dtype=float) @ np.array([0.0, 0.0, 1.0])
+                    chosen = _disambiguate_world_branch(world_branches, R_root_nominal.T @ n_nominal)
+                if chosen == "undecidable":
+                    undecidable.add(cab_idx)
+                    continue
+                est_R.setdefault(cab_idx, []).append(chosen[0])
+                est_t.setdefault(cab_idx, []).append(chosen[1])
+        newly = [ci for ci in est_R if ci not in known]
+        for ci in newly:
+            known[ci] = (_avg_rotation(est_R[ci]),
+                         np.median(np.array(est_t[ci]), axis=0))
+        if not newly and not progressed:
+            break
+
+    out: dict[int, tuple] = {}
+    for cab_idx, rotations in est_R.items():
+        undecidable.discard(cab_idx)  # at least one view resolved it
+        t = np.median(np.array(est_t[cab_idx]), axis=0)
+        out[cab_idx] = (_avg_rotation(rotations), t)
+    return out, undecidable
+
+
+def _pnp_camera(
+    cam_idx: int,
+    root_idx: int,
+    init_cabinets: dict[int, tuple[np.ndarray, np.ndarray]],
+    per_view_cab_corners: dict[tuple[int, int], list[tuple[np.ndarray, np.ndarray]]],
+    K: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Initialize one camera's world-to-camera pose via PnP.
+
+    Joint PnP over ALL cabinets this view sees (world points from each
+    cabinet's init pose): a wider, usually non-planar target that avoids the
+    single-cabinet IPPE branch-0 wobble near fronto-parallel (FIX-3: that
+    wobble left segmented-capture end cameras ~20deg off; Huber BA then wrote
+    their whole view off as outliers and Stage B amputated it). Falls back to
+    root-only PnP, then single-cabinet composition, then a neutral guess.
+    """
+    obj_w: list[np.ndarray] = []
+    img_w: list[np.ndarray] = []
+    for (ci, cab_idx), corners in per_view_cab_corners.items():
+        if ci != cam_idx or len(corners) < MIN_PNP_CORNERS:
+            continue
+        R_w, t_w = init_cabinets[cab_idx]
+        for p_l, px in corners:
+            obj_w.append(R_w @ p_l + t_w)
+            img_w.append(px)
+    if len(obj_w) >= MIN_PNP_CORNERS:
+        try:
+            ok_j, rvec_j, tvec_j = cv2.solvePnP(
+                np.asarray(obj_w, dtype=np.float64), np.asarray(img_w, dtype=np.float64),
+                K, None, flags=cv2.SOLVEPNP_SQPNP)
+        except cv2.error:
+            ok_j = False
+        if ok_j and np.isfinite(rvec_j).all() and np.isfinite(tvec_j).all():
+            return cv2.Rodrigues(np.asarray(rvec_j, dtype=float))[0], \
+                   np.asarray(tvec_j, dtype=float).reshape(3)
+
+    # Try root alone.
+    root_corners = per_view_cab_corners.get((cam_idx, root_idx), [])
+    if len(root_corners) >= MIN_PNP_CORNERS:
+        pose = _solve_pnp(root_corners, K)
+        if pose is not None:
+            return pose
+
+    # Fall back to any other cabinet this view sees, composing with the inverse
+    # of its nominal world_from_cabinet pose: T_cam_world = T_cam_cab @ T_cab_world,
+    # where T_cab_world = inverse(world_from_cabinet).
+    for (ci, cab_idx), corners in per_view_cab_corners.items():
+        if ci != cam_idx or cab_idx == root_idx or len(corners) < MIN_PNP_CORNERS:
+            continue
+        cam_from_cab = _solve_pnp(corners, K)
+        if cam_from_cab is None:
+            continue
+        Rcc, tcc = cam_from_cab  # camera_from_cabinet: x_cam = Rcc·p_local + tcc
+        # init_cabinets stores world_from_cabinet (BA: xw = R_wc·p_local + t_wc).
+        # camera_from_world = camera_from_cabinet ∘ inverse(world_from_cabinet).
+        R_wc, t_wc = init_cabinets[cab_idx]  # world_from_cabinet (nominal)
+        R = Rcc @ R_wc.T
+        t = tcc - R @ t_wc
+        return R, t
+
+    # Neutral fallback: identity rotation, pushed back along +z.
+    return np.eye(3), np.array([0.0, 0.0, 2200.0])

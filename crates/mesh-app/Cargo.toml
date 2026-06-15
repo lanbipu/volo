@@ -1,6 +1,26 @@
 [package]
 name = "mesh-app"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LMT service layer: transport-agnostic run_* helpers consumed by Tauri GUI + CLI"
 
 [dependencies]
+mesh-core = { path = "../mesh-core" }
+volo-shared = { path = "../volo-shared" }
+mesh-adapter-total-station = { path = "../mesh-adapter-total-station" }
+mesh-adapter-visual-ba = { path = "../mesh-adapter-visual-ba" }
+tokio.workspace = true
+nalgebra.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+rusqlite.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+include_dir = "0.7"
+
+[dev-dependencies]
+tempfile.workspace = true
+pretty_assertions = "1"

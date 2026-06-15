@@ -6,6 +6,11 @@
 //! in `setup` so `State<Db>` / `State<UeJobRegistry>` injection works.
 
 pub mod commands;
+// step 3c: native PDF render backend for the mesh `save_instruction_pdf`
+// command (macOS WKWebView / Windows WebView2, cfg-gated; Linux returns a
+// graceful "unsupported" error). Lives at crate root so command shims can
+// `use crate::pdf_render::render_html_to_pdf`.
+pub mod pdf_render;
 
 use tauri::Manager;
 
@@ -30,6 +35,9 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
+        // step 3c: mesh `save_instruction_pdf` uses tauri-plugin-dialog (LMT
+        // wired it for the native save dialog); opener is shared with UECM.
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // UECM setup: open + migrate the SQLite DB, manage it as shared
@@ -41,6 +49,27 @@ pub fn run() {
             app.manage(db);
             app.manage(commands::ddc_pak::UeJobRegistry::default());
             tracing::info!("volo started, cache database at {}", db_path.display());
+
+            // step 3c mesh setup: open + migrate the separate LMT SQLite DB
+            // (app_data_dir/lmt.sqlite, shared with `voloctl lmt`) and manage
+            // it as `MeshDb` to keep it distinct from the cache `Db` in the
+            // TypeId-keyed state map.
+            let mesh_db_path = app
+                .path()
+                .app_data_dir()
+                .expect("failed to resolve app_data_dir")
+                .join("lmt.sqlite");
+            std::fs::create_dir_all(mesh_db_path.parent().unwrap())
+                .expect("failed to create mesh DB dir");
+            let mesh_db = volo_shared::data::open(&mesh_db_path)
+                .expect("failed to open mesh DB");
+            {
+                let mut conn = mesh_db.lock().unwrap();
+                volo_shared::data::schema::migrate(&mut conn)
+                    .expect("failed to migrate mesh DB");
+            }
+            app.manage(commands::mesh::MeshDb(mesh_db));
+            tracing::info!("volo mesh database at {}", mesh_db_path.display());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -127,6 +156,22 @@ pub fn run() {
             commands::zen::zen_urlacl_list,
             commands::zen::zen_urlacl_remove,
             commands::zen::zen_verify_rules,
+            // step 3c: mesh (LMT) command group. No name collisions with the
+            // 82 cache commands above, so original names are preserved.
+            commands::mesh_projects::list_recent_projects,
+            commands::mesh_projects::add_recent_project,
+            commands::mesh_projects::remove_recent_project,
+            commands::mesh_projects::seed_example_project,
+            commands::mesh_projects::load_project_yaml,
+            commands::mesh_projects::save_project_yaml,
+            commands::mesh_measurements::load_measurements_yaml,
+            commands::mesh_reconstruct::reconstruct_surface,
+            commands::mesh_reconstruct::list_runs,
+            commands::mesh_reconstruct::get_run_report,
+            commands::mesh_export::export_obj,
+            commands::mesh_total_station::import_total_station_csv,
+            commands::mesh_total_station::generate_instruction_card,
+            commands::mesh_total_station::save_instruction_pdf,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

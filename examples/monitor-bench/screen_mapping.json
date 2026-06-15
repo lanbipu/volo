@@ -1,0 +1,28 @@
+{
+  "screen_id": "BENCH",
+  "cabinets": [
+    {
+      "cabinet_id": "V000_R000",
+      "resolution_px": [1080, 1080],
+      "active_size_mm": [300.0, 300.0],
+      "pixel_pitch_mm": [0.2778, 0.2778],
+      "active_origin": "center",
+      "input_rect_px": [0, 0, 1080, 1080],
+      "rotation": 0,
+      "mirror_x": false,
+      "mirror_y": false
+    },
+    {
+      "cabinet_id": "V000_R001",
+      "resolution_px": [1080, 1080],
+      "active_size_mm": [300.0, 300.0],
+      "pixel_pitch_mm": [0.2778, 0.2778],
+      "active_origin": "center",
+      "input_rect_px": [0, 1080, 1080, 1080],
+      "rotation": 0,
+      "mirror_x": false,
+      "mirror_y": false
+    }
+  ],
+  "expected_pattern_hash": "REPLACE_WITH_PATTERN_HASH"
+}

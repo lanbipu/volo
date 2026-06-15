@@ -1,0 +1,21 @@
+project:
+  name: Curved-Flat-Demo
+  unit: mm
+screens:
+  MAIN:
+    cabinet_count: [8, 4]
+    cabinet_size_mm: [500, 500]
+    pixels_per_cabinet: [256, 256]
+    shape_prior:
+      type: flat
+    shape_mode: rectangle
+    irregular_mask: []
+coordinate_system:
+  origin_point: MAIN_V001_R001
+  x_axis_point: MAIN_V008_R001
+  xy_plane_point: MAIN_V001_R004
+output:
+  target: disguise
+  obj_filename: "{screen_id}_mesh.obj"
+  weld_vertices_tolerance_mm: 1.0
+  triangulate: true
