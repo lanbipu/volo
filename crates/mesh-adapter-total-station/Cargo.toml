@@ -1,6 +1,21 @@
 [package]
 name = "mesh-adapter-total-station"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Total-station CSV adapter for LMT (M1)"
 
 [dependencies]
+mesh-core = { path = "../mesh-core" }
+nalgebra.workspace = true
+kiddo.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+csv = "1"
+
+[dev-dependencies]
+insta = { version = "1", features = ["yaml", "json"] }
+pretty_assertions = "1"
+tempfile = "3"

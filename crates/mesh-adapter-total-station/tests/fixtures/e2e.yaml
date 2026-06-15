@@ -1,0 +1,12 @@
+project:
+  name: E2E_Test
+screens:
+  MAIN:
+    cabinet_count: [4, 2]
+    cabinet_size_mm: [500, 500]
+    shape_prior:
+      type: flat
+coordinate_system:
+  origin_grid_name: MAIN_V001_R001
+  x_axis_grid_name: MAIN_V005_R001
+  xy_plane_grid_name: MAIN_V001_R003

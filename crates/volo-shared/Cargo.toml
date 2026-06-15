@@ -1,6 +1,22 @@
 [package]
 name = "volo-shared"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LMT shared platform types: DTO, error model, sqlite data layer. Transport-agnostic; consumed by lmt-tauri and lmt-cli."
 
 [dependencies]
+mesh-core = { path = "../mesh-core" }
+mesh-adapter-total-station = { path = "../mesh-adapter-total-station" }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+rusqlite.workspace = true
+chrono.workspace = true
+dirs = "5"
+schemars.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+pretty_assertions = "1"
