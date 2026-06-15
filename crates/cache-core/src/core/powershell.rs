@@ -115,9 +115,11 @@ pub fn read_script(name: &str) -> UecmResult<String> {
 }
 
 /// Resolve a vendored binary's on-disk path (e.g. `PsExec64.exe`).
-/// Respects `UECM_VENDOR_DIR` env override, then searches:
+/// Respects `UECM_VENDOR_DIR` env override, then searches (mirrors
+/// [`script_path`], which resolves `ps-scripts` symmetrically):
 ///   1. `<exe-dir>/vendor/<name>` — production install
-///   2. `<repo-root>/vendor/<name>` — dev builds via `CARGO_MANIFEST_DIR`
+///   2. `<exe-dir>/../Resources/vendor/<name>` — packaged Tauri app on macOS
+///   3. `<workspace>/src-tauri/resources/vendor/<name>` — dev fallback
 pub fn vendor_path(name: &str) -> PathBuf {
     if let Ok(over) = std::env::var("UECM_VENDOR_DIR") {
         return PathBuf::from(over).join(name);
@@ -128,12 +130,24 @@ pub fn vendor_path(name: &str) -> PathBuf {
             if candidate.exists() {
                 return candidate;
             }
+            // Packaged Tauri app on macOS: resources live in Contents/Resources,
+            // i.e. <exe-dir>/../Resources/vendor.
+            let bundled = parent.join("../Resources/vendor").join(name);
+            if bundled.exists() {
+                return bundled;
+            }
         }
     }
+    // FIX (review #5): dev fallback was `<repo-root>/vendor` (= crates/vendor,
+    // which never existed). Vendor resources actually live under
+    // src-tauri/resources/vendor, bundled exactly like ps-scripts. Walk up TWO
+    // levels (CARGO_MANIFEST_DIR = <workspace>/crates/cache-core → workspace
+    // root) and join src-tauri/resources/vendor, symmetric with script_path.
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
+        .and_then(std::path::Path::parent)
         .unwrap_or_else(|| std::path::Path::new("."))
-        .join("vendor")
+        .join("src-tauri/resources/vendor")
         .join(name)
 }
 

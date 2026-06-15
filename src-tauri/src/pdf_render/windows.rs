@@ -59,7 +59,7 @@ pub fn render(app: &tauri::AppHandle, html: &str, dst: &Path) -> LmtResult<()> {
     // WebView2 needs STA + a Win32 message pump. We give it a dedicated
     // OS thread so the pump can spin freely without affecting Tauri.
     thread::Builder::new()
-        .name("lmt-pdf-webview2".into())
+        .name("volo-pdf-webview2".into())
         .spawn(move || {
             let result = run_on_sta_thread(&html_owned, &dst_owned, &user_data);
             let _ = tx.send(result);
