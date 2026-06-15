@@ -38,3 +38,9 @@ atty = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true
+# E2E integration tests migrated from lmt-cli (cli_e2e) and ue-cache-manager
+# (cli_smoke / usage_envelope). assert_cmd+predicates drive the `voloctl` binary
+# for the lmt suite; regex backs the uecm smoke assertions.
+assert_cmd = "2"
+predicates = "3"
+regex = "1"
