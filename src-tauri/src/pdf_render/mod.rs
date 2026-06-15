@@ -7,8 +7,8 @@
 use std::path::Path;
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-use volo_shared::error::LmtError;
-use volo_shared::error::LmtResult;
+use volo_shared::error::VoloError;
+use volo_shared::error::VoloResult;
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -22,7 +22,7 @@ mod windows;
 /// webview 的调用 dispatch 到主线程并阻塞等待结果。
 ///
 /// 失败时不写盘——调用方负责 atomic rename。
-pub fn render_html_to_pdf(app: &tauri::AppHandle, html: &str, dst: &Path) -> LmtResult<()> {
+pub fn render_html_to_pdf(app: &tauri::AppHandle, html: &str, dst: &Path) -> VoloResult<()> {
     #[cfg(target_os = "macos")]
     {
         return macos::render(app, html, dst);
@@ -36,7 +36,7 @@ pub fn render_html_to_pdf(app: &tauri::AppHandle, html: &str, dst: &Path) -> Lmt
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (app, html, dst);
-        Err(LmtError::Other(
+        Err(VoloError::Other(
             "PDF export on Linux is not supported in this build \
              (macOS and Windows only)"
                 .into(),

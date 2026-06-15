@@ -1,5 +1,5 @@
 use crate::dto::RecentProject;
-use crate::error::{LmtError, LmtResult};
+use crate::error::{VoloError, VoloResult};
 use rusqlite::Connection;
 use std::path::Path;
 
@@ -15,15 +15,15 @@ pub fn upsert_normalized(
     conn: &Connection,
     abs_path: &str,
     display_name: &str,
-) -> LmtResult<RecentProject> {
+) -> VoloResult<RecentProject> {
     let raw = Path::new(abs_path);
     let normalized = if raw.exists() {
         std::fs::canonicalize(raw).map_err(|e| {
-            LmtError::Io(format!("canonicalize recent project {abs_path}: {e}"))
+            VoloError::Io(format!("canonicalize recent project {abs_path}: {e}"))
         })?
     } else {
         std::path::absolute(raw)
-            .map_err(|e| LmtError::Io(format!("absolutize recent project {abs_path}: {e}")))?
+            .map_err(|e| VoloError::Io(format!("absolutize recent project {abs_path}: {e}")))?
     };
     let normalized_str = normalized.display().to_string();
     // 如果 caller 传的 raw 跟规范化后字符串不同,DB 里可能有一条老 raw alias
@@ -42,7 +42,7 @@ pub fn upsert_normalized(
 /// Insert or update a recent project entry.
 /// On conflict (same abs_path), updates display_name and last_opened_at.
 /// Returns the full row after the upsert.
-pub fn upsert(conn: &Connection, abs_path: &str, display_name: &str) -> LmtResult<RecentProject> {
+pub fn upsert(conn: &Connection, abs_path: &str, display_name: &str) -> VoloResult<RecentProject> {
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         r#"
@@ -72,7 +72,7 @@ pub fn upsert(conn: &Connection, abs_path: &str, display_name: &str) -> LmtResul
 }
 
 /// Return all recent projects ordered by last_opened_at descending (most recent first).
-pub fn list(conn: &Connection) -> LmtResult<Vec<RecentProject>> {
+pub fn list(conn: &Connection) -> VoloResult<Vec<RecentProject>> {
     let mut stmt = conn.prepare(
         "SELECT id, abs_path, display_name, last_opened_at FROM recent_projects ORDER BY last_opened_at DESC",
     )?;
@@ -94,7 +94,7 @@ pub fn list(conn: &Connection) -> LmtResult<Vec<RecentProject>> {
 }
 
 /// Delete a recent project by id. No-op if the id does not exist.
-pub fn delete(conn: &Connection, id: i64) -> LmtResult<()> {
+pub fn delete(conn: &Connection, id: i64) -> VoloResult<()> {
     conn.execute(
         "DELETE FROM recent_projects WHERE id = ?1",
         rusqlite::params![id],

@@ -50,15 +50,18 @@ pub fn run() {
             app.manage(commands::ddc_pak::UeJobRegistry::default());
             tracing::info!("volo started, cache database at {}", db_path.display());
 
-            // step 3c mesh setup: open + migrate the separate LMT SQLite DB
-            // (app_data_dir/lmt.sqlite, shared with `voloctl lmt`) and manage
-            // it as `MeshDb` to keep it distinct from the cache `Db` in the
-            // TypeId-keyed state map.
-            let mesh_db_path = app
-                .path()
-                .app_data_dir()
-                .expect("failed to resolve app_data_dir")
-                .join("lmt.sqlite");
+            // step 3c mesh setup: open + migrate the separate LMT SQLite DB and
+            // manage it as `MeshDb` to keep it distinct from the cache `Db` in
+            // the TypeId-keyed state map.
+            //
+            // FIX (review #1): resolve the path via `volo_shared::data::
+            // default_db_path()` (→ `<data_dir>/com.lanbipu.lmt/lmt.sqlite`),
+            // **not** the Tauri `app_data_dir()` (→ `com.lanbipu.volo/...`,
+            // the GUI bundle identifier). `voloctl lmt` uses default_db_path()
+            // too, so this guarantees GUI and CLI open the same file. Using
+            // app_data_dir forked them into two distinct DBs.
+            let mesh_db_path = volo_shared::data::connection::default_db_path()
+                .expect("failed to resolve mesh DB path");
             std::fs::create_dir_all(mesh_db_path.parent().unwrap())
                 .expect("failed to create mesh DB dir");
             let mesh_db = volo_shared::data::open(&mesh_db_path)
@@ -172,6 +175,8 @@ pub fn run() {
             commands::mesh_total_station::import_total_station_csv,
             commands::mesh_total_station::generate_instruction_card,
             commands::mesh_total_station::save_instruction_pdf,
+            // review #15: argv-based vpcal / tracksim sidecar spawn bridge.
+            commands::sidecars::spawn_sidecar,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

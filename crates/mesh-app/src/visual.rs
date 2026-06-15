@@ -24,14 +24,36 @@ use volo_shared::dto::{
     DecodeStructuredLightResult, EvalResult, GeneratePatternResult, GenerateStructuredLightResult,
     PairCheck, SimulateResult, VisualReconstructResult, WarningDto,
 };
-use volo_shared::error::{LmtError, LmtResult};
+use volo_shared::error::{VoloError, VoloResult};
 
 use crate::projects::load_project_yaml_from_path;
 
-/// A short-lived tokio runtime for `block_on`. The workspace tokio enables the
-/// `rt` + `process` features (the adapter spawns the sidecar via tokio process).
-fn rt() -> LmtResult<tokio::runtime::Runtime> {
-    tokio::runtime::Runtime::new().map_err(|e| LmtError::Other(format!("tokio runtime: {e}")))
+/// Block the calling (synchronous) thread on an adapter future, working whether
+/// or not a tokio runtime is already running on this thread.
+///
+/// FIX (review #4): the old `rt()` always built a fresh `tokio::runtime::Runtime`
+/// and `block_on`'d it. That panics with *"Cannot start a runtime from within a
+/// runtime"* the moment any **async** Tauri command (which runs on Tauri's
+/// worker runtime) calls one of these sync `run_*` helpers. We avoid that:
+///   - If we're already inside a tokio runtime (the Tauri / async case), use
+///     `block_in_place` to move off the async worker, then drive the future on
+///     the current runtime handle — no nested runtime is created.
+///   - If there is no ambient runtime (the CLI / unit-test case), spin up a
+///     short-lived current-thread runtime and block on it.
+///
+/// The workspace tokio enables `rt` + `process`; the adapter spawns the sidecar
+/// via tokio process, so a current-thread (single-threaded) runtime is enough.
+fn block_on_future<F: std::future::Future>(fut: F) -> VoloResult<F::Output> {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => Ok(tokio::task::block_in_place(|| handle.block_on(fut))),
+        Err(_) => {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| VoloError::Other(format!("tokio runtime: {e}")))?;
+            Ok(rt.block_on(fut))
+        }
+    }
 }
 
 /// Map the adapter's sidecar-stream warnings to the public `WarningDto`. These ride the
@@ -48,30 +70,30 @@ fn map_warnings(warnings: Vec<ipc::WarningEvent>) -> Vec<WarningDto> {
         .collect()
 }
 
-/// Map adapter `VbaError` → `LmtError`, preserving the sidecar's error code so
+/// Map adapter `VbaError` → `VoloError`, preserving the sidecar's error code so
 /// the CLI exit code is correct (see Task 1.6 error-code table). The `Protocol`
-/// `code` string is exactly the snake_case `kind` of the matching `LmtError`
+/// `code` string is exactly the snake_case `kind` of the matching `VoloError`
 /// variant, so the envelope re-emits the same `error_codes::*` string.
-fn map_vba_err(e: mesh_adapter_visual_ba::error::VbaError) -> LmtError {
+fn map_vba_err(e: mesh_adapter_visual_ba::error::VbaError) -> VoloError {
     use mesh_adapter_visual_ba::error::VbaError as V;
     match e {
         V::Protocol { code, message } => match code.as_str() {
-            "detection_failed" => LmtError::DetectionFailed(message),
-            "ba_diverged" => LmtError::BaDiverged(message),
-            "procrustes_failed" => LmtError::ProcrustesFailed(message),
-            "intrinsics_invalid" => LmtError::IntrinsicsInvalid(message),
-            "observability_failed" => LmtError::ObservabilityFailed(message),
-            "decode_failed" => LmtError::DecodeFailed(message),
-            "invalid_input" => LmtError::InvalidInput(message),
-            "internal_error" | "internal" => LmtError::Other(message),
-            other => LmtError::Other(format!("{other}: {message}")),
+            "detection_failed" => VoloError::DetectionFailed(message),
+            "ba_diverged" => VoloError::BaDiverged(message),
+            "procrustes_failed" => VoloError::ProcrustesFailed(message),
+            "intrinsics_invalid" => VoloError::IntrinsicsInvalid(message),
+            "observability_failed" => VoloError::ObservabilityFailed(message),
+            "decode_failed" => VoloError::DecodeFailed(message),
+            "invalid_input" => VoloError::InvalidInput(message),
+            "internal_error" | "internal" => VoloError::Other(message),
+            other => VoloError::Other(format!("{other}: {message}")),
         },
         // The sync run_* helpers never pass a cancel token, so this arm is
         // permanently defensive — cancel is only reachable from async (Tauri)
         // callers.
-        V::Cancelled => LmtError::Other("cancelled".into()),
-        V::InvalidInput(m) => LmtError::InvalidInput(m),
-        other => LmtError::Other(other.to_string()),
+        V::Cancelled => VoloError::Other("cancelled".into()),
+        V::InvalidInput(m) => VoloError::InvalidInput(m),
+        other => VoloError::Other(other.to_string()),
     }
 }
 
@@ -121,10 +143,10 @@ fn ipc_shape_prior(screen_cfg: &volo_shared::dto::ScreenConfig) -> ipc::ShapePri
 fn load_screen<'a>(
     cfg: &'a volo_shared::dto::ProjectConfig,
     screen_id: &str,
-) -> LmtResult<&'a volo_shared::dto::ScreenConfig> {
+) -> VoloResult<&'a volo_shared::dto::ScreenConfig> {
     cfg.screens
         .get(screen_id)
-        .ok_or_else(|| LmtError::NotFound(format!("screen '{screen_id}' not in project")))
+        .ok_or_else(|| VoloError::NotFound(format!("screen '{screen_id}' not in project")))
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +170,7 @@ pub fn run_reconstruct(
     capture_manifest: &Path,
     intrinsics: Option<&str>,
     intrinsics_crosscheck: Option<&str>,
-) -> LmtResult<VisualReconstructResult> {
+) -> VoloResult<VisualReconstructResult> {
     let cfg = load_project_yaml_from_path(project_path)?;
     let screen_cfg = load_screen(&cfg, screen_id)?;
 
@@ -176,7 +198,7 @@ pub fn run_reconstruct(
         cancel: None,
     };
 
-    let out = rt()?.block_on(reconstruct(args)).map_err(map_vba_err)?;
+    let out = block_on_future(reconstruct(args))?.map_err(map_vba_err)?;
     Ok(build_reconstruct_result(screen_id, out))
 }
 
@@ -226,7 +248,7 @@ pub fn run_reconstruct_structured_light(
     intrinsics: &str,
     intrinsics_crosscheck: Option<&str>,
     correspondences: &[String],
-) -> LmtResult<VisualReconstructResult> {
+) -> VoloResult<VisualReconstructResult> {
     let cfg = load_project_yaml_from_path(project_path)?;
     let screen_cfg = load_screen(&cfg, screen_id)?;
     let project = ipc::ReconstructProject {
@@ -250,9 +272,7 @@ pub fn run_reconstruct_structured_light(
         cancel: None,
     };
 
-    let out = rt()?
-        .block_on(reconstruct_structured_light(args))
-        .map_err(map_vba_err)?;
+    let out = block_on_future(reconstruct_structured_light(args))?.map_err(map_vba_err)?;
     Ok(build_reconstruct_result(screen_id, out))
 }
 
@@ -274,7 +294,7 @@ pub fn run_calibrate_structured_light(
     force: bool,
     max_rms_px: f64,
     intrinsics_crosscheck: Option<&str>,
-) -> LmtResult<CalibrateResult> {
+) -> VoloResult<CalibrateResult> {
     let cfg = load_project_yaml_from_path(project_path)?;
     let screen_cfg = load_screen(&cfg, screen_id)?;
     let project = ipc::ReconstructProject {
@@ -290,7 +310,7 @@ pub fn run_calibrate_structured_light(
         None => calibration_dir.join(format!("{screen_id}_sl_intrinsics.json")),
     };
     if output_path.exists() && !force {
-        return Err(LmtError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "would overwrite existing intrinsics {}; pass --force or --out",
             output_path.display()
         )));
@@ -307,9 +327,7 @@ pub fn run_calibrate_structured_light(
         cancel: None,
     };
 
-    let out = rt()?
-        .block_on(calibrate_structured_light(args))
-        .map_err(map_vba_err)?;
+    let out = block_on_future(calibrate_structured_light(args))?.map_err(map_vba_err)?;
 
     Ok(CalibrateResult {
         intrinsics_path: out.intrinsics_path,
@@ -327,17 +345,17 @@ pub fn run_calibrate_structured_light(
 // ---------------------------------------------------------------------------
 
 /// Parse `"9x9"` → `[9, 9]`. Both factors must be positive integers.
-fn parse_inner_corners(s: &str) -> LmtResult<[u32; 2]> {
+fn parse_inner_corners(s: &str) -> VoloResult<[u32; 2]> {
     let (a, b) = s
         .split_once(['x', 'X'])
-        .ok_or_else(|| LmtError::InvalidInput(format!("inner corners must be WxH, got '{s}'")))?;
-    let parse = |t: &str, which: &str| -> LmtResult<u32> {
+        .ok_or_else(|| VoloError::InvalidInput(format!("inner corners must be WxH, got '{s}'")))?;
+    let parse = |t: &str, which: &str| -> VoloResult<u32> {
         t.trim()
             .parse::<u32>()
-            .map_err(|_| LmtError::InvalidInput(format!("inner corners {which} '{t}' invalid")))
+            .map_err(|_| VoloError::InvalidInput(format!("inner corners {which} '{t}' invalid")))
             .and_then(|v| {
                 if v == 0 {
-                    Err(LmtError::InvalidInput(format!(
+                    Err(VoloError::InvalidInput(format!(
                         "inner corners {which} must be > 0"
                     )))
                 } else {
@@ -356,11 +374,11 @@ pub fn run_calibrate(
     checkerboard_dir: &Path,
     square_mm: f64,
     inner: &str,
-) -> LmtResult<CalibrateResult> {
+) -> VoloResult<CalibrateResult> {
     let inner_corners = parse_inner_corners(inner)?;
 
     if !checkerboard_dir.is_dir() {
-        return Err(LmtError::NotFound(format!(
+        return Err(VoloError::NotFound(format!(
             "checkerboard dir not found: {}",
             checkerboard_dir.display()
         )));
@@ -382,7 +400,7 @@ pub fn run_calibrate(
         .collect();
     images.sort();
     if images.is_empty() {
-        return Err(LmtError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "no checkerboard images (png/jpg) found in {}",
             checkerboard_dir.display()
         )));
@@ -401,7 +419,7 @@ pub fn run_calibrate(
         cancel: None,
     };
 
-    let out = rt()?.block_on(calibrate(args)).map_err(map_vba_err)?;
+    let out = block_on_future(calibrate(args))?.map_err(map_vba_err)?;
 
     Ok(CalibrateResult {
         intrinsics_path: out.intrinsics_path,
@@ -427,7 +445,7 @@ pub fn run_calibrate(
 /// `project_path = proj` → `proj/proj/screen_mapping.json`). Absolute paths pass
 /// through unchanged; `None` (flag absent) stays `None`. The result is absolute so
 /// the sidecar subprocess resolves it identically regardless of its own CWD.
-fn resolve_screen_mapping_path(p: Option<&Path>) -> LmtResult<Option<std::path::PathBuf>> {
+fn resolve_screen_mapping_path(p: Option<&Path>) -> VoloResult<Option<std::path::PathBuf>> {
     match p {
         None => Ok(None),
         Some(p) if p.is_absolute() => Ok(Some(p.to_path_buf())),
@@ -447,17 +465,17 @@ fn compute_screen_resolution(
     sm_abs: &Option<std::path::PathBuf>,
     screen_cfg: &volo_shared::dto::ScreenConfig,
     screen_id: &str,
-) -> LmtResult<[u32; 2]> {
+) -> VoloResult<[u32; 2]> {
     match sm_abs {
         Some(p) => {
             let txt = std::fs::read_to_string(p).map_err(|e| {
-                LmtError::InvalidInput(format!("screen_mapping '{}' unreadable: {e}", p.display()))
+                VoloError::InvalidInput(format!("screen_mapping '{}' unreadable: {e}", p.display()))
             })?;
             let v: serde_json::Value = serde_json::from_str(&txt).map_err(|e| {
-                LmtError::InvalidInput(format!("screen_mapping '{}' invalid JSON: {e}", p.display()))
+                VoloError::InvalidInput(format!("screen_mapping '{}' invalid JSON: {e}", p.display()))
             })?;
             let cabs = v.get("cabinets").and_then(|c| c.as_array()).ok_or_else(|| {
-                LmtError::InvalidInput("screen_mapping has no cabinets[]".into())
+                VoloError::InvalidInput("screen_mapping has no cabinets[]".into())
             })?;
             // Parse each coordinate via as_f64 (accepts both JSON int and float,
             // matching the Python side's int coercion) and reject negative /
@@ -466,19 +484,19 @@ fn compute_screen_resolution(
             let (mut max_w, mut max_h) = (0u64, 0u64);
             for c in cabs {
                 let r = c.get("input_rect_px").and_then(|r| r.as_array()).ok_or_else(|| {
-                    LmtError::InvalidInput("screen_mapping cabinet missing input_rect_px".into())
+                    VoloError::InvalidInput("screen_mapping cabinet missing input_rect_px".into())
                 })?;
                 if r.len() != 4 {
-                    return Err(LmtError::InvalidInput(
+                    return Err(VoloError::InvalidInput(
                         "input_rect_px must be [x, y, w, h]".into(),
                     ));
                 }
-                let g = |i: usize| -> Result<u64, LmtError> {
+                let g = |i: usize| -> Result<u64, VoloError> {
                     let f = r[i].as_f64().ok_or_else(|| {
-                        LmtError::InvalidInput("input_rect_px values must be numbers".into())
+                        VoloError::InvalidInput("input_rect_px values must be numbers".into())
                     })?;
                     if !f.is_finite() || f < 0.0 {
-                        return Err(LmtError::InvalidInput(format!(
+                        return Err(VoloError::InvalidInput(format!(
                             "input_rect_px values must be finite and non-negative, got {f}"
                         )));
                     }
@@ -488,7 +506,7 @@ fn compute_screen_resolution(
                 max_h = max_h.max(g(1)? + g(3)?);
             }
             if max_w > u32::MAX as u64 || max_h > u32::MAX as u64 {
-                return Err(LmtError::InvalidInput(format!(
+                return Err(VoloError::InvalidInput(format!(
                     "screen_mapping framebuffer {max_w}x{max_h} exceeds u32 range"
                 )));
             }
@@ -496,7 +514,7 @@ fn compute_screen_resolution(
         }
         None => {
             let ppc = screen_cfg.pixels_per_cabinet.ok_or_else(|| {
-                LmtError::InvalidInput(format!(
+                VoloError::InvalidInput(format!(
                     "screen '{screen_id}' has no pixels_per_cabinet; required for uniform pattern generation"
                 ))
             })?;
@@ -514,9 +532,9 @@ pub fn run_generate_pattern(
     method: &str,
     screen_id_code: u8,
     screen_mapping_path: Option<&Path>,
-) -> LmtResult<GeneratePatternResult> {
+) -> VoloResult<GeneratePatternResult> {
     if method != "charuco" && method != "vpqsp" {
-        return Err(LmtError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "unsupported pattern method '{method}' (expected 'vpqsp' or 'charuco')"
         )));
     }
@@ -545,7 +563,7 @@ pub fn run_generate_pattern(
         cancel: None,
     };
 
-    let out = rt()?.block_on(generate_pattern(args)).map_err(map_vba_err)?;
+    let out = block_on_future(generate_pattern(args))?.map_err(map_vba_err)?;
 
     Ok(GeneratePatternResult {
         output_dir: out.output_dir,
@@ -573,7 +591,7 @@ pub fn run_generate_structured_light(
     // None = auto: emit the TIFF `.seq` iff the project's output.target == "disguise".
     emit_tiff_seq: Option<bool>,
     screen_mapping_path: Option<&Path>,
-) -> LmtResult<GenerateStructuredLightResult> {
+) -> VoloResult<GenerateStructuredLightResult> {
     let cfg = load_project_yaml_from_path(project_path)?;
     let emit_tiff_seq = emit_tiff_seq.unwrap_or_else(|| cfg.output.target == "disguise");
     let screen_cfg = load_screen(&cfg, screen_id)?;
@@ -600,7 +618,7 @@ pub fn run_generate_structured_light(
         cancel: None,
     };
 
-    let out = rt()?.block_on(generate_structured_light(args)).map_err(map_vba_err)?;
+    let out = block_on_future(generate_structured_light(args))?.map_err(map_vba_err)?;
 
     Ok(GenerateStructuredLightResult {
         output_dir: out.output_dir,
@@ -625,7 +643,7 @@ pub fn run_decode_structured_light(
     screen_roi: Option<[u32; 4]>,
     // When true the sidecar also writes <output_path>.debug.png.
     emit_debug_image: bool,
-) -> LmtResult<DecodeStructuredLightResult> {
+) -> VoloResult<DecodeStructuredLightResult> {
     let args = DecodeStructuredLightArgs {
         input_path: input_path.display().to_string(),
         sl_meta_path: sl_meta_path.display().to_string(),
@@ -637,7 +655,7 @@ pub fn run_decode_structured_light(
         cancel: None,
     };
 
-    let out = rt()?.block_on(decode_structured_light(args)).map_err(map_vba_err)?;
+    let out = block_on_future(decode_structured_light(args))?.map_err(map_vba_err)?;
 
     Ok(DecodeStructuredLightResult {
         output_path: out.output_path,
@@ -652,11 +670,11 @@ pub fn run_decode_structured_light(
 /// Run a synthetic-dataset simulation. `config_path` is the
 /// `{scene, cameras, intrinsics, noise, seed}` JSON object; `out_dir` is
 /// injected as `out_dir` (overriding any value in the config).
-pub fn run_simulate(config_path: &Path, out_dir: &Path) -> LmtResult<SimulateResult> {
+pub fn run_simulate(config_path: &Path, out_dir: &Path) -> VoloResult<SimulateResult> {
     let raw = std::fs::read_to_string(config_path)?;
     let mut config: serde_json::Value = serde_json::from_str(&raw)?;
     let obj = config.as_object_mut().ok_or_else(|| {
-        LmtError::InvalidInput("simulate config must be a JSON object".into())
+        VoloError::InvalidInput("simulate config must be a JSON object".into())
     })?;
     obj.insert(
         "out_dir".to_string(),
@@ -669,7 +687,7 @@ pub fn run_simulate(config_path: &Path, out_dir: &Path) -> LmtResult<SimulateRes
         cancel: None,
     };
 
-    let out = rt()?.block_on(simulate(args)).map_err(map_vba_err)?;
+    let out = block_on_future(simulate(args))?.map_err(map_vba_err)?;
 
     Ok(SimulateResult {
         dataset_dir: out.dataset_dir,
@@ -691,7 +709,7 @@ pub fn run_eval(
     method: &str,
     seed_matrix: Vec<i64>,
     init: &str,
-) -> LmtResult<EvalResult> {
+) -> VoloResult<EvalResult> {
     let args = EvalArgs {
         dataset_dir: dataset_dir.display().to_string(),
         method: method.to_string(),
@@ -701,7 +719,7 @@ pub fn run_eval(
         cancel: None,
     };
 
-    let out = rt()?.block_on(eval(args)).map_err(map_vba_err)?;
+    let out = block_on_future(eval(args))?.map_err(map_vba_err)?;
 
     Ok(EvalResult {
         method: out.method,
@@ -729,7 +747,7 @@ pub fn run_compare_known(
     max_size_mm: Option<f64>,
     max_dist_mm: Option<f64>,
     max_angle_deg: Option<f64>,
-) -> LmtResult<CompareKnownResult> {
+) -> VoloResult<CompareKnownResult> {
     let args = CompareKnownArgs {
         report_path: report_path.display().to_string(),
         known_path: known_path.display().to_string(),
@@ -740,7 +758,7 @@ pub fn run_compare_known(
         cancel: None,
     };
 
-    let out = rt()?.block_on(compare_known(args)).map_err(map_vba_err)?;
+    let out = block_on_future(compare_known(args))?.map_err(map_vba_err)?;
 
     Ok(CompareKnownResult {
         cabinets: out
@@ -772,17 +790,17 @@ pub fn run_compare_known(
 // ── plan-capture ──────────────────────────────────────────────────────────────
 
 /// Parse `"3840x2160"` → `[3840, 2160]`.
-fn parse_wxh(s: &str) -> LmtResult<[u32; 2]> {
+fn parse_wxh(s: &str) -> VoloResult<[u32; 2]> {
     let (a, b) = s
         .split_once(['x', 'X'])
-        .ok_or_else(|| LmtError::InvalidInput(format!("image-size must be WxH, got '{s}'")))?;
+        .ok_or_else(|| VoloError::InvalidInput(format!("image-size must be WxH, got '{s}'")))?;
     let p = |t: &str| {
         t.trim()
             .parse::<u32>()
-            .map_err(|_| LmtError::InvalidInput(format!("image-size component '{t}' invalid")))
+            .map_err(|_| VoloError::InvalidInput(format!("image-size component '{t}' invalid")))
             .and_then(|v| {
                 if v == 0 {
-                    Err(LmtError::InvalidInput(
+                    Err(VoloError::InvalidInput(
                         "image-size components must be > 0".into(),
                     ))
                 } else {
@@ -794,20 +812,20 @@ fn parse_wxh(s: &str) -> LmtResult<[u32; 2]> {
 }
 
 /// Parse `"2000..12000"` → `(2000.0, 12000.0)`; min must be < max.
-fn parse_range(s: &str, name: &str) -> LmtResult<(f64, f64)> {
+fn parse_range(s: &str, name: &str) -> VoloResult<(f64, f64)> {
     let (a, b) = s
         .split_once("..")
-        .ok_or_else(|| LmtError::InvalidInput(format!("{name} must be MIN..MAX, got '{s}'")))?;
+        .ok_or_else(|| VoloError::InvalidInput(format!("{name} must be MIN..MAX, got '{s}'")))?;
     let lo = a
         .trim()
         .parse::<f64>()
-        .map_err(|_| LmtError::InvalidInput(format!("{name} min '{a}' invalid")))?;
+        .map_err(|_| VoloError::InvalidInput(format!("{name} min '{a}' invalid")))?;
     let hi = b
         .trim()
         .parse::<f64>()
-        .map_err(|_| LmtError::InvalidInput(format!("{name} max '{b}' invalid")))?;
+        .map_err(|_| VoloError::InvalidInput(format!("{name} max '{b}' invalid")))?;
     if !(lo < hi) {
-        return Err(LmtError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "{name} needs MIN < MAX, got {lo}..{hi}"
         )));
     }
@@ -827,11 +845,11 @@ pub fn run_plan_capture(
     trials: u32,
     seed: u32,
     min_views: Option<u32>,
-) -> LmtResult<volo_shared::dto::CapturePlan> {
+) -> VoloResult<volo_shared::dto::CapturePlan> {
     use volo_shared::dto::{CabinetCoverage, CapturePlan, CaptureStation, UnreachableRegion};
 
     if hfov_deg.is_some() == vfov_deg.is_some() {
-        return Err(LmtError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "pass exactly one of --hfov-deg / --vfov-deg".into(),
         ));
     }
@@ -863,7 +881,7 @@ pub fn run_plan_capture(
         progress_tx: None,
         cancel: None,
     };
-    let out = rt()?.block_on(plan_capture(args)).map_err(map_vba_err)?;
+    let out = block_on_future(plan_capture(args))?.map_err(map_vba_err)?;
 
     Ok(CapturePlan {
         stations: out
@@ -977,7 +995,7 @@ pub fn run_capture_card(
     target_p95_residual_mm: f64,
     trials: u32,
     seed: u32,
-) -> LmtResult<volo_shared::dto::CaptureCardResult> {
+) -> VoloResult<volo_shared::dto::CaptureCardResult> {
     let plan = run_plan_capture(
         project_path, screen_id, image_size, hfov_deg, vfov_deg, standoff, height,
         target_p95_residual_mm, trials, seed,
@@ -1333,7 +1351,7 @@ output:
         seed_project(dir.path());
         let manifest = dir.path().join("capture_manifest.json");
         let err = run_reconstruct(dir.path(), "FLOOR", &manifest, None, None).unwrap_err();
-        assert!(matches!(err, LmtError::NotFound(_)), "got: {err:?}");
+        assert!(matches!(err, VoloError::NotFound(_)), "got: {err:?}");
         assert!(format!("{err}").contains("FLOOR"), "got: {err}");
     }
 
@@ -1350,7 +1368,7 @@ output:
         let dir = tempdir().unwrap();
         seed_project(dir.path());
         let err = run_generate_pattern(dir.path(), "MAIN", "gray_code", 0, None).unwrap_err();
-        assert!(matches!(err, LmtError::InvalidInput(_)), "got: {err:?}");
+        assert!(matches!(err, VoloError::InvalidInput(_)), "got: {err:?}");
         assert!(format!("{err}").contains("vpqsp"), "got: {err}");
     }
 
@@ -1359,7 +1377,7 @@ output:
         let dir = tempdir().unwrap();
         seed_project(dir.path());
         let err = run_generate_pattern(dir.path(), "FLOOR", "charuco", 0, None).unwrap_err();
-        assert!(matches!(err, LmtError::NotFound(_)), "got: {err:?}");
+        assert!(matches!(err, VoloError::NotFound(_)), "got: {err:?}");
     }
 
     #[test]
@@ -1367,7 +1385,7 @@ output:
         let dir = tempdir().unwrap();
         let missing = dir.path().join("does_not_exist");
         let err = run_calibrate(dir.path(), "MAIN", &missing, 25.0, "9x9").unwrap_err();
-        assert!(matches!(err, LmtError::NotFound(_)), "got: {err:?}");
+        assert!(matches!(err, VoloError::NotFound(_)), "got: {err:?}");
     }
 
     #[test]
@@ -1376,7 +1394,7 @@ output:
         std::fs::create_dir_all(dir.path().join("imgs")).unwrap();
         let err =
             run_calibrate(dir.path(), "MAIN", &dir.path().join("imgs"), 25.0, "nope").unwrap_err();
-        assert!(matches!(err, LmtError::InvalidInput(_)), "got: {err:?}");
+        assert!(matches!(err, VoloError::InvalidInput(_)), "got: {err:?}");
     }
 
     #[test]

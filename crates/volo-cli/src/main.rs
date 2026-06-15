@@ -138,8 +138,48 @@ fn main() {
                 }
             }
         }
-        Err(e) => emit_parse_error(e, json_mode),
+        // Top-level parse failure (e.g. an unknown flag like `--bogus`, or a bad
+        // value) errors *before* `matches.subcommand()` can route it. Detect
+        // whether the failing argv targeted the `lmt` subtree and, if so, format
+        // the error with LMT's native `invalid_input`/exit-2 envelope instead of
+        // UECM's `usage_error`/exit-64. Otherwise fall back to the uecm path.
+        //
+        // FIX (review #2): without this, `voloctl lmt reconstruct --bogus --json`
+        // leaked the uecm `usage_error` envelope (exit 64). The post-match
+        // `from_arg_matches` arm already used `emit_lmt_parse_error`, but a clap
+        // tokenization error never reaches it.
+        Err(e) => {
+            if argv_targets_lmt(&argv) {
+                emit_lmt_parse_error(e, json_mode)
+            } else {
+                emit_parse_error(e, json_mode)
+            }
+        }
     }
+}
+
+/// True if the first positional token in `argv` (the subcommand name) is `lmt`.
+/// Scans past the program name and any leading `global` flags (`--json`,
+/// `--output <v>`, `-o <v>`) so a flag before the subcommand doesn't mask it.
+/// Used only to pick the right parse-error envelope when the top-level clap
+/// parse fails before the subcommand can be matched.
+fn argv_targets_lmt(argv: &[OsString]) -> bool {
+    let mut iter = argv.iter().skip(1); // skip argv[0] = program name
+    while let Some(tok) = iter.next() {
+        let s = tok.to_string_lossy();
+        if s == "--output" || s == "-o" {
+            // value-taking global flag: skip its value too.
+            iter.next();
+            continue;
+        }
+        if s.starts_with('-') {
+            // any other flag (incl. `--json`, `--output=...`, `-o=...`): skip.
+            continue;
+        }
+        // first non-flag token is the subcommand name.
+        return s == "lmt";
+    }
+    false
 }
 
 /// Render a clap parse error consistently with the UECM contract:

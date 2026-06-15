@@ -2,17 +2,23 @@
 # Build a single-file macOS arm64 executable with PyInstaller.
 #
 # Usage: ./build_exe.sh
-# Output: target/sidecar-vendor/darwin-arm64/lmt-vba-sidecar
+# Output: <workspace-root>/target/sidecar-vendor/darwin-arm64/lmt-vba-sidecar
 #
-# The output platform dir must match crates/adapter-visual-ba/src/locate.rs
-# platform_dir() so the Rust locator finds the vendored binary.
+# The output dir MUST be the WORKSPACE-ROOT `target/sidecar-vendor/<platform>/`,
+# because crates/mesh-adapter-visual-ba/src/locate.rs resolves the vendored
+# binary via `workspace_target_from_compile_time()` — the first `target/` found
+# walking up from the crate, i.e. the workspace root's target/. SCRIPT_DIR is
+# `sidecars/mesh-vba`, so the workspace root is TWO levels up (review #16: the
+# old `$SCRIPT_DIR/..` resolved to `sidecars/target`, which locate.rs never
+# searches).
 #
 # Uses the sidecar's own .venv (which carries the `dev` extra, including
 # pyinstaller>=6.0). Re-runnable: stale build/spec dirs are wiped first.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Workspace root = two levels up from sidecars/mesh-vba.
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 VENV="$SCRIPT_DIR/.venv"
 
 if [[ ! -x "$VENV/bin/pyinstaller" ]]; then

@@ -20,6 +20,9 @@ dependencies = [
 dev = [
     "pytest",
     "jsonschema",
+    # PyInstaller drives build_exe.sh (review #16) to vendor a single-file CLI
+    # into the workspace target/sidecar-vendor/<platform>/.
+    "pyinstaller>=6.0",
 ]
 
 [project.scripts]

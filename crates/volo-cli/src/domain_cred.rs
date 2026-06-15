@@ -158,36 +158,9 @@ fn delete(ctx: &mut Ctx<'_>, alias: &str, yes: bool, dry_run: bool) -> UecmResul
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::output::{Emitter, NdjsonEmitter};
-    use cache_core::data::{open_in_memory, schema, Db};
-
-    fn fresh_db() -> Db {
-        let db = open_in_memory().unwrap();
-        {
-            let mut conn = db.lock().unwrap();
-            schema::migrate(&mut conn).unwrap();
-        }
-        db
-    }
-
-    fn make_ctx<'a>(buf: &'a mut Vec<u8>, db: &'a Db) -> Ctx<'a> {
-        let emitter: Box<dyn Emitter> = Box::new(NdjsonEmitter::new(buf));
-        Ctx {
-            db: Some(db.clone()),
-            db_path: std::path::PathBuf::from(":memory:"),
-            emitter,
-            json_mode: true,
-            operation_id: "cred.unmapped",
-            request_id: "test-req".into(),
-            no_input: false,
-        }
-    }
-
-    // (Removed `save_returns_powershell_error_when_cmdkey_unavailable`: `cred save`
-    // is now SecretStore-backed and cross-platform — it no longer fails without
-    // cmdkey, so the old non-Windows assertion is obsolete. A hermetic test would
-    // also have to avoid writing the real SecretStore via from_config.)
-}
+// (Removed `save_returns_powershell_error_when_cmdkey_unavailable`: `cred save`
+// is now SecretStore-backed and cross-platform — it no longer fails without
+// cmdkey, so the old non-Windows assertion is obsolete. A hermetic test would
+// also have to avoid writing the real SecretStore via from_config. With that
+// test gone, the `fresh_db` / `make_ctx` test helpers (review #12) were orphaned
+// and removed — every other domain module keeps its own copy where still used.)

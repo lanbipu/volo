@@ -19,7 +19,7 @@ use objc2_core_foundation::CGRect;
 use objc2_foundation::{NSData, NSDate, NSDefaultRunLoopMode, NSError, NSNumber, NSRunLoop, NSString};
 use objc2_web_kit::{WKPDFConfiguration, WKWebView, WKWebViewConfiguration};
 
-use volo_shared::error::{LmtError, LmtResult};
+use volo_shared::error::{VoloError, VoloResult};
 
 /// Letter portrait @ 96 dpi viewport width. CSS 里 `max-width: 900px` 的页面
 /// 落在这个宽度内。高度用初始值，加载完后会按 `document.documentElement.scrollHeight`
@@ -40,7 +40,7 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 /// 100% 占用 CPU。
 const SPIN_TICK: Duration = Duration::from_millis(50);
 
-pub fn render(app: &tauri::AppHandle, html: &str, dst: &Path) -> LmtResult<()> {
+pub fn render(app: &tauri::AppHandle, html: &str, dst: &Path) -> VoloResult<()> {
     let (tx, rx) = mpsc::channel::<Result<Vec<u8>, String>>();
     let html_owned = html.to_string();
 
@@ -48,12 +48,12 @@ pub fn render(app: &tauri::AppHandle, html: &str, dst: &Path) -> LmtResult<()> {
         let result = unsafe { render_on_main_thread(&html_owned) };
         let _ = tx.send(result);
     })
-    .map_err(|e| LmtError::Other(format!("dispatch to main thread: {e}")))?;
+    .map_err(|e| VoloError::Other(format!("dispatch to main thread: {e}")))?;
 
     let pdf_bytes = rx
         .recv_timeout(TIMEOUT)
-        .map_err(|_| LmtError::Other(format!("PDF render timed out after {TIMEOUT:?}")))?
-        .map_err(LmtError::Other)?;
+        .map_err(|_| VoloError::Other(format!("PDF render timed out after {TIMEOUT:?}")))?
+        .map_err(VoloError::Other)?;
 
     write_pdf(dst, &pdf_bytes)
 }
@@ -61,14 +61,14 @@ pub fn render(app: &tauri::AppHandle, html: &str, dst: &Path) -> LmtResult<()> {
 /// Atomic enough for our caller: we write to `dst` directly. The outer
 /// `run_save_pdf` already handles tmp-then-rename — this fn is the leaf
 /// that just dumps the bytes.
-fn write_pdf(dst: &Path, bytes: &[u8]) -> LmtResult<()> {
+fn write_pdf(dst: &Path, bytes: &[u8]) -> VoloResult<()> {
     if !bytes.starts_with(b"%PDF-") {
-        return Err(LmtError::Other(
+        return Err(VoloError::Other(
             "renderer returned non-PDF bytes (likely empty)".into(),
         ));
     }
     std::fs::write(dst, bytes)
-        .map_err(|e| LmtError::Other(format!("write PDF to {}: {e}", dst.display())))?;
+        .map_err(|e| VoloError::Other(format!("write PDF to {}: {e}", dst.display())))?;
     Ok(())
 }
 

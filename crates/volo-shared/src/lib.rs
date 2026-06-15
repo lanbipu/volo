@@ -16,4 +16,4 @@ pub mod manifest;
 pub mod schema;
 
 pub use envelope::{ApiError, Envelope, ErrorEnvelope};
-pub use error::{LmtError, LmtResult};
+pub use error::{VoloError, VoloResult};

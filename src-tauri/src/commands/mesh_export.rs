@@ -3,7 +3,7 @@
 pub use mesh_app::export::{build_cabinet_array, run_export};
 
 use crate::commands::mesh::MeshDb;
-use volo_shared::error::LmtResult;
+use volo_shared::error::VoloResult;
 
 #[tauri::command]
 pub fn export_obj(
@@ -11,7 +11,7 @@ pub fn export_obj(
     run_id: i64,
     target: String,
     dst_abs_path: Option<String>,
-) -> LmtResult<String> {
+) -> VoloResult<String> {
     let dst = dst_abs_path.as_deref().map(std::path::Path::new);
     run_export(state.0.clone(), run_id, &target, dst)
 }

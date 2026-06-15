@@ -1,6 +1,6 @@
 use include_dir::{include_dir, Dir};
 use volo_shared::dto::ProjectConfig;
-use volo_shared::error::{LmtError, LmtResult};
+use volo_shared::error::{VoloError, VoloResult};
 use std::path::{Path, PathBuf};
 
 // examples/ 在编译期嵌入(相对 crates/mesh-app -> ../../examples)。
@@ -19,21 +19,21 @@ pub fn embedded_example_names() -> Vec<String> {
 /// 不存在(无半成品残留)。**拒绝覆盖已存在目标**——避免与既有文件混合成
 /// 损坏的 example;要重新 seed 须自己先删目标。
 /// transport-free:CLI 与未来 MCP server 共用这一份。
-pub fn seed_embedded_example(name: &str, target_dir: &Path) -> LmtResult<PathBuf> {
+pub fn seed_embedded_example(name: &str, target_dir: &Path) -> VoloResult<PathBuf> {
     // Fix 1: validate against top-level whitelist FIRST so execute and dry-run
     // both reject path components (e.g. "curved-flat/measurements") identically.
     if !embedded_example_names().iter().any(|n| n == name) {
-        return Err(LmtError::NotFound(format!(
+        return Err(VoloError::NotFound(format!(
             "example '{name}' not found; available: {:?}",
             embedded_example_names()
         )));
     }
     let src = EXAMPLES.get_dir(name).ok_or_else(|| {
-        LmtError::NotFound(format!("example '{name}' not found; available: {:?}", embedded_example_names()))
+        VoloError::NotFound(format!("example '{name}' not found; available: {:?}", embedded_example_names()))
     })?;
     let dst = target_dir.join(name);
     if dst.exists() {
-        return Err(LmtError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "destination already exists: {} (remove it first to re-seed)",
             dst.display()
         )));
@@ -42,7 +42,7 @@ pub fn seed_embedded_example(name: &str, target_dir: &Path) -> LmtResult<PathBuf
     // staging 放在目标同一父目录下,保证 rename 不跨文件系统(/tmp 会 EXDEV)。
     let staging = target_dir.join(format!(".{name}.seed.{}.tmp", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
-    let staged = (|| -> LmtResult<()> {
+    let staged = (|| -> VoloResult<()> {
         std::fs::create_dir_all(&staging)?;
         write_embedded_dir_contents(src, &staging)
     })();
@@ -54,7 +54,7 @@ pub fn seed_embedded_example(name: &str, target_dir: &Path) -> LmtResult<PathBuf
             Ok(()) => Ok(dst),
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&staging);
-                Err(LmtError::Io(format!("finalize seed rename: {e}")))
+                Err(VoloError::Io(format!("finalize seed rename: {e}")))
             }
         },
         Err(e) => {
@@ -65,7 +65,7 @@ pub fn seed_embedded_example(name: &str, target_dir: &Path) -> LmtResult<PathBuf
 }
 
 /// 把 include_dir 的某个 Dir 的内容(剥掉自身名字前缀)递归写到 `out_dir`。
-fn write_embedded_dir_contents(dir: &Dir, out_dir: &Path) -> LmtResult<()> {
+fn write_embedded_dir_contents(dir: &Dir, out_dir: &Path) -> VoloResult<()> {
     for f in dir.files() {
         let name = f.path().file_name().expect("embedded file has a name");
         std::fs::write(out_dir.join(name), f.contents())?;
@@ -84,10 +84,10 @@ pub fn seed_example_to_dir(
     examples_root: &Path,
     example_name: &str,
     target_dir: &Path,
-) -> LmtResult<PathBuf> {
+) -> VoloResult<PathBuf> {
     let src = examples_root.join(example_name);
     if !src.is_dir() {
-        return Err(LmtError::NotFound(format!(
+        return Err(VoloError::NotFound(format!(
             "example '{example_name}' (looked in {})",
             examples_root.display()
         )));
@@ -97,7 +97,7 @@ pub fn seed_example_to_dir(
     Ok(dst)
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> LmtResult<()> {
+fn copy_dir_recursive(src: &Path, dst: &Path) -> VoloResult<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
@@ -116,17 +116,17 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> LmtResult<()> {
 
 /// Pure helper: read project.yaml from `abs_path/project.yaml`.
 /// Returns `NotFound` if the file does not exist.
-pub fn load_project_yaml_from_path(abs_path: &Path) -> LmtResult<ProjectConfig> {
+pub fn load_project_yaml_from_path(abs_path: &Path) -> VoloResult<ProjectConfig> {
     let yaml_path = abs_path.join("project.yaml");
     if !yaml_path.is_file() {
-        return Err(LmtError::NotFound(yaml_path.display().to_string()));
+        return Err(VoloError::NotFound(yaml_path.display().to_string()));
     }
     let yaml = std::fs::read_to_string(&yaml_path)?;
     Ok(serde_yaml::from_str(&yaml)?)
 }
 
 /// Pure helper: write `config` to `abs_path/project.yaml` atomically (temp + rename).
-pub fn save_project_yaml_to_path(abs_path: &Path, config: &ProjectConfig) -> LmtResult<()> {
+pub fn save_project_yaml_to_path(abs_path: &Path, config: &ProjectConfig) -> VoloResult<()> {
     std::fs::create_dir_all(abs_path)?;
     let yaml = serde_yaml::to_string(config)?;
     let final_path = abs_path.join("project.yaml");

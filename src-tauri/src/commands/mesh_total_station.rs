@@ -4,7 +4,7 @@ pub use mesh_app::total_station::{run_generate_card, run_import, run_save_pdf};
 
 use std::path::Path;
 use volo_shared::dto::{InstructionCardResult, TotalStationImportResult};
-use volo_shared::error::{LmtError, LmtResult};
+use volo_shared::error::{VoloError, VoloResult};
 
 use crate::pdf_render::render_html_to_pdf;
 
@@ -25,7 +25,7 @@ pub fn import_total_station_csv(
     screen_id: String,
     mode: Option<String>,
     columns: Option<String>,
-) -> LmtResult<TotalStationImportResult> {
+) -> VoloResult<TotalStationImportResult> {
     match mode.as_deref().unwrap_or("grid") {
         "grid" | "" => run_import(
             Path::new(&project_abs_path),
@@ -36,7 +36,7 @@ pub fn import_total_station_csv(
             let col_map = match columns.as_deref() {
                 Some(s) => {
                     let cm = mesh_app::total_station::parse_column_map(s)
-                        .map_err(LmtError::InvalidInput)?;
+                        .map_err(VoloError::InvalidInput)?;
                     Some(cm)
                 }
                 None => None,
@@ -48,7 +48,7 @@ pub fn import_total_station_csv(
                 col_map,
             )
         }
-        other => Err(LmtError::InvalidInput(format!(
+        other => Err(VoloError::InvalidInput(format!(
             "unknown import mode '{other}'; expected 'grid' or 'scatter'"
         ))),
     }
@@ -58,7 +58,7 @@ pub fn import_total_station_csv(
 pub fn generate_instruction_card(
     project_abs_path: String,
     screen_id: String,
-) -> LmtResult<InstructionCardResult> {
+) -> VoloResult<InstructionCardResult> {
     run_generate_card(Path::new(&project_abs_path), &screen_id)
 }
 
@@ -68,7 +68,7 @@ pub async fn save_instruction_pdf(
     project_abs_path: String,
     screen_id: String,
     dst_pdf_path: String,
-) -> LmtResult<String> {
+) -> VoloResult<String> {
     // CRITICAL: the macOS PDF renderer dispatches a closure onto the AppKit
     // main thread and then blocks on a channel waiting for the result. If
     // this command itself runs on the main thread (which is where sync
@@ -84,5 +84,5 @@ pub async fn save_instruction_pdf(
         )
     })
     .await
-    .map_err(|e| LmtError::Other(format!("PDF task join: {e}")))?
+    .map_err(|e| VoloError::Other(format!("PDF task join: {e}")))?
 }

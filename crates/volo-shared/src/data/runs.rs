@@ -1,5 +1,5 @@
 use crate::dto::ReconstructionRun;
-use crate::error::LmtResult;
+use crate::error::VoloResult;
 use rusqlite::{params, Connection};
 
 pub struct NewRun {
@@ -17,7 +17,7 @@ pub struct NewRun {
     pub warnings_json: String,
 }
 
-pub fn insert(conn: &Connection, run: &NewRun) -> LmtResult<i64> {
+pub fn insert(conn: &Connection, run: &NewRun) -> VoloResult<i64> {
     conn.execute(
         "INSERT INTO reconstruction_runs(
             project_path, screen_id, measurements_path, method,
@@ -46,7 +46,7 @@ pub fn update_export(
     run_id: i64,
     target: &str,
     output_obj_path: &str,
-) -> LmtResult<()> {
+) -> VoloResult<()> {
     let n = conn.execute(
         "UPDATE reconstruction_runs
          SET target = ?1, output_obj_path = ?2
@@ -54,7 +54,7 @@ pub fn update_export(
         params![target, output_obj_path, run_id],
     )?;
     if n == 0 {
-        return Err(crate::error::LmtError::NotFound(format!("run id {run_id}")));
+        return Err(crate::error::VoloError::NotFound(format!("run id {run_id}")));
     }
     Ok(())
 }
@@ -63,7 +63,7 @@ pub fn list_by_project(
     conn: &Connection,
     project_path: &str,
     screen_id: Option<&str>,
-) -> LmtResult<Vec<ReconstructionRun>> {
+) -> VoloResult<Vec<ReconstructionRun>> {
     let mut sql = String::from(
         "SELECT id, screen_id, method, estimated_rms_mm, vertex_count, target, output_obj_path, created_at
          FROM reconstruction_runs WHERE project_path = ?1",
@@ -95,13 +95,13 @@ pub fn list_by_project(
     Ok(rows)
 }
 
-pub fn get_report_path(conn: &Connection, run_id: i64) -> LmtResult<(String, String)> {
+pub fn get_report_path(conn: &Connection, run_id: i64) -> VoloResult<(String, String)> {
     conn.query_row(
         "SELECT project_path, report_json_path FROM reconstruction_runs WHERE id = ?1",
         [run_id],
         |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
     )
-    .map_err(|_| crate::error::LmtError::NotFound(format!("run id {run_id}")))
+    .map_err(|_| crate::error::VoloError::NotFound(format!("run id {run_id}")))
 }
 
 #[cfg(test)]
@@ -154,7 +154,7 @@ mod tests {
         }
         let conn = db.lock().unwrap();
         let err = update_export(&conn, 9999, "disguise", "x.obj").unwrap_err();
-        assert!(matches!(err, crate::error::LmtError::NotFound(_)));
+        assert!(matches!(err, crate::error::VoloError::NotFound(_)));
     }
 
     #[test]
@@ -187,6 +187,6 @@ mod tests {
         assert_eq!(report, "reports/rep.json");
 
         let err = get_report_path(&conn, 9999).unwrap_err();
-        assert!(matches!(err, crate::error::LmtError::NotFound(_)));
+        assert!(matches!(err, crate::error::VoloError::NotFound(_)));
     }
 }

@@ -60,7 +60,7 @@ pub fn bootstrap_winrm(
         ok: false,
         method: "ssh-onboard-required".into(),
         message: "Remote WinRM push has been retired. Onboard this node with the \
-                  UECM-Bootstrap.cmd USB bundle (build it via `uecm-cli ssh package-bootstrap`), \
+                  UECM-Bootstrap.cmd USB bundle (build it via `voloctl uecm ssh package-bootstrap`), \
                   then use machine refresh over SSH."
             .into(),
         winrm_ok: false,

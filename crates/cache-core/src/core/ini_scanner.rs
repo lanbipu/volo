@@ -521,16 +521,9 @@ pub fn pick_highest_ue_version(installs: &[(String, String)]) -> Option<String> 
         .map(|(_, v)| v)
 }
 
-fn lookup_machine_hostname(db: &Db, machine_id: i64) -> UecmResult<String> {
-    let conn = db.lock().unwrap();
-    let mut stmt = conn.prepare("SELECT hostname FROM machines WHERE id = ?1")?;
-    let mut rows = stmt.query(params![machine_id])?;
-    if let Some(row) = rows.next()? {
-        Ok(row.get::<_, String>(0)?)
-    } else {
-        Ok(String::new())
-    }
-}
+// (review #12) `lookup_machine_hostname` removed — superseded by
+// `lookup_machine_addresses` below, which returns hostname AND ip so R014 can
+// match either form. The single-column lookup had no remaining callers.
 
 /// Return (hostname, ip) for a machine — both columns may be non-empty so
 /// R014 can match either. Codex P2 fix: `zen enable` writes the cluster

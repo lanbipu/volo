@@ -16,7 +16,7 @@ use mesh_adapter_total_station::{
 use crate::projects::load_project_yaml_from_path;
 use crate::total_station_mapper::map_to_adapter;
 use volo_shared::dto::{InstructionCardResult, TotalStationImportResult};
-use volo_shared::error::{LmtError, LmtResult};
+use volo_shared::error::{VoloError, VoloResult};
 
 /// 把 `csv_path` 的 Trimble CSV 转成 `{project}/measurements/measured.yaml`，
 /// 同时写 `import_report.json`，返回 GUI 友好的 summary。
@@ -26,14 +26,14 @@ pub fn run_import(
     project_abs_path: &Path,
     screen_id: &str,
     csv_path: &Path,
-) -> LmtResult<TotalStationImportResult> {
+) -> VoloResult<TotalStationImportResult> {
     // 1. 读 GUI project.yaml，映射到 M1 ProjectConfig
     let gui_cfg = load_project_yaml_from_path(project_abs_path)?;
     let m1_cfg = map_to_adapter(&gui_cfg)?;
     let screen_cfg = m1_cfg
         .screens
         .get(screen_id)
-        .ok_or_else(|| LmtError::NotFound(format!("screen '{screen_id}' not in project")))?;
+        .ok_or_else(|| VoloError::NotFound(format!("screen '{screen_id}' not in project")))?;
 
     // 2. 解析 CSV
     let raw = parse_csv(csv_path)?;
@@ -66,7 +66,7 @@ pub fn run_import(
     };
 
     // 4c. 写新文件。任一步失败：删除可能落地的新 measured.yaml，再 restore .bak。
-    let write_result = (|| -> LmtResult<()> {
+    let write_result = (|| -> VoloResult<()> {
         let yaml = serde_yaml::to_string(&measured)?;
         let tmp = measurements_dir.join("measured.yaml.tmp");
         std::fs::write(&tmp, yaml)?;
@@ -111,14 +111,14 @@ pub fn run_import(
 pub fn check_import_no_screen_conflict(
     project_abs_path: &Path,
     target_screen_id: &str,
-) -> LmtResult<()> {
+) -> VoloResult<()> {
     let measured_yaml_path = project_abs_path.join("measurements").join("measured.yaml");
     if !measured_yaml_path.exists() {
         return Ok(());
     }
     if let Some(existing_screen) = read_existing_screen_id(&measured_yaml_path) {
         if existing_screen != target_screen_id {
-            return Err(LmtError::InvalidInput(format!(
+            return Err(VoloError::InvalidInput(format!(
                 "refusing to overwrite measured.yaml for screen {existing_screen:?} \
                  with an import targeting screen {target_screen_id:?}; remove the \
                  existing file first or import to the correct screen"
@@ -147,13 +147,13 @@ fn read_existing_screen_id(path: &Path) -> Option<String> {
 
 /// Build the `InstructionCard` payload from a GUI project.yaml.
 /// Shared by HTML-render and PDF-save paths.
-fn build_card(project_abs_path: &Path, screen_id: &str) -> LmtResult<InstructionCard> {
+fn build_card(project_abs_path: &Path, screen_id: &str) -> VoloResult<InstructionCard> {
     let gui_cfg = load_project_yaml_from_path(project_abs_path)?;
     let m1_cfg = map_to_adapter(&gui_cfg)?;
     let screen_cfg = m1_cfg
         .screens
         .get(screen_id)
-        .ok_or_else(|| LmtError::NotFound(format!("screen '{screen_id}' not in project")))?
+        .ok_or_else(|| VoloError::NotFound(format!("screen '{screen_id}' not in project")))?
         .clone();
 
     Ok(InstructionCard {
@@ -171,7 +171,7 @@ fn build_card(project_abs_path: &Path, screen_id: &str) -> LmtResult<Instruction
 pub fn run_generate_card(
     project_abs_path: &Path,
     screen_id: &str,
-) -> LmtResult<InstructionCardResult> {
+) -> VoloResult<InstructionCardResult> {
     let card = build_card(project_abs_path, screen_id)?;
     Ok(InstructionCardResult {
         html_content: generate_html(&card),
@@ -204,10 +204,10 @@ pub fn run_save_pdf(
     project_abs_path: &Path,
     screen_id: &str,
     dst_pdf_path: &Path,
-    render: impl FnOnce(&str, &Path) -> LmtResult<()>,
-) -> LmtResult<String> {
+    render: impl FnOnce(&str, &Path) -> VoloResult<()>,
+) -> VoloResult<String> {
     if dst_pdf_path.as_os_str().is_empty() {
-        return Err(LmtError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "destination PDF path must not be empty".into(),
         ));
     }
@@ -295,7 +295,7 @@ pub fn run_import_scatter(
     screen_id: &str,
     csv_path: &Path,
     columns: Option<mesh_adapter_total_station::scatter_csv::ColumnMap>,
-) -> LmtResult<volo_shared::dto::TotalStationImportResult> {
+) -> VoloResult<volo_shared::dto::TotalStationImportResult> {
     use mesh_adapter_total_station::scatter_csv::parse_scatter_csv;
     use mesh_core::coordinate::CoordinateFrame;
     use mesh_core::measured_points::MeasuredPoints;
@@ -308,7 +308,7 @@ pub fn run_import_scatter(
     let screen_cfg = cfg
         .screens
         .get(screen_id)
-        .ok_or_else(|| LmtError::NotFound(format!("screen '{screen_id}' not in project")))?;
+        .ok_or_else(|| VoloError::NotFound(format!("screen '{screen_id}' not in project")))?;
     let cabinet_array = crate::export::build_cabinet_array(screen_cfg)?;
     let shape_prior = crate::export::build_shape_prior(screen_cfg)?;
 
@@ -379,7 +379,7 @@ mod tests {
     /// and inject this stub so `run_save_pdf` exercises the atomic-write +
     /// filesystem logic on its own. The byte sequence below is a minimal valid
     /// PDF header so any "starts_with(%PDF-)" assertion still holds.
-    fn fake_render(_html: &str, dst: &Path) -> LmtResult<()> {
+    fn fake_render(_html: &str, dst: &Path) -> VoloResult<()> {
         fs::write(dst, b"%PDF-1.4\n% LMT test stub\n")?;
         Ok(())
     }

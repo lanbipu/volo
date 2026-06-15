@@ -32,11 +32,14 @@ import pytest
 #   _main_path/expected.json         (optional regression anchor)
 MAINPATH = Path(__file__).resolve().parents[2] / "_main_path"
 
-pytestmark = pytest.mark.skipif(
-    not (MAINPATH / "session.json").exists(),
-    reason="B2 real-data not available (gitignored; needs a real tracking source + "
-           "held-out validation frames — see docs/b2-real-data-capture.md)",
-)
+pytestmark = [
+    pytest.mark.walkthrough,
+    pytest.mark.skipif(
+        not (MAINPATH / "session.json").exists(),
+        reason="B2 real-data not available (gitignored; needs a real tracking source + "
+               "held-out validation frames — see docs/b2-real-data-capture.md)",
+    ),
+]
 
 
 def _run():

@@ -19,6 +19,9 @@ dev = [
     "pytest",
     "pytest-cov",
     "jsonschema",
+    # PyInstaller drives build_exe.sh (review #16) to vendor a single-file CLI
+    # into the workspace target/sidecar-vendor/<platform>/.
+    "pyinstaller>=6.0",
 ]
 
 [project.scripts]
@@ -39,6 +42,12 @@ CMAKE_POLICY_VERSION_MINIMUM = "3.5"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# `walkthrough` tests need gitignored real-capture data (_walkthrough/ and
+# _main_path/) and are excluded from the default run so `pytest` is green on a
+# clean checkout. Run them explicitly with `pytest -m walkthrough` on a dev
+# machine that has the data.
+addopts = "-m 'not walkthrough'"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "walkthrough: end-to-end tests requiring gitignored real-capture data (run with -m walkthrough)",
 ]

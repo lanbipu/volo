@@ -3,7 +3,7 @@
   "operations": [
     {
       "operation_id": "quick.run",
-      "summary": "Run the full calibration pipeline (validate \u2192 detect \u2192 solve \u2192 report).",
+      "summary": "Run the full calibration pipeline (validate → detect → solve → report).",
       "input_schema": {
         "$defs": {
           "BrownConradyDistortion": {
@@ -61,6 +61,141 @@
               "path"
             ],
             "title": "ImagesConfig",
+            "type": "object"
+          },
+          "LensEstimateConfig": {
+            "description": "Quick Lens Estimate config (Level 2, Quick Lens Estimate spec §3.1).\n\nDefault ``enabled=False`` reproduces Phase-1 behaviour exactly (lens fully\nfixed).  When enabled, the listed ``params`` become free variables in the\njoint bundle adjustment, gated by the observability checks in\n``qa/observability.py``.  The result is always a session-coupled, non-master\nestimate carrying an identifiability warning.",
+            "properties": {
+              "enabled": {
+                "default": false,
+                "title": "Enabled",
+                "type": "boolean"
+              },
+              "params": {
+                "items": {
+                  "enum": [
+                    "k1",
+                    "k2",
+                    "cx",
+                    "cy"
+                  ],
+                  "type": "string"
+                },
+                "title": "Params",
+                "type": "array",
+                "uniqueItems": true
+              },
+              "refine_focal": {
+                "default": false,
+                "title": "Refine Focal",
+                "type": "boolean"
+              },
+              "focal_prior_weight": {
+                "default": 1000.0,
+                "exclusiveMinimum": 0,
+                "title": "Focal Prior Weight",
+                "type": "number"
+              },
+              "principal_point_margin_mm": {
+                "default": 5.0,
+                "minimum": 0.0,
+                "title": "Principal Point Margin Mm",
+                "type": "number"
+              },
+              "k_bounds": {
+                "default": [
+                  -0.5,
+                  0.5
+                ],
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "title": "K Bounds",
+                "type": "array"
+              },
+              "cv2_bootstrap": {
+                "default": false,
+                "title": "Cv2 Bootstrap",
+                "type": "boolean"
+              },
+              "min_poses": {
+                "default": 8,
+                "exclusiveMinimum": 0,
+                "title": "Min Poses",
+                "type": "integer"
+              },
+              "min_observations": {
+                "default": 60,
+                "exclusiveMinimum": 0,
+                "title": "Min Observations",
+                "type": "integer"
+              },
+              "min_edge_obs_fraction": {
+                "default": 0.25,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "title": "Min Edge Obs Fraction",
+                "type": "number"
+              },
+              "edge_radius_fraction": {
+                "default": 0.35,
+                "exclusiveMinimum": 0.0,
+                "maximum": 1.0,
+                "title": "Edge Radius Fraction",
+                "type": "number"
+              },
+              "max_spatial_rms_px_for_center": {
+                "default": 2.0,
+                "exclusiveMinimum": 0,
+                "title": "Max Spatial Rms Px For Center",
+                "type": "number"
+              },
+              "max_spatial_rms_px_for_k": {
+                "default": 1.0,
+                "exclusiveMinimum": 0,
+                "title": "Max Spatial Rms Px For K",
+                "type": "number"
+              },
+              "condition_number_limit": {
+                "default": 10000.0,
+                "exclusiveMinimum": 0,
+                "title": "Condition Number Limit",
+                "type": "number"
+              },
+              "correlation_limit": {
+                "default": 0.8,
+                "exclusiveMinimum": 0,
+                "maximum": 1.0,
+                "title": "Correlation Limit",
+                "type": "number"
+              },
+              "cross_subset_k_abs_delta": {
+                "default": 0.05,
+                "minimum": 0.0,
+                "title": "Cross Subset K Abs Delta",
+                "type": "number"
+              },
+              "cross_subset_k_rel_delta": {
+                "default": 0.3,
+                "minimum": 0.0,
+                "title": "Cross Subset K Rel Delta",
+                "type": "number"
+              },
+              "min_improvement_pct": {
+                "default": 3.0,
+                "minimum": 0.0,
+                "title": "Min Improvement Pct",
+                "type": "number"
+              }
+            },
+            "title": "LensEstimateConfig",
             "type": "object"
           },
           "LensProfile": {
@@ -174,7 +309,7 @@
             "type": "object"
           },
           "SolverConfig": {
-            "description": "Solver tuning knobs (spec \u00a73.2 / \u00a75.3).",
+            "description": "Solver tuning knobs (spec §3.2 / §5.3).",
             "properties": {
               "refine_tracker_to_camera": {
                 "default": false,
@@ -184,11 +319,30 @@
               "tracker_to_camera_prior": {
                 "$ref": "#/$defs/RigidPrior"
               },
-              "tracker_to_camera_prior_weight": {
-                "default": 1000.0,
+              "prior_weight_rotation": {
+                "default": 820.701587502936,
                 "exclusiveMinimum": 0,
-                "title": "Tracker To Camera Prior Weight",
+                "title": "Prior Weight Rotation",
                 "type": "number"
+              },
+              "prior_weight_translation": {
+                "default": 0.01,
+                "exclusiveMinimum": 0,
+                "title": "Prior Weight Translation",
+                "type": "number"
+              },
+              "tracker_to_camera_prior_weight": {
+                "anyOf": [
+                  {
+                    "exclusiveMinimum": 0,
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Tracker To Camera Prior Weight"
               },
               "robust_loss": {
                 "default": "huber",
@@ -217,6 +371,9 @@
                 "exclusiveMinimum": 0,
                 "title": "Timeout Seconds",
                 "type": "number"
+              },
+              "lens_estimate": {
+                "$ref": "#/$defs/LensEstimateConfig"
               }
             },
             "title": "SolverConfig",
@@ -236,6 +393,7 @@
                   "optitrack",
                   "vicon",
                   "freeDEuler",
+                  "opentrackio",
                   "custom"
                 ],
                 "title": "Coordinate System",
@@ -283,9 +441,38 @@
             ],
             "title": "TrackingConfig",
             "type": "object"
+          },
+          "ValidationConfig": {
+            "description": "Held-out validation poses (remediation A4).\n\nFrames listed in ``holdout_frames`` (or selected by ``holdout_ratio``,\nevenly spaced over the sorted frame ids) are EXCLUDED from the solve; the\nsolved transform is then evaluated on them, giving an independent\n``validation_rms_px`` — in-sample RMS only proves self-consistency, not\nthat the perspective is right.",
+            "properties": {
+              "holdout_frames": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Holdout Frames"
+              },
+              "holdout_ratio": {
+                "default": 0.2,
+                "exclusiveMaximum": 1.0,
+                "exclusiveMinimum": 0.0,
+                "title": "Holdout Ratio",
+                "type": "number"
+              }
+            },
+            "title": "ValidationConfig",
+            "type": "object"
           }
         },
-        "description": "Top-level session configuration (spec \u00a73.2).",
+        "description": "Top-level session configuration (spec §3.2).",
         "properties": {
           "images": {
             "$ref": "#/$defs/ImagesConfig"
@@ -301,6 +488,17 @@
           },
           "solver": {
             "$ref": "#/$defs/SolverConfig"
+          },
+          "validation": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ValidationConfig"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "capture_mode": {
             "default": "legacy",
@@ -413,6 +611,147 @@
             "title": "CovarianceStd",
             "type": "object"
           },
+          "EstimatedLens": {
+            "description": "Session-coupled quick lens estimate (Level 2, QLE spec §6.1).\n\nPresent only when ``solver.lens_estimate.enabled``.  ``is_master`` is always\nFalse and ``session_coupled`` always True — this estimate must never be\ntreated as a master lens or reused across stages.",
+            "properties": {
+              "is_master": {
+                "const": false,
+                "default": false,
+                "title": "Is Master",
+                "type": "boolean"
+              },
+              "session_coupled": {
+                "const": true,
+                "default": true,
+                "title": "Session Coupled",
+                "type": "boolean"
+              },
+              "focal_length_mm": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/EstimatedLensParam"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "principal_point_offset_mm": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/EstimatedLensParam"
+                    },
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Principal Point Offset Mm"
+              },
+              "distortion_k1": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/EstimatedLensParam"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "distortion_k2": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/EstimatedLensParam"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "spatial_only_rms_px": {
+                "title": "Spatial Only Rms Px",
+                "type": "number"
+              },
+              "refined_rms_px": {
+                "title": "Refined Rms Px",
+                "type": "number"
+              },
+              "identifiability_flags": {
+                "items": {
+                  "type": "string"
+                },
+                "title": "Identifiability Flags",
+                "type": "array"
+              },
+              "confidence": {
+                "default": "low",
+                "enum": [
+                  "high",
+                  "medium",
+                  "low"
+                ],
+                "title": "Confidence",
+                "type": "string"
+              }
+            },
+            "required": [
+              "spatial_only_rms_px",
+              "refined_rms_px"
+            ],
+            "title": "EstimatedLens",
+            "type": "object"
+          },
+          "EstimatedLensParam": {
+            "description": "One estimated lens scalar with its observability verdict (QLE spec §6.1).",
+            "properties": {
+              "value": {
+                "title": "Value",
+                "type": "number"
+              },
+              "std": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Std"
+              },
+              "observable": {
+                "default": false,
+                "title": "Observable",
+                "type": "boolean"
+              },
+              "locked_reason": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Locked Reason"
+              }
+            },
+            "required": [
+              "value"
+            ],
+            "title": "EstimatedLensParam",
+            "type": "object"
+          },
           "Inputs": {
             "properties": {
               "session_config_hash": {
@@ -490,6 +829,23 @@
                 "title": "Confidence",
                 "type": "string"
               },
+              "validation_rms_px": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Validation Rms Px"
+              },
+              "validation_observations": {
+                "default": 0,
+                "title": "Validation Observations",
+                "type": "integer"
+              },
               "lens_residual_pattern": {
                 "default": "none",
                 "enum": [
@@ -499,6 +855,22 @@
                 ],
                 "title": "Lens Residual Pattern",
                 "type": "string"
+              },
+              "lens_estimate": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/EstimatedLens"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "lens_observability_warning": {
+                "default": false,
+                "title": "Lens Observability Warning",
+                "type": "boolean"
               }
             },
             "required": [
@@ -625,10 +997,10 @@
             "type": "object"
           }
         },
-        "description": "Top-level calibration result (spec \u00a74.4).",
+        "description": "Top-level calibration result (spec §4.4).",
         "properties": {
           "schema_version": {
-            "default": "1.0",
+            "default": "1.2",
             "title": "Schema Version",
             "type": "string"
           },
@@ -952,6 +1324,63 @@
       }
     },
     {
+      "operation_id": "simulate.sweep",
+      "summary": "Sweep each error source and tabulate solver sensitivity (error budget).",
+      "input_schema": {},
+      "output_schema": {},
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        2,
+        3,
+        5
+      ],
+      "cli": {
+        "command": "vpcal simulate sweep",
+        "supports_stdin": false,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "simulate_sweep",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    },
+    {
       "operation_id": "report.generate",
       "summary": "Generate a QA report from a calibration result.",
       "input_schema": {},
@@ -1008,6 +1437,63 @@
       }
     },
     {
+      "operation_id": "report.diff",
+      "summary": "Compare two calibration results for drift (daily drift check).",
+      "input_schema": {},
+      "output_schema": {},
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        1,
+        2,
+        5
+      ],
+      "cli": {
+        "command": "vpcal report diff",
+        "supports_stdin": false,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "report_diff",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    },
+    {
       "operation_id": "export.opentrackio",
       "summary": "Export calibrated tracking data as OpenTrackIO JSONL.",
       "input_schema": {},
@@ -1055,6 +1541,233 @@
       },
       "mcp": {
         "tool_name": "export_opentrackio",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    },
+    {
+      "operation_id": "export.ndisplay",
+      "summary": "Export calibrated screen geometry + transforms for UE nDisplay.",
+      "input_schema": {},
+      "output_schema": {},
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        1,
+        2,
+        5
+      ],
+      "cli": {
+        "command": "vpcal export ndisplay",
+        "supports_stdin": false,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "export_ndisplay",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    },
+    {
+      "operation_id": "capture.track",
+      "summary": "Record a timestamped tracking stream from a live FreeD / OpenTrackIO source.",
+      "input_schema": {},
+      "output_schema": {},
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        1,
+        2,
+        5,
+        6
+      ],
+      "cli": {
+        "command": "vpcal capture track",
+        "supports_stdin": false,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "capture_track",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    },
+    {
+      "operation_id": "capture.video",
+      "summary": "Capture an SDI/NDI/UVC video stream (scaffold — requires hardware).",
+      "input_schema": {},
+      "output_schema": {},
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        2,
+        6
+      ],
+      "cli": {
+        "command": "vpcal capture video",
+        "supports_stdin": false,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "capture_video",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    },
+    {
+      "operation_id": "capture.playback",
+      "summary": "Drive synchronized pattern playback (scaffold — requires hardware).",
+      "input_schema": {},
+      "output_schema": {},
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        2,
+        6
+      ],
+      "cli": {
+        "command": "vpcal capture playback",
+        "supports_stdin": false,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "capture_playback",
         "annotations": {
           "readOnlyHint": false,
           "destructiveHint": false,

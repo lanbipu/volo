@@ -32,8 +32,12 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "resources/ps-scripts": "ps-scripts",
-      "resources/vendor": "vendor"
+      "resources/ps-scripts/*.ps1": "ps-scripts",
+      "resources/ps-scripts/*.cmd": "ps-scripts",
+      "resources/ps-scripts/*.txt": "ps-scripts",
+      "resources/vendor": "vendor",
+      "../examples": "examples",
+      "../target/sidecar-vendor": "sidecar-vendor"
     }
   }
 }

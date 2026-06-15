@@ -91,7 +91,7 @@ vp/volo/
 |---|---|---|---|
 | 0 | — | 脚手架(见 §5) | 空壳 `cargo build --workspace` + `tauri dev` 起得来 |
 | 1 | 共享层 | `volo-shared`(升格)+ `mesh-core`(改名) | `volo-cli --json schema/manifest` 非空;`volo-shared` 无 tauri 依赖(cargo tree 验) |
-| 2 | **Cache**(UECM) | 抽 `cache-core`(剥 tauri::Builder)、CLI 并入、command 加前缀、ps-scripts/vendor 接 bundle | `uecm-cli system schema` 与源仓 `contract-manifest.json` diff 为空;同 DB CLI add → GUI 读到同行;lanPC 端到端 |
+| 2 | **Cache**(UECM) | 抽 `cache-core`(剥 tauri::Builder)、CLI 并入、command 加前缀、ps-scripts/vendor 接 bundle | `voloctl uecm system schema` 自洽(operation_ids 唯一、每 op 三 schema 非空);CLI 契约语义(JSON 信封 `schema_version` / exit code 表 / AI_AGENT)保留。**注**:`cli_command` / `binary` 已由旧 `uecm-cli ...` 改为 voloctl 命名空间 `voloctl uecm ...`(review #9 消除契约-现实漂移),故不再要求与源仓旧 `contract-manifest.json` 逐字 diff=0;校验改为 manifest 自洽 + 命名空间正确。同 DB CLI add → GUI 读到同行;lanPC 端到端 |
 | 3 | **Calibrate 网格**(LMT) | `mesh-app`/两 adapter 平移、`mesh-vba` 进 sidecars 接 vendoring、13 command 并入、pdf_render 随迁 | `cargo test --workspace`(含 cli_e2e)绿;`mesh-vba` pytest 全过;M1 seed→reconstruct 端到端;capture-card 自包含 |
 | 4 | **vpcal + tracksim** | 整包搬 sidecars(各 venv)、vpcal C++ 扩展随编、src-tauri 加 spawn sidecar command + ndjson event | sidecar pytest 全绿;`manifest` 与快照 diff 为空;tracksim freed 往返;Tauri spawn 信封与 CLI 字节对等 |
 | 5 | Color/Pre-viz/Live | 仅建 feature 目录 + 路由占位 + 空 RS2 页,不接后端 | 6 tab 可点击进入占位页;Color 不暴露任何 OpenVPCal/未实现功能 |

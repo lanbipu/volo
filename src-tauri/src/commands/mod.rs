@@ -23,5 +23,7 @@ pub mod mesh_total_station;
 pub mod projects;
 pub mod pso;
 pub mod shares;
+// review #15: spawn bridge for the argv-based vpcal / tracksim sidecars.
+pub mod sidecars;
 pub mod system;
 pub mod zen;
