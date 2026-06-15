@@ -28,10 +28,32 @@ use volo_shared::error::{LmtError, LmtResult};
 
 use crate::projects::load_project_yaml_from_path;
 
-/// A short-lived tokio runtime for `block_on`. The workspace tokio enables the
-/// `rt` + `process` features (the adapter spawns the sidecar via tokio process).
-fn rt() -> LmtResult<tokio::runtime::Runtime> {
-    tokio::runtime::Runtime::new().map_err(|e| LmtError::Other(format!("tokio runtime: {e}")))
+/// Block the calling (synchronous) thread on an adapter future, working whether
+/// or not a tokio runtime is already running on this thread.
+///
+/// FIX (review #4): the old `rt()` always built a fresh `tokio::runtime::Runtime`
+/// and `block_on`'d it. That panics with *"Cannot start a runtime from within a
+/// runtime"* the moment any **async** Tauri command (which runs on Tauri's
+/// worker runtime) calls one of these sync `run_*` helpers. We avoid that:
+///   - If we're already inside a tokio runtime (the Tauri / async case), use
+///     `block_in_place` to move off the async worker, then drive the future on
+///     the current runtime handle — no nested runtime is created.
+///   - If there is no ambient runtime (the CLI / unit-test case), spin up a
+///     short-lived current-thread runtime and block on it.
+///
+/// The workspace tokio enables `rt` + `process`; the adapter spawns the sidecar
+/// via tokio process, so a current-thread (single-threaded) runtime is enough.
+fn block_on_future<F: std::future::Future>(fut: F) -> LmtResult<F::Output> {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => Ok(tokio::task::block_in_place(|| handle.block_on(fut))),
+        Err(_) => {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| LmtError::Other(format!("tokio runtime: {e}")))?;
+            Ok(rt.block_on(fut))
+        }
+    }
 }
 
 /// Map the adapter's sidecar-stream warnings to the public `WarningDto`. These ride the
@@ -176,7 +198,7 @@ pub fn run_reconstruct(
         cancel: None,
     };
 
-    let out = rt()?.block_on(reconstruct(args)).map_err(map_vba_err)?;
+    let out = block_on_future(reconstruct(args))?.map_err(map_vba_err)?;
     Ok(build_reconstruct_result(screen_id, out))
 }
 
@@ -250,9 +272,7 @@ pub fn run_reconstruct_structured_light(
         cancel: None,
     };
 
-    let out = rt()?
-        .block_on(reconstruct_structured_light(args))
-        .map_err(map_vba_err)?;
+    let out = block_on_future(reconstruct_structured_light(args))?.map_err(map_vba_err)?;
     Ok(build_reconstruct_result(screen_id, out))
 }
 
@@ -307,9 +327,7 @@ pub fn run_calibrate_structured_light(
         cancel: None,
     };
 
-    let out = rt()?
-        .block_on(calibrate_structured_light(args))
-        .map_err(map_vba_err)?;
+    let out = block_on_future(calibrate_structured_light(args))?.map_err(map_vba_err)?;
 
     Ok(CalibrateResult {
         intrinsics_path: out.intrinsics_path,
@@ -401,7 +419,7 @@ pub fn run_calibrate(
         cancel: None,
     };
 
-    let out = rt()?.block_on(calibrate(args)).map_err(map_vba_err)?;
+    let out = block_on_future(calibrate(args))?.map_err(map_vba_err)?;
 
     Ok(CalibrateResult {
         intrinsics_path: out.intrinsics_path,
@@ -545,7 +563,7 @@ pub fn run_generate_pattern(
         cancel: None,
     };
 
-    let out = rt()?.block_on(generate_pattern(args)).map_err(map_vba_err)?;
+    let out = block_on_future(generate_pattern(args))?.map_err(map_vba_err)?;
 
     Ok(GeneratePatternResult {
         output_dir: out.output_dir,
@@ -600,7 +618,7 @@ pub fn run_generate_structured_light(
         cancel: None,
     };
 
-    let out = rt()?.block_on(generate_structured_light(args)).map_err(map_vba_err)?;
+    let out = block_on_future(generate_structured_light(args))?.map_err(map_vba_err)?;
 
     Ok(GenerateStructuredLightResult {
         output_dir: out.output_dir,
@@ -637,7 +655,7 @@ pub fn run_decode_structured_light(
         cancel: None,
     };
 
-    let out = rt()?.block_on(decode_structured_light(args)).map_err(map_vba_err)?;
+    let out = block_on_future(decode_structured_light(args))?.map_err(map_vba_err)?;
 
     Ok(DecodeStructuredLightResult {
         output_path: out.output_path,
@@ -669,7 +687,7 @@ pub fn run_simulate(config_path: &Path, out_dir: &Path) -> LmtResult<SimulateRes
         cancel: None,
     };
 
-    let out = rt()?.block_on(simulate(args)).map_err(map_vba_err)?;
+    let out = block_on_future(simulate(args))?.map_err(map_vba_err)?;
 
     Ok(SimulateResult {
         dataset_dir: out.dataset_dir,
@@ -701,7 +719,7 @@ pub fn run_eval(
         cancel: None,
     };
 
-    let out = rt()?.block_on(eval(args)).map_err(map_vba_err)?;
+    let out = block_on_future(eval(args))?.map_err(map_vba_err)?;
 
     Ok(EvalResult {
         method: out.method,
@@ -740,7 +758,7 @@ pub fn run_compare_known(
         cancel: None,
     };
 
-    let out = rt()?.block_on(compare_known(args)).map_err(map_vba_err)?;
+    let out = block_on_future(compare_known(args))?.map_err(map_vba_err)?;
 
     Ok(CompareKnownResult {
         cabinets: out
@@ -863,7 +881,7 @@ pub fn run_plan_capture(
         progress_tx: None,
         cancel: None,
     };
-    let out = rt()?.block_on(plan_capture(args)).map_err(map_vba_err)?;
+    let out = block_on_future(plan_capture(args))?.map_err(map_vba_err)?;
 
     Ok(CapturePlan {
         stations: out
