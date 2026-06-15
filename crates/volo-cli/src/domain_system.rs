@@ -1,4 +1,4 @@
-//! `uecm-cli system <action>` handlers.
+//! `voloctl uecm system <action>` handlers.
 
 use crate::args::SystemAction;
 use crate::output::Event;
@@ -33,7 +33,7 @@ pub fn handle(ctx: &mut Ctx<'_>, action: SystemAction) -> UecmResult<()> {
 }
 
 fn version(ctx: &mut Ctx<'_>) -> UecmResult<()> {
-    let info = VersionInfo { binary: "uecm-cli", version: env!("CARGO_PKG_VERSION") };
+    let info = VersionInfo { binary: "voloctl uecm", version: env!("CARGO_PKG_VERSION") };
     ctx.emitter.emit_result(&info).ok();
     Ok(())
 }
@@ -75,7 +75,7 @@ fn schema(ctx: &mut Ctx<'_>) -> UecmResult<()> {
     let cmd = crate::args::Cli::command();
     let tree = command_to_json(&cmd);
     let payload = serde_json::json!({
-        "binary": "uecm-cli",
+        "binary": "voloctl uecm",
         "version": env!("CARGO_PKG_VERSION"),
         "spec_version": 1,
         "command_tree": tree,
@@ -175,9 +175,9 @@ mod tests {
     #[test]
     fn test_version_info() {
         // Sanity check: VersionInfo should serialize with correct fields.
-        let info = VersionInfo { binary: "uecm-cli", version: "0.1.0" };
+        let info = VersionInfo { binary: "voloctl uecm", version: "0.1.0" };
         let json = serde_json::to_value(&info).unwrap();
-        assert_eq!(json["binary"], "uecm-cli");
+        assert_eq!(json["binary"], "voloctl uecm");
         assert_eq!(json["version"], "0.1.0");
     }
 

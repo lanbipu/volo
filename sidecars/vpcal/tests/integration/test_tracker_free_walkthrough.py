@@ -15,17 +15,38 @@ import pytest
 
 WALKTHROUGH = Path(__file__).resolve().parents[2] / "_walkthrough"
 
-pytestmark = pytest.mark.skipif(
-    not (WALKTHROUGH / "lens_photos" / "060801").exists(),
-    reason="walkthrough data not available (gitignored)",
-)
+# `walkthrough` marker → excluded from the default `pytest` run via the
+# `addopts = -m "not walkthrough"` in pyproject. `skipif` still guards the case
+# where someone opts in (`-m walkthrough`) on a machine without the gitignored
+# data. Both markers ride together.
+pytestmark = [
+    pytest.mark.walkthrough,
+    pytest.mark.skipif(
+        not (WALKTHROUGH / "lens_photos" / "060801").exists(),
+        reason="walkthrough data not available (gitignored)",
+    ),
+]
+
+
+def _load_reference(name: str) -> dict:
+    """Load a gitignored reference JSON, tolerating its absence.
+
+    Read at COLLECTION time (module import). pytest imports a module to read its
+    markers *before* `-m`/`skipif` deselection runs, so an unconditional
+    `read_text()` here crashed default collection when `_walkthrough/` was
+    missing. Return `{}` when absent — every consumer lives inside a test body
+    that is skipped (data missing) anyway, so `{}` is never dereferenced.
+    """
+    p = WALKTHROUGH / name
+    return json.loads(p.read_text()) if p.exists() else {}
+
 
 SCREEN_ASUS = str(WALKTHROUGH / "screen_asus.json")
 SCREEN_LG = str(WALKTHROUGH / "screen_lg.json")
 LENS_PHOTOS = str(WALKTHROUGH / "lens_photos" / "060801")
 SPATIAL_PHOTOS = str(WALKTHROUGH / "spatial_photos" / "060801")
-REFERENCE_LENS = json.loads((WALKTHROUGH / "lens.json").read_text())
-REFERENCE_SPATIAL = json.loads((WALKTHROUGH / "spatial.json").read_text())
+REFERENCE_LENS = _load_reference("lens.json")
+REFERENCE_SPATIAL = _load_reference("spatial.json")
 
 
 # ── lens-cal ─────────────────────────────────────────────────────────
