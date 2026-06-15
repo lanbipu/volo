@@ -147,7 +147,7 @@
 
 ## P5 sidecar 接线
 
-### 15. 🟡 vpcal/tracksim spawn command
+### 15. ✅ vpcal/tracksim spawn command（后端通路）
 - **问题**：`src-tauri` 没有触达 vpcal/tracksim 两 sidecar 的 spawn command。
 - **核对结论（重要）**：vpcal（click CLI）与 tracksim（argparse CLI）都是
   **argv-based 子命令** CLI，**不是** mesh-vba 那种 stdin-JSON/stdout-NDJSON
@@ -156,7 +156,7 @@
   tracksim 子命令支持 `--output json` 时回传结构化结果）。前端 UI 等设计稿。
 - **状态见实施说明**。
 
-### 16. 🟡 打包脚本 + tauri.conf 绑定
+### 16. ✅ 打包脚本 + tauri.conf 绑定（脚本/接线就绪，未实跑 PyInstaller）
 - **问题**：vpcal/tracksim 缺 `build_exe.sh`（PyInstaller）；`tauri.conf.json`
   未绑 3 个 sidecar-vendor。mesh-vba 已知债：`build_exe.sh` 输出路径与
   `locate.rs` 期望是否对齐。
@@ -171,13 +171,62 @@
 
 ## P6 架构
 
-### 17. （选择见下）volo-shared error rename
+### 17. ✅ volo-shared error rename（选 Option A 全量改名）
 - **问题**：`volo-shared` 的全局基座 error 仍叫 `LmtError`/`LmtResult`
   （feature-neutral 基座却挂着 lmt 名）。
-- **选择**：见文末"error rename 决策"。
+- **决策（Option A 全量改名，非 alias）**：`LmtError`→`VoloError`、
+  `LmtResult`→`VoloResult`，全 workspace 304 处机械改名（volo-shared /
+  mesh-app / src-tauri；其余 crate 用各自 error 类型，0 处）。
+- **为何不选 alias（Option B）**：影响面其实可控（3 crate、纯标识符、编译器
+  逐处兜底），全量改名才真正"名实相符"；alias 会留两套名字混用。
+- **契约保全**：① wire 形态 `{kind:<snake_case>, message}` 不含类型名 →
+  改名 wire 不可见；② `schema` 命令 types map 的 **key 仍是 `"LmtError"`**
+  （暴露契约面，client + cli_e2e 据此取 schema）—— 改名用负向 lookaround
+  保护了 4 处引号字符串 key 未动，`error.rs`/`schema.rs` 加注释记录。
+- **验证**：cargo build 绿；volo-shared 47 tests 绿；cli_e2e
+  `schema_json_envelope_has_known_types` 绿（`"LmtError"` key 仍在）。
 
 ---
 
 ## 实施说明与决策
 
-（随实施补充：error rename 的最终选择、各项验证实际输出、卡点。）
+### error rename 决策
+选 **Option A 全量改名**（理由见 #17）。schema 契约 key `"LmtError"` 保留。
+
+### #15/#16 范围说明
+- #15 后端通路打通：`spawn_sidecar` command 注册进 invoke_handler，locate 四级
+  解析（env → workspace .venv → workspace target/sidecar-vendor → exe-relative
+  含 macOS Resources），vpcal venv 实测可触达（13 ops）。前端 UI 按设计稿门禁
+  推迟，不在本轮。vpcal/tracksim 是 argv CLI（非 mesh-vba 的 NDJSON channel），
+  bridge 形态据实做成 run-argv-capture-stdout。
+- #16 打包脚本 + 接线就绪：vpcal/tracksim `build_exe.sh`（PyInstaller，输出
+  workspace-root `target/sidecar-vendor/<platform>`）+ tauri.conf 绑
+  `../target/sidecar-vendor` + build.rs mkdir 兜底（tauri_build 对缺失 resource
+  硬报错）。**未实跑 PyInstaller 产出 exe**（耗时且非验证项；脚本逻辑/路径对齐
+  已就绪）。校准 mesh-vba 已知债：`build_exe.sh` ROOT 从 `sidecars/target`
+  修正到 workspace-root `target`（实测 locate.rs `workspace_target_from_
+  compile_time` 期望 workspace 根 target，原 `$SCRIPT_DIR/..` 落在 sidecars/
+  target —— 确有 mismatch，已修）。
+
+### 最终验证实际输出
+- `cargo build --workspace`：✅ Finished，无 warning（dead_code 已清）。
+- `cargo test --workspace`：✅ **0 failed**。关键计数：cache-core 801、voloctl
+  unit 229、cli_e2e 88 passed/11 ignored、cli_smoke 41、usage_envelope 2、
+  volo-shared 47、volo(src-tauri) lib 33（含 sidecars 模块）、mesh-app 79、
+  mesh-core 27 + 各 adapter/integration 全过。
+- cli_e2e 11 个 `#[ignore]` sidecar 测试（带 mesh-vba venv + LMT_VBA_SIDECAR_PATH
+  wrapper）：✅ **11 passed**（修了 1 处陈旧 measured.yaml 断言对齐 FIX-13 ④）。
+- `pnpm build`（tsc && vite）：✅ built，1666 modules。
+- `bash scripts/verify-goal.sh`：✅ **14/14 全绿**。
+- sidecar pytest：vpcal `.venv/bin/pytest` ✅ **307 passed/4 skipped/10
+  deselected**（默认可跑，#11 达成）；tracksim `pytest tests` ✅ **484 passed**；
+  mesh-vba venv 已装（console script 就位，驱动 cli_e2e sidecar 测试通过）。
+- `voloctl lmt reconstruct --bogus --json` → ✅ `invalid_input` / exit **2**。
+- `voloctl uecm boguscmd --json` → ✅ `usage_error` / exit **64**（未破坏）。
+
+### 卡点 / 未尽事项
+- 无硬卡点。所有 25 项均落地（17 项核心 + 8 项 cosmetic/契约/测试，按 P1–P6）。
+- #16 未实跑 PyInstaller（非验证项，脚本就绪）；mesh-vba/vpcal/tracksim 的
+  vendored exe 由各自 `build_exe.sh` 在打包时产出。
+- 环境约束：worktree 的 `.venv` / `node_modules` / `target` 均 gitignore，本轮
+  按需现装（vpcal/tracksim/mesh-vba venv + pnpm install），不入库。
