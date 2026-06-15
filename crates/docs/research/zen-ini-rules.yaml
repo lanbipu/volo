@@ -1,0 +1,156 @@
+# UECM Plan 7 — Zen Cache configuration rules
+#
+# v1 (2026-05-18) — M0 T0.5 deliverable. Schema per plan §6.1 (v4).
+# Direction: UE 5.4+ local zen auto-starts (no INI needed); these rules
+# manage (a) ZenShared upstream to a cluster master endpoint, and
+# (b) legacy SMB/Pak DDC cleanup so the two backends don't double up.
+#
+# Verification basis: docs/research/zen-launch-mechanism.md §1 / appendix C.
+# Real-machine T0.5 sandbox on lanPC UE 5.7.4 with running zen 5.8.10:
+# log line `LogDerivedDataCache: Display: ZenShared: Using ZenServer
+# HTTP service at 127.0.0.1 with namespace ue.ddc status: OK!`
+# confirms candidate A wiring.
+
+zen_ini:
+  applies_to: ">=5.4"
+  rules:
+    enable_zen_shared:
+      ini_file: DefaultEngine.ini
+      # NOTE: section is the bare name without brackets — core::ini_editor
+      # wraps it with brackets via format!("[{}]", section). Storing "[Foo]"
+      # here would produce "[[Foo]]".
+      #
+      # === [StorageServers] activation model (verified against UnrealEngine
+      #     BaseEngine.ini + ZenCacheStore.cpp, 2026-06-14) ===
+      # UE 5.4+ ships a default backend node `ZenShared=(Type=Zen,
+      # ServerID=Shared)` in [DerivedDataCacheStores], already wired into the
+      # default Default/Installed graphs (BaseEngine.ini:2772/2790/2825). That
+      # node reads its connection settings from the [StorageServers] entry whose
+      # key == its ServerID, i.e. `Shared` (ZenCacheStore.cpp ServerID
+      # indirection). The shipped `[StorageServers] Shared` has Host=None
+      # (inactive). So we activate the shared Zen DDC by OVERRIDING that entry's
+      # Host — we do NOT write a backend-graph node. (The old
+      # `[InstalledDerivedDataBackendGraph] ZenShared=(...)` write targeted a
+      # section that is no longer a node container in modern UE — it is now a
+      # graph-name key under [DerivedDataCacheGraphs] — so it was inert.)
+      section: StorageServers
+      key: Shared
+      # value_template notes:
+      #   * placeholders: {host} = cluster master hostname/IP, {port} = master
+      #     zen port (default 8558), {namespace} = DDC namespace (default ue.ddc).
+      #   * Host MUST be a full URI WITH scheme + embedded port (http://{host}:{port}).
+      #     FZenCacheStoreParams has NO `Port=` field — a separate Port= token is
+      #     silently ignored (this was a real bug in the previous template:
+      #     Host="render-master", Port=8558 connected to host "render-master"
+      #     with no port). Host is parsed by FHttpHostBuilder::AddFromString as a
+      #     ';'-separated list of full-URL candidates; scheme picks http/https.
+      #   * EnvHostOverride/CommandLineHostOverride preserve UE's defaults so a
+      #     per-machine/region env var (UE-ZenSharedDataCacheHost) can still
+      #     override this Host — this is the multi-region routing path (ZEN-4).
+      #   * DeactivateAt=60 (ms latency threshold) auto-disables the node when
+      #     the server is slow, protecting workstation perf — matches the
+      #     BaseEngine.ini default for the Shared entry.
+      #   * A struct value FULLY REPLACES the BaseEngine default, so the whole
+      #     struct (not just Host) must be written.
+      value_template: '(Host="http://{host}:{port}", Namespace="{namespace}", EnvHostOverride=UE-ZenSharedDataCacheHost, CommandLineHostOverride=ZenSharedDataCacheHost, DeactivateAt=60)'
+      backup: true
+      verified_by:
+        # Source-verified against UnrealEngine BaseEngine.ini:2742/2825 +
+        # ZenCacheStore.cpp::FZenCacheStoreParams::Parse: the [StorageServers]
+        # Shared override + shipped ServerID=Shared node is the official
+        # activation path. The runtime log line is unchanged (it reports the
+        # ZenShared NODE name, independent of activation method); re-capture a
+        # live-editor log proof on lanPC after deploy.
+        - ue: "5.7.4"
+          basis: "UnrealEngine BaseEngine.ini:2742/2825 + ZenCacheStore.cpp ServerID indirection"
+          log_line: "LogDerivedDataCache: Display: ZenShared: Using ZenServer HTTP service at <host> with namespace ue.ddc status: OK!"
+
+    disable_legacy_smb_shared:
+      ini_file: DefaultEngine.ini
+      section: InstalledDerivedDataBackendGraph
+      key: Shared
+      action: remove
+      backup: true
+      # Clear env var in BOTH scopes — UECM's setx-machine.ps1 + health-probes.ps1
+      # use Machine scope (see ps-scripts/health-probes.ps1:103) but operators may
+      # have also set it via setx (no /M flag) which writes User scope.
+      # Clearing only one scope leaves the legacy SMB path reactivated.
+      env_cleanup:
+        - var: UE-SharedDataCachePath
+          scopes: [machine, user]
+      verified_by:
+        # Activation evidence on lanPC test_0311 before T0.5:
+        # log: `LogDerivedDataCache: Shared: Found environment variable
+        #       UE-SharedDataCachePath=\\192.168.10.2\Docs\DDC`
+        # The legacy SMB path is set by env var (not by [Shared] section in
+        # default UE templates). Plan §6.1 rule kept for safety against
+        # projects that DO write to [Shared] section.
+        - ue: "5.7.4"
+          sandbox: "E:\\Sandbox\\uecm_t05_zen_shared (lanPC, 2026-05-18)"
+          log_line: "(no [Shared] section to remove in TP_BlankBP — rule applies on legacy projects)"
+
+    disable_legacy_pak:
+      ini_file: DefaultEngine.ini
+      section: InstalledDerivedDataBackendGraph
+      # Multiple keys — INI removal does exact key-name match, so each backend
+      # entry must be listed separately. "Pak,CompressedPak" as a single string
+      # would not match either `Pak=...` or `CompressedPak=...` lines.
+      keys: [Pak, CompressedPak]
+      action: remove
+      backup: true
+      # Note: Pak DDC files (DDC.ddp / Compressed.ddp) under
+      # <project>/DerivedDataCache/ are project-shipped artifacts; UE will
+      # silently fall back if they're missing. Removing the [Backend] entry
+      # only disables UE's *attempt* to read them. Pak files themselves are
+      # left untouched (operator may keep them for offline scenarios).
+      verified_by:
+        - ue: "5.7.4"
+          sandbox: "E:\\Sandbox\\uecm_t05_zen_shared (lanPC, 2026-05-18)"
+          log_line: "LogDerivedDataCache: FDerivedDataBackendGraph: Pak pak cache file ... not found, will not use a pak cache."
+
+# Versions actually verified on a running UE editor + zen daemon.
+# Only versions on this list are eligible for `uecm-cli zen enable` when
+# `unverified_policy=refuse` (the default — see Red Line §12 #7).
+verified_versions:
+  - "5.7"   # lanPC 2026-05-18 (this file's commit)
+
+# Default: refuse to apply rules on unverified UE versions.
+# Set to `warn` only after a careful judgment that the candidate rules
+# likely carry over (e.g. UE patch bump on the same major.minor).
+unverified_policy: refuse
+
+# Per-version overrides — used when a future UE rev changes the section/key
+# shape and the default rules above no longer fit.
+overrides: {}
+  # Example (commented out; only add after fact-find proves the shape changed):
+  # "5.9":
+  #   enable_zen_shared:
+  #     section: "[SomeNewSectionName]"
+  #     key: ZenShared.Host
+  #     value_template: "{host}"
+
+# === Notes on multi-sponsor zen behaviour (from T0.5 observations) ===
+#
+# A second UE editor opening a project while another UE editor already
+# owns a local zen will SHUTDOWN the running zen and re-launch under the
+# new editor's --owner-pid. This is NOT cooperative sponsoring — it's
+# preemption. Implication for cluster design:
+#   * On render nodes, only one editor should own local zen at a time.
+#   * Cluster master should run zen via `zen service install` (lifecycle
+#     mode = 'installed_service' in plan §1.1), NOT via UE editor sponsor.
+#     A persistent service is immune to editor-driven preemption.
+#   * For workstation machines that *do* use editor-sponsored zen, plan
+#     §M2 dry-run should warn the operator before launching a second
+#     editor with a different project against the same data-dir.
+#
+# === Notes on `-Quit` flag for headless `uecm-cli zen verify` (plan §M4 T4.4) ===
+#
+# `UnrealEditor.exe <uproject> -Unattended -NoSplash -NoSound -nullrhi -Quit`
+# does NOT cause prompt termination in UE 5.7.4. Editor reaches "Engine
+# is initialized" (~20 sec) then continues loading asset registry /
+# Python plugins / etc. for an indefinite period (>3 minutes observed).
+# T4.4 should use either:
+#   * a commandlet (`-run=Help` or similar) that exits cleanly after
+#     init, OR
+#   * a process supervisor that kills the editor after a positive
+#     LogDerivedDataCache match is found in real-time stdout.

@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = ["crates/*", "src-tauri"]
+# crates/docs holds embedded data assets (zen-ini-rules.yaml) referenced via
+# include_str! from cache-core; it is not a Rust crate. step 2c 校准 ps/资源布局时再收口。
+exclude = ["crates/docs"]
 
 [workspace.package]
 version = "0.1.0"
