@@ -1108,15 +1108,15 @@ mod tests {
     #[cfg(unix)]
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    /// Path to the project's python-sidecar venv interpreter, computed from this
-    /// crate's manifest dir (`crates/mesh-app` → `../../python-sidecar/.venv/bin`).
+    /// Path to the project's mesh-vba sidecar venv interpreter, computed from this
+    /// crate's manifest dir (`crates/mesh-app` → `../../sidecars/mesh-vba/.venv/bin`).
     /// We canonicalize only the parent `.venv/bin` dir and KEEP the `python`
     /// basename: launching via that path activates the venv's sys.path, while
     /// canonicalizing the file would resolve the symlink to the bare interpreter.
     #[cfg(unix)]
     fn sidecar_python() -> Option<PathBuf> {
         let bin =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../python-sidecar/.venv/bin");
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../sidecars/mesh-vba/.venv/bin");
         let bin = bin.canonicalize().ok()?;
         let py = bin.join("python");
         if py.is_file() {

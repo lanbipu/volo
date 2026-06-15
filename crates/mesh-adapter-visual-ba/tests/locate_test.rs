@@ -59,7 +59,7 @@ fn compile_time_vendor_path() -> Option<PathBuf> {
     Some(target.join("sidecar-vendor").join(platform).join(filename))
 }
 
-/// Mirror locate.rs's dev venv-sidecar path (workspace root + python-sidecar/
+/// Mirror locate.rs's dev venv-sidecar path (workspace root + sidecars/mesh-vba/
 /// .venv/bin/<bin>). locate_sidecar prefers this editable install over the
 /// vendored bundle, so fallback tests must stash it (like the vendor binary)
 /// to exercise the lower-precedence branches deterministically.
@@ -82,7 +82,8 @@ fn compile_time_venv_path() -> Option<PathBuf> {
     let venv_bin = if cfg!(windows) { "Scripts" } else { "bin" };
     Some(
         workspace
-            .join("python-sidecar")
+            .join("sidecars")
+            .join("mesh-vba")
             .join(".venv")
             .join(venv_bin)
             .join(filename),

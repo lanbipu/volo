@@ -107,7 +107,8 @@ pub fn locate_sidecar() -> VbaResult<PathBuf> {
         if let Some(workspace) = target.parent() {
             let venv_bin = if cfg!(windows) { "Scripts" } else { "bin" };
             let venv = workspace
-                .join("python-sidecar")
+                .join("sidecars")
+                .join("mesh-vba")
                 .join(".venv")
                 .join(venv_bin)
                 .join(binary_filename());

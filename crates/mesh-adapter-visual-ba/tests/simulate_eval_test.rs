@@ -27,7 +27,7 @@ use serde_json::json;
 // the process, so the lock is still needed).
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-/// Path to the project's python-sidecar venv interpreter, computed from this
+/// Path to the project's mesh-vba sidecar venv interpreter, computed from this
 /// crate's manifest dir. Returns None (caller skips) if it doesn't exist.
 ///
 /// We canonicalize only the parent `.venv/bin` directory and KEEP the `python`
@@ -36,7 +36,7 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 /// `import lmt_vba_sidecar` resolves). Canonicalizing the file itself would
 /// resolve the symlink to the bare system python and break the venv.
 fn sidecar_python() -> Option<PathBuf> {
-    let bin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../python-sidecar/.venv/bin");
+    let bin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../sidecars/mesh-vba/.venv/bin");
     let bin = bin.canonicalize().ok()?;
     let py = bin.join("python");
     if py.is_file() {
