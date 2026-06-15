@@ -1,50 +1,51 @@
 import { useState } from "react";
-import reactLogo from "./assets/react.svg";
 import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import "@react-spectrum/s2/page.css";
+import { Provider, Button, Heading, Text } from "@react-spectrum/s2";
+import { style } from "@react-spectrum/s2/style" with { type: "macro" };
 
+type Scheme = "light" | "dark";
+
+// step 0 最小壳：仅验证 S2 framework 接入（Provider + 暗/亮主题）与前后端 invoke 打通。
+// 实质 UI（外壳四区 / 6 tab / 各 feature 页）在 Claude Design 设计稿就绪后实现。
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
-
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  const [colorScheme, setColorScheme] = useState<Scheme>("dark");
+  const [pong, setPong] = useState("");
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
+    <Provider
+      elementType="main"
+      colorScheme={colorScheme}
+      background="base"
+      styles={style({
+        minHeight: "[100vh]",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 24,
+      })}
+    >
+      <Heading level={1} styles={style({ font: "heading-xl" })}>
+        Volo
+      </Heading>
+      <Text>LanX · 虚拟制作（VP / LED）统一桌面控制台</Text>
+      <Button
+        variant="primary"
+        onPress={async () => setPong(await invoke<string>("ping"))}
       >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+        Ping 后端
+      </Button>
+      {pong ? <Text>{pong}</Text> : null}
+      <Button
+        variant="secondary"
+        onPress={() =>
+          setColorScheme((s) => (s === "dark" ? "light" : "dark"))
+        }
+      >
+        切换主题（当前 {colorScheme === "dark" ? "暗色" : "亮色"}）
+      </Button>
+    </Provider>
   );
 }
 
