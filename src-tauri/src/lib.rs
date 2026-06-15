@@ -175,6 +175,8 @@ pub fn run() {
             commands::mesh_total_station::import_total_station_csv,
             commands::mesh_total_station::generate_instruction_card,
             commands::mesh_total_station::save_instruction_pdf,
+            // review #15: argv-based vpcal / tracksim sidecar spawn bridge.
+            commands::sidecars::spawn_sidecar,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

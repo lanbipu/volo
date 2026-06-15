@@ -36,7 +36,8 @@
       "resources/ps-scripts/*.cmd": "ps-scripts",
       "resources/ps-scripts/*.txt": "ps-scripts",
       "resources/vendor": "vendor",
-      "../examples": "examples"
+      "../examples": "examples",
+      "../target/sidecar-vendor": "sidecar-vendor"
     }
   }
 }
