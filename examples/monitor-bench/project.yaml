@@ -1,0 +1,26 @@
+project:
+  name: Monitor-Bench
+  unit: mm
+screens:
+  BENCH:
+    # 两块显示器各作一个 cabinet，组成 1 列 × 2 行（cabinet_count: [cols, rows]）。
+    # 为满足"每块 cabinet 像素是正方形"的 ChArUco 前提（见 screen_mapping 注释），
+    # pixels_per_cabinet 必须是正方形（N × N），cabinet_size_mm 也要填成
+    # 你实际测量的 ChArUco 显示区域尺寸（S × S mm）。
+    # 示例值：1080×1080 px 正方形区域，每像素 0.2778 mm，对应 300×300 mm 正方区域。
+    cabinet_count: [1, 2]
+    cabinet_size_mm: [300.0, 300.0]       # 实测正方形 ChArUco 区域边长（mm）—— 需填真值
+    pixels_per_cabinet: [1080, 1080]       # 正方形显示区域像素数 —— 需填真值
+    shape_prior:
+      type: flat
+    shape_mode: rectangle
+    irregular_mask: []
+coordinate_system:
+  origin_point: BENCH_V000_R000
+  x_axis_point: BENCH_V000_R000
+  xy_plane_point: BENCH_V000_R001
+output:
+  target: neutral
+  obj_filename: "{screen_id}_mesh.obj"
+  weld_vertices_tolerance_mm: 1.0
+  triangulate: true

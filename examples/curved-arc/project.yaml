@@ -1,0 +1,23 @@
+project:
+  name: Curved-Arc-Demo
+  unit: mm
+screens:
+  MAIN:
+    cabinet_count: [16, 6]
+    cabinet_size_mm: [500, 500]
+    pixels_per_cabinet: [256, 256]
+    shape_prior:
+      type: curved
+      radius_mm: 12000
+      fold_seams_at_columns: []
+    shape_mode: rectangle
+    irregular_mask: []
+coordinate_system:
+  origin_point: MAIN_V001_R001
+  x_axis_point: MAIN_V017_R001
+  xy_plane_point: MAIN_V001_R007
+output:
+  target: disguise
+  obj_filename: "{screen_id}_mesh.obj"
+  weld_vertices_tolerance_mm: 1.0
+  triangulate: true

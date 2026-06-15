@@ -1,6 +1,23 @@
 [package]
 name = "mesh-adapter-visual-ba"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Visual photogrammetry (ChArUco + BA) adapter for LMT (M2)"
 
 [dependencies]
+mesh-core = { path = "../mesh-core" }
+nalgebra.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+futures.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+pretty_assertions = "1"
+
+[[bin]]
+name = "mesh-poc-compare"
+path = "src/bin/poc_compare.rs"
