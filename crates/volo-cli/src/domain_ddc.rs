@@ -241,6 +241,26 @@ fn generate(
             op_pass.as_deref(),
         );
 
+        // Wire Ctrl-C → graceful cancel. The runner's poll loop checks
+        // `cancel.requested` each tick and, when set, calls `stop_process`
+        // (kills the remote/local UE editor) then emits `Cancelled`. Without
+        // this, SIGINT tears the runtime down and leaves the headless UE
+        // running on the source node until its own timeout. A *second* Ctrl-C
+        // force-quits (128 + SIGINT = 130) so a hung remote stop can't trap
+        // the operator.
+        let cancel = handle.cancel.clone();
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                cancel.lock().await.requested = true;
+                eprintln!(
+                    "→ interrupt received; stopping UE on the source node \
+                     (Ctrl-C again to force-quit)"
+                );
+            }
+            let _ = tokio::signal::ctrl_c().await;
+            std::process::exit(130);
+        });
+
         while let Some(ev) = handle.events.recv().await {
             match ev {
                 UeRunnerEvent::Spawned { pid, log_path } => {
