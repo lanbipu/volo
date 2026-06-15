@@ -1,7 +1,9 @@
 [package]
 name = "volo-cli"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "voloctl — unified VP CLI. step 2b platformed UECM's CLI layer in under the `uecm` subcommand group; step 3 adds `lmt`."
 
 [[bin]]
 # app(GUI)的 bin 已叫 volo（src-tauri，与 tauri.conf 关联）；CLI 用 voloctl 避让，避免输出文件名冲突。
@@ -9,3 +11,23 @@ name = "voloctl"
 path = "src/main.rs"
 
 [dependencies]
+cache-core = { path = "../cache-core" }
+clap.workspace = true
+clap_complete.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+schemars.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio.workspace = true
+rusqlite.workspace = true
+sha2.workspace = true
+rand.workspace = true
+ipnet.workspace = true
+# UECM CLI 用 atty 决定 stdout 是否 TTY（run.rs 选色）；根 workspace 无此依赖，crate 内直接钉版本（沿用 UECM 的 0.2）。
+atty = "0.2"
+
+[dev-dependencies]
+tempfile.workspace = true
