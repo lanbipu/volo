@@ -22,4 +22,13 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# step 2c: UECM transport layer (commands/) + its core/data/startup/error backend.
+cache-core = { path = "../crates/cache-core" }
+# commands use tokio::sync::Mutex (UeJobRegistry) and tracing; run() inits tracing-subscriber.
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+# commands/pso.rs timestamps job rows; commands/zen.rs edits the rules YAML.
+chrono = { workspace = true }
+serde_yaml = { workspace = true }
 

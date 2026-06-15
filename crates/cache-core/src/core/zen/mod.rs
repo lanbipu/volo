@@ -12,6 +12,7 @@ pub mod enable;
 pub mod endpoint;
 pub mod lockfile;
 pub mod lua_config;
+pub mod ops;
 pub mod probe;
 pub mod redaction;
 pub mod rules_loader;

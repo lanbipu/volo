@@ -39,7 +39,8 @@ pub(crate) fn decode_subprocess_output(bytes: &[u8]) -> String {
 /// Respects `UECM_PS_DIR` env override (returned unconditionally — caller wants
 /// that exact dir), then searches per-file:
 ///   1. `<exe-dir>/ps-scripts/<name>` — production install (Tauri bundle.resources)
-///   2. `<repo-root>/ps-scripts/<name>` — dev builds via `CARGO_MANIFEST_DIR`
+///   2. `<workspace-root>/src-tauri/resources/ps-scripts/<name>` — dev builds
+///      via `CARGO_MANIFEST_DIR` (cache-core is two dirs below the root)
 ///
 /// File-existence is checked per `name` so a partially-populated exe-dir
 /// (e.g. an older copy missing a newly added script) still falls back to the
@@ -64,10 +65,13 @@ pub fn script_path(name: &str) -> PathBuf {
             }
         }
     }
+    // step 2c dev fallback: scripts moved under <workspace>/src-tauri/resources.
+    // CARGO_MANIFEST_DIR = <workspace>/crates/cache-core → up two to the root.
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
+        .and_then(std::path::Path::parent)
         .unwrap_or_else(|| std::path::Path::new("."))
-        .join("ps-scripts")
+        .join("src-tauri/resources/ps-scripts")
         .join(name)
 }
 
@@ -94,10 +98,12 @@ pub fn script_dirs() -> Vec<PathBuf> {
         }
     }
     dirs.push(
+        // step 2c dev fallback: <workspace>/src-tauri/resources/ps-scripts.
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
+            .and_then(Path::parent)
             .unwrap_or_else(|| Path::new("."))
-            .join("ps-scripts"),
+            .join("src-tauri/resources/ps-scripts"),
     );
     dirs
 }

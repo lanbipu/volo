@@ -120,8 +120,16 @@ pub fn open_and_migrate_db(path: &Path) -> UecmResult<Db> {
 /// Resolves the directory containing PowerShell sidecar scripts.
 /// Priority:
 ///   1. `UECM_PS_DIR` env var
-///   2. `<exe-dir>/ps-scripts` (release binaries ship scripts alongside)
-///   3. `<repo-root>/ps-scripts` via CARGO_MANIFEST_DIR (dev builds)
+///   2. `<exe-dir>/ps-scripts` (release binaries ship scripts alongside,
+///      via `tauri.conf.json` `bundle.resources`)
+///   3. dev fallback: the in-tree resources copy at
+///      `<workspace-root>/src-tauri/resources/ps-scripts`.
+///
+/// step 2c moved the scripts under `src-tauri/resources/` (Tauri bundle
+/// source) and `cache-core` lives at `<workspace>/crates/cache-core`, so the
+/// dev fallback walks two parents up from `CARGO_MANIFEST_DIR` to the
+/// workspace root before locating `src-tauri/resources/ps-scripts`. The env
+/// override and release exe-dir legs are unchanged.
 pub fn resolve_ps_script_dir() -> PathBuf {
     if let Ok(override_path) = env::var("UECM_PS_DIR") {
         return PathBuf::from(override_path);
@@ -134,10 +142,14 @@ pub fn resolve_ps_script_dir() -> PathBuf {
             }
         }
     }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("ps-scripts")
+    // CARGO_MANIFEST_DIR = <workspace>/crates/cache-core → up two to the
+    // workspace root, then into the bundled resources copy.
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
+        .parent() // <workspace>/crates
+        .and_then(Path::parent) // <workspace>
+        .unwrap_or_else(|| Path::new("."));
+    workspace_root.join("src-tauri/resources/ps-scripts")
 }
 
 #[cfg(test)]

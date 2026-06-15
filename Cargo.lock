@@ -5041,11 +5041,17 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "volo"
 version = "0.1.0"
 dependencies = [
+ "cache-core",
+ "chrono",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

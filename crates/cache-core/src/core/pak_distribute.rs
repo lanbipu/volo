@@ -206,7 +206,7 @@ fn path_ends_with_segments(path: &str, suffix: &str) -> bool {
 /// rather than by exact string compare (which would drop the credential for a
 /// valid Mode B share). Segment-wise matching also avoids a string-prefix false
 /// positive (e.g. `\\H\DDC` must not match the share `\\H\D`).
-pub(crate) fn unc_names_share(candidate: &str, share_unc: &str) -> bool {
+pub fn unc_names_share(candidate: &str, share_unc: &str) -> bool {
     let cand: Vec<_> = candidate
         .split(['\\', '/'])
         .filter(|segment| !segment.is_empty())

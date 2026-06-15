@@ -138,9 +138,12 @@ mod tests {
         // Parse ps-scripts/health-probes.ps1 looking for the line
         //     <key> = (Probe-<Name>)
         // inside the $results hashtable. Build the key set, compare to powershell_probe_keys().
+        // step 2c: scripts live at <workspace>/src-tauri/resources/ps-scripts;
+        // CARGO_MANIFEST_DIR = <workspace>/crates/cache-core → up two to root.
         let ps1_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent().unwrap()
-            .join("ps-scripts").join("health-probes.ps1");
+            .parent().unwrap()
+            .join("src-tauri/resources/ps-scripts").join("health-probes.ps1");
         let body = std::fs::read_to_string(&ps1_path)
             .unwrap_or_else(|e| panic!("read {:?}: {}", ps1_path, e));
 

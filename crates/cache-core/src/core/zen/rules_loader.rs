@@ -1,5 +1,5 @@
 //! Loader + resolver for the Plan 7 zen INI rules YAML
-//! (`docs/research/zen-ini-rules.yaml`).
+//! (`crates/cache-core/resources/zen-ini-rules.yaml`).
 //!
 //! The YAML is a curated rulebook that says: for a given UE version, which
 //! INI keys to write to enable ZenShared and which legacy DDC entries to
@@ -363,7 +363,7 @@ fn validate_override_key(key: &str) -> UecmResult<()> {
 /// when the operator hasn't dropped a YAML next to the exe / set the env
 /// override. Path is relative to this source file's directory.
 const EMBEDDED_RULES_YAML: &str =
-    include_str!("../../../../docs/research/zen-ini-rules.yaml");
+    include_str!("../../../resources/zen-ini-rules.yaml");
 
 /// Load from the canonical project location:
 ///   `$UECM_ZEN_RULES_PATH` ▸ `<exe-dir>/zen-ini-rules.yaml`
@@ -430,12 +430,12 @@ pub fn default_path() -> PathBuf {
             }
         }
     }
-    // Dev / cargo-test path. `env!` is resolved at build time; CARGO_MANIFEST_DIR
-    // always points at `src-tauri/`, so `parent()` is the worktree root.
+    // Dev / cargo-test path. `env!` is resolved at build time; for cache-core
+    // CARGO_MANIFEST_DIR is `<workspace>/crates/cache-core`, and step 2c moved
+    // the YAML into this crate's own `resources/` so the asset travels with the
+    // crate (no more root `crates/docs` shim).
     let manifest_candidate = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("docs/research/zen-ini-rules.yaml");
+        .join("resources/zen-ini-rules.yaml");
     if manifest_candidate.is_file() {
         return manifest_candidate;
     }
