@@ -41,6 +41,9 @@ pub mod domain_deploy;
 pub mod domain_zen;
 pub mod envelope;
 pub mod manifest;
+// step 3c: LMT's CLI layer, platformed as the `lmt` subcommand group (parallel
+// to `uecm`). Its clap tree + envelope/dispatch are kept intact under `lmt::`.
+pub mod lmt;
 
 // Re-export the emitter trait + the generic extension trait so domain handlers
 // can `use crate::{Emitter, EmitSerialize}` in one line.
@@ -66,11 +69,16 @@ use args::Cli;
 /// `Cli::command()`,完全不受这层包装影响。
 fn voloctl_command() -> clap::Command {
     let uecm = Cli::command().name("uecm");
+    // step 3c: mount LMT's clap tree as a sibling subcommand `lmt`. Like the
+    // `uecm` reparent above, `lmt::cli::Cli::command()` returns the original
+    // LMT tree (name = "lmt"); renaming is a no-op but kept explicit for parity.
+    let lmt = lmt::cli::Cli::command().name("lmt");
     clap::Command::new("voloctl")
         .about("VP unified command-line interface")
         .subcommand_required(true)
         .arg_required_else_help(true)
         .subcommand(uecm)
+        .subcommand(lmt)
 }
 
 fn main() {
@@ -110,8 +118,20 @@ fn main() {
                     let code = run::run(cli);
                     std::process::exit(code);
                 }
-                // Unreachable while `uecm` is the only subcommand and
-                // subcommand_required is set; future-proof for `lmt`.
+                // step 3c: `lmt` group. Reconstruct the LMT `Cli` from the
+                // `lmt` submatches and hand to LMT's own dispatch, preserving
+                // its envelope / exit-code contract verbatim. A from_arg_matches
+                // failure here is formatted with LMT's invalid_input envelope
+                // (its native parse-error contract) rather than the uecm one.
+                Some(("lmt", sub)) => {
+                    let cli = match lmt::cli::Cli::from_arg_matches(sub) {
+                        Ok(c) => c,
+                        Err(e) => emit_lmt_parse_error(e, json_mode),
+                    };
+                    let code = lmt::commands::dispatch(cli);
+                    std::process::exit(code);
+                }
+                // Unreachable while subcommand_required is set.
                 _ => {
                     let _ = writeln!(io::stderr(), "voloctl: no matching subcommand");
                     std::process::exit(64);
@@ -161,6 +181,29 @@ fn emit_parse_error(e: clap::Error, json_mode: bool) -> ! {
     } else {
         // Reproduce clap's native rendering on stderr, then exit 64 so non-JSON
         // automation can still distinguish usage errors from runtime failures.
+        let _ = writeln!(io::stderr(), "{}", e);
+        std::process::exit(64);
+    }
+}
+
+/// LMT's native parse-error contract (from its standalone `main`): `--help` /
+/// `--version` pass through; a real argv error under `--json` becomes an
+/// `invalid_input` ErrorEnvelope via LMT's own `output::err`; otherwise clap's
+/// native rendering. Kept separate from `emit_parse_error` so the `lmt` group
+/// preserves LMT's envelope shape (distinct from UECM's usage_error envelope).
+/// Never returns.
+fn emit_lmt_parse_error(e: clap::Error, json_mode: bool) -> ! {
+    if matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) {
+        e.exit();
+    }
+    if json_mode {
+        let api = volo_shared::envelope::ApiError::new(
+            volo_shared::envelope::error_codes::INVALID_INPUT,
+            format!("argument parse error: {e}"),
+        );
+        let exit = lmt::output::err(lmt::output::Mode::Json, api);
+        std::process::exit(exit);
+    } else {
         let _ = writeln!(io::stderr(), "{}", e);
         std::process::exit(64);
     }
