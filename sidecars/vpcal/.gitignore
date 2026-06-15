@@ -1,0 +1,32 @@
+# Build artifacts
+build/
+build_cpp/
+_skbuild/
+dist/
+wheelhouse/
+*.egg-info/
+*.so
+*.pyd
+*.dylib
+
+# Virtual environments
+.venv/
+venv/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# CMake FetchContent / local build logs
+build_cpp_*.log
+*_err.txt
+stderr_check.txt
+
+# OS
+.DS_Store
+_walkthrough/
+_main_path/      # B2 real-data session (dev-only; see docs/b2-real-data-capture.md)

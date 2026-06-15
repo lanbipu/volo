@@ -1,0 +1,201 @@
+"""Session configuration model.
+
+Mirrors the session config JSON schema in spec §3.2.  Parsed with Pydantic v2;
+the CLI loads a JSON/YAML file into :class:`SessionConfig` and passes it to the
+core pipeline.
+"""
+
+from __future__ import annotations
+
+from typing import Annotated, Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from vpcal.models.lens import LensProfile
+
+CoordinateSystem = Literal["unreal", "optitrack", "vicon", "freeDEuler", "opentrackio", "custom"]
+FrameMatching = Literal["frame_id", "line_number", "timestamp"]
+RobustLoss = Literal["huber", "cauchy", "none"]
+LensParam = Literal["k1", "k2", "cx", "cy"]
+
+
+class ImagesConfig(BaseModel):
+    """Where the captured image frames live."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    path: str
+    format: str = "png"
+
+
+class TrackingConfig(BaseModel):
+    """Tracking data source + coordinate-system / frame-alignment policy."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    path: str
+    coordinate_system: CoordinateSystem = "unreal"
+    frame_matching: FrameMatching = "frame_id"
+    timestamp_tolerance_s: float = Field(default=0.05, ge=0.0)
+    custom_transform: Optional[
+        Annotated[list[list[float]], Field(min_length=4, max_length=4)]
+    ] = None
+    """Required 4x4 matrix when ``coordinate_system == 'custom'`` (§10.2)."""
+
+
+class ScreenConfig(BaseModel):
+    """Path to the screen definition (JSON or OBJ)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    path: str
+
+
+class RigidPrior(BaseModel):
+    """A rigid-transform prior: translation (mm) + quaternion (w, x, y, z)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    translation: Annotated[list[float], Field(min_length=3, max_length=3)] = [
+        0.0,
+        0.0,
+        0.0,
+    ]
+    rotation: Annotated[list[float], Field(min_length=4, max_length=4)] = [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+    ]
+
+
+class LensEstimateConfig(BaseModel):
+    """Quick Lens Estimate config (Level 2, Quick Lens Estimate spec §3.1).
+
+    Default ``enabled=False`` reproduces Phase-1 behaviour exactly (lens fully
+    fixed).  When enabled, the listed ``params`` become free variables in the
+    joint bundle adjustment, gated by the observability checks in
+    ``qa/observability.py``.  The result is always a session-coupled, non-master
+    estimate carrying an identifiability warning.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    enabled: bool = False
+    params: set[LensParam] = Field(default_factory=lambda: {"k1", "k2", "cx", "cy"})
+    refine_focal: bool = False
+    focal_prior_weight: float = Field(default=1000.0, gt=0)
+    principal_point_margin_mm: float = Field(default=5.0, ge=0.0)
+    k_bounds: tuple[float, float] = (-0.5, 0.5)
+    cv2_bootstrap: bool = False
+
+    # Observability gate thresholds (documented architecture constraints, not
+    # magic numbers; QA always prints measured-vs-threshold so they can be
+    # re-tuned without code changes).
+    min_poses: int = Field(default=8, gt=0)
+    min_observations: int = Field(default=60, gt=0)
+    min_edge_obs_fraction: float = Field(default=0.25, ge=0.0, le=1.0)
+    edge_radius_fraction: float = Field(default=0.35, gt=0.0, le=1.0)
+    max_spatial_rms_px_for_center: float = Field(default=2.0, gt=0)
+    max_spatial_rms_px_for_k: float = Field(default=1.0, gt=0)
+    condition_number_limit: float = Field(default=1.0e4, gt=0)
+    correlation_limit: float = Field(default=0.8, gt=0, le=1.0)
+    cross_subset_k_abs_delta: float = Field(default=0.05, ge=0.0)
+    cross_subset_k_rel_delta: float = Field(default=0.30, ge=0.0)
+    min_improvement_pct: float = Field(default=3.0, ge=0.0)
+
+    @model_validator(mode="after")
+    def _check_params(self) -> "LensEstimateConfig":
+        # k2 is meaningless without k1 (spec §2.2 / §3.2).
+        if "k2" in self.params and "k1" not in self.params:
+            raise ValueError(
+                "lens_estimate.params contains 'k2' without 'k1'; "
+                "k2 may only be estimated jointly with k1"
+            )
+        if self.k_bounds[0] >= self.k_bounds[1]:
+            raise ValueError("lens_estimate.k_bounds must be (lo, hi) with lo < hi")
+        return self
+
+
+_PRIOR_SIGMA_ROTATION_RAD = 0.034906585039886591  # 2° — expected hand-eye rotation error
+_PRIOR_SIGMA_TRANSLATION_MM = 10.0                # expected hand-eye translation error
+DEFAULT_PRIOR_WEIGHT_ROTATION = 1.0 / _PRIOR_SIGMA_ROTATION_RAD**2    # ≈ 820.7
+DEFAULT_PRIOR_WEIGHT_TRANSLATION = 1.0 / _PRIOR_SIGMA_TRANSLATION_MM**2  # 0.01
+
+
+class SolverConfig(BaseModel):
+    """Solver tuning knobs (spec §3.2 / §5.3)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    refine_tracker_to_camera: bool = False
+    tracker_to_camera_prior: RigidPrior = Field(default_factory=RigidPrior)
+    prior_weight_rotation: float = Field(default=DEFAULT_PRIOR_WEIGHT_ROTATION, gt=0)
+    """Camera-from-tracker prior weight on the rotation residual (rad⁻²).
+
+    Defaults to 1/σ² with σ = 2°.  Replaces the single
+    ``tracker_to_camera_prior_weight``, which applied one weight to mm and rad
+    residuals alike — equivalent to σ ≈ 0.03 mm translation (a hard freeze)
+    next to σ ≈ 1.8° rotation (remediation A3.2).
+    """
+    prior_weight_translation: float = Field(default=DEFAULT_PRIOR_WEIGHT_TRANSLATION, gt=0)
+    """Camera-from-tracker prior weight on the translation residual (mm⁻²).
+
+    Defaults to 1/σ² with σ = 10 mm.
+    """
+    tracker_to_camera_prior_weight: Optional[float] = Field(default=None, gt=0)
+    """DEPRECATED single prior weight (schema <= 1.1).
+
+    When set, it is applied to BOTH rotation and translation residuals unless
+    the split fields are given explicitly — reproducing the legacy behaviour
+    for old session files.
+    """
+    robust_loss: RobustLoss = "huber"
+    robust_loss_scale: float = Field(default=1.0, gt=0)
+    max_iterations: int = Field(default=200, gt=0)
+    timeout_seconds: float = Field(default=300.0, gt=0)
+    lens_estimate: LensEstimateConfig = Field(default_factory=LensEstimateConfig)
+
+    @model_validator(mode="after")
+    def _legacy_prior_weight(self) -> "SolverConfig":
+        # Deprecated alias: a legacy single weight fills BOTH split fields when
+        # they were not given explicitly (bit-compatible with schema <= 1.1).
+        if self.tracker_to_camera_prior_weight is not None:
+            if "prior_weight_rotation" not in self.model_fields_set:
+                self.prior_weight_rotation = self.tracker_to_camera_prior_weight
+            if "prior_weight_translation" not in self.model_fields_set:
+                self.prior_weight_translation = self.tracker_to_camera_prior_weight
+        return self
+
+
+class ValidationConfig(BaseModel):
+    """Held-out validation poses (remediation A4).
+
+    Frames listed in ``holdout_frames`` (or selected by ``holdout_ratio``,
+    evenly spaced over the sorted frame ids) are EXCLUDED from the solve; the
+    solved transform is then evaluated on them, giving an independent
+    ``validation_rms_px`` — in-sample RMS only proves self-consistency, not
+    that the perspective is right.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    holdout_frames: Optional[list[int]] = None
+    """Explicit frame ids to hold out (takes precedence over the ratio)."""
+    holdout_ratio: float = Field(default=0.2, gt=0.0, lt=1.0)
+    """Fraction of frames (not observations) to hold out when no list is given."""
+
+
+class SessionConfig(BaseModel):
+    """Top-level session configuration (spec §3.2)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    images: ImagesConfig
+    tracking: TrackingConfig
+    screen: ScreenConfig
+    lens: LensProfile
+    solver: SolverConfig = Field(default_factory=SolverConfig)
+    validation: Optional[ValidationConfig] = None
+    """Held-out validation config; omit for the legacy no-holdout behaviour."""
+    capture_mode: Literal["legacy", "dual_frame"] = "legacy"

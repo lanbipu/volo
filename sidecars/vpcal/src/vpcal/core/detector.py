@@ -1,0 +1,292 @@
+"""VP-QSP marker detection pipeline.
+
+Pipeline: optional normal−inverted differencing → threshold → quad contour
+detection → perspective rectification → 7×7 cell sampling → 32-bit decode +
+CRC-8 check → local topology consistency → Gaussian sub-pixel centring.
+
+Camera I/O uses OpenCV (``cv2``); the sub-pixel centre is an intensity-weighted
+centroid of the marker's central locator dot, which recovers a clean isotropic
+dot to < 0.01 px on noiseless renders.
+
+With an inverted frame, cell sampling and the sub-pixel centroid run on the
+**signed** difference ``int16(normal) − int16(inverted)`` — ambient-light
+gradients cancel exactly instead of biasing the intensity-weighted centroid
+(remediation A2.2); a saturating ``cv2.subtract`` would clip the negative half.
+When the global Otsu threshold yields zero detections, the detector retries
+with a block-wise adaptive threshold (remediation A2.4).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import cv2
+import numpy as np
+from numpy.typing import NDArray
+
+from vpcal.core.observations import Detection, MarkerId
+from vpcal.core.pattern import (
+    GRID,
+    _MARGIN_FRAC,
+    cellgrid_to_code,
+    decode_marker,
+    orientation_ok,
+)
+
+_CANON_CELL_PX = 12
+
+
+@dataclass
+class DetectorConfig:
+    min_area_px: float = 200.0
+    max_area_frac: float = 0.25
+    approx_eps_frac: float = 0.04
+    topology_neighbors: int = 6
+    topology_max_residual_px: float = 8.0
+    enable_topology: bool = True
+
+
+def _order_corners(pts: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Order 4 points as TL, TR, BR, BL (image convention, y down)."""
+    pts = pts.reshape(4, 2).astype(np.float64)
+    s = pts.sum(axis=1)
+    d = np.diff(pts, axis=1).ravel()
+    return np.array(
+        [pts[np.argmin(s)], pts[np.argmin(d)], pts[np.argmax(s)], pts[np.argmax(d)]],
+        dtype=np.float64,
+    )
+
+
+def _threshold(gray: NDArray[np.uint8]) -> NDArray[np.uint8]:
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return cv2.morphologyEx(th, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+
+
+def _threshold_adaptive(gray: NDArray[np.uint8]) -> NDArray[np.uint8]:
+    """Block-wise adaptive threshold — fallback when global Otsu fails (A2.4)."""
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    block = min(51, (min(gray.shape) // 2) * 2 + 1)  # odd, fits small images
+    th = cv2.adaptiveThreshold(
+        blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, block, -5
+    )
+    return cv2.morphologyEx(th, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+
+
+def _sample_cellgrid(rect: NDArray[np.float32]) -> NDArray[np.int_]:
+    """Sample the 7×7 cell value grid from a rectified marker panel image."""
+    n = GRID * _CANON_CELL_PX
+    margin = int(round(n * _MARGIN_FRAC))
+    panel = rect[margin : n - margin, margin : n - margin]
+    ps = panel.shape[0]
+    cell = ps / GRID
+    vals = np.zeros((GRID, GRID), dtype=np.float64)
+    for r in range(GRID):
+        for c in range(GRID):
+            y0 = int(round(r * cell + cell * 0.25))
+            y1 = int(round(r * cell + cell * 0.75))
+            x0 = int(round(c * cell + cell * 0.25))
+            x1 = int(round(c * cell + cell * 0.75))
+            vals[r, c] = panel[y0:y1, x0:x1].mean()
+    thresh = (vals.max() + vals.min()) / 2.0
+    return (vals > thresh).astype(int)
+
+
+def _decode_quad(sample_src: NDArray[np.float32], corners: NDArray[np.float64]) -> MarkerId | None:
+    """Rectify a quad and decode its marker id over the 4 orientations.
+
+    ``sample_src`` is the signed difference image when differencing is active
+    (float32, may contain negatives), else the plain grayscale frame.
+    """
+    n = GRID * _CANON_CELL_PX
+    dst = np.array([[0, 0], [n - 1, 0], [n - 1, n - 1], [0, n - 1]], dtype=np.float32)
+    H = cv2.getPerspectiveTransform(corners.astype(np.float32), dst)
+    rect = cv2.warpPerspective(sample_src, H, (n, n))
+    grid = _sample_cellgrid(rect)
+    for k in range(4):
+        g = np.rot90(grid, k)
+        if orientation_ok(g):
+            marker = decode_marker(cellgrid_to_code(g))
+            if marker is not None:
+                return marker
+    return None
+
+
+def _diagonal_intersection(corners: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Intersection of the quad diagonals = projection of the square's centre."""
+    tl, tr, br, bl = corners
+    p, r = tl, br - tl
+    q, s = tr, bl - tr
+    denom = r[0] * s[1] - r[1] * s[0]
+    if abs(denom) < 1e-12:
+        return corners.mean(axis=0)
+    t = ((q[0] - p[0]) * s[1] - (q[1] - p[1]) * s[0]) / denom
+    return p + t * r
+
+
+def _subpixel_center(
+    gray: NDArray[np.float32], corners: NDArray[np.float64]
+) -> tuple[float, float]:
+    """Intensity-weighted centroid of the central locator dot.
+
+    ``gray`` is the signed difference image when differencing is active —
+    ambient gradients cancel there, keeping the centroid unbiased (A2.2).
+    """
+    center = _diagonal_intersection(corners)
+    side = np.mean([np.linalg.norm(corners[i] - corners[(i + 1) % 4]) for i in range(4)])
+    cell = side * (1.0 - 2.0 * _MARGIN_FRAC) / GRID
+    radius = max(3, int(round(cell)))
+    cx, cy = float(center[0]), float(center[1])
+    for _ in range(3):
+        cx0, cy0 = int(round(cx)), int(round(cy))
+        x0 = max(0, cx0 - radius)
+        x1 = min(gray.shape[1], cx0 + radius + 1)
+        y0 = max(0, cy0 - radius)
+        y1 = min(gray.shape[0], cy0 + radius + 1)
+        win = gray[y0:y1, x0:x1].astype(np.float64)
+        if win.size == 0:
+            break
+        bg = float(np.median(win))
+        peak = float(win.max())
+        if peak <= bg:
+            break
+        mask = (win > bg + 0.3 * (peak - bg)).astype(np.uint8)
+        n_lbl, labels = cv2.connectedComponents(mask)
+        seed = labels[min(int(round(cy)) - y0, win.shape[0] - 1), min(int(round(cx)) - x0, win.shape[1] - 1)]
+        if seed == 0:
+            seed = labels[labels.shape[0] // 2, labels.shape[1] // 2]
+        blob = labels == seed
+        weights = np.where(blob, win - bg, 0.0)
+        total = weights.sum()
+        if total <= 0:
+            break
+        ys, xs = np.mgrid[y0:y1, x0:x1]
+        cx = float((xs * weights).sum() / total)
+        cy = float((ys * weights).sum() / total)
+    return cx, cy
+
+
+def _grid_coords(dets: list[Detection]) -> NDArray[np.float64]:
+    """Continuous grid position per detection, including the sub-quadrant offset.
+
+    With multiple markers per cabinet, ``local_id`` indexes the sub-quadrant
+    (same table as ``screen_geometry._SUB_QUADRANTS``); ignoring it would put
+    all of a cabinet's markers at one grid point and break the local affine fit.
+    """
+    from vpcal.core.screen_geometry import _SUB_QUADRANTS
+
+    multi = any(d.marker_id.local_id > 0 for d in dets)
+    coords = []
+    for d in dets:
+        ou, ov = _SUB_QUADRANTS[min(d.marker_id.local_id, 3)] if multi else (0.5, 0.5)
+        coords.append([d.marker_id.cab_col + ou, d.marker_id.cab_row + ov])
+    return np.array(coords, dtype=np.float64)
+
+
+def _topology_filter(dets: list[Detection], cfg: DetectorConfig) -> list[Detection]:
+    """Down-weight markers whose decoded id disagrees with their neighbours."""
+    if not cfg.enable_topology or len(dets) < cfg.topology_neighbors + 1:
+        return dets
+    pix = np.array([[d.pixel_u, d.pixel_v] for d in dets])
+    grid = _grid_coords(dets)
+    out: list[Detection] = []
+    for i, d in enumerate(dets):
+        dist = np.linalg.norm(pix - pix[i], axis=1)
+        order = np.argsort(dist)[1 : cfg.topology_neighbors + 1]
+        try:
+            # A rogue neighbour with far-off grid coords is a high-leverage
+            # point: plain least squares bends towards it and honest markers
+            # near it would be rejected too.  Fit every leave-one-out neighbour
+            # subset and keep the most self-consistent fit (the subset without
+            # the rogue fits the local affine almost exactly).
+            coef = None
+            best_rms = np.inf
+            subsets = (
+                [np.delete(order, j) for j in range(len(order))]
+                if len(order) > 4
+                else [order]
+            )
+            for keep in subsets:
+                A = np.column_stack([grid[keep], np.ones(len(keep))])
+                c_fit, *_ = np.linalg.lstsq(A, pix[keep], rcond=None)
+                rms = float(np.linalg.norm(A @ c_fit - pix[keep]))
+                if rms < best_rms:
+                    best_rms, coef = rms, c_fit
+            pred = np.array([grid[i, 0], grid[i, 1], 1.0]) @ coef
+        except np.linalg.LinAlgError:
+            out.append(d)
+            continue
+        residual = float(np.linalg.norm(pred - pix[i]))
+        conf = d.confidence if residual <= cfg.topology_max_residual_px else d.confidence * 0.5
+        out.append(Detection(d.frame_id, d.marker_id, d.pixel_u, d.pixel_v, conf, d.differenced))
+    return out
+
+
+def detect_markers(
+    image: NDArray[np.uint8],
+    *,
+    frame_id: int = 0,
+    inverted: NDArray[np.uint8] | None = None,
+    config: DetectorConfig | None = None,
+) -> list[Detection]:
+    """Detect and decode VP-QSP markers in one image.
+
+    ``image`` is the normal-frame capture; ``inverted`` (optional) enables
+    normal−inverted differencing.  Returns one :class:`Detection` per
+    successfully decoded, CRC-valid marker.
+    """
+    cfg = config or DetectorConfig()
+    gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gray = gray.astype(np.uint8)
+    differenced = inverted is not None
+    if differenced:
+        inv = inverted if inverted.ndim == 2 else cv2.cvtColor(inverted, cv2.COLOR_BGR2GRAY)
+        signed = gray.astype(np.int16) - inv.astype(np.int16)
+        # Segmentation only needs the positive half; decode + centroid use the
+        # full signed image so ambient gradients cancel (A2.2).
+        seg_src = np.clip(signed, 0, 255).astype(np.uint8)
+        sample_src = signed.astype(np.float32)
+    else:
+        seg_src = gray
+        sample_src = gray.astype(np.float32)
+
+    dets = _detect_pass(_threshold(seg_src), sample_src, frame_id, differenced, cfg)
+    if not dets:
+        # Global Otsu found nothing (e.g. a bright region dominates the
+        # histogram) — retry with a block-wise adaptive threshold (A2.4).
+        dets = _detect_pass(_threshold_adaptive(seg_src), sample_src, frame_id, differenced, cfg)
+
+    return _topology_filter(dets, cfg)
+
+
+def _detect_pass(
+    binary: NDArray[np.uint8],
+    sample_src: NDArray[np.float32],
+    frame_id: int,
+    differenced: bool,
+    cfg: DetectorConfig,
+) -> list[Detection]:
+    """One contour → decode → sub-pixel pass over a binarised image."""
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    img_area = sample_src.shape[0] * sample_src.shape[1]
+    dets: list[Detection] = []
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < cfg.min_area_px or area > cfg.max_area_frac * img_area:
+            continue
+        peri = cv2.arcLength(cnt, True)
+        approx = None
+        for eps in (0.02, 0.03, 0.04, 0.05):
+            cand = cv2.approxPolyDP(cnt, eps * peri, True)
+            if len(cand) == 4 and cv2.isContourConvex(cand):
+                approx = cand
+                break
+        if approx is None:
+            continue
+        corners = _order_corners(approx.reshape(4, 2).astype(np.float64))
+        marker = _decode_quad(sample_src, corners)
+        if marker is None:
+            continue
+        u, v = _subpixel_center(sample_src, corners)
+        dets.append(Detection(frame_id, marker, u, v, 1.0, differenced))
+    return dets
