@@ -31,3 +31,6 @@ dist-ssr
 __pycache__/
 *.egg-info/
 .pytest_cache/
+
+# git worktrees（EnterWorktree / git worktree add 在此创建，不入主仓）
+.claude/
