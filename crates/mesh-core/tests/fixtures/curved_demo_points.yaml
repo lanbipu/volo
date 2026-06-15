@@ -1,0 +1,30 @@
+screen_id: MAIN
+coordinate_frame:
+  origin_world: [0.0, 0.0, 0.0]
+  basis:
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]
+cabinet_array:
+  cols: 4
+  rows: 2
+  cabinet_size_mm: [500.0, 500.0]
+  absent_cells: []
+shape_prior: flat
+points:
+  - name: MAIN_V001_R001
+    position: [0.0, 0.0, 0.0]
+    uncertainty: !isotropic 2.0
+    source: total_station
+  - name: MAIN_V005_R001
+    position: [2.0, 0.0, 0.0]
+    uncertainty: !isotropic 2.0
+    source: total_station
+  - name: MAIN_V001_R003
+    position: [0.0, 0.0, 1.0]
+    uncertainty: !isotropic 2.0
+    source: total_station
+  - name: MAIN_V005_R003
+    position: [2.0, 0.0, 1.0]
+    uncertainty: !isotropic 2.0
+    source: total_station

@@ -1,6 +1,19 @@
 [package]
 name = "mesh-core"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LED Mesh Toolkit core: IR, reconstruction, UV, export"
 
 [dependencies]
+nalgebra.workspace = true
+kiddo.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+insta = { version = "1", features = ["yaml", "json"] }
+pretty_assertions = "1"
+tempfile = "3"
