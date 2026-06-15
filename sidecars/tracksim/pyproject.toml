@@ -1,0 +1,9 @@
+[project]
+name = "volo-sidecar-tracksim"
+version = "0.1.0"
+description = "Volo tracksim sidecar 占位（独立 venv，勿与其他 sidecar 共享解释器）"
+requires-python = ">=3.11"
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"

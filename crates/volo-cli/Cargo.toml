@@ -1,0 +1,10 @@
+[package]
+name = "volo-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "volo"
+path = "src/main.rs"
+
+[dependencies]
