@@ -3,7 +3,7 @@ name = "volo-shared"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "LMT shared platform types: DTO, error model, sqlite data layer. Transport-agnostic; consumed by lmt-tauri and lmt-cli."
+description = "Volo shared platform types: DTO, error model, envelope, exit codes, manifest, sqlite data layer. Transport-agnostic (zero tauri); consumed by volo-cli / src-tauri / sidecars."
 
 [dependencies]
 mesh-core = { path = "../mesh-core" }

@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "volo"
+# app(GUI)的 bin 已叫 volo（src-tauri，与 tauri.conf 关联）；CLI 用 voloctl 避让，避免输出文件名冲突。
+name = "voloctl"
 path = "src/main.rs"
 
 [dependencies]
