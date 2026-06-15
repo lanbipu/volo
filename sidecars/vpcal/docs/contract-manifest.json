@@ -1,0 +1,1067 @@
+{
+  "contract_version": "1.0",
+  "operations": [
+    {
+      "operation_id": "quick.run",
+      "summary": "Run the full calibration pipeline (validate \u2192 detect \u2192 solve \u2192 report).",
+      "input_schema": {
+        "$defs": {
+          "BrownConradyDistortion": {
+            "description": "Brown-Conrady radial + tangential distortion coefficients.\n\nPhase 1 supports 5 parameters only.  If k4/k5/k6 (rational model)\nare needed, the validate stage will reject the input.",
+            "properties": {
+              "model": {
+                "const": "brown_conrady",
+                "default": "brown_conrady",
+                "title": "Model",
+                "type": "string"
+              },
+              "k1": {
+                "default": 0.0,
+                "title": "K1",
+                "type": "number"
+              },
+              "k2": {
+                "default": 0.0,
+                "title": "K2",
+                "type": "number"
+              },
+              "k3": {
+                "default": 0.0,
+                "title": "K3",
+                "type": "number"
+              },
+              "p1": {
+                "default": 0.0,
+                "title": "P1",
+                "type": "number"
+              },
+              "p2": {
+                "default": 0.0,
+                "title": "P2",
+                "type": "number"
+              }
+            },
+            "title": "BrownConradyDistortion",
+            "type": "object"
+          },
+          "ImagesConfig": {
+            "description": "Where the captured image frames live.",
+            "properties": {
+              "path": {
+                "title": "Path",
+                "type": "string"
+              },
+              "format": {
+                "default": "png",
+                "title": "Format",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "title": "ImagesConfig",
+            "type": "object"
+          },
+          "LensProfile": {
+            "description": "Unified internal lens representation.\n\nComputed properties ``fx``, ``fy``, ``cx``, ``cy`` derive the camera\nintrinsic matrix values (in pixels) from the physical parameters.",
+            "properties": {
+              "focal_length_mm": {
+                "exclusiveMinimum": 0,
+                "title": "Focal Length Mm",
+                "type": "number"
+              },
+              "sensor_width_mm": {
+                "exclusiveMinimum": 0,
+                "title": "Sensor Width Mm",
+                "type": "number"
+              },
+              "sensor_height_mm": {
+                "exclusiveMinimum": 0,
+                "title": "Sensor Height Mm",
+                "type": "number"
+              },
+              "principal_point_offset_mm": {
+                "default": [
+                  0.0,
+                  0.0
+                ],
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "title": "Principal Point Offset Mm",
+                "type": "array"
+              },
+              "image_width_px": {
+                "exclusiveMinimum": 0,
+                "title": "Image Width Px",
+                "type": "integer"
+              },
+              "image_height_px": {
+                "exclusiveMinimum": 0,
+                "title": "Image Height Px",
+                "type": "integer"
+              },
+              "distortion": {
+                "$ref": "#/$defs/BrownConradyDistortion"
+              }
+            },
+            "required": [
+              "focal_length_mm",
+              "sensor_width_mm",
+              "sensor_height_mm",
+              "image_width_px",
+              "image_height_px"
+            ],
+            "title": "LensProfile",
+            "type": "object"
+          },
+          "RigidPrior": {
+            "description": "A rigid-transform prior: translation (mm) + quaternion (w, x, y, z).",
+            "properties": {
+              "translation": {
+                "default": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "title": "Translation",
+                "type": "array"
+              },
+              "rotation": {
+                "default": [
+                  1.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 4,
+                "minItems": 4,
+                "title": "Rotation",
+                "type": "array"
+              }
+            },
+            "title": "RigidPrior",
+            "type": "object"
+          },
+          "ScreenConfig": {
+            "description": "Path to the screen definition (JSON or OBJ).",
+            "properties": {
+              "path": {
+                "title": "Path",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "title": "ScreenConfig",
+            "type": "object"
+          },
+          "SolverConfig": {
+            "description": "Solver tuning knobs (spec \u00a73.2 / \u00a75.3).",
+            "properties": {
+              "refine_tracker_to_camera": {
+                "default": false,
+                "title": "Refine Tracker To Camera",
+                "type": "boolean"
+              },
+              "tracker_to_camera_prior": {
+                "$ref": "#/$defs/RigidPrior"
+              },
+              "tracker_to_camera_prior_weight": {
+                "default": 1000.0,
+                "exclusiveMinimum": 0,
+                "title": "Tracker To Camera Prior Weight",
+                "type": "number"
+              },
+              "robust_loss": {
+                "default": "huber",
+                "enum": [
+                  "huber",
+                  "cauchy",
+                  "none"
+                ],
+                "title": "Robust Loss",
+                "type": "string"
+              },
+              "robust_loss_scale": {
+                "default": 1.0,
+                "exclusiveMinimum": 0,
+                "title": "Robust Loss Scale",
+                "type": "number"
+              },
+              "max_iterations": {
+                "default": 200,
+                "exclusiveMinimum": 0,
+                "title": "Max Iterations",
+                "type": "integer"
+              },
+              "timeout_seconds": {
+                "default": 300.0,
+                "exclusiveMinimum": 0,
+                "title": "Timeout Seconds",
+                "type": "number"
+              }
+            },
+            "title": "SolverConfig",
+            "type": "object"
+          },
+          "TrackingConfig": {
+            "description": "Tracking data source + coordinate-system / frame-alignment policy.",
+            "properties": {
+              "path": {
+                "title": "Path",
+                "type": "string"
+              },
+              "coordinate_system": {
+                "default": "unreal",
+                "enum": [
+                  "unreal",
+                  "optitrack",
+                  "vicon",
+                  "freeDEuler",
+                  "custom"
+                ],
+                "title": "Coordinate System",
+                "type": "string"
+              },
+              "frame_matching": {
+                "default": "frame_id",
+                "enum": [
+                  "frame_id",
+                  "line_number",
+                  "timestamp"
+                ],
+                "title": "Frame Matching",
+                "type": "string"
+              },
+              "timestamp_tolerance_s": {
+                "default": 0.05,
+                "minimum": 0.0,
+                "title": "Timestamp Tolerance S",
+                "type": "number"
+              },
+              "custom_transform": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "items": {
+                        "type": "number"
+                      },
+                      "type": "array"
+                    },
+                    "maxItems": 4,
+                    "minItems": 4,
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Custom Transform"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "title": "TrackingConfig",
+            "type": "object"
+          }
+        },
+        "description": "Top-level session configuration (spec \u00a73.2).",
+        "properties": {
+          "images": {
+            "$ref": "#/$defs/ImagesConfig"
+          },
+          "tracking": {
+            "$ref": "#/$defs/TrackingConfig"
+          },
+          "screen": {
+            "$ref": "#/$defs/ScreenConfig"
+          },
+          "lens": {
+            "$ref": "#/$defs/LensProfile"
+          },
+          "solver": {
+            "$ref": "#/$defs/SolverConfig"
+          },
+          "capture_mode": {
+            "default": "legacy",
+            "enum": [
+              "legacy",
+              "dual_frame"
+            ],
+            "title": "Capture Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "images",
+          "tracking",
+          "screen",
+          "lens"
+        ],
+        "title": "SessionConfig",
+        "type": "object"
+      },
+      "output_schema": {
+        "$defs": {
+          "CameraFromTracker": {
+            "description": "camera-from-tracker delta, with a flag for whether it was refined.",
+            "properties": {
+              "translation": {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "title": "Translation",
+                "type": "array"
+              },
+              "rotation": {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 4,
+                "minItems": 4,
+                "title": "Rotation",
+                "type": "array"
+              },
+              "matrix_4x4": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "items": {
+                        "type": "number"
+                      },
+                      "type": "array"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Matrix 4X4"
+              },
+              "refined": {
+                "default": false,
+                "title": "Refined",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "translation",
+              "rotation"
+            ],
+            "title": "CameraFromTracker",
+            "type": "object"
+          },
+          "CovarianceStd": {
+            "properties": {
+              "tx_mm": {
+                "title": "Tx Mm",
+                "type": "number"
+              },
+              "ty_mm": {
+                "title": "Ty Mm",
+                "type": "number"
+              },
+              "tz_mm": {
+                "title": "Tz Mm",
+                "type": "number"
+              },
+              "rx_deg": {
+                "title": "Rx Deg",
+                "type": "number"
+              },
+              "ry_deg": {
+                "title": "Ry Deg",
+                "type": "number"
+              },
+              "rz_deg": {
+                "title": "Rz Deg",
+                "type": "number"
+              }
+            },
+            "required": [
+              "tx_mm",
+              "ty_mm",
+              "tz_mm",
+              "rx_deg",
+              "ry_deg",
+              "rz_deg"
+            ],
+            "title": "CovarianceStd",
+            "type": "object"
+          },
+          "Inputs": {
+            "properties": {
+              "session_config_hash": {
+                "title": "Session Config Hash",
+                "type": "string"
+              },
+              "image_count": {
+                "title": "Image Count",
+                "type": "integer"
+              },
+              "screen_definition": {
+                "title": "Screen Definition",
+                "type": "string"
+              }
+            },
+            "required": [
+              "session_config_hash",
+              "image_count",
+              "screen_definition"
+            ],
+            "title": "Inputs",
+            "type": "object"
+          },
+          "ParameterCovariance": {
+            "properties": {
+              "available": {
+                "default": false,
+                "title": "Available",
+                "type": "boolean"
+              },
+              "tracker_to_stage_std": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/CovarianceStd"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "title": "ParameterCovariance",
+            "type": "object"
+          },
+          "Quality": {
+            "properties": {
+              "reprojection_rms_px": {
+                "title": "Reprojection Rms Px",
+                "type": "number"
+              },
+              "total_observations": {
+                "title": "Total Observations",
+                "type": "integer"
+              },
+              "inlier_observations": {
+                "title": "Inlier Observations",
+                "type": "integer"
+              },
+              "outlier_ratio": {
+                "title": "Outlier Ratio",
+                "type": "number"
+              },
+              "num_poses": {
+                "title": "Num Poses",
+                "type": "integer"
+              },
+              "confidence": {
+                "enum": [
+                  "high",
+                  "medium",
+                  "low",
+                  "very_low"
+                ],
+                "title": "Confidence",
+                "type": "string"
+              },
+              "lens_residual_pattern": {
+                "default": "none",
+                "enum": [
+                  "none",
+                  "radial",
+                  "tangential"
+                ],
+                "title": "Lens Residual Pattern",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reprojection_rms_px",
+              "total_observations",
+              "inlier_observations",
+              "outlier_ratio",
+              "num_poses",
+              "confidence"
+            ],
+            "title": "Quality",
+            "type": "object"
+          },
+          "RigidTransform": {
+            "description": "A solved rigid transform: translation (mm) + quaternion (w, x, y, z).\n\n``matrix_4x4`` is the homogeneous form, included for direct consumption by\ndownstream tools (e.g. manual UE/nDisplay application).",
+            "properties": {
+              "translation": {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "title": "Translation",
+                "type": "array"
+              },
+              "rotation": {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 4,
+                "minItems": 4,
+                "title": "Rotation",
+                "type": "array"
+              },
+              "matrix_4x4": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "items": {
+                        "type": "number"
+                      },
+                      "type": "array"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Matrix 4X4"
+              }
+            },
+            "required": [
+              "translation",
+              "rotation"
+            ],
+            "title": "RigidTransform",
+            "type": "object"
+          },
+          "SolverDiagnostics": {
+            "properties": {
+              "num_iterations": {
+                "title": "Num Iterations",
+                "type": "integer"
+              },
+              "initial_cost": {
+                "title": "Initial Cost",
+                "type": "number"
+              },
+              "final_cost": {
+                "title": "Final Cost",
+                "type": "number"
+              },
+              "termination_type": {
+                "title": "Termination Type",
+                "type": "string"
+              },
+              "termination_message": {
+                "default": "",
+                "title": "Termination Message",
+                "type": "string"
+              },
+              "num_residual_blocks": {
+                "title": "Num Residual Blocks",
+                "type": "integer"
+              },
+              "num_inliers": {
+                "title": "Num Inliers",
+                "type": "integer"
+              },
+              "num_outliers": {
+                "title": "Num Outliers",
+                "type": "integer"
+              },
+              "outlier_ratio": {
+                "title": "Outlier Ratio",
+                "type": "number"
+              },
+              "solver_backend": {
+                "enum": [
+                  "ceres",
+                  "scipy"
+                ],
+                "title": "Solver Backend",
+                "type": "string"
+              },
+              "parameter_covariance": {
+                "$ref": "#/$defs/ParameterCovariance"
+              }
+            },
+            "required": [
+              "num_iterations",
+              "initial_cost",
+              "final_cost",
+              "termination_type",
+              "num_residual_blocks",
+              "num_inliers",
+              "num_outliers",
+              "outlier_ratio",
+              "solver_backend"
+            ],
+            "title": "SolverDiagnostics",
+            "type": "object"
+          }
+        },
+        "description": "Top-level calibration result (spec \u00a74.4).",
+        "properties": {
+          "schema_version": {
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "vpcal_version": {
+            "title": "Vpcal Version",
+            "type": "string"
+          },
+          "timestamp": {
+            "title": "Timestamp",
+            "type": "string"
+          },
+          "tracker_to_stage": {
+            "$ref": "#/$defs/RigidTransform"
+          },
+          "tracker_to_camera": {
+            "$ref": "#/$defs/CameraFromTracker"
+          },
+          "quality": {
+            "$ref": "#/$defs/Quality"
+          },
+          "inputs": {
+            "$ref": "#/$defs/Inputs"
+          },
+          "solver_diagnostics": {
+            "$ref": "#/$defs/SolverDiagnostics"
+          }
+        },
+        "required": [
+          "vpcal_version",
+          "timestamp",
+          "tracker_to_stage",
+          "tracker_to_camera",
+          "quality",
+          "inputs",
+          "solver_diagnostics"
+        ],
+        "title": "CalibrationResult",
+        "type": "object"
+      },
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        1,
+        2,
+        3,
+        5,
+        6,
+        7,
+        9
+      ],
+      "cli": {
+        "command": "vpcal quick run",
+        "supports_stdin": true,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "quick_run",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    },
+    {
+      "operation_id": "pattern.generate",
+      "summary": "Generate VP-QCP calibration patterns for an LED screen.",
+      "input_schema": {},
+      "output_schema": {},
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        2,
+        3,
+        5
+      ],
+      "cli": {
+        "command": "vpcal pattern generate",
+        "supports_stdin": false,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "pattern_generate",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    },
+    {
+      "operation_id": "screen.create",
+      "summary": "Create a screen definition JSON interactively or from parameters.",
+      "input_schema": {},
+      "output_schema": {},
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        2,
+        3
+      ],
+      "cli": {
+        "command": "vpcal screen create",
+        "supports_stdin": false,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "screen_create",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    },
+    {
+      "operation_id": "screen.import",
+      "summary": "Import a screen definition from an OBJ mesh.",
+      "input_schema": {},
+      "output_schema": {},
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        2,
+        3,
+        5
+      ],
+      "cli": {
+        "command": "vpcal screen import",
+        "supports_stdin": false,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "screen_import",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    },
+    {
+      "operation_id": "simulate",
+      "summary": "Generate a synthetic calibration dataset with known ground truth.",
+      "input_schema": {},
+      "output_schema": {},
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        2,
+        3,
+        5
+      ],
+      "cli": {
+        "command": "vpcal simulate",
+        "supports_stdin": false,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "simulate",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    },
+    {
+      "operation_id": "report.generate",
+      "summary": "Generate a QA report from a calibration result.",
+      "input_schema": {},
+      "output_schema": {},
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        2,
+        5
+      ],
+      "cli": {
+        "command": "vpcal report generate",
+        "supports_stdin": false,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "report_generate",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    },
+    {
+      "operation_id": "export.opentrackio",
+      "summary": "Export calibrated tracking data as OpenTrackIO JSONL.",
+      "input_schema": {},
+      "output_schema": {},
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        2,
+        5
+      ],
+      "cli": {
+        "command": "vpcal export opentrackio",
+        "supports_stdin": false,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "export_opentrackio",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    }
+  ]
+}

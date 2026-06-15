@@ -1,9 +1,44 @@
-[project]
-name = "volo-sidecar-vpcal"
-version = "0.1.0"
-description = "Volo vpcal sidecar 占位（独立 venv，勿与其他 sidecar 共享解释器）"
-requires-python = ">=3.11"
-
 [build-system]
-requires = ["setuptools", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["scikit-build-core>=0.5", "pybind11>=2.11"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "vpcal"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "click",
+    "pydantic>=2.0",
+    "numpy",
+    "scipy",
+    "opencv-python-headless>=4.8,<5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "jsonschema",
+]
+
+[project.scripts]
+vpcal = "vpcal.cli.main:main"
+
+[tool.scikit-build]
+cmake.build-type = "Release"
+cmake.version = ">=3.20"
+# Python package lives under src/; the compiled module installs into it
+# (CMake install DESTINATION "vpcal").  A C++ toolchain + CMake are build
+# prerequisites (spec §1.1); if the compiled module is nonetheless absent at
+# runtime, the solver transparently falls back to scipy.
+wheel.packages = ["src/vpcal"]
+build-dir = "build/{wheel_tag}"
+
+[tool.scikit-build.cmake.define]
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]

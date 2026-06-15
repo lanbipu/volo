@@ -1,9 +1,29 @@
-[project]
-name = "volo-sidecar-tracksim"
-version = "0.1.0"
-description = "Volo tracksim sidecar 占位（独立 venv，勿与其他 sidecar 共享解释器）"
-requires-python = ">=3.11"
-
 [build-system]
-requires = ["setuptools", "wheel"]
+requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "tracksim"
+version = "0.1.0"
+description = "Camera tracking protocol simulator (FreeD / OpenTrackIO)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2",
+    "pysdl3",
+    "pyserial",
+    "cbor2",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "jsonschema",
+]
+
+[project.scripts]
+tracksim = "tracksim.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
