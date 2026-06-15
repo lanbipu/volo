@@ -2884,7 +2884,13 @@ fn reconstruct_structured_light_reports_rejection_stats() {
     // Converged-equivalent: a finite low reprojection RMS + a written result.
     let rms = env["data"]["ba_rms_px"].as_f64().unwrap();
     assert!(rms.is_finite() && rms < 5.0, "expected converged low RMS, got {rms}");
-    assert!(proj.join("measurements/measured.yaml").exists());
+    // review #13: the durable product is the cabinet pose report, NOT
+    // `measurements/measured.yaml`. volo's `run_reconstruct_structured_light`
+    // carries FIX-13 ④ — it deliberately stopped writing measured.yaml (the old
+    // write would back up + overwrite the M1 total-station data with
+    // incompatibly-named points, a data-corruption risk). Assert the pose report
+    // the sidecar actually writes instead.
+    assert!(proj.join("measurements/MAIN_cabinet_pose_report.json").exists());
 }
 
 
