@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use crate::error::{LmtError, LmtResult};
+use crate::error::{VoloError, VoloResult};
 
 pub type Db = std::sync::Arc<Mutex<Connection>>;
 
@@ -24,9 +24,9 @@ pub const DB_FILENAME: &str = "lmt.sqlite";
 /// - Windows:`%APPDATA%\com.lanbipu.lmt\lmt.sqlite`
 ///
 /// CLI 解析顺序应当是:`--db <path>` > `LMT_DB_PATH` env > `default_db_path()`。
-pub fn default_db_path() -> LmtResult<PathBuf> {
+pub fn default_db_path() -> VoloResult<PathBuf> {
     let base = dirs::data_dir()
-        .ok_or_else(|| LmtError::Other("OS data dir not resolvable on this platform".into()))?;
+        .ok_or_else(|| VoloError::Other("OS data dir not resolvable on this platform".into()))?;
     Ok(base.join(APP_IDENTIFIER).join(DB_FILENAME))
 }
 

@@ -7,7 +7,7 @@ use mesh_core::reconstruct::Reconstructor;
 use mesh_core::sampling::SamplingMode;
 use volo_shared::data::{runs, Db};
 use volo_shared::dto::{ReconstructionReport, ReconstructionResult};
-use volo_shared::error::{LmtError, LmtResult};
+use volo_shared::error::{VoloError, VoloResult};
 use std::path::{Path, PathBuf};
 
 pub fn run_reconstruction(
@@ -15,13 +15,13 @@ pub fn run_reconstruction(
     project_path: &Path,
     screen_id: &str,
     measurements_rel_path: &str,
-) -> LmtResult<ReconstructionResult> {
+) -> VoloResult<ReconstructionResult> {
     // Canonicalize project_path 在入口做一次,让 DB 里写入的字符串与 cwd /
     // symlink 无关。CLI 与 Tauri GUI 都受益:任何 caller 给 `./proj` 或
     // symlink path 都被规范化到真实绝对路径,后续 list_runs_for /
     // read_run_report 才能 exact-match 找到。
     let project_path = &std::fs::canonicalize(project_path).map_err(|e| {
-        LmtError::Io(format!(
+        VoloError::Io(format!(
             "canonicalize project_path {}: {e}",
             project_path.display()
         ))
@@ -29,11 +29,11 @@ pub fn run_reconstruction(
     // Load project.yaml to snapshot cabinet_array and weld_tolerance at this moment.
     let yaml = std::fs::read_to_string(project_path.join("project.yaml"))?;
     let cfg: volo_shared::dto::ProjectConfig =
-        serde_yaml::from_str(&yaml).map_err(|e| LmtError::Yaml(format!("project.yaml: {e}")))?;
+        serde_yaml::from_str(&yaml).map_err(|e| VoloError::Yaml(format!("project.yaml: {e}")))?;
     let screen_cfg = cfg
         .screens
         .get(screen_id)
-        .ok_or_else(|| LmtError::NotFound(format!("screen {screen_id} in project.yaml")))?;
+        .ok_or_else(|| VoloError::NotFound(format!("screen {screen_id} in project.yaml")))?;
     let cabinet_array = build_cabinet_array(screen_cfg)?;
     let weld_tolerance_mm = cfg.output.weld_vertices_tolerance_mm;
 
@@ -61,7 +61,7 @@ pub fn run_reconstruction(
                 shape_prior = ?measurements.shape_prior,
                 "reconstruct: surface_fit failed",
             );
-            LmtError::SurfaceFitFailed(e.to_string())
+            VoloError::SurfaceFitFailed(e.to_string())
         })?
     } else {
         auto_reconstruct(&measurements).map_err(|e| {
@@ -73,7 +73,7 @@ pub fn run_reconstruction(
                 shape_prior = ?measurements.shape_prior,
                 "reconstruct: auto_reconstruct failed",
             );
-            LmtError::from(e)
+            VoloError::from(e)
         })?
     };
     let metrics = surface.quality_metrics.clone();
@@ -96,11 +96,11 @@ pub fn run_reconstruction(
         scatter_fit: surface.scatter_fit.clone().map(Into::into),
     };
     let json = serde_json::to_vec_pretty(&report)
-        .map_err(|e| LmtError::Yaml(format!("json: {e}")))?;
+        .map_err(|e| VoloError::Yaml(format!("json: {e}")))?;
     std::fs::write(&report_abs, json)?;
 
     let warnings_json = serde_json::to_string(&metrics.warnings)
-        .map_err(|e| LmtError::Yaml(format!("json: {e}")))?;
+        .map_err(|e| VoloError::Yaml(format!("json: {e}")))?;
 
     let run_id = {
         let conn = db.lock().unwrap();
@@ -133,7 +133,7 @@ pub fn list_runs_for(
     db: Db,
     project_path: &str,
     screen_id: Option<&str>,
-) -> LmtResult<Vec<volo_shared::dto::ReconstructionRun>> {
+) -> VoloResult<Vec<volo_shared::dto::ReconstructionRun>> {
     // 同时按 raw 与 canonical key 查询,合并去重。本 patch 之后写入的
     // run 是 canonical,但 patch 之前的旧 row 可能仍是 raw symlink path;
     // 单按 canonical 查会让升级前的历史 "消失"。所以两种字符串都试,合并
@@ -158,14 +158,14 @@ pub fn list_runs_for(
     Ok(rows)
 }
 
-pub fn read_run_report(db: Db, run_id: i64) -> LmtResult<serde_json::Value> {
+pub fn read_run_report(db: Db, run_id: i64) -> VoloResult<serde_json::Value> {
     let (project_path, report_rel) = {
         let conn = db.lock().unwrap();
         runs::get_report_path(&conn, run_id)?
     };
     let report_abs = PathBuf::from(&project_path).join(&report_rel);
     let bytes = std::fs::read(&report_abs)?;
-    serde_json::from_slice(&bytes).map_err(|e| LmtError::Yaml(format!("json: {e}")))
+    serde_json::from_slice(&bytes).map_err(|e| VoloError::Yaml(format!("json: {e}")))
 }
 
 #[cfg(test)]

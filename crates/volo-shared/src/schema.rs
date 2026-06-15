@@ -90,8 +90,13 @@ pub fn dump_all() -> Value {
     add!("UnreachableRegion", dto::UnreachableRegion);
     add!("CaptureCardResult", dto::CaptureCardResult);
 
-    // 错误模型
-    add!("LmtError", error::LmtError);
+    // 错误模型。
+    // review #17: the Rust type was renamed LmtError → VoloError (feature-neutral
+    // base), but the *schema key* stays "LmtError" on purpose — it's an exposed
+    // contract surface (the `schema` command's `types` map; clients + cli_e2e key
+    // off it). The wire error shape itself (snake_case `kind`/`message`) never
+    // carried the type name, so this rename is otherwise contract-invisible.
+    add!("LmtError", error::VoloError);
     add!("ApiError", envelope::ApiError);
 
     // Envelope:Envelope<T> 是泛型,这里以 `Envelope<serde_json::Value>` 形态
@@ -189,7 +194,7 @@ mod tests {
 
     #[test]
     fn lmt_error_schema_carries_kind_tag() {
-        // 校验 schemars 正确尊重了 LmtError 上的 `#[serde(tag = "kind", content = "message")]`,
+        // 校验 schemars 正确尊重了 VoloError 上的 `#[serde(tag = "kind", content = "message")]`,
         // 这样客户端按 schema 解析时 discriminator 与运行时输出一致。
         let v = dump_all();
         let s = serde_json::to_string(&v["types"]["LmtError"]).unwrap();

@@ -1384,7 +1384,7 @@ fn visual_compare_known_missing_file_is_invalid_input() {
 //
 // Deterministic E2E for the sidecar→adapter→lmt-app→CLI error chain:
 //   sidecar emits {"event":"error","code":<X>,...} → adapter Protocol{code:X}
-//   → map_vba_err → LmtError::<Variant> → ApiError{code:X}
+//   → map_vba_err → VoloError::<Variant> → ApiError{code:X}
 //   → exit_codes::from_api_error_code → process exit N → ErrorEnvelope on stderr.
 // A MOCK sidecar emits each code, so no fragile real-image construction is
 // needed. The adapter returns the Protocol error as soon as it reads the error

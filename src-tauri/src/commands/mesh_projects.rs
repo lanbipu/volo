@@ -15,20 +15,20 @@ use crate::commands::mesh::MeshDb;
 use std::path::Path;
 use volo_shared::data::recent_projects;
 use volo_shared::dto::{ProjectConfig, RecentProject};
-use volo_shared::error::{LmtError, LmtResult};
+use volo_shared::error::{VoloError, VoloResult};
 
 #[tauri::command]
-pub fn load_project_yaml(abs_path: String) -> LmtResult<ProjectConfig> {
+pub fn load_project_yaml(abs_path: String) -> VoloResult<ProjectConfig> {
     load_project_yaml_from_path(Path::new(&abs_path))
 }
 
 #[tauri::command]
-pub fn save_project_yaml(abs_path: String, config: ProjectConfig) -> LmtResult<()> {
+pub fn save_project_yaml(abs_path: String, config: ProjectConfig) -> VoloResult<()> {
     save_project_yaml_to_path(Path::new(&abs_path), &config)
 }
 
 #[tauri::command]
-pub fn list_recent_projects(state: tauri::State<'_, MeshDb>) -> LmtResult<Vec<RecentProject>> {
+pub fn list_recent_projects(state: tauri::State<'_, MeshDb>) -> VoloResult<Vec<RecentProject>> {
     let conn = state.0.lock().unwrap();
     recent_projects::list(&conn)
 }
@@ -38,7 +38,7 @@ pub fn add_recent_project(
     state: tauri::State<'_, MeshDb>,
     abs_path: String,
     display_name: String,
-) -> LmtResult<RecentProject> {
+) -> VoloResult<RecentProject> {
     let conn = state.0.lock().unwrap();
     // 走 upsert_normalized,让 GUI 与 CLI 共用 DB 时 abs_path 落到同一字符串,
     // 避免同一项目被记录成两条 recent_projects(UNIQUE key 才有意义)。
@@ -46,7 +46,7 @@ pub fn add_recent_project(
 }
 
 #[tauri::command]
-pub fn remove_recent_project(state: tauri::State<'_, MeshDb>, id: i64) -> LmtResult<()> {
+pub fn remove_recent_project(state: tauri::State<'_, MeshDb>, id: i64) -> VoloResult<()> {
     let conn = state.0.lock().unwrap();
     recent_projects::delete(&conn, id)
 }
@@ -56,12 +56,12 @@ pub fn seed_example_project(
     app: tauri::AppHandle,
     target_dir: String,
     example: String,
-) -> LmtResult<String> {
+) -> VoloResult<String> {
     use tauri::{Emitter, Manager};
     let resource_dir = app
         .path()
         .resource_dir()
-        .map_err(|e| LmtError::Io(e.to_string()))?;
+        .map_err(|e| VoloError::Io(e.to_string()))?;
     let examples_root = resource_dir.join("examples");
     let out = seed_example_to_dir(&examples_root, &example, Path::new(&target_dir))?;
     let _ = app.emit(

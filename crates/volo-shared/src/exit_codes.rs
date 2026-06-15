@@ -6,7 +6,7 @@
 //! - 2+ = 分类失败,每类一个稳定数字
 //!
 //! 与 [`crate::envelope::error_codes`] 字符串码一一对应。新增 code 时同步
-//! 这里、`From<LmtError> for ApiError`、AGENTS.md 三处。
+//! 这里、`From<VoloError> for ApiError`、AGENTS.md 三处。
 
 pub const OK: i32 = 0;
 pub const UNKNOWN: i32 = 1;

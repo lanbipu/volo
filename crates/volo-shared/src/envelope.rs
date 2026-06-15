@@ -130,9 +130,9 @@ pub mod error_codes {
     pub const DECODE_FAILED: &str = "decode_failed";
 }
 
-impl From<crate::error::LmtError> for ApiError {
-    fn from(e: crate::error::LmtError) -> Self {
-        use crate::error::LmtError as E;
+impl From<crate::error::VoloError> for ApiError {
+    fn from(e: crate::error::VoloError) -> Self {
+        use crate::error::VoloError as E;
         let (code, message) = match &e {
             E::Io(m) => (error_codes::IO, m.clone()),
             E::Yaml(m) => (error_codes::SERIALIZATION, m.clone()),
@@ -203,43 +203,43 @@ mod tests {
 
     #[test]
     fn lmt_error_maps_each_variant_to_expected_code() {
-        use crate::error::LmtError;
-        let cases: Vec<(LmtError, &str)> = vec![
-            (LmtError::Io("x".into()), error_codes::IO),
-            (LmtError::Yaml("x".into()), error_codes::SERIALIZATION),
-            (LmtError::Core("x".into()), error_codes::INVALID_INPUT),
-            (LmtError::Db("x".into()), error_codes::DB),
-            (LmtError::NotFound("x".into()), error_codes::NOT_FOUND),
+        use crate::error::VoloError;
+        let cases: Vec<(VoloError, &str)> = vec![
+            (VoloError::Io("x".into()), error_codes::IO),
+            (VoloError::Yaml("x".into()), error_codes::SERIALIZATION),
+            (VoloError::Core("x".into()), error_codes::INVALID_INPUT),
+            (VoloError::Db("x".into()), error_codes::DB),
+            (VoloError::NotFound("x".into()), error_codes::NOT_FOUND),
             (
-                LmtError::InvalidInput("x".into()),
+                VoloError::InvalidInput("x".into()),
                 error_codes::INVALID_INPUT,
             ),
             (
-                LmtError::SurfaceFitFailed("x".into()),
+                VoloError::SurfaceFitFailed("x".into()),
                 error_codes::SURFACE_FIT_FAILED,
             ),
             (
-                LmtError::DetectionFailed("x".into()),
+                VoloError::DetectionFailed("x".into()),
                 error_codes::DETECTION_FAILED,
             ),
-            (LmtError::BaDiverged("x".into()), error_codes::BA_DIVERGED),
+            (VoloError::BaDiverged("x".into()), error_codes::BA_DIVERGED),
             (
-                LmtError::ProcrustesFailed("x".into()),
+                VoloError::ProcrustesFailed("x".into()),
                 error_codes::PROCRUSTES_FAILED,
             ),
             (
-                LmtError::IntrinsicsInvalid("x".into()),
+                VoloError::IntrinsicsInvalid("x".into()),
                 error_codes::INTRINSICS_INVALID,
             ),
             (
-                LmtError::ObservabilityFailed("x".into()),
+                VoloError::ObservabilityFailed("x".into()),
                 error_codes::OBSERVABILITY_FAILED,
             ),
             (
-                LmtError::DecodeFailed("x".into()),
+                VoloError::DecodeFailed("x".into()),
                 error_codes::DECODE_FAILED,
             ),
-            (LmtError::Other("x".into()), error_codes::INTERNAL),
+            (VoloError::Other("x".into()), error_codes::INTERNAL),
         ];
         for (lmt, expected) in cases {
             let api: ApiError = lmt.into();

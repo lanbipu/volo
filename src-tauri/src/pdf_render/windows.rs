@@ -34,11 +34,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
 
-use volo_shared::error::{LmtError, LmtResult};
+use volo_shared::error::{VoloError, VoloResult};
 
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-pub fn render(app: &tauri::AppHandle, html: &str, dst: &Path) -> LmtResult<()> {
+pub fn render(app: &tauri::AppHandle, html: &str, dst: &Path) -> VoloResult<()> {
     use tauri::Manager;
 
     // Resolve a writable user-data folder for WebView2. Default (null) puts it
@@ -47,10 +47,10 @@ pub fn render(app: &tauri::AppHandle, html: &str, dst: &Path) -> LmtResult<()> {
     let user_data: PathBuf = app
         .path()
         .app_data_dir()
-        .map_err(|e| LmtError::Other(format!("resolve app_data_dir: {e}")))?
+        .map_err(|e| VoloError::Other(format!("resolve app_data_dir: {e}")))?
         .join("webview2-pdf");
     std::fs::create_dir_all(&user_data)
-        .map_err(|e| LmtError::Other(format!("create WebView2 user data dir: {e}")))?;
+        .map_err(|e| VoloError::Other(format!("create WebView2 user data dir: {e}")))?;
 
     let (tx, rx) = mpsc::channel::<Result<(), String>>();
     let html_owned = html.to_string();
@@ -64,13 +64,13 @@ pub fn render(app: &tauri::AppHandle, html: &str, dst: &Path) -> LmtResult<()> {
             let result = run_on_sta_thread(&html_owned, &dst_owned, &user_data);
             let _ = tx.send(result);
         })
-        .map_err(|e| LmtError::Other(format!("spawn webview2 thread: {e}")))?;
+        .map_err(|e| VoloError::Other(format!("spawn webview2 thread: {e}")))?;
 
     let outcome = rx
         .recv_timeout(TIMEOUT)
-        .map_err(|_| LmtError::Other(format!("PDF render timed out after {TIMEOUT:?}")))?;
+        .map_err(|_| VoloError::Other(format!("PDF render timed out after {TIMEOUT:?}")))?;
 
-    outcome.map_err(LmtError::Other)
+    outcome.map_err(VoloError::Other)
 }
 
 fn run_on_sta_thread(html: &str, dst: &Path, user_data: &Path) -> Result<(), String> {

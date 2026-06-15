@@ -9,22 +9,22 @@ use volo_shared::data::{runs, Db};
 use volo_shared::dto::{
     CabinetPoseReportFile, ExportPoseObjResult, PoseReportGauge, ReconstructionReport, ShapeMode,
 };
-use volo_shared::error::{LmtError, LmtResult};
+use volo_shared::error::{VoloError, VoloResult};
 use nalgebra::Vector3;
 use std::path::{Path, PathBuf};
 
-fn parse_target(s: &str) -> LmtResult<TargetSoftware> {
+fn parse_target(s: &str) -> VoloResult<TargetSoftware> {
     match s {
         "disguise" => Ok(TargetSoftware::Disguise),
         "unreal" => Ok(TargetSoftware::Unreal),
         "neutral" => Ok(TargetSoftware::Neutral),
-        other => Err(LmtError::InvalidInput(format!("unknown target: {other}"))),
+        other => Err(VoloError::InvalidInput(format!("unknown target: {other}"))),
     }
 }
 
 pub fn build_shape_prior(
     screen_cfg: &volo_shared::dto::ScreenConfig,
-) -> LmtResult<mesh_core::shape::ShapePrior> {
+) -> VoloResult<mesh_core::shape::ShapePrior> {
     use volo_shared::dto::ShapePriorConfig;
     Ok(match &screen_cfg.shape_prior {
         ShapePriorConfig::Flat => mesh_core::shape::ShapePrior::Flat,
@@ -37,7 +37,7 @@ pub fn build_shape_prior(
     })
 }
 
-pub fn build_cabinet_array(screen_cfg: &volo_shared::dto::ScreenConfig) -> LmtResult<CabinetArray> {
+pub fn build_cabinet_array(screen_cfg: &volo_shared::dto::ScreenConfig) -> VoloResult<CabinetArray> {
     let [cols, rows] = screen_cfg.cabinet_count;
     let cabinet_size_mm = screen_cfg.cabinet_size_mm;
     match screen_cfg.shape_mode {
@@ -58,7 +58,7 @@ pub fn run_export(
     run_id: i64,
     target: &str,
     dst_abs_path: Option<&std::path::Path>,
-) -> LmtResult<String> {
+) -> VoloResult<String> {
     let target_enum = parse_target(target)?;
 
     let (project_path, report_rel) = {
@@ -165,11 +165,11 @@ pub fn run_export_pose_obj(
     ground: bool,
     split: bool,
     screen_mapping: Option<&Path>,
-) -> LmtResult<ExportPoseObjResult> {
+) -> VoloResult<ExportPoseObjResult> {
     let target_enum = parse_target(target)?; // 校验 target；几何原样（Neutral）
     reject_unreal_pose_obj(target_enum)?;
     if split && screen_mapping.is_some() {
-        return Err(LmtError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "--screen-mapping shapes the merged UV atlas; --split files each carry \
              their own full [0,1] UV (disguise assigns per-cabinet feed rects natively) \
              — drop one of the two flags"
@@ -179,7 +179,7 @@ pub fn run_export_pose_obj(
     let report: CabinetPoseReportFile =
         serde_json::from_slice(&std::fs::read(pose_report_path)?)?;
     if report.cabinet_poses.is_empty() {
-        return Err(LmtError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "pose report has no cabinet_poses".into(),
         ));
     }
@@ -188,7 +188,7 @@ pub fn run_export_pose_obj(
     // 猜朝向(apply_canonical_frame);--root 会覆盖这个已定的摆放,故拒。
     let align = report.frame.gauge_strategy == PoseReportGauge::AlignToNominal;
     if align && root.is_some() {
-        return Err(LmtError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "align_to_nominal report is already in the design frame; --root would override it".into(),
         ));
     }
@@ -210,10 +210,10 @@ pub fn run_export_pose_obj(
                 .iter()
                 .find(|c| c.cabinet_id == rid)
                 .ok_or_else(|| {
-                    LmtError::NotFound(format!("--root cabinet '{rid}' not in pose report"))
+                    VoloError::NotFound(format!("--root cabinet '{rid}' not in pose report"))
                 })?;
             Some(CabinetFrame::from_corners(&rc.corners_mm).ok_or_else(|| {
-                LmtError::InvalidInput(format!(
+                VoloError::InvalidInput(format!(
                     "--root cabinet '{rid}' has degenerate corners (zero-area or collinear)"
                 ))
             })?)
@@ -225,7 +225,7 @@ pub fn run_export_pose_obj(
         Vec::with_capacity(report.cabinet_poses.len());
     for cab in &report.cabinet_poses {
         let (col, row) = parse_cabinet_col_row(&cab.cabinet_id).ok_or_else(|| {
-            LmtError::InvalidInput(format!(
+            VoloError::InvalidInput(format!(
                 "cabinet_id {:?} not parseable as V<col>_R<row>",
                 cab.cabinet_id
             ))
@@ -356,9 +356,9 @@ pub fn run_export_pose_obj(
 /// FIX-13 ②: pose-obj 不支持 unreal——pose-report 帧（+Y up / +Z outward）
 /// 没有对账验证过的 UE 适配；core 的 `adapt_to_target` 假设的是 model 帧
 /// （+Z up / +Y normal），直接套会静默产出错轴错单位的文件。宁可拒绝。
-fn reject_unreal_pose_obj(target: TargetSoftware) -> LmtResult<()> {
+fn reject_unreal_pose_obj(target: TargetSoftware) -> VoloResult<()> {
     if target == TargetSoftware::Unreal {
-        return Err(LmtError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "pose-obj does not support target 'unreal' (no verified pose-report→UE \
              frame adaptation; refusing to emit a silently-wrong file). Export \
              'neutral' and convert in your DCC, or use `lmt export obj <run_id> unreal` \
@@ -377,7 +377,7 @@ fn reject_unreal_pose_obj(target: TargetSoftware) -> LmtResult<()> {
 fn load_screen_mapping_cells(
     path: &Path,
     panels: &[(String, u32, u32, [[f64; 3]; 4])],
-) -> LmtResult<std::collections::HashMap<(u32, u32), [f64; 4]>> {
+) -> VoloResult<std::collections::HashMap<(u32, u32), [f64; 4]>> {
     let mapping: volo_shared::dto::ScreenMappingFile =
         serde_json::from_slice(&std::fs::read(path)?)?;
     let mut rects: std::collections::HashMap<(u32, u32), [i64; 4]> =
@@ -385,14 +385,14 @@ fn load_screen_mapping_cells(
     let (mut canvas_w, mut canvas_h) = (0i64, 0i64);
     for cab in &mapping.cabinets {
         let (col, row) = parse_cabinet_col_row(&cab.cabinet_id).ok_or_else(|| {
-            LmtError::InvalidInput(format!(
+            VoloError::InvalidInput(format!(
                 "screen_mapping cabinet_id {:?} not parseable as V<col>_R<row>",
                 cab.cabinet_id
             ))
         })?;
         let [x, y, w, h] = cab.input_rect_px;
         if x < 0 || y < 0 || w <= 0 || h <= 0 {
-            return Err(LmtError::InvalidInput(format!(
+            return Err(VoloError::InvalidInput(format!(
                 "screen_mapping cabinet {:?} has degenerate input_rect_px {:?}",
                 cab.cabinet_id, cab.input_rect_px
             )));
@@ -404,7 +404,7 @@ fn load_screen_mapping_cells(
     let mut cells = std::collections::HashMap::new();
     for (cid, col, row, _) in panels {
         let [x, y, w, h] = *rects.get(&(*col, *row)).ok_or_else(|| {
-            LmtError::InvalidInput(format!(
+            VoloError::InvalidInput(format!(
                 "pose-report cabinet {cid:?} (V{col:03}_R{row:03}) has no \
                  input_rect_px entry in the screen_mapping"
             ))
@@ -432,11 +432,11 @@ pub fn check_pose_obj_inputs(
     root: Option<&str>,
     split: bool,
     screen_mapping: Option<&Path>,
-) -> LmtResult<()> {
+) -> VoloResult<()> {
     // dry-run 与 execute 对齐:unreal 假出口拒绝(FIX-13 ②)。
     reject_unreal_pose_obj(parse_target(target)?)?;
     if split && screen_mapping.is_some() {
-        return Err(LmtError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "--screen-mapping shapes the merged UV atlas; --split files each carry \
              their own full [0,1] UV (disguise assigns per-cabinet feed rects natively) \
              — drop one of the two flags"
@@ -446,13 +446,13 @@ pub fn check_pose_obj_inputs(
     let report: CabinetPoseReportFile =
         serde_json::from_slice(&std::fs::read(pose_report_path)?)?;
     if report.cabinet_poses.is_empty() {
-        return Err(LmtError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "pose report has no cabinet_poses".into(),
         ));
     }
     // dry-run 与 execute 对齐：align_to_nominal report 拒 --root。
     if report.frame.gauge_strategy == PoseReportGauge::AlignToNominal && root.is_some() {
-        return Err(LmtError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "align_to_nominal report is already in the design frame; --root would override it".into(),
         ));
     }
@@ -465,7 +465,7 @@ pub fn check_pose_obj_inputs(
     let (cols, _rows) = infer_grid_dims(&ids)?;
     if let Some(rid) = root {
         if !report.cabinet_poses.iter().any(|c| c.cabinet_id == rid) {
-            return Err(LmtError::NotFound(format!(
+            return Err(VoloError::NotFound(format!(
                 "--root cabinet '{rid}' not in pose report"
             )));
         }
@@ -482,7 +482,7 @@ pub fn check_pose_obj_inputs(
             })
             .collect();
         if center_column_forward(&panels, cols).is_none() {
-            return Err(LmtError::InvalidInput(
+            return Err(VoloError::InvalidInput(
                 "cannot auto-orient: wall normal near-vertical or no usable cabinets; pass --root <cabinet_id>".into(),
             ));
         }
@@ -545,15 +545,15 @@ fn parse_cabinet_col_row(cabinet_id: &str) -> Option<(u32, u32)> {
 /// 总列/行数 = max(col)+1 / max(row)+1。任一 id 不可解析 → InvalidInput。
 /// 越界 index（≥ MAX_GRID_DIM）也拒：既防 `max+1` 溢出（pose report 是外部文件，
 /// 可含 `V4294967295_R000` 这类极值），又与 GridTopology 的 cols/rows 上限一致。
-fn infer_grid_dims(ids: &[&str]) -> LmtResult<(u32, u32)> {
+fn infer_grid_dims(ids: &[&str]) -> VoloResult<(u32, u32)> {
     let mut max_col = 0u32;
     let mut max_row = 0u32;
     for id in ids {
         let (c, r) = parse_cabinet_col_row(id).ok_or_else(|| {
-            LmtError::InvalidInput(format!("cabinet_id {id:?} not parseable as V<col>_R<row>"))
+            VoloError::InvalidInput(format!("cabinet_id {id:?} not parseable as V<col>_R<row>"))
         })?;
         if c >= MAX_GRID_DIM || r >= MAX_GRID_DIM {
-            return Err(LmtError::InvalidInput(format!(
+            return Err(VoloError::InvalidInput(format!(
                 "cabinet_id {id:?} grid index out of range (must be < {MAX_GRID_DIM})"
             )));
         }
@@ -626,9 +626,9 @@ fn center_column_forward(
 fn apply_canonical_frame(
     panels: &mut [(String, u32, u32, [[f64; 3]; 4])],
     cols: u32,
-) -> LmtResult<()> {
+) -> VoloResult<()> {
     let fwd = center_column_forward(panels, cols).ok_or_else(|| {
-        LmtError::InvalidInput(
+        VoloError::InvalidInput(
             "cannot auto-orient: wall normal near-vertical or no usable cabinets; pass --root <cabinet_id>".into(),
         )
     })?;
@@ -767,14 +767,14 @@ pub fn resolve_export_dst(
 
 /// 从 reconstruction_runs 表读 `(project_path, screen_id)`,供 dry-run
 /// 在不读 report.json 的情况下解析默认导出路径。
-pub fn lookup_run_paths(db: Db, run_id: i64) -> LmtResult<(String, String)> {
+pub fn lookup_run_paths(db: Db, run_id: i64) -> VoloResult<(String, String)> {
     let conn = db.lock().unwrap();
     conn.query_row(
         "SELECT project_path, screen_id FROM reconstruction_runs WHERE id = ?1",
         [run_id],
         |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
     )
-    .map_err(|_| LmtError::NotFound(format!("run id {run_id}")))
+    .map_err(|_| VoloError::NotFound(format!("run id {run_id}")))
 }
 
 #[cfg(test)]
@@ -860,7 +860,7 @@ mod tests {
         // disguise 无 root → 预检拒(与 execute 的 apply_canonical_frame 一致)
         assert!(matches!(
             check_pose_obj_inputs(&rp, "disguise", None, false, None),
-            Err(LmtError::InvalidInput(_))
+            Err(VoloError::InvalidInput(_))
         ));
         // neutral 不走标准摆法 → 放行
         assert!(check_pose_obj_inputs(&rp, "neutral", None, false, None).is_ok());
@@ -948,7 +948,7 @@ mod tests {
         // 墙面朝上 → 无法定向 → InvalidInput(不 panic)
         let flat_up = [[-300.0, 0.0, -170.0], [300.0, 0.0, -170.0], [300.0, 0.0, 170.0], [-300.0, 0.0, 170.0]];
         let mut panels = vec![panel(0, 0, flat_up)];
-        assert!(matches!(apply_canonical_frame(&mut panels, 1), Err(LmtError::InvalidInput(_))));
+        assert!(matches!(apply_canonical_frame(&mut panels, 1), Err(VoloError::InvalidInput(_))));
     }
 
     const BENCH_REPORT: &str = r#"{
@@ -1195,10 +1195,10 @@ mod tests {
         .unwrap();
         let out = dir.path().join("ar.obj");
         let err = run_export_pose_obj(&rp, "neutral", &out, Some("V000_R000"), false, false, None).unwrap_err();
-        assert!(matches!(err, LmtError::InvalidInput(_)), "align + --root must be rejected, got {err:?}");
+        assert!(matches!(err, VoloError::InvalidInput(_)), "align + --root must be rejected, got {err:?}");
         // dry-run 必须同样拒(parity)。
         let derr = check_pose_obj_inputs(&rp, "neutral", Some("V000_R000"), false, None).unwrap_err();
-        assert!(matches!(derr, LmtError::InvalidInput(_)), "dry-run must also reject align + --root, got {derr:?}");
+        assert!(matches!(derr, VoloError::InvalidInput(_)), "dry-run must also reject align + --root, got {derr:?}");
     }
 
     #[test]
@@ -1381,10 +1381,10 @@ mod tests {
         let out = dir.path().join("u.obj");
         let err =
             run_export_pose_obj(&rp, "unreal", &out, None, false, false, None).unwrap_err();
-        assert!(matches!(err, LmtError::InvalidInput(_)), "got {err:?}");
+        assert!(matches!(err, VoloError::InvalidInput(_)), "got {err:?}");
         assert!(err.to_string().contains("unreal"));
         let derr = check_pose_obj_inputs(&rp, "unreal", None, false, None).unwrap_err();
-        assert!(matches!(derr, LmtError::InvalidInput(_)), "dry-run parity: {derr:?}");
+        assert!(matches!(derr, VoloError::InvalidInput(_)), "dry-run parity: {derr:?}");
     }
 
     /// FIX-13 ③:均匀布局的 screen_mapping 必须复现默认网格 UV(回归锚),
@@ -1462,12 +1462,12 @@ mod tests {
             &rp, "neutral", &dir.path().join("m.obj"), None, false, false, Some(&sm_missing),
         )
         .unwrap_err();
-        assert!(matches!(err, LmtError::InvalidInput(_)), "got {err:?}");
+        assert!(matches!(err, VoloError::InvalidInput(_)), "got {err:?}");
         let err = run_export_pose_obj(
             &rp, "neutral", &dir.path().join("s"), None, false, true, Some(&sm_uniform),
         )
         .unwrap_err();
-        assert!(matches!(err, LmtError::InvalidInput(_)), "split+mapping: {err:?}");
+        assert!(matches!(err, VoloError::InvalidInput(_)), "split+mapping: {err:?}");
     }
 
     #[test]
@@ -1492,7 +1492,7 @@ mod tests {
 
             let result = run_export_pose_obj(&rp, "neutral", &out, None, false, false, None);
             assert!(
-                matches!(result, Err(LmtError::InvalidInput(_))),
+                matches!(result, Err(VoloError::InvalidInput(_))),
                 "expected InvalidInput for cabinet_id={bad_id:?}, got {result:?}"
             );
         }
@@ -1530,7 +1530,7 @@ mod tests {
 
         // 未知 --root → NotFound
         let err = run_export_pose_obj(&rp, "neutral", &out, Some("V999_R999"), false, false, None).unwrap_err();
-        assert!(matches!(err, LmtError::NotFound(_)), "got {err:?}");
+        assert!(matches!(err, VoloError::NotFound(_)), "got {err:?}");
     }
 
     #[test]
@@ -1552,7 +1552,7 @@ mod tests {
         let ids = ["V000_R000", "V002_R000", "V001_R001"];
         assert_eq!(infer_grid_dims(&ids).unwrap(), (3, 2));
         let ids = ["V000_R000", "bad"];
-        assert!(matches!(infer_grid_dims(&ids), Err(LmtError::InvalidInput(_))));
+        assert!(matches!(infer_grid_dims(&ids), Err(VoloError::InvalidInput(_))));
     }
 
     #[test]
@@ -1567,12 +1567,12 @@ mod tests {
         // u32::MAX 可解析但 max+1 会溢出 → 必须先拒（外部 pose report 是系统边界）。
         assert!(matches!(
             infer_grid_dims(&["V4294967295_R000"]),
-            Err(LmtError::InvalidInput(_))
+            Err(VoloError::InvalidInput(_))
         ));
         // index == MAX_GRID_DIM 越界（合法上限是 < MAX_GRID_DIM）。
         assert!(matches!(
             infer_grid_dims(&["V000_R10000"]),
-            Err(LmtError::InvalidInput(_))
+            Err(VoloError::InvalidInput(_))
         ));
     }
 

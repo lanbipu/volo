@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use serde::Serialize;
-use volo_shared::error::{LmtError, LmtResult};
+use volo_shared::error::{VoloError, VoloResult};
 
 /// The two argv-based sidecars this bridge can spawn. Kept as an explicit enum
 /// (not a free-form string) so the frontend can't ask us to exec an arbitrary
@@ -32,11 +32,11 @@ enum Sidecar {
 }
 
 impl Sidecar {
-    fn parse(name: &str) -> LmtResult<Self> {
+    fn parse(name: &str) -> VoloResult<Self> {
         match name {
             "vpcal" => Ok(Sidecar::Vpcal),
             "tracksim" => Ok(Sidecar::Tracksim),
-            other => Err(LmtError::InvalidInput(format!(
+            other => Err(VoloError::InvalidInput(format!(
                 "unknown sidecar '{other}' (expected 'vpcal' or 'tracksim')"
             ))),
         }
@@ -103,7 +103,7 @@ fn workspace_target_from_compile_time() -> Option<PathBuf> {
     None
 }
 
-fn locate(sidecar: Sidecar) -> LmtResult<PathBuf> {
+fn locate(sidecar: Sidecar) -> VoloResult<PathBuf> {
     let cli = sidecar.cli_name();
     let mut tried: Vec<String> = Vec::new();
 
@@ -160,7 +160,7 @@ fn locate(sidecar: Sidecar) -> LmtResult<PathBuf> {
         }
     }
 
-    Err(LmtError::NotFound(format!(
+    Err(VoloError::NotFound(format!(
         "sidecar '{cli}' not found; tried: {}",
         tried.join(", ")
     )))
@@ -180,14 +180,14 @@ pub struct SidecarOutput {
 /// minimal backend通路 so the Tauri host can reach both sidecars; richer
 /// streaming/UX is added once the feature designs land.
 #[tauri::command]
-pub fn spawn_sidecar(name: String, args: Vec<String>) -> LmtResult<SidecarOutput> {
+pub fn spawn_sidecar(name: String, args: Vec<String>) -> VoloResult<SidecarOutput> {
     let sidecar = Sidecar::parse(&name)?;
     let exe = locate(sidecar)?;
 
     let output = Command::new(&exe)
         .args(&args)
         .output()
-        .map_err(|e| LmtError::Io(format!("failed to spawn {}: {e}", exe.display())))?;
+        .map_err(|e| VoloError::Io(format!("failed to spawn {}: {e}", exe.display())))?;
 
     Ok(SidecarOutput {
         // 128 stands in for "killed by signal, no code" — keeps the field a
@@ -206,7 +206,7 @@ mod tests {
     fn parse_rejects_unknown_sidecar() {
         assert!(matches!(
             Sidecar::parse("bogus"),
-            Err(LmtError::InvalidInput(_))
+            Err(VoloError::InvalidInput(_))
         ));
         assert!(Sidecar::parse("vpcal").is_ok());
         assert!(Sidecar::parse("tracksim").is_ok());

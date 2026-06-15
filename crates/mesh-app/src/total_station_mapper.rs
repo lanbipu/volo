@@ -10,9 +10,9 @@
 
 use mesh_adapter_total_station::project as m1;
 use volo_shared::dto;
-use volo_shared::error::{LmtError, LmtResult};
+use volo_shared::error::{VoloError, VoloResult};
 
-pub fn map_to_adapter(cfg: &dto::ProjectConfig) -> LmtResult<m1::ProjectConfig> {
+pub fn map_to_adapter(cfg: &dto::ProjectConfig) -> VoloResult<m1::ProjectConfig> {
     use std::collections::HashMap;
 
     let mut screens: HashMap<String, m1::ScreenConfig> = HashMap::new();
@@ -34,7 +34,7 @@ pub fn map_to_adapter(cfg: &dto::ProjectConfig) -> LmtResult<m1::ProjectConfig> 
 
     // M1 validate first — catches no-screens, bad cabinet dims, distinct refs,
     // etc. with adapter-authored messages.
-    m1_cfg.validate().map_err(LmtError::from)?;
+    m1_cfg.validate().map_err(VoloError::from)?;
 
     // Then the GUI-side extra check: grid names must use a known screen ID
     // as prefix. M1 validate doesn't parse names, so this catches typos /
@@ -51,7 +51,7 @@ pub fn map_to_adapter(cfg: &dto::ProjectConfig) -> LmtResult<m1::ProjectConfig> 
     Ok(m1_cfg)
 }
 
-fn check_grid_name_prefix(label: &str, name: &str, screen_ids: &[&str]) -> LmtResult<()> {
+fn check_grid_name_prefix(label: &str, name: &str, screen_ids: &[&str]) -> VoloResult<()> {
     // Longest-prefix-first so e.g. {"MAIN", "MAIN_AUX"} both with "MAIN_AUX_V001_R001"
     // resolves to MAIN_AUX, not MAIN. After matching a screen prefix, the suffix
     // must be exactly `_V<digits>_R<digits>` — no other shape is a valid grid name.
@@ -69,7 +69,7 @@ fn check_grid_name_prefix(label: &str, name: &str, screen_ids: &[&str]) -> LmtRe
             return Ok(());
         }
     }
-    Err(LmtError::InvalidInput(format!(
+    Err(VoloError::InvalidInput(format!(
         "coordinate_system.{label} = {name:?} does not look like \
          '<screen_id>_V###_R###' for any screen in this project (known: {screen_ids:?})"
     )))
@@ -103,7 +103,7 @@ fn split_digits(s: &str) -> Option<(&str, &str)> {
     Some((&s[..split], &s[split..]))
 }
 
-fn map_screen(s: &dto::ScreenConfig) -> LmtResult<m1::ScreenConfig> {
+fn map_screen(s: &dto::ScreenConfig) -> VoloResult<m1::ScreenConfig> {
     let shape_prior = match &s.shape_prior {
         dto::ShapePriorConfig::Flat => m1::ShapePriorConfig::Flat,
         dto::ShapePriorConfig::Curved {
@@ -115,7 +115,7 @@ fn map_screen(s: &dto::ScreenConfig) -> LmtResult<m1::ScreenConfig> {
                     radius_mm: *radius_mm,
                 }
             } else {
-                return Err(LmtError::InvalidInput(
+                return Err(VoloError::InvalidInput(
                     "shape_prior Curved with non-empty fold_seams_at_columns is not supported \
                      by M1 adapter (radius would be lost); pick pure Curved (drop seams) or \
                      switch to Folded"
@@ -133,11 +133,11 @@ fn map_screen(s: &dto::ScreenConfig) -> LmtResult<m1::ScreenConfig> {
     let bottom_completion = s
         .bottom_completion
         .as_ref()
-        .map(|bc| -> LmtResult<m1::BottomCompletion> {
+        .map(|bc| -> VoloResult<m1::BottomCompletion> {
             let fallback_method = match bc.fallback_method.as_str() {
                 "vertical" | "vertical_extension" => m1::FallbackMethod::Vertical,
                 other => {
-                    return Err(LmtError::InvalidInput(format!(
+                    return Err(VoloError::InvalidInput(format!(
                         "bottom_completion.fallback_method {other:?} is not supported; \
                          M1 currently accepts vertical / vertical_extension"
                     )));
