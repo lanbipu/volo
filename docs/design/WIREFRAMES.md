@@ -95,6 +95,7 @@
 - ◆ 左：**Finding 层级树**（`FindingHierarchy`）：每行 hostname、file_path、severity badge、rule_id、symptom 摘要。
 - ◆ 右：**Finding 详情**（`FindingDetail`）：severity badge + 规则 + 文件 + 行号；3 列卡片(What's Wrong / Why It Matters / Symptom)；**代码 diff**(`snippet_before` critical 调 / `snippet_after` healthy 调)；操作 Apply Suggestion / Skip(Custom Edit、Open File 现为占位)。
   - ⤴ **补强**：跨机批量改 INI 时，Apply 前增加"影响机器列表"(见 1.6)。
+- ✚ **缓存留存提醒卡片**（R027/R028，Info 级）：当扫描发现 Shared DDC / Zen 跑在**默认过期窗口**上，在树顶给一张提醒卡——「当前留存=默认 N 天，长期不访问会被回收」+ 主按钮**「设为项目期常驻」**（FS→`gc_pause` / Zen→`zen_gc_pause`）+ 次按钮**「恢复默认」**（`gc_resume` / `zen_gc_resume`）。**不复用 Apply Suggestion**（这两条 finding 是 `manual`）。详见 `CACHE-UX.md §3.6.1`、`CACHE-CAPABILITIES.md §2`。
 
 **健康**
 - ◆ `UecmScoreTile`(集群评分 score/tone/verdict) + 4 KPI(healthy/warning/critical/offline)。

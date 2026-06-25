@@ -152,6 +152,8 @@ pub fn run_rules(file: &ParsedFile, env: &EnvVarState) -> Vec<Finding> {
         "PSO cache file loading is disabled or not configured.",
         "Without this CVar collected PSO cache files are not loaded at runtime."));
     out.extend(rule_r025(file, env));
+    out.extend(rule_r027(file));
+    out.extend(rule_r028(file));
     out
 }
 
@@ -616,6 +618,87 @@ fn rule_r025(file: &ParsedFile, env: &EnvVarState) -> Vec<Finding> {
     out
 }
 
+// ── Retention reminders R027 (FileSystem) / R028 (Zen) ───────────────────────
+//
+// These two flag the "running on default cache expiry" situation and are
+// Info-severity *reminders*, not problems. They use RecommendedAction::Manual
+// on purpose: the actual write is done by the dedicated, reversible toggles
+// (`ini gc-pause/gc-resume` for FileSystem, `ini zen-gc-pause/zen-gc-resume`
+// for Zen) — NOT by auto-applying the finding. That keeps R027 from issuing a
+// "set DeleteUnused=false" auto-fix that would contradict R015's "set true".
+//
+// Known gap: both only inspect the *explicitly declared* node/section in the
+// scanned file. A project that inherits the engine default entirely (no Shared
+// node / no [Zen.AutoLaunch] of its own) is not flagged — that would require a
+// full BaseEngine→Default→User config merge.
+
+fn rule_r027(file: &ParsedFile) -> Vec<Finding> {
+    let Some(n) = find_shared_backend(file) else { return vec![]; };
+    // FileSystem-only concept: DeleteUnused / UnusedFileAge are meaningless on a
+    // Zen/other-typed Shared node. R011 already flags a non-FileSystem Type as
+    // critical; don't pile misleading retention advice on top of it.
+    if matches!(get_field(n, "Type"), Some(t) if !t.eq_ignore_ascii_case("FileSystem")) {
+        return vec![];
+    }
+    // GC already explicitly off → caches persist → nothing to remind about.
+    if matches!(get_field(n, "DeleteUnused"), Some(v) if v.eq_ignore_ascii_case("false")) {
+        return vec![];
+    }
+    let age = get_field(n, "UnusedFileAge");
+    // UnusedFileAge already pinned well beyond the default window → intentional.
+    if let Some(days) = age.and_then(|v| v.parse::<i64>().ok()) {
+        if days > crate::core::ddc_retention::FS_REMINDER_MAX_DAYS {
+            return vec![];
+        }
+    }
+    let cur_delete = get_field(n, "DeleteUnused").unwrap_or("(unset, defaults true)");
+    let age_desc = age.unwrap_or("unset (engine default ~15 days)");
+    vec![bg_finding(
+        file, n, "R027", Severity::Info, "DeleteUnused", cur_delete, "false",
+        &format!("Shared DDC runs on default expiry: UnusedFileAge={}, GC active — unused derived data is reclaimed after the default window.", age_desc),
+        "Caches still needed mid-project get reclaimed and trigger recompiles. Pause GC (DeleteUnused=false, via `ini gc-pause`) to keep the Shared DDC for the project's duration; `gc-resume` restores the default.",
+        RecommendedAction::Manual,
+    )]
+}
+
+fn rule_r028(file: &ParsedFile) -> Vec<Finding> {
+    // Only remind when the project explicitly configures [Zen.AutoLaunch]
+    // (avoids nagging projects that don't use Zen at all).
+    let Some(section) = file.sections.iter()
+        .find(|s| s.name.eq_ignore_ascii_case("Zen.AutoLaunch")) else { return vec![]; };
+    let extra = key(section, "ExtraArgs");
+    let current = extra
+        .and_then(|k| crate::core::ddc_retention::parse_gc_cache_duration_seconds(&k.value));
+    // GC window already raised well past the default → intentional.
+    if let Some(secs) = current {
+        if secs > crate::core::ddc_retention::ZEN_REMINDER_MAX_SECONDS {
+            return vec![];
+        }
+    }
+    let cur_desc = match current {
+        Some(s) => format!("{} s (~{} days)", s, s / 86_400),
+        None => "unset (engine default 1209600 s = 14 days)".to_string(),
+    };
+    vec![Finding {
+        rule_id: "R028".into(),
+        severity: Severity::Info,
+        category: file.category,
+        file_path: file.path.clone(),
+        section: Some("Zen.AutoLaunch".into()),
+        key_name: Some("ExtraArgs".into()),
+        line_number: extra.map(|k| k.line_number as i64),
+        snippet_before: format!("--gc-cache-duration-seconds = {}", cur_desc),
+        snippet_after: Some(format!(
+            "--gc-cache-duration-seconds {}",
+            crate::core::ddc_retention::ZEN_NEVER_EXPIRE_SECONDS
+        )),
+        recommended_action: RecommendedAction::Manual,
+        recommended_value: None,
+        symptom: format!("Zen Server runs on default GC retention ({}); unused cache is reclaimed after that window.", cur_desc),
+        rationale: "Zen has no DeleteUnused switch; to keep cache for the whole project raise --gc-cache-duration-seconds in [Zen.AutoLaunch] ExtraArgs (via `ini zen-gc-pause`). `zen-gc-resume` restores the 14-day default.".into(),
+    }]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -868,6 +951,33 @@ mod tests {
     #[test] fn r022_fires_when_missing() { assert_fires("R022", &ddb_project(r"Shared=(Type=FileSystem, Path=\\NAS)")); }
     #[test] fn r022_silent_when_present() { assert_silent("R022", &ddb_project(r"Shared=(Type=FileSystem, Path=\\NAS, EnvPathOverride=UE-SharedDataCachePath)")); }
     #[test] fn r023_fires_when_missing() { assert_fires("R023", &ddb_project(r"Shared=(Type=FileSystem, Path=\\NAS)")); }
+
+    // ── R027 (FileSystem default-retention reminder) ──────────────────────────
+    #[test] fn r027_fires_when_age_unset_and_gc_active() { assert_fires("R027", &ddb_project(r"Shared=(Type=FileSystem, Path=\\NAS)")); }
+    #[test] fn r027_fires_when_age_short() { assert_fires("R027", &ddb_project(r"Shared=(Type=FileSystem, UnusedFileAge=10)")); }
+    #[test] fn r027_silent_when_gc_paused() { assert_silent("R027", &ddb_project(r"Shared=(Type=FileSystem, DeleteUnused=false)")); }
+    #[test] fn r027_silent_when_age_pinned_long() { assert_silent("R027", &ddb_project(r"Shared=(Type=FileSystem, UnusedFileAge=36500)")); }
+    #[test] fn r027_silent_on_non_filesystem_shared() { assert_silent("R027", &ddb_project(r"Shared=(Type=Zen, Host=x, Namespace=y)")); }
+
+    // ── R028 (Zen default-retention reminder) ─────────────────────────────────
+    fn zen_autolaunch(extra_args: Option<&str>) -> ParsedFile {
+        let keys = match extra_args {
+            Some(v) => vec![ParsedKey { name: "ExtraArgs".into(), value: v.into(), line_number: 3 }],
+            None => vec![],
+        };
+        ParsedFile {
+            path: r"C:\Project\Config\DefaultEngine.ini".into(),
+            category: Category::Project,
+            sections: vec![ParsedSection { name: "Zen.AutoLaunch".into(), keys, backend_nodes: vec![] }],
+        }
+    }
+    #[test] fn r028_fires_on_default_duration() { assert_fires("R028", &zen_autolaunch(Some("--http asio --gc-cache-duration-seconds 1209600 --quiet"))); }
+    #[test] fn r028_fires_when_flag_absent() { assert_fires("R028", &zen_autolaunch(Some("--http asio --quiet"))); }
+    #[test] fn r028_silent_when_duration_long() { assert_silent("R028", &zen_autolaunch(Some("--gc-cache-duration-seconds 3153600000"))); }
+    #[test] fn r028_silent_when_no_zen_section() {
+        let f = ParsedFile { path: r"C:\Project\Config\DefaultEngine.ini".into(), category: Category::Project, sections: vec![] };
+        assert_silent("R028", &f);
+    }
 
     #[test]
     fn r025_fires_when_project_shared_pref_masks_env() {

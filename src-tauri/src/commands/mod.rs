@@ -6,6 +6,7 @@ pub mod deploy;
 pub mod ddc_pak;
 pub mod discovery;
 pub mod env_vars;
+pub mod gc;
 pub mod gpu_consistency;
 pub mod health_check;
 pub mod ini_editor;

@@ -98,6 +98,8 @@ pub fn operations() -> &'static [Operation] {
         Operation { operation_id: "ini.backend_graph",         summary: "Read/write/scan [DerivedDataBackendGraph] tuple nodes",           cli_command: "voloctl uecm ini backend-graph",          side_effects: SideEffects{writes:true, external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
         Operation { operation_id: "ini.gc_pause",              summary: "Pause Shared DDC GC (DeleteUnused=false)",                        cli_command: "voloctl uecm ini gc-pause",               side_effects: SideEffects{writes:true, external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
         Operation { operation_id: "ini.gc_resume",             summary: "Resume Shared DDC GC (DeleteUnused=true)",                        cli_command: "voloctl uecm ini gc-resume",              side_effects: SideEffects{writes:true, external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
+        Operation { operation_id: "ini.zen_gc_pause",          summary: "Pause Zen Server GC (--gc-cache-duration-seconds ~100y)",         cli_command: "voloctl uecm ini zen-gc-pause",           side_effects: SideEffects{writes:true, external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
+        Operation { operation_id: "ini.zen_gc_resume",         summary: "Restore Zen Server GC retention window (default 14 days)",        cli_command: "voloctl uecm ini zen-gc-resume",          side_effects: SideEffects{writes:true, external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
         Operation { operation_id: "zen.status",                summary: "Read-only view of latest probe per endpoint",                     cli_command: "voloctl uecm zen status",                 side_effects: SideEffects{writes:false,external_calls:false,idempotent:true},  exit_codes: &[0,3] },
         Operation { operation_id: "zen.probe",                 summary: "Probe one or more endpoints now and persist each",                cli_command: "voloctl uecm zen probe",                  side_effects: SideEffects{writes:true, external_calls:true, idempotent:true},  exit_codes: &[0,2,3] },
         Operation { operation_id: "zen.cache_stats",           summary: "Fetch /stats + /stats/z$ now and persist a row",                  cli_command: "voloctl uecm zen cache-stats",            side_effects: SideEffects{writes:true, external_calls:true, idempotent:true},  exit_codes: &[0,2,3] },
@@ -224,6 +226,8 @@ pub fn operation_id_for(cmd: &Domain) -> &'static str {
             crate::args::IniAction::BackendGraph { .. } => "ini.backend_graph",
             crate::args::IniAction::GcPause { .. } => "ini.gc_pause",
             crate::args::IniAction::GcResume { .. } => "ini.gc_resume",
+            crate::args::IniAction::ZenGcPause { .. } => "ini.zen_gc_pause",
+            crate::args::IniAction::ZenGcResume { .. } => "ini.zen_gc_resume",
         },
         Domain::Gpu { action } => match action {
             crate::args::GpuAction::Matrix => "gpu.matrix",
@@ -344,7 +348,8 @@ pub fn output_schema_for(operation_id: &str) -> serde_json::Value {
         | "pso.collect" | "pso.distribute"
         | "health.run"
         | "ini.set" | "ini.remove" | "ini.scan" | "ini.apply" | "ini.skip"
-        | "ini.gc_pause" | "ini.gc_resume" => event_schema(),
+        | "ini.gc_pause" | "ini.gc_resume"
+        | "ini.zen_gc_pause" | "ini.zen_gc_resume" => event_schema(),
         // zen ops that emit ONLY an Event stream (incl. dry-run plan):
         "zen.probe" | "zen.cache_stats" | "zen.detect_binary"
         | "zen.unregister" | "zen.change_role" | "zen.apply_config" => event_schema(),

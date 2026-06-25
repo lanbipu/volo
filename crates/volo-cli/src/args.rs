@@ -577,6 +577,36 @@ pub enum IniAction {
         #[command(flatten)]
         cred: crate::credential_args::CredentialArgs,
     },
+    /// Pause Zen Server GC: set [Zen.AutoLaunch] ExtraArgs --gc-cache-duration-seconds
+    /// to ~100 years (cache never expires). Reversible with `zen-gc-resume`.
+    ZenGcPause {
+        #[command(flatten)]
+        target: crate::host_args::HostArgs,
+        #[arg(long)]
+        project_id: i64,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        dry_run: bool,
+        #[command(flatten)]
+        cred: crate::credential_args::CredentialArgs,
+    },
+    /// Restore Zen Server GC retention window (--gc-cache-duration-seconds,
+    /// default 1209600 = the engine's 14-day default).
+    ZenGcResume {
+        #[command(flatten)]
+        target: crate::host_args::HostArgs,
+        #[arg(long)]
+        project_id: i64,
+        #[arg(long, default_value_t = 1_209_600)]
+        gc_seconds: u64,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        dry_run: bool,
+        #[command(flatten)]
+        cred: crate::credential_args::CredentialArgs,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1802,6 +1832,39 @@ mod tests {
         match cli.command {
             Domain::Ini { action: IniAction::GcResume { unused_file_age, .. } } => {
                 assert_eq!(unused_file_age, 30);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_ini_zen_gc_pause() {
+        let cli = Cli::try_parse_from([
+            "uecm-cli", "ini", "zen-gc-pause",
+            "--hosts", "R01",
+            "--project-id", "7",
+            "--cred-alias", "admin", "--yes",
+        ]).unwrap();
+        match cli.command {
+            Domain::Ini { action: IniAction::ZenGcPause { project_id, yes, .. } } => {
+                assert_eq!(project_id, 7);
+                assert!(yes);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_ini_zen_gc_resume_default_and_override() {
+        // default gc_seconds = 14-day engine default
+        let cli = Cli::try_parse_from([
+            "uecm-cli", "ini", "zen-gc-resume",
+            "--hosts", "R01", "--project-id", "1",
+            "--cred-alias", "admin", "--yes",
+        ]).unwrap();
+        match cli.command {
+            Domain::Ini { action: IniAction::ZenGcResume { gc_seconds, .. } } => {
+                assert_eq!(gc_seconds, 1_209_600);
             }
             _ => panic!("wrong variant"),
         }

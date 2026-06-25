@@ -77,6 +77,22 @@
 | `skip_finding` | `finding_id` | |
 | `verify_pso_precaching` | `request{...}`（project_paths 必填） | |
 
+> **新增提醒规则 R027 / R028（缓存留存默认探测）**：扫描会在「缓存跑在默认过期策略上」时产出 `Info` 级 `IniFinding`（提醒，非问题）。
+> - **R027（FileSystem）**：项目显式声明了 `[DerivedDataBackendGraph] Shared` 节点，但 `DeleteUnused` 未关、`UnusedFileAge` 缺失或 ≤30 天 → 提醒可设为项目期常驻。
+> - **R028（Zen）**：项目显式配置了 `[Zen.AutoLaunch]`，但 `ExtraArgs` 的 `--gc-cache-duration-seconds` 缺失或 ≤30 天 → 同。
+> - 两者 `recommended_action=manual`（**不走 `apply_finding` 自动修**，避免与 R015「DeleteUnused=true」矛盾）；真正的写操作走下面的 GC 开关命令。
+> - **已知盲区**：只看「显式声明」。纯继承引擎默认（项目里没有 Shared 节点 / 没有 `[Zen.AutoLaunch]`）的情况**不报**——要全 BaseEngine→Default→User 配置合并才能判，本期不做。
+
+### DDC 留存 / GC 开关（"缓存永不过期 ↔ 恢复默认"）
+> 字段以 UE 源码实测为准：FileSystem 的留存字段是 **`UnusedFileAge`**（非 `DaysToKeep`；引擎默认 15 天、BaseEngine `Shared` 出厂 10），GC 总开关是 **`DeleteUnused`**（默认 `true`）；Zen 没有 `DeleteUnused`，留存靠 `[Zen.AutoLaunch] ExtraArgs` 的 **`--gc-cache-duration-seconds`**（默认 1209600 秒 = 14 天）。"永不过期" = FS 停 GC（`DeleteUnused=false`）/ Zen 把秒数设到约 100 年。均写**项目 `DefaultEngine.ini`**。
+
+| 命令 | 关键参数 | 标签 |
+|---|---|---|
+| `gc_pause` | `machine_id, project_id` | 🔴 FS 停 GC（`DeleteUnused=false`） |
+| `gc_resume` | `machine_id, project_id, unused_file_age`(天) | 🔴 FS 恢复 GC（`DeleteUnused=true` + 回填 `UnusedFileAge`，默认 10） |
+| `zen_gc_pause` | `machine_id, project_id` | 🔴 Zen 设 `--gc-cache-duration-seconds` ≈100 年 |
+| `zen_gc_resume` | `machine_id, project_id, gc_seconds` | 🔴 Zen 恢复留存窗口（默认 1209600 = 14 天） |
+
 ### 共享 DDC
 | 命令 | 关键参数 | 标签 |
 |---|---|---|

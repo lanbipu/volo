@@ -187,6 +187,25 @@ ini skip  <id> 跳过
 ```
 UX 要点（⤴ 重点补强）：UECM 现状 `IniEditModal` 有 backup 反馈但**无 diff 预览**。Volo 在 `apply` 前必须走**确认抽屉**（§4）：① 变更 diff（`snippet_before/after`）② **影响机器列表**（跨机批量改 INI 时）③ backup 路径。`ini set/remove` 直接编辑往返一致，破坏性需 `--yes`。
 
+#### 3.6.1 缓存留存默认探测 → 一键设长（提醒卡片）
+
+来自用户需求：缓存默认超过 8/10 天不访问就被引擎 GC 清掉；要能**自动探测留存是否为默认**，是则**提醒**用户一键把它设得很长（项目期常驻）。落地：
+
+```
+ini scan          扫描时一并产出 R027(FileSystem) / R028(Zen) 的 Info 级 finding
+ini gc-pause      FS 停 GC（DeleteUnused=false）—— 缓存项目期常驻
+ini gc-resume     FS 恢复默认（DeleteUnused=true + UnusedFileAge，默认 10 天）
+ini zen-gc-pause  Zen 把 --gc-cache-duration-seconds 设到约 100 年
+ini zen-gc-resume Zen 恢复留存窗口（默认 1209600 秒 = 14 天）
+```
+
+UX 要点：
+- R027/R028 是 **Info 级提醒**（不是 critical/warning），在一致性段以**提醒卡片**呈现，文案点明「当前留存=默认 N 天，长期不访问会被回收」+ 一个「设为项目期常驻」主按钮。
+- 主按钮走 **GC 开关命令**（`gc_pause` / `zen_gc_pause`），**不走 `apply_finding`**——这两条 finding 是 `manual`，自动修会与 R015(DeleteUnused=true) 矛盾。卡片同时给「恢复默认」次按钮（`gc_resume` / `zen_gc_resume`）形成可逆开关。
+- 仍是破坏性写远端 INI → 走 §4 确认抽屉（diff + 影响机器 + backup + `--yes`）。
+- **字段以 UE 源码为准**：FS 是 `UnusedFileAge`（非 `DaysToKeep`，默认 15 天）+ `DeleteUnused`；Zen 是 `ExtraArgs --gc-cache-duration-seconds`（非 `DataRetentionDays`，默认 14 天）。
+- **盲区**（卡片不要暗示已覆盖）：只在项目**显式声明**了 Shared 节点 / `[Zen.AutoLaunch]` 时探测；纯继承引擎默认的项目本期不报。
+
 ### 3.7 健康检查（◆，健康段，含前置刷新）
 
 ```
@@ -211,7 +230,7 @@ UX 要点：plan → dry-run 预览（输出 steps）→ 执行。plan 校验失
 REPORT 反复验证了一组「安全行为」，是 Cache 页所有写操作的统一底座。Claude Design 应把它们设计成**一致的复用模式**，而非每处各搞一套：
 
 1. **预览优先（dry-run）** —— `env set` / `ini apply` / `deploy` 均支持 `--dry-run`。任何写操作 UI 默认先给「预览变更」。
-2. **二次确认（`--yes`）** —— 破坏性命令缺 `--yes` 一律拒绝（exit 2，提示 `pass --yes to confirm or --dry-run`），真实 id 也不误删（实测 `machine delete 1` 无 `--yes` 后机器仍在）。涉及：`machine delete` / `zen unregister` / `cred delete` / `zen service stop` / `ini gc-pause|gc-resume`。UI = 不可绕过的确认步骤。
+2. **二次确认（`--yes`）** —— 破坏性命令缺 `--yes` 一律拒绝（exit 2，提示 `pass --yes to confirm or --dry-run`），真实 id 也不误删（实测 `machine delete 1` 无 `--yes` 后机器仍在）。涉及：`machine delete` / `zen unregister` / `cred delete` / `zen service stop` / `ini gc-pause|gc-resume|zen-gc-pause|zen-gc-resume`。UI = 不可绕过的确认步骤。
 3. **自动备份** —— `ini apply` 自动建 `.bak.<timestamp>`。确认抽屉与日志面板都要回显 backup 路径。
 4. **统一「确认抽屉」**（⤴ 重点补强）—— 改 INI / 凭据 / 注册表 / 机器级 ENV 前，抽屉必须显示三件套：① 变更 **diff**；② **影响机器列表**（沿用 `BatchProgressTable` 形态：✓/✗/↻/— + 机器名 + IP + 消息）；③ **backup 路径**。再确认。（修复 UECM 现状：`IniEditModal` 无 diff、`CredentialDialog` 删除无二次确认。）
 5. **两阶段「探测 vs 纳管」** —— `machine scan` 纯探测**不写 DB**，`machine add` 才入库。UI 的「扫描/纳管」应是：扫出候选列表 → 勾选 → 纳管，不要扫到就直接入库。

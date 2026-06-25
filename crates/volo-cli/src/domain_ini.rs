@@ -219,19 +219,7 @@ pub fn handle(ctx: &mut Ctx<'_>, action: IniAction) -> UecmResult<()> {
                 return Ok(());
             }
             for host in &hosts {
-                let machine = data_machines::find_by_ip(db, host)?
-                    .ok_or_else(|| cache_core::error::UecmError::InvalidInput(
-                        format!("machine {} not in inventory", host)))?;
-                let location = cache_core::data::project_locations::get_for_project_machine(
-                    db, project_id, machine.id.unwrap())?
-                    .ok_or_else(|| cache_core::error::UecmError::InvalidInput(
-                        format!("project {} not located on {}", project_id, host)))?;
-                let ini = format!("{}\\Config\\DefaultEngine.ini",
-                    location.abs_path.trim_end_matches('\\'));
-                ini_editor::set_backend_field(
-                    host, &ini, "DerivedDataBackendGraph", "Shared",
-                    "DeleteUnused", "false",
-                )?;
+                cache_core::core::ddc_retention::pause_gc(db, project_id, host)?;
             }
             Ok(())
         }
@@ -249,24 +237,50 @@ pub fn handle(ctx: &mut Ctx<'_>, action: IniAction) -> UecmResult<()> {
                         "unused_file_age": unused_file_age}));
                 return Ok(());
             }
-            let age_str = unused_file_age.to_string();
             for host in &hosts {
-                let machine = data_machines::find_by_ip(db, host)?
-                    .ok_or_else(|| cache_core::error::UecmError::InvalidInput(
-                        format!("machine {} not in inventory", host)))?;
-                let location = cache_core::data::project_locations::get_for_project_machine(
-                    db, project_id, machine.id.unwrap())?
-                    .ok_or_else(|| cache_core::error::UecmError::InvalidInput(
-                        format!("project {} not located on {}", project_id, host)))?;
-                let ini = format!("{}\\Config\\DefaultEngine.ini",
-                    location.abs_path.trim_end_matches('\\'));
-                ini_editor::set_backend_field(
-                    host, &ini, "DerivedDataBackendGraph", "Shared",
-                    "DeleteUnused", "true",
+                cache_core::core::ddc_retention::resume_gc(db, project_id, host, unused_file_age)?;
+            }
+            Ok(())
+        }
+        IniAction::ZenGcPause { target, project_id, yes, dry_run, cred } => {
+            let hosts: Vec<String> = match target.require_one()? {
+                HostTarget::Single(h) => vec![h],
+                HostTarget::Batch(hs) => hs,
+            };
+            let outcome = destructive::check(yes, dry_run, "ini.zen-gc-pause")?;
+            let db = ctx.require_db()?;
+            cred.preflight(db)?;
+            if outcome == Outcome::DryRun {
+                destructive::emit_plan(ctx.emitter.as_mut(), "ini.zen-gc-pause",
+                    serde_json::json!({"hosts": hosts, "project_id": project_id,
+                        "gc_seconds": cache_core::core::ddc_retention::ZEN_NEVER_EXPIRE_SECONDS}));
+                return Ok(());
+            }
+            for host in &hosts {
+                cache_core::core::ddc_retention::set_zen_gc_duration(
+                    db, project_id, host,
+                    cache_core::core::ddc_retention::ZEN_NEVER_EXPIRE_SECONDS,
                 )?;
-                ini_editor::set_backend_field(
-                    host, &ini, "DerivedDataBackendGraph", "Shared",
-                    "UnusedFileAge", &age_str,
+            }
+            Ok(())
+        }
+        IniAction::ZenGcResume { target, project_id, gc_seconds, yes, dry_run, cred } => {
+            let hosts: Vec<String> = match target.require_one()? {
+                HostTarget::Single(h) => vec![h],
+                HostTarget::Batch(hs) => hs,
+            };
+            let outcome = destructive::check(yes, dry_run, "ini.zen-gc-resume")?;
+            let db = ctx.require_db()?;
+            cred.preflight(db)?;
+            if outcome == Outcome::DryRun {
+                destructive::emit_plan(ctx.emitter.as_mut(), "ini.zen-gc-resume",
+                    serde_json::json!({"hosts": hosts, "project_id": project_id,
+                        "gc_seconds": gc_seconds}));
+                return Ok(());
+            }
+            for host in &hosts {
+                cache_core::core::ddc_retention::set_zen_gc_duration(
+                    db, project_id, host, gc_seconds,
                 )?;
             }
             Ok(())
