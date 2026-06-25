@@ -34,3 +34,6 @@ __pycache__/
 
 # git worktrees（git worktree add 在此创建，不入主仓）；.claude/commands 等配置仍入库
 .claude/worktrees/
+
+# Miro 板本地镜像（miro-code-spec 从 Miro 板抽取；板=规划真相、可重生覆盖，本地引用即可，不入库）
+.miro/
