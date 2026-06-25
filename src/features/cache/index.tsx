@@ -1,21 +1,10 @@
-import { Heading, Text } from "@react-spectrum/s2";
-import { style } from "@react-spectrum/s2/style" with { type: "macro" };
-
-// Cache 占位页 —— 实质功能待 Claude Design 设计稿后实现。
-export default function Cache() {
-  return (
-    <div
-      className={style({
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        gap: 8,
-      })}
-    >
-      <Heading level={2} styles={style({ font: "heading-lg" })}>
-        缓存
-      </Heading>
-      <Text>功能待 Claude Design 设计稿后实现</Text>
-    </div>
-  );
-}
+// Volo · Cache 控制台 —— 缓存域对外出口（被 Tools 页与外壳组合）。
+// UECM 缓存控制台（集群总览 + DDC 管理），移植自 Claude Design handoff 原型；接真 Tauri 命令。
+export { CacheProvider, useCache } from "./state/store";
+export { MachinesProvider } from "./state/data";
+export { LeftNav } from "./shell/LeftNav";
+export { LogPanel } from "./shell/LogPanel";
+export { TaskDrawer } from "./shell/TaskDrawer";
+export { CacheActions } from "./CacheActions";
+export { CacheCenter } from "./CacheCenter";
+export { CacheOverlay } from "./CacheOverlay";

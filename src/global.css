@@ -1,0 +1,10 @@
+/* Volo · 全局基线 —— .volo-cache 把组件样式 scope 了，这里只管文档根的清零，让 .viewport 占满窗口。 */
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #000;
+  overflow: hidden;
+}

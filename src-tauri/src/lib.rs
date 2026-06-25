@@ -25,6 +25,81 @@ fn ping() -> String {
     format!("pong · volo v{}", env!("CARGO_PKG_VERSION"))
 }
 
+/// macOS 全局菜单栏（屏幕顶端，归操作系统所有）—— 把原型的
+/// 文件/编辑/视图/舞台/渲染/现场/窗口/帮助 放进系统菜单栏。编辑 / 窗口用系统预定义项，
+/// 其余暂为占位（待建设）。Windows/Linux 不走原生菜单（菜单画在窗口顶部，见前端 win-topbar）。
+#[cfg(target_os = "macos")]
+fn build_macos_menu<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> tauri::Result<tauri::menu::Menu<R>> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+
+    let placeholder = |title: &str| -> tauri::Result<Submenu<R>> {
+        Submenu::with_items(
+            app,
+            title,
+            true,
+            &[&MenuItem::new(app, "（待建设）", false, None::<&str>)?],
+        )
+    };
+
+    let app_menu = Submenu::with_items(
+        app,
+        "Volo",
+        true,
+        &[
+            &PredefinedMenuItem::about(app, Some("Volo"), None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, None)?,
+            &PredefinedMenuItem::hide_others(app, None)?,
+            &PredefinedMenuItem::show_all(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::quit(app, None)?,
+        ],
+    )?;
+    let edit = Submenu::with_items(
+        app,
+        "编辑",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+    let window = Submenu::with_items(
+        app,
+        "窗口",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::maximize(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::fullscreen(app, None)?,
+            &PredefinedMenuItem::close_window(app, None)?,
+        ],
+    )?;
+
+    Menu::with_items(
+        app,
+        &[
+            &app_menu,
+            &placeholder("文件")?,
+            &edit,
+            &placeholder("视图")?,
+            &placeholder("舞台")?,
+            &placeholder("渲染")?,
+            &placeholder("现场")?,
+            &window,
+            &placeholder("帮助")?,
+        ],
+    )
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
@@ -73,6 +148,15 @@ pub fn run() {
             }
             app.manage(commands::mesh::MeshDb(mesh_db));
             tracing::info!("volo mesh database at {}", mesh_db_path.display());
+
+            // macOS：把应用菜单装进系统菜单栏（屏幕顶端）。Windows/Linux 菜单画在窗口顶部
+            // （前端 win-topbar），不设原生菜单，故 cfg-gate 到 macOS。
+            #[cfg(target_os = "macos")]
+            {
+                let handle = app.handle().clone();
+                let menu = build_macos_menu(&handle)?;
+                app.set_menu(menu)?;
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -1,0 +1,59 @@
+/* ============================================================
+   Spectrum 2 — Space, radius, border, shadow, motion tokens
+   Spacing follows the Spectrum 100-based step scale.
+   Radii use Spectrum 2's rounder corners (default 8px control radius).
+   ============================================================ */
+
+.volo-cache {
+  /* ---- Spacing scale (px) ---- */
+  --spacing-0: 0px;
+  --spacing-50: 2px;
+  --spacing-75: 4px;
+  --spacing-100: 8px;
+  --spacing-200: 12px;
+  --spacing-300: 16px;
+  --spacing-400: 24px;
+  --spacing-500: 32px;
+  --spacing-600: 40px;
+  --spacing-700: 48px;
+  --spacing-800: 64px;
+  --spacing-900: 80px;
+  --spacing-1000: 96px;
+
+  /* ---- Corner radius (Spectrum 2 = rounder) ---- */
+  --radius-none: 0px;
+  --radius-sm: 4px;     /* small controls, tags */
+  --radius-default: 8px; /* cards, fields, menus */
+  --radius-lg: 10px;
+  --radius-xl: 16px;    /* large containers, dialogs */
+  --radius-full: 9999px; /* pills, avatars, toggles */
+
+  /* ---- Control heights (interactive sizing) ---- */
+  --control-height-xs: 20px;
+  --control-height-sm: 24px;
+  --control-height-md: 32px;  /* default */
+  --control-height-lg: 40px;
+  --control-height-xl: 48px;
+
+  /* ---- Border widths ---- */
+  --border-width-100: 1px;
+  --border-width-200: 2px;  /* default control border / focus */
+  --border-width-400: 4px;
+
+  /* ---- Focus ring ---- */
+  --focus-ring-width: 2px;
+  --focus-ring-gap: 2px;
+
+  /* ---- Elevation (drop shadows) ---- */
+  --shadow-emphasized: 0 1px 4px rgba(0, 0, 0, 0.09);
+  --shadow-elevated: 0 3px 12px rgba(0, 0, 0, 0.14);
+  --shadow-dragged: 0 8px 20px rgba(0, 0, 0, 0.22);
+
+  /* ---- Motion ---- */
+  --ease-default: cubic-bezier(0.45, 0, 0.4, 1); /* @kind other */
+  --ease-in: cubic-bezier(0.5, 0, 1, 1); /* @kind other */
+  --ease-out: cubic-bezier(0, 0, 0.40, 1); /* @kind other */
+  --duration-100: 130ms; /* @kind other */
+  --duration-200: 160ms; /* @kind other */
+  --duration-300: 190ms; /* @kind other */
+}

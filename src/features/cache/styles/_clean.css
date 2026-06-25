@@ -1,0 +1,78 @@
+/* ============================================================
+   Volo — 简洁模式 (clean / calm density)
+   Scoped under .desktop.clean. Toggle via Tweaks (简洁 / 丰富).
+
+   Goals:
+   · 去重复：集群状态原本散落在 标题栏 / 工具栏 / 概览横幅 三处 —— 只保留概览横幅一处。
+   · 减信息：隐藏 KPI 进度条 + 副标签、横幅副标题、快照备注等次要内容。
+   · 静配色：正常 / 健康 状态去色（中性文字），把颜色留给真正的告警。
+   · 轻容器：卡片去描边、机器列表改为分隔线平铺，减少“一格一格”的臃肿感。
+   ============================================================ */
+
+/* ---- 1 · 去掉 chrome 里重复的集群状态 ---- */
+.desktop.clean .conn { display: none; }                 /* 标题栏「同步 / N 节点」 */
+.desktop.clean .ctxbar .cluster-sum,
+.desktop.clean .ctxbar .health-chip,
+.desktop.clean .ctxbar .snap-note { display: none; }     /* 工具栏的在线/健康分/快照 */
+.desktop.clean .pagetabs .meta { display: none; }        /* 底部「缓存健康分」 */
+
+/* ---- 2 · 概览横幅：平背景、去副标题、收小徽标 ---- */
+.desktop.clean .land-status {
+  background: var(--chrome-card);
+  padding: 14px 16px; gap: 14px;
+}
+.desktop.clean .ls-sub { display: none; }
+.desktop.clean .ls-line { font-size: 15px; }
+.desktop.clean .ls-badge { width: 40px; height: 40px; border-radius: 11px; }
+
+/* ---- 3 · KPI 卡：去进度条 + 副标签，轻容器 ---- */
+.desktop.clean .kpi {
+  background: var(--chrome-card); border-color: transparent;
+  padding: 12px 14px;
+}
+.desktop.clean .kpi .vmeter { display: none; }
+.desktop.clean .kpi-sub { display: none; }
+.desktop.clean .kpi-h { margin-bottom: 6px; }
+.desktop.clean .kpi-k { white-space: nowrap; }
+.desktop.clean .kpi-v { margin-bottom: 0; font-size: 22px; }
+
+/* ---- 4 · 卡片整体去描边（靠背景区分，减少盒感） ---- */
+.desktop.clean .dash-card { border-color: transparent; }
+
+/* ---- 5 · 静配色：正常/健康去色，颜色只留给告警 ---- */
+/* 健康/正常 状态药丸 → 中性文字、去填充 */
+.desktop.clean .spill--positive {
+  color: var(--chrome-dim); background: transparent; font-weight: 600;
+}
+/* 远程通道标签（每行都有，原本最吵）→ 朴素灰字 */
+.desktop.clean .chan-tag {
+  border-color: transparent; background: transparent;
+  color: var(--chrome-faint); padding: 1px 0; font-weight: 600;
+}
+.desktop.clean .chan-tag.mini { padding: 0; }
+/* 「已部署」绿字 → 中性 */
+.desktop.clean .env-ok { color: var(--chrome-dim); font-weight: 600; }
+/* 诊断行：正常项去色，L 层标签去色 */
+.desktop.clean .diag-ico.s-positive { color: var(--chrome-faint); background: var(--wash-2); }
+.desktop.clean .diag-ok { color: var(--chrome-dim); }
+.desktop.clean .diag-layer { color: var(--chrome-faint); background: var(--wash); }
+
+/* ---- 6 · 机器列表：盒子 → 分隔线平铺 ---- */
+.desktop.clean .mrow2 {
+  background: transparent; border-color: transparent; border-radius: 0;
+  padding: 9px 8px;
+}
+.desktop.clean .mrow2.mhead { padding: 0 8px 4px; }
+.desktop.clean .mrow2 + .mrow2 { margin-top: 0; border-top: 1px solid var(--chrome-line); }
+.desktop.clean .mrow2:hover { background: var(--wash-3); }
+
+/* ---- 7 · 诊断行去盒、收紧 ---- */
+.desktop.clean .diag-sub { display: none; }
+.desktop.clean .diag-row { background: transparent; border-color: transparent; padding: 7px 8px; }
+.desktop.clean .diag-row + .diag-row { border-top: 1px solid var(--chrome-line); }
+.desktop.clean .diag-list { gap: 0; }
+
+/* ---- 8 · 图标视图 clean 模式 ---- */
+.desktop.clean .mach-tile { border-color: transparent; }
+.desktop.clean .mach-tile:hover { border-color: var(--chrome-line); }
+/* 环境徽章是主要信息，clean 模式保留原色 */

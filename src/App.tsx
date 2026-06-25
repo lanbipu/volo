@@ -1,69 +1,19 @@
-import { useState } from "react";
-import type { ComponentType } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import "@react-spectrum/s2/page.css";
-import { Provider, Button, Heading, Text } from "@react-spectrum/s2";
-import { style } from "@react-spectrum/s2/style" with { type: "macro" };
-import { AppShell, type TabKey } from "./shell/AppShell";
-import Previz from "./features/previz";
-import Calibrate from "./features/calibrate";
-import Color from "./features/color";
-import Cache from "./features/cache";
-import Live from "./features/live";
-import Tools from "./features/tools";
+// Volo —— LanX 虚拟制作统一桌面控制台。1:1 还原 Volo.html 桌面窗口外壳；缓存控制台接真 Tauri 命令。
+// 全自定义视觉（不依赖 RS2）；暗/亮双主题由 .volo-cache 的 data-theme 驱动。
+import "./global.css";
+import "./features/cache/styles/cache.css";
+import { ShellProvider } from "./shell/store";
+import { CacheProvider, MachinesProvider } from "./features/cache";
+import { Shell } from "./shell/Shell";
 
-type Scheme = "light" | "dark";
-
-// tab key → feature 占位页。各页实质 UI 等 Claude Design 设计稿后实现。
-const FEATURES: Record<TabKey, ComponentType> = {
-  previz: Previz,
-  calibrate: Calibrate,
-  color: Color,
-  cache: Cache,
-  live: Live,
-  tools: Tools,
-};
-
-// step 5 壳：AppShell 底部 6 tab 导航 + tab 切换显示对应 feature 占位页。
-// 保留 step 0 的 Provider 暗/亮主题切换与前后端 ping 打通验证。
-function App() {
-  const [colorScheme, setColorScheme] = useState<Scheme>("dark");
-  const [activeTab, setActiveTab] = useState<TabKey>("previz");
-  const [pong, setPong] = useState("");
-
-  const ActiveFeature = FEATURES[activeTab];
-
+export default function App() {
   return (
-    <Provider
-      elementType="main"
-      colorScheme={colorScheme}
-      background="base"
-      styles={style({ minHeight: "[100vh]" })}
-    >
-      <AppShell activeTab={activeTab} onTabChange={setActiveTab}>
-        <Heading level={1} styles={style({ font: "heading-xl" })}>
-          Volo
-        </Heading>
-        <Text>LanX · 虚拟制作（VP / LED）统一桌面控制台</Text>
-
-        <ActiveFeature />
-
-        <Button
-          variant="primary"
-          onPress={async () => setPong(await invoke<string>("ping"))}
-        >
-          Ping 后端
-        </Button>
-        {pong ? <Text>{pong}</Text> : null}
-        <Button
-          variant="secondary"
-          onPress={() => setColorScheme((s) => (s === "dark" ? "light" : "dark"))}
-        >
-          切换主题（当前 {colorScheme === "dark" ? "暗色" : "亮色"}）
-        </Button>
-      </AppShell>
-    </Provider>
+    <ShellProvider>
+      <CacheProvider>
+        <MachinesProvider>
+          <Shell />
+        </MachinesProvider>
+      </CacheProvider>
+    </ShellProvider>
   );
 }
-
-export default App;
