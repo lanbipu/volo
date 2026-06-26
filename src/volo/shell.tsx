@@ -137,11 +137,9 @@ function WinTopBar({ s }) {
     h('div', { className: 'wt-menus', 'data-tauri-drag-region': true }, APP_MENUS.map((m) => h('div', { key: m, className: 'menu-item' }, m))),
     h('div', { className: 'wt-right' },
       h(Selector, { variant: 'stage', kpre: '当前舞台', value: s.stage, options: stageOptions(), onChange: s.setStage }),
-      h(ChromeIconButtons, { s }),
-      h('div', { className: 'winctl' },
-        h('button', { className: 'wc-min', title: '最小化' }, h(Icon, { name: 'wmin', size: 16 })),
-        h('button', { className: 'wc-max', title: '最大化' }, h(Icon, { name: 'wmax', size: 14 })),
-        h('button', { className: 'wc-close', title: '关闭' }, h(Icon, { name: 'x', size: 15 })))));
+      /* 窗口最小化/最大化/关闭由 Windows 原生标题栏提供（与 mac 同策略：用原生、不画自定义），
+         不再渲染自定义 .winctl，避免与原生标题栏按钮重复 */
+      h(ChromeIconButtons, { s })));
 }
 
 /* ---------- Page tabs ---------- */
