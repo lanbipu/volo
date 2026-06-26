@@ -24,7 +24,7 @@ use webview2_com::{
     CreateCoreWebView2EnvironmentCompletedHandler, Microsoft::Web::WebView2::Win32::*,
     NavigationCompletedEventHandler, PrintToPdfCompletedHandler,
 };
-use windows::core::{Interface, BOOL, HSTRING, PCWSTR, PWSTR};
+use windows::core::{Interface, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -106,7 +106,7 @@ fn run_on_sta_thread(html: &str, dst: &Path, user_data: &Path) -> Result<(), Str
     // 4. env → controller → navigate → print, all wired up via callbacks.
     let env_handler = CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(
         move |code, env| {
-            if let Err(e) = code.ok() {
+            if let Err(e) = code {
                 let _ = result_tx_for_env.send(Err(format!("env init failed: {e}")));
                 signal_quit();
                 return Ok(());
@@ -127,7 +127,7 @@ fn run_on_sta_thread(html: &str, dst: &Path, user_data: &Path) -> Result<(), Str
 
             let ctrl_handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
                 move |code, controller| {
-                    if let Err(e) = code.ok() {
+                    if let Err(e) = code {
                         let _ = result_tx_for_ctrl
                             .send(Err(format!("controller init failed: {e}")));
                         signal_quit();
@@ -200,9 +200,9 @@ fn run_on_sta_thread(html: &str, dst: &Path, user_data: &Path) -> Result<(), Str
                             let result_tx_for_pdf = result_tx_for_nav.clone();
                             let pdf_handler =
                                 PrintToPdfCompletedHandler::create(Box::new(move |code, ok| {
-                                    let outcome = match code.ok() {
+                                    let outcome = match code {
                                         Err(e) => Err(format!("PrintToPdf error: {e}")),
-                                        Ok(()) if ok.as_bool() => Ok(()),
+                                        Ok(()) if ok => Ok(()),
                                         Ok(()) => Err("PrintToPdf returned success=FALSE".into()),
                                     };
                                     let _ = result_tx_for_pdf.send(outcome);
