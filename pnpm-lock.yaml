@@ -23,6 +23,9 @@ importers:
       react-dom:
         specifier: ^19.1.0
         version: 19.2.7(react@19.2.7)
+      tauri-plugin-snap-layout:
+        specifier: ^1.0.9
+        version: 1.0.9
     devDependencies:
       '@tauri-apps/cli':
         specifier: ^2
@@ -927,6 +930,9 @@ packages:
     resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
     engines: {node: '>=0.10.0'}
 
+  tauri-plugin-snap-layout@1.0.9:
+    resolution: {integrity: sha512-d2pU2nLpO4INc4rSyic2JC7dVo6aGoPRx1ySMkV3QUFVg7I5Xb4/bbjMz+xkJ3jD2sw5vArOe6K8UKA9PCvdvA==}
+
   tinyglobby@0.2.17:
     resolution: {integrity: sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==}
     engines: {node: '>=12.0.0'}
@@ -1766,6 +1772,10 @@ snapshots:
   semver@6.3.1: {}
 
   source-map-js@1.2.1: {}
+
+  tauri-plugin-snap-layout@1.0.9:
+    dependencies:
+      '@tauri-apps/api': 2.11.0
 
   tinyglobby@0.2.17:
     dependencies:

@@ -148,10 +148,11 @@ function WinTopBar({ s }) {
          Overlay 原生交通灯对称 —— 各平台都只有一条标题栏。 */
       h('div', { className: 'winctl' },
         h('button', { className: 'wc-min', title: '最小化', onClick: () => winCtl('min') }, h(Icon, { name: 'wmin', size: 16 })),
-        /* wc-max 在 Windows 标了 app-region:drag → 点击走 Rust 子类化（HTMAXBUTTON），
-           此 onClick 仅浏览器预览 / 非 Windows 生效；图标 + 标题随 s.maximized 切换
-           （App 订阅窗口 onResized 更新），最大化时显示「还原」图标。 */
-        h('button', { className: 'wc-max', title: s.maximized ? '还原' : '最大化', onClick: () => winCtl('max') }, h(Icon, { name: s.maximized ? 'wrestore' : 'wmax', size: 14 })),
+        /* id="snap-btn" 让 tauri-plugin-snap-layout 在此按钮上叠透明 child HWND，
+           还原 Win11 Snap Layouts + 接管点击（最大化/还原）。Windows 上点击走该
+           overlay，此 onClick 仅浏览器预览 / 非 Windows 生效；图标 + 标题随
+           s.maximized 切换（App 订阅窗口 onResized 更新），最大化时显示「还原」。 */
+        h('button', { id: 'snap-btn', className: 'wc-max', title: s.maximized ? '还原' : '最大化', onClick: () => winCtl('max') }, h(Icon, { name: s.maximized ? 'wrestore' : 'wmax', size: 14 })),
         h('button', { className: 'wc-close', title: '关闭', onClick: () => winCtl('close') }, h(Icon, { name: 'x', size: 15 })))));
 }
 

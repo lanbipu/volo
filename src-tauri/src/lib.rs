@@ -11,9 +11,6 @@ pub mod commands;
 // graceful "unsupported" error). Lives at crate root so command shims can
 // `use crate::pdf_render::render_html_to_pdf`.
 pub mod pdf_render;
-// Windows 自绘标题栏的命中测试（Snap Layouts）。仅 Windows 编译。
-#[cfg(windows)]
-mod win_titlebar;
 
 use tauri::Manager;
 
@@ -117,6 +114,10 @@ pub fn run() {
         // wired it for the native save dialog); opener is shared with UECM.
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // Windows Win11 Snap Layouts：在自绘最大化按钮（前端 id="snap-btn"）上叠一个
+        // 透明原生 child HWND 返回 HTMAXBUTTON，让 DWM 在 hover 时弹布局菜单——这是
+        // WebView2 覆盖标题栏下还原 Snap Layouts 的标准做法（issue #4531）。跨平台 no-op。
+        .plugin(tauri_plugin_snap_layout::init().button_id("snap-btn").build())
         .setup(|app| {
             // UECM setup: open + migrate the SQLite DB, manage it as shared
             // state, and register the long-running UE job tracker.
@@ -166,22 +167,18 @@ pub fn run() {
             // conf 的 `titleBarStyle: Overlay` 是 macOS 专属、Windows 不认，否则
             // Windows 会退回默认原生标题栏并与 win-topbar 并排成两条。窗口最小化/
             // 最大化/关闭由前端 winctl 调 window API（capabilities 已放行）。
+            // Windows：关掉原生标题栏（decorations），让前端自绘的 win-topbar 成为
+            // 唯一标题栏。Snap Layouts 由 tauri-plugin-snap-layout 的 overlay 还原
+            // （见上方 builder）。conf 的 titleBarStyle:Overlay 是 macOS 专属、
+            // Windows 不认，否则会退回原生标题栏与 win-topbar 并排成两条。
             #[cfg(target_os = "windows")]
             {
                 if let Some(win) = app.get_webview_window("main") {
                     if let Err(e) = win.set_decorations(false) {
                         tracing::warn!("set_decorations(false) failed: {e}");
                     }
-                    // 子类化主窗口，把自绘最大化按钮报成 HTMAXBUTTON 还原 Win11
-                    // Snap Layouts（前端将该按钮标 app-region:drag 让命中穿透到此）。
-                    match win.hwnd() {
-                        Ok(hwnd) => win_titlebar::attach(hwnd.0 as isize),
-                        Err(e) => {
-                            tracing::warn!("hwnd() failed; custom titlebar hit-test disabled: {e}")
-                        }
-                    }
                 } else {
-                    tracing::warn!("main window not found; custom titlebar setup skipped");
+                    tracing::warn!("main window not found; decorations not disabled");
                 }
             }
             Ok(())

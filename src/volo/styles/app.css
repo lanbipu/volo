@@ -269,15 +269,12 @@ html, body {
 
 /* Windows window controls (minimize / maximize / close) */
 .winctl { display: flex; align-items: stretch; align-self: stretch; -webkit-app-region: no-drag; }
-/* width 须与 win_titlebar.rs 的 BTN_W 同步；height 撑满标题栏让 HTMAXBUTTON 命中区与视觉对齐 */
+/* height 撑满标题栏，让 snap-layout overlay 的命中区与按钮视觉对齐 */
 .winctl button { all: unset; width: 46px; height: 100%; display: grid; place-items: center; color: var(--chrome-dim); cursor: default; }
 .winctl button:hover { background: var(--wash-2); color: var(--chrome-text); }
 .winctl button.wc-close:hover { background: #e81123; color: #fff; }
-/* 最大化按钮标为 WebView2 非客户区 → 命中穿透到宿主窗口过程，由 win_titlebar.rs
-   报成 HTMAXBUTTON 还原 Win11 Snap Layouts。这里有意用 app-region（而非
-   data-tauri-drag-region）：Snap Layouts 必须走 WebView2 原生非客户区路径。
-   非 Windows / 浏览器预览忽略此属性，按钮仍走前端 onClick。 */
-.winctl button.wc-max { app-region: drag; -webkit-app-region: drag; }
+/* 最大化按钮(id=snap-btn)的 Snap Layouts overlay 由 tauri-plugin-snap-layout 在
+   原生层叠加，无需 app-region；点击与 hover 均由该 overlay 处理。 */
 
 
 /* platform Mac/Win toggle (lives in both chrome variants) */
