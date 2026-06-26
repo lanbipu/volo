@@ -273,8 +273,11 @@ html, body {
 .winctl button { all: unset; width: 46px; height: 100%; display: grid; place-items: center; color: var(--chrome-dim); cursor: default; }
 .winctl button:hover { background: var(--wash-2); color: var(--chrome-text); }
 .winctl button.wc-close:hover { background: #e81123; color: #fff; }
-/* 最大化按钮(id=snap-btn)的 Snap Layouts overlay 由 tauri-plugin-snap-layout 在
-   原生层叠加，无需 app-region；点击与 hover 均由该 overlay 处理。 */
+/* 最大化按钮(id=snap-btn)的 Snap Layouts overlay 由 tauri-plugin-snap-layout 在原生层
+   叠加，会吞掉 webview 的真实 :hover。该插件只会把「选择器里含 #snap-btn」的 :hover 规则
+   镜像成 .is-hovered 并在 overlay 悬停时挂到按钮上，故这里必须单独用 #snap-btn 选择器写一条
+   （.winctl button:hover 不含 #snap-btn，插件不会镜像），让最大化按钮悬停高亮与其它按钮一致。 */
+#snap-btn:hover { background: var(--wash-2); color: var(--chrome-text); }
 
 
 /* platform Mac/Win toggle (lives in both chrome variants) */
