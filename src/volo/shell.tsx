@@ -118,7 +118,8 @@ function SysBar({ s }) {
 /* ---------- macOS in-window title bar (traffic lights, no menus) ---------- */
 function MacTitleBar({ s }) {
   return h('div', { className: 'titlebar', 'data-tauri-drag-region': true },
-    h('div', { className: 'traffic' }, h('i', { className: 'c1' }), h('i', { className: 'c2' }), h('i', { className: 'c3' })),
+    /* 原生交通灯由 Tauri titleBarStyle:Overlay 提供（trafficLightPosition 13/20），
+       不再渲染浏览器原型的自定义 .traffic，避免与原生关闭/最小化/放大按钮重复 */
     h(DocCrumb, { s }),
     h('div', { className: 'right' },
       h('span', { className: 'conn' }, h(SyncPip), '同步 23.976'),
