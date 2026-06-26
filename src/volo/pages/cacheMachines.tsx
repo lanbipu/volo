@@ -176,9 +176,38 @@ import "./cache";
   /* =================== 机器管理 section — 嵌入「集群总览」的已纳管列表 + 扫描入口 + 逐机部署环境 =================== */
   function MachineSection({ s, onScan }) {
     const [machView, setMachView] = useState('grid');   /* 'list' | 'grid' */
+    const [selected, setSelected] = useState([]);       /* 勾选待删除的机器 id */
+    const [removed, setRemoved] = useState([]);          /* 已批量删除的机器 id（本会话内移除） */
     const open = (id) => s.setDrawer({ kind: 'machine', id });
     const isDeployed = (n) => n.env !== 'pending' || (s.enrolled || []).includes(n.id);
-    const online = RENDER_NODES.filter((n) => n.status !== 'offline').length;
+
+    const visible = RENDER_NODES.filter((n) => !removed.includes(n.id));
+    const online = visible.filter((n) => n.status !== 'offline').length;
+    const allSel = visible.length > 0 && visible.every((n) => selected.includes(n.id));
+    const isSel = (n) => selected.includes(n.id);
+    const toggleOne = (id) => setSelected((v) => v.includes(id) ? v.filter((x) => x !== id) : v.concat(id));
+    const toggleAll = () => setSelected(allSel ? [] : visible.map((n) => n.id));
+    const delSelected = () => {
+      const nodes = visible.filter(isSel);
+      if (!nodes.length) return;
+      const ids = selected;
+      /* 与单机删除一致：走「预览 → 确认 → 执行」确认门（CX.openPreview）。
+         多选时 confirmInput 会要求勾选确认框；确认后才 runTask 记日志并从列表移除 */
+      CX.openPreview(s, {
+        title: '删除所选机器 · ' + nodes.length + ' 台', icon: 'trash', cli: 'machine delete',
+        destructive: true, confirmInput: true, channel: 'ssh',
+        simpleScope: nodes.map((n) => ({ host: n.host, ip: n.ip, msg: '将移除' })),
+        steps: ['从集群中移除选中的 ' + nodes.length + ' 台机器', '解除它们与共享缓存、ZenServer 的关联', '清除这些机器已保存的登录凭据'],
+        task: { domain: 'machine', action: 'delete', target: nodes.length + ' 台', chan: 'ssh', note: '从管理列表移除',
+          lines: nodes.map((n) => ({ msg: 'remove_machine ' + n.host + ' (' + n.ip + ') → 已移除' }))
+            .concat([{ lv: 'ok', msg: nodes.length + ' 台已从机器列表删除' }]) },
+        onConfirm: () => { setRemoved((v) => v.concat(ids)); setSelected([]); },
+      });
+    };
+    /* 行 / 图标内的复选框（自带 stopPropagation，避免触发打开详情） */
+    const checkbox = (n, cls) => h('span', { className: (cls ? cls + ' ' : '') + 'mck' + (isSel(n) ? ' on' : ''),
+      title: '选择', onClick: (e) => { e.stopPropagation(); toggleOne(n.id); } },
+      isSel(n) ? h(Icon, { name: 'check', size: 12 }) : null);
 
     /* 获取入网脚本 = get_winrm_bootstrap_script（SSH key 现场入网，不再远程推送），打开脚本面板 */
     const getScript = (n) => s.setDrawer({ kind: 'script', id: n.id });
@@ -195,8 +224,14 @@ import "./cache";
     return h('div', { className: 'dash-card mach-card' },
       h('div', { className: 'dc-h' },
         h('span', { className: 't' }, h(Icon, { name: 'node', size: 14 }), '机器管理',
-          h('span', { className: 'dc-count' }, RENDER_NODES.length + ' 台 · ' + online + ' 在线')),
+          h('span', { className: 'dc-count' }, visible.length + ' 台 · ' + online + ' 在线')),
         h('div', { className: 'mach-acts' },
+          h('div', { className: 'mach-selall' + (allSel ? ' on' : ''), onClick: toggleAll, title: '全选 / 取消全选' },
+            h('span', { className: 'mck' + (allSel ? ' on' : '') }, allSel ? h(Icon, { name: 'check', size: 12 }) : null), '全选'),
+          selected.length
+            ? h('button', { className: 'mach-del', onClick: delSelected, title: '批量删除所选机器' },
+                h(Icon, { name: 'trash', size: 14 }), '删除所选 (' + selected.length + ')')
+            : null,
           h('div', { className: 'view-toggle' },
             h('button', { className: 'vt-btn' + (machView === 'grid' ? ' on' : ''), title: '图标视图', onClick: () => setMachView('grid') }, h(Icon, { name: 'grid', size: 14 })),
             h('button', { className: 'vt-btn' + (machView === 'list' ? ' on' : ''), title: '列表视图', onClick: () => setMachView('list') }, h(Icon, { name: 'list', size: 14 }))),
@@ -207,15 +242,18 @@ import "./cache";
         machView === 'list'
           ? h(React.Fragment, null,
               h('div', { className: 'mrow2 mhead' },
+                h('span', null, ''),
                 h('span', null, '机器 / IP'), h('span', null, 'UE 版本'), h('span', null, 'last-seen'), h('span', null, '环境'), h('span', { style: { textAlign: 'right' } }, '健康')),
-              RENDER_NODES.map((n) => h('div', { key: n.id, className: 'mrow2' + (n.status === 'offline' ? ' off' : ''), onClick: () => open(n.id) },
+              visible.map((n) => h('div', { key: n.id, className: 'mrow2' + (n.status === 'offline' ? ' off' : '') + (isSel(n) ? ' picked' : ''), onClick: () => open(n.id) },
+                checkbox(n),
                 h('span', { className: 'mname' }, dot(NODE_STATUS[n.status].visual), h('span', { className: 'h' }, n.host), h('span', { className: 'ip' }, n.ip)),
                 h('span', { className: 'mue' }, n.ue === '—' ? '—' : 'UE ' + n.ue),
                 h('span', { className: 'mseen' }, n.last),
                 envCell(n),
                 h('span', { style: { display: 'flex', justifyContent: 'flex-end' } }, h(CX.StatusPill, { status: n.status })))))
           : h('div', { className: 'mach-grid' },
-              RENDER_NODES.map((n) => h('div', { key: n.id, className: 'mach-tile' + (n.status === 'offline' ? ' off' : ''), onClick: () => open(n.id) },
+              visible.map((n) => h('div', { key: n.id, className: 'mach-tile' + (n.status === 'offline' ? ' off' : '') + (isSel(n) ? ' picked' : ''), onClick: () => open(n.id) },
+                checkbox(n, 'mt-check'),
                 h('div', { className: 'mt-ico ' + (n.status !== 'offline' ? 's-positive' : 's-neutral') }, h(Icon, { name: 'node', size: 28, stroke: 1.4 })),
                 h('div', { className: 'mt-host' }, n.host),
                 n.status === 'offline'

@@ -90,15 +90,7 @@ function Selector({ kpre, value, options, onChange, width = 188, variant = 'obj'
 
 /* ---------- shared chrome bits ---------- */
 const APP_MENUS = ['文件', '编辑', '视图', '舞台', '渲染', '现场', '窗口', '帮助'];
-const stageOptions = () => STAGES.map((x) => ({ id: x.id, label: `${x.name} · ${x.volume}`, sub: x.state, pip: x.status }));
 const SyncPip = () => h('span', { className: 'pip', style: { width: 7, height: 7, borderRadius: '50%', background: 'var(--positive-visual)' } });
-function DocCrumb({ s, style }) {
-  const stage = STAGES.find((x) => x.id === s.stage);
-  return h('div', { className: 'doc', style, 'data-tauri-drag-region': true },
-    h('span', null, '制作'), h(Icon, { name: 'chevr', size: 13 }),
-    h('b', null, 'Helios — Ep.204'), h('span', { style: { color: 'var(--chrome-faint)' } }, '·'),
-    h('span', null, stage.name));
-}
 function PlatformToggle({ s }) {
   return h('div', { className: 'plat-seg', title: '平台外观' },
     h('button', { className: s.platform === 'mac' ? 'on' : '', onClick: () => s.setPlatform('mac') }, 'Mac'),
@@ -133,12 +125,11 @@ function SysBar({ s }) {
 function MacTitleBar({ s }) {
   return h('div', { className: 'titlebar', 'data-tauri-drag-region': true },
     /* 原生交通灯由 Tauri titleBarStyle:Overlay 提供（trafficLightPosition 13/20），
-       不再渲染浏览器原型的自定义 .traffic，避免与原生关闭/最小化/放大按钮重复 */
-    h(DocCrumb, { s }),
+       不再渲染浏览器原型的自定义 .traffic，避免与原生关闭/最小化/放大按钮重复。
+       面包屑 DocCrumb 与「当前舞台」Selector 已移除，左侧留给原生交通灯 + 拖拽区 */
     h('div', { className: 'right' },
       h('span', { className: 'conn' }, h(SyncPip), '同步 23.976'),
       h('span', { className: 'conn' }, '8 节点 · 6 在线'),
-      h(Selector, { variant: 'stage', kpre: '当前舞台', value: s.stage, options: stageOptions(), onChange: s.setStage }),
       h(ChromeIconButtons, { s })));
 }
 
@@ -150,7 +141,7 @@ function WinTopBar({ s }) {
       h('span', { className: 'brand-name' }, 'Volo')),
     h('div', { className: 'wt-menus', 'data-tauri-drag-region': true }, APP_MENUS.map((m) => h('div', { key: m, className: 'menu-item' }, m))),
     h('div', { className: 'wt-right' },
-      h(Selector, { variant: 'stage', kpre: '当前舞台', value: s.stage, options: stageOptions(), onChange: s.setStage }),
+      /* 「当前舞台」Selector 已移除 */
       h(ChromeIconButtons, { s }),
       /* 原生标题栏已在 Windows 关闭（src-tauri set_decorations(false)），由这套自绘
          winctl 接管最小化/最大化/关闭，调 Tauri window API（winCtl）。与 mac 的
@@ -247,7 +238,7 @@ function App() {
   const [rightCollapsed, setRightCollapsed] = useState(!!persisted.rightCollapsed);
   const [logH, setLogH] = useState(typeof persisted.logH === 'number' ? persisted.logH : 150);
   const [page, setPage] = useState(() => PAGES.some((p) => p.id === persisted.page) ? persisted.page : 'tools');
-  const [stage, setStage] = useState(STAGES.some((x) => x.id === persisted.stage) ? persisted.stage : 'st4');
+  /* 舞台切换器 / 面包屑已移除，stage state 无消费者，随之删除 */
   const [logOpen, setLogOpen] = useState(persisted.logOpen !== undefined ? persisted.logOpen : true);
   const [logFilter, setLogFilter] = useState('all');
   const [logs, setLogs] = useState(LOGS);
@@ -285,10 +276,10 @@ function App() {
   useEffect(() => {
     clearTimeout(persistTimer.current);
     persistTimer.current = setTimeout(() => {
-      try { localStorage.setItem('volo2', JSON.stringify({ page, stage, logOpen, selNode, cacheNav, ddcOpen, calStep, calScreen, calMethod, calSel, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed, rightCollapsed })); } catch (e) {}
+      try { localStorage.setItem('volo2', JSON.stringify({ page, logOpen, selNode, cacheNav, ddcOpen, calStep, calScreen, calMethod, calSel, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed, rightCollapsed })); } catch (e) {}
     }, 150);
     return () => clearTimeout(persistTimer.current);
-  }, [page, stage, logOpen, selNode, cacheNav, ddcOpen, calStep, calScreen, calMethod, calSel, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed, rightCollapsed]);
+  }, [page, logOpen, selNode, cacheNav, ddcOpen, calStep, calScreen, calMethod, calSel, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed, rightCollapsed]);
 
   /* 禁掉桌面 WebView 的右键菜单（reload / 检查）；calibrate 画布另有本地 preventDefault */
   useEffect(() => {
@@ -353,7 +344,7 @@ function App() {
     }, 420 * (n + 1));
   };
 
-  const s = { theme, toggleTheme, platform, setPlatform, toolsNav, setToolsNav, page, setPage, stage, setStage, logOpen, setLogOpen, logFilter, setLogFilter,
+  const s = { theme, toggleTheme, platform, setPlatform, toolsNav, setToolsNav, page, setPage, logOpen, setLogOpen, logFilter, setLogFilter,
     logs, pushLog, pushLogs, logH, setLogH,
     selNode, setSelNode, cacheNav, setCacheNav, ddcOpen, setDdcOpen, drawer, setDrawer,
     freshSetup, setFreshSetup, machinesAdded, setMachinesAdded,

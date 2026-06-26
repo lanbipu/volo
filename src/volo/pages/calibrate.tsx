@@ -28,46 +28,15 @@ import "../ds";
   }
 
   /* =================== context toolbar =================== */
-  function ExportDrop({ s }) {
-    const [open, setOpen] = useState(false);
-    const ref = useRef(null);
-    useEffect(() => {
-      if (!open) return;
-      const fn = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-      document.addEventListener('mousedown', fn);
-      return () => document.removeEventListener('mousedown', fn);
-    }, [open]);
-    const opts = [
-      { id: 'disguise', label: 'Disguise', sub: '.obj + 顶点贴图' },
-      { id: 'unreal',   label: 'Unreal',   sub: 'nDisplay 配置' },
-      { id: 'neutral',  label: 'Neutral',  sub: '.obj 中性网格' },
-    ];
-    return h('div', { className: 'ctx-drop', ref },
-      h('button', { className: 'ctx-drop-btn', onClick: () => setOpen((v) => !v) },
-        h(Icon, { name: 'download', size: 15 }), '导出', h(Icon, { name: 'chevd', size: 14 })),
-      open ? h('div', { className: 'popover' },
-        opts.map((o) => h('div', { key: o.id, className: 'pop-i', onClick: () => { setOpen(false); s.pushLog({ lv: 'ok', cat: 'calibrate', msg: `导出网格为 <b>${o.label}</b> 格式 → mesh_v6.obj` }); } },
-          h('div', { style: { display: 'flex', flexDirection: 'column', lineHeight: 1.2 } },
-            h('span', { className: 'pop-l' }, o.label), h('span', { className: 'pop-s' }, o.sub))))) : null);
-  }
-
+  /* 重建 / 导出 / 生成指导卡 三个按钮已移除（导出 / 生成指导卡 迁至左侧导航「输出」），
+     仅保留居中显示的「屏幕」选择器 */
   function ctx(s) {
-    const sc = CAL_SCREENS.find((x) => x.id === s.calScreen) || CAL_SCREENS[0];
     return h(React.Fragment, null,
       h(CtxTitle, { icon: 'calibrate', title: 'Calibrate', sub: 'LED 网格重建 → 镜头校正' }),
-      h('div', { className: 'ctx-div' }),
-      h(Selector, { kpre: '屏幕', value: s.calScreen, width: 196,
-        options: CAL_SCREENS.map((x) => ({ id: x.id, label: x.name, sub: `${x.cols}×${x.rows} · ${x.panels} 面板` })),
-        onChange: s.setCalScreen }),
-      h('div', { className: 'ctx-actions' },
-        h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'sync', size: 15 }),
-          onPress: () => s.pushLogs([
-            { lv: 'info', cat: 'calibrate', msg: `重建 <b>${sc.name}</b> 网格 …` },
-            { lv: 'ok', cat: 'calibrate', msg: 'mesh_v7 重建收敛，estimated RMS <b>0.40 mm</b>' },
-          ]) }, '重建'),
-        h(ExportDrop, { s }),
-        h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'doc', size: 15 }),
-          onPress: () => s.pushLog({ lv: 'info', cat: 'calibrate', msg: '生成校正指导卡 → guide_card.pdf' }) }, '生成指导卡')));
+      h('div', { className: 'ctx-center' },
+        h(Selector, { kpre: '屏幕', value: s.calScreen, width: 196,
+          options: CAL_SCREENS.map((x) => ({ id: x.id, label: x.name, sub: `${x.cols}×${x.rows} · ${x.panels} 面板` })),
+          onChange: s.setCalScreen })));
   }
 
   /* =================== left: workflow =================== */
@@ -92,6 +61,15 @@ import "../ds";
     lens: '镜头校正：Validate → Detect → Solve → Report（7-DOF 变换）',
   };
 
+  /* 左侧导航「输出」列表项 — 由原顶部工具栏的「导出 / 生成指导卡」迁入 */
+  function OutItem({ icon, label, sub, onClick }) {
+    return h('div', { className: 'out-item', onClick },
+      h('span', { className: 'out-ico' }, h(Icon, { name: icon, size: 15 })),
+      h('div', { className: 'out-main' },
+        h('div', { className: 'out-t' }, label),
+        h('div', { className: 'out-s' }, sub)));
+  }
+
   function left(s) {
     const mesh = CAL_STEPS.filter((x) => x.group === 'mesh');
     const lens = CAL_STEPS.filter((x) => x.group === 'lens');
@@ -102,6 +80,13 @@ import "../ds";
       h('div', { className: 'sect' },
         h('div', { className: 'sect-h' }, h('span', { className: 't' }, '镜头校正')),
         h('div', { className: 'cal-list' }, lens.map((st) => h(StepItem, { key: st.id, st, s })))),
+      h('div', { className: 'sect' },
+        h('div', { className: 'sect-h' }, h('span', { className: 't' }, '输出')),
+        h('div', { className: 'cal-list' },
+          h(OutItem, { icon: 'download', label: '导出', sub: '网格 → .obj / nDisplay',
+            onClick: () => s.pushLog({ lv: 'ok', cat: 'calibrate', msg: '导出网格 → mesh_v6.obj' }) }),
+          h(OutItem, { icon: 'doc', label: '生成指导卡', sub: 'guide_card.pdf',
+            onClick: () => s.pushLog({ lv: 'info', cat: 'calibrate', msg: '生成校正指导卡 → guide_card.pdf' }) }))),
       h('div', { className: 'sect', style: { marginTop: 'auto' } },
         h('div', { className: 'farm-roll' },
           h('div', { className: 'top' }, h('span', null, '重建进度'), h('span', null, '4 / 5')),
@@ -610,9 +595,12 @@ import "../ds";
     }
   }
   function center(s) {
-    return h('div', { className: 'dash cal-dash' },
+    /* 仅 Design 步（非 method/survey/preview/runs/lens）走满铺画布：
+       画布铺满编辑区，顶部工具栏 / 底部模式按钮 / 图例浮动其上，取消外层卡片框 */
+    const bleed = !['method', 'survey', 'preview', 'runs', 'lens'].includes(s.calStep);
+    return h('div', { className: 'dash cal-dash' + (bleed ? ' cal-dash--bleed' : '') },
       calTop(s),
-      h('div', { className: 'dash-card cal-stage-card' }, stepView(s)));
+      h('div', { className: 'dash-card cal-stage-card' + (bleed ? ' is-bleed' : '') }, stepView(s)));
   }
 
   /* =================== inspector (per selected object) =================== */
