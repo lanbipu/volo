@@ -16,9 +16,11 @@ const h = React.createElement;
 function winCtl(action) {
   try {
     const w = getCurrentWindow();
-    if (action === 'min') w.minimize();
-    else if (action === 'max') w.toggleMaximize();
-    else if (action === 'close') w.close();
+    // 既兜底浏览器预览的同步抛错（getCurrentWindow），也兜底 Tauri 内 IPC 的异步
+    // reject（否则冒成 uncaught promise rejection）。
+    if (action === 'min') w.minimize().catch(() => {});
+    else if (action === 'max') w.toggleMaximize().catch(() => {});
+    else if (action === 'close') w.close().catch(() => {});
   } catch (e) { /* 非 Tauri 环境（浏览器预览）忽略 */ }
 }
 
@@ -155,7 +157,10 @@ function WinTopBar({ s }) {
          Overlay 原生交通灯对称 —— 各平台都只有一条标题栏。 */
       h('div', { className: 'winctl' },
         h('button', { className: 'wc-min', title: '最小化', onClick: () => winCtl('min') }, h(Icon, { name: 'wmin', size: 16 })),
-        h('button', { className: 'wc-max', title: '最大化', onClick: () => winCtl('max') }, h(Icon, { name: 'wmax', size: 14 })),
+        /* wc-max 在 Windows 标了 app-region:drag → 点击走 Rust 子类化（HTMAXBUTTON），
+           此 onClick 仅浏览器预览 / 非 Windows 生效；图标 + 标题随 s.maximized 切换
+           （App 订阅窗口 onResized 更新），最大化时显示「还原」图标。 */
+        h('button', { className: 'wc-max', title: s.maximized ? '还原' : '最大化', onClick: () => winCtl('max') }, h(Icon, { name: s.maximized ? 'wrestore' : 'wmax', size: 14 })),
         h('button', { className: 'wc-close', title: '关闭', onClick: () => winCtl('close') }, h(Icon, { name: 'x', size: 15 })))));
 }
 
@@ -270,6 +275,9 @@ function App() {
   const [enrolled, setEnrolled] = useState([]);
   /* 凭据管理（SecretStore）—— 仅共享 DDC 创建/接入用到 */
   const [creds, setCreds] = useState(CREDS);
+  /* 窗口是否最大化 —— Windows 自绘标题栏的最大化按钮据此切「最大化/还原」图标。
+     Windows 上点击走 Rust 子类化，React 不参与，故订阅窗口 onResized 反推状态。 */
+  const [maximized, setMaximized] = useState(false);
 
   /* debounce persistence so live drag-resize (leftW/rightW/logH change每帧) doesn't
      JSON.stringify + setItem synchronously on every pointermove frame */
@@ -287,6 +295,19 @@ function App() {
     const block = (e) => e.preventDefault();
     document.addEventListener('contextmenu', block);
     return () => document.removeEventListener('contextmenu', block);
+  }, []);
+
+  /* 跟踪窗口最大化状态（驱动 Windows 自绘最大化/还原按钮图标）。浏览器预览无 Tauri
+     runtime，getCurrentWindow() 同步抛错 → try/catch 静默。 */
+  useEffect(() => {
+    let unlisten;
+    try {
+      const w = getCurrentWindow();
+      const sync = () => w.isMaximized().then(setMaximized).catch(() => {});
+      sync();
+      w.onResized(sync).then((f) => { unlisten = f; }).catch(() => {});
+    } catch (e) { /* 非 Tauri 环境忽略 */ }
+    return () => { if (unlisten) unlisten(); };
   }, []);
 
   const setThemeValue = (v) => {
@@ -339,7 +360,7 @@ function App() {
     enrolled, setEnrolled, creds, setCreds,
     tasks, setTasks, runTask, taskTab, setTaskTab, logSearch, setLogSearch, logPaused, setLogPaused,
     calStep, setCalStep, calScreen, setCalScreen, calMethod, setCalMethod, calSel, setCalSel,
-    leftCollapsed, setLeftCollapsed, rightCollapsed, setRightCollapsed };
+    leftCollapsed, setLeftCollapsed, rightCollapsed, setRightCollapsed, maximized };
 
   const { TweaksPanel, TweakSection, TweakRadio, TweakToggle } = window;
   const pg = window.VOLO_PAGES[page] || window.VOLO_PAGES.tools;

@@ -64,6 +64,7 @@ const ICON_PATHS = {
   /* --- Windows window controls --- */
   wmin:     '<path d="M4 10h12"/>',
   wmax:     '<rect x="4.5" y="4.5" width="11" height="11" rx="1"/>',
+  wrestore: '<rect x="6.5" y="4" width="9" height="9" rx="1"/><path d="M4.5 7.5v8h8v-8z"/>',
   /* --- added for UECM cache redesign --- */
   minus:    '<path d="M4.5 10h11"/>',
   pause:    '<path d="M7 4.5v11M13 4.5v11"/>',

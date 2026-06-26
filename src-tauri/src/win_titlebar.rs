@@ -21,11 +21,11 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClientRect, IsZoomed, SendMessageW, HTMAXBUTTON, SC_MAXIMIZE, SC_RESTORE, WM_NCHITTEST,
-    WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_SYSCOMMAND,
+    WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_SYSCOMMAND,
 };
 
-/// `.win-topbar` 的高度（CSS 逻辑像素）。
-const TITLEBAR_H: f32 = 40.0;
+/// 标题栏高度（CSS 逻辑像素），须 = `.win.is-win` grid 首行轨（app.css 38px）。
+const TITLEBAR_H: f32 = 38.0;
 /// `.winctl button` 的宽度（CSS 逻辑像素）。
 const BTN_W: f32 = 46.0;
 /// 子类化 id（任意常量，'VOLO'）。
@@ -37,7 +37,9 @@ pub fn attach(hwnd: isize) {
     let hwnd = HWND(hwnd as *mut core::ffi::c_void);
     // SAFETY: hwnd 来自 tauri 主窗口、在主线程 setup 阶段调用，proc 是 'static fn。
     unsafe {
-        let _ = SetWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID, 0);
+        if !SetWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID, 0).as_bool() {
+            tracing::warn!("SetWindowSubclass failed; Snap Layouts hit-test inactive");
+        }
     }
 }
 
@@ -78,9 +80,11 @@ unsafe extern "system" fn subclass_proc(
             DefSubclassProc(hwnd, msg, wparam, lparam)
         }
         // 非真 caption 窗口，HTMAXBUTTON 的点击不会被 DefWindowProc 自动执行，
-        // 这里自己 toggle 最大化/还原；按下吞掉以免触发默认行为。
-        WM_NCLBUTTONDOWN if wparam.0 == HTMAXBUTTON as usize => LRESULT(0),
-        WM_NCLBUTTONUP if wparam.0 == HTMAXBUTTON as usize => {
+        // 这里自己 toggle 最大化/还原。在「按下」即 toggle（而非松开）：双击时
+        // 第二次按下走的是 DBLCLK 而非 DOWN，故单击/双击都净 toggle 一次（双击=
+        // 最大化，不会被第二次 toggle 还原）；UP/DBLCLK 一并吞掉，杜绝
+        // DefSubclassProc 再补发一次 SC_MAXIMIZE。
+        WM_NCLBUTTONDOWN if wparam.0 == HTMAXBUTTON as usize => {
             let cmd = if IsZoomed(hwnd).as_bool() {
                 SC_RESTORE
             } else {
@@ -89,6 +93,7 @@ unsafe extern "system" fn subclass_proc(
             SendMessageW(hwnd, WM_SYSCOMMAND, Some(WPARAM(cmd as usize)), Some(LPARAM(0)));
             LRESULT(0)
         }
+        WM_NCLBUTTONUP | WM_NCLBUTTONDBLCLK if wparam.0 == HTMAXBUTTON as usize => LRESULT(0),
         _ => DefSubclassProc(hwnd, msg, wparam, lparam),
     }
 }

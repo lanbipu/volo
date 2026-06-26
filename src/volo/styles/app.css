@@ -252,8 +252,8 @@ html, body {
   display: flex; align-items: stretch;
   border-bottom: 1px solid var(--chrome-line);
   -webkit-app-region: drag;
-  /* 固定高度，须与 win_titlebar.rs 的 TITLEBAR_H 同步（Snap Layouts 命中矩形按它算） */
-  height: 40px; box-sizing: border-box;
+  /* 高度跟随 .win.is-win grid 首行轨（38px）；win_titlebar.rs 的 TITLEBAR_H 须与该轨同步
+     —— Snap Layouts 命中矩形按它算，winctl 按钮 align-self/height:100% 撑满该轨 */
 }
 .win-topbar .wt-left { display: flex; align-items: center; gap: 8px; padding: 0 10px 0 12px; }
 .win-topbar .wt-menus { display: flex; align-items: center; gap: 2px; -webkit-app-region: no-drag; }

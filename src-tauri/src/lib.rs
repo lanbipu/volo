@@ -169,12 +169,19 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             {
                 if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.set_decorations(false);
+                    if let Err(e) = win.set_decorations(false) {
+                        tracing::warn!("set_decorations(false) failed: {e}");
+                    }
                     // 子类化主窗口，把自绘最大化按钮报成 HTMAXBUTTON 还原 Win11
                     // Snap Layouts（前端将该按钮标 app-region:drag 让命中穿透到此）。
-                    if let Ok(hwnd) = win.hwnd() {
-                        win_titlebar::attach(hwnd.0 as isize);
+                    match win.hwnd() {
+                        Ok(hwnd) => win_titlebar::attach(hwnd.0 as isize),
+                        Err(e) => {
+                            tracing::warn!("hwnd() failed; custom titlebar hit-test disabled: {e}")
+                        }
                     }
+                } else {
+                    tracing::warn!("main window not found; custom titlebar setup skipped");
                 }
             }
             Ok(())
