@@ -11,6 +11,9 @@ pub mod commands;
 // graceful "unsupported" error). Lives at crate root so command shims can
 // `use crate::pdf_render::render_html_to_pdf`.
 pub mod pdf_render;
+// Windows 自绘标题栏的命中测试（Snap Layouts）。仅 Windows 编译。
+#[cfg(windows)]
+mod win_titlebar;
 
 use tauri::Manager;
 
@@ -167,6 +170,11 @@ pub fn run() {
             {
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.set_decorations(false);
+                    // 子类化主窗口，把自绘最大化按钮报成 HTMAXBUTTON 还原 Win11
+                    // Snap Layouts（前端将该按钮标 app-region:drag 让命中穿透到此）。
+                    if let Ok(hwnd) = win.hwnd() {
+                        win_titlebar::attach(hwnd.0 as isize);
+                    }
                 }
             }
             Ok(())

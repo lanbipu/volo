@@ -252,6 +252,8 @@ html, body {
   display: flex; align-items: stretch;
   border-bottom: 1px solid var(--chrome-line);
   -webkit-app-region: drag;
+  /* 固定高度，须与 win_titlebar.rs 的 TITLEBAR_H 同步（Snap Layouts 命中矩形按它算） */
+  height: 40px; box-sizing: border-box;
 }
 .win-topbar .wt-left { display: flex; align-items: center; gap: 8px; padding: 0 10px 0 12px; }
 .win-topbar .wt-menus { display: flex; align-items: center; gap: 2px; -webkit-app-region: no-drag; }
@@ -268,10 +270,16 @@ html, body {
 .paneltgl.on svg { color: var(--volo-500); }
 
 /* Windows window controls (minimize / maximize / close) */
-.winctl { display: flex; align-items: stretch; -webkit-app-region: no-drag; }
-.winctl button { all: unset; width: 46px; display: grid; place-items: center; color: var(--chrome-dim); cursor: default; }
+.winctl { display: flex; align-items: stretch; align-self: stretch; -webkit-app-region: no-drag; }
+/* width 须与 win_titlebar.rs 的 BTN_W 同步；height 撑满标题栏让 HTMAXBUTTON 命中区与视觉对齐 */
+.winctl button { all: unset; width: 46px; height: 100%; display: grid; place-items: center; color: var(--chrome-dim); cursor: default; }
 .winctl button:hover { background: var(--wash-2); color: var(--chrome-text); }
 .winctl button.wc-close:hover { background: #e81123; color: #fff; }
+/* 最大化按钮标为 WebView2 非客户区 → 命中穿透到宿主窗口过程，由 win_titlebar.rs
+   报成 HTMAXBUTTON 还原 Win11 Snap Layouts。这里有意用 app-region（而非
+   data-tauri-drag-region）：Snap Layouts 必须走 WebView2 原生非客户区路径。
+   非 Windows / 浏览器预览忽略此属性，按钮仍走前端 onClick。 */
+.winctl button.wc-max { app-region: drag; -webkit-app-region: drag; }
 
 
 /* platform Mac/Win toggle (lives in both chrome variants) */
