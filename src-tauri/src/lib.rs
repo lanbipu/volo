@@ -157,6 +157,18 @@ pub fn run() {
                 let menu = build_macos_menu(&handle)?;
                 app.set_menu(menu)?;
             }
+
+            // Windows：关掉原生标题栏（decorations），让前端自绘的 win-topbar 成为
+            // 唯一标题栏 —— 与 macOS 的 Overlay 交通灯同策略（单一标题栏）。
+            // conf 的 `titleBarStyle: Overlay` 是 macOS 专属、Windows 不认，否则
+            // Windows 会退回默认原生标题栏并与 win-topbar 并排成两条。窗口最小化/
+            // 最大化/关闭由前端 winctl 调 window API（capabilities 已放行）。
+            #[cfg(target_os = "windows")]
+            {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.set_decorations(false);
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

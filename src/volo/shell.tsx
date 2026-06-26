@@ -3,12 +3,24 @@
    1:1 port of the Claude Design handoff `src/shell.jsx`. The IIFE publishes
    App / Selector / CtxTitle / Stat onto `window`; we re-export App below. */
 import * as React from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./ds";
 
 (function () {
 const { useState, useRef, useEffect } = React;
 const { Button } = window.Spectrum2DesignSystem_b6d1b3;
 const h = React.createElement;
+
+/* Windows 自绘标题栏的窗口控制（原生标题栏已 set_decorations(false) 关掉）。
+   在浏览器预览（vite :1420，无 Tauri runtime）下 getCurrentWindow() 会抛 —— 静默兜底。 */
+function winCtl(action) {
+  try {
+    const w = getCurrentWindow();
+    if (action === 'min') w.minimize();
+    else if (action === 'max') w.toggleMaximize();
+    else if (action === 'close') w.close();
+  } catch (e) { /* 非 Tauri 环境（浏览器预览）忽略 */ }
+}
 
 /* drag-to-resize: axis 'x'|'y', dir +1/-1, captures startVal at pointerdown */
 function startResize(e, axis, dir, startVal, setVal, min, max) {
@@ -137,9 +149,14 @@ function WinTopBar({ s }) {
     h('div', { className: 'wt-menus', 'data-tauri-drag-region': true }, APP_MENUS.map((m) => h('div', { key: m, className: 'menu-item' }, m))),
     h('div', { className: 'wt-right' },
       h(Selector, { variant: 'stage', kpre: '当前舞台', value: s.stage, options: stageOptions(), onChange: s.setStage }),
-      /* 窗口最小化/最大化/关闭由 Windows 原生标题栏提供（与 mac 同策略：用原生、不画自定义），
-         不再渲染自定义 .winctl，避免与原生标题栏按钮重复 */
-      h(ChromeIconButtons, { s })));
+      h(ChromeIconButtons, { s }),
+      /* 原生标题栏已在 Windows 关闭（src-tauri set_decorations(false)），由这套自绘
+         winctl 接管最小化/最大化/关闭，调 Tauri window API（winCtl）。与 mac 的
+         Overlay 原生交通灯对称 —— 各平台都只有一条标题栏。 */
+      h('div', { className: 'winctl' },
+        h('button', { className: 'wc-min', title: '最小化', onClick: () => winCtl('min') }, h(Icon, { name: 'wmin', size: 16 })),
+        h('button', { className: 'wc-max', title: '最大化', onClick: () => winCtl('max') }, h(Icon, { name: 'wmax', size: 14 })),
+        h('button', { className: 'wc-close', title: '关闭', onClick: () => winCtl('close') }, h(Icon, { name: 'x', size: 15 })))));
 }
 
 /* ---------- Page tabs ---------- */
