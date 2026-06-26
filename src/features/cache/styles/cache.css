@@ -1,8 +1,0 @@
-/* Volo 应用样式入口 —— 按 token → app → clean → 自定义控件 顺序聚合，全部 rescope 到 .volo-cache。 */
-@import "./_tokens-fonts.css";
-@import "./_tokens-colors.css";
-@import "./_tokens-spacing.css";
-@import "./_tokens-typography.css";
-@import "./_app.css";
-@import "./_clean.css";
-@import "./_components.css";
