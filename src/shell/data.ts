@@ -16,7 +16,7 @@ export type PageId = "previz" | "calibrate" | "color" | "live" | "tools";
 // 非缓存页（含 calibrate）按用户选择走占位骨架（skeleton:true）。
 export const PAGES: PageDef[] = [
   { id: "previz", label: "预演", icon: "previz", skeleton: true, title: "预可视化", sub: "场景布局与机位走位" },
-  { id: "calibrate", label: "校正", icon: "calibrate", skeleton: true, title: "Calibrate", sub: "LED 网格重建 → 镜头校正" },
+  { id: "calibrate", label: "校正", icon: "calibrate", skeleton: false, title: "Calibrate", sub: "LED 网格重建 → 镜头校正" },
   { id: "color", label: "调色", icon: "color", skeleton: true, title: "调色", sub: "屏幕 LUT 与一级" },
   { id: "live", label: "现场", icon: "live", skeleton: true, title: "现场", sub: "现场回放与录制" },
   { id: "tools", label: "工具", icon: "tools", skeleton: false, title: "工具", sub: "渲染缓存 · 诊断" },

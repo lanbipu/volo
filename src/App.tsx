@@ -2,8 +2,10 @@
 // 全自定义视觉（不依赖 RS2）；暗/亮双主题由 .volo-cache 的 data-theme 驱动。
 import "./global.css";
 import "./features/cache/styles/cache.css";
+import "./features/calibrate/styles/calibrate.css";
 import { ShellProvider } from "./shell/store";
 import { CacheProvider, MachinesProvider } from "./features/cache";
+import { CalibrateProvider } from "./features/calibrate";
 import { Shell } from "./shell/Shell";
 
 export default function App() {
@@ -11,7 +13,9 @@ export default function App() {
     <ShellProvider>
       <CacheProvider>
         <MachinesProvider>
-          <Shell />
+          <CalibrateProvider>
+            <Shell />
+          </CalibrateProvider>
         </MachinesProvider>
       </CacheProvider>
     </ShellProvider>
