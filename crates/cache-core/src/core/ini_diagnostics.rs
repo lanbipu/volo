@@ -143,17 +143,23 @@ pub fn run_rules(file: &ParsedFile, env: &EnvVarState) -> Vec<Finding> {
         "全局着色器 PSO 预缓存被关闭或没配置。",
         "打开全局着色器预缓存，有助于集群内各机器运行时 PSO 行为一致。",
     ));
-    out.extend(rule_r011(file)); out.extend(rule_r012(file)); out.extend(rule_r013(file));
-    out.extend(rule_r014(file)); out.extend(rule_r015(file)); out.extend(rule_r016(file));
-    out.extend(rule_r017(file)); out.extend(rule_r018(file)); out.extend(rule_r019(file));
-    out.extend(rule_r020(file)); out.extend(rule_r021(file)); out.extend(rule_r022(file));
-    out.extend(rule_r023(file));
+    // 引擎出厂 BaseEngine.ini 是只读基线：它的 [DerivedDataBackendGraph] Shared 节点是 Epic 工厂默认
+    // （`Path=?EpicDDC`、`DeleteUnused` 等），不是团队可操作的共享 DDC 策略，Volo 也从不改它。整族
+    // 「Shared 节点策略 + 留存提醒」规则（R011–R023 / R027 / R028）只在工程 / 用户层评估，否则每台装了
+    // UE 的机器都会被工厂默认刷一墙误报。在派发层一处门控，避免逐规则散落、漏改不一致。
+    if file.category != Category::Engine {
+        out.extend(rule_r011(file)); out.extend(rule_r012(file)); out.extend(rule_r013(file));
+        out.extend(rule_r014(file)); out.extend(rule_r015(file)); out.extend(rule_r016(file));
+        out.extend(rule_r017(file)); out.extend(rule_r018(file)); out.extend(rule_r019(file));
+        out.extend(rule_r020(file)); out.extend(rule_r021(file, env)); out.extend(rule_r022(file));
+        out.extend(rule_r023(file));
+        out.extend(rule_r027(file));
+        out.extend(rule_r028(file));
+    }
     out.extend(pso_cvar_rule(file, "R024", "r.ShaderPipelineCache.Enabled", Severity::Critical,
         "PSO 缓存文件的加载被关闭或没配置。",
         "没有这个控制台变量，收集来的 PSO 缓存文件在运行时不会被加载。"));
     out.extend(rule_r025(file, env));
-    out.extend(rule_r027(file));
-    out.extend(rule_r028(file));
     out
 }
 
@@ -409,6 +415,21 @@ fn pso_missing_finding(
 
 // ── BackendGraph helpers ─────────────────────────────────────────────────────
 
+/// UE 共享 DDC 的 per-machine 覆盖环境变量名。scanner 只读这一个变量进 EnvVarState，
+/// R021 的 EnvPathOverride 抑制也只能据此校验。
+const SHARED_DDC_ENV_VAR: &str = "UE-SharedDataCachePath";
+
+/// 剥掉 UE INI 值两端的成对双引号（parse_node 只去空白、保留引号）。
+fn unquote(s: &str) -> &str {
+    s.strip_prefix('"').and_then(|x| x.strip_suffix('"')).unwrap_or(s)
+}
+
+/// UNC 路径判定，`\\host\share` 与 `//host/share` 都认（与 crate 内 zen/ops、zen/endpoint 一致；
+/// UE / Windows 两种前缀都接受）。
+fn is_unc(p: &str) -> bool {
+    p.starts_with(r"\\") || p.starts_with("//")
+}
+
 fn find_shared_backend(file: &ParsedFile) -> Option<&crate::core::ini_backend_graph::BackendNode> {
     file.sections.iter()
         .find(|s| s.name.eq_ignore_ascii_case("DerivedDataBackendGraph"))?
@@ -556,10 +577,21 @@ fn rule_r020(file: &ParsedFile) -> Vec<Finding> {
     }
 }
 
-fn rule_r021(file: &ParsedFile) -> Vec<Finding> {
+fn rule_r021(file: &ParsedFile, env: &EnvVarState) -> Vec<Finding> {
     let Some(n) = find_shared_backend(file) else { return vec![]; };
-    let path = get_field(n, "Path").unwrap_or("");
-    if !path.starts_with(r"\\") {
+    // UE 的 INI 约定会给含空格的路径加引号（如 `Path="\\NAS\Shared DDC"`）；parse_node 只去空白、
+    // 不剥引号，所以前缀判断前先剥掉两端引号，否则带引号的合法 UNC 会被误判成「不是 UNC」。
+    let path = unquote(get_field(n, "Path").unwrap_or(""));
+    // 节点声明了 EnvPathOverride=UE-SharedDataCachePath 且该环境变量已是合法 UNC，则 UE 会用环境变量
+    // 覆盖字面 Path、字面值无关紧要——这正是「按机器单独指共享路径」的正常做法（引擎出厂 Shared
+    // 默认 `Path=?EpicDDC` 也带这个 override，环境变量一设好就走这条静默路径）。
+    // 注：scanner 只把 UE-SharedDataCachePath 读进 env_state，故只能校验这一个 override 变量名。
+    if matches!(get_field(n, "EnvPathOverride"), Some(v) if v.eq_ignore_ascii_case(SHARED_DDC_ENV_VAR))
+        && matches!(env.shared_data_cache_path.as_deref(), Some(p) if is_unc(p))
+    {
+        return vec![];
+    }
+    if !is_unc(path) {
         return vec![bg_finding(file, n, "R021", Severity::Critical, "Path",
             if path.is_empty() { "（未设置）" } else { path },
             r"\\HOST\Share",
@@ -948,6 +980,29 @@ mod tests {
     #[test] fn r021_fires_on_drive_letter() { assert_fires("R021", &ddb_project(r"Shared=(Type=FileSystem, Path=Z:\DDC)")); }
     #[test] fn r021_fires_on_missing_path() { assert_fires("R021", &ddb_project(r"Shared=(Type=FileSystem)")); }
     #[test] fn r021_silent_on_unc() { assert_silent("R021", &ddb_project(r"Shared=(Type=FileSystem, Path=\\NAS\DDC)")); }
+    // 工程 / 用户层的宏路径不是「引擎默认」而是误配：`%ENGINEDIR%…` 解析成本机本地引擎目录、
+    // `?EpicDDC` 残留则各机自解析——都不是共享 UNC，无 override 兜底时 R021 必须照报（不能当宏放行）。
+    #[test] fn r021_fires_on_project_percent_macro() { assert_fires("R021", &ddb_project(r"Shared=(Type=FileSystem, Path=%ENGINEDIR%DerivedDataCache)")); }
+    #[test] fn r021_fires_on_project_epic_macro_without_override() { assert_fires("R021", &ddb_project(r"Shared=(Type=FileSystem, Path=?EpicDDC)")); }
+    // 带引号的合法 UNC（含空格的共享名必须加引号）剥引号后应识别为 UNC，不误报。
+    #[test] fn r021_silent_on_quoted_unc() { assert_silent("R021", &ddb_project(r#"Shared=(Type=FileSystem, Path="\\NAS\Shared DDC")"#)); }
+    // EnvPathOverride=UE-SharedDataCachePath 且环境变量已是合法 UNC → 字面 Path（含宏）被覆盖，不报。
+    #[test] fn r021_silent_when_env_override_unc() {
+        let f = ddb_project(r"Shared=(Type=FileSystem, Path=?EpicDDC, EnvPathOverride=UE-SharedDataCachePath)");
+        let env = EnvVarState { shared_data_cache_path: Some(r"\\LANPC\Volo_DDC".into()), local_data_cache_path: None };
+        assert!(!run_rules(&f, &env).iter().any(|x| x.rule_id == "R021"), "R021 应被 EnvPathOverride+合法 UNC 环境变量抑制");
+    }
+    // 环境变量用正斜杠 UNC（Windows/UE 也接受）同样应抑制。
+    #[test] fn r021_silent_when_env_override_forward_slash_unc() {
+        let f = ddb_project(r"Shared=(Type=FileSystem, EnvPathOverride=UE-SharedDataCachePath)");
+        let env = EnvVarState { shared_data_cache_path: Some("//NAS/DDC".into()), local_data_cache_path: None };
+        assert!(!run_rules(&f, &env).iter().any(|x| x.rule_id == "R021"), "正斜杠 UNC 环境变量也应抑制 R021");
+    }
+    // 但环境变量没设 / 不是 UNC 时，EnvPathOverride 单独存在不足以抑制——仍报。
+    #[test] fn r021_fires_when_env_override_but_env_unset() {
+        let f = ddb_project(r"Shared=(Type=FileSystem, EnvPathOverride=UE-SharedDataCachePath)");
+        assert!(run_rules(&f, &EnvVarState::default()).iter().any(|x| x.rule_id == "R021"), "环境变量未设时 R021 应仍报");
+    }
     #[test] fn r022_fires_when_missing() { assert_fires("R022", &ddb_project(r"Shared=(Type=FileSystem, Path=\\NAS)")); }
     #[test] fn r022_silent_when_present() { assert_silent("R022", &ddb_project(r"Shared=(Type=FileSystem, Path=\\NAS, EnvPathOverride=UE-SharedDataCachePath)")); }
     #[test] fn r023_fires_when_missing() { assert_fires("R023", &ddb_project(r"Shared=(Type=FileSystem, Path=\\NAS)")); }
@@ -976,6 +1031,25 @@ mod tests {
     #[test] fn r028_silent_when_duration_long() { assert_silent("R028", &zen_autolaunch(Some("--gc-cache-duration-seconds 3153600000"))); }
     #[test] fn r028_silent_when_no_zen_section() {
         let f = ParsedFile { path: r"C:\Project\Config\DefaultEngine.ini".into(), category: Category::Project, sections: vec![] };
+        assert_silent("R028", &f);
+    }
+
+    // ── 引擎基线整族抑制（派发层按 Category::Engine 一处门控）─────────────────────
+    // 引擎出厂 BaseEngine.ini 是只读基线（Volo 从不改它），其 Shared 节点策略 + 留存默认都不是团队
+    // 可操作的配置 → R011–R023 / R027 / R028 在引擎层一律静默。R021 也不例外（即便手改成盘符路径，
+    // 引擎文件不是 Volo 的修复目标，统一不报，避免与 R015/R027/R028 行为不一致）。
+    fn ddb_engine(node_raw: &str) -> ParsedFile {
+        ParsedFile { category: Category::Engine,
+            path: r"D:\Program Files\Epic Games\UE_5.7\Engine\Config\BaseEngine.ini".into(),
+            ..ddb_project(node_raw) }
+    }
+    #[test] fn r015_silent_on_engine() { assert_silent("R015", &ddb_engine(r"Shared=(Type=FileSystem, Path=?EpicDDC)")); }
+    #[test] fn r021_silent_on_engine() { assert_silent("R021", &ddb_engine(r"Shared=(Type=FileSystem, Path=Z:\DDC)")); }
+    #[test] fn r027_silent_on_engine() { assert_silent("R027", &ddb_engine(r"Shared=(Type=FileSystem, Path=?EpicDDC)")); }
+    #[test] fn r028_silent_on_engine() {
+        let mut f = zen_autolaunch(Some("--gc-cache-duration-seconds 1209600"));
+        f.category = Category::Engine;
+        f.path = r"D:\Program Files\Epic Games\UE_5.7\Engine\Config\BaseEngine.ini".into();
         assert_silent("R028", &f);
     }
 

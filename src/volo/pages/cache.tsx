@@ -181,23 +181,28 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
 
   function Overview({ s }) {
     const [scanOpen, setScanOpen] = useState(false);
+    const onScan = () => setScanOpen(true);
+    /* 扫描向导挂在所有分支（error / loading / 空集群 / 已有机器）共享的稳定兄弟位上：加入机器时
+       confirmAdd 会触发 setMachinesAdded + reloadCache，外层因此在「空集群引导 ↔ 加载态 ↔ 总览」
+       间切换。若向导跟着某一分支的子树渲染，分支一变就被 React 卸载重挂，done 步（已加入 N 台）状态
+       丢失、对话框瞬间消失。用 Fragment 把它固定在 index 1，分支只换 index 0 的 body，向导不重挂。 */
+    const wizard = scanOpen ? window.VOLO_CACHE_MACHINES.ScanWizard({ s, onClose: () => setScanOpen(false) }) : null;
+    const wrap = (content) => h(React.Fragment, null, content, wizard);
     /* three-channel gate (色 + 图标 + 文字) over the backend read-path load */
-    if (s.cacheError) return h('div', { className: 'dash' },
+    if (s.cacheError) return wrap(h('div', { className: 'dash' },
       h('div', { className: 'dash-card', style: { padding: 22, display: 'flex', gap: 14, alignItems: 'center' } },
         h('span', { className: 's-negative', style: { display: 'flex' } }, h(Icon, { name: 'alert', size: 22 })),
         h('div', { style: { minWidth: 0, flex: 1 } },
           h('div', { style: { fontWeight: 700, marginBottom: 3 } }, '加载集群数据失败'),
           h('div', { style: { fontSize: 12, color: 'var(--chrome-dim)', wordBreak: 'break-word' } }, s.cacheError)),
-        h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'sync', size: 15 }), onPress: s.reloadCache }, '重试')));
-    if (s.cacheLoading) return h('div', { className: 'dash' },
+        h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'sync', size: 15 }), onPress: s.reloadCache }, '重试'))));
+    if (s.cacheLoading) return wrap(h('div', { className: 'dash' },
       h('div', { className: 'dash-card', style: { padding: 22, display: 'flex', gap: 14, alignItems: 'center' } },
         h('span', { className: 's-informative', style: { display: 'flex' } }, h('span', { className: 'spin' }, h(Icon, { name: 'sync', size: 20 }))),
         h('div', null,
           h('div', { style: { fontWeight: 700, marginBottom: 3 } }, '正在加载集群数据…'),
-          h('div', { style: { fontSize: 12, color: 'var(--chrome-dim)' } }, '从后端读取 机器 / 凭据 / 共享'))));
-    const onScan = () => setScanOpen(true);
+          h('div', { style: { fontSize: 12, color: 'var(--chrome-dim)' } }, '从后端读取 机器 / 凭据 / 共享')))));
     const fresh = isFresh(s);
-    const wizard = scanOpen ? window.VOLO_CACHE_MACHINES.ScanWizard({ s, onClose: () => setScanOpen(false) }) : null;
 
     /* ---------- 空集群引导：先扫描添加机器，巡检才有意义 ---------- */
     if (fresh) {
@@ -205,7 +210,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
         h('span', { className: 'ce-step-n' }, on ? h(Icon, { name: 'arrowr', size: 13 }) : n),
         h('span', { className: 'ce-step-ico' }, h(Icon, { name: icon, size: 18 })),
         h('div', { className: 'ce-step-txt' }, h('div', { className: 'ce-step-t' }, title), h('div', { className: 'ce-step-d' }, desc)));
-      return h('div', { className: 'dash' },
+      return wrap(h('div', { className: 'dash' },
         h('div', { className: 'cluster-empty' },
           h('div', { className: 'ce-ico' }, h(Icon, { name: 'node', size: 36, stroke: 1.3 })),
           h('div', { className: 'ce-t' }, '集群里还没有机器'),
@@ -215,8 +220,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
           h('div', { className: 'ce-steps' },
             step(1, 'search',   '扫描网段',   '输入 IP 或 CIDR，探活发现未纳管设备', true),
             step(2, 'download', '选择并加入', '勾选要纳管的机器，加入机器列表', false),
-            step(3, 'pulse',    '巡检与部署', '机器就位后，才能巡检健康、部署缓存', false))),
-        wizard);
+            step(3, 'pulse',    '巡检与部署', '机器就位后，才能巡检健康、部署缓存', false)))));
     }
 
     /* ---------- 已有机器：全局概览 + 机器管理 ---------- */
@@ -268,7 +272,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
       h('div', { className: 'im-top' }, h('span', null, k), h('span', null, v)),
       h('div', { className: 'vmeter vmeter--' + variant }, h('div', { className: 'vmeter__fill', style: { width: pct + '%' } })));
 
-    return h('div', { className: 'dash' },
+    return wrap(h('div', { className: 'dash' },
       /* 1 · 集群健康总览条 */
       h('div', { className: 'land-status hero-' + overall },
         h('div', { className: 'ls-badge s-' + SEV[overall].visual }, h(Icon, { name: SEV[overall].icon, size: 24 })),
@@ -353,8 +357,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
                 h('span', { className: 'tk-state s-' + taskVis(t.state) }, taskIcon(t)),
                 h('span', { className: 'tk-title' }, t.title, h('span', { className: 'no' }, '#' + t.no)),
                 h(ChannelTag, { ch: t.chan, mini: true }),
-                t.state === 'running' ? h('span', { className: 'tk-pct' }, t.pct + '%') : h('span', { className: 'tk-el' }, t.elapsed))))))),
-      wizard);
+                t.state === 'running' ? h('span', { className: 'tk-pct' }, t.pct + '%') : h('span', { className: 'tk-el' }, t.elapsed)))))))));
   }
 
   /* =================== center router =================== */
