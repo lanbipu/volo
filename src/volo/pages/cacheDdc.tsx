@@ -6,7 +6,8 @@ import "../ds";
 import "./cache";
 import { deleteShare as deleteShareCmd, discoverProjects, createShare,
   generateDdcPak, startPsoCollection, verifyPakOutput, listPsoCacheFiles,
-  distributeDdcPak, distributePsoCache } from "../api/commands";
+  distributeDdcPak, distributePsoCache,
+  setMachineEnvVar, setMachineBackendField } from "../api/commands";
 
 (function () {
   const { Button } = window.Spectrum2DesignSystem_b6d1b3;
@@ -191,6 +192,63 @@ import { deleteShare as deleteShareCmd, discoverProjects, createShare,
           .then(() => s.reloadCache(), () => {});
       },
     });
+    /* 接入共享 DDC：让选中机器指向该共享 —— 对每台设环境变量 UE-SharedDataCachePath，
+       并对该机已扫描到的工程写 [DerivedDataBackendGraph] Shared 的 Path + EnvPathOverride
+       （没有 EnvPathOverride 时 UE 会忽略这个环境变量）。没扫到工程的机器只设环境变量。 */
+    const joinShareToMachines = (targets, unc) => {
+      let envOk = 0, iniProjOk = 0, fail = 0;
+      return Promise.allSettled(targets.map((mid) =>
+        setMachineEnvVar(mid, 'UE-SharedDataCachePath', unc).then(() => {
+          envOk++;
+          const projs = (UE_PROJECTS || []).filter((p) => (p.machines || []).includes(String(mid)));
+          return Promise.allSettled(projs.map((p) => {
+            const base = (p.locByMachine && p.locByMachine[String(mid)]) || p.root;
+            const ini = String(base).replace(/\\+$/, '') + '\\Config\\DefaultEngine.ini';
+            return Promise.all([
+              setMachineBackendField(mid, ini, 'DerivedDataBackendGraph', 'Shared', 'Path', unc),
+              setMachineBackendField(mid, ini, 'DerivedDataBackendGraph', 'Shared', 'EnvPathOverride', 'UE-SharedDataCachePath'),
+            ]);
+          })).then((rs) => { iniProjOk += rs.filter((r) => r.status === 'fulfilled').length; });
+        }, () => { fail++; })
+      )).then(() => {
+        if (envOk === 0) throw new Error('全部目标设置失败');
+        return { envOk, iniProjOk, fail };
+      });
+    };
+    const joinShare = (sh) => CX.openPreview(s, {
+      title: '接入共享 DDC · ' + sh.path, icon: 'folder', cli: 'set UE-SharedDataCachePath (+ BackendGraph)', destructive: false, channel: 'ssh', confirmLabel: '接入',
+      steps: ['对选中机器设环境变量 UE-SharedDataCachePath = ' + sh.path,
+        '该机已扫描到的工程，同时写 DefaultEngine.ini [DerivedDataBackendGraph] Shared 的 Path + EnvPathOverride（UE 才认这个环境变量）',
+        '未扫描到工程的机器只设环境变量 —— 需该工程已配 EnvPathOverride 才生效'],
+      scope: RENDER_NODES.filter((n) => n.status !== 'offline').map((n) => n.id),
+      onConfirm: (sel) => {
+        const targets = (sel || []).map((id) => (CX.node(id) || {}).machineId).filter((x) => x != null);
+        if (!targets.length) return;
+        s.runCmd({ domain: 'share', action: 'join', target: targets.length + ' 台', chan: 'ssh', note: '接入共享 DDC · ' + sh.path },
+          () => joinShareToMachines(targets, sh.path),
+          { okMsg: (r) => '已接入 · ' + r.envOk + ' 台设环境变量' + (r.iniProjOk ? ('，写 ' + r.iniProjOk + ' 个工程 INI') : '') + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
+          .then(() => s.reloadCache(), () => {});
+      },
+    });
+    /* 退出共享 DDC：清空选中机器的 UE-SharedDataCachePath（不动工程 INI；EnvPathOverride
+       指向的环境变量为空时 UE 回退本地缓存）。 */
+    const leaveShare = (sh) => CX.openPreview(s, {
+      title: '退出共享 DDC · ' + sh.path, icon: 'minus', cli: 'set UE-SharedDataCachePath=""', destructive: true, channel: 'ssh', confirmLabel: '退出',
+      steps: ['对选中机器清空环境变量 UE-SharedDataCachePath', '不改工程 INI —— 环境变量为空时 UE 自动回退本地缓存'],
+      scope: RENDER_NODES.filter((n) => n.status !== 'offline').map((n) => n.id),
+      onConfirm: (sel) => {
+        const targets = (sel || []).map((id) => (CX.node(id) || {}).machineId).filter((x) => x != null);
+        if (!targets.length) return;
+        s.runCmd({ domain: 'share', action: 'leave', target: targets.length + ' 台', chan: 'ssh', note: '退出共享 DDC · ' + sh.path },
+          () => Promise.allSettled(targets.map((mid) => setMachineEnvVar(mid, 'UE-SharedDataCachePath', ''))).then((rs) => {
+            const ok = rs.filter((r) => r.status === 'fulfilled').length;
+            if (!ok) throw new Error('全部目标清空失败');
+            return { ok, fail: rs.length - ok };
+          }),
+          { okMsg: (r) => '已退出 · ' + r.ok + ' 台清空环境变量' + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
+          .then(() => s.reloadCache(), () => {});
+      },
+    });
     const deployLocal = () => CX.openPreview(s, {
       title: '开启本地 DDC', icon: 'server', cli: 'local-cache create', destructive: false, channel: 'winrm', confirmLabel: '开启',
       steps: ['在这台机器本地新建一个缓存目录', '作为找不到共享缓存时的本地兜底'],
@@ -295,6 +353,8 @@ import { deleteShare as deleteShareCmd, discoverProjects, createShare,
     const shareRow = (sh) => h('div', { key: sh.id, className: 'art-row' },
       h('span', { className: 'art-dot s-' + (sh.status === 'healthy' ? 'positive' : 'notice') }, h(Icon, { name: 'folder', size: 12 })),
       h('div', { className: 'art-meta' }, h('div', { className: 'art-name mono' }, sh.path), h('div', { className: 'art-sub' }, sh.mode + ' · ' + sh.clients + ' 客户端 · ' + sh.size)),
+      h('button', { className: 'mini-btn', onClick: () => joinShare(sh) }, h(Icon, { name: 'download', size: 12 }), '接入'),
+      h('button', { className: 'mini-btn', onClick: () => leaveShare(sh) }, h(Icon, { name: 'minus', size: 12 }), '退出'),
       h('button', { className: 'mini-btn danger', onClick: () => deleteShare(sh) }, h(Icon, { name: 'trash', size: 12 }), '解除纳管'));
 
     /* 单个后端面板（介绍卡 + 部署表单）— 仅 SMB / 本地（ZenServer 拆到 cacheZen.tsx）。 */
@@ -329,21 +389,33 @@ import { deleteShare as deleteShareCmd, discoverProjects, createShare,
     /* localDirs 的初值在 mount 时算（那会儿 RENDER_NODES 还是空），机器异步到达后不会回填 →
        读 localDirs[n.id] 会是 undefined。这里按机器盘符给默认值兜底，用户改过的覆盖优先。 */
     const localDirOf = (n) => localDirs[n.id] || ((/^([A-Za-z]):/.test(n.uePath || '') ? n.uePath[0].toUpperCase() : 'D') + ':\\UE_DDC\\Local');
+    /* 真实本地 DDC：设环境变量 UE-LocalDataCachePath（Local backend 默认带 EnvPathOverride，
+       不必改工程 INI；目录由 UE 首次运行时创建）。原 task 假数据已删。 */
     const deployLocalOne = (n) => CX.openPreview(s, {
-      title: '部署本地 DDC · ' + n.host, icon: 'server', cli: 'local-cache create', destructive: false, channel: 'winrm', confirmLabel: '部署',
-      steps: ['在这台机器本地新建缓存目录 ' + localDirOf(n), '作为找不到共享缓存时的本地兜底，配置后自动复核'],
+      title: '部署本地 DDC · ' + n.host, icon: 'server', cli: 'set UE-LocalDataCachePath', destructive: false, channel: 'ssh', confirmLabel: '部署',
+      steps: ['设环境变量 UE-LocalDataCachePath = ' + localDirOf(n), '作为找不到共享缓存时的本地兜底；目录由 UE 首次运行时创建'],
       simpleScope: [{ host: n.host, ip: n.ip, msg: localDirOf(n) }],
-      task: { domain: 'local-cache', action: 'create', target: n.host, chan: 'winrm', note: '本地 DDC 已部署 · ' + localDirOf(n),
-        lines: [{ msg: 'local-cache create ' + localDirOf(n) }, { lv: 'ok', msg: n.host + ' 本地缓存层已就绪' }] },
-      onConfirm: () => setLocalDeployed((d) => d.includes(n.id) ? d : d.concat(n.id)),
+      onConfirm: () => {
+        s.runCmd({ domain: 'local-cache', action: 'create', target: n.host, chan: 'ssh', note: '本地 DDC · ' + localDirOf(n) },
+          () => setMachineEnvVar(n.machineId, 'UE-LocalDataCachePath', localDirOf(n)),
+          { okMsg: () => n.host + ' 本地缓存路径已设 · ' + localDirOf(n) })
+          .then(() => setLocalDeployed((d) => d.includes(n.id) ? d : d.concat(n.id)), () => {});
+      },
     });
     const deployLocalAll = () => CX.openPreview(s, {
-      title: '一键部署本地 DDC', icon: 'bolt', cli: 'local-cache create', destructive: false, channel: 'winrm', confirmLabel: '部署 ' + onlineLocalTargets.length + ' 台',
-      steps: ['为这些机器逐台在本地新建缓存目录', '作为找不到共享缓存时的本地兜底，配置后自动复核'],
+      title: '一键部署本地 DDC', icon: 'bolt', cli: 'set UE-LocalDataCachePath', destructive: false, channel: 'ssh', confirmLabel: '部署 ' + onlineLocalTargets.length + ' 台',
+      steps: ['为这些机器逐台设环境变量 UE-LocalDataCachePath（各自 data-dir）', '作为找不到共享缓存时的本地兜底；目录由 UE 首次运行时创建'],
       simpleScope: onlineLocalTargets.map((n) => ({ host: n.host, ip: n.ip, msg: localDirOf(n) })),
-      task: { domain: 'local-cache', action: 'create', target: onlineLocalTargets.length + ' 台', chan: 'winrm', note: '一键部署本地 DDC（' + onlineLocalTargets.length + ' 台）',
-        lines: [{ msg: 'local-cache create ×' + onlineLocalTargets.length }, { lv: 'ok', msg: onlineLocalTargets.length + ' 台本地缓存层已就绪' }] },
-      onConfirm: () => setLocalDeployed((d) => Array.from(new Set(d.concat(onlineLocalTargets.map((n) => n.id))))),
+      onConfirm: () => {
+        s.runCmd({ domain: 'local-cache', action: 'create', target: onlineLocalTargets.length + ' 台', chan: 'ssh', note: '一键部署本地 DDC（' + onlineLocalTargets.length + ' 台）' },
+          () => Promise.allSettled(onlineLocalTargets.map((n) => setMachineEnvVar(n.machineId, 'UE-LocalDataCachePath', localDirOf(n)))).then((rs) => {
+            const ok = rs.filter((r) => r.status === 'fulfilled').length;
+            if (!ok) throw new Error('全部目标设置失败');
+            return { ok, fail: rs.length - ok };
+          }),
+          { okMsg: (r) => r.ok + ' 台本地缓存路径已设' + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
+          .then(() => setLocalDeployed((d) => Array.from(new Set(d.concat(onlineLocalTargets.map((n) => n.id))))), () => {});
+      },
     });
     const localRow = (n) => {
       const dep = localDeployed.includes(n.id);

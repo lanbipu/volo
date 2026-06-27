@@ -59,9 +59,13 @@ function normalizeRoleKey(raw: string): NodeVM["roleKey"] {
   return "render";
 }
 
-export function toNodeVM(m: Machine): NodeVM {
+export function toNodeVM(m: Machine, shares: ShareConfig[] = []): NodeVM {
   const machineId = m.id ?? 0;
   const roleKey = normalizeRoleKey(m.role);
+  /* 该机作为宿主托管的共享（share_configs.host_machine_id 命中）→ 机器详情「关联」
+     段显示「共享 DDC 宿主」。客户端是否「已接入」靠机器详情⑥读 UE-SharedDataCachePath
+     体现（那是异步逐机读，不放进同步的列表 VM）。 */
+  const hosted = shares.find((s) => s.host_machine_id === machineId);
   return {
     id: String(machineId),
     host: m.hostname,
@@ -84,7 +88,7 @@ export function toNodeVM(m: Machine): NodeVM {
     auth: "SSH 公钥",
     domain: "—",
     zen: null,
-    share: null,
+    share: hosted ? hosted.unc_path : null,
     proj: [],
     tags: [roleKey],
     cfg: null,
@@ -199,6 +203,36 @@ const PROBE_DICT: Record<string, { label: string; layer: string }> = {
   zen_cache_provider_ready: { label: "Zen 缓存 provider 就绪", layer: "L3" },
 };
 
+/* 面向用户的自然语言文案：诊断面板不该出现 probe key、端口号、服务名、英文 message
+ *  或 L1/L2/L3 层级代号。这里给每个探测项一个「人话标题 + 这条出问题意味着什么」，
+ *  替代后端英文 CheckOutcome.message 直显。技术名（PROBE_DICT.label）留作 tooltip。 */
+const PROBE_NARRATIVE: Record<string, { label: string; hint: string }> = {
+  tcp_5985: { label: "远程管理通道", hint: "连不上这台机器的远程管理通道，Volo 没法远程下发配置或采集状态。" },
+  tcp_445: { label: "文件共享通道", hint: "文件共享通道不通，这台机器访问不了共享缓存盘。" },
+  tcp_135: { label: "远程调用通道", hint: "远程调用通道不通，部分远程操作无法进行。" },
+  firewall_445: { label: "文件共享防火墙", hint: "防火墙挡住了文件共享，共享缓存可能连不上。" },
+  local_account_token_filter: { label: "本地账户远程权限", hint: "本地账户的远程访问权限没放开，部分远程操作会被系统拒绝。" },
+  long_paths_enabled: { label: "长路径支持", hint: "系统没开启长路径支持，目录很深的缓存文件可能写不进去。" },
+  lanman_server: { label: "文件共享服务", hint: "Windows 文件共享服务没在运行，这台机器没法对外提供共享。" },
+  share_reachable: { label: "共享缓存盘连通性", hint: "这台机器连不上共享缓存盘。" },
+  ntfs_perm: { label: "共享目录权限", hint: "共享缓存目录的访问权限不正确。" },
+  cred_user: { label: "共享访问账号", hint: "访问共享缓存盘的账号凭据还没准备好。" },
+  cred_system: { label: "后台服务访问凭据", hint: "系统账户访问共享缓存的凭据还没准备好，后台服务可能读不到共享。" },
+  env_vars: { label: "缓存路径配置", hint: "缓存相关的路径配置没设好，UE 可能找不到缓存盘。" },
+  env_local: { label: "本地缓存路径", hint: "本地缓存路径还没设好。" },
+  env_shared: { label: "共享缓存路径", hint: "这台机器还没指向共享缓存盘，渲染时用不上团队共享的缓存，会各自重新生成。" },
+  system_write: { label: "缓存目录写入权限", hint: "系统账户对缓存目录没有写入权限，缓存写不进去。" },
+  winmgmt: { label: "系统信息服务", hint: "系统信息服务没在运行，部分硬件和状态信息采集不到。" },
+  rs_service: { label: "RenderStream 服务", hint: "RenderStream 服务还没就绪。" },
+  ini_consistency: { label: "工程配置检查", hint: "工程配置里有需要调整的项。" },
+  pso_precaching: { label: "着色器预缓存", hint: "着色器预缓存没打开，画面首次出现时可能卡顿。" },
+  gpu_consistency: { label: "显卡一致性", hint: "集群里各机器的显卡型号或驱动不一致，可能导致渲染结果有差异。" },
+  zen_reachable: { label: "共享缓存服务器连通性", hint: "连不上共享缓存服务器（Zen）。" },
+  zen_version_consistent: { label: "缓存服务器版本一致性", hint: "共享缓存服务器的版本和集群其他机器不一致。" },
+  zen_binary_intact: { label: "缓存服务器程序完整性", hint: "共享缓存服务器的程序文件不完整。" },
+  zen_cache_provider_ready: { label: "缓存服务器就绪", hint: "共享缓存服务器还没准备好对外提供缓存。" },
+};
+
 const STAT_RANK: Record<string, number> = { critical: 3, warning: 2, healthy: 1, na: 0, offline: 0, unknown: 0 };
 const normHealthStatus = (s: string): string =>
   s === "critical" || s === "warning" || s === "healthy" ? s : "na";
@@ -227,16 +261,19 @@ export function toHealthVMs(rows: HealthCheckRow[], machines: NodeVM[]): any[] {
   return Object.keys(byKey).map((key) => {
     const g = byKey[key];
     const worst = g.statuses.reduce((a, s) => ((STAT_RANK[s] || 0) > (STAT_RANK[a] || 0) ? s : a), "na");
-    const meta = PROBE_DICT[key] || { label: key, layer: "L3" };
+    const tech = PROBE_DICT[key] || { label: key, layer: "L3" };
+    const nat = PROBE_NARRATIVE[key] || { label: tech.label, hint: "" };
     const hosts = g.bad.map((b) => b.host);
     return {
       id: key,
-      layer: meta.layer,
-      label: meta.label,
+      layer: tech.layer,      // 保留供他处用；诊断面板不再显示
+      tech: tech.label,       // 技术名，留作 tooltip
+      label: nat.label,       // 自然语言标题
+      hint: nat.hint,         // 自然语言「这条出问题意味着什么」
       status: normHealthStatus(worst),
-      detail: hosts.length ? hosts.length + " 台异常：" + hosts.join(" / ") : "全部正常",
+      detail: hosts.length ? (hosts.length === 1 ? "影响 " + hosts[0] : "影响 " + hosts.length + " 台：" + hosts.join("、")) : "全部正常",
       remediation: g.remediation || null,
-      desc: g.bad.length && g.bad[0].msg ? g.bad[0].msg : undefined,
+      desc: nat.hint || undefined,  // 诊断面板 detail 取 desc → 现为自然语言，不再直显后端 message
     };
   });
 }

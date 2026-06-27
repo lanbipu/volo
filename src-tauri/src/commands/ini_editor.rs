@@ -42,6 +42,26 @@ pub fn set_ini_key(
     Ok(WriteIniResponse { backup_path })
 }
 
+/// Write one field of a DerivedDataBackendGraph backend node (e.g. the
+/// `Shared` node's `Path` / `EnvPathOverride`). Unlike `set_ini_key` (which
+/// sets a whole `[section] name=value` line), this edits a sub-field INSIDE a
+/// compound backend line — required to wire the file-system shared DDC so UE
+/// actually honors `UE-SharedDataCachePath` (the node needs
+/// `EnvPathOverride=UE-SharedDataCachePath`, else UE ignores the env var).
+#[tauri::command]
+pub fn set_machine_backend_field(
+    db: State<'_, Db>,
+    machine_id: i64,
+    file_path: String,
+    section: String,
+    node_name: String,
+    field: String,
+    value: String,
+) -> UecmResult<String> {
+    let host = ip_for(&db, machine_id)?;
+    ini_editor::set_backend_field(&host, &file_path, &section, &node_name, &field, &value)
+}
+
 #[tauri::command]
 pub fn read_ini_section_with_credential(
     db: State<'_, Db>,

@@ -124,24 +124,24 @@ pub fn run_rules(file: &ParsedFile, env: &EnvVarState) -> Vec<Finding> {
         "R008",
         "r.PSOPrecaching",
         Severity::Critical,
-        "PSO precaching is disabled or not configured.",
-        "Runtime PSO precaching must be enabled before collecting and distributing useful PSO cache files.",
+        "着色器（PSO）预缓存被关闭或没配置。",
+        "要先打开运行时 PSO 预缓存，之后收集和分发的 PSO 缓存文件才有意义。",
     ));
     out.extend(pso_cvar_rule(
         file,
         "R009",
         "r.PSOPrecache.Compile",
         Severity::Warning,
-        "PSO precache compilation is disabled or not configured.",
-        "UE versions and project configs can leave compile behavior disabled unless explicitly set.",
+        "PSO 预缓存编译被关闭或没配置。",
+        "不同 UE 版本和工程配置可能默认关掉编译，除非显式打开。",
     ));
     out.extend(pso_cvar_rule(
         file,
         "R010",
         "r.PSOPrecache.GlobalShaders",
         Severity::Warning,
-        "Global shader PSO precaching is disabled or not configured.",
-        "Global shader precaching helps keep runtime PSO cache behavior consistent across the cluster.",
+        "全局着色器 PSO 预缓存被关闭或没配置。",
+        "打开全局着色器预缓存，有助于集群内各机器运行时 PSO 行为一致。",
     ));
     out.extend(rule_r011(file)); out.extend(rule_r012(file)); out.extend(rule_r013(file));
     out.extend(rule_r014(file)); out.extend(rule_r015(file)); out.extend(rule_r016(file));
@@ -149,8 +149,8 @@ pub fn run_rules(file: &ParsedFile, env: &EnvVarState) -> Vec<Finding> {
     out.extend(rule_r020(file)); out.extend(rule_r021(file)); out.extend(rule_r022(file));
     out.extend(rule_r023(file));
     out.extend(pso_cvar_rule(file, "R024", "r.ShaderPipelineCache.Enabled", Severity::Critical,
-        "PSO cache file loading is disabled or not configured.",
-        "Without this CVar collected PSO cache files are not loaded at runtime."));
+        "PSO 缓存文件的加载被关闭或没配置。",
+        "没有这个控制台变量，收集来的 PSO 缓存文件在运行时不会被加载。"));
     out.extend(rule_r025(file, env));
     out.extend(rule_r027(file));
     out.extend(rule_r028(file));
@@ -183,8 +183,8 @@ fn rule_r001(file: &ParsedFile) -> Vec<Finding> {
             snippet_after: Some("EnvPathOverride=UE-SharedDataCachePath".into()),
             recommended_action: RecommendedAction::Set,
             recommended_value: Some("UE-SharedDataCachePath".into()),
-            symptom: "DDC silently uses the hardcoded path; env-var overrides are ignored.".into(),
-            rationale: "When `Path=` is set without `EnvPathOverride`, UE skips the env-var lookup. The cluster cannot share DDC.".into(),
+            symptom: "DDC 用了写死的缓存路径，环境变量覆盖被忽略。".into(),
+            rationale: "Path= 设了却没配 EnvPathOverride 时，UE 不再读环境变量，整个集群无法共享缓存。".into(),
         }];
     }
     vec![]
@@ -206,11 +206,11 @@ fn rule_r002(file: &ParsedFile) -> Vec<Finding> {
             .map(|k| format!("{}={}", k.name, k.value))
             .collect::<Vec<_>>()
             .join("\n"),
-        snippet_after: Some("(remove the entire DDC section from this user-level file)".into()),
+        snippet_after: Some("（把这个用户级文件里的整段 DDC 配置删掉）".into()),
         recommended_action: RecommendedAction::Remove,
         recommended_value: None,
-        symptom: "User-level DDC override silently overrides project + env-var configs.".into(),
-        rationale: "EditorPerProjectUserSettings.ini is the highest-priority DDC source. Any DDC keys here will mask the cluster setup.".into(),
+        symptom: "用户级 DDC 设置悄悄盖过了工程和环境变量的配置。".into(),
+        rationale: "EditorPerProjectUserSettings.ini 是优先级最高的 DDC 来源，这里的任何 DDC 设置都会遮蔽集群配置。".into(),
     }]
 }
 
@@ -237,8 +237,8 @@ fn rule_r004(file: &ParsedFile) -> Vec<Finding> {
                 snippet_after: Some("Path=\\\\HOST\\Share\\...".into()),
                 recommended_action: RecommendedAction::Manual,
                 recommended_value: None,
-                symptom: "Mapped drive letters are not visible to Windows Services (e.g. RenderStream).".into(),
-                rationale: "Use UNC paths so SYSTEM-context processes can resolve the share.".into(),
+                symptom: "用了映射盘符，而 Windows 后台服务（如 RenderStream）看不到映射盘。".into(),
+                rationale: "改用 UNC 路径，系统账户下的进程才能找到共享。".into(),
             });
         }
     }
@@ -259,11 +259,11 @@ fn rule_r005(file: &ParsedFile) -> Vec<Finding> {
                     key_name: Some(k.name.clone()),
                     line_number: Some(k.line_number as i64),
                     snippet_before: format!("{}={}", k.name, k.value),
-                    snippet_after: Some("(remove this line)".into()),
+                    snippet_after: Some("（删掉这一行）".into()),
                     recommended_action: RecommendedAction::Remove,
                     recommended_value: None,
-                    symptom: "Deprecated CVar that no longer functions in UE 5.x.".into(),
-                    rationale: format!("`{}` was removed; keeping it adds confusion at no benefit.", k.name),
+                    symptom: "用了已废弃、在 UE 5.x 已失效的控制台变量。".into(),
+                    rationale: format!("`{}` 已被移除，留着只会增加困惑、没有任何好处。", k.name),
                 });
             }
         }
@@ -293,8 +293,8 @@ fn rule_r006(file: &ParsedFile, env: &EnvVarState) -> Vec<Finding> {
             snippet_after: Some(format!("(set environment variable `{}` on this machine)", v)),
             recommended_action: RecommendedAction::Manual,
             recommended_value: None,
-            symptom: "INI references an env var that is not set; DDC falls back to local.".into(),
-            rationale: format!("`{}` is not present on this machine. Use UECM env-var modal to set it.", v),
+            symptom: "配置引用了一个未设置的环境变量，DDC 会回退到本地缓存。".into(),
+            rationale: format!("这台机器上没有 `{}`。用 Volo 的环境变量设置把它设上。", v),
         }];
     }
     vec![]
@@ -321,8 +321,8 @@ fn rule_r007(file: &ParsedFile, env: &EnvVarState) -> Vec<Finding> {
         snippet_after: None,
         recommended_action: RecommendedAction::Manual,
         recommended_value: None,
-        symptom: "Configured correctly. Tracked for healthy-count summary.".into(),
-        rationale: "EnvPathOverride references a populated env var on this machine.".into(),
+        symptom: "配置正确，仅计入健康统计。".into(),
+        rationale: "EnvPathOverride 指向的环境变量在这台机器上已设值。".into(),
     }]
 }
 
@@ -398,7 +398,7 @@ fn pso_missing_finding(
         section: section.or_else(|| Some("ConsoleVariables".into())),
         key_name: Some(key_name.into()),
         line_number: None,
-        snippet_before: "(missing)".into(),
+        snippet_before: "（未设置）".into(),
         snippet_after: Some(format!("{}=1", key_name)),
         recommended_action: RecommendedAction::Set,
         recommended_value: Some("1".into()),
@@ -457,8 +457,8 @@ fn rule_r011(file: &ParsedFile) -> Vec<Finding> {
     if !v.eq_ignore_ascii_case("FileSystem") {
         return vec![bg_finding(file, n, "R011", Severity::Critical, "Type",
             v, "FileSystem",
-            "Shared backend Type missing or wrong (expected FileSystem).",
-            "Without Type=FileSystem UE may build a no-op backend and silently fall back to Local only.",
+            "共享缓存的类型缺失或不对（应为 FileSystem）。",
+            "没有 Type=FileSystem，UE 可能建出一个无效缓存层，悄悄只用本地缓存。",
             RecommendedAction::Set)];
     }
     vec![]
@@ -469,8 +469,8 @@ fn rule_r012(file: &ParsedFile) -> Vec<Finding> {
     match get_field(n, "ReadOnly") {
         Some(v) if v.eq_ignore_ascii_case("true") => vec![bg_finding(file, n, "R012",
             Severity::Warning, "ReadOnly", v, "false",
-            "Shared DDC marked ReadOnly; cluster cannot write back.",
-            "Render nodes must push first-run results so siblings hit cache.",
+            "共享缓存被设成只读，集群无法写回。",
+            "渲染机要能把首次生成的结果推上去，其他机器才能命中缓存。",
             RecommendedAction::Set)],
         _ => vec![],
     }
@@ -481,8 +481,8 @@ fn rule_r013(file: &ParsedFile) -> Vec<Finding> {
     match get_field(n, "Clean") {
         Some(v) if v.eq_ignore_ascii_case("true") => vec![bg_finding(file, n, "R013",
             Severity::Critical, "Clean", v, "false",
-            "Clean=true wipes Shared DDC every launch.",
-            "Production Shared DDC must persist between sessions.",
+            "Clean=true 会在每次启动时清空共享缓存。",
+            "生产用的共享缓存必须在多次会话间保留。",
             RecommendedAction::Set)],
         _ => vec![],
     }
@@ -493,8 +493,8 @@ fn rule_r014(file: &ParsedFile) -> Vec<Finding> {
     match get_field(n, "Flush") {
         Some(v) if v.eq_ignore_ascii_case("true") => vec![bg_finding(file, n, "R014",
             Severity::Warning, "Flush", v, "false",
-            "Flush=true drops cache on exit.",
-            "Shared DDC must survive editor close.",
+            "Flush=true 会在退出时丢弃缓存。",
+            "共享缓存必须能在编辑器关闭后保留。",
             RecommendedAction::Set)],
         _ => vec![],
     }
@@ -504,9 +504,9 @@ fn rule_r015(file: &ParsedFile) -> Vec<Finding> {
     let Some(n) = find_shared_backend(file) else { return vec![]; };
     if get_field(n, "DeleteUnused").is_none() {
         return vec![bg_finding(file, n, "R015", Severity::Warning, "DeleteUnused",
-            "(missing)", "true",
-            "DeleteUnused not configured; GC behaviour ambiguous.",
-            "Default may differ across UE versions; pin it.",
+            "（未设置）", "true",
+            "DeleteUnused 没配置，缓存回收行为不确定。",
+            "不同 UE 版本的默认值可能不同，建议显式固定。",
             RecommendedAction::Set)];
     }
     vec![]
@@ -516,32 +516,32 @@ fn rule_r016(file: &ParsedFile) -> Vec<Finding> {
     let Some(n) = find_shared_backend(file) else { return vec![]; };
     rule_numeric_range(file, n, "R016", Severity::Warning, "UnusedFileAge",
         1, 365, "10",
-        "UnusedFileAge out of 1–365 day range.",
-        "GC sweeps need a meaningful retention window.")
+        "UnusedFileAge 超出 1–365 天的合理范围。",
+        "缓存回收需要一个有意义的保留窗口。")
 }
 
 fn rule_r017(file: &ParsedFile) -> Vec<Finding> {
     let Some(n) = find_shared_backend(file) else { return vec![]; };
     rule_numeric_range(file, n, "R017", Severity::Warning, "FoldersToClean",
         1, 100, "10",
-        "FoldersToClean out of 1–100 range.",
-        "GC sweep granularity off.")
+        "FoldersToClean 超出 1–100 的范围。",
+        "缓存回收的清理粒度不合适。")
 }
 
 fn rule_r018(file: &ParsedFile) -> Vec<Finding> {
     let Some(n) = find_shared_backend(file) else { return vec![]; };
     rule_numeric_range(file, n, "R018", Severity::Warning, "MaxFileChecksPerSec",
         1, 100, "1",
-        "MaxFileChecksPerSec out of 1–100 range.",
-        "Too high stresses NAS; too low slows DDC reads.")
+        "MaxFileChecksPerSec 超出 1–100 的范围。",
+        "设太高会给存储增加压力，太低会拖慢缓存读取。")
 }
 
 fn rule_r019(file: &ParsedFile) -> Vec<Finding> {
     let Some(n) = find_shared_backend(file) else { return vec![]; };
     rule_numeric_range(file, n, "R019", Severity::Warning, "ConsiderSlowAt",
         10, 1000, "70",
-        "ConsiderSlowAt out of 10–1000 ms.",
-        "If wrong UE may deactivate Shared backend.")
+        "ConsiderSlowAt 超出 10–1000 毫秒。",
+        "设错时 UE 可能会停用共享缓存层。")
 }
 
 fn rule_r020(file: &ParsedFile) -> Vec<Finding> {
@@ -549,8 +549,8 @@ fn rule_r020(file: &ParsedFile) -> Vec<Finding> {
     match get_field(n, "PromptIfMissing") {
         Some(v) if v.eq_ignore_ascii_case("true") => vec![bg_finding(file, n, "R020",
             Severity::Critical, "PromptIfMissing", v, "false",
-            "PromptIfMissing=true breaks unattended starts.",
-            "RenderStream service has no UI; a missing-path dialog hangs boot.",
+            "PromptIfMissing=true 会让无人值守启动卡住。",
+            "RenderStream 服务没有界面，一旦弹出路径缺失对话框就会卡在启动。",
             RecommendedAction::Set)],
         _ => vec![],
     }
@@ -561,10 +561,10 @@ fn rule_r021(file: &ParsedFile) -> Vec<Finding> {
     let path = get_field(n, "Path").unwrap_or("");
     if !path.starts_with(r"\\") {
         return vec![bg_finding(file, n, "R021", Severity::Critical, "Path",
-            if path.is_empty() { "(missing)" } else { path },
+            if path.is_empty() { "（未设置）" } else { path },
             r"\\HOST\Share",
-            "Shared backend Path missing or not UNC.",
-            "Mapped drives are invisible to Windows services and RenderStream.",
+            "共享缓存路径缺失或不是 UNC 路径。",
+            "映射盘符对 Windows 服务和 RenderStream 不可见。",
             RecommendedAction::Manual)];
     }
     vec![]
@@ -574,9 +574,9 @@ fn rule_r022(file: &ParsedFile) -> Vec<Finding> {
     let Some(n) = find_shared_backend(file) else { return vec![]; };
     if get_field(n, "EnvPathOverride").is_none() {
         return vec![bg_finding(file, n, "R022", Severity::Warning, "EnvPathOverride",
-            "(missing)", "UE-SharedDataCachePath",
-            "EnvPathOverride not set; env var fallback disabled.",
-            "Without it UE ignores UE-SharedDataCachePath; per-machine override impossible.",
+            "（未设置）", "UE-SharedDataCachePath",
+            "没设 EnvPathOverride，环境变量回退被禁用。",
+            "没有它，UE 会忽略 UE-SharedDataCachePath，没法按机器单独覆盖路径。",
             RecommendedAction::Set)];
     }
     vec![]
@@ -586,9 +586,9 @@ fn rule_r023(file: &ParsedFile) -> Vec<Finding> {
     let Some(n) = find_shared_backend(file) else { return vec![]; };
     if get_field(n, "EditorOverrideSetting").is_none() {
         return vec![bg_finding(file, n, "R023", Severity::Info, "EditorOverrideSetting",
-            "(missing)", "SharedDerivedDataCache",
-            "EditorOverrideSetting not declared.",
-            "Without this, Editor Preferences UI cannot override the INI Path.",
+            "（未设置）", "SharedDerivedDataCache",
+            "没声明 EditorOverrideSetting。",
+            "缺了它，编辑器偏好设置界面无法覆盖 INI 里的路径。",
             RecommendedAction::Set)];
     }
     vec![]
@@ -607,11 +607,11 @@ fn rule_r025(file: &ParsedFile, env: &EnvVarState) -> Vec<Finding> {
                 key_name: Some("ProjectSharedDDCPath".into()),
                 line_number: None,
                 snippet_before: format!("ProjectSharedDDCPath={}", proj),
-                snippet_after: Some("(leave empty so env var / project Config takes over)".into()),
+                snippet_after: Some("（留空，让环境变量 / 工程 Config 接管）".into()),
                 recommended_action: RecommendedAction::Remove,
                 recommended_value: None,
-                symptom: "Project-level Editor Pref masks UE-SharedDataCachePath silently.".into(),
-                rationale: "When ProjectSharedDDCPath is non-empty, UE uses it and ignores EnvPathOverride.".into(),
+                symptom: "工程级编辑器偏好悄悄遮蔽了 UE-SharedDataCachePath。".into(),
+                rationale: "ProjectSharedDDCPath 非空时，UE 会用它而忽略 EnvPathOverride。".into(),
             });
         }
     }
@@ -651,12 +651,12 @@ fn rule_r027(file: &ParsedFile) -> Vec<Finding> {
             return vec![];
         }
     }
-    let cur_delete = get_field(n, "DeleteUnused").unwrap_or("(unset, defaults true)");
-    let age_desc = age.unwrap_or("unset (engine default ~15 days)");
+    let cur_delete = get_field(n, "DeleteUnused").unwrap_or("（未设置，默认 true）");
+    let age_desc = age.unwrap_or("未设置（引擎默认约 15 天）");
     vec![bg_finding(
         file, n, "R027", Severity::Info, "DeleteUnused", cur_delete, "false",
-        &format!("Shared DDC runs on default expiry: UnusedFileAge={}, GC active — unused derived data is reclaimed after the default window.", age_desc),
-        "Caches still needed mid-project get reclaimed and trigger recompiles. Pause GC (DeleteUnused=false, via `ini gc-pause`) to keep the Shared DDC for the project's duration; `gc-resume` restores the default.",
+        &format!("共享缓存按默认过期策略运行：UnusedFileAge={}，回收已开启 —— 超过默认窗口的派生数据会被回收。", age_desc),
+        "工程进行中仍需要的缓存会被回收并触发重新编译。用 `ini gc-pause` 暂停回收（DeleteUnused=false）以在整个工程期间保留共享缓存；`gc-resume` 恢复默认。",
         RecommendedAction::Manual,
     )]
 }
@@ -676,8 +676,8 @@ fn rule_r028(file: &ParsedFile) -> Vec<Finding> {
         }
     }
     let cur_desc = match current {
-        Some(s) => format!("{} s (~{} days)", s, s / 86_400),
-        None => "unset (engine default 1209600 s = 14 days)".to_string(),
+        Some(s) => format!("{} 秒（约 {} 天）", s, s / 86_400),
+        None => "未设置（引擎默认 1209600 秒 = 14 天）".to_string(),
     };
     vec![Finding {
         rule_id: "R028".into(),
@@ -694,8 +694,8 @@ fn rule_r028(file: &ParsedFile) -> Vec<Finding> {
         )),
         recommended_action: RecommendedAction::Manual,
         recommended_value: None,
-        symptom: format!("Zen Server runs on default GC retention ({}); unused cache is reclaimed after that window.", cur_desc),
-        rationale: "Zen has no DeleteUnused switch; to keep cache for the whole project raise --gc-cache-duration-seconds in [Zen.AutoLaunch] ExtraArgs (via `ini zen-gc-pause`). `zen-gc-resume` restores the 14-day default.".into(),
+        symptom: format!("Zen 服务器按默认回收策略运行（{}）；超过该窗口后未使用的缓存会被回收。", cur_desc),
+        rationale: "Zen 没有 DeleteUnused 开关；要在整个工程期间保留缓存，用 `ini zen-gc-pause` 提高 [Zen.AutoLaunch] ExtraArgs 里的 --gc-cache-duration-seconds。`zen-gc-resume` 恢复 14 天默认。".into(),
     }]
 }
 

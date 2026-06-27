@@ -406,7 +406,7 @@ fn rule_r012(file: &ParsedFile, ctx: &ZenRuleContext<'_>) -> Vec<Finding> {
         section: Some(rule.section.clone()),
         key_name: Some(rule.key.clone()),
         line_number: None,
-        snippet_before: "(missing)".into(),
+        snippet_before: "（未设置）".into(),
         // Show the raw template in the suggested snippet (placeholders are
         // informative for an operator reading the report) but DO NOT set
         // `recommended_value` — `ini_apply::apply` would write the raw
@@ -420,10 +420,10 @@ fn rule_r012(file: &ParsedFile, ctx: &ZenRuleContext<'_>) -> Vec<Finding> {
         recommended_action: RecommendedAction::Manual,
         recommended_value: None,
         symptom: format!(
-            "Project is on UE {}+ with a registered cluster zen endpoint but no `{}` upstream is wired.",
+            "工程是 UE {}+ 且已登记集群 zen 端点，但没接上 `{}` 上游。",
             resolved.matched_version, rule.key
         ),
-        rationale: "Without ZenShared the project pays the local-only zen cost; nothing is shared across the cluster. Run `uecm-cli zen enable` to materialize the value from the cluster master endpoint.".into(),
+        rationale: "没有 ZenShared，工程只能用本地 zen，集群间不共享任何缓存。运行 `uecm-cli zen enable` 从集群主端点生成该值。".into(),
     }]
 }
 
@@ -458,10 +458,10 @@ fn rule_r013(file: &ParsedFile, ctx: &ZenRuleContext<'_>) -> Vec<Finding> {
         recommended_action: RecommendedAction::Manual,
         recommended_value: None,
         symptom: format!(
-            "`{}` value does not match the expected [StorageServers] shape (Host=\"http://host:port\", Namespace=...). A bare host or a separate `Port=` token is malformed — the port must be embedded in the Host URI.",
+            "`{}` 的值不符合 [StorageServers] 的格式（Host=\"http://host:port\", Namespace=...）。裸主机名或单独的 `Port=` 都是错的 —— 端口必须写进 Host URI 里。",
             rule.key
         ),
-        rationale: "Zen will refuse to wire up the backend if the value doesn't parse (or connects to the wrong port when the URI omits it); the project silently falls back to local-only DDC. Re-run `uecm-cli zen enable` to overwrite with a materialized value.".into(),
+        rationale: "值解析不了时 Zen 会拒绝接入后端（URI 缺端口时还会连错端口），工程会悄悄回退到只用本地 DDC。重跑 `uecm-cli zen enable` 用生成的值覆盖。".into(),
     }]
 }
 
@@ -516,11 +516,11 @@ fn rule_r014(file: &ParsedFile, ctx: &ZenRuleContext<'_>) -> Vec<Finding> {
     });
     let (status, detail) = match matching {
         Some(er) if er.recent_reachable => return vec![],
-        Some(_) => ("unreachable", "no recent reachable probe".to_string()),
+        Some(_) => ("不可达", "最近没有成功的可达探测".to_string()),
         None => (
-            "no match",
+            "无匹配端点",
             format!(
-                "no registered endpoint matches host '{}' (port / namespace also checked when present)",
+                "没有已登记的端点匹配主机 '{}'（端口 / 命名空间在存在时也会一并比对）",
                 host_in_value
             ),
         ),
@@ -539,11 +539,11 @@ fn rule_r014(file: &ParsedFile, ctx: &ZenRuleContext<'_>) -> Vec<Finding> {
         recommended_action: RecommendedAction::Manual,
         recommended_value: None,
         symptom: format!(
-            "`{}` upstream '{}' is {}.",
+            "`{}` 上游 '{}' {}。",
             rule.key, host_in_value, status
         ),
         rationale: format!(
-            "{}; UE will be unable to fetch from the cluster master.",
+            "{}；UE 将无法从集群主节点拉取缓存。",
             detail
         ),
     }]
@@ -612,16 +612,16 @@ fn rule_r015(
                 recommended_value: None,
                 symptom: if zen_shared_configured {
                     format!(
-                        "Legacy SMB `{}` key still present alongside ZenShared.",
+                        "旧式 SMB 的 `{}` 键和 ZenShared 同时存在。",
                         smb.key
                     )
                 } else {
                     format!(
-                        "Legacy SMB `{}` key present; ZenShared not yet wired — run `zen enable` first, then re-scan to remove.",
+                        "存在旧式 SMB 的 `{}` 键；ZenShared 还没接上 —— 先运行 `zen enable`，再重新扫描以移除它。",
                         smb.key
                     )
                 },
-                rationale: "Both backends compete for the same DDC lookup; UE may pick either or fight, producing inconsistent cache hits across the cluster.".into(),
+                rationale: "两个缓存后端争抢同一次 DDC 查找，UE 可能任选其一或互相冲突，导致集群内缓存命中不一致。".into(),
             });
         }
     }
@@ -660,7 +660,7 @@ fn rule_r015(
                 line_number: None,
                 snippet_before: format!("{}={}", var_name, env_value),
                 snippet_after: Some(format!(
-                    "(clear `{}` env var on this machine — both machine and user scope)",
+                    "（在这台机器上清除 `{}` 环境变量 —— 机器级和用户级都要清）",
                     var_name
                 )),
                 // Env-var cleanup is not an INI edit — `ini_apply::apply`
@@ -669,10 +669,10 @@ fn rule_r015(
                 recommended_action: RecommendedAction::Manual,
                 recommended_value: None,
                 symptom: format!(
-                    "ZenShared upstream is configured but legacy `{}` env var is still set ({}).",
+                    "已配置 ZenShared 上游，但旧式 `{}` 环境变量还设着（{}）。",
                     var_name, env_value
                 ),
-                rationale: "UE will write to BOTH backends — the zen cluster cache AND the legacy SMB path the env var points at. Cache hits become inconsistent across the cluster. Clear the env var (machine + user scope) so only the ZenShared route stays.".into(),
+                rationale: "UE 会同时往两个后端写 —— zen 集群缓存，以及环境变量指向的旧式 SMB 路径。集群内缓存命中会变得不一致。清除该环境变量（机器级 + 用户级），只保留 ZenShared 这条路。".into(),
             });
         }
     }
@@ -706,16 +706,16 @@ fn rule_r016(file: &ParsedFile, ctx: &ZenRuleContext<'_>) -> Vec<Finding> {
         line_number: None,
         snippet_before: format!("actual sha256={}", check.actual_sha256),
         snippet_after: Some(format!(
-            "expected sha256={} (baseline for {})",
+            "期望 sha256={}（{} 的基线）",
             check.expected_sha256, check.build_version
         )),
         recommended_action: RecommendedAction::Manual,
         recommended_value: None,
         symptom: format!(
-            "zenserver.exe install path sha256 does not match baseline for build {}.",
+            "zenserver.exe 安装路径的 sha256 与 build {} 的基线不一致。",
             check.build_version
         ),
-        rationale: "Drift can mean a partial auto-upgrade, a manual re-copy, or tampering. Re-sync from the canonical install source and re-run `zen detect-binary`.".into(),
+        rationale: "不一致可能意味着升级只完成了一半、文件被手动重拷过、或被篡改。从标准安装源重新同步，再跑 `zen detect-binary`。".into(),
     }]
 }
 
@@ -745,9 +745,9 @@ fn rule_r017(file: &ParsedFile, ctx: &ZenRuleContext<'_>) -> Vec<Finding> {
             let (action, snippet_after_extra, symptom) = if zen_shared_configured {
                 (
                     RecommendedAction::Remove,
-                    format!("(remove `{}` from [{}])", k.name, section.name),
+                    format!("（从 [{}] 移除 `{}`）", section.name, k.name),
                     format!(
-                        "Legacy Pak DDC key `{}` still present alongside ZenShared.",
+                        "旧式 Pak DDC 键 `{}` 和 ZenShared 同时存在。",
                         k.name
                     ),
                 )
@@ -755,11 +755,11 @@ fn rule_r017(file: &ParsedFile, ctx: &ZenRuleContext<'_>) -> Vec<Finding> {
                 (
                     RecommendedAction::Manual,
                     format!(
-                        "(legacy `{}` will be removed once `zen enable` writes ZenShared into [{}])",
-                        k.name, section.name
+                        "（`zen enable` 把 ZenShared 写进 [{}] 后，旧式 `{}` 会被移除）",
+                        section.name, k.name
                     ),
                     format!(
-                        "Legacy Pak DDC key `{}` present; ZenShared not yet wired — run `zen enable` first, then re-scan to remove.",
+                        "存在旧式 Pak DDC 键 `{}`；ZenShared 还没接上 —— 先运行 `zen enable`，再重新扫描以移除它。",
                         k.name
                     ),
                 )
@@ -777,7 +777,7 @@ fn rule_r017(file: &ParsedFile, ctx: &ZenRuleContext<'_>) -> Vec<Finding> {
                 recommended_action: action,
                 recommended_value: None,
                 symptom,
-                rationale: "UE will keep loading the .ddp pak file even when ZenShared is wired, masking cluster cache misses.".into(),
+                rationale: "即使接上了 ZenShared，UE 仍会继续加载 .ddp pak 文件，掩盖集群缓存未命中。".into(),
             });
         }
     }
@@ -827,16 +827,16 @@ fn rule_r018(file: &ParsedFile, ctx: &ZenRuleContext<'_>) -> Vec<Finding> {
             section: None,
             key_name: Some("zenserver_build_version".into()),
             line_number: None,
-            snippet_before: format!("this machine: {}", current.zenserver_build_version),
+            snippet_before: format!("本机：{}", current.zenserver_build_version),
             snippet_after: Some(format!(
-                "cluster split: {} version(s) across {} machines (no strict majority)",
+                "集群分裂：{} 个版本分布在 {} 台机器上（没有绝对多数）",
                 ranked.len(),
                 ctx.cluster_versions.len()
             )),
             recommended_action: RecommendedAction::Manual,
             recommended_value: None,
-            symptom: "Cluster has multiple zen versions with no clear majority.".into(),
-            rationale: "Mixed zen versions across the cluster can produce subtle wire-format incompatibilities; pick one build and align every machine on it.".into(),
+            symptom: "集群里有多个 zen 版本，且没有明显的多数版本。".into(),
+            rationale: "集群内 zen 版本混杂可能造成细微的协议格式不兼容；选定一个 build，让每台机器对齐。".into(),
         }];
     }
 
@@ -852,9 +852,9 @@ fn rule_r018(file: &ParsedFile, ctx: &ZenRuleContext<'_>) -> Vec<Finding> {
         section: None,
         key_name: Some("zenserver_build_version".into()),
         line_number: None,
-        snippet_before: format!("this machine: {}", current.zenserver_build_version),
+        snippet_before: format!("本机：{}", current.zenserver_build_version),
         snippet_after: Some(format!(
-            "cluster majority: {} ({} of {} machines)",
+            "集群多数：{}（{} / {} 台机器）",
             majority,
             top.1,
             ctx.cluster_versions.len()
@@ -862,10 +862,10 @@ fn rule_r018(file: &ParsedFile, ctx: &ZenRuleContext<'_>) -> Vec<Finding> {
         recommended_action: RecommendedAction::Manual,
         recommended_value: None,
         symptom: format!(
-            "zenserver_build_version `{}` differs from cluster majority `{}`.",
+            "zenserver_build_version `{}` 与集群多数版本 `{}` 不一致。",
             current.zenserver_build_version, majority
         ),
-        rationale: "Mixed zen versions across the cluster can produce subtle wire-format incompatibilities; align the build before relying on shared DDC.".into(),
+        rationale: "集群内 zen 版本混杂可能造成细微的协议格式不兼容；在依赖共享 DDC 之前先对齐 build。".into(),
     }]
 }
 
@@ -945,11 +945,11 @@ pub fn evaluate_r026(
         snippet_after: None,
         recommended_action: RecommendedAction::Manual,
         recommended_value: None,
-        symptom: "Global ZenShared (UserEngine.ini) and project-level ZenShared both present \
-                  — project-level config takes precedence and may shadow the global setting"
+        symptom: "全局 ZenShared（UserEngine.ini）和工程级 ZenShared 同时存在 \
+                  —— 工程级配置优先，会遮蔽全局设置"
             .to_string(),
-        rationale: "UE INI merge order: project DefaultEngine.ini overrides user UserEngine.ini. \
-                    Remove one of the two ZenShared entries."
+        rationale: "UE 的 INI 合并顺序：工程 DefaultEngine.ini 覆盖用户 UserEngine.ini。\
+                    删掉两处 ZenShared 中的一个即可。"
             .to_string(),
     }]
 }

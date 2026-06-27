@@ -69,7 +69,7 @@ export const saveCredential = (alias: string, kind: CredentialKind, username: st
 export const deleteCredential = (alias: string) => call<void>("delete_credential", { alias });
 
 /* ----------------------------- env vars ----------------------------- */
-// 📝 no-ui: 无单机写环境变量入口
+// ✅ wired: cacheDdc 接入/退出共享 → setMachineEnvVar(UE-SharedDataCachePath)；本地 DDC 部署 → setMachineEnvVar(UE-LocalDataCachePath)
 export const setMachineEnvVar = (machineId: number, name: string, value: string) =>
   call<void>("set_machine_env_var", { machineId, name, value });
 // ✅ wired: machineDetail ⑥ → getMachineEnvVar(UE-Local/SharedDataCachePath) 异步读取
@@ -89,6 +89,9 @@ export const readIniSection = (machineId: number, filePath: string, section: str
 // ✅ wired: cacheZen ② 客户端指向 → setIniKey 写 [StorageServers] Shared
 export const setIniKey = (machineId: number, filePath: string, section: string, name: string, value: string) =>
   call<WriteIniResponse>("set_ini_key", { machineId, filePath, section, name, value });
+// ✅ wired: cacheDdc 接入共享 → 写工程 [DerivedDataBackendGraph] Shared 的 Path/EnvPathOverride（不写 EnvPathOverride 时 UE 会忽略 UE-SharedDataCachePath）
+export const setMachineBackendField = (machineId: number, filePath: string, section: string, nodeName: string, field: string, value: string) =>
+  call<string>("set_machine_backend_field", { machineId, filePath, section, nodeName, field, value });
 // 📝 no-ui: 凭据变体，无 UI 入口
 export const readIniSectionWithCredential = (machineId: number, filePath: string, section: string, credentialAlias: string) =>
   call<IniKey[]>("read_ini_section_with_credential", { machineId, filePath, section, credentialAlias });

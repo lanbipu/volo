@@ -251,12 +251,12 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
     const sevRank = { critical: 0, warning: 1 };
     const healthProblems = HEALTH_CHECKS
       .filter((c) => c.status === 'critical' || c.status === 'warning')
-      .map((c) => ({ key: 'h_' + c.id, src: '健康', tag: c.layer, sev: c.status,
-        label: c.label, detail: c.desc || c.detail, onFix: () => fixCheck(c) }));
+      .map((c) => ({ key: 'h_' + c.id, src: '健康', tech: c.tech, sev: c.status,
+        label: c.label, detail: c.hint || c.detail, affected: c.detail, onFix: () => fixCheck(c) }));
     const iniProblems = INI_FINDINGS
       .filter((f) => f.sev === 'critical' || f.sev === 'warning')
-      .map((f) => ({ key: 'i_' + f.id, src: 'INI', tag: f.rule, sev: f.sev,
-        label: f.summary, detail: f.why, onFix: () => fixIni(f) }));
+      .map((f) => ({ key: 'i_' + f.id, src: '配置', tech: f.rule, sev: f.sev,
+        label: f.summary, detail: f.why, affected: f.machine, onFix: () => fixIni(f) }));
     const problems = [...healthProblems, ...iniProblems].sort((a, b) => sevRank[a.sev] - sevRank[b.sev]);
     const critCt = problems.filter((p) => p.sev === 'critical').length;
     const warnCt = problems.length - critCt;
@@ -339,8 +339,9 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
                   h('span', { className: 'diag-ico s-' + m.visual }, h(Icon, { name: m.icon, size: 13 })),
                   h('span', { className: 'diag-layer' }, p.src),
                   h('div', { className: 'diag-meta' },
-                    h('div', { className: 'dl' }, p.label),
-                    h('div', { className: 'dd' }, h('span', { className: 'diag-rule' }, p.tag), p.detail)),
+                    h('div', { className: 'dl', title: p.tech || undefined }, p.label),
+                    h('div', { className: 'dd' }, p.detail,
+                      p.affected && p.affected !== '全部正常' ? h('span', { className: 'diag-aff' }, ' · ' + p.affected) : null)),
                   h('button', { className: 'fix-btn', onClick: p.onFix }, h(Icon, { name: 'bolt', size: 12 }), '修复'));
               }))),
         h('div', { className: 'dash-col' },
@@ -562,7 +563,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
         h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '⑤ 关联（自动发现）'),
           h('div', { className: 'rev-links' },
             n.zen ? h('span', { className: 'rev', onClick: () => { s.setDrawer(null); s.setCacheNav('ddc_zen'); } }, h(Icon, { name: 'cube', size: 13 }), n.zen) : null,
-            n.share ? h('span', { className: 'rev', onClick: () => { s.setDrawer(null); s.setCacheNav('ddc_zen'); } }, h(Icon, { name: 'folder', size: 13 }), '共享 DDC') : null,
+            n.share ? h('span', { className: 'rev', title: n.share, onClick: () => { s.setDrawer(null); s.setCacheNav('ddc_legacy'); } }, h(Icon, { name: 'folder', size: 13 }), '共享 DDC 宿主') : null,
             (n.proj || []).map((p) => h('span', { key: p, className: 'rev' }, h(Icon, { name: 'film', size: 13 }), p)),
             !n.zen && !n.share && !(n.proj || []).length ? h('span', { className: 'dim', style: { fontSize: 12 } }, '无关联资源') : null)),
         !off ? h('div', { className: 'insp-sect' },

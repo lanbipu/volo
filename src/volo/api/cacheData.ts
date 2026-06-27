@@ -67,7 +67,7 @@ export async function loadCacheResources(): Promise<CacheResources> {
     loadProjects().catch(() => [] as ProjectVM[]),
     getGpuConsistencyMatrix().catch(() => null),
   ]);
-  const machines = machinesRaw.map(toNodeVM);
+  const machines = machinesRaw.map((m) => toNodeVM(m, shares));
   /* health / ini 需要 machines 做 machine_id→host 反查，故在 machines 就绪后加载；
      非阻断（失败 → []）。 */
   const [health, ini] = await Promise.all([
