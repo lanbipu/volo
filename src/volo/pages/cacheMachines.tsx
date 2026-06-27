@@ -31,7 +31,7 @@ import { deleteMachine, scanNetwork, addDiscoveredMachine } from "../api/command
   /* ========== 扫描入网向导（① 输入 → ② 扫描 → ③ 选择 → ④ 加入）========== */
   function ScanWizard({ s, onClose }) {
     const [step, setStep] = useState('input'); /* input | scanning | results | done */
-    const [targets, setTargets] = useState(['10.20.8.0/24', '10.20.9.0/24']);
+    const [targets, setTargets] = useState(['192.168.10.0/24']);
     const [pick, setPick] = useState([]);
     const [added, setAdded] = useState(0);
     /* 真实 scan_network 结果：[{ip, winrm, smb, rpc}]（ProbedHost 只有 ip + 端口可达性，
@@ -109,8 +109,24 @@ import { deleteMachine, scanNetwork, addDiscoveredMachine } from "../api/command
     const STEP_IDX = { input: 1, scanning: 2, results: 3, done: 4 };
     const cur = STEP_IDX[step];
     const arr = h('span', { className: 'ob-arr' }, h(Icon, { name: 'arrowr', size: 13 }));
-    const stepTab = (n, label) => h('div', { className: 'ob-tab' + (cur === n ? ' on' : '') + (cur > n ? ' done' : '') },
-      h('span', { className: 'ob-n' }, cur > n ? h(Icon, { name: 'check', size: 12 }) : n), label);
+    /* 步骤可点击跳转：输入随时可回；扫描 / 选择需已填有效目标；加入需已完成入网 */
+    const reachable = (n) =>
+      n === 1 ? true :
+      n === 2 ? validTargets.length > 0 :
+      n === 3 ? scanResults.length > 0 :   /* 选择=回到结果页：必须已扫描出结果，否则会跳进误导性空结果页 */
+      added > 0;
+    const goStep = (n) => {
+      if (cur === n || !reachable(n)) return;
+      if (n === 1) setStep('input');
+      else if (n === 2) startScan();            /* 扫描 = 重新发起扫描 */
+      else if (n === 3) { setPick([]); setStep('results'); }  /* 选择 = 回到结果页 */
+      else setStep('done');
+    };
+    const stepTab = (n, label) => h('div', {
+      className: 'ob-tab' + (cur === n ? ' on' : '') + (cur > n ? ' done' : '') + (reachable(n) && cur !== n ? ' clickable' : ''),
+      onClick: () => goStep(n),
+      title: reachable(n) && cur !== n ? '跳转到「' + label + '」' : null,
+    }, h('span', { className: 'ob-n' }, cur > n ? h(Icon, { name: 'check', size: 12 }) : n), label);
 
     /* ---- step bodies (scrollable content only — footers are grounded below) ---- */
     const inputBody = h(React.Fragment, null,

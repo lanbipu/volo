@@ -134,14 +134,14 @@ function ChromeIconButtons({ s }) {
   return h(React.Fragment, null,
     h('button', { className: 'iconbtn', title: '切换主题', onClick: s.toggleTheme }, h(Icon, { name: s.theme === 'dark' ? 'sun' : 'moon', size: 17 })));
 }
-/* panel toggle — show/hide the persistent task drawer (right column) */
+/* panel toggle — show/hide the persistent inspector (right column) */
 function DrawerToggle({ s, style }) {
   return h('button', {
     className: 'paneltgl' + (!s.rightCollapsed ? ' on' : ''),
-    title: s.rightCollapsed ? '显示任务抽屉' : '隐藏任务抽屉',
+    title: s.rightCollapsed ? '显示检查器' : '隐藏检查器',
     style,
     onClick: () => s.setRightCollapsed((v) => !v),
-  }, h(Icon, { name: 'list', size: 15 }), h('span', null, '任务抽屉'));
+  }, h(Icon, { name: 'panel', size: 15 }), h('span', null, '检查器'));
 }
 
 /* ---------- macOS system menu bar (outside the app window) ---------- */
@@ -294,9 +294,11 @@ function App() {
   const [density, setDensity] = useState(persisted.density === 'rich' ? 'rich' : 'clean');
   const [toolsNav, setToolsNav] = useState(persisted.toolsNav === 'left' ? 'left' : 'top');
   const [leftW, setLeftW] = useState(typeof persisted.leftW === 'number' ? persisted.leftW : 214);
-  const [rightW, setRightW] = useState(typeof persisted.rightW === 'number' ? persisted.rightW : 312);
+  const [rightW, setRightW] = useState(typeof persisted.rightW === 'number' ? persisted.rightW : 372);
   const [leftCollapsed, setLeftCollapsed] = useState(!!persisted.leftCollapsed);
-  const [rightCollapsed, setRightCollapsed] = useState(!!persisted.rightCollapsed);
+  /* 若上次停在 DDC PAK/PSO（操作面只在检查器里），即便持久化了折叠态也强制展开——否则
+     重载后右栏 0 宽，生成/校验/收集/分发全不可见、不可达（goCacheNav 的展开只在交互时生效，重载走原始 useState）。 */
+  const [rightCollapsed, setRightCollapsed] = useState(!!persisted.rightCollapsed && !/^ddc_p(ak|so)$/.test(persisted.cacheNav || ''));
   const [logH, setLogH] = useState(typeof persisted.logH === 'number' ? persisted.logH : 150);
   const [page, setPage] = useState(() => PAGES.some((p) => p.id === persisted.page) ? persisted.page : 'tools');
   /* 舞台切换器 / 面包屑已移除，stage state 无消费者，随之删除 */
@@ -323,6 +325,13 @@ function App() {
   const [cacheNav, setCacheNav] = useState(CACHE_NAVS.includes(persisted.cacheNav) ? persisted.cacheNav : 'home');
   const [ddcOpen, setDdcOpen] = useState(persisted.ddcOpen != null ? persisted.ddcOpen : /^ddc_/.test(persisted.cacheNav || ''));
   const [drawer, setDrawer] = useState(null);
+  /* DDC PAK / PSO 工程选择（主视图勾选 · 检查器就地显示 + 操作）。pakSel 多选(数组)，
+     psoSel 单选。提到 shell：主视图(center)写选择，检查器(inspector)读选择，两栏共享。 */
+  const [pakSel, setPakSel] = useState([]);
+  const [psoSel, setPsoSel] = useState(null);
+  /* DDC PAK 校验结果（projId → {found,path,size,…}）提到 shell：分发走 preview drawer 会把
+     PakDetail 从检查器槽换下卸载，本地 verify state 会丢；放 shell 才能跨 preview 存活。 */
+  const [pakVerify, setPakVerify] = useState({});
   /* task drawer + NDJSON console */
   const [tasks, setTasks] = useState([]);
   const taskSeq = useRef(1);
@@ -574,9 +583,16 @@ function App() {
 
   const cluster = deriveCluster(machines, healthChecks, healthRunAt);
 
+  /* 检查器（右栏）就地显示：scrim 弹层已移除，细节渲染进 inspector 列。若右栏已折叠(rightCollapsed)
+     而此刻要展示内容，必须自动展开——否则细节渲染进 0 宽 + overflow:hidden 的列里完全不可见、不可点。 */
+  const openDrawer = (d) => { if (d) setRightCollapsed(false); setDrawer(d); }; /* 关闭(null)不触发展开 */
+  /* 切缓存子页：清掉残留的就地细节(drawer)，并在进入 DDC PAK / PSO（检查器=操作面）时自动展开右栏。 */
+  const goCacheNav = (v) => { setDrawer(null); if (/^ddc_p(ak|so)$/.test(v)) setRightCollapsed(false); setCacheNav(v); };
+
   const s = { theme, toggleTheme, platform, setPlatform, toolsNav, setToolsNav, page, setPage, logOpen, setLogOpen, logFilter, setLogFilter,
     logs, pushLog, pushLogs, logH, setLogH,
-    selNode, setSelNode, cacheNav, setCacheNav, ddcOpen, setDdcOpen, drawer, setDrawer,
+    selNode, setSelNode, cacheNav, setCacheNav: goCacheNav, ddcOpen, setDdcOpen, drawer, setDrawer: openDrawer,
+    pakSel, setPakSel, psoSel, setPsoSel, pakVerify, setPakVerify,
     freshSetup, setFreshSetup, machinesAdded, setMachinesAdded,
     enrolled, setEnrolled, creds, setCreds,
     tasks, setTasks, runTask, runCmd, runStreamingCmd, taskTab, setTaskTab, logSearch, setLogSearch, logPaused, setLogPaused,
@@ -604,17 +620,16 @@ function App() {
     h('div', { className: 'win is-' + platform },
       mac ? h(MacTitleBar, { s }) : h(WinTopBar, { s }),
       h('div', { className: 'ctxbar' }, guard('ctx', () => pg.ctx(s)), h(DrawerToggle, { s, style: { marginLeft: 'auto', flex: '0 0 auto' } })),
-      h('div', { className: 'body', style: { gridTemplateColumns: `${leftCollapsed ? 0 : leftW}px ${leftCollapsed ? 0 : 6}px minmax(0,1fr) ${rightCollapsed ? 0 : 6}px ${rightCollapsed ? 0 : rightW}px` } },
+      h('div', { className: 'body', style: { gridTemplateColumns: `${leftCollapsed ? 0 : leftW}px ${leftCollapsed ? 0 : 6}px minmax(0,1fr) ${rightCollapsed ? 0 : 6}px ${rightCollapsed ? 0 : Math.max(330, rightW)}px` } },
         h('div', { className: 'leftcol' + (leftCollapsed ? ' is-collapsed' : '') }, guard('left', () => pg.left(s))),
         h('div', { className: 'resizer resizer--col' + (leftCollapsed ? ' is-hidden' : ''), title: '拖动调整宽度',
           onPointerDown: (e) => { if (leftCollapsed) return; startResize(e, 'x', 1, leftW, setLeftW, 170, 380); } }),
         h('div', { className: 'center' }, guard('center', () => pg.center(s))),
         h('div', { className: 'resizer resizer--col' + (rightCollapsed ? ' is-hidden' : ''), title: '拖动调整宽度',
-          onPointerDown: (e) => { if (rightCollapsed) return; startResize(e, 'x', -1, rightW, setRightW, 240, 480); } }),
-        h('div', { className: 'inspector' + (rightCollapsed ? ' is-collapsed' : '') }, guard('inspector', () => pg.inspector(s))),
-        s.drawer && pg.drawer ? h(React.Fragment, null,
-          h('div', { className: 'scrim', onClick: () => s.setDrawer(null) }),
-          guard('drawer', () => pg.drawer(s))) : null),
+          onPointerDown: (e) => { if (rightCollapsed) return; startResize(e, 'x', -1, rightW, setRightW, 330, 620); } }),
+        /* 检查器（右栏）= 就地细节显示：机器详情 / 操作预览 / 入网脚本 / 凭据 / DDC PAK·PSO 检查器
+           都在 inspector 列内就地渲染（见 cache.tsx 的 inspector dispatcher），不再弹滑窗 + 遮罩。 */
+        h('div', { className: 'inspector' + (rightCollapsed ? ' is-collapsed' : '') }, guard('inspector', () => pg.inspector(s)))),
       h(LogPanel, { s }),
       h(PageTabs, { s })),
     TweaksPanel ? h(TweaksPanel, { title: 'Tweaks' },

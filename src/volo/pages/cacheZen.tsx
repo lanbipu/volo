@@ -466,13 +466,20 @@ import {
             ? h('span', { className: 'toolchip' }, h(Icon, { name: 'cube', size: 14 }), '当前后端：ZenServer · ' + (status.host || ('endpoint ' + status.endpointId)))
             : h('span', { className: 'toolchip dim' }, h(Icon, { name: 'minus', size: 14 }), '未部署共享缓存服务器'))),
       h('div', { className: 'ddc-body' },
+        /* 左右两列：左 ① 架设 / 管理，右 ② 客户端指向。两列顶部对齐（.zen-col 内
+           .ddc-sec-h:first-child / .cli-panel 的 margin-top 已在 CSS 清零）；窄屏 <1180px 回退单列。 */
+        h('div', { className: 'zen-2col' },
+        /* 左列 · ① 架设 / 管理 Zen 缓存服务器 */
+        h('div', { className: 'zen-col' },
         h('div', { className: 'ddc-sec-h' },
           h('span', null, '① 架设 / 管理 Zen 缓存服务器'),
           h('span', { className: 'dim' }, '在集群某一台机器上立起一台共享缓存服务器')),
         statusCard,
         deployForm,
-        stepper,
-        h('div', { className: 'ddc-sec-h', style: { marginTop: 24 } },
+        stepper),
+        /* 右列 · ② 让客户端机器用上这台缓存 */
+        h('div', { className: 'zen-col' },
+        h('div', { className: 'ddc-sec-h' },
           h('span', null, '② 让客户端机器用上这台缓存'),
           h('span', { className: 'dim' }, pointedCount + ' / ' + clients.length + ' 已指向 · 逐台改缓存配置指向此服务器')),
         h('div', { className: 'cli-panel' },
@@ -494,7 +501,7 @@ import {
               : null,
           h('div', { className: 'cli-note' }, h(Icon, { name: 'shield', size: 13 }),
             '应用 = 改这些机器的缓存配置（写 [StorageServers] Shared）指向上方服务器；远程操作走 SSH key，逐台执行、逐台看成败。'),
-          h('div', { className: 'cli-list' }, clients.map(clientRow)))));
+          h('div', { className: 'cli-list' }, clients.map(clientRow)))))));
   }
 
   window.VOLO_CACHE_ZEN = { view: (s) => h(ZenServer, { s }) };

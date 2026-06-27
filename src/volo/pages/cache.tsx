@@ -401,13 +401,19 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
         h('div', { className: 'er-std' }, t.stderr)) : null);
   }
 
-  function inspector(s) {
+  /* =================== 检查器 (right column · detail-display) ===================
+     选中机器/工程或预览操作时，内容直接在右侧检查器中就地展开（不再弹出滑窗）。
+     无选中时回落为「检查器」空闲态：顶部说明 + 下方当前的任务与活动列表。 */
+  function taskPanel(s) {
     const active = s.tasks.filter((t) => t.state === 'running' || t.state === 'queued');
     const history = s.tasks.filter((t) => t.state === 'success' || t.state === 'failed');
     const list = s.taskTab === 'active' ? active : history;
     return h('div', { className: 'task-drawer' },
       h('div', { className: 'td-head' },
-        h('div', { className: 'td-title' }, h(Icon, { name: 'list', size: 15 }), '任务抽屉'),
+        h('div', { className: 'td-title' }, h(Icon, { name: 'panel', size: 15 }), '检查器'),
+        h('div', { className: 'insp-idle-hint', style: { margin: '9px 0 2px' } },
+          h(Icon, { name: 'eye', size: 14 }),
+          '选择机器或工程，相关细节与操作会直接在这里展开。下方是当前的任务与活动。'),
         h('div', { className: 'td-tabs' },
           h('button', { className: s.taskTab === 'active' ? 'on' : '', onClick: () => s.setTaskTab('active') }, '进行中', h('span', { className: 'n' }, active.length)),
           h('button', { className: s.taskTab === 'history' ? 'on' : '', onClick: () => s.setTaskTab('history') }, '历史', h('span', { className: 'n' }, history.length)))),
@@ -416,6 +422,24 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
           ? h('div', { className: 'td-empty' }, h('div', { className: 'ph' }, h(Icon, { name: s.taskTab === 'active' ? 'sync' : 'list', size: 26 })),
               h('div', null, s.taskTab === 'active' ? '当前没有运行中的任务' : '暂无历史任务'))
           : list.map((t) => h(TaskCard, { key: t.id, s, t }))));
+  }
+
+  /* inspector dispatcher（就地细节显示）：
+     · 选中机器 / 预览操作 / 入网脚本 / 凭据 → 在检查器列内就地渲染对应 drawer；
+     · DDC PAK / PSO 子页 → 渲染该子页的检查器（已选工程 + 操作）；
+     · 其余 → 检查器空闲态（任务与活动列表）。 */
+  function inspector(s) {
+    const d = s.drawer;
+    /* drawer 指向的机器/脚本目标若已被 reloadCache 剔除（node 找不到），回落到检查器空闲态，
+       避免检查器永久空白（如详情开着时「立即巡检」刚好移除了该机）。 */
+    const stale = d && (d.kind === 'machine' || d.kind === 'script') && !node(d.id);
+    if (d && !stale && (d.kind === 'machine' || d.kind === 'preview' || d.kind === 'script' || d.kind === 'creds')) {
+      return drawer(s);
+    }
+    if (/^ddc_p(ak|so)$/.test(s.cacheNav) && window.VOLO_CACHE_DDC && window.VOLO_CACHE_DDC.detail) {
+      return window.VOLO_CACHE_DDC.detail(s);
+    }
+    return taskPanel(s);
   }
 
   /* =================== overlay · machine detail (6.2) =================== */

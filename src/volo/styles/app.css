@@ -1897,3 +1897,139 @@ html, body {
 .pak-verify-hint { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--chrome-faint);
   background: var(--wash-3); border: 1px dashed var(--chrome-line-2); border-radius: 9px; padding: 12px 14px; margin-top: 13px; text-wrap: pretty; }
 .pak-verify-hint svg { color: var(--chrome-line-2); flex: 0 0 auto; }
+
+/* ============================================================
+   扫描入网向导 · 步骤指示器可点击跳转（req #5）
+   ============================================================ */
+.ob-tab.clickable { cursor: pointer; }
+.ob-tab.clickable:hover { color: var(--chrome-text); }
+.ob-tab.clickable:hover .ob-n { border-color: var(--volo-600); color: var(--volo-400); }
+.ob-tab.done.clickable:hover .ob-n { color: #06281b; }
+
+.toolchip.dim svg { color: var(--chrome-faint); }
+
+@media (prefers-reduced-motion: reduce) {
+  .zstep-spin { animation: none; border-top-color: var(--informative-visual); }
+}
+
+/* ============================================================
+   Inspector (right column) — detail-display mode
+   The old slide-in overlay drawers now render INLINE inside the
+   inspector column. Neutralise the absolute positioning / width /
+   shadow so the same drawer markup fills the right panel.
+   ============================================================ */
+.inspector > .drawer {
+  position: static; width: 100%; height: 100%;
+  border-left: 0; box-shadow: none; animation: none;
+  background: var(--chrome-panel); z-index: auto;
+}
+.inspector { display: flex; flex-direction: column; }
+.inspector > .drawer .drawer-h { padding: 13px 14px 12px; }
+.inspector > .drawer .drawer-b { padding: 6px 14px 16px; }
+.inspector > .drawer .drawer-f { padding: 12px 14px; flex-wrap: wrap; }
+.inspector > .drawer .drawer--detail,
+.inspector > .drawer .drawer--preview { width: 100%; }
+
+/* idle inspector — header + activity (tasks) */
+.insp-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.insp-head { padding: 12px 14px 11px; border-bottom: 1px solid var(--chrome-line);
+  display: flex; align-items: center; gap: 9px; flex: 0 0 auto; background: var(--chrome-panel); }
+.insp-head .ico { width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center;
+  background: var(--wash); color: var(--chrome-dim); flex: 0 0 auto; }
+.insp-head .tt { font-size: 13px; font-weight: 800; color: var(--chrome-text); }
+.insp-head .sub { font-size: 11px; color: var(--chrome-faint); margin-top: 1px; }
+.insp-idle-hint { display: flex; align-items: flex-start; gap: 9px; font-size: 12px; line-height: 1.5;
+  color: var(--chrome-dim); background: var(--wash-3); border: 1px solid var(--chrome-line);
+  border-radius: 9px; padding: 10px 12px; margin: 12px 13px 4px; text-wrap: pretty; }
+.insp-idle-hint svg { flex: 0 0 auto; margin-top: 1px; color: var(--chrome-faint); }
+.insp-tasks-h { padding: 4px 14px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--chrome-faint); font-weight: 700; display: flex; align-items: center; gap: 7px; margin-top: 6px; }
+.insp-tasks-h .n { font-size: 10.5px; font-variant-numeric: tabular-nums; background: var(--wash);
+  color: var(--chrome-faint); padding: 0 6px; border-radius: 8px; }
+
+/* ============================================================
+   DDC inspector detail (PAK / PSO) — selection-driven panel
+   ============================================================ */
+.insp-detail { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.insp-detail .id-body { flex: 1; overflow-y: auto; padding: 12px 14px 16px; display: flex; flex-direction: column; gap: 14px; }
+.insp-detail .id-foot { flex: 0 0 auto; padding: 12px 14px; border-top: 1px solid var(--chrome-line);
+  background: var(--chrome-panel); display: flex; flex-direction: column; gap: 8px; }
+.id-sec-h { display: flex; align-items: center; gap: 8px; font-size: 11px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--chrome-faint); font-weight: 700; }
+.id-sec-h .ct { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 600;
+  color: var(--chrome-dim); font-size: 11px; }
+.id-empty { display: flex; flex-direction: column; align-items: center; gap: 11px; text-align: center;
+  color: var(--chrome-faint); padding: 30px 14px; font-size: 12px; }
+.id-empty .ph { width: 52px; height: 52px; border-radius: 13px; border: 1.5px dashed var(--chrome-line-2);
+  display: grid; place-items: center; color: var(--chrome-line-2); }
+.id-note { display: flex; align-items: flex-start; gap: 8px; font-size: 11.5px; line-height: 1.5;
+  color: var(--chrome-dim); background: var(--wash-3); border: 1px solid var(--chrome-line);
+  border-radius: 8px; padding: 9px 11px; text-wrap: pretty; }
+.id-note svg { flex: 0 0 auto; margin-top: 1px; color: var(--chrome-faint); }
+
+/* selected-project rows in the detail panel */
+.id-proj { background: var(--chrome-card); border: 1px solid var(--chrome-line); border-radius: 10px;
+  padding: 11px 12px; display: flex; flex-direction: column; gap: 9px; }
+.id-proj-top { display: flex; align-items: flex-start; gap: 9px; }
+.id-proj-ico { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center;
+  background: var(--wash); color: var(--chrome-dim); flex: 0 0 auto; }
+.id-proj-meta { min-width: 0; flex: 1; }
+.id-proj-name { font-size: 13px; font-weight: 700; color: var(--chrome-text); display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.id-proj-name .ue { font-size: 10.5px; font-weight: 700; color: var(--volo-400); background: rgba(240,78,42,.13);
+  padding: 1px 6px; border-radius: 5px; }
+.id-proj-path { font-family: var(--font-code); font-size: 11px; color: var(--chrome-faint); margin-top: 3px; word-break: break-all; }
+.id-proj-x { all: unset; cursor: pointer; width: 22px; height: 22px; border-radius: 6px; display: grid;
+  place-items: center; color: var(--chrome-faint); flex: 0 0 auto; }
+.id-proj-x:hover { background: var(--wash); color: var(--chrome-text); }
+.id-proj-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.id-proj-tags .t { font-size: 10.5px; color: var(--chrome-dim); background: var(--wash); border: 1px solid var(--chrome-line);
+  padding: 1px 7px; border-radius: 5px; }
+.id-proj-tags .t.warn { color: var(--notice-visual); background: color-mix(in srgb, var(--notice-visual) 12%, transparent); border-color: transparent; }
+.id-proj-tags .t.pak { color: var(--positive-visual); background: color-mix(in srgb, var(--positive-visual) 12%, transparent); border-color: transparent; }
+.id-proj-acts { display: flex; gap: 7px; flex-wrap: wrap; }
+
+/* compact verify result inside a project row */
+.id-verify { border-radius: 8px; padding: 9px 10px; font-size: 11.5px; display: flex; flex-direction: column; gap: 6px;
+  background: var(--wash-3); border: 1px solid var(--chrome-line); }
+.id-verify.ok { border-color: color-mix(in srgb, var(--positive-visual) 34%, transparent); }
+.id-verify.miss { border-color: color-mix(in srgb, var(--notice-visual) 34%, transparent); }
+.id-verify-h { display: flex; align-items: center; gap: 7px; font-weight: 700; }
+.id-verify-kv { display: flex; justify-content: space-between; gap: 10px; color: var(--chrome-dim); }
+.id-verify-kv .v { font-family: var(--font-code); color: var(--chrome-text); text-align: right; word-break: break-all; }
+
+/* detail config fields stacked */
+.id-form { display: flex; flex-direction: column; gap: 10px; }
+.id-field { display: flex; flex-direction: column; gap: 5px; }
+.id-field > label { font-size: 11px; font-weight: 600; color: var(--chrome-dim); }
+.id-gpu { display: flex; align-items: flex-start; gap: 7px; font-size: 11.5px; line-height: 1.45; color: var(--chrome-dim); }
+.id-gpu svg { flex: 0 0 auto; margin-top: 1px; color: var(--chrome-faint); }
+.id-gpu b { color: var(--chrome-text); font-weight: 700; }
+.id-scan { display: flex; flex-direction: column; gap: 9px; }
+.id-scan-meta { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--chrome-faint); }
+.id-scan-meta svg { color: var(--positive-visual); }
+
+/* ============================================================
+   Button sizing — calm the Spectrum pills down to a normal weight.
+   The default S2 buttons run bold/14px+; with CJK (Noto Sans SC)
+   bold they read chunky. Trim font size + weight + height a touch,
+   app-scoped so the design-system kit pages are unaffected.
+   ============================================================ */
+.desktop .s2-btn { font-weight: 600; }
+.desktop .s2-btn--S { height: 24px; font-size: 12px; padding: 0 10px; }
+.desktop .s2-btn--M { height: 30px; font-size: 12.5px; padding: 0 13px; }
+.desktop .s2-btn--L { height: 34px; font-size: 13.5px; padding: 0 16px; }
+.desktop .s2-btn--XL { height: 40px; font-size: 15px; padding: 0 20px; }
+.desktop .s2-btn svg { width: 1.05em; height: 1.05em; }
+
+/* ============================================================
+   ZenServer page — two-column layout
+   Left: ① 架设 / 管理 (status + deploy form + steps)
+   Right: ② 客户端机器列表
+   ============================================================ */
+.zen-2col { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 22px; align-items: start; }
+.zen-col { min-width: 0; display: flex; flex-direction: column; }
+.zen-col .ddc-sec-h:first-child { margin-top: 0; }
+.zen-col > .cli-panel { margin-top: 0; }
+@media (max-width: 1180px) {
+  .zen-2col { grid-template-columns: minmax(0, 1fr); }
+}
