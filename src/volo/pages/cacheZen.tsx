@@ -116,6 +116,12 @@ import {
     const [started, setStarted] = useState(false);
     const [run, setRun] = useState({});           /* stepId -> { st, err } */
     const [deploying, setDeploying] = useState(false);
+    /* pointed/sel/res 必须在任何条件 return 之前声明（Rules of Hooks）。否则首屏 RENDER_NODES 还空、
+       走下面 if(!srvNode) 早返回时这 3 个 hook 不执行；机器异步到达后 re-render 又执行，hook 数变化会让
+       React 抛「Rendered more hooks than during the previous render」并卸载整棵树（纯黑屏）。 */
+    const [pointed, setPointed] = useState(() => new Set());  /* 本地跟踪「已成功指向」的机器（后端无逐机查询）*/
+    const [sel, setSel] = useState([]);
+    const [res, setRes] = useState({});   /* clientId -> { st, msg } */
 
     const deployed = !!status;
     /* 仅当服务真正 running 才允许把客户端指向它——指向一台已停止/不可达/状态未知的服务器
@@ -252,10 +258,6 @@ import {
     /* 同时排除「表单选中的服务器机器」和「已部署 endpoint 的实际机器」——两者可能不同台
        （部署后切了表单 srvId 也不能把真正的服务器自己当客户端指向自己）。 */
     const clients = RN.filter((n) => n.id !== srvNode.id && !(status && n.machineId === status.machineId));
-    /* pointed：本地跟踪「已成功指向」的机器（后端无逐机「是否指向」廉价查询）*/
-    const [pointed, setPointed] = useState(() => new Set());
-    const [sel, setSel] = useState([]);
-    const [res, setRes] = useState({});   /* clientId -> { st, msg } */
     const pointedCount = clients.filter((n) => pointed.has(n.id)).length;
 
     const toggleSel = (n) => { if (n.status === 'offline') return; setSel((v) => v.includes(n.id) ? v.filter((x) => x !== n.id) : v.concat(n.id)); };
