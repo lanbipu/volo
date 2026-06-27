@@ -48,10 +48,13 @@ pub struct ScanInisResponse {
 }
 
 #[tauri::command]
-pub fn scan_inis(
+pub async fn scan_inis(
     db: State<'_, Db>,
     request: ScanInisRequest,
 ) -> UecmResult<ScanInisResponse> {
+    // 改 async + spawn_blocking：原 body 同步阻塞 SSH 读 INI，跑主线程会冻结 UI。
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || -> UecmResult<ScanInisResponse> {
     let summary = scan_inis_summary(
         &db,
         request.machine_ids.clone(),
@@ -72,6 +75,9 @@ pub fn scan_inis(
         },
         findings,
     })
+    })
+    .await
+    .map_err(|e| UecmError::OperationFailed(format!("ini scan task join: {}", e)))?
 }
 
 fn scan_inis_summary(
@@ -283,11 +289,14 @@ pub fn get_finding(db: State<'_, Db>, finding_id: i64) -> UecmResult<Option<IniF
 }
 
 #[tauri::command]
-pub fn apply_finding(
+pub async fn apply_finding(
     db: State<'_, Db>,
     finding_id: i64,
     credential_alias: String,
 ) -> UecmResult<String> {
+    // 改 async + spawn_blocking：ini_apply::apply 是阻塞 SSH 远程写，跑主线程会卡 UI。
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || -> UecmResult<String> {
     let f = ini_findings::find_by_id(&db, finding_id)?
         .ok_or_else(|| UecmError::InvalidInput(format!("finding {} not found", finding_id)))?;
     let machine = data_machines::find_by_id(&db, f.machine_id)?
@@ -300,6 +309,9 @@ pub fn apply_finding(
     let backup = ini_apply::apply(&ctx, &f)?;
     ini_findings::mark_fixed(&db, finding_id)?;
     Ok(backup)
+    })
+    .await
+    .map_err(|e| UecmError::OperationFailed(format!("apply finding task join: {}", e)))?
 }
 
 #[tauri::command]
@@ -308,7 +320,7 @@ pub fn skip_finding(db: State<'_, Db>, finding_id: i64) -> UecmResult<()> {
 }
 
 #[tauri::command]
-pub fn verify_pso_precaching(
+pub async fn verify_pso_precaching(
     db: State<'_, Db>,
     request: ScanInisRequest,
 ) -> UecmResult<ScanInisResponse> {
@@ -317,5 +329,5 @@ pub fn verify_pso_precaching(
             "project_paths cannot be empty for PSO precaching verification".into(),
         ));
     }
-    scan_inis(db, request)
+    scan_inis(db, request).await
 }

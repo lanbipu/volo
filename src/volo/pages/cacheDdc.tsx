@@ -4,21 +4,87 @@
 import * as React from "react";
 import "../ds";
 import "./cache";
+import { deleteShare as deleteShareCmd, discoverProjects, createShare,
+  generateDdcPak, startPsoCollection, verifyPakOutput, listPsoCacheFiles,
+  distributeDdcPak, distributePsoCache } from "../api/commands";
 
 (function () {
   const { Button } = window.Spectrum2DesignSystem_b6d1b3;
-  const { useState } = React;
+  const { useState, useEffect } = React;
   const h = React.createElement;
   const CX = window.VOLO_CX;
 
   const TITLE = { ddc_zen: 'ZenServer', ddc_legacy: '文件系统 DDC', ddc_pak: 'DDC PAK', ddc_pso: 'PSO 缓存' };
 
+  const humanBytes = (b) => b == null ? '—'
+    : b >= 1e9 ? (b / 1073741824).toFixed(1) + ' GB'
+    : b >= 1e6 ? (b / 1048576).toFixed(0) + ' MB'
+    : (b / 1024).toFixed(0) + ' KB';
+
+  /* UeRunnerEvent reduce（generate_ddc_pak / start_pso_collection 共用进度流）.
+     payload = {job_id, source_machine_id, project_id, event:UeRunnerEvent}，
+     event 是 tag='kind' 的联合。pct 量纲不定（0..1 或 0..100），<=1 视为比例 *100。 */
+  const ueLineLv = (pk) => pk && /error/i.test(pk) ? 'err' : pk && /warn/i.test(pk) ? 'warn' : 'info';
+  const ueProgressReduce = (p, terminalOnCompleted) => {
+    const e = p && p.event ? p.event : {};
+    switch (e.kind) {
+      case 'spawned':   return { pct: 8, log: { lv: 'info', msg: '已启动 · pid ' + e.pid } };
+      case 'log_line':  return { log: { lv: ueLineLv(e.parsed_kind), msg: e.text } };
+      case 'progress': {
+        const pct = e.pct == null ? null : (e.pct <= 1 ? e.pct * 100 : e.pct);
+        return { pct: terminalOnCompleted ? pct : (pct == null ? null : Math.min(96, pct)), log: e.label ? { lv: 'info', msg: e.label } : null };
+      }
+      case 'completed':
+        return terminalOnCompleted
+          ? { done: true, ok: e.exit_code === 0, exit: e.exit_code, log: { lv: e.exit_code === 0 ? 'ok' : 'err', msg: '退出码 ' + e.exit_code } }
+          : { pct: 96, log: { lv: 'info', msg: 'UE 进程结束（退出码 ' + e.exit_code + '）· 汇总缓存…' } };
+      case 'cancelled': return { done: true, ok: false, log: { lv: 'warn', msg: '已取消' } };
+      case 'error':     return { done: true, ok: false, exit: 2, log: { lv: 'err', msg: e.message } };
+      default:          return {};
+    }
+  };
+  /* generate：ue-runner 'completed' 即终止；pak-verified 是次级校验事件（非终止）。
+     注：pak-verified 在 completed 后才发，finalize 已同步 unlisten → 这行校验日志可能
+     被吞（best-effort）；任务成败由 completed 的 exit_code 决定，用户可另点④校验产物。 */
+  const genReduce = (ev, p) => ev === 'pak-verified'
+    ? { log: { lv: p.verified ? 'ok' : 'warn', msg: '产物校验 ' + (p.verified ? '通过' : '未通过') + (p.output && p.output.path ? (' · ' + p.output.path) : '') } }
+    : ueProgressReduce(p, true);
+  /* pso collect：真终止是 pso-collect-finalized；ue-runner 'completed' 仅推进到 96%。 */
+  const psoReduce = (ev, p) => ev === 'pso-collect-finalized'
+    ? (p.error_message
+        ? { done: true, ok: false, exit: 2, log: { lv: 'err', msg: p.error_message } }
+        : { done: true, ok: true, log: { lv: 'ok', msg: '已收集 ' + (p.files_collected == null ? '?' : p.files_collected) + ' 个 PSO 缓存' } })
+    : ueProgressReduce(p, false);
+
+  /* 分发流（pak / pso-distribute-progress）共用：payload {…, event:BatchEvent}，
+     BatchEvent {machine_id, status:'running'|'ok'|'err', message}。无「全部完成」哨兵事件
+     → 数到 st.total（=plan 长度）个终态(ok|err)即收尾，期间任一 err 则整体失败。 */
+  const batchReduce = (ev, p, st) => {
+    const e = p && p.event ? p.event : {};
+    st.terminal = st.terminal || new Set();
+    const mid = e.machine_id;
+    if (e.status === 'running') return { log: { lv: 'info', msg: '分发中 · 机器 ' + mid } };
+    if (e.status === 'ok' || e.status === 'err') {
+      st.terminal.add(mid);
+      if (e.status === 'err') st.anyErr = true;
+      const done = st.total != null && st.terminal.size >= st.total;
+      const pct = st.total ? (st.terminal.size / st.total * 100) : null;
+      return {
+        pct, done,
+        ok: done ? !st.anyErr : undefined,
+        exit: done && st.anyErr ? 2 : 0,
+        log: e.status === 'ok'
+          ? { lv: 'ok', msg: '机器 ' + mid + ' 完成' }
+          : { lv: 'err', msg: '机器 ' + mid + ' 失败 · ' + (e.message || '') },
+      };
+    }
+    return {};
+  };
+
   function DDC({ s }) {
-    const [dataDir, setDataDir] = useState('D:\\ZenData');
+    /* srv：SMB 共享创建的宿主机选择（sharedNode 由它派生）。ZenServer 相关 state
+       （dataDir/zenReadback/clientDir/joined）随旧 zenBody 一并删除。 */
     const [srv, setSrv] = useState('rn0');
-    const [zenReadback, setZenReadback] = useState(true); /* render-zen-01 已部署 */
-    const [clientDir, setClientDir] = useState('D:\\ZenData\\Local'); /* 客户端本地 data 路径 */
-    const [joined, setJoined] = useState(() => RENDER_NODES.filter((n) => n.roleKey !== 'shared' && n.zen === 'render-zen-01').map((n) => n.id));
     /* 文件系统 DDC · 本地 DDC：每台机器独立路径 + 独立/一键部署 */
     const [localDirs, setLocalDirs] = useState(() => {
       const m = {};
@@ -34,6 +100,10 @@ import "./cache";
     const [pakScope, setPakScope] = useState('all');
     const [pakVerify, setPakVerify] = useState({}); /* projId -> verify_pak_output 结果 */
     const [shareCred, setShareCred] = useState('c1'); /* 共享 DDC 创建/接入的运维凭据 */
+    /* 文件系统 DDC · 共享创建（create_share）表单：share_name + local_path + mode。 */
+    const [shareName, setShareName] = useState('Volo_DDC');
+    const [shareLocal, setShareLocal] = useState('D:\\Volo\\DDC');
+    const [shareMode, setShareMode] = useState('open'); /* 'open'(Mode A) | 'managed'(Mode B) */
     /* PSO：按机器搜工程 → 选工程 → 收集（PSO 按 GPU 签名生成） */
     const [psoProj, setPsoProj] = useState(null);
     const [psoSrc, setPsoSrc] = useState(null);
@@ -41,99 +111,177 @@ import "./cache";
     const [psoMax, setPsoMax] = useState('20');
     const [psoScope, setPsoScope] = useState('all');
     const [psoRoots, setPsoRoots] = useState('D:\\Projects;E:\\UEProjects');
+    /* 已收集的 PSO 缓存（list_pso_cache_files，按选中工程加载，替代 ARTIFACTS mock）。 */
+    const [psoFiles, setPsoFiles] = useState([]);
+
+    /* PSO 列表随选中工程变化重载；收集完成后也手动调一次（见 collectPso）。 */
+    const loadPsoFor = (projId) => {
+      if (projId == null) { setPsoFiles([]); return; }
+      listPsoCacheFiles(Number(projId), null, null).then(
+        (fs) => setPsoFiles(Array.isArray(fs) ? fs : []),
+        () => setPsoFiles([]));
+    };
+    useEffect(() => { loadPsoFor(psoProj); /* eslint-disable-line */ }, [psoProj]);
 
     const view = /^ddc_/.test(s.cacheNav) ? s.cacheNav : 'ddc_zen';
-    const zen = ZEN_ENDPOINTS[0];
-    const ddcPaks = ARTIFACTS.filter((a) => a.kind === 'DDC pak');
-    const psos = ARTIFACTS.filter((a) => a.kind === 'PSO');
+
+    /* ZenServer 视图已拆分到独立组件 cacheZen.tsx（真实分步部署 + 客户端指向）。
+       它自带状态/空态处理，故在此处早返回，不走下面的 gate / sharedNode 等。 */
+    if (view === 'ddc_zen') return window.VOLO_CACHE_ZEN.view(s);
+
+    /* three-channel gate (色+图标+文字) — the DDC views are built against real
+       machine ids (srv / sharedNode / selectors); don't render the mock-shaped
+       body until the backend read-path has machines (mirrors the Overview gate). */
+    if (s.cacheError) return h('div', { className: 'res ddc' }, h('div', { className: 'ddc-body' },
+      h('div', { className: 'gen-empty' },
+        h('span', { className: 's-negative', style: { display: 'flex' } }, h(Icon, { name: 'alert', size: 22 })),
+        h('span', null, '加载集群数据失败 · ' + s.cacheError),
+        h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'sync', size: 14 }), onPress: s.reloadCache }, '重试'))));
+    if (s.cacheLoading) return h('div', { className: 'res ddc' }, h('div', { className: 'ddc-body' },
+      h('div', { className: 'gen-empty' },
+        h('span', { className: 's-informative', style: { display: 'flex' } }, h('span', { className: 'spin' }, h(Icon, { name: 'sync', size: 20 }))),
+        h('span', null, '正在加载集群数据…'))));
+    if (!RENDER_NODES.length) return h('div', { className: 'res ddc' }, h('div', { className: 'ddc-body' },
+      h('div', { className: 'gen-empty' }, h(Icon, { name: 'node', size: 22 }),
+        h('span', null, '集群里还没有机器 — 先在「集群总览」扫描添加机器，再配置 DDC'))));
+
+    /* resolve the chosen server to a real node — persisted `srv` may be a stale
+       mock id ('rn0') now that machines come from the backend; fall back to the
+       first non-shared (else first) node so sharedNode is never undefined. */
+    const sharedNode = CX.node(srv) || RENDER_NODES.find((n) => n.roleKey !== 'shared') || RENDER_NODES[0];
+    /* 真实 PSO 缓存文件（list_pso_cache_files）→ artRow 形状；PsoCacheFile 无
+       verified 字段，统一显示「已收集」；size_bytes 数字 → humanBytes。 */
+    const psos = psoFiles.map((f) => ({ id: f.id, kind: 'PSO', name: f.file_name,
+      size: humanBytes(f.size_bytes), built: f.collected_at || '—', verified: true,
+      gpuSig: f.gpu_signature, srcId: f.source_machine_id }));
     const srvOpts = RENDER_NODES.map((n) => ({ id: n.id, label: n.host, sub: n.ip }));
     const credList = s.creds || CREDS;
     const credOpts = credList.map((c) => ({ id: c.id, label: c.name, sub: c.kind }));
     const credName = (id) => (credList.find((c) => c.id === id) || credList[0] || { name: '—' }).name;
 
-    /* ---- deploy flows ---- */
-    const deployZen = () => CX.openPreview(s, {
-      title: '部署 ZenServer', icon: 'cube', cli: 'zen register → … → enable', destructive: false, channel: 'winrm', confirmLabel: '部署',
-      steps: ['在这台机器上安装并登记 ZenServer 缓存服务', '后台自动配置访问权限并启动服务（凭据等无需你手动处理）', '确认服务正常后，把它设为全集群共用的缓存上游，并自动复核配置是否写对'],
-      simpleScope: [{ host: CX.node(srv).host, ip: CX.node(srv).ip, msg: 'data-dir ' + dataDir }],
-      readback: { key: '[StorageServers] Shared', expected: 'Host=render-zen-01;Port=1337' },
-      task: { domain: 'zen', action: 'deploy', target: CX.node(srv).host, chan: 'winrm', note: 'ZenServer 部署链路（后台逐步执行）',
-        lines: ['zen register render-zen-01 :1337', 'zen apply-config → zen.lua（SHA256 a91f…7c2d）', 'urlacl add + service install + start（提权 SSH 自动处理）', 'zen probe → HTTP 200 /health', 'zen enable → 写 [StorageServers] Shared'].map((m, i, a) => ({ lv: i === a.length - 1 ? 'ok' : 'info', msg: m })) },
-      onConfirm: () => setZenReadback(true),
-    });
+    /* ---- deploy flows ----（ZenServer 部署「假一条龙」已删，真实分步部署在 cacheZen.tsx）*/
+    /* 真实 create_share：host=sharedNode.machineId，mode 序列化为 'open'|'managed'
+       （非显示串），share_name + local_path 来自表单；operator_credential_alias 废弃
+       传 null（SSH key 鉴权）；Mode B 的 svc_username 留空 → 后端默认 'ddc-svc'。 */
     const deploySMB = () => CX.openPreview(s, {
       title: '创建共享 DDC（SMB）', icon: 'folder', cli: 'create_share', destructive: false, channel: 'ssh', confirmLabel: '创建共享',
-      steps: ['使用运维凭据 ' + credName(shareCred) + ' 在这台机器上新建一个共享缓存文件夹', '自动把集群的缓存指向这个共享文件夹', '其他机器会自动连接并开始使用这个共享缓存'],
-      simpleScope: [{ host: CX.node(srv).host, ip: CX.node(srv).ip, msg: '共享盘宿主' }],
-      task: { domain: 'share', action: 'create', target: CX.node(srv).host, chan: 'ssh', note: 'SMB 共享 DDC 已创建（凭据 ' + credName(shareCred) + '）', lines: [{ msg: 'create_share \\\\ddc01\\Volo\\DDC --cred ' + credName(shareCred) }, { lv: 'ok', msg: '共享创建完成，backend-graph 已写入' }] },
+      steps: ['在 ' + sharedNode.host + ' 上新建共享缓存文件夹 ' + shareLocal,
+        '共享名 ' + shareName + (shareMode === 'managed' ? '（Mode B · 专用账号 ddc-svc）' : '（Mode A · 开放）'),
+        '集群缓存指向该共享，客户端自动接入'],
+      simpleScope: [{ host: sharedNode.host, ip: sharedNode.ip, msg: shareLocal }],
+      onConfirm: () => {
+        if (!sharedNode || !shareName.trim() || !shareLocal.trim()) return;
+        s.runCmd({ domain: 'share', action: 'create', target: sharedNode.host, chan: 'ssh', note: 'SMB 共享 DDC（' + shareMode + '）' },
+          () => createShare(sharedNode.machineId, shareMode, shareName.trim(), shareLocal.trim(), null, null),
+          { okMsg: (r) => '共享已创建 · ' + r.unc_path })
+          .then(() => s.reloadCache(), () => {});
+      },
     });
     /* 删除共享 DDC：仅从 Volo 解除纳管，不删远端共享文件夹（后端暂不支持 also_remove_remote）*/
     const deleteShare = (sh) => CX.openPreview(s, {
       title: '解除共享纳管 · ' + sh.path, icon: 'trash', cli: 'delete_share', destructive: true, channel: 'ssh', confirmLabel: '解除纳管',
       steps: ['从 Volo 解除对该共享的纳管（不再分发 / 不再注入客户端）', '不会删除远端共享文件夹本身（后端暂不支持远端删共享）'],
       simpleScope: [{ host: sh.path, ip: sh.clients + ' 客户端', msg: '仅解除纳管' }],
-      task: { domain: 'share', action: 'delete', target: sh.path, chan: 'ssh', note: '已解除共享纳管（远端文件夹保留）', lines: [{ lv: 'warn', msg: 'delete_share ' + sh.path + ' (also_remove_remote=false)' }, { lv: 'ok', msg: '已从 Volo 解除纳管 · 远端共享文件夹保留' }] },
+      /* 真实 delete_share：仅删 DB 行（also_remove_remote=false，后端忽略）；用 numeric
+         shareConfigId（0 跳过，否则 delete(db,0) 静默 no-op）；成功后 reloadCache。 */
+      onConfirm: () => {
+        if (!sh.shareConfigId) return;
+        s.runCmd({ domain: 'share', action: 'delete', target: sh.path, chan: 'ssh', note: '解除共享纳管（远端保留）' },
+          () => deleteShareCmd(sh.shareConfigId, false), { okMsg: () => sh.path + ' 已解除纳管 · 远端文件夹保留' })
+          .then(() => s.reloadCache(), () => {});
+      },
     });
     const deployLocal = () => CX.openPreview(s, {
       title: '开启本地 DDC', icon: 'server', cli: 'local-cache create', destructive: false, channel: 'winrm', confirmLabel: '开启',
       steps: ['在这台机器本地新建一个缓存目录', '作为找不到共享缓存时的本地兜底'],
-      simpleScope: [{ host: CX.node(srv).host, ip: CX.node(srv).ip, msg: '本地缓存目录' }],
-      task: { domain: 'local-cache', action: 'create', target: CX.node(srv).host, chan: 'winrm', note: '本地 DDC 已开启', lines: [{ msg: 'local-cache create D:\\UE_DDC\\Local' }, { lv: 'ok', msg: '本地缓存层已就绪' }] },
+      simpleScope: [{ host: sharedNode.host, ip: sharedNode.ip, msg: '本地缓存目录' }],
+      task: { domain: 'local-cache', action: 'create', target: sharedNode.host, chan: 'winrm', note: '本地 DDC 已开启', lines: [{ msg: 'local-cache create D:\\UE_DDC\\Local' }, { lv: 'ok', msg: '本地缓存层已就绪' }] },
     });
 
     /* ---- cache content ---- */
     /* discover_projects：远程扫各机 .uproject（只发现不写盘） */
-    const scanProjects = () => s.runTask({ domain: 'project', action: 'discover', target: pakScope === 'all' ? '全部在线机' : CX.node(pakScope).host, chan: 'winrm', note: '远程扫描 UE 工程（.uproject）',
-      lines: [
-        { msg: 'discover_projects --scope ' + (pakScope === 'all' ? 'online' : CX.node(pakScope).host) + ' --roots "' + pakRoots + '"' },
-        { msg: 'RNODE-01 → D:\\Projects\\Helios\\Helios.uproject（UE 5.4.4）' },
-        { msg: 'WS-ART-01 → D:\\Projects\\Aurora\\Aurora.uproject（UE 5.4.4）' },
-        { msg: 'RNODE-05 → E:\\UEProjects\\Nomad\\Nomad.uproject（UE 5.4.3）' },
-        { lv: 'ok', msg: '发现 3 个工程 / 6 台机器，已对齐项目身份' },
-      ] });
-    /* PSO 也走 discover_projects（同一份工程库），可按单台机器搜索 */
-    const scanPso = () => s.runTask({ domain: 'project', action: 'discover', target: psoScope === 'all' ? '全部在线机' : CX.node(psoScope).host, chan: 'winrm', note: '远程扫描 UE 工程（.uproject）',
-      lines: [
-        { msg: 'discover_projects --scope ' + (psoScope === 'all' ? 'online' : CX.node(psoScope).host) + ' --roots "' + psoRoots + '"' },
-        { msg: 'RNODE-01 → Helios.uproject · WS-ART-01 → Aurora.uproject · RNODE-05 → Nomad.uproject' },
-        { lv: 'ok', msg: '发现 3 个工程 / 6 台机器，已对齐项目身份' },
-      ] });
+    /* 真实 discover_projects：命令只收单台 machineId，scope='all' 时前端对全部在线机
+       fan-out（allSettled 容部分失败）；rootsStr 分号串 split 成 search_roots[]；
+       发现写库后 reloadCache 刷新 window.UE_PROJECTS（loadProjects 重跑）。 */
+    const runDiscover = (scope, rootsStr) => {
+      const roots = (rootsStr || '').split(';').map((r) => r.trim()).filter(Boolean);
+      if (!roots.length) return;
+      const targets = scope === 'all'
+        ? RENDER_NODES.filter((n) => n.status !== 'offline').map((n) => n.machineId)
+        : [CX.node(scope) ? CX.node(scope).machineId : null].filter((x) => x != null);
+      if (!targets.length) return;
+      const tgtLabel = scope === 'all' ? targets.length + ' 台在线机' : (CX.node(scope) || {}).host;
+      s.runCmd({ domain: 'project', action: 'discover', target: tgtLabel, chan: 'winrm', note: '远程扫描 UE 工程（.uproject）' },
+        () => Promise.allSettled(targets.map((mid) => discoverProjects(mid, roots, null))).then((rs) => {
+          const ok = rs.filter((r) => r.status === 'fulfilled');
+          if (!ok.length) throw new Error('全部目标扫描失败');
+          const found = ok.reduce((a, r) => a + (Array.isArray(r.value) ? r.value.length : 0), 0);
+          return { found, failed: rs.length - ok.length };
+        }),
+        { okMsg: (r) => '发现 ' + r.found + ' 个工程位置' + (r.failed ? ('（' + r.failed + ' 台失败）') : '') })
+        .then(() => s.reloadCache(), () => {});
+    };
+    const scanProjects = () => runDiscover(pakScope, pakRoots);
+    const scanPso = () => runDiscover(psoScope, psoRoots);
     /* generate_ddc_pak：针对选定工程 + 源机器 + 后端，编 shader 生成 PAK（长任务） */
+    /* 真实 generate_ddc_pak（流式）：backend 固定 'remote'（BackendChoice 是执行位置，
+       与 UI 的 pakBackend 'zen'/'legacy' 存储后端无关）；ue_version 传 null（后端取
+       primary 安装）；ue-runner-progress 'completed' 即终止，pak-verified 是次级校验。 */
     const genPak = () => {
       const p = UE_PROJECTS.find((x) => x.id === pakProj);
       if (!p) return;
       const src = CX.node(pakSrc) || CX.node(p.primary);
-      s.runTask({ domain: 'ddc', action: 'generate', target: p.name + ' ' + p.ue, chan: 'winrm', note: '生成 DDC PAK · ' + p.name + '（长任务）',
-        lines: [
-          { msg: 'generate_ddc_pak --project ' + p.name + ' --src ' + src.host + ' --backend ' + pakBackend + ' --ue ' + p.ue },
-          { msg: '载入 ' + p.root + '\\' + p.uproject },
-          { msg: '编译 shader 1/6650 …' },
-          { msg: '编译 shader 4128/6650 …' },
-          { lv: 'ok', msg: 'DDC PAK 生成完成 · DDC_' + p.name + '_' + p.ue + '_' + pakBackend },
-        ] });
+      if (!src) return; /* 工程无 location（机器列表为空）时跳过 */
+      s.runStreamingCmd(
+        { domain: 'ddc', action: 'generate', target: p.name, chan: 'winrm', note: '生成 DDC PAK · ' + p.name + '（长任务）' },
+        () => generateDdcPak('remote', Number(p.id), src.machineId, null, null, null, null),
+        { mode: 'event', events: ['ue-runner-progress', 'pak-verified'], jobIdOf: (r) => r.job_id, reduce: genReduce, timeoutMs: 45 * 60 * 1000 });
     };
-    /* start_pso_collection：针对选定工程 + 源机器收集 PSO（按该机 GPU 签名；长任务 · NDJSON） */
+    /* 真实 start_pso_collection（流式）：psoRes '1920×1080' 用 U+00D7 分隔需 split；
+       psoMax 字符串 parseInt；windowed 固定 true；ue_version null；真终止是
+       pso-collect-finalized；完成后重载 PSO 列表。 */
     const collectPso = () => {
       const p = UE_PROJECTS.find((x) => x.id === psoProj);
       if (!p) return;
       const src = CX.node(psoSrc) || CX.node(p.primary);
-      s.runTask({ domain: 'pso', action: 'collect', target: p.name + ' ' + p.ue, chan: 'winrm', note: '收集 PSO 缓存 · ' + p.name + '（长任务 · NDJSON）',
-        lines: [
-          { msg: 'start_pso_collection --project ' + p.name + ' --src ' + src.host + ' --res ' + psoRes + ' --max ' + psoMax + 'min' },
-          { msg: 'GPU 签名：' + src.gpu + '（' + src.vendor + '）· -game 窗口化收集' },
-          { msg: '{"event":"pso","created":128}' },
-          { msg: '{"event":"pso","created":402}' },
-          { lv: 'ok', msg: 'PSO 收集完成 · PSO_' + p.name + '_' + p.ue },
-        ] });
+      if (!src) return;
+      const parts = String(psoRes).split('×');
+      const rw = Number(parts[0]) || 1920, rh = Number(parts[1]) || 1080;
+      const mm = parseInt(psoMax, 10) || 20;
+      s.runStreamingCmd(
+        { domain: 'pso', action: 'collect', target: p.name, chan: 'winrm', note: '收集 PSO 缓存 · ' + p.name + '（长任务 · NDJSON）' },
+        () => startPsoCollection(src.machineId, Number(p.id), rw, rh, true, mm, null, null),
+        { mode: 'event', events: ['ue-runner-progress', 'pso-collect-finalized'], jobIdOf: (r) => r.job_id, reduce: psoReduce, timeoutMs: (mm + 5) * 60 * 1000 })
+        .then(() => loadPsoFor(p.id), () => loadPsoFor(p.id));
     };
+    /* 真实分发（流式）：PAK 用 source(pakSrc/工程 primary)+project；PSO 用 file_id(art.id)。
+       目标机来自确认门里编辑后的选择（排除源机、转 numeric machineId）。PSO 默认
+       force_gpu_mismatch=false：目标 GPU 不匹配后端会同步拒绝 → 任务标失败并显示原因。 */
     const distribute = (art) => {
       const isPso = art.kind === 'PSO';
+      const proj = isPso ? null : UE_PROJECTS.find((x) => x.id === pakProj);
+      const srcNode = isPso ? null : (CX.node(pakSrc) || (proj ? CX.node(proj.primary) : null));
+      const srcId = isPso ? art.srcId : (srcNode ? srcNode.machineId : null);
+      if (isPso && art.id == null) return; /* 没有 file_id 不能分发 PSO */
+      if (!isPso && (srcId == null || pakProj == null)) return;
+      const scopeIds = RENDER_NODES.filter((n) => n.status !== 'offline' && n.roleKey === 'render').map((n) => n.id);
       CX.openPreview(s, {
         title: '分发 · ' + art.name, icon: 'download', cli: (isPso ? 'pso' : 'ddc') + ' distribute', destructive: false, channel: 'winrm',
-        steps: ['把这份缓存包复制分发到各台渲染机', isPso ? '分发前自动比对各机显卡是否匹配，不用你手动核对' : '只传缺少的部分，已经有的自动跳过', '只有真的不匹配时才会弹出提醒'],
-        scope: RENDER_NODES.filter((n) => n.status !== 'offline' && n.roleKey === 'render').map((n) => n.id),
-        task: { domain: isPso ? 'pso' : 'ddc', action: 'distribute', target: art.name, chan: 'winrm', note: '分发完成',
-          lines: [{ msg: (isPso ? 'pso' : 'ddc') + ' distribute ' + art.name }, isPso ? { msg: 'GPU preflight：全部匹配，无警告' } : { msg: 'Robocopy 增量同步 …' }, { lv: 'ok', msg: '分发完成至目标机' }] },
+        steps: ['把这份缓存包复制分发到选中的渲染机',
+          isPso ? 'PSO 与 GPU 绑定：目标机 GPU 签名不匹配时后端会拒绝' : '只传缺少的部分，已有的自动跳过',
+          '逐台显示成功 / 失败'],
+        scope: scopeIds,
+        onConfirm: (sel) => {
+          const targets = (sel || []).map((id) => (CX.node(id) || {}).machineId).filter((x) => x != null && x !== srcId);
+          if (!targets.length) return;
+          const evName = isPso ? 'pso-distribute-progress' : 'pak-distribute-progress';
+          s.runStreamingCmd(
+            { domain: isPso ? 'pso' : 'ddc', action: 'distribute', target: art.name, chan: 'winrm', note: '分发 · ' + art.name + ' → ' + targets.length + ' 台' },
+            () => isPso
+              ? distributePsoCache({ file_id: art.id, target_machine_ids: targets, named_share_unc: null, operator_credential_alias: null, source_smb_credential_alias: null, force_gpu_mismatch: false })
+              : distributeDdcPak(srcId, Number(pakProj), targets, null, null, null),
+            { mode: 'event', events: [evName], jobIdOf: (r) => r.job_id, total: (r) => (r.plan || []).length, reduce: batchReduce });
+        },
       });
     };
 
@@ -147,123 +295,31 @@ import "./cache";
       h('div', { className: 'art-meta' }, h('div', { className: 'art-name mono' }, sh.path), h('div', { className: 'art-sub' }, sh.mode + ' · ' + sh.clients + ' 客户端 · ' + sh.size)),
       h('button', { className: 'mini-btn danger', onClick: () => deleteShare(sh) }, h(Icon, { name: 'trash', size: 12 }), '解除纳管'));
 
-    const readbackEl = h('div', { className: 'readback ok' },
-      h('div', { className: 'rb-h' }, h(Icon, { name: 'check', size: 13 }), '写配置后自动回读校验 · 期望 vs 实际'),
-      h('div', { className: 'rb-cmp' },
-        h('div', { className: 'rb-col' }, h('span', { className: 'rl' }, 'expected'), h('code', null, 'Host=render-zen-01;Port=1337')),
-        h('div', { className: 'rb-col' }, h('span', { className: 'rl' }, 'actual'), h('code', { className: 'good' }, 'Host=render-zen-01;Port=1337'))));
-
-    /* 单个后端面板（介绍卡 + 部署表单），按 backend id 渲染 */
+    /* 单个后端面板（介绍卡 + 部署表单）— 仅 SMB / 本地（ZenServer 拆到 cacheZen.tsx）。 */
     const backendPanel = (beId) => {
       const b = DDC_BACKENDS.find((x) => x.id === beId) || DDC_BACKENDS[0];
-      const doDeploy = beId === 'zen' ? deployZen : beId === 'smb' ? deploySMB : deployLocal;
+      const doDeploy = beId === 'smb' ? deploySMB : deployLocal;
       return h('div', { className: 'be-block', key: beId },
         h('div', { className: 'deploy-panel' },
           h('div', { className: 'dp-h' }, h(Icon, { name: b.icon, size: 15 }), '部署 ' + b.label,
             b.current ? h('span', { className: 'dp-cur' }, h(Icon, { name: 'check', size: 11 }), '已部署') : null),
           h('div', { className: 'dp-form' },
             h('div', { className: 'dp-field' }, h('label', null, '服务器机器'),
-              h(Selector, { kpre: '机器', value: srv, options: srvOpts, width: 240, onChange: setSrv })),
-            beId === 'zen' ? h('div', { className: 'dp-field' }, h('label', null, 'data-dir'),
-              h('input', { className: 'dp-input mono', value: dataDir, onChange: (e) => setDataDir(e.target.value) }))
-              : beId === 'smb' ? h(React.Fragment, null,
-                h('div', { className: 'dp-field' }, h('label', null, '共享路径'),
-                  h('input', { className: 'dp-input mono', defaultValue: '\\\\ddc01\\Volo\\DDC' })),
-                h('div', { className: 'dp-field' }, h('label', null, '运维凭据'),
-                  h(Selector, { kpre: '凭据', value: shareCred, options: credOpts, width: 200, onChange: setShareCred })))
-              : null,
+              h(Selector, { kpre: '机器', value: sharedNode.id, options: srvOpts, width: 240, onChange: setSrv })),
+            beId === 'smb' ? h(React.Fragment, null,
+              h('div', { className: 'dp-field' }, h('label', null, '共享名'),
+                h('input', { className: 'dp-input mono', value: shareName, spellCheck: false, onChange: (e) => setShareName(e.target.value) })),
+              h('div', { className: 'dp-field' }, h('label', null, '本地路径'),
+                h('input', { className: 'dp-input mono', value: shareLocal, spellCheck: false, onChange: (e) => setShareLocal(e.target.value) })),
+              h('div', { className: 'dp-field' }, h('label', null, '模式'),
+                h(Selector, { kpre: '模式', value: shareMode, width: 200, onChange: setShareMode,
+                  options: [{ id: 'open', label: 'Mode A · 开放' }, { id: 'managed', label: 'Mode B · 专用账号' }] }))) : null,
             h('div', { className: 'dp-go' }, h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'bolt', size: 14 }), onPress: doDeploy }, b.current ? '重新部署' : '部署 ' + b.label))),
-          h('div', { className: 'dp-note' }, h(Icon, { name: 'shield', size: 13 }), '链路在后台逐步执行（进度进任务抽屉）；凭据 / urlacl / 服务安装全部自动处理。'),
-          beId === 'zen' && zenReadback ? readbackEl : null));
+          h('div', { className: 'dp-note' }, h(Icon, { name: 'shield', size: 13 }), '链路在后台逐步执行（进度进任务抽屉）；凭据 / urlacl / 服务安装全部自动处理。')));
     };
 
-    /* ---- ZenServer：① 共享 DDC 服务器（单台角色）· ② 客户端机器（加入共享服务器）---- */
-    const sharedNode = CX.node(srv);
-    const clients = RENDER_NODES.filter((n) => n.id !== srv);
-    const joinedCt = clients.filter((n) => joined.includes(n.id)).length;
-    const onlineUnjoined = clients.filter((n) => n.status !== 'offline' && !joined.includes(n.id));
-
-    const joinClient = (n) => CX.openPreview(s, {
-      title: '加入共享 DDC · ' + n.host, icon: 'link', cli: 'zen client-join', destructive: false, channel: 'winrm', confirmLabel: '加入',
-      steps: [
-        '用运维凭据 ' + credName(shareCred) + ' 注入共享访问',
-        '让这台机器连接到共享缓存服务器 ' + sharedNode.host,
-        '把它的缓存来源指向该共享服务器',
-        '在本地目录 ' + clientDir + ' 留一份缓存，配置写好后自动复核',
-      ],
-      simpleScope: [{ host: n.host, ip: n.ip, msg: '本地 data-dir ' + clientDir }],
-      readback: { key: '[StorageServers] Shared', expected: 'Host=render-zen-01;Port=1337' },
-      task: { domain: 'zen', action: 'client-join', target: n.host, chan: 'winrm', note: '加入共享 DDC（' + sharedNode.host + '）',
-        lines: [
-          { msg: 'zen client-join --server render-zen-01:1337' },
-          { msg: 'ini set [StorageServers] Shared → Host=render-zen-01;Port=1337' },
-          { msg: 'local data-dir ' + clientDir },
-          { lv: 'ok', msg: n.host + ' 已加入共享 DDC · 回读校验通过' },
-        ] },
-      onConfirm: () => setJoined((j) => j.includes(n.id) ? j : j.concat(n.id)),
-    });
-    const joinAll = () => CX.openPreview(s, {
-      title: '批量加入共享 DDC', icon: 'link', cli: 'zen client-join', destructive: false, channel: 'winrm', confirmLabel: '加入 ' + onlineUnjoined.length + ' 台',
-      steps: [
-        '用运维凭据 ' + credName(shareCred) + ' 逐台注入共享访问',
-        '让这些机器逐台连接到共享缓存服务器 ' + sharedNode.host,
-        '把每台的缓存来源都指向该共享服务器',
-        '各机在本地目录 ' + clientDir + ' 留一份缓存，并自动复核',
-      ],
-      simpleScope: onlineUnjoined.map((n) => ({ host: n.host, ip: n.ip, msg: '本地 data-dir ' + clientDir })),
-      readback: { key: '[StorageServers] Shared', expected: 'Host=render-zen-01;Port=1337' },
-      task: { domain: 'zen', action: 'client-join', target: onlineUnjoined.length + ' 台客户端', chan: 'winrm', note: '批量加入共享 DDC（' + sharedNode.host + '）',
-        lines: [
-          { msg: 'zen client-join --server render-zen-01:1337 ×' + onlineUnjoined.length },
-          { msg: 'ini set [StorageServers] Shared → 逐台写入' },
-          { lv: 'ok', msg: onlineUnjoined.length + ' 台已加入共享 DDC · 回读校验通过' },
-        ] },
-      onConfirm: () => setJoined((j) => Array.from(new Set(j.concat(onlineUnjoined.map((n) => n.id))))),
-    });
-
-    const clientRow = (n) => {
-      const isJoined = joined.includes(n.id);
-      const off = n.status === 'offline';
-      return h('div', { key: n.id, className: 'cli-row' + (off ? ' off' : '') + (isJoined ? ' on' : '') },
-        CX.dot(NODE_STATUS[n.status].visual),
-        h('div', { className: 'cli-meta' },
-          h('div', { className: 'cli-host mono' }, n.host),
-          h('div', { className: 'cli-sub' }, n.ip + ' · ' + n.role)),
-        isJoined
-          ? h('div', { className: 'cli-joined' },
-              h('span', { className: 'cli-path mono' }, h(Icon, { name: 'folder', size: 11 }), clientDir),
-              h('span', { className: 'cli-badge ok' }, h(Icon, { name: 'check', size: 11 }), '已加入'))
-          : off
-            ? h('span', { className: 'cli-badge off' }, h(Icon, { name: 'power', size: 11 }), '离线 · 跳过')
-            : h('button', { className: 'mini-btn join', onClick: () => joinClient(n) }, h(Icon, { name: 'link', size: 12 }), '加入'));
-    };
-
-    /* ---- per-view bodies ---- */
-    const zenBody = h(React.Fragment, null,
-      h('div', { className: 'ddc-sec-h' },
-        h('span', null, '① ZenServer 共享 DDC 服务器'),
-        h('span', { className: 'dim' }, '只能选取一台服务器作为该角色 · 设置共享 Data 路径')),
-      backendPanel('zen'),
-      h('div', { className: 'ddc-sec-h' },
-        h('span', null, '② 客户端机器'),
-        h('span', { className: 'dim' }, joinedCt + ' / ' + clients.length + ' 已加入 · 各自设置本地 Data 路径')),
-      h('div', { className: 'cli-panel' },
-        h('div', { className: 'cli-top' },
-          h('div', { className: 'cli-server-chip' },
-            h('span', { className: 'csc-ico' }, h(Icon, { name: 'cube', size: 15 })),
-            h('div', { style: { minWidth: 0 } },
-              h('div', { className: 'csc-t' }, '加入目标 · ' + sharedNode.host),
-              h('div', { className: 'csc-s mono' }, sharedNode.ip + ' :1337'))),
-          h('div', { className: 'dp-field' }, h('label', null, '本地 data-dir'),
-            h('input', { className: 'dp-input mono', value: clientDir, onChange: (e) => setClientDir(e.target.value) })),
-          h('div', { className: 'dp-field' }, h('label', null, '运维凭据'),
-            h(Selector, { kpre: '凭据', value: shareCred, options: credOpts, width: 180, onChange: setShareCred })),
-          h('div', { className: 'cli-go' },
-            h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'link', size: 14 }), isDisabled: onlineUnjoined.length === 0, onPress: joinAll },
-              onlineUnjoined.length ? '全部加入（' + onlineUnjoined.length + '）' : '全部已加入'))),
-        h('div', { className: 'cli-note' }, h(Icon, { name: 'shield', size: 13 }),
-          '加入会写客户端 [StorageServers] Shared 指向上方共享服务器，并在本地 data-dir 落地缓存；凭据 / 回读校验后台自动处理。'),
-        h('div', { className: 'cli-list' }, clients.map(clientRow))));
+    /* ZenServer ①服务器 + ②客户端 已拆分到独立组件 cacheZen.tsx（真实分步部署 + 客户端指向）；
+       旧 zenBody / joinClient / joinAll / clientRow（假的「加入共享」+ 写死回读）已删除。 */
 
     /* 文件系统 DDC = 共享 DDC（上）+ 本地 DDC（下，逐台列表）*/
     const onlineLocalTargets = RENDER_NODES.filter((n) => n.status !== 'offline');
@@ -296,10 +352,11 @@ import "./cache";
           spellCheck: false, onChange: (e) => setLocalDir(n.id, e.target.value) }),
         h('div', { className: 'local-act' },
           off ? h('span', { className: 'cli-badge off' }, h(Icon, { name: 'power', size: 11 }), '离线')
-            : h(React.Fragment, null,
-                dep ? h('span', { className: 'cli-badge ok' }, h(Icon, { name: 'check', size: 11 }), '已部署') : null,
-                h('button', { className: 'mini-btn', onClick: () => deployLocalOne(n) },
-                  h(Icon, { name: dep ? 'sync' : 'bolt', size: 12 }), dep ? '重新部署' : '部署'))));
+            : dep ? h('span', { className: 'cli-badge ok' }, h(Icon, { name: 'check', size: 11 }), '已部署')
+            : h('span', { className: 'cli-badge none' }, h(Icon, { name: 'minus', size: 11 }), '未部署'),
+          off ? null
+            : h('button', { className: 'mini-btn', onClick: () => deployLocalOne(n) },
+                h(Icon, { name: dep ? 'sync' : 'bolt', size: 12 }), dep ? '重新部署' : '部署')));
     };
 
     const legacyBody = h(React.Fragment, null,
@@ -344,21 +401,17 @@ import "./cache";
     };
     const selectPak = (p) => { setPakProj(p.id); setPakSrc(p.primary); };
 
-    /* verify_pak_output — 只能校验单个工程的产物，没有“列举全部产物”的能力 */
-    const pakInfo = (p) => {
-      const art = ARTIFACTS.find((a) => a.kind === 'DDC pak' && a.name.indexOf(p.name) >= 0);
-      const name = art ? art.name : 'DDC_' + p.name + '_' + p.ue + '_' + pakBackend;
-      return { exists: !!p.hasPak, name, path: p.root + '\\DerivedDataCache\\' + name + '.upak', size: art ? art.size : '—' };
-    };
+    /* 真实 verify_pak_output：返回 PakOutput{path,size_bytes}，产物不存在=后端抛
+       OperationFailed（不是 exists:false 的成功态）→ found 由成功/失败分支决定。 */
     const verifyPak = (p) => {
       const src = CX.node(pakSrc) || CX.node(p.primary);
-      const info = pakInfo(p);
-      s.runTask({ domain: 'ddc', action: 'verify', target: p.name, chan: 'ssh', note: '校验 DDC PAK 产物 · ' + p.name,
-        lines: [
-          { msg: 'verify_pak_output --machine ' + src.host + ' --project ' + p.name },
-          info.exists ? { lv: 'ok', msg: '产物存在 · ' + info.path + ' · ' + info.size } : { lv: 'warn', msg: '未找到产物 · 该工程尚未生成 PAK' },
-        ] });
-      setPakVerify((m) => Object.assign({}, m, { [p.id]: info }));
+      if (!src) return;
+      s.runCmd({ domain: 'ddc', action: 'verify', target: p.name, chan: 'ssh', note: '校验 DDC PAK 产物 · ' + p.name },
+        () => verifyPakOutput(src.machineId, Number(p.id), null),
+        { okMsg: (r) => '产物存在 · ' + r.path + ' · ' + humanBytes(r.size_bytes) })
+        .then(
+          (r) => setPakVerify((m) => Object.assign({}, m, { [p.id]: { found: true, path: r.path, sizeBytes: r.size_bytes } })),
+          () => setPakVerify((m) => Object.assign({}, m, { [p.id]: { found: false } })));
     };
     const pakStatusCard = (p) => {
       const v = pakVerify[p.id];
@@ -368,21 +421,21 @@ import "./cache";
           h('span', { className: 'gen-ico' }, h(Icon, { name: 'cache', size: 17 })),
           h('div', { className: 'gen-sum-txt' },
             h('div', { className: 'gen-sum-t' }, h('span', { className: 'gen-sum-name' }, p.name), h('span', { className: 'gen-sum-ue' }, 'UE ' + p.ue)),
-            h('div', { className: 'gen-sum-d mono' }, '校验源 · ' + src.host)),
+            h('div', { className: 'gen-sum-d mono' }, '校验源 · ' + ((src || {}).host || '—'))),
           h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'search', size: 14 }), onPress: () => verifyPak(p) }, v ? '重新校验' : '校验产物')),
         v
-          ? h('div', { className: 'pak-verify' + (v.exists ? ' ok' : ' miss') },
+          ? h('div', { className: 'pak-verify' + (v.found ? ' ok' : ' miss') },
               h('div', { className: 'pak-verify-h' },
-                h('span', { className: 'pv-ico s-' + (v.exists ? 'positive' : 'notice') }, h(Icon, { name: v.exists ? 'check' : 'alert', size: 14 })),
-                h('span', { className: 'pv-state' }, v.exists ? '产物存在' : '未找到产物')),
-              h('div', { className: 'pak-verify-kv' },
-                h('div', { className: 'pvk' }, h('span', { className: 'k' }, '路径'), h('span', { className: 'v mono' }, v.path)),
-                h('div', { className: 'pvk' }, h('span', { className: 'k' }, '大小'), h('span', { className: 'v' }, v.size)),
-                h('div', { className: 'pvk' }, h('span', { className: 'k' }, '是否存在'), h('span', { className: 'v s-' + (v.exists ? 'positive' : 'notice') }, v.exists ? '是' : '否'))),
-              v.exists
-                ? h('div', { className: 'pak-verify-act' }, h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'download', size: 14 }), onPress: () => distribute({ kind: 'DDC pak', name: v.name }) }, '分发到渲染机'))
+                h('span', { className: 'pv-ico s-' + (v.found ? 'positive' : 'notice') }, h(Icon, { name: v.found ? 'check' : 'alert', size: 14 })),
+                h('span', { className: 'pv-state' }, v.found ? '产物存在' : '未找到产物')),
+              v.found
+                ? h(React.Fragment, null,
+                    h('div', { className: 'pak-verify-kv' },
+                      h('div', { className: 'pvk' }, h('span', { className: 'k' }, '路径'), h('span', { className: 'v mono' }, v.path)),
+                      h('div', { className: 'pvk' }, h('span', { className: 'k' }, '大小'), h('span', { className: 'v' }, humanBytes(v.sizeBytes)))),
+                    h('div', { className: 'pak-verify-act' }, h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'download', size: 14 }), onPress: () => distribute({ kind: 'DDC pak', name: 'DDC_' + p.name }) }, '分发到渲染机')))
                 : h('div', { className: 'pak-verify-note' }, h(Icon, { name: 'eye', size: 12 }), '该工程在源机上尚无 PAK 产物，先在上方③生成。'))
-          : h('div', { className: 'pak-verify-hint' }, h(Icon, { name: 'eye', size: 13 }), '点「校验产物」检查该工程在源机上的 PAK 是否存在（路径 / 大小 / 是否存在）。'));
+          : h('div', { className: 'pak-verify-hint' }, h(Icon, { name: 'eye', size: 13 }), '点「校验产物」检查该工程在源机上的 PAK 是否存在（路径 / 大小）。'));
     };
 
     const pakBody = h(React.Fragment, null,
@@ -478,7 +531,7 @@ import "./cache";
         h('span', { className: 't' }, 'DDC · ' + TITLE[view]),
         h('div', { className: 'right' }, headRight)),
       h('div', { className: 'ddc-body' },
-        view === 'ddc_zen' ? zenBody : view === 'ddc_legacy' ? legacyBody : view === 'ddc_pak' ? pakBody : psoBody));
+        view === 'ddc_legacy' ? legacyBody : view === 'ddc_pak' ? pakBody : psoBody));
   }
 
   window.VOLO_CACHE_DDC = { ddc: (s) => h(DDC, { s }) };

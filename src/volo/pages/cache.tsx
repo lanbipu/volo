@@ -7,10 +7,13 @@
    cacheMachines.tsx / cacheDdc.tsx. */
 import * as React from "react";
 import "../ds";
+import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
+  getWinrmBootstrapScript, getMachineDetail, scanNetwork, addDiscoveredMachine,
+  runHealthCheck, scanInis, applyFinding, getMachineEnvVar, readIniSection } from "../api/commands";
 
 (function () {
   const { Button, Badge } = window.Spectrum2DesignSystem_b6d1b3;
-  const { useState } = React;
+  const { useState, useEffect } = React;
   const h = React.createElement;
   /* CX is published as window.VOLO_CX; bind a stable reference up-front so the
      page's own `CX.openPreview(...)` calls (and cacheMachines/cacheDdc which
@@ -86,21 +89,34 @@ import "../ds";
   function openPreview(s, spec) { s.setDrawer(Object.assign({ kind: 'preview' }, spec)); }
 
   /* =================== cluster status + actions =================== */
+  /* 真实「立即巡检」：并行跑 run_health_check + scan_inis（后端已改 async，不冻结 UI）。
+     machine_ids 取在线非共享机；credential_alias 走 SSH key 传 ''；project_paths 从已加载
+     工程的 root 取（避免无 UE 安装机 scan_inis 报 0 文件）。完成后 reloadCache 拉新结果。 */
   function refreshScan(s) {
-    s.runTask({ domain: 'health', action: 'run', target: '集群 · 8 台', chan: 'winrm',
-      note: 'zen probe → cache-stats → health run',
-      lines: [
-        { msg: 'zen probe render-zen-01 → HTTP 200 /health' },
-        { msg: 'zen cache-stats → 命中 94% · 3.1 TB' },
-        { lv: 'warn', msg: 'health run L1/L2/L3 → 7 项（1 critical / 4 warning）' },
-      ] });
+    const nodes = RENDER_NODES.filter((n) => n.roleKey !== 'shared' && n.status !== 'offline');
+    const ids = nodes.map((n) => n.machineId).filter((x) => x != null && x !== 0);
+    if (!ids.length) return;
+    const roots = Array.from(new Set((window.UE_PROJECTS || []).map((p) => p.root).filter((r) => r && r !== '—')));
+    s.runCmd({ domain: 'health', action: 'run', target: ids.length + ' 台', chan: 'winrm', note: '健康巡检 + INI 一致性检查' },
+      () => Promise.allSettled([
+        runHealthCheck({ machine_ids: ids, credential_alias: '', project_paths: roots, expected_local_path: null, expected_shared_path: null }),
+        scanInis({ machine_ids: ids, credential_alias: '', project_paths: roots, user_profile_path: null }),
+      ]).then((rs) => {
+        const ok = rs.filter((r) => r.status === 'fulfilled').length;
+        if (!ok) throw new Error('巡检与 INI 检查均失败');
+        return ok;
+      }),
+      { okMsg: () => '巡检完成 · 已更新健康与 INI 结果' })
+      .then(() => s.reloadCache(), () => {});
   }
   function clusterChips() {
+    const hv = CLUSTER.health;
+    const lv = hv == null ? 'not' : hv >= 85 ? 'pos' : hv >= 60 ? 'not' : 'neg';
     return h('div', { className: 'cluster-sum' },
       h('span', { className: 'sum-grp' }, dot('positive'), '在线 ',
         h('b', null, CLUSTER.online), h('span', { className: 'frac' }, '/' + CLUSTER.total)),
-      h('span', { className: 'health-chip lv-' + (CLUSTER.health >= 85 ? 'pos' : CLUSTER.health >= 60 ? 'not' : 'neg') },
-        h(Icon, { name: 'pulse', size: 14 }), '健康分 ', h('b', null, CLUSTER.health)));
+      h('span', { className: 'health-chip lv-' + lv },
+        h(Icon, { name: 'pulse', size: 14 }), '健康分 ', h('b', null, hv == null ? '—' : hv)));
   }
   function actions(s) {
     const fresh = s.freshSetup && !s.machinesAdded;
@@ -161,6 +177,20 @@ import "../ds";
 
   function Overview({ s }) {
     const [scanOpen, setScanOpen] = useState(false);
+    /* three-channel gate (色 + 图标 + 文字) over the backend read-path load */
+    if (s.cacheError) return h('div', { className: 'dash' },
+      h('div', { className: 'dash-card', style: { padding: 22, display: 'flex', gap: 14, alignItems: 'center' } },
+        h('span', { className: 's-negative', style: { display: 'flex' } }, h(Icon, { name: 'alert', size: 22 })),
+        h('div', { style: { minWidth: 0, flex: 1 } },
+          h('div', { style: { fontWeight: 700, marginBottom: 3 } }, '加载集群数据失败'),
+          h('div', { style: { fontSize: 12, color: 'var(--chrome-dim)', wordBreak: 'break-word' } }, s.cacheError)),
+        h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'sync', size: 15 }), onPress: s.reloadCache }, '重试')));
+    if (s.cacheLoading) return h('div', { className: 'dash' },
+      h('div', { className: 'dash-card', style: { padding: 22, display: 'flex', gap: 14, alignItems: 'center' } },
+        h('span', { className: 's-informative', style: { display: 'flex' } }, h('span', { className: 'spin' }, h(Icon, { name: 'sync', size: 20 }))),
+        h('div', null,
+          h('div', { style: { fontWeight: 700, marginBottom: 3 } }, '正在加载集群数据…'),
+          h('div', { style: { fontSize: 12, color: 'var(--chrome-dim)' } }, '从后端读取 机器 / 凭据 / 共享'))));
     const onScan = () => setScanOpen(true);
     const fresh = isFresh(s);
     const wizard = scanOpen ? window.VOLO_CACHE_MACHINES.ScanWizard({ s, onClose: () => setScanOpen(false) }) : null;
@@ -188,24 +218,29 @@ import "../ds";
     /* ---------- 已有机器：全局概览 + 机器管理 ---------- */
     const cluster = RENDER_NODES.filter((n) => n.roleKey !== 'shared');
     const online = cluster.filter((n) => n.status !== 'offline');
-    const zen = ZEN_ENDPOINTS[0];
-    const share = SHARES[0];
     const offlineCt = cluster.filter((n) => n.status === 'offline').length;
     const alerts = HEALTH_CHECKS.filter((c) => c.status === 'critical' || c.status === 'warning').length
       + INI_FINDINGS.filter((f) => f.sev !== 'info').length;
     const overall = HEALTH_CHECKS.some((c) => c.status === 'critical') ? 'critical'
       : HEALTH_CHECKS.some((c) => c.status === 'warning') ? 'warning' : 'healthy';
+    /* 健康项无「一键修复」后端命令（remediation 是建议文案）：展示建议 + 确认后重新巡检验证。 */
     const fixCheck = (c) => CX.openPreview(s, {
-      title: '应用修复 · ' + c.label, icon: 'pulse', cli: 'health remediation', destructive: false, channel: 'winrm',
-      steps: [c.remediation, '修复后自动重新巡检这一项，确认是否恢复正常'], scope: [],
-      simpleScope: [{ host: c.label, ip: c.layer, msg: c.remediation }],
-      task: { domain: 'health', action: 'remediate', target: c.label, chan: 'winrm', note: c.remediation, lines: [{ msg: c.remediation }, { lv: 'ok', msg: '已修复，' + c.label + ' → healthy' }] },
+      title: '处理 · ' + c.label, icon: 'pulse', cli: 'health remediation', destructive: false, channel: 'winrm', confirmLabel: '重新巡检',
+      steps: [c.remediation || '按提示在目标机处理后重新巡检', '巡检会重新评估这一项是否恢复'], scope: [],
+      simpleScope: [{ host: c.label, ip: c.layer, msg: c.remediation || '—' }],
+      onConfirm: () => refreshScan(s),
     });
+    /* 真实 apply_finding：写远端 INI（先备份）；需真实数字 findingId（来自 list_findings）。 */
     const fixIni = (f) => CX.openPreview(s, {
-      title: '应用修复 · ' + f.id + ' · ' + f.machine, icon: 'pulse', cli: 'ini apply', destructive: false, channel: 'winrm',
-      steps: [f.file + ' ' + f.section + '：' + f.cur + ' → ' + f.rec, '先创建 .bak.<时间戳> 备份，apply 后自动 re-scan 确认 warning 计数下降'], scope: [],
+      title: '应用修复 · ' + f.rule + ' · ' + f.machine, icon: 'pulse', cli: 'apply_finding', destructive: false, channel: 'ssh', confirmLabel: '应用修复',
+      steps: [f.file + ' ' + f.section + '：' + f.cur + ' → ' + f.rec, '后端先创建 .bak.<时间戳> 备份再写'], scope: [],
       simpleScope: [{ host: f.machine, ip: f.file, msg: f.rec }],
-      task: { domain: 'ini', action: 'apply', target: f.machine + ' · ' + f.file, chan: 'winrm', note: f.id + ' ' + f.cur + ' → ' + f.rec, lines: [{ msg: 'ini apply ' + f.id + ' → ' + f.rec }, { lv: 'ok', msg: '已修复，re-scan warning 计数下降' }] },
+      onConfirm: () => {
+        if (f.findingId == null) return;
+        s.runCmd({ domain: 'ini', action: 'apply', target: f.machine + ' · ' + f.file, chan: 'ssh', note: f.rule + ' ' + f.cur + ' → ' + f.rec },
+          () => applyFinding(f.findingId, ''), { okMsg: (backup) => '已修复 · 备份 ' + backup })
+          .then(() => s.reloadCache(), () => {});
+      },
     });
 
     /* 只列「巡检发现有问题、需要处理」的事项：健康调查结果 + INI 一致性检查，各带一键修复 */
@@ -246,10 +281,14 @@ import "../ds";
         const totalCt   = cluster.length;
         const onlineCt  = online.length;
         const allOnline = offlineCt === 0;
-        const gpuNodes  = online.filter((n) => n.driver && n.driver !== '—');
-        const gpuTotal  = gpuNodes.length;
-        const gpuMatch  = gpuNodes.filter((n) => n.driver === BASELINE.driver).length;
-        const gpuOk     = gpuMatch === gpuTotal;
+        /* GPU 一致性来自 get_gpu_consistency_matrix（DB 读，无 SSH）。NodeVM.driver 是
+           占位 '—'，不可作来源；signature===null 的机器=无 GPU 数据，不计入分母。 */
+        const gm        = window.GPU_MATRIX;
+        const gpuCells  = gm && Array.isArray(gm.cells) ? gm.cells.filter((c) => c.signature) : [];
+        const gpuTotal  = gpuCells.length;
+        const gpuMatch  = gpuCells.filter((c) => c.status === 'match').length;
+        const gpuOk     = gpuTotal > 0 && gpuMatch === gpuTotal;
+        const baseDriver = gm && gm.baseline ? gm.baseline.driver : '—';
         const probTone  = problems.length === 0 ? 's-positive' : critCt ? 's-negative' : 's-notice';
         return h('div', { className: 'dash-kpis' },
           kpi('node', '节点在线',
@@ -258,10 +297,10 @@ import "../ds";
             allOnline ? '全部在线' : (offlineCt + ' 台离线 · ' + onlineCt + ' 台在线'),
             allOnline ? 's-positive' : 's-negative'),
           kpi('cpu', 'GPU 一致性',
-            gpuMatch + ' / ' + gpuTotal + ' 匹配',
-            gpuOk ? 's-positive' : 's-notice',
-            gpuOk ? '驱动全部对齐基线' : ((gpuTotal - gpuMatch) + ' 台驱动偏离基线 ' + BASELINE.driver),
-            gpuOk ? 's-positive' : 's-notice'),
+            gpuTotal ? (gpuMatch + ' / ' + gpuTotal + ' 匹配') : '—',
+            gpuTotal === 0 ? null : gpuOk ? 's-positive' : 's-notice',
+            gpuTotal === 0 ? '暂无 GPU 数据' : gpuOk ? ('驱动全部对齐基线 ' + baseDriver) : ((gpuTotal - gpuMatch) + ' 台驱动偏离基线 ' + baseDriver),
+            gpuTotal === 0 ? null : gpuOk ? 's-positive' : 's-notice'),
           kpi('alert', '待处理问题',
             problems.length + ' 项',
             probTone,
@@ -374,60 +413,59 @@ import "../ds";
   /* =================== overlay · machine detail (6.2) =================== */
   const KV = (k, v, mono) => h('div', { className: 'kv', key: k }, h('span', { className: 'k' }, k), h('span', { className: 'v' + (mono ? ' mono' : '') }, v));
 
-  /* ⑥ 已读到的 DDC 相关配置 — 只展示两项能真实读到的：
-     ① 环境变量（本地 / 共享缓存路径，get_machine_env_var）
+  /* ⑥ 已读到的 DDC 相关配置 — 真实读两项（离线机不读，由调用方门控）：
+     ① 环境变量 UE-LocalDataCachePath / UE-SharedDataCachePath（get_machine_env_var）
      ② 项目 DefaultEngine.ini 的 [StorageServers]（read_ini_section）
-     这是读到的配置，不是“多层有效配置解析”。离线机无法读取。 */
-  function ddcReadConfig(n) {
-    if (n.status === 'offline' || !n.cfg) return null;
-    const drv = /^([A-Za-z]):/.test(n.uePath) ? n.uePath[0].toUpperCase() : 'D';
-    const zf = INI_FINDINGS.find((f) => f.machine === n.host && f.section.indexOf('StorageServers') >= 0);
-    const env = { local: drv + ':\\UE_DDC\\Local', shared: n.share || null };
-    const ini = zf
-      ? { ok: false, val: '[StorageServers] Shared 缺失', note: zf.id + ' · 未写入共享上游服务器' }
-      : { ok: !!n.zen,
-          val: n.zen ? '[StorageServers] Shared = render-zen-01:1337' : '[StorageServers] 未配置 Zen 上游',
-          note: n.zen ? '随版本库下发' : '未配置共享上游' };
-    return { env, ini, hasFix: !!zf };
-  }
-
-  /* SSH key 现场入网脚本（get_winrm_bootstrap_script 返回的脚本文本） */
-  function bootstrapScript(n) {
-    return [
-      '# enable-ssh.ps1 — Volo 现场入网脚本（以管理员身份运行）',
-      '# 目标机：' + n.host + '  (' + n.ip + ')',
-      '',
-      '# 1) 安装并启用 OpenSSH Server',
-      'Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0',
-      'Set-Service sshd -StartupType Automatic',
-      'Start-Service sshd',
-      '',
-      '# 2) 放行防火墙 22 端口',
-      'New-NetFirewallRule -Name sshd -DisplayName "OpenSSH Server" `',
-      '  -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22',
-      '',
-      '# 3) 写入 Volo operator 的 SSH 公钥（免密登录）',
-      '$key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA… uecm-operator"',
-      '$f = "$Env:ProgramData\\ssh\\administrators_authorized_keys"',
-      'Add-Content -Path $f -Value $key',
-      'icacls $f /inheritance:r /grant "Administrators:F" /grant "SYSTEM:F"',
-      '',
-      '# 完成后回到 Volo，点「刷新」确认入网状态',
-    ].join('\n');
+     INI 路径无 UI 来源 → 从该机的工程 location 推（window.UE_PROJECTS 的 root + Config）。
+     这是读到的配置，不是「多层有效配置解析」。 */
+  function loadDdcConfig(mid) {
+    const proj = (window.UE_PROJECTS || []).find((p) => (p.machines || []).indexOf(String(mid)) >= 0);
+    const iniPath = proj ? (proj.root + '\\Config\\DefaultEngine.ini') : null;
+    return Promise.allSettled([
+      getMachineEnvVar(mid, 'UE-LocalDataCachePath'),
+      getMachineEnvVar(mid, 'UE-SharedDataCachePath'),
+      iniPath ? readIniSection(mid, iniPath, 'StorageServers') : Promise.resolve(null),
+    ]).then((rs) => {
+      const envLocal = rs[0].status === 'rejected' ? '读取失败' : (rs[0].value || '未设');
+      const envShared = rs[1].status === 'rejected' ? '读取失败' : (rs[1].value || '未设');
+      let ini;
+      if (!iniPath) ini = { ok: false, val: '该机未发现 UE 工程', note: '无项目配置路径，无法读取 [StorageServers]' };
+      else if (rs[2].status === 'rejected') ini = { ok: false, val: '读取失败', note: (rs[2].reason && rs[2].reason.message) ? rs[2].reason.message : '远程读取 INI 失败' };
+      else {
+        const sh = (rs[2].value || []).find((k) => k.name && k.name.toLowerCase() === 'shared');
+        ini = sh
+          ? { ok: true, val: '[StorageServers] Shared = ' + sh.value, note: '已配置共享上游' }
+          : { ok: false, val: '[StorageServers] 未配置 Shared', note: '未写入共享上游服务器' };
+      }
+      return { envLocal, envShared, ini };
+    });
   }
 
   function ScriptPanel({ s, d }) {
     const n = node(d.id);
     const [copied, setCopied] = useState(false);
+    /* 真实 get_winrm_bootstrap_script：脚本与机器无关（后端 include_str! 固定文本），
+       打开面板时异步拉一次。 */
+    const [script, setScript] = useState(null);
+    const [scriptErr, setScriptErr] = useState(null);
+    useEffect(() => {
+      let alive = true;
+      getWinrmBootstrapScript().then(
+        (txt) => { if (alive) setScript(txt); },
+        (e) => { if (alive) setScriptErr(e && e.message ? e.message : String(e)); });
+      return () => { alive = false; };
+    }, []);
     if (!n) return null;
     const close = () => s.setDrawer(null);
-    const script = bootstrapScript(n);
-    const copy = () => { try { navigator.clipboard.writeText(script); } catch (e) {} setCopied(true); setTimeout(() => setCopied(false), 1500); };
+    const copy = () => { if (!script) return; try { navigator.clipboard.writeText(script); } catch (e) {} setCopied(true); setTimeout(() => setCopied(false), 1500); };
     const refresh = () => {
       close();
       if (s.setEnrolled) s.setEnrolled((v) => v.includes(n.id) ? v : v.concat(n.id));
-      s.runTask({ domain: 'machine', action: 'refresh', target: n.host, chan: 'ssh', note: '刷新入网状态（SSH 探活）',
-        lines: [{ msg: 'refresh_machine ' + n.host + ' — 探 SSH:22 / UE / GPU' }, { lv: 'ok', msg: n.host + ' SSH 可达 · 已入网' }] });
+      /* 真实 refresh_machine：软失败=Ok+.error（不抛）；成败都 reloadCache 回填。 */
+      s.runCmd({ domain: 'machine', action: 'refresh', target: n.host, chan: 'winrm', note: '刷新入网状态（探 SSH / UE / GPU）' },
+        () => refreshMachine(n.machineId).then((r) => { if (r && r.error) throw new Error(r.error); return r; }),
+        { okMsg: (r) => n.host + ' 已刷新 · UE ' + ((r.ue_installs || []).length) + ' · GPU ' + ((r.gpus || []).length) })
+        .then(() => s.reloadCache(), () => s.reloadCache());
     };
     const step = (i, tx) => h('div', { className: 'step-line', key: i }, h('span', { className: 'sn' }, i), h('span', { className: 'step-tx' }, tx));
     return h('div', { className: 'drawer drawer--script' },
@@ -449,18 +487,52 @@ import "../ds";
         h('div', { className: 'dblock' },
           h('div', { className: 'dblock-h' }, h('span', { className: 'no' }, '2'), 'enable-ssh.ps1',
             h('button', { className: 'mini-btn script-copy', onClick: copy }, h(Icon, { name: copied ? 'check' : 'copy', size: 12 }), copied ? '已复制' : '复制')),
-          h('pre', { className: 'script-code' }, script))),
+          h('pre', { className: 'script-code' }, scriptErr ? ('加载脚本失败 · ' + scriptErr) : (script == null ? '加载脚本…' : script)))),
       h('div', { className: 'drawer-f' },
         h(Button, { variant: 'secondary', size: 'M', onPress: close }, '关闭'),
         h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'sync', size: 15 }), onPress: refresh }, '已运行 · 刷新')));
   }
-  function machineDetail(s, d) {
+  function MachineDetail({ s, d }) {
     const n = node(d.id);
+    /* 真实 get_machine_detail：抽屉打开时异步拉 UE 安装 / GPU（NodeVM 列表里这些是
+       占位 '—'，详情才有真实值）。账户/关联段暂仍占位（Machine DTO 无 user/domain 源）。 */
+    const [detail, setDetail] = useState(null);
+    const [detailErr, setDetailErr] = useState(null);
+    /* ⑥ DDC 配置真实读取（环境变量 + [StorageServers]）。 */
+    const [ddc, setDdc] = useState(null);
+    useEffect(() => {
+      const mid = n ? n.machineId : null;
+      if (mid == null || mid === 0) return;
+      let alive = true;
+      setDetail(null); setDetailErr(null);
+      getMachineDetail(mid).then(
+        (md) => { if (alive) setDetail(md); },
+        (e) => { if (alive) setDetailErr(e && e.message ? e.message : String(e)); });
+      return () => { alive = false; };
+    }, [n ? n.machineId : null]);
+    useEffect(() => {
+      const mid = n ? n.machineId : null;
+      if (mid == null || mid === 0 || (n && n.status === 'offline')) { setDdc(null); return; }
+      let alive = true;
+      setDdc({ loading: true });
+      loadDdcConfig(mid).then((v) => { if (alive) setDdc(v); }, () => { if (alive) setDdc({ err: true }); });
+      return () => { alive = false; };
+    }, [n ? n.machineId : null]);
     if (!n) return null;
     const off = n.status === 'offline';
     const close = () => s.setDrawer(null);
     const recentHealth = HEALTH_CHECKS.filter((c) => (c.detail || '').includes(n.host)).slice(0, 2);
-    const cfg = ddcReadConfig(n);
+    const reloadDdc = () => { const mid = n.machineId; if (mid == null || mid === 0 || off) return; setDdc({ loading: true }); loadDdcConfig(mid).then(setDdc, () => setDdc({ err: true })); };
+    /* UE / GPU 视图：优先真实 detail，未到/失败回退占位 */
+    const ueInst = detail && detail.ue_installs ? (detail.ue_installs.find((u) => u.is_primary) || detail.ue_installs[0]) : null;
+    const gpu0 = detail && detail.gpus && detail.gpus.length ? detail.gpus[0] : null;
+    const ph = detailErr ? '读取失败' : (detail ? '—' : '加载中…');
+    const ueVer = ueInst ? ueInst.version : ph;
+    const uePath = ueInst ? ueInst.install_path : ph;
+    const gpuModel = gpu0 ? gpu0.gpu_model : ph;
+    const gpuDriver = gpu0 ? gpu0.driver_version : ph;
+    const gpuVram = gpu0 && gpu0.vram_mb != null ? ((gpu0.vram_mb / 1024).toFixed(0) + ' GB') : ph;
+    const gpuVendor = gpu0 ? gpu0.vendor : ph;
     return h('div', { className: 'drawer drawer--detail' },
       h('div', { className: 'drawer-h detail' },
         h('span', { className: 'di info' }, dot(NODE_STATUS[n.status].visual)),
@@ -478,9 +550,9 @@ import "../ds";
         h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '① 身份'),
           KV('IP 地址', n.ip, true), KV('角色', n.role), KV('最后在线', n.last)),
         h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '② UE 安装'),
-          KV('版本', n.ue), KV('安装路径', n.uePath, true)),
+          KV('版本', ueVer), KV('安装路径', uePath, true)),
         h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '③ GPU（入网后自动采集 · 已过滤虚拟适配器）'),
-          KV('型号', n.gpu), KV('驱动', n.driver, true), KV('显存', n.vram + ' GB'), KV('厂商', n.vendor)),
+          KV('型号', gpuModel), KV('驱动', gpuDriver, true), KV('显存', gpuVram), KV('厂商', gpuVendor)),
         h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '④ 入网账户（SSH key · 现场入网）'),
           KV('登录账户', n.user, true), KV('认证方式', 'SSH 公钥'), KV('域', n.domain)),
         h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '⑤ 关联（自动发现）'),
@@ -489,31 +561,42 @@ import "../ds";
             n.share ? h('span', { className: 'rev', onClick: () => { s.setDrawer(null); s.setCacheNav('ddc_zen'); } }, h(Icon, { name: 'folder', size: 13 }), '共享 DDC') : null,
             (n.proj || []).map((p) => h('span', { key: p, className: 'rev' }, h(Icon, { name: 'film', size: 13 }), p)),
             !n.zen && !n.share && !(n.proj || []).length ? h('span', { className: 'dim', style: { fontSize: 12 } }, '无关联资源') : null)),
-        cfg ? h('div', { className: 'insp-sect' },
+        !off ? h('div', { className: 'insp-sect' },
           h('div', { className: 'lh ddc-scan-h' }, h('span', { className: 'ddc-scan-title' }, '⑥ 已读到的 DDC 相关配置'),
-            h('button', { className: 'mini-btn ddc-rescan', onClick: () => { close(); s.runTask({ domain: 'ddc', action: 'read-config', target: n.host, chan: 'ssh', note: '读取 DDC 相关配置（环境变量 + DefaultEngine.ini）',
-              lines: [{ msg: 'get_machine_env_var ' + n.host + ' UE-LocalDataCachePath / UE-SharedDataCachePath' }, { msg: 'read_ini_section ' + n.host + ' DefaultEngine.ini [StorageServers]' }, { lv: 'ok', msg: '已读取 · 这是读到的配置，非有效配置解析' }] }); } },
-              h(Icon, { name: 'search', size: 12 }), '重新读取')),
+            h('button', { className: 'mini-btn ddc-rescan', onClick: reloadDdc }, h(Icon, { name: 'search', size: 12 }), '重新读取')),
           h('div', { className: 'ddc-read-note' }, h(Icon, { name: 'eye', size: 12 }), '这是从这台机器读到的配置，不是有效配置解析。'),
-          h('div', { className: 'ddc-read-row' },
-            h('div', { className: 'ddc-read-h' }, h('span', { className: 'ddc-read-k' }, '① 环境变量'), h('code', { className: 'ddc-tfile' }, '系统环境变量')),
-            KV('本地缓存路径', cfg.env.local, true),
-            KV('共享缓存路径', cfg.env.shared || '未设', true)),
-          h('div', { className: 'ddc-read-row' + (cfg.ini.ok ? '' : ' miss') },
-            h('div', { className: 'ddc-read-h' }, h('span', { className: 'ddc-read-k' }, '② 项目配置'), h('code', { className: 'ddc-tfile' }, 'DefaultEngine.ini')),
-            h('div', { className: 'ddc-read-val mono' + (cfg.ini.ok ? '' : ' empty') }, cfg.ini.val),
-            h('div', { className: 'ddc-read-sub' + (cfg.ini.ok ? '' : ' warn') }, cfg.ini.note))) : null,
+          (!ddc || ddc.loading)
+            ? h('div', { className: 'ddc-read-row' }, h('span', { className: 'dim', style: { fontSize: 12 } }, '读取中…'))
+            : ddc.err
+              ? h('div', { className: 'ddc-read-row miss' }, h('span', { className: 'dim', style: { fontSize: 12 } }, '读取失败'))
+              : h(React.Fragment, null,
+                  h('div', { className: 'ddc-read-row' },
+                    h('div', { className: 'ddc-read-h' }, h('span', { className: 'ddc-read-k' }, '① 环境变量'), h('code', { className: 'ddc-tfile' }, '系统环境变量')),
+                    KV('本地缓存路径', ddc.envLocal, true),
+                    KV('共享缓存路径', ddc.envShared, true)),
+                  h('div', { className: 'ddc-read-row' + (ddc.ini.ok ? '' : ' miss') },
+                    h('div', { className: 'ddc-read-h' }, h('span', { className: 'ddc-read-k' }, '② 项目配置'), h('code', { className: 'ddc-tfile' }, 'DefaultEngine.ini')),
+                    h('div', { className: 'ddc-read-val mono' + (ddc.ini.ok ? '' : ' empty') }, ddc.ini.val),
+                    h('div', { className: 'ddc-read-sub' + (ddc.ini.ok ? '' : ' warn') }, ddc.ini.note)))) : null,
         recentHealth.length ? h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '⑦ 最近健康'),
           recentHealth.map((c) => h('div', { key: c.id, className: 'mini-health' }, dot(SEV[c.status].visual), h('span', null, c.label), h('span', { className: 'd' }, c.detail)))) : null),
       h('div', { className: 'drawer-f between' },
         h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'search', size: 14 }), isDisabled: off,
-          onPress: () => { close(); s.runTask({ domain: 'machine', action: 'refresh', target: n.host, chan: n.chan, note: '探 UE / GPU / last-seen', lines: [{ msg: `refresh ${n.host} …` }, { lv: 'ok', msg: '已更新 UE 安装与 GPU 信息' }] }); } }, '刷新'),
+          /* 真实 refresh_machine：阻塞 SSH（probe→UE→GPU），返回 RefreshResult。
+             软失败是 Ok+.error（不抛），抛出后标任务失败；无论成败都 reloadCache 回填。 */
+          onPress: () => { close(); s.runCmd({ domain: 'machine', action: 'refresh', target: n.host, chan: 'winrm', note: '探 UE / GPU / last-seen' },
+            () => refreshMachine(n.machineId).then((r) => { if (r && r.error) throw new Error(r.error); return r; }),
+            { okMsg: (r) => n.host + ' 已刷新 · UE ' + ((r.ue_installs || []).length) + ' · GPU ' + ((r.gpus || []).length) })
+            .then(() => s.reloadCache(), () => s.reloadCache()); } }, '刷新'),
         h(Button, { variant: 'negative', size: 'M', icon: h(Icon, { name: 'trash', size: 14 }),
           onPress: () => openPreview(s, {
-            title: '删除机器 · ' + n.host, icon: 'trash', cli: 'machine delete', destructive: true, channel: n.chan,
+            title: '删除机器 · ' + n.host, icon: 'trash', cli: 'machine delete', destructive: true, channel: 'ssh',
             steps: ['从集群中移除机器 ' + n.host, '解除它与共享缓存、ZenServer 的关联', '清除已保存的这台机器的登录凭据'],
             scope: [n.id], confirmInput: true,
-            task: { domain: 'machine', action: 'delete', target: n.host, chan: n.chan, note: '已从集群移除', lines: [{ lv: 'warn', msg: `删除 ${n.host} … 解除关联` }, { lv: 'ok', msg: `${n.host} 已移除` }] },
+            /* 真实 delete_machine：用 numeric machineId（非 string n.id），成功后 reloadCache。 */
+            onConfirm: () => { s.runCmd({ domain: 'machine', action: 'delete', target: n.host, chan: 'ssh', note: '从集群移除' },
+              () => deleteMachine(n.machineId), { okMsg: () => n.host + ' 已从集群移除' })
+              .then(() => s.reloadCache(), () => {}); },
           }) }, '删除机器')));
   }
 
@@ -531,7 +614,7 @@ import "../ds";
     const confirm = () => {
       close();
       if (d.task) s.runTask(Object.assign({}, d.task, { chan: d.channel || d.task.chan }));
-      if (d.onConfirm) d.onConfirm();
+      if (d.onConfirm) d.onConfirm(scope); /* 把编辑后的目标机选择传出（分发流要用） */
     };
     return h('div', { className: 'drawer drawer--preview' + (d.destructive ? ' danger' : '') },
       h('div', { className: 'drawer-h' },
@@ -596,19 +679,28 @@ import "../ds";
     const creds = s.creds || [];
     const [confirmDel, setConfirmDel] = useState(null);
     const [adding, setAdding] = useState(false);
-    const [form, setForm] = useState({ name: '', kind: '域账户', username: '' });
-    const KINDS = ['域账户', '服务账户', '本地账户'];
+    /* kind 用后端 CredentialKind 二态（winrm|share），与列表侧 toCredVM 渲染一致；
+       旧三态(域/服务/本地账户)是账户类型、后端无此分类，故弃用。 */
+    const [form, setForm] = useState({ name: '', kind: 'winrm', username: '', password: '' });
+    const KINDS = [{ id: 'winrm', label: 'WinRM（远程执行）' }, { id: 'share', label: '共享 DDC' }];
     const addCred = () => {
-      const nm = form.name.trim();
-      if (!nm) return;
-      s.setCreds((cs) => cs.concat([{ id: 'c' + Date.now(), name: nm, kind: form.kind, domain: form.kind === '本地账户' ? '—' : 'VOLO', use: '共享 DDC', machines: 0, last: '刚刚' }]));
-      s.runTask({ domain: 'cred', action: 'save', target: nm, chan: 'ssh', note: '写入 SecretStore（AES-GCM）', lines: [{ msg: 'save_credential ' + nm }, { lv: 'ok', msg: nm + ' 已写入 SecretStore' }] });
-      setForm({ name: '', kind: '域账户', username: '' }); setAdding(false);
+      const alias = form.name.trim();
+      if (!alias || !form.password) return;
+      /* 真实 save_credential：password 是 SecretStore 存的 secret 本体（UI 端非空校验）；
+         不再 optimistic 追加假 VM，成功后 reloadCache 取真实列表。 */
+      s.runCmd({ domain: 'cred', action: 'save', target: alias, chan: 'ssh', note: '写入 SecretStore（AES-GCM）' },
+        () => saveCredential(alias, form.kind, form.username.trim(), form.password),
+        { okMsg: () => alias + ' 已写入 SecretStore' })
+        .then(() => s.reloadCache(), () => {});
+      setForm({ name: '', kind: 'winrm', username: '', password: '' }); setAdding(false);
     };
     const delCred = (c) => {
-      s.setCreds((cs) => cs.filter((x) => x.id !== c.id));
-      s.runTask({ domain: 'cred', action: 'delete', target: c.name, chan: 'ssh', note: '从 SecretStore 删除', lines: [{ lv: 'warn', msg: 'delete_credential ' + c.name }, { lv: 'ok', msg: c.name + ' 已删除' }] });
       setConfirmDel(null);
+      /* 真实 delete_credential：不再 optimistic 删本地，成功后 reloadCache 同步后端；
+         失败则保留列表（runCmd 已把错误打进任务抽屉）。 */
+      s.runCmd({ domain: 'cred', action: 'delete', target: c.alias, chan: 'ssh', note: '从 SecretStore 删除' },
+        () => deleteCredential(c.alias), { okMsg: () => c.alias + ' 已从 SecretStore 删除' })
+        .then(() => s.reloadCache(), () => {});
     };
     return h('div', { className: 'drawer drawer--creds' },
       h('div', { className: 'drawer-h' },
@@ -636,18 +728,20 @@ import "../ds";
       h('div', { className: 'drawer-f' },
         adding
           ? h('div', { className: 'cred-add' },
-              h('div', { className: 'cred-add-kinds' }, KINDS.map((k) => h('button', { key: k, className: 'cred-kind' + (form.kind === k ? ' on' : ''), onClick: () => setForm((f) => Object.assign({}, f, { kind: k })) }, k))),
-              h('input', { className: 'dp-input mono', placeholder: '凭据名 / alias（如 zen-svc）', value: form.name, autoFocus: true, spellCheck: false, onChange: (e) => setForm((f) => Object.assign({}, f, { name: e.target.value })), onKeyDown: (e) => { if (e.key === 'Enter') addCred(); } }),
+              h('div', { className: 'cred-add-kinds' }, KINDS.map((k) => h('button', { key: k.id, className: 'cred-kind' + (form.kind === k.id ? ' on' : ''), onClick: () => setForm((f) => Object.assign({}, f, { kind: k.id })) }, k.label))),
+              h('input', { className: 'dp-input mono', placeholder: '凭据名 / alias（如 zen-svc）', value: form.name, autoFocus: true, spellCheck: false, onChange: (e) => setForm((f) => Object.assign({}, f, { name: e.target.value })) }),
+              h('input', { className: 'dp-input mono', placeholder: '用户名（如 VOLO\\svc-render，可空）', value: form.username, spellCheck: false, onChange: (e) => setForm((f) => Object.assign({}, f, { username: e.target.value })) }),
+              h('input', { className: 'dp-input mono', type: 'password', placeholder: '密码（存入 SecretStore · 必填）', value: form.password, onChange: (e) => setForm((f) => Object.assign({}, f, { password: e.target.value })), onKeyDown: (e) => { if (e.key === 'Enter') addCred(); } }),
               h('div', { className: 'cred-add-acts' },
-                h(Button, { variant: 'secondary', size: 'M', onPress: () => { setAdding(false); setForm({ name: '', kind: '域账户', username: '' }); } }, '取消'),
-                h(Button, { variant: 'accent', size: 'M', isDisabled: !form.name.trim(), icon: h(Icon, { name: 'check', size: 14 }), onPress: addCred }, '保存凭据')))
+                h(Button, { variant: 'secondary', size: 'M', onPress: () => { setAdding(false); setForm({ name: '', kind: 'winrm', username: '', password: '' }); } }, '取消'),
+                h(Button, { variant: 'accent', size: 'M', isDisabled: !form.name.trim() || !form.password, icon: h(Icon, { name: 'check', size: 14 }), onPress: addCred }, '保存凭据')))
           : h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'plus', size: 15 }), onPress: () => setAdding(true) }, '新增凭据')));
   }
 
   function drawer(s) {
     const d = s.drawer;
     if (!d) return null;
-    if (d.kind === 'machine') return machineDetail(s, d);
+    if (d.kind === 'machine') return h(MachineDetail, { s, d });
     if (d.kind === 'preview') return h(PreviewPanel, { s, d });
     if (d.kind === 'script') return h(ScriptPanel, { s, d });
     if (d.kind === 'creds') return h(CredsPanel, { s });

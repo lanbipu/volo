@@ -54,11 +54,15 @@ pub struct RunHealthCheckRequest {
 }
 
 #[tauri::command]
-pub fn run_health_check(
+pub async fn run_health_check(
     db: State<'_, Db>,
     app: AppHandle,
     request: RunHealthCheckRequest,
 ) -> UecmResult<HealthRunSummary> {
+    // 改 async + spawn_blocking：原 body 是同步阻塞 SSH/探活，跑在 Tauri 主线程会冻结 UI。
+    // Db = Arc<Mutex<Connection>>，clone 出 owned 句柄遮蔽 db；body 一行不动地搬进 blocking 线程。
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || -> UecmResult<HealthRunSummary> {
     let machine_ids = request.machine_ids;
     let credential_alias = request.credential_alias;
     let expected_local_path = request.expected_local_path.unwrap_or_default();
@@ -304,6 +308,9 @@ pub fn run_health_check(
     });
     scan_runs::finish(&db, scan_id, &summary_json)?;
     Ok(summary)
+    })
+    .await
+    .map_err(|e| UecmError::OperationFailed(format!("health check task join: {}", e)))?
 }
 
 /// Tally one machine's per-key outcomes into the run summary.

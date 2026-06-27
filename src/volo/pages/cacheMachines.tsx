@@ -5,6 +5,7 @@
 import * as React from "react";
 import "../ds";
 import "./cache";
+import { deleteMachine, scanNetwork, addDiscoveredMachine } from "../api/commands";
 
 (function () {
   const { Button } = window.Spectrum2DesignSystem_b6d1b3;
@@ -26,12 +27,6 @@ import "./cache";
     if (RE_IP.test(v)) return octOk(v) ? 'ip' : 'bad';
     return 'bad';
   }
-  const ipNum = (ip) => ip.split('.').reduce((a, o) => a * 256 + (+o), 0);
-  function ipInCidr(ip, cidr) {
-    const [base, bits] = cidr.split('/');
-    const mask = (+bits === 0) ? 0 : (~0 << (32 - +bits)) >>> 0;
-    return ((ipNum(ip) & mask) >>> 0) === ((ipNum(base) & mask) >>> 0);
-  }
 
   /* ========== 扫描入网向导（① 输入 → ② 扫描 → ③ 选择 → ④ 加入）========== */
   function ScanWizard({ s, onClose }) {
@@ -39,6 +34,10 @@ import "./cache";
     const [targets, setTargets] = useState(['10.20.8.0/24', '10.20.9.0/24']);
     const [pick, setPick] = useState([]);
     const [added, setAdded] = useState(0);
+    /* 真实 scan_network 结果：[{ip, winrm, smb, rpc}]（ProbedHost 只有 ip + 端口可达性，
+       无 name/os/ue 来源——这些演示列已去掉）。 */
+    const [scanResults, setScanResults] = useState([]);
+    const [scanErr, setScanErr] = useState(null);
     const timer = useRef(null);
     useEffect(() => () => timer.current && clearTimeout(timer.current), []);
     useEffect(() => {
@@ -48,11 +47,15 @@ import "./cache";
     }, [onClose]);
 
     const validTargets = targets.map((t) => t.trim()).filter((t) => { const c = classify(t); return c === 'ip' || c === 'cidr'; });
-    const hostMatch = (ip) => validTargets.some((t) => classify(t) === 'ip' ? t === ip : ipInCidr(ip, t));
-    const matchedGroups = DISCOVERED
-      .map((g) => ({ subnet: g.subnet, hosts: g.hosts.filter((x) => hostMatch(x.ip)) }))
-      .filter((g) => g.hosts.length);
-    const allDisc = matchedGroups.flatMap((g) => g.hosts.map((x) => x.ip));
+    /* 剔除已纳管 IP（scan 不去重已纳管机），按 /24 分组展示 */
+    const managedIps = new Set(RENDER_NODES.map((m) => m.ip));
+    const fresh = scanResults.filter((r) => !managedIps.has(r.ip));
+    const matchedGroups = (() => {
+      const m = {};
+      fresh.forEach((r) => { const sub = r.ip.split('.').slice(0, 3).join('.') + '.0/24'; (m[sub] = m[sub] || []).push(r); });
+      return Object.keys(m).sort().map((subnet) => ({ subnet, hosts: m[subnet] }));
+    })();
+    const allDisc = fresh.map((r) => r.ip);
 
     const setTarget = (i, v) => setTargets((a) => a.map((x, j) => j === i ? v : x));
     const addTarget = () => setTargets((a) => a.concat(''));
@@ -64,19 +67,41 @@ import "./cache";
       setPick((v) => allOn ? v.filter((ip) => !ips.includes(ip)) : Array.from(new Set(v.concat(ips))));
     };
 
+    /* 真实 scan_network：单 IP 转 /32（命令只收 CIDR）；多目标 allSettled 合并 probed；
+       backend 只回 winrm/smb 可达的主机。扫描在 invoke resolve 后进 results 步。 */
     const startScan = () => {
       if (!validTargets.length) return;
-      setPick([]);
+      setPick([]); setScanResults([]); setScanErr(null);
       setStep('scanning');
-      timer.current = setTimeout(() => setStep('results'), 1500);
+      const cidrs = validTargets.map((t) => classify(t) === 'ip' ? (t + '/32') : t);
+      Promise.allSettled(cidrs.map((c) => scanNetwork(c))).then((rs) => {
+        const seen = new Set(); const uniq = [];
+        rs.forEach((r) => {
+          if (r.status === 'fulfilled' && r.value && Array.isArray(r.value.probed)) {
+            r.value.probed.forEach((ph) => { if (!seen.has(ph.ip)) { seen.add(ph.ip); uniq.push({ ip: ph.ip, winrm: ph.winrm_open, smb: ph.smb_open, rpc: ph.rpc_open }); } });
+          }
+        });
+        setScanResults(uniq);
+        const failed = rs.filter((r) => r.status === 'rejected').length;
+        if (failed && failed === rs.length) setScanErr('全部目标扫描失败');
+        setStep('results');
+      });
     };
+    /* 真实 add_discovered_machine：逐 IP allSettled（hostname 传 null → 后端用 IP 当名）；
+       成功后 reloadCache 让新机进列表（不再伪造「后台 GPU 核对」文案）。 */
     const confirmAdd = () => {
-      const sel = matchedGroups.flatMap((g) => g.hosts).filter((x) => pick.includes(x.ip));
-      setAdded(sel.length);
+      const ips = pick.slice();
+      if (!ips.length) return;
+      setAdded(ips.length);
       if (s.setMachinesAdded) s.setMachinesAdded(true);
-      s.runTask({ domain: 'machine', action: 'add', target: sel.length + ' 台', chan: 'ssh', note: '已入网，后台自动配置中',
-        lines: sel.map((x) => ({ msg: 'add_discovered_machine ' + x.ip + ' → 已入库' }))
-          .concat([{ msg: '后台：GPU 矩阵核对 · 项目发现 …' }, { lv: 'ok', msg: '入网完成，' + sel.length + ' 台已纳入管理（可在列表里「部署环境」）' }]) });
+      s.runCmd({ domain: 'machine', action: 'add', target: ips.length + ' 台', chan: 'ssh', note: '加入发现的机器' },
+        () => Promise.allSettled(ips.map((ip) => addDiscoveredMachine(ip, null))).then((rs) => {
+          const failed = rs.filter((r) => r.status === 'rejected').length;
+          if (failed) throw new Error(failed + ' / ' + ips.length + ' 台入库失败');
+          return ips.length;
+        }),
+        { okMsg: (c) => c + ' 台已加入机器列表（UE / GPU 可在列表里逐台「刷新」采集）' })
+        .then(() => s.reloadCache(), () => s.reloadCache());
       setStep('done');
     };
     const restart = () => { setStep('input'); setPick([]); setAdded(0); };
@@ -126,15 +151,11 @@ import "./cache";
                 h('button', { className: 'mini-btn', onClick: () => toggleSubnet(g) }, allOn ? '取消本网段' : '全选本网段')),
               g.hosts.map((x) => h('div', { key: x.ip, className: 'disc-row' + (pick.includes(x.ip) ? ' on' : ''), onClick: () => toggle(x.ip) },
                 h('span', { className: 'mck' + (pick.includes(x.ip) ? ' on' : '') }, pick.includes(x.ip) ? h(Icon, { name: 'check', size: 12 }) : null),
-                h('span', { className: 'd-host' }, x.name),
-                h('span', { className: 'd-ip mono' }, x.ip),
-                h('span', { className: 'd-os' }, x.os),
-                h('span', { className: 'd-ue' }, 'UE ' + x.ue),
-                x.reach === 'ssh'
-                  ? h('span', { className: 'd-note ok' }, h(Icon, { name: 'shield', size: 11 }), 'SSH 可达')
-                  : h('span', { className: 'd-note warn' }, h(Icon, { name: 'alert', size: 11 }), 'SSH 不通'))));
+                h('span', { className: 'd-host mono' }, x.ip),
+                h('span', { className: 'd-note ok' }, h(Icon, { name: 'shield', size: 11 }),
+                  x.winrm ? 'WinRM 可达' : x.smb ? 'SMB 可达' : '可达'))));
           }))
-        : h('div', { className: 'swz-empty' }, '这些目标下没有发现未纳管设备。已纳管的机器不会重复出现。'));
+        : h('div', { className: 'swz-empty' }, scanErr ? ('扫描失败 · ' + scanErr) : '这些目标下没有发现未纳管设备。已纳管的机器不会重复出现。'));
 
     const doneBody = h('div', { className: 'ob-done' },
       h('div', { className: 'ob-done-ico' }, h(Icon, { name: 'check', size: 26 })),
@@ -190,18 +211,27 @@ import "./cache";
     const delSelected = () => {
       const nodes = visible.filter(isSel);
       if (!nodes.length) return;
-      const ids = selected;
-      /* 与单机删除一致：走「预览 → 确认 → 执行」确认门（CX.openPreview）。
-         多选时 confirmInput 会要求勾选确认框；确认后才 runTask 记日志并从列表移除 */
+      /* 走「预览 → 确认 → 执行」确认门（CX.openPreview）；多选时 confirmInput 要求勾选
+         确认框，确认后才真实逐台 delete_machine。 */
       CX.openPreview(s, {
         title: '删除所选机器 · ' + nodes.length + ' 台', icon: 'trash', cli: 'machine delete',
         destructive: true, confirmInput: true, channel: 'ssh',
         simpleScope: nodes.map((n) => ({ host: n.host, ip: n.ip, msg: '将移除' })),
         steps: ['从集群中移除选中的 ' + nodes.length + ' 台机器', '解除它们与共享缓存、ZenServer 的关联', '清除这些机器已保存的登录凭据'],
-        task: { domain: 'machine', action: 'delete', target: nodes.length + ' 台', chan: 'ssh', note: '从管理列表移除',
-          lines: nodes.map((n) => ({ msg: 'remove_machine ' + n.host + ' (' + n.ip + ') → 已移除' }))
-            .concat([{ lv: 'ok', msg: nodes.length + ' 台已从机器列表删除' }]) },
-        onConfirm: () => { setRemoved((v) => v.concat(ids)); setSelected([]); },
+        /* 真实批量 delete_machine：无批量命令 → 前端 allSettled 逐台调用（numeric
+           machineId）；任一失败标任务失败，无论成败都 reloadCache 以后端为准（不再本地
+           optimistic setRemoved）。 */
+        onConfirm: () => {
+          setSelected([]);
+          s.runCmd({ domain: 'machine', action: 'delete', target: nodes.length + ' 台', chan: 'ssh', note: '从集群移除' },
+            () => Promise.allSettled(nodes.map((n) => deleteMachine(n.machineId))).then((rs) => {
+              const failed = rs.filter((r) => r.status === 'rejected').length;
+              if (failed) throw new Error(failed + ' / ' + nodes.length + ' 台删除失败');
+              return nodes.length;
+            }),
+            { okMsg: (cnt) => cnt + ' 台已从集群移除' })
+            .then(() => s.reloadCache(), () => s.reloadCache());
+        },
       });
     };
     /* 行 / 图标内的复选框（自带 stopPropagation，避免触发打开详情） */

@@ -1,0 +1,119 @@
+/* Volo — Cache · DDC · ZenServer 重做版样式（从 Claude Design handoff styles.css 移植）.
+   复用现有 chrome 与状态 token；新增类：状态卡 zen-status / zs、徽标 zbadge / zb，
+   空态 zen-empty / ze、部署表单 zform / zendpoint / zep / zacct / zseg / zadv，
+   步骤列表 zsteps / zstep、客户端 zcli / zck / zlink-all。 */
+
+@keyframes zspin { to { transform: rotate(360deg); } }
+
+.cli-badge.ok { color: var(--positive-visual); background: color-mix(in srgb, var(--positive-visual) 14%, transparent); }
+.cli-badge.off { margin-left: auto; color: var(--chrome-faint); background: var(--sunken); }
+.cli-badge.none { color: var(--chrome-faint); background: var(--sunken); }
+
+.zbadge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700;
+  padding: 3px 9px; border-radius: 6px; flex: 0 0 auto; white-space: nowrap; line-height: 1.35; }
+.zbadge svg { flex: 0 0 auto; }
+.zb-positive { color: var(--positive-visual);    background: color-mix(in srgb, var(--positive-visual) 14%, transparent); }
+.zb-notice { color: var(--notice-visual);      background: color-mix(in srgb, var(--notice-visual) 16%, transparent); }
+.zb-negative { color: var(--negative-visual);    background: color-mix(in srgb, var(--negative-visual) 14%, transparent); }
+.zb-informative { color: var(--informative-visual); background: color-mix(in srgb, var(--informative-visual) 14%, transparent); }
+.zb-neutral { color: var(--chrome-faint);       background: var(--sunken); }
+.zb-dash { font-weight: 800; }
+
+.zen-status { background: var(--chrome-panel-2); border: 1px solid var(--chrome-line-2); border-radius: 12px; padding: 15px 16px; }
+.zs-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.zs-ico { width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center; flex: 0 0 auto;
+  color: var(--volo-500); background: var(--highlight-selected); }
+.zs-id { min-width: 0; margin-right: auto; }
+.zs-title { display: flex; align-items: baseline; gap: 9px; font-size: 15px; font-weight: 800; color: var(--chrome-text); flex-wrap: wrap; }
+.zs-host { font-family: var(--font-code); font-size: 12px; font-weight: 600; color: var(--chrome-faint); }
+.zs-sub { font-size: 11.5px; color: var(--chrome-dim); margin-top: 3px; }
+.zs-sub .mono { font-family: var(--font-code); }
+.zs-actions .mini-btn, .zstep-acts .mini-btn, .cli-row .mini-btn, .zcli-right .mini-btn {
+  display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.zs-actions { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; flex-wrap: wrap; }
+.zs-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin-top: 14px;
+  background: var(--chrome-line); border: 1px solid var(--chrome-line); border-radius: 10px; overflow: hidden; }
+.zs-kv { display: flex; flex-direction: column; gap: 4px; padding: 10px 13px; background: var(--chrome-card); }
+.zs-k { font-size: 11px; color: var(--chrome-faint); }
+.zs-v { font-size: 13.5px; font-weight: 700; color: var(--chrome-text); font-variant-numeric: tabular-nums; }
+.zs-v.mono { font-family: var(--font-code); font-size: 12px; font-weight: 600; word-break: break-all; }
+
+.zen-empty { display: flex; align-items: center; gap: 14px; padding: 18px 18px; border-radius: 12px;
+  background: var(--wash-3); border: 1px dashed var(--chrome-line-2); }
+.ze-ico { width: 48px; height: 48px; border-radius: 12px; display: grid; place-items: center; flex: 0 0 auto;
+  color: var(--chrome-faint); background: var(--sunken); }
+.ze-tx { min-width: 0; margin-right: auto; }
+.ze-t { font-size: 14px; font-weight: 800; color: var(--chrome-text); }
+.ze-s { font-size: 12px; color: var(--chrome-dim); margin-top: 4px; line-height: 1.55; text-wrap: pretty; }
+
+.zform-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px 16px; align-items: end; }
+.zform-grid .dp-field.grow { grid-column: 1 / -1; }
+.zform-grid .dp-input { width: 100%; min-width: 0; box-sizing: border-box; }
+.zform-grid .dp-input.narrow { width: 110px; }
+.zform-tip { display: flex; align-items: center; gap: 7px; margin-top: 11px; font-size: 11.5px; color: var(--notice-visual); line-height: 1.5; }
+.zform-tip svg { flex: 0 0 auto; }
+.zseg { display: inline-flex; gap: 3px; padding: 3px; background: var(--sunken); border: 1px solid var(--chrome-line-2); border-radius: 8px; }
+.zseg button { all: unset; box-sizing: border-box; cursor: pointer; padding: 6px 14px; border-radius: 6px; font-size: 12px;
+  font-weight: 600; color: var(--chrome-dim); text-align: center; transition: background .12s, color .12s; }
+.zseg button:hover { color: var(--chrome-text); background: var(--wash); }
+.zseg button.on { background: var(--chrome-card); color: var(--volo-400); font-weight: 700; box-shadow: 0 1px 2px rgba(0,0,0,.16), inset 0 0 0 1px color-mix(in srgb, var(--volo-700) 30%, transparent); }
+.zseg.wide button { padding: 6px 16px; }
+.zendpoint { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.zendpoint .zseg { flex: 0 0 auto; }
+.zep-sep { color: var(--chrome-faint); font-size: 13px; font-weight: 600; }
+.zep-host { font-size: 13px; font-weight: 700; color: var(--chrome-text); padding: 0 2px; white-space: nowrap; }
+.zendpoint .dp-input.zep-port { width: 62px; min-width: 0; text-align: center; flex: 0 0 auto; }
+.zacct { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.zacct .dp-input { min-width: 180px; width: auto; flex: 1; }
+.zacct .dp-input[type="password"] { min-width: 130px; flex: 0 0 150px; }
+.zacct-note { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--chrome-faint); }
+.zacct-note svg { color: var(--positive-visual); }
+.zadv { margin-top: 13px; }
+.zadv-tgl { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 700; color: var(--chrome-dim); }
+.zadv-tgl:hover { color: var(--chrome-text); }
+.zadv-tgl svg { transition: transform .14s cubic-bezier(.45,0,.4,1); color: var(--volo-500); }
+.zadv-body { margin-top: 12px; padding: 13px 14px; border-radius: 10px; background: var(--sunken); border: 1px solid var(--chrome-line); }
+.zform-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--chrome-line); }
+
+.zsteps { margin-top: 13px; display: flex; flex-direction: column; gap: 7px; }
+.zstep { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; border-radius: 10px;
+  background: var(--chrome-card); border: 1px solid var(--chrome-line); transition: border-color .14s, background .14s; }
+.zstep.is-running { border-color: color-mix(in srgb, var(--informative-visual) 38%, transparent); background: color-mix(in srgb, var(--informative-visual) 6%, var(--chrome-card)); }
+.zstep.is-ok { border-color: color-mix(in srgb, var(--positive-visual) 26%, transparent); }
+.zstep.is-fail { border-color: color-mix(in srgb, var(--negative-visual) 40%, transparent); background: color-mix(in srgb, var(--negative-visual) 6%, var(--chrome-card)); }
+.zstep-ico { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; flex: 0 0 auto; margin-top: 1px;
+  background: var(--sunken); color: var(--chrome-faint); }
+.zstep-n { font-size: 12px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.zstep.is-ok .zstep-ico { background: color-mix(in srgb, var(--positive-visual) 16%, transparent); color: var(--positive-visual); }
+.zstep.is-fail .zstep-ico { background: color-mix(in srgb, var(--negative-visual) 16%, transparent); color: var(--negative-visual); }
+.zstep.is-running .zstep-ico { background: color-mix(in srgb, var(--informative-visual) 14%, transparent); }
+.zstep-spin { width: 13px; height: 13px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--informative-visual) 28%, transparent);
+  border-top-color: var(--informative-visual); animation: zspin .7s linear infinite; }
+.zstep-main { flex: 1; min-width: 0; }
+.zstep-top { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+.zstep-label { font-size: 13px; font-weight: 700; color: var(--chrome-text); }
+.zstep-cli { font-size: 11px; color: var(--chrome-faint); }
+.zstep-desc { font-size: 11.5px; color: var(--chrome-dim); margin-top: 4px; line-height: 1.55; word-break: break-word; }
+.zstep-err { display: flex; align-items: flex-start; gap: 7px; margin-top: 9px; padding: 8px 10px; border-radius: 8px; font-size: 11.5px; line-height: 1.55;
+  color: var(--negative-visual); background: color-mix(in srgb, var(--negative-visual) 9%, transparent); border: 1px solid color-mix(in srgb, var(--negative-visual) 26%, transparent); text-wrap: pretty; }
+.zstep-err svg { flex: 0 0 auto; margin-top: 1px; }
+.zstep-acts { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.zstep > .zbadge { margin-top: 2px; }
+
+.zcli-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.zcli-bar .cli-server-chip { margin-right: auto; }
+.zlink-all { all: unset; cursor: pointer; font-size: 12px; font-weight: 700; color: var(--volo-400); padding: 7px 12px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--volo-700) 32%, transparent); }
+.zlink-all:hover { background: var(--highlight-selected); }
+.zlink-all:disabled { opacity: .45; cursor: default; color: var(--chrome-faint); border-color: var(--chrome-line); }
+.zcli-go { flex: 0 0 auto; }
+.cli-row.zcli { align-items: center; gap: 11px; }
+.zck { all: unset; box-sizing: border-box; width: 19px; height: 19px; border-radius: 6px; border: 1.5px solid var(--chrome-line-2);
+  display: grid; place-items: center; cursor: pointer; color: #fff; flex: 0 0 auto; transition: background .12s, border-color .12s; }
+.zck:hover { border-color: var(--volo-500); }
+.zck.on { background: var(--volo-500); border-color: var(--volo-500); }
+.zck.dis { opacity: .35; cursor: default; }
+.zcli-state { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; width: 58px; }
+.zcli-state-tx { font-size: 11px; font-weight: 700; }
+.zcli-end { margin-left: auto; flex: 0 0 auto; }
+.zcli-right { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
+.zcli-msg { font-size: 11px; }

@@ -102,265 +102,43 @@ const PAGES = [
    CACHE — UECM (UE Cache Manager) · operator 单机操控渲染集群缓存
    IA: 任务中心(Playbooks) + 资产域(Resources) + 常驻任务抽屉
    ============================================================ */
-/* status meta (color + icon + text) — shared by machines / health / tasks */
-const NODE_STATUS = {
-  healthy:  { label: '健康', variant: 'positive', visual: 'positive', icon: 'check' },
-  warning:  { label: '警告', variant: 'notice',   visual: 'notice',   icon: 'alert' },
-  critical: { label: '严重', variant: 'negative', visual: 'negative', icon: 'alert' },
-  offline:  { label: '离线', variant: 'neutral',  visual: 'neutral',  icon: 'power' },
-  na:       { label: '不适用', variant: 'neutral', visual: 'neutral', icon: 'minus' },
-};
+/* NODE_STATUS / CHANNEL / ROLES / CACHE_MODULES / DDC_NAV (presentation config)
+   moved to src/volo/api/uiConfig.ts — they are design maps, not backend data. */
 
-/* cluster snapshot — the "上次巡检缓存快照"，非实时轮询 */
-const CLUSTER = { online: 6, total: 8, health: 72, lastRun: '14:08', lastRunAgo: '14 分钟前' };
+/* CLUSTER removed — 概况条改为派生（shell deriveCluster → window.CLUSTER）：
+   online/total 从机器数，health 从健康检查结果，lastRun/lastRunAgo 从最近一次巡检
+   完成时间。data.tsx 自此再无 Cache 域 mock。 */
 
-/* config baseline (consistency-check 下钻用) */
-const BASELINE = { driver: '552.22', ue: '5.4.4', psoPrecache: '1', tdrLevel: '0' };
+/* BASELINE removed — GPU 一致性 KPI 改用真实 get_gpu_consistency_matrix
+   （window.GPU_MATRIX.baseline.driver + cells status），driver 有了后端来源；
+   ue/psoPrecache/tdrLevel 无其它消费者，随 mock 一并移除。 */
 
-/* remote channel — WinRM (pull 默认) vs 提权 SSH (UAC 过滤的操作) */
-const CHANNEL = {
-  winrm: { label: 'WinRM', short: 'WinRM', icon: 'net',   note: 'pull 默认通道' },
-  ssh:   { label: '提权 SSH', short: 'SSH', icon: 'shield', note: 'UAC 过滤操作走此' },
-};
+/* CHANNEL / CACHE_MODULES / DDC_NAV moved to src/volo/api/uiConfig.ts. */
 
-/* ---- UI 左导航（概览与机器管理已合并为「集群总览」） ---- */
-const CACHE_MODULES = [
-  { id: 'home',     label: '集群总览', sub: 'Cluster',    icon: 'grid' },
-  { id: 'ddc',      label: 'DDC 管理', sub: 'DDC',        icon: 'cache' },
-];
+/* DISCOVERED removed — ScanWizard 改用真实 scan_network（cacheMachines scanResults，
+   ProbedHost 只有 ip + 端口可达性；name/os/ue 无后端源，演示列已去掉）。
+   ONBOARD_TARGETS removed — was dead (no consumer). */
 
-/* ---- DDC 管理·折叠子菜单（父项仅折叠，不导航）---- */
-const DDC_NAV = [
-  { id: 'ddc_zen',    label: 'ZenServer',      icon: 'cube' },
-  { id: 'ddc_legacy', label: '文件系统 DDC', icon: 'server' },
-  { id: 'ddc_pak',    label: 'DDC PAK',       icon: 'cache' },
-  { id: 'ddc_pso',    label: 'PSO 缓存',        icon: 'layers' },
-];
+/* DDC_BACKENDS → api/uiConfig.ts (presentation config — the 3 DDC strategies;
+   page only reads id/icon/label/current).
+   ZEN_ENDPOINTS removed — was dead (only `const zen = ZEN_ENDPOINTS[0]` in
+   cache.tsx / cacheDdc.tsx, never read further). zen_list_endpoints stays bound
+   in api/commands; the ZenServer view is deploy-oriented and surfaces no
+   endpoint table yet (TODO when that view wires zen_status/zen_cache_stats). */
 
-/* ---- 机器管理 · 扫描发现的未纳管设备（按网段分组）---- */
-const DISCOVERED = [
-  { subnet: '10.20.8.0/24', hosts: [
-    { ip: '10.20.8.21', name: 'DESKTOP-7K2', mac: '34:17:EB:9A:21:04', os: 'Windows 11', ue: '5.4.4', reach: 'ssh' },
-    { ip: '10.20.8.22', name: 'DESKTOP-7K3', mac: '34:17:EB:9A:21:1C', os: 'Windows 11', ue: '5.4.4', reach: 'unreach' },
-  ] },
-  { subnet: '10.20.9.0/24', hosts: [
-    { ip: '10.20.9.10', name: 'RACK-B-N1', mac: 'A0:36:9F:3D:00:11', os: 'Windows Server', ue: '5.4.3', reach: 'ssh' },
-  ] },
-];
+/* HEALTH_CHECKS / INI_FINDINGS removed — 改用真实数据：
+   · 健康 = run_health_check + list_recent_health_runs + list_health_results_for_run
+     （shell loadCacheResources → api/adapters.toHealthVMs，按 probe_keys.rs 字典聚合）；
+   · INI  = scan_inis + list_findings（toIniVMs，携真实 findingId 供 apply_finding）。
+   两者经 shell 镜像到 window.{HEALTH_CHECKS,INI_FINDINGS}，无 run 时为 []（诊断面板空态）。 */
 
-/* ---- 新机开通 · 待开通裸机候选 ---- */
-const ONBOARD_TARGETS = [
-  { id: 'ob1', ip: '10.20.8.41', name: 'NEW-RIG-01', reach: 'ssh',  note: 'SSH 直连可达' },
-  { id: 'ob2', ip: '10.20.8.42', name: 'NEW-RIG-02', reach: 'usb',  note: 'SSH 不通 · 需 U 盘兜底' },
-];
+/* UE_PROJECTS → loaded from the backend (list_projects + list_project_locations)
+   by the shell, mirrored onto window.UE_PROJECTS via api/cacheData → toProjectVM.
+   ue / size / hasPak / warn have no backend source → "—" / false / null (TODO). */
 
-/* ---- DDC 管理 · 三种后端 ---- */
-const DDC_BACKENDS = [
-  { id: 'zen',   label: 'ZenServer 共享 DDC', tag: '主推', icon: 'cube', cli: 'zen register → … → enable',
-    desc: '独立 Zen 服务器做共享缓存，链路在后台逐步执行。', current: true,
-    state: '已部署 · render-zen-01', meta: ':1337 · D:\\ZenData · 命中 94%' },
-  { id: 'smb',   label: '共享 DDC（SMB）', tag: null, icon: 'folder', cli: 'share create',
-    desc: '局域网共享缓存盘，适合无独立服务器的小集群。', current: false,
-    state: '可选', meta: '\\\\ddc01\\Volo\\DDC' },
-  { id: 'local', label: '本地 DDC', tag: null, icon: 'server', cli: 'local-cache create',
-    desc: '单机本地缓存，作为命中链路的回退层。', current: false,
-    state: '各机默认开启', meta: 'D:\\UE_DDC\\Local' },
-];
-
-/* roles for the unified machine selector */
-const ROLES = {
-  shared:     { label: '共享上游', tag: 'shared_upstream' },
-  render:     { label: '渲染节点', tag: 'render' },
-  workstation:{ label: '工作站',   tag: 'workstation' },
-  spare:      { label: '备用',     tag: 'spare' },
-};
-
-const RENDER_NODES = [
-  { id: 'rn0', host: 'RENDER-ZEN-01', ip: '10.20.8.10', status: 'healthy', roleKey: 'shared', role: '共享上游 · ZenServer',
-    last: '刚刚', chan: 'winrm', ddc: 100, pso: 100, gpu: '—（缓存服务器）', vendor: '—', driver: '—', vram: 64,
-    ue: '5.4.4', uePath: 'D:\\UE_5.4\\Engine', user: 'svc-render', auth: '域账户', domain: 'VOLO',
-    health: 98, zen: 'render-zen-01', share: null, proj: ['Helios'], tags: ['shared_upstream'],
-    cfg: { driver: '—', ue: '5.4.4', psoPrecache: '1', tdrLevel: '0' } },
-  { id: 'rn1', host: 'RNODE-01', ip: '10.20.8.11', status: 'healthy', roleKey: 'render', role: '渲染节点 · nDisplay 主控',
-    last: '12 秒前', chan: 'winrm', ddc: 96, pso: 100, gpu: 'RTX 6000 Ada', vendor: 'NVIDIA', driver: '552.22', vram: 48,
-    ue: '5.4.4', uePath: 'D:\\UE_5.4\\Engine', user: 'svc-render', auth: '域账户', domain: 'VOLO',
-    health: 96, zen: 'render-zen-01', share: '\\\\ddc01\\Volo\\DDC', proj: ['Helios'], tags: ['render'],
-    cfg: { driver: '552.22', ue: '5.4.4', psoPrecache: '1', tdrLevel: '0' } },
-  { id: 'rn2', host: 'RNODE-02', ip: '10.20.8.12', status: 'healthy', roleKey: 'render', role: '渲染节点',
-    last: '8 秒前', chan: 'winrm', ddc: 92, pso: 100, gpu: 'RTX 6000 Ada', vendor: 'NVIDIA', driver: '552.22', vram: 48,
-    ue: '5.4.4', uePath: 'D:\\UE_5.4\\Engine', user: 'svc-render', auth: '域账户', domain: 'VOLO',
-    health: 93, zen: 'render-zen-01', share: '\\\\ddc01\\Volo\\DDC', proj: ['Helios'], tags: ['render'],
-    cfg: { driver: '552.22', ue: '5.4.4', psoPrecache: '1', tdrLevel: '0' } },
-  { id: 'rn3', host: 'RNODE-03', ip: '10.20.8.13', status: 'healthy', roleKey: 'render', role: '渲染节点',
-    last: '15 秒前', chan: 'winrm', ddc: 88, pso: 97, gpu: 'RTX A6000', vendor: 'NVIDIA', driver: '552.22', vram: 48,
-    ue: '5.4.4', uePath: 'D:\\UE_5.4\\Engine', user: 'svc-render', auth: '域账户', domain: 'VOLO',
-    health: 90, zen: 'render-zen-01', share: '\\\\ddc01\\Volo\\DDC', proj: ['Helios'], tags: ['render'],
-    cfg: { driver: '552.22', ue: '5.4.4', psoPrecache: '1', tdrLevel: '0' } },
-  { id: 'rn4', host: 'RNODE-04', ip: '10.20.8.14', status: 'warning', roleKey: 'render', role: '渲染节点', env: 'pending', remote: false,
-    last: '40 秒前', chan: 'winrm', ddc: 61, pso: 74, gpu: 'RTX A6000', vendor: 'NVIDIA', driver: '551.86', vram: 48,
-    ue: '5.4.4', uePath: 'D:\\UE_5.4\\Engine', user: 'svc-render', auth: '域账户', domain: 'VOLO',
-    health: 68, zen: 'render-zen-01', share: '\\\\ddc01\\Volo\\DDC', proj: ['Helios'], tags: ['render'],
-    cfg: { driver: '551.86', ue: '5.4.4', psoPrecache: '1', tdrLevel: '3' } },
-  { id: 'rn5', host: 'RNODE-05', ip: '10.20.8.15', status: 'critical', roleKey: 'render', role: '渲染节点', env: 'pending', remote: true,
-    last: '2 分钟前', chan: 'ssh', ddc: 34, pso: 18, gpu: 'RTX 5880 Ada', vendor: 'NVIDIA', driver: '552.22', vram: 48,
-    ue: '5.4.3', uePath: 'D:\\UE_5.4\\Engine', user: 'render', auth: '本地账户', domain: '—',
-    health: 34, zen: null, share: '\\\\ddc01\\Volo\\DDC', proj: ['Helios'], tags: ['render'],
-    cfg: { driver: '552.22', ue: '5.4.3', psoPrecache: '0', tdrLevel: '0' } },
-  { id: 'rn6', host: 'WS-ART-01', ip: '10.20.8.31', status: 'healthy', roleKey: 'workstation', role: '工作站 · 美术',
-    last: '6 秒前', chan: 'winrm', ddc: 90, pso: 99, gpu: 'L40S', vendor: 'NVIDIA', driver: '552.22', vram: 48,
-    ue: '5.4.4', uePath: 'C:\\UE_5.4\\Engine', user: 'svc-render', auth: '域账户', domain: 'VOLO',
-    health: 91, zen: 'render-zen-01', share: null, proj: ['Helios'], tags: ['workstation'],
-    cfg: { driver: '552.22', ue: '5.4.4', psoPrecache: '1', tdrLevel: '0' } },
-  { id: 'rn7', host: 'RNODE-07', ip: '10.20.8.17', status: 'offline', roleKey: 'render', role: '渲染节点',
-    last: '14 分钟前', chan: 'winrm', ddc: 0, pso: 0, gpu: 'RTX A6000', vendor: 'NVIDIA', driver: '—', vram: 48,
-    ue: '—', uePath: '—', user: 'svc-render', auth: '域账户', domain: 'VOLO',
-    health: 0, zen: null, share: null, proj: [], tags: ['render'], cfg: null },
-  { id: 'rn8', host: 'RNODE-08', ip: '10.20.8.18', status: 'offline', roleKey: 'spare', role: '备用节点',
-    last: '1 小时前', chan: 'winrm', ddc: 0, pso: 0, gpu: 'L40S', vendor: 'NVIDIA', driver: '—', vram: 48,
-    ue: '—', uePath: '—', user: 'svc-render', auth: '域账户', domain: 'VOLO',
-    health: 0, zen: null, share: null, proj: [], tags: ['spare'], cfg: null },
-];
-
-/* ---- 资产域 · Credentials (AES-GCM SecretStore) ---- */
-const CREDS = [
-  { id: 'c1', name: 'svc-render', kind: '域账户', domain: 'VOLO', use: '部署 / 远程执行', machines: 7, last: '今天 14:08' },
-  { id: 'c2', name: 'zen-svc',    kind: '服务账户', domain: 'VOLO', use: 'ZenServer 服务身份', machines: 1, last: '昨天 18:30' },
-  { id: 'c3', name: 'render（本地）', kind: '本地账户', domain: '—', use: 'RNODE-05 回退登录', machines: 1, last: '3 天前' },
-];
-
-/* ---- 资产域 · Shares (SMB 共享 DDC) ---- */
-const SHARES = [
-  { id: 's1', path: '\\\\ddc01\\Volo\\DDC', mode: 'Mode A · 开放', clients: 5, size: '4.8 / 8 TB', gc: '已暂停', status: 'healthy' },
-  { id: 's2', path: '\\\\ddc02\\Volo\\Backup', mode: 'Mode B · 专用账号', clients: 0, size: '0.2 / 4 TB', gc: '运行中', status: 'warning' },
-];
-
-/* ---- 资产域 · Zen endpoints (独立 ZenServer) ---- */
-const ZEN_ENDPOINTS = [
-  { id: 'z1', name: 'render-zen-01', host: 'RENDER-ZEN-01', ip: '10.20.8.10', port: 1337, dataDir: 'D:\\ZenData',
-    version: 'Zen 5.4.4', service: '运行中', urlacl: '已注册', clients: 5, hit: 94, size: '3.1 TB', status: 'healthy' },
-];
-
-/* ---- ZenServer 服务端 10 步链路（搭共享缓存 → Zen 向导）---- */
-const ZEN_STEPS = [
-  { id: 'zs1', n: 1, label: '选服务器机器', cli: 'machine（选择）',   status: 'done',
-    summary: '已选 RENDER-ZEN-01 · 10.20.8.10', destructive: false },
-  { id: 'zs2', n: 2, label: '选凭据',       cli: 'cred（选择）',     status: 'done',
-    summary: '已选 zen-svc（域账户 VOLO）', destructive: false },
-  { id: 'zs3', n: 3, label: '注册 endpoint', cli: 'zen register',    status: 'active',
-    summary: 'endpoint: render-zen-01 · port 1337 · data-dir D:\\ZenData', destructive: false,
-    preview: ['zen detect-binary → 定位 ZenServer.exe', 'zen register --name render-zen-01 --port 1337 --data-dir D:\\ZenData'],
-    readback: { key: '[Endpoint] render-zen-01', expected: 'registered', actual: '—' } },
-  { id: 'zs4', n: 4, label: 'apply-config', cli: 'zen apply-config', status: 'ready',
-    summary: '写入 zen.lua + SHA256 校验', destructive: false,
-    preview: ['生成 zen.lua（StorageDir=D:\\ZenData, Port=1337）', '写入后回读并校验 SHA256'],
-    readback: { key: 'zen.lua SHA256', expected: 'a91f…7c2d', actual: '—' } },
-  { id: 'zs5', n: 5, label: 'urlacl add',   cli: 'zen urlacl add',   status: 'pending',
-    summary: 'netsh http add urlacl（需提权 SSH）', destructive: false, channel: 'ssh',
-    preview: ['netsh http add urlacl url=http://+:1337/ user=zen-svc'],
-    readback: { key: 'urlacl :1337', expected: 'reserved', actual: '—' } },
-  { id: 'zs6', n: 6, label: '安装服务',     cli: 'zen service install', status: 'pending',
-    summary: '注册 Windows 服务 ZenServer（需提权 SSH）', destructive: false, channel: 'ssh',
-    preview: ['sc create ZenServer binPath=…ZenServer.exe', '设置 startup=auto，服务账户 zen-svc'],
-    readback: { key: 'service ZenServer', expected: 'installed', actual: '—' } },
-  { id: 'zs7', n: 7, label: '启动 + probe', cli: 'zen service start → probe', status: 'pending',
-    summary: '启动服务并探活 endpoint', destructive: false,
-    preview: ['sc start ZenServer', 'zen probe render-zen-01 → 期望 HTTP 200 /health'],
-    readback: { key: 'probe /health', expected: '200 OK', actual: '—' } },
-  { id: 'zs8', n: 8, label: 'enable 工作站', cli: 'zen enable', status: 'pending',
-    summary: '写 [StorageServers] Shared，回读确证', destructive: true,
-    preview: ['ini set [StorageServers] Shared (Host="render-zen-01"; Port=1337)', '回读 expected vs actual 对比'],
-    readback: { key: '[StorageServers] Shared', expected: 'Host=render-zen-01;Port=1337', actual: '—' } },
-];
-
-/* ---- 资产域 · Health · L1/L2/L3 三层（每条 critical 带 remediation）---- */
-const HEALTH_CHECKS = [
-  { id: 'h_port', layer: 'L1', label: '端口可达 · ZenServer :1337', status: 'healthy', weight: 12,
-    detail: 'RENDER-ZEN-01 :1337 响应 200，5 客户端连通', remediation: null },
-  { id: 'h_hb',  layer: 'L1', label: '心跳 / 在线', status: 'warning', weight: 14,
-    detail: '6 / 8 节点在线，RNODE-07 / 08 无心跳', remediation: '重新远程引导这台机器，或检查它的远程管理服务',
-    desc: 'RNODE-07 和 08 连不上了，可能已关机或远程管理服务挂了。' },
-  { id: 'h_zen', layer: 'L2', label: 'zen_reachable', status: 'na', weight: 10,
-    detail: 'probe 过期，已按 DESIGN-1 降级为不适用（先跑 zen probe 再判定）', remediation: null,
-    naReason: 'probe 结果过期 · 非缺陷（F-043）' },
-  { id: 'h_drv', layer: 'L2', label: '驱动一致性', status: 'warning', weight: 12,
-    detail: 'RNODE-04 驱动 551.86 偏离基线 552.22', remediation: '分发驱动 552.22 并重启 RNODE-04',
-    desc: 'RNODE-04 的显卡驱动和集群其他机器不一致，可能导致渲染表现差异。' },
-  { id: 'h_ue',  layer: 'L2', label: 'UE 版本一致', status: 'warning', weight: 12,
-    detail: 'RNODE-05 为 5.4.3，落后基线 5.4.4', remediation: '在 RNODE-05 升级 UE 至 5.4.4',
-    desc: 'RNODE-05 的虚幻引擎版本比集群基线旧，建议升级后再参与生成。' },
-  { id: 'h_pso', layer: 'L3', label: 'PSO 就绪', status: 'critical', weight: 18,
-    detail: 'RNODE-05 预热 18% — r.PSOPrecache 未启用', remediation: '开启 RNODE-05 的着色器预热（PSO 预缓存），然后重新收集一次',
-    desc: 'RNODE-05 的着色器预热远未完成，现在去渲染会反复卡顿。' },
-  { id: 'h_ddc', layer: 'L3', label: 'DDC 命中率 / 失衡', status: 'healthy', weight: 12,
-    detail: '集群均值 78%，本地 vs 共享 DDC 无失衡', remediation: null },
-  { id: 'h_cred',layer: 'L2', label: '凭据有效性', status: 'warning', weight: 10,
-    detail: 'RNODE-05 仍用本地账户，建议切域账户 svc-render', remediation: '把 RNODE-05 切换为域账户 svc-render，重新登录后校验',
-    desc: 'RNODE-05 还在用本地账户登录，建议换成统一的域账户以免授权出问题。' },
-];
-
-/* ---- INI 扫描 findings（每条带 recommendation）---- */
-const INI_FINDINGS = [
-  { id: 'R015', rule: 'R015', sev: 'critical', machine: 'RNODE-05', file: 'DefaultEngine.ini',
-    section: '[/Script/Engine.RendererSettings]', cur: 'r.PSOPrecache=0', rec: 'r.PSOPrecache=1',
-    summary: 'RNODE-05 的着色器预缓存被关闭',
-    why: 'PSO 预缓存关闭会导致运行时编译卡顿与重复 shader 编译。', auto: true },
-  { id: 'R022', rule: 'R022', sev: 'warning', machine: 'RNODE-05', file: 'DefaultEngine.ini',
-    section: '[/Script/Engine.RendererSettings]', cur: 'r.PSOPrecache.Resources=0', rec: 'r.PSOPrecache.Resources=1',
-    summary: 'RNODE-05 的资源着色器未预缓存',
-    why: '资源 PSO 未预缓存，建议跟 R015 一起修复。', auto: true },
-  { id: 'R008', rule: 'R008', sev: 'warning', machine: 'RNODE-04', file: 'DefaultEngine.ini',
-    section: '[StorageServers]', cur: 'Shared 缺失', rec: 'Host=render-zen-01; Port=1337',
-    summary: 'RNODE-04 缺少共享缓存服务器配置',
-    why: '未写入共享存储服务器，DDC 不会命中 Zen 上游。', auto: true },
-  { id: 'R031', rule: 'R031', sev: 'info', machine: 'RNODE-01', file: 'DefaultEngine.ini',
-    section: '[Core.System]', cur: 'DerivedDataBackendGraph 顺序待优化', rec: 'Zen 优先于本地 Pak',
-    summary: 'RNODE-01 的缓存查找顺序建议调优',
-    why: 'backend-graph 顺序影响命中链路，建议 Zen 优先。', auto: false },
-  { id: 'R044', rule: 'R044', sev: 'warning', machine: 'RNODE-04', file: 'GraphicsDrivers（注册表）',
-    section: 'HKLM\\…\\GraphicsDrivers', cur: 'TdrLevel=3', rec: 'TdrLevel=0',
-    summary: 'RNODE-04 的驱动超时保护未关闭',
-    why: '长任务渲染建议禁用 TDR，避免驱动超时重置。', auto: true },
-];
-
-/* ---- 资产域 · UE 工程（discover_projects 远程扫 .uproject 的结果）---- */
-/* machines: 在哪些机器上发现了这个工程（机器 id）；primary: 推荐作为生成源的机器 */
-const UE_PROJECTS = [
-  { id: 'helios', name: 'Helios', uproject: 'Helios.uproject', ue: '5.4.4', size: '184 GB',
-    root: 'D:\\Projects\\Helios', last: '今天 13:32', machines: ['rn1', 'rn2', 'rn3', 'rn4', 'rn6'], primary: 'rn1', hasPak: true },
-  { id: 'aurora', name: 'Aurora_Trailer', uproject: 'Aurora.uproject', ue: '5.4.4', size: '92 GB',
-    root: 'D:\\Projects\\Aurora', last: '今天 13:32', machines: ['rn6', 'rn1'], primary: 'rn6', hasPak: false },
-  { id: 'nomad', name: 'Nomad_Test', uproject: 'Nomad.uproject', ue: '5.4.3', size: '37 GB',
-    root: 'E:\\UEProjects\\Nomad', last: '昨天 20:14', machines: ['rn5'], primary: 'rn5', hasPak: false,
-    warn: 'UE 版本 5.4.3 与集群基线 5.4.4 不一致' },
-];
-
-/* ---- 资产域 · Artifacts (DDC pak / PSO 列表) ---- */
-const ARTIFACTS = [
-  { id: 'a1', kind: 'DDC pak', name: 'DDC_Helios_5.4.4_zen', size: '62 GB', built: '今天 13:40', backend: 'zen', verified: true, status: 'healthy' },
-  { id: 'a2', kind: 'DDC pak', name: 'DDC_Helios_5.4.4_legacy', size: '58 GB', built: '昨天 22:10', backend: 'legacy', verified: true, status: 'healthy' },
-  { id: 'a3', kind: 'PSO', name: 'PSO_main_5.4.4_d92f', size: '418 MB', built: '今天 11:25', backend: '—', verified: true, status: 'warning' },
-  { id: 'a4', kind: 'PSO', name: 'PSO_seq204_5.4.4_a17c', size: '286 MB', built: '昨天 19:02', backend: '—', verified: false, status: 'warning' },
-];
-
-/* ---- 常驻任务抽屉 · 异步任务（含历史 / 失败留痕）---- */
-const TASKS = [
-  { id: 't_3', no: 3, domain: 'ddc', action: 'generate', title: 'ddc generate', state: 'running',
-    pct: 62, chan: 'winrm', started: '14:19', elapsed: '3m 02s', target: 'RENDER-ZEN-01',
-    note: '编译 shader · 灌共享 DDC（可达 30+ 分钟）', stream: true },
-  { id: 't_7', no: 7, domain: 'ini', action: 'apply', title: 'ini apply', state: 'success',
-    pct: 100, chan: 'winrm', started: '14:11', elapsed: '6s', target: 'RNODE-05',
-    note: 'R015 已修复 · warning 4 → 2', stream: false },
-  { id: 't_6', no: 6, domain: 'zen', action: 'probe', title: 'zen probe', state: 'success',
-    pct: 100, chan: 'winrm', started: '14:08', elapsed: '2s', target: 'render-zen-01',
-    note: 'HTTP 200 /health · 5 客户端连通', stream: false },
-  { id: 't_5', no: 5, domain: 'share', action: 'create', title: 'share create', state: 'failed',
-    pct: 100, chan: 'winrm', started: '13:52', elapsed: '4s', target: 'RNODE-04',
-    note: 'WinRM 被 UAC 过滤', exit: 2, channelFail: true,
-    stderr: 'Access is denied. (0x80070005) — Machine-scope 写操作被 WinRM/UAC 过滤', stream: false },
-];
-
-/* monotonic task counter seed (next #) */
-const TASK_SEQ = 8;
+/* ARTIFACTS removed — PSO 列表改用真实 list_pso_cache_files（cacheDdc psoFiles，
+   按选中工程加载）；DDC pak 列表后端无「列举产物」命令（只有 generate/verify/distribute
+   单产物），UI 也无 pak 列表（只按工程 verify_pak_output），故整条 mock 移除。 */
 
 /* ============================================================
    CALIBRATE — LED mesh reconstruct → lens solve
@@ -427,29 +205,14 @@ const LENS_STAGES = [
   { id: 'report',   n: 4, label: 'Report',   cn: '报告',  status: 'pending' },
 ];
 
-/* ---------- Console log (NDJSON 流 · dynamic seed) ----------
-   ch = 通道（winrm / ssh）；task = 关联任务 #；lv = info/ok/warn/err */
-const LOGS = [
-  { ts: '14:22:07.118', lv: 'info', cat: 'ddc',   ch: 'winrm', task: 3, msg: '<b>ddc generate #3</b> · 编译 shader 4128 / 6650（62%）' },
-  { ts: '14:22:05.902', lv: 'info', cat: 'ddc',   ch: 'winrm', task: 3, msg: 'Materials/MI_Sand_Wet → 命中共享 DDC，跳过编译' },
-  { ts: '14:21:58.440', lv: 'warn', cat: 'health',ch: 'winrm', task: null, msg: '<b>RNODE-04</b> 驱动 551.86 偏离基线 552.22（remediation 可用）' },
-  { ts: '14:21:40.013', lv: 'info', cat: 'calibrate', ch: null, task: null, msg: '网格预览：顶点 <b>33,800</b>，拓扑 64 × 16' },
-  { ts: '14:21:12.221', lv: 'err',  cat: 'health', ch: 'winrm', task: null, msg: '<b>RNODE-05</b> PSO 预热 18% — r.PSOPrecache 未启用（finding R015）' },
-  { ts: '14:11:06.330', lv: 'ok',   cat: 'ini',   ch: 'winrm', task: 7, msg: '<b>ini apply #7</b> 完成 · R015 修复，re-scan warning 4 → 2' },
-  { ts: '14:08:31.004', lv: 'ok',   cat: 'zen',   ch: 'winrm', task: 6, msg: '<b>zen probe #6</b> · render-zen-01 → HTTP 200 /health' },
-  { ts: '13:52:19.880', lv: 'err',  cat: 'share', ch: 'winrm', task: 5, msg: '<b>share create #5</b> 失败 · exit 2 — WinRM 被 UAC 过滤，建议切提权 SSH' },
-  { ts: '13:40:09.510', lv: 'info', cat: 'ddc',   ch: 'winrm', task: null, msg: 'auto 模式：Zen 可达，generate 已智能跳过 legacy 分支' },
-  { ts: '13:38:02.118', lv: 'info', cat: 'health',ch: 'winrm', task: null, msg: '集群快照刷新 — 6/8 在线 · 健康分 72 · 上次巡检 14:08' },
-];
-
 Object.assign(window, {
   Icon, STAGES, PAGES,
-  NODE_STATUS, CLUSTER, BASELINE, CHANNEL, ROLES,
-  CACHE_MODULES, DDC_NAV, DISCOVERED, ONBOARD_TARGETS, DDC_BACKENDS, RENDER_NODES,
-  CREDS, SHARES, ZEN_ENDPOINTS, ZEN_STEPS, HEALTH_CHECKS, INI_FINDINGS, ARTIFACTS, UE_PROJECTS,
-  TASKS, TASK_SEQ,
+  /* machines / creds / shares / projects are loaded from the backend by the
+     shell and mirrored onto window.{RENDER_NODES,CREDS,SHARES,UE_PROJECTS};
+     presentation maps (NODE_STATUS/…/DDC_BACKENDS) live in api/uiConfig；
+     health/ini/cluster 经 shell 镜像 window.{HEALTH_CHECKS,INI_FINDINGS,CLUSTER}。
+     Cache 域已无 mock；下列仅 Calibrate/Mesh 域。 */
   CAL_SCREENS, CAL_STEPS, CAL_POINTS, SURVEY_REPORT, CAL_RUNS, MESH_METRICS, LENS_STAGES,
-  LOGS,
 });
 
 export { Icon, STAGES, PAGES };

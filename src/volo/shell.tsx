@@ -4,7 +4,10 @@
    App / Selector / CtxTitle / Stat onto `window`; we re-export App below. */
 import * as React from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import "./ds";
+import { loadCacheResources } from "./api/cacheData";
+import { isTauri, VoloInvokeError } from "./api/invoke";
 
 (function () {
 const { useState, useRef, useEffect } = React;
@@ -48,6 +51,33 @@ function startResize(e, axis, dir, startVal, setVal, min, max) {
   document.body.style.webkitUserSelect = 'none'; // WKWebView (macOS) ignores bare user-select
 }
 
+/* CLUSTER 概况派生（替代旧 mock）：online/total 从机器数、health 从健康检查结果、
+   lastRun/lastRunAgo 从最近一次巡检完成时间。 */
+function formatRunTime(raw) {
+  if (!raw) return { lastRun: '—', lastRunAgo: '从未巡检' };
+  /* SQLite CURRENT_TIMESTAMP 是 UTC 空格分隔、无时区 → 补 'Z' 当 UTC 解析 */
+  const hasTz = /[zZ]$|[+\-]\d\d:?\d\d$/.test(String(raw));
+  const d = new Date(String(raw).replace(' ', 'T') + (hasTz ? '' : 'Z'));
+  if (isNaN(d.getTime())) return { lastRun: String(raw), lastRunAgo: '' };
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const diff = Math.max(0, Math.round((Date.now() - d.getTime()) / 60000));
+  const ago = diff < 1 ? '刚刚' : diff < 60 ? (diff + ' 分钟前') : diff < 1440 ? (Math.round(diff / 60) + ' 小时前') : (Math.round(diff / 1440) + ' 天前');
+  return { lastRun: hh + ':' + mm, lastRunAgo: ago };
+}
+function deriveCluster(machines, health, runAt) {
+  const cluster = (machines || []).filter((n) => n.roleKey !== 'shared');
+  const total = cluster.length;
+  const online = cluster.filter((n) => n.status !== 'offline').length;
+  let score = null;
+  if (health && health.length) {
+    const scored = health.filter((c) => c.status !== 'na');
+    score = scored.length ? Math.round((100 * scored.filter((c) => c.status === 'healthy').length) / scored.length) : 100;
+  }
+  const t = formatRunTime(runAt);
+  return { online, total, health: score, lastRun: t.lastRun, lastRunAgo: t.lastRunAgo };
+}
+
 /* 默认平台跟随运行 OS（仅在无持久化偏好时）；可在 Tweaks 手动覆盖 */
 function detectPlatform() {
   try {
@@ -66,7 +96,11 @@ function Selector({ kpre, value, options, onChange, width = 188, variant = 'obj'
     document.addEventListener('mousedown', h);
     return () => document.removeEventListener('mousedown', h);
   }, [open]);
-  const cur = options.find((o) => o.id === value) || options[0];
+  /* fall back to a placeholder when the option list is empty (real backend data
+     can yield empty pools — e.g. no credentials, or a project with no online
+     source machines — where the mock always had entries). Prevents cur.label
+     crashing the render. */
+  const cur = options.find((o) => o.id === value) || options[0] || { id: value, label: '—' };
   const cls = variant === 'stage' ? 'stage-switch' : 'obj-sel';
   return React.createElement('div', { ref, style: { position: 'relative' } },
     React.createElement('div', { className: cls, style: variant === 'obj' ? { minWidth: width } : null, onClick: () => setOpen((v) => !v) },
@@ -129,7 +163,7 @@ function MacTitleBar({ s }) {
        面包屑 DocCrumb 与「当前舞台」Selector 已移除，左侧留给原生交通灯 + 拖拽区 */
     h('div', { className: 'right' },
       h('span', { className: 'conn' }, h(SyncPip), '同步 23.976'),
-      h('span', { className: 'conn' }, '8 节点 · 6 在线'),
+      h('span', { className: 'conn' }, s.cluster.total + ' 节点 · ' + s.cluster.online + ' 在线'),
       h(ChromeIconButtons, { s })));
 }
 
@@ -166,8 +200,8 @@ function PageTabs({ s }) {
       p.label,
       p.skeleton ? React.createElement('span', { className: 'skl' }, 'WIP') : null)),
     React.createElement('div', { className: 'meta' },
-      React.createElement('span', { className: 'sdot bg-notice' }),
-      React.createElement('span', null, '缓存健康分 72')));
+      React.createElement('span', { className: 'sdot bg-' + (s.cluster.health == null ? 'neutral' : s.cluster.health >= 85 ? 'positive' : s.cluster.health >= 60 ? 'notice' : 'negative') }),
+      React.createElement('span', null, '缓存健康分 ' + (s.cluster.health == null ? '—' : s.cluster.health))));
 }
 
 /* ---------- Log panel — NDJSON stream (search · pause · channel) ---------- */
@@ -242,16 +276,30 @@ function App() {
   /* 舞台切换器 / 面包屑已移除，stage state 无消费者，随之删除 */
   const [logOpen, setLogOpen] = useState(persisted.logOpen !== undefined ? persisted.logOpen : true);
   const [logFilter, setLogFilter] = useState('all');
-  const [logs, setLogs] = useState(LOGS);
-  const [selNode, setSelNode] = useState(RENDER_NODES.some((n) => n.id === persisted.selNode) ? persisted.selNode : 'rn4');
+  const [logs, setLogs] = useState([]); /* NDJSON 流 —— 真实命令派发的事件后续批次接入 */
+  const [selNode, setSelNode] = useState(persisted.selNode || null);
+  /* Cache/UECM read-path resources, loaded from the backend (machines / creds /
+     shares). Replaces the former hardcoded RENDER_NODES / CREDS / SHARES mocks. */
+  const [machines, setMachines] = useState([]);
+  const [shares, setShares] = useState([]);
+  /* UE projects (list_projects + locations) — feeds the DDC PAK/PSO views. */
+  const [projects, setProjects] = useState([]);
+  /* GPU consistency matrix (get_gpu_consistency_matrix) — drives Overview GPU KPI. */
+  const [gpuMatrix, setGpuMatrix] = useState(null);
+  /* 最近一次健康巡检 / INI 扫描结果（映射成 HEALTH_CHECKS / INI_FINDINGS 形状）。 */
+  const [healthChecks, setHealthChecks] = useState([]);
+  const [iniFindings, setIniFindings] = useState([]);
+  const [healthRunAt, setHealthRunAt] = useState(null);
+  const [cacheLoading, setCacheLoading] = useState(true);
+  const [cacheError, setCacheError] = useState(null);
   const CACHE_NAVS = ['home', 'ddc_zen', 'ddc_legacy', 'ddc_pak', 'ddc_pso',
     'diag_net', 'diag_sync', 'diag_thm', 'diag_term'];
   const [cacheNav, setCacheNav] = useState(CACHE_NAVS.includes(persisted.cacheNav) ? persisted.cacheNav : 'home');
   const [ddcOpen, setDdcOpen] = useState(persisted.ddcOpen != null ? persisted.ddcOpen : /^ddc_/.test(persisted.cacheNav || ''));
   const [drawer, setDrawer] = useState(null);
   /* task drawer + NDJSON console */
-  const [tasks, setTasks] = useState(TASKS);
-  const taskSeq = useRef(TASK_SEQ);
+  const [tasks, setTasks] = useState([]);
+  const taskSeq = useRef(1);
   const [taskTab, setTaskTab] = useState('active');
   const [logSearch, setLogSearch] = useState('');
   const [logPaused, setLogPaused] = useState(false);
@@ -265,11 +313,33 @@ function App() {
   const [machinesAdded, setMachinesAdded] = useState(false);
   /* SSH-key 现场入网：本会话内已确认「已运行入网脚本 + 刷新通过」的机器 */
   const [enrolled, setEnrolled] = useState([]);
-  /* 凭据管理（SecretStore）—— 仅共享 DDC 创建/接入用到 */
-  const [creds, setCreds] = useState(CREDS);
+  /* 凭据管理（SecretStore）—— 仅共享 DDC 创建/接入用到；从后端 list_credentials 加载 */
+  const [creds, setCreds] = useState([]);
   /* 窗口是否最大化 —— Windows 自绘标题栏的最大化按钮据此切「最大化/还原」图标。
      Windows 上点击走 Rust 子类化，React 不参与，故订阅窗口 onResized 反推状态。 */
   const [maximized, setMaximized] = useState(false);
+
+  /* Load the Cache read-path resources (machines / creds / shares) from the
+     backend. Drives the three-channel loading/error gate on the Cache page. */
+  const reloadCache = React.useCallback(() => {
+    setCacheLoading(true);
+    setCacheError(null);
+    loadCacheResources().then((r) => {
+      setMachines(r.machines);
+      setCreds(r.creds);
+      setShares(r.shares);
+      setProjects(r.projects);
+      setGpuMatrix(r.gpuMatrix);
+      setHealthChecks(r.health);
+      setIniFindings(r.ini);
+      setHealthRunAt(r.healthRunAt);
+      setCacheLoading(false);
+    }).catch((e) => {
+      setCacheError(e && e.message ? e.message : String(e));
+      setCacheLoading(false);
+    });
+  }, []);
+  useEffect(() => { reloadCache(); }, [reloadCache]);
 
   /* debounce persistence so live drag-resize (leftW/rightW/logH change每帧) doesn't
      JSON.stringify + setItem synchronously on every pointermove frame */
@@ -345,14 +415,146 @@ function App() {
     }, 420 * (n + 1));
   };
 
+  /* escape untrusted text before it reaches a task/log msg (LogPanel renders msg
+     via dangerouslySetInnerHTML). Our own `<b>` wrappers are added outside esc. */
+  const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;');
+
+  /* runCmd — dispatch ONE real backend command (no event stream) into the same
+     task drawer + NDJSON console as runTask. meta.chan must be 'winrm'|'ssh'.
+     exec is a thunk returning the typed command Promise (e.g. () => deleteShare(id)).
+     opts.okMsg(res) builds the success line from the result. Rethrows on failure
+     so callers can react (e.g. skip optimistic UI). */
+  const runCmd = async (meta, exec, opts = {}) => {
+    const { domain, action, target, chan = 'winrm', note } = meta;
+    const no = taskSeq.current++;
+    const id = 't_' + no;
+    const title = `${domain} ${action}`;
+    const t0 = Date.now();
+    const secs = () => Math.max(1, Math.round((Date.now() - t0) / 1000)) + 's';
+    setTasks((prev) => [{ id, no, domain, action, title, state: 'running', pct: 4, chan, started: nowHM(), elapsed: '0s', target, note, stream: false }, ...prev]);
+    setTaskTab('active');
+    setLogOpen(true);
+    pushLog({ lv: 'info', cat: domain, ch: chan, task: no, msg: esc(opts.startMsg || `${title} …`) });
+    try {
+      const res = await exec();
+      setTasks((prev) => prev.map((t) => t.id === id ? { ...t, state: 'success', pct: 100, exit: 0, elapsed: secs() } : t));
+      pushLog({ lv: 'ok', cat: domain, ch: chan, task: no, msg: opts.okMsg ? esc(opts.okMsg(res)) : `<b>${title} #${no}</b> 完成` });
+      return res;
+    } catch (e) {
+      const m = e && e.message ? e.message : String(e);
+      setTasks((prev) => prev.map((t) => t.id === id ? { ...t, state: 'failed', pct: 100, exit: 2, elapsed: secs() } : t));
+      pushLog({ lv: 'err', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 失败 · ${esc(m)}` });
+      throw e;
+    }
+  };
+
+  /* runStreamingCmd — dispatch a long-running command whose progress arrives as
+     Tauri events. wiring.mode:
+       'event' — kickoff returns a job_id;終止 from the stream (generate / pso /
+                 distribute). Events before job_id is known are buffered + replayed.
+       'await' — kickoff blocks to completion (events are pure side-channel
+                 progress); finalize on resolve.
+     wiring.reduce(eventName, payload, st) → { pct?, log?:{lv,msg}, done?, ok?, exit? }.
+     Subscribes BEFORE kickoff to avoid losing early events; filters by job_id via
+     wiring.isMine (ue-runner-progress is shared across concurrent jobs). */
+  const runStreamingCmd = async (meta, kickoff, wiring) => {
+    const { domain, action, target, chan = 'winrm', note } = meta;
+    const no = taskSeq.current++;
+    const id = 't_' + no;
+    const title = `${domain} ${action}`;
+    const t0 = Date.now();
+    const secs = () => Math.max(1, Math.round((Date.now() - t0) / 1000)) + 's';
+    setTasks((prev) => [{ id, no, domain, action, title, state: 'running', pct: 4, chan, started: nowHM(), elapsed: '0s', target, note, stream: true }, ...prev]);
+    setTaskTab('active');
+    setLogOpen(true);
+    pushLog({ lv: 'info', cat: domain, ch: chan, task: no, msg: esc(note || `${title} …`) });
+
+    /* 浏览器预览（无 Tauri runtime）：不能 listen，直接失败收尾，不挂起。 */
+    if (!isTauri()) {
+      setTasks((prev) => prev.map((t) => t.id === id ? { ...t, state: 'failed', pct: 100, exit: 2, elapsed: secs() } : t));
+      pushLog({ lv: 'err', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 失败 · 浏览器预览无后端` });
+      throw new VoloInvokeError('runStreamingCmd', '未运行在 Tauri 运行时');
+    }
+
+    let jobId = null, finished = false, timer = null;
+    let uns = [];
+    const buf = [];
+    const st = {};
+    const isMine = wiring.isMine || ((p, jid) => p && p.job_id === jid);
+    const setPct = (p) => { if (p != null) setTasks((prev) => prev.map((t) => t.id === id ? { ...t, pct: Math.max(4, Math.min(99, Math.round(p))) } : t)); };
+    const finalize = (ok, exit) => {
+      if (finished) return;
+      finished = true;
+      if (timer) { clearTimeout(timer); timer = null; }
+      const ex = ok ? 0 : (exit == null ? 2 : exit);
+      setTasks((prev) => prev.map((t) => t.id === id ? { ...t, state: ok ? 'success' : 'failed', pct: 100, exit: ex, elapsed: secs() } : t));
+      pushLog(ok
+        ? { lv: 'ok', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 完成` }
+        : { lv: 'err', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 失败 · exit ${ex}` });
+      uns.forEach((u) => { try { u(); } catch (e) {} });
+    };
+    const apply = (ev, p) => {
+      const r = wiring.reduce(ev, p, st) || {};
+      if (r.log && r.log.msg) pushLog({ lv: r.log.lv || 'info', cat: domain, ch: chan, task: no, msg: esc(r.log.msg) });
+      if (r.pct != null) setPct(r.pct);
+      if (r.done) finalize(!!r.ok, r.exit);
+    };
+    const handler = (ev) => (e) => {
+      const p = e.payload;
+      if (wiring.mode === 'event' && jobId == null) { buf.push([ev, p]); return; }
+      if (isMine && !isMine(p, jobId)) return;
+      apply(ev, p);
+    };
+    uns = await Promise.all((wiring.events || []).map((ev) => listen(ev, handler(ev))));
+
+    let resp;
+    try {
+      resp = await kickoff();
+    } catch (e) {
+      const m = e && e.message ? e.message : String(e);
+      setTasks((prev) => prev.map((t) => t.id === id ? { ...t, state: 'failed', pct: 100, exit: 2, elapsed: secs() } : t));
+      pushLog({ lv: 'err', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 失败 · ${esc(m)}` });
+      uns.forEach((u) => { try { u(); } catch (e2) {} });
+      throw e;
+    }
+
+    if (wiring.mode === 'event') {
+      jobId = wiring.jobIdOf(resp);
+      if (wiring.total) st.total = wiring.total(resp); /* 分发流：reducer 数到 st.total 即收尾 */
+      buf.forEach(([ev, p]) => { if (!isMine || isMine(p, jobId)) apply(ev, p); });
+      if (st.total === 0) finalize(true, 0); /* 空 plan：无事件，立即收尾 */
+      else if (wiring.timeoutMs && !finished) {
+        /* 客户端超时兜底：generate_ddc_pak 后端无 watchdog，若 UE 异常退出/被杀且
+           日志未命中精确终止串，后端永不发 completed → 任务会永久卡 running。到点
+           标失败并 unlisten，避免僵任务（PSO 后端有 watchdog，此为双保险）。 */
+        timer = setTimeout(() => {
+          if (!finished) { pushLog({ lv: 'warn', cat: domain, ch: chan, task: no, msg: '超时未收到终止事件，停止等待' }); finalize(false, 124); }
+        }, wiring.timeoutMs);
+      }
+    } else {
+      finalize(true, 0); /* 'await' 模式：kickoff 已是终态 */
+    }
+    return resp;
+  };
+
+  const cluster = deriveCluster(machines, healthChecks, healthRunAt);
+
   const s = { theme, toggleTheme, platform, setPlatform, toolsNav, setToolsNav, page, setPage, logOpen, setLogOpen, logFilter, setLogFilter,
     logs, pushLog, pushLogs, logH, setLogH,
     selNode, setSelNode, cacheNav, setCacheNav, ddcOpen, setDdcOpen, drawer, setDrawer,
     freshSetup, setFreshSetup, machinesAdded, setMachinesAdded,
     enrolled, setEnrolled, creds, setCreds,
-    tasks, setTasks, runTask, taskTab, setTaskTab, logSearch, setLogSearch, logPaused, setLogPaused,
+    tasks, setTasks, runTask, runCmd, runStreamingCmd, taskTab, setTaskTab, logSearch, setLogSearch, logPaused, setLogPaused,
     calStep, setCalStep, calScreen, setCalScreen, calMethod, setCalMethod, calSel, setCalSel,
-    leftCollapsed, setLeftCollapsed, rightCollapsed, setRightCollapsed, maximized };
+    leftCollapsed, setLeftCollapsed, rightCollapsed, setRightCollapsed, maximized,
+    machines, setMachines, shares, setShares, projects, setProjects, gpuMatrix, cluster, cacheLoading, cacheError, reloadCache };
+
+  /* Mirror the loaded resources onto the bare globals the custom-CSS Cache page
+     reads (RENDER_NODES / CREDS / SHARES / …). Done in render so each pass exposes
+     the current state; initial state is [] so the first paint is crash-safe.
+     CLUSTER is derived (no more mock): online/total from machines, health from the
+     health checks, lastRun/ago from the latest health run timestamp. */
+  Object.assign(window, { RENDER_NODES: machines, CREDS: creds, SHARES: shares, UE_PROJECTS: projects, GPU_MATRIX: gpuMatrix, HEALTH_CHECKS: healthChecks, INI_FINDINGS: iniFindings, CLUSTER: cluster });
 
   const { TweaksPanel, TweakSection, TweakRadio, TweakToggle } = window;
   const pg = window.VOLO_PAGES[page] || window.VOLO_PAGES.tools;
