@@ -35,6 +35,9 @@ export interface NodeVM {
   proj: string[];
   tags: string[];
   cfg: null;
+  /** 入网状态：后端 Machine DTO 无「待入网」字段，机器在库即视为受管 → 固定 'ready'
+   *  （入网脚本仍可在机器列表逐台获取；无后端信号无法区分未入网机）。 */
+  env: string;
   /** numeric machine id for backend calls (NodeVM.id is the string render key). */
   machineId: number;
 }
@@ -85,6 +88,7 @@ export function toNodeVM(m: Machine): NodeVM {
     proj: [],
     tags: [roleKey],
     cfg: null,
+    env: "ready",
     machineId,
   };
 }
@@ -160,6 +164,9 @@ export interface ProjectVM {
   primary: string | null;
   hasPak: boolean;
   warn: string | null;
+  /** String(machine_id) → 该机上的工程目录 abs_path（每机独立，不要复用 root）。
+   *  客户端写 [StorageServers] 时要用各机自己的路径。 */
+  locByMachine: Record<string, string>;
 }
 
 /* ----------------------------- health ----------------------------- */
@@ -186,6 +193,10 @@ const PROBE_DICT: Record<string, { label: string; layer: string }> = {
   ini_consistency: { label: "INI 一致性", layer: "L3" },
   pso_precaching: { label: "PSO 预缓存", layer: "L3" },
   gpu_consistency: { label: "GPU 一致性", layer: "L3" },
+  zen_reachable: { label: "Zen 可达", layer: "L3" },
+  zen_version_consistent: { label: "Zen 版本一致", layer: "L3" },
+  zen_binary_intact: { label: "Zen 程序完整", layer: "L3" },
+  zen_cache_provider_ready: { label: "Zen 缓存 provider 就绪", layer: "L3" },
 };
 
 const STAT_RANK: Record<string, number> = { critical: 3, warning: 2, healthy: 1, na: 0, offline: 0, unknown: 0 };
@@ -259,6 +270,8 @@ export function toIniVMs(findings: IniFinding[], machines: NodeVM[]): any[] {
 export function toProjectVM(p: ProjectSummary, locations: ProjectLocation[]): ProjectVM {
   const machines = Array.from(new Set(locations.map((l) => String(l.machine_id))));
   const first = locations[0];
+  const locByMachine: Record<string, string> = {};
+  locations.forEach((l) => { locByMachine[String(l.machine_id)] = l.abs_path; });
   return {
     id: p.id,
     name: p.display_name || p.uproject_name,
@@ -271,5 +284,6 @@ export function toProjectVM(p: ProjectSummary, locations: ProjectLocation[]): Pr
     primary: machines[0] ?? null,
     hasPak: false,
     warn: null,
+    locByMachine,
   };
 }

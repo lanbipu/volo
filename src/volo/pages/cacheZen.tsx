@@ -53,6 +53,7 @@ import {
     running:     { vis: 'positive', icon: 'check', label: '运行中' },
     stopped:     { vis: 'notice',   icon: 'pause', label: '已停止' },
     unreachable: { vis: 'negative', icon: 'alert', label: '不可达' },
+    unknown:     { vis: 'neutral',  icon: 'minus', label: '状态未知' },  /* reachable=null：探活尚未跑过 */
   };
   const RUN_STATE = {
     idle:    { vis: 'neutral',     icon: null,   label: '待执行' },
@@ -92,17 +93,19 @@ import {
         const ep = eps.find((e) => e.role === 'shared_upstream') || eps[0] || null;
         if (!ep) { setStatus(null); setStatusLoading(false); return; }
         const row = rows.find((r) => r.endpoint_id === ep.id) || null;
-        const svc = row ? (row.reachable === true ? 'running' : row.reachable === false ? 'unreachable' : 'stopped') : 'stopped';
+        /* reachable 三态：true→运行中 / false→不可达 / null（从未探活）→状态未知（不冒充已停止）*/
+        const svc = row ? (row.reachable === true ? 'running' : row.reachable === false ? 'unreachable' : 'unknown') : 'unknown';
         setStatus({
           endpointId: ep.id, machineId: ep.machine_id,
           host: row ? row.hostname : '', ip: row ? row.ip : '',
           port: ep.declared_port, scheme: ep.scheme, dataDir: ep.data_dir,
-          version: row && row.build_version ? row.build_version : '—', svc, records: null,
+          version: row && row.build_version ? row.build_version : '—', svc, providers: null,
         });
         setStatusLoading(false);
         zenCacheStats(ep.id, null).then((cs) => {
-          const rec = cs && Array.isArray(cs.samples) && cs.samples[0] ? cs.samples[0].records : null;
-          setStatus((s2) => (s2 ? Object.assign({}, s2, { records: rec }) : s2));
+          const sample = cs && Array.isArray(cs.samples) && cs.samples[0] ? cs.samples[0] : null;
+          const provs = sample && Array.isArray(sample.providers) ? sample.providers : null;
+          setStatus((s2) => (s2 ? Object.assign({}, s2, { providers: provs }) : s2));
         }, () => {});
       });
     };
@@ -115,6 +118,9 @@ import {
     const [deploying, setDeploying] = useState(false);
 
     const deployed = !!status;
+    /* 仅当服务真正 running 才允许把客户端指向它——指向一台已停止/不可达/状态未知的服务器
+       会让客户端缓存上游失效。stopped/unreachable/unknown 都不放行。 */
+    const canPoint = deployed && status.svc === 'running';
     const RN = window.RENDER_NODES || [];
     const srvNode = CX.node(srvId) || RN.find((n) => n.roleKey !== 'shared') || RN[0];
 
@@ -243,7 +249,9 @@ import {
     });
 
     /* ============ ② 客户端：把选中机器指向此缓存服务器 ============ */
-    const clients = RN.filter((n) => n.id !== srvNode.id);
+    /* 同时排除「表单选中的服务器机器」和「已部署 endpoint 的实际机器」——两者可能不同台
+       （部署后切了表单 srvId 也不能把真正的服务器自己当客户端指向自己）。 */
+    const clients = RN.filter((n) => n.id !== srvNode.id && !(status && n.machineId === status.machineId));
     /* pointed：本地跟踪「已成功指向」的机器（后端无逐机「是否指向」廉价查询）*/
     const [pointed, setPointed] = useState(() => new Set());
     const [sel, setSel] = useState([]);
@@ -259,27 +267,33 @@ import {
       else setSel((v) => Array.from(new Set(v.concat(selectableUnpointed.map((n) => n.id)))));
     };
 
-    /* 推导某客户端的 DefaultEngine.ini 路径（从该机的工程 location 取 root + Config）*/
+    /* 推导某客户端的 DefaultEngine.ini 路径：必须取「这台机自己」的工程目录（locByMachine[mid]），
+       不能用 proj.root（那是首个 location 的路径，可能属于别的机器）。 */
     const iniPathFor = (mid) => {
-      const proj = (window.UE_PROJECTS || []).find((p) => (p.machines || []).indexOf(String(mid)) >= 0);
-      return proj ? (proj.root + '\\Config\\DefaultEngine.ini') : null;
+      const key = String(mid);
+      const proj = (window.UE_PROJECTS || []).find((p) => p.locByMachine && p.locByMachine[key]);
+      return proj ? (proj.locByMachine[key] + '\\Config\\DefaultEngine.ini') : null;
     };
 
     /* 逐机真实写配置：set_ini_key 写 [StorageServers] Shared 指向此服务器；部分失败是常态 */
     const applyTo = (ids) => {
       if (!status) return;
       const host = status.host || (srvNode && srvNode.host) || '';
-      const value = 'Host=' + host + ';Port=' + status.port;
+      const scheme = status.scheme || protocol || 'http';
+      const hostUri = scheme + '://' + host + ':' + status.port;
+      /* UE [StorageServers] Shared 的值必须是结构化条目：Host 为完整 URI（含端口），
+         附 Namespace / 环境与命令行覆盖键 / DeactivateAt——单写 Host=..;Port=.. UE 不识别。 */
+      const value = '(Host="' + hostUri + '", Namespace="ue.ddc", EnvHostOverride=UE-ZenSharedDataCacheHost, CommandLineHostOverride=ZenSharedDataCacheHost, DeactivateAt=60)';
       ids.filter((id) => { const n = CX.node(id); return n && n.status !== 'offline'; }).forEach((id) => {
         const n = CX.node(id);
         const iniPath = iniPathFor(n.machineId);
-        if (!iniPath) { setRes((r) => Object.assign({}, r, { [id]: { st: 'fail', msg: '该机未发现 UE 工程，无配置文件可写' } })); return; }
+        if (!iniPath) { setRes((r) => Object.assign({}, r, { [id]: { st: 'fail', msg: '该机未发现 UE 工程 — 先在「集群总览」对这台机扫描发现工程，才知道往哪个 DefaultEngine.ini 写' } })); return; }
         setRes((r) => Object.assign({}, r, { [id]: { st: 'running' } }));
         setIniKey(n.machineId, iniPath, 'StorageServers', 'Shared', value).then(
           () => {
-            setRes((r) => Object.assign({}, r, { [id]: { st: 'ok', msg: '已指向 ' + host + ':' + status.port } }));
+            setRes((r) => Object.assign({}, r, { [id]: { st: 'ok', msg: '已指向 ' + hostUri } }));
             setPointed((p) => { const np = new Set(p); np.add(id); return np; });
-            log(s, 'ok', `<b>set_ini_key</b> · ${esc(n.host)} → Host=${esc(host)};Port=${esc(status.port)}`);
+            log(s, 'ok', `<b>set_ini_key</b> · ${esc(n.host)} → ${esc(hostUri)}`);
           },
           (e) => {
             const em = e && e.message ? e.message : String(e);
@@ -293,11 +307,12 @@ import {
       const online = ids.filter((id) => { const n = CX.node(id); return n && n.status !== 'offline'; });
       if (!online.length || !status) return;
       const host = status.host || srvNode.host;
+      const hostUri = (status.scheme || protocol || 'http') + '://' + host + ':' + status.port;
       CX.openPreview(s, {
         title: '把客户端指向此缓存服务器', icon: 'link', cli: 'set_ini_key [StorageServers] Shared',
         destructive: false, channel: 'ssh', confirmLabel: '应用到 ' + online.length + ' 台',
         steps: [
-          '在每台选中机器写入 [StorageServers] Shared → Host=' + host + '; Port=' + status.port,
+          '在每台选中机器写入 [StorageServers] Shared → Host=' + hostUri,
           '逐台远程改缓存配置（远程操作，部分失败是常态，可单独重试）',
           '写入后该机即把缓存上游指向此共享服务器',
         ],
@@ -308,7 +323,7 @@ import {
 
     /* ============ 渲染 ============ */
     const kv = (k, v, mono) => h('div', { className: 'zs-kv' }, h('span', { className: 'zs-k' }, k), h('span', { className: 'zs-v' + (mono ? ' mono' : '') }, v));
-    const sMeta = SVC_STATE[(status && status.svc) || 'stopped'] || SVC_STATE.stopped;
+    const sMeta = SVC_STATE[(status && status.svc) || 'unknown'] || SVC_STATE.unknown;
 
     /* ① 状态卡 / 未部署空态 */
     const statusCard = statusLoading
@@ -335,7 +350,7 @@ import {
               kv('端口', String(status.port), true),
               kv('协议', status.scheme),
               kv('数据目录', status.dataDir, true),
-              kv('缓存记录', status.records == null ? '—' : String(status.records)),
+              kv('缓存 provider', status.providers && status.providers.length ? status.providers.join(' · ') : '—', true),
               kv('已指向客户端', pointedCount + ' 台')))
         : h('div', { className: 'zen-empty' },
             h('span', { className: 'ze-ico' }, h(Icon, { name: 'cube', size: 26 })),
@@ -468,9 +483,13 @@ import {
             h('button', { className: 'zlink-all', onClick: toggleSelectUnpointed, disabled: selectableUnpointed.length === 0 },
               allUnpointedSelected ? '取消选择' : '选中全部未指向（' + selectableUnpointed.length + '）'),
             h('div', { className: 'zcli-go' },
-              h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'link', size: 14 }), isDisabled: onlineSel.length === 0 || !deployed, onPress: () => previewApply(sel) },
+              h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'link', size: 14 }), isDisabled: onlineSel.length === 0 || !canPoint, onPress: () => previewApply(sel) },
                 onlineSel.length ? '指向此服务器（' + onlineSel.length + '）' : '指向此服务器'))),
-          !deployed ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }), '尚未部署服务器，先在上方①部署一台，再把客户端指向它。') : null,
+          !deployed
+            ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }), '尚未部署服务器，先在上方①部署一台，再把客户端指向它。')
+            : !canPoint
+              ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }), '服务器已部署但当前未在运行（' + sMeta.label + '）—— 先在上方①启动 / 探活确认运行中，再指向客户端。')
+              : null,
           h('div', { className: 'cli-note' }, h(Icon, { name: 'shield', size: 13 }),
             '应用 = 改这些机器的缓存配置（写 [StorageServers] Shared）指向上方服务器；远程操作走 SSH key，逐台执行、逐台看成败。'),
           h('div', { className: 'cli-list' }, clients.map(clientRow)))));

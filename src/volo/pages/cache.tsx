@@ -89,24 +89,28 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
   function openPreview(s, spec) { s.setDrawer(Object.assign({ kind: 'preview' }, spec)); }
 
   /* =================== cluster status + actions =================== */
-  /* 真实「立即巡检」：并行跑 run_health_check + scan_inis（后端已改 async，不冻结 UI）。
+  /* 真实「立即巡检」：顺序跑 scan_inis → run_health_check（后端已改 async，不冻结 UI）。
      machine_ids 取在线非共享机；credential_alias 走 SSH key 传 ''；project_paths 从已加载
-     工程的 root 取（避免无 UE 安装机 scan_inis 报 0 文件）。完成后 reloadCache 拉新结果。 */
+     工程的 root 取（避免无 UE 安装机 scan_inis 报 0 文件）。完成后 reloadCache 拉新结果。
+     · 串行而非并行：健康检查的 ini_consistency 探测读 DB 里最新 INI 结果，先扫 INI 再巡检才不读旧数据；
+       两条都对同批机器开远程会话，串行更稳。
+     · 局部失败不掩成全绿：记录失败项，仅两条全挂才整体失败，否则 okMsg 显式标「部分完成 + 原因」。 */
   function refreshScan(s) {
     const nodes = RENDER_NODES.filter((n) => n.roleKey !== 'shared' && n.status !== 'offline');
     const ids = nodes.map((n) => n.machineId).filter((x) => x != null && x !== 0);
     if (!ids.length) return;
     const roots = Array.from(new Set((window.UE_PROJECTS || []).map((p) => p.root).filter((r) => r && r !== '—')));
     s.runCmd({ domain: 'health', action: 'run', target: ids.length + ' 台', chan: 'winrm', note: '健康巡检 + INI 一致性检查' },
-      () => Promise.allSettled([
-        runHealthCheck({ machine_ids: ids, credential_alias: '', project_paths: roots, expected_local_path: null, expected_shared_path: null }),
-        scanInis({ machine_ids: ids, credential_alias: '', project_paths: roots, user_profile_path: null }),
-      ]).then((rs) => {
-        const ok = rs.filter((r) => r.status === 'fulfilled').length;
-        if (!ok) throw new Error('巡检与 INI 检查均失败');
-        return ok;
-      }),
-      { okMsg: () => '巡检完成 · 已更新健康与 INI 结果' })
+      async () => {
+        const fail = [];
+        try { await scanInis({ machine_ids: ids, credential_alias: '', project_paths: roots, user_profile_path: null }); }
+        catch (e) { fail.push('INI 检查（' + (e && e.message ? e.message : String(e)) + '）'); }
+        try { await runHealthCheck({ machine_ids: ids, credential_alias: '', project_paths: roots, expected_local_path: null, expected_shared_path: null }); }
+        catch (e) { fail.push('健康巡检（' + (e && e.message ? e.message : String(e)) + '）'); }
+        if (fail.length === 2) throw new Error('巡检与 INI 检查均失败');
+        return fail;
+      },
+      { okMsg: (fail) => fail.length ? ('部分完成 · ' + fail.join(' / ') + ' 失败，其余结果已更新') : '巡检完成 · 已更新健康与 INI 结果' })
       .then(() => s.reloadCache(), () => {});
   }
   function clusterChips() {

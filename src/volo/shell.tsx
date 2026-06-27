@@ -492,12 +492,26 @@ function App() {
         ? { lv: 'ok', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 完成` }
         : { lv: 'err', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 失败 · exit ${ex}` });
       uns.forEach((u) => { try { u(); } catch (e) {} });
+      if (wiring.onDone) { try { wiring.onDone(ok); } catch (e) {} } /* 完成回调（如收集后重载列表）*/
+    };
+    /* 空闲超时计时器：每收到一个真实事件就重置 → 持续出进度的健康长任务永不误判，
+       只有真·timeoutMs 内零事件才触发；到点调 onTimeout(jobId)（如 cancelUeJob）避免孤儿进程。 */
+    const armTimer = () => {
+      if (!wiring.timeoutMs || finished) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (finished) return;
+        pushLog({ lv: 'warn', cat: domain, ch: chan, task: no, msg: `超时 ${Math.round(wiring.timeoutMs / 60000)} 分钟无进度事件，停止等待` });
+        if (wiring.onTimeout && jobId != null) { try { wiring.onTimeout(jobId); } catch (e) {} }
+        finalize(false, 124);
+      }, wiring.timeoutMs);
     };
     const apply = (ev, p) => {
       const r = wiring.reduce(ev, p, st) || {};
       if (r.log && r.log.msg) pushLog({ lv: r.log.lv || 'info', cat: domain, ch: chan, task: no, msg: esc(r.log.msg) });
       if (r.pct != null) setPct(r.pct);
       if (r.done) finalize(!!r.ok, r.exit);
+      else armTimer(); /* 每个非终态事件重置空闲计时器 */
     };
     const handler = (ev) => (e) => {
       const p = e.payload;
@@ -523,14 +537,9 @@ function App() {
       if (wiring.total) st.total = wiring.total(resp); /* 分发流：reducer 数到 st.total 即收尾 */
       buf.forEach(([ev, p]) => { if (!isMine || isMine(p, jobId)) apply(ev, p); });
       if (st.total === 0) finalize(true, 0); /* 空 plan：无事件，立即收尾 */
-      else if (wiring.timeoutMs && !finished) {
-        /* 客户端超时兜底：generate_ddc_pak 后端无 watchdog，若 UE 异常退出/被杀且
-           日志未命中精确终止串，后端永不发 completed → 任务会永久卡 running。到点
-           标失败并 unlisten，避免僵任务（PSO 后端有 watchdog，此为双保险）。 */
-        timer = setTimeout(() => {
-          if (!finished) { pushLog({ lv: 'warn', cat: domain, ch: chan, task: no, msg: '超时未收到终止事件，停止等待' }); finalize(false, 124); }
-        }, wiring.timeoutMs);
-      }
+      else armTimer(); /* 武装空闲超时兜底：generate_ddc_pak 等后端无 watchdog，UE 异常退出且
+                          日志未命中终止串时后端永不发 completed → 任务卡 running。空闲超时到点
+                          调 onTimeout(jobId) 取消后端 job + 标失败，避免僵任务（PSO 有 watchdog，此为双保险）。 */
     } else {
       finalize(true, 0); /* 'await' 模式：kickoff 已是终态 */
     }

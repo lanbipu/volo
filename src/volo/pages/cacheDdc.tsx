@@ -251,8 +251,9 @@ import { deleteShare as deleteShareCmd, discoverProjects, createShare,
       s.runStreamingCmd(
         { domain: 'pso', action: 'collect', target: p.name, chan: 'winrm', note: '收集 PSO 缓存 · ' + p.name + '（长任务 · NDJSON）' },
         () => startPsoCollection(src.machineId, Number(p.id), rw, rh, true, mm, null, null),
-        { mode: 'event', events: ['ue-runner-progress', 'pso-collect-finalized'], jobIdOf: (r) => r.job_id, reduce: psoReduce, timeoutMs: (mm + 5) * 60 * 1000 })
-        .then(() => loadPsoFor(p.id), () => loadPsoFor(p.id));
+        { mode: 'event', events: ['ue-runner-progress', 'pso-collect-finalized'], jobIdOf: (r) => r.job_id, reduce: psoReduce,
+          timeoutMs: (mm + 5) * 60 * 1000, onDone: () => loadPsoFor(p.id) }) /* 真·完成（finalize）才重载 PSO 列表，不在 kickoff resolve 时重载空列表 */
+        .catch(() => {}); /* kickoff 失败已在内部标失败，吞掉 rejection */
     };
     /* 真实分发（流式）：PAK 用 source(pakSrc/工程 primary)+project；PSO 用 file_id(art.id)。
        目标机来自确认门里编辑后的选择（排除源机、转 numeric machineId）。PSO 默认
@@ -280,7 +281,8 @@ import { deleteShare as deleteShareCmd, discoverProjects, createShare,
             () => isPso
               ? distributePsoCache({ file_id: art.id, target_machine_ids: targets, named_share_unc: null, operator_credential_alias: null, source_smb_credential_alias: null, force_gpu_mismatch: false })
               : distributeDdcPak(srcId, Number(pakProj), targets, null, null, null),
-            { mode: 'event', events: [evName], jobIdOf: (r) => r.job_id, total: (r) => (r.plan || []).length, reduce: batchReduce });
+            { mode: 'event', events: [evName], jobIdOf: (r) => r.job_id, total: (r) => (r.plan || []).length, reduce: batchReduce,
+              timeoutMs: 30 * 60 * 1000 });  /* 空闲超时兜底：单台拷贝间隔超 30 分钟无任何 batch 事件才判超时 */
         },
       });
     };
@@ -324,18 +326,21 @@ import { deleteShare as deleteShareCmd, discoverProjects, createShare,
     /* 文件系统 DDC = 共享 DDC（上）+ 本地 DDC（下，逐台列表）*/
     const onlineLocalTargets = RENDER_NODES.filter((n) => n.status !== 'offline');
     const setLocalDir = (id, v) => setLocalDirs((m) => Object.assign({}, m, { [id]: v }));
+    /* localDirs 的初值在 mount 时算（那会儿 RENDER_NODES 还是空），机器异步到达后不会回填 →
+       读 localDirs[n.id] 会是 undefined。这里按机器盘符给默认值兜底，用户改过的覆盖优先。 */
+    const localDirOf = (n) => localDirs[n.id] || ((/^([A-Za-z]):/.test(n.uePath || '') ? n.uePath[0].toUpperCase() : 'D') + ':\\UE_DDC\\Local');
     const deployLocalOne = (n) => CX.openPreview(s, {
       title: '部署本地 DDC · ' + n.host, icon: 'server', cli: 'local-cache create', destructive: false, channel: 'winrm', confirmLabel: '部署',
-      steps: ['在这台机器本地新建缓存目录 ' + localDirs[n.id], '作为找不到共享缓存时的本地兜底，配置后自动复核'],
-      simpleScope: [{ host: n.host, ip: n.ip, msg: localDirs[n.id] }],
-      task: { domain: 'local-cache', action: 'create', target: n.host, chan: 'winrm', note: '本地 DDC 已部署 · ' + localDirs[n.id],
-        lines: [{ msg: 'local-cache create ' + localDirs[n.id] }, { lv: 'ok', msg: n.host + ' 本地缓存层已就绪' }] },
+      steps: ['在这台机器本地新建缓存目录 ' + localDirOf(n), '作为找不到共享缓存时的本地兜底，配置后自动复核'],
+      simpleScope: [{ host: n.host, ip: n.ip, msg: localDirOf(n) }],
+      task: { domain: 'local-cache', action: 'create', target: n.host, chan: 'winrm', note: '本地 DDC 已部署 · ' + localDirOf(n),
+        lines: [{ msg: 'local-cache create ' + localDirOf(n) }, { lv: 'ok', msg: n.host + ' 本地缓存层已就绪' }] },
       onConfirm: () => setLocalDeployed((d) => d.includes(n.id) ? d : d.concat(n.id)),
     });
     const deployLocalAll = () => CX.openPreview(s, {
       title: '一键部署本地 DDC', icon: 'bolt', cli: 'local-cache create', destructive: false, channel: 'winrm', confirmLabel: '部署 ' + onlineLocalTargets.length + ' 台',
       steps: ['为这些机器逐台在本地新建缓存目录', '作为找不到共享缓存时的本地兜底，配置后自动复核'],
-      simpleScope: onlineLocalTargets.map((n) => ({ host: n.host, ip: n.ip, msg: localDirs[n.id] })),
+      simpleScope: onlineLocalTargets.map((n) => ({ host: n.host, ip: n.ip, msg: localDirOf(n) })),
       task: { domain: 'local-cache', action: 'create', target: onlineLocalTargets.length + ' 台', chan: 'winrm', note: '一键部署本地 DDC（' + onlineLocalTargets.length + ' 台）',
         lines: [{ msg: 'local-cache create ×' + onlineLocalTargets.length }, { lv: 'ok', msg: onlineLocalTargets.length + ' 台本地缓存层已就绪' }] },
       onConfirm: () => setLocalDeployed((d) => Array.from(new Set(d.concat(onlineLocalTargets.map((n) => n.id))))),
@@ -348,7 +353,7 @@ import { deleteShare as deleteShareCmd, discoverProjects, createShare,
         h('div', { className: 'cli-meta' },
           h('div', { className: 'cli-host mono' }, n.host),
           h('div', { className: 'cli-sub' }, n.ip + ' · ' + n.role)),
-        h('input', { className: 'cli-pathin mono', value: localDirs[n.id], disabled: off,
+        h('input', { className: 'cli-pathin mono', value: localDirOf(n), disabled: off,
           spellCheck: false, onChange: (e) => setLocalDir(n.id, e.target.value) }),
         h('div', { className: 'local-act' },
           off ? h('span', { className: 'cli-badge off' }, h(Icon, { name: 'power', size: 11 }), '离线')
