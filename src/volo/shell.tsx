@@ -260,6 +260,32 @@ function LogPanel({ s }) {
       : null);
 }
 
+/* ---------- 顶层渲染保护 ----------
+   全应用此前无 error boundary：任一面板渲染抛错（如 cacheZen 那次 Hooks 顺序违规）
+   都会让 React 卸载整棵树 → 纯黑屏。这里给每个渲染槽包一层，单个面板崩只显示局部错误卡，
+   外壳 / 导航 / 其余面板照常可用。每个槽用随 page/cacheNav 变化的 key → 切页即 remount 清错误。 */
+class ErrBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err: err }; }
+  componentDidCatch(err, info) {
+    try { console.error('[volo] 面板渲染异常 · ' + (this.props.slot || ''), err, info && info.componentStack); } catch (e) {}
+  }
+  render() {
+    if (!this.state.err) return this.props.children;
+    const msg = this.state.err && this.state.err.message ? this.state.err.message : String(this.state.err);
+    return React.createElement('div', { className: 'res', style: { padding: 22, minWidth: 0 } },
+      React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 9, maxWidth: 560 } },
+        React.createElement('div', { style: { fontSize: 14, fontWeight: 700, color: 'var(--negative-visual)' } }, '这个面板渲染出错了'),
+        React.createElement('div', { style: { fontSize: 12, lineHeight: 1.6, color: 'var(--chrome-dim)' } }, '其余面板与导航仍可正常使用 —— 切换到别的页面，或点下方「重试」即可恢复。'),
+        React.createElement('div', { style: { fontSize: 11.5, fontFamily: 'var(--font-code)', wordBreak: 'break-all', color: 'var(--chrome-faint)', background: 'var(--sunken)', borderRadius: 8, padding: '8px 11px' } }, msg),
+        React.createElement('button', { className: 'mini-btn', style: { alignSelf: 'flex-start' }, onClick: () => this.setState({ err: null }) }, '重试')));
+  }
+}
+/* Slot：把渲染槽的「调用」也放进 boundary 子树内。若在 App render 里直接求值 pg.center(s)，
+   函数同步抛错会逃出外层 ErrBoundary（错误发生在 App 自己的 render 期）；改由 Slot 子组件调用
+   render thunk，则连「槽函数本身同步抛」也落在 boundary 子树内 → 能被捕获。 */
+function Slot(props) { return props.render(); }
+
 /* ---------- App ---------- */
 function App() {
   const persisted = (() => { try { return JSON.parse(localStorage.getItem('volo2') || '{}'); } catch (e) { return {}; } })();
@@ -568,24 +594,27 @@ function App() {
   const { TweaksPanel, TweakSection, TweakRadio, TweakToggle } = window;
   const pg = window.VOLO_PAGES[page] || window.VOLO_PAGES.tools;
   const mac = platform === 'mac';
+  /* 把每个页面渲染槽包进 error boundary；render 是 thunk（在 Slot 子组件内调用，使槽函数本身的
+     同步抛错也被捕获）；key 随 page/cacheNav 变 → 切页/切视图即清错误。 */
+  const guard = (slot, render) => h(ErrBoundary, { key: 'eb-' + slot + '-' + page + '-' + cacheNav, slot: slot }, h(Slot, { render: render }));
   return h('div', { className: 'desktop is-' + platform + (density === 'clean' ? ' clean' : '') },
     /* SysBar 隐藏：mac 原生系统菜单栏（src-tauri set_menu）已提供真实功能菜单，
        in-window SysBar 是浏览器原型对系统菜单栏的冗余模拟（SysBar 仍保留定义作设计参照） */
     null,
     h('div', { className: 'win is-' + platform },
       mac ? h(MacTitleBar, { s }) : h(WinTopBar, { s }),
-      h('div', { className: 'ctxbar' }, pg.ctx(s), h(DrawerToggle, { s, style: { marginLeft: 'auto', flex: '0 0 auto' } })),
+      h('div', { className: 'ctxbar' }, guard('ctx', () => pg.ctx(s)), h(DrawerToggle, { s, style: { marginLeft: 'auto', flex: '0 0 auto' } })),
       h('div', { className: 'body', style: { gridTemplateColumns: `${leftCollapsed ? 0 : leftW}px ${leftCollapsed ? 0 : 6}px minmax(0,1fr) ${rightCollapsed ? 0 : 6}px ${rightCollapsed ? 0 : rightW}px` } },
-        h('div', { className: 'leftcol' + (leftCollapsed ? ' is-collapsed' : '') }, pg.left(s)),
+        h('div', { className: 'leftcol' + (leftCollapsed ? ' is-collapsed' : '') }, guard('left', () => pg.left(s))),
         h('div', { className: 'resizer resizer--col' + (leftCollapsed ? ' is-hidden' : ''), title: '拖动调整宽度',
           onPointerDown: (e) => { if (leftCollapsed) return; startResize(e, 'x', 1, leftW, setLeftW, 170, 380); } }),
-        h('div', { className: 'center' }, pg.center(s)),
+        h('div', { className: 'center' }, guard('center', () => pg.center(s))),
         h('div', { className: 'resizer resizer--col' + (rightCollapsed ? ' is-hidden' : ''), title: '拖动调整宽度',
           onPointerDown: (e) => { if (rightCollapsed) return; startResize(e, 'x', -1, rightW, setRightW, 240, 480); } }),
-        h('div', { className: 'inspector' + (rightCollapsed ? ' is-collapsed' : '') }, pg.inspector(s)),
+        h('div', { className: 'inspector' + (rightCollapsed ? ' is-collapsed' : '') }, guard('inspector', () => pg.inspector(s))),
         s.drawer && pg.drawer ? h(React.Fragment, null,
           h('div', { className: 'scrim', onClick: () => s.setDrawer(null) }),
-          pg.drawer(s)) : null),
+          guard('drawer', () => pg.drawer(s))) : null),
       h(LogPanel, { s }),
       h(PageTabs, { s })),
     TweaksPanel ? h(TweaksPanel, { title: 'Tweaks' },
