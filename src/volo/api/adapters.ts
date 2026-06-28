@@ -5,6 +5,7 @@
    fields the backend cannot provide with safe placeholders ("—" / null / "na")
    so no consumer crashes and no fabricated metric is invented. */
 import type { Machine, CredentialRecord, ShareConfig, ProjectSummary, ProjectLocation, HealthCheckRow, IniFinding } from "./types";
+/* Machine is referenced by toShareVM (host_machine_id → hostname reverse-lookup). */
 
 /* ----------------------------- machine ----------------------------- */
 /** Shape the Cache page reads off each node (RENDER_NODES element). */
@@ -132,17 +133,25 @@ export interface ShareVM {
   id: string;
   shareConfigId: number;
   path: string;
+  /** 宿主机器主机名（host_machine_id 反查 machines）；未命中机器列表时 "—"。 */
+  host: string;
+  /** 宿主机器渲染 id = String(host_machine_id)，与 NodeVM.id 对齐，供部署面板
+   *  匹配「该服务器是否已部署共享」（srvShare = shares.find(hostId === srv)）。 */
+  hostId: string;
   mode: string;
   clients: number;
   size: string;
   status: "healthy" | "warning";
 }
 
-export function toShareVM(s: ShareConfig): ShareVM {
+export function toShareVM(s: ShareConfig, machines: Machine[] = []): ShareVM {
+  const hostM = machines.find((m) => (m.id ?? 0) === s.host_machine_id);
   return {
     id: String(s.id ?? 0),
     shareConfigId: s.id ?? 0,
     path: s.unc_path,
+    host: hostM ? hostM.hostname : "—",
+    hostId: String(s.host_machine_id),
     mode: s.mode === "open" ? "Mode A · 开放" : "Mode B · 专用账号",
     clients: 0,
     size: "—",

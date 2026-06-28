@@ -236,10 +236,74 @@ pub fn delete_share(
     share_config_id: i64,
     also_remove_remote: bool,
 ) -> UecmResult<()> {
-    // TODO(plan-4): when `ps-scripts/remove-share.ps1` lands, branch on
-    // `also_remove_remote` to call Remove-SmbShare + (Mode B) Remove-LocalUser.
-    // For Plan 3 v1 we delete the SQLite row only.
+    // delete_share = pure unmanage: drop the SQLite row only, leave the remote
+    // share serving. To actually un-deploy the share on the host (Remove-SmbShare
+    // + Mode-B account, keep folder) use `teardown_share` instead.
     let _ = also_remove_remote;
     data_shares::delete(&db, share_config_id)?;
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+pub struct TeardownShareResult {
+    pub share_config_id: i64,
+    pub host: String,
+    pub share_name: String,
+    pub kept_files: bool,
+    pub message: String,
+}
+
+/// Tear down an SMB share *on the host*: stop sharing the folder
+/// (`Remove-SmbShare`) and, for Mode B, remove the dedicated `ddc-svc` account.
+/// `keep_files = true` keeps the folder + cached files on disk. On success the
+/// SQLite share row (and any Mode-B credential/secret) is dropped so the share
+/// leaves the managed list. Distinct from `delete_share`, which only unmanages.
+#[tauri::command]
+pub fn teardown_share(
+    db: State<'_, Db>,
+    share_config_id: i64,
+    keep_files: bool,
+) -> UecmResult<TeardownShareResult> {
+    let share = data_shares::find_by_id(&db, share_config_id)?.ok_or_else(|| {
+        UecmError::InvalidInput(format!("share_config {} not found", share_config_id))
+    })?;
+    let host_ip = host_ip(&db, share.host_machine_id)?;
+    let host_hn = host_hostname(&db, share.host_machine_id)?;
+
+    // Mode B: the dedicated svc account (username on the credential row keyed by
+    // the share alias) is removed together with the share.
+    let svc_username: Option<String> = match share.mode {
+        ShareMode::Managed => share
+            .credential_alias
+            .as_deref()
+            .and_then(|alias| data_creds::find_by_alias(&db, alias).ok().flatten())
+            .map(|c| c.username),
+        ShareMode::Open => None,
+    };
+
+    let message = core_shares::teardown(
+        &host_ip,
+        &share.share_name,
+        svc_username.as_deref(),
+        Some(&share.local_path),
+        keep_files,
+    )?;
+
+    // Remote teardown succeeded — drop local bookkeeping. Mode B: also remove the
+    // stored secret + credential row so the freed alias doesn't linger in the UI.
+    if let Some(alias) = share.credential_alias.as_deref() {
+        if let Ok(store) = cache_core::core::secrets::SecretStore::from_config() {
+            let _ = store.delete(alias);
+        }
+        let _ = data_creds::delete_by_alias(&db, alias);
+    }
+    data_shares::delete(&db, share_config_id)?;
+
+    Ok(TeardownShareResult {
+        share_config_id,
+        host: host_hn,
+        share_name: share.share_name,
+        kept_files: keep_files,
+        message,
+    })
 }

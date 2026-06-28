@@ -17,7 +17,7 @@ import type {
   ScanResult, RefreshResult, CredentialRecord, CredentialKind,
   IniKey, WriteIniResponse, ScanInisRequest, ScanInisResponse, IniFinding, ScanRun,
   VerifyReport, DeployPlan, DeployStep, GpuMatrix, ConsistencyResult,
-  ShareMode, CreateShareResponse, InjectionResult, ShareConfig,
+  ShareMode, CreateShareResponse, TeardownShareResult, InjectionResult, ShareConfig,
   ProjectSummary, ProjectLocation, DiscoveryResult,
   BackendChoice, GenerateJobResponse, PakOutput, DistributeJobResponse,
   PsoCollectJobResponse, PsoCacheFile, DistributePsoCacheRequest, PsoDistributeJobResponse,
@@ -81,6 +81,11 @@ export const setMachineEnvVarWithCredential = (machineId: number, name: string, 
 // 📝 no-ui: 凭据变体，无 UI 入口
 export const getMachineEnvVarWithCredential = (machineId: number, name: string, credentialAlias: string) =>
   call<string | null>("get_machine_env_var_with_credential", { machineId, name, credentialAlias });
+
+/* ----------------------------- local cache ----------------------------- */
+// ✅ wired: cacheDdc 本地 DDC 部署（单机/批量）→ createLocalCache 远端建目录+ACL，再 set UE-LocalDataCachePath
+export const createLocalCache = (machineId: number, localPath: string) =>
+  call<string>("create_local_cache", { machineId, localPath });
 
 /* ----------------------------- ini editor ----------------------------- */
 // ✅ wired: machineDetail ⑥ → readIniSection(DefaultEngine.ini,[StorageServers])（路径从工程 location 推）
@@ -172,9 +177,12 @@ export const injectShareCredentialToClients = (shareConfigId: number, clientMach
   call<InjectionResult[]>("inject_share_credential_to_clients", { shareConfigId, clientMachineIds, operatorCredentialAlias: operatorCredentialAlias ?? null });
 // ✅ wired: shell → loadCacheResources → window.SHARES（已纳管共享列表）
 export const listShares = () => call<ShareConfig[]>("list_shares");
-// ✅ wired: cacheDdc deleteShare 解除纳管 → deleteShare(id,false) + reloadCache
+// ✅ wired: cacheDdc deleteShare「取消服务器」（仅解除纳管）→ deleteShare(id,false) + reloadCache
 export const deleteShare = (shareConfigId: number, alsoRemoveRemote: boolean) =>
   call<void>("delete_share", { shareConfigId, alsoRemoveRemote });
+// ✅ wired: cacheDdc undeploySMB「取消该服务器部署」→ teardownShare(id, keepFiles=true)（Remove-SmbShare + Mode B Remove-LocalUser，保留文件夹）+ reloadCache
+export const teardownShare = (shareConfigId: number, keepFiles: boolean) =>
+  call<TeardownShareResult>("teardown_share", { shareConfigId, keepFiles });
 
 /* ----------------------------- projects ----------------------------- */
 // ✅ wired: shell → loadProjects → window.UE_PROJECTS（DDC PAK/PSO 工程列表）

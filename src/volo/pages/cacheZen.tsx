@@ -72,7 +72,7 @@ import {
     /* —— 服务器表单状态 —— */
     const firstServer = () => { const ns = window.RENDER_NODES || []; return (ns.find((n) => n.roleKey !== 'shared') || ns[0] || {}).id || null; };
     const [srvId, setSrvId] = useState(firstServer);
-    const [port, setPort] = useState('1337');
+    const [port, setPort] = useState('8558');  /* UE ZenServer 真实默认端口 */
     const [protocol, setProtocol] = useState('http');
     const [dataDir, setDataDir] = useState('D:\\ZenData');
     const [configPath, setConfigPath] = useState('D:\\ZenData\\config\\zen.lua');
@@ -151,7 +151,7 @@ import {
       const svcUser = acctKind === 'domain' ? (domUser.trim() || null) : null;
       const svcPass = acctKind === 'domain' ? (domPass || null) : null;
       if (id === 'register') {
-        const o = await zenRegister({ machine_id: mid, declared_port: Number(port) || 1337, scheme: protocol,
+        const o = await zenRegister({ machine_id: mid, declared_port: Number(port) || 8558, scheme: protocol,
           role: 'shared_upstream', data_dir: dataDir, httpserverclass: httpType, lifecycle: 'installed_service' });
         epRef.current = o && o.endpoint_id != null ? o.endpoint_id : epRef.current;
         if (epRef.current == null) throw new Error('登记未返回 endpoint_id');

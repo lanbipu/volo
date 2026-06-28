@@ -1627,7 +1627,9 @@ html, body {
 .dp-field { display: flex; flex-direction: column; gap: 6px; }
 .dp-field label { font-size: 11px; color: var(--chrome-dim); }
 .dp-input { all: unset; font-size: 12.5px; color: var(--chrome-text); background: var(--sunken); border: 1px solid var(--chrome-line-2); border-radius: 8px; padding: 8px 12px; min-width: 220px; }
-.dp-go { margin-left: auto; }
+.dp-go { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.dp-deployed { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--positive-visual); }
+.dp-deployed svg { flex: 0 0 auto; }
 .dp-note { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 11.5px; color: var(--chrome-faint); }
 .dp-note svg { color: var(--positive-visual); flex: 0 0 auto; }
 .deploy-panel .readback { margin-top: 13px; }
@@ -1664,6 +1666,17 @@ html, body {
 .cli-pathin:focus { outline: none; border-color: var(--volo-700); box-shadow: 0 0 0 2px color-mix(in srgb, var(--volo-700) 22%, transparent); }
 .cli-pathin:disabled { opacity: 0.45; cursor: not-allowed; }
 .local-act { display: flex; align-items: center; gap: 9px; flex: 0 0 auto; justify-content: flex-end; min-width: 168px; }
+/* local DDC · 行内勾选框 + 多选批量栏（取消部署 / 批量部署接真实后端）*/
+.lcheck { all: unset; cursor: pointer; flex: 0 0 auto; display: grid; place-items: center; }
+.lcheck.dis { cursor: not-allowed; }
+.cli-row.local.sel { border-color: color-mix(in srgb, var(--volo-500) 45%, transparent); background: color-mix(in srgb, var(--volo-500) 7%, var(--chrome-card)); }
+.share-host { display: inline-flex; align-items: center; gap: 3px; margin-left: 8px; font-size: 10.5px; font-weight: 700; color: var(--chrome-dim); background: var(--wash); border: 1px solid var(--chrome-line); padding: 1px 6px; border-radius: 5px; vertical-align: middle; }
+.share-host svg { color: var(--volo-500); flex: 0 0 auto; }
+.local-selbar { display: flex; align-items: center; gap: 12px; margin-top: 12px; padding: 9px 12px; background: var(--chrome-card); border: 1px dashed var(--chrome-line-2); border-radius: 9px; }
+.local-selbar.on { border-style: solid; border-color: color-mix(in srgb, var(--volo-500) 40%, transparent); background: color-mix(in srgb, var(--volo-500) 6%, var(--chrome-card)); }
+.lsb-all { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: var(--chrome-text); flex: 0 0 auto; }
+.lsb-ct { font-size: 11.5px; color: var(--chrome-faint); margin-right: auto; }
+.lsb-acts { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .content-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .content-grid.single { grid-template-columns: minmax(0, 560px); }
 .content-card { background: var(--chrome-card); border: 1px solid var(--chrome-line); border-radius: 12px; padding: 14px 15px; }
@@ -1689,6 +1702,10 @@ html, body {
 .proj-row.on { border-color: color-mix(in srgb, var(--volo-700) 40%, transparent); background: color-mix(in srgb, var(--volo-500) 7%, var(--sunken)); box-shadow: inset 2.5px 0 0 0 var(--volo-500); }
 .proj-mck { width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--chrome-line-2); display: grid; place-items: center; flex: 0 0 auto; color: #fff; }
 .proj-row.on .proj-mck { background: var(--volo-500); border-color: var(--volo-500); }
+/* standalone mck states (行内勾选框 / 全选「部分」态)：proj-row 上下文之外也要能填充 */
+.proj-mck.on { background: var(--volo-500); border-color: var(--volo-500); }
+.proj-mck.part { background: var(--volo-500); border-color: var(--volo-500); }
+.proj-mck.dis { opacity: 0.5; }
 .proj-ico { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; flex: 0 0 auto; color: var(--volo-400); background: var(--wash-2); }
 .proj-row.on .proj-ico { color: #fff; background: var(--volo-500); }
 .proj-main { flex: 1; min-width: 0; }
