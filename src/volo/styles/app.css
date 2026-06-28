@@ -1657,6 +1657,11 @@ html, body {
 .cli-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 5px; flex: 0 0 auto; }
 .cli-badge.ok { color: var(--positive-visual); background: color-mix(in srgb, var(--positive-visual) 14%, transparent); }
 .cli-badge.off { margin-left: auto; color: var(--chrome-faint); background: var(--sunken); }
+.cli-badge.none { color: var(--chrome-faint); background: var(--sunken); }
+.cli-badge.pend { color: var(--notice-visual); background: color-mix(in srgb, var(--notice-visual) 14%, transparent); }
+.cli-badge.pend svg { animation: spin360 1.1s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .cli-badge.pend svg { animation: none; } }
+.cli-badge.alt { color: var(--informative-visual); background: color-mix(in srgb, var(--informative-visual) 14%, transparent); }
 .cli-row .mini-btn.join { margin-left: auto; }
 /* local DDC · per-machine path + deploy */
 .local-hint { display: flex; align-items: center; gap: 8px; margin-right: auto; font-size: 12px; font-weight: 600; color: var(--chrome-dim); white-space: nowrap; }
@@ -1666,6 +1671,14 @@ html, body {
 .cli-pathin:focus { outline: none; border-color: var(--volo-700); box-shadow: 0 0 0 2px color-mix(in srgb, var(--volo-700) 22%, transparent); }
 .cli-pathin:disabled { opacity: 0.45; cursor: not-allowed; }
 .local-act { display: flex; align-items: center; gap: 9px; flex: 0 0 auto; justify-content: flex-end; min-width: 168px; }
+/* ② 其他服务器加入共享 DDC · 逐机环境变量行 */
+.cli-row.join .cli-meta { width: 190px; flex: 0 0 auto; }
+.cli-row.join .local-act { min-width: 168px; }
+.cli-envvar { display: flex; align-items: baseline; gap: 6px; min-width: 0; flex: 1; font-size: 11px; }
+.cli-envvar .ev-k { color: var(--chrome-dim); font-weight: 600; white-space: nowrap; flex: 0 0 auto; }
+.cli-envvar .ev-eq { color: var(--chrome-faint); flex: 0 0 auto; }
+.cli-envvar .ev-v { color: var(--volo-400); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.cli-envvar .ev-v.none { color: var(--chrome-faint); }
 /* local DDC · 行内勾选框 + 多选批量栏（取消部署 / 批量部署接真实后端）*/
 .lcheck { all: unset; cursor: pointer; flex: 0 0 auto; display: grid; place-items: center; }
 .lcheck.dis { cursor: not-allowed; }
@@ -2060,6 +2073,21 @@ html, body {
 .zen-col { min-width: 0; display: flex; flex-direction: column; }
 .zen-col .ddc-sec-h:first-child { margin-top: 0; }
 .zen-col > .cli-panel { margin-top: 0; }
+.zen-col > .be-block > .deploy-panel { margin-top: 0; }
+/* 统一路径开关（③ 本地 DDC cli-top 右侧）*/
+.cli-unify { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: 0 0 auto; }
+.cli-unify label { font-size: 11px; font-weight: 700; color: var(--chrome-dim); white-space: nowrap; }
+/* ---- 文件系统 DDC 两列布局：窄列内自适应（路径输入 / 环境变量各自换到第二行）---- */
+.zen-col .cli-top { flex-direction: column; align-items: stretch; gap: 10px; }
+.zen-col .cli-unify { margin-left: 0; width: 100%; }
+.zen-col .cli-unify input { flex: 1 1 auto; width: auto !important; min-width: 0; }
+.zen-col .cli-go { width: 100%; }
+.zen-col .cli-server-chip { width: 100%; }
+.zen-col .cli-row.local, .zen-col .cli-row.join { flex-wrap: wrap; row-gap: 8px; }
+.zen-col .cli-row.local .cli-meta, .zen-col .cli-row.join .cli-meta { width: auto; flex: 1 1 auto; }
+.zen-col .cli-row.local .local-act, .zen-col .cli-row.join .local-act { min-width: 0; margin-left: auto; }
+.zen-col .cli-row.local .cli-pathin { order: 9; flex: 1 1 100%; min-width: 0; }
+.zen-col .cli-row.join .cli-envvar { order: 9; flex: 1 1 100%; }
 @media (max-width: 1180px) {
   .zen-2col { grid-template-columns: minmax(0, 1fr); }
 }

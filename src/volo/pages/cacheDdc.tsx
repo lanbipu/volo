@@ -433,7 +433,14 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
           : h('div', { className: 'id-note' }, h(Icon, { name: 'eye', size: 12 }), p ? '该工程尚无已收集的 PSO 缓存产物。' : '选中工程后这里会列出它的 PSO 缓存产物。')));
   }
 
-  /* =================== 文件系统 DDC（本地 + 共享）— 整页视图，保持原行为（真实后端）=================== */
+  /* =================== 文件系统 DDC（本地 + 共享）— 双列视图，接真实后端 ===================
+     左列：① 共享 DDC（SMB）服务器部署 + 已纳管共享 + ② 其他服务器加入共享 DDC（写环境变量 + 工程 INI）。
+     右列：③ 本地 DDC（统一路径一键 + 逐台 + 多选批量）。
+     部署 / 加入类动作「直接执行」：点击即跑真实命令，期间显示「部署中…/加入中…」徽标，任务真正落地
+     （promise resolve）后才翻状态——不再走 openPreview 确认门。① 服务器创建（create_share）/ 拆除
+     （teardown_share）/ 解除纳管（delete_share）仍走确认门（破坏性、影响整集群）。
+     localDeployed / shareJoined 无 NodeVM 字段，挂载时对在线机 fan-out 读 UE-Local/SharedDataCachePath
+     得真实状态（statusLoading 期间徽标显示「读取中…」，不假报「未部署」）。 */
   function LegacyView({ s }) {
     const [srv, setSrv] = useState('rn0');
     const [localDirs, setLocalDirs] = useState(() => {
@@ -441,26 +448,82 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       RENDER_NODES.forEach((n) => { const drv = /^([A-Za-z]):/.test(n.uePath) ? n.uePath[0].toUpperCase() : 'D'; m[n.id] = drv + ':\\UE_DDC\\Local'; });
       return m;
     });
-    const [localDeployed, setLocalDeployed] = useState(() => RENDER_NODES.filter((n) => n.status !== 'offline').map((n) => n.id));
-    const [selLocal, setSelLocal] = useState([]);  /* 多选批量部署/取消部署的勾选集（节点 id）*/
+    const [localDeployed, setLocalDeployed] = useState([]);   /* 节点 id：本地 DDC 已部署（真实 env 读得）*/
+    const [shareJoined, setShareJoined] = useState({});       /* 节点 id -> 当前已指向的共享路径（真实 env 读得）*/
+    const [statusLoading, setStatusLoading] = useState(true); /* 初始 env-var 状态读取中 */
+    const [selLocal, setSelLocal] = useState([]);             /* 多选批量部署 / 取消部署的勾选集 */
+    const [localPending, setLocalPending] = useState({});     /* 节点 id -> 'deploy' | 'undeploy' */
+    const [joinPending, setJoinPending] = useState({});       /* 节点 id -> 'join' | 'leave' */
+    const [joinTarget, setJoinTarget] = useState(null);       /* 选中要加入哪个共享服务器（share id）*/
+    const [commonLocalDir, setCommonLocalDir] = useState('D:\\UE_DDC\\Local');
     /* 共享创建（create_share）表单：share_name + local_path + mode。 */
     const [shareName, setShareName] = useState('Volo_DDC');
     const [shareLocal, setShareLocal] = useState('D:\\Volo\\DDC');
     const [shareMode, setShareMode] = useState('open'); /* 'open'(Mode A) | 'managed'(Mode B) */
+    /* 给 env-read 回填用：lpRef/jpRef 取最新 pending（对「取消部署/退出」进行中的机器跳过旧快照复活）；
+       readGenRef 作代次令牌——只应用最新一次读取，丢弃被取代的旧读取（也兼作卸载守卫）。 */
+    const lpRef = useRef(localPending); lpRef.current = localPending;
+    const jpRef = useRef(joinPending); jpRef.current = joinPending;
+    const readGenRef = useRef(0);
+
+    /* 真实状态读取：对在线机 fan-out 读两个 env var → 已部署 / 已加入（NodeVM 不带这两个字段，
+       adapter 注释：客户端是否已接入靠 get_machine_env_var 读 UE-SharedDataCachePath）。
+       readStatus 同时被「挂载 / 机器集合变化」的 effect 与「刷新状态」按钮调用。 */
+    const readStatus = () => {
+      const online = RENDER_NODES.filter((n) => n.status !== 'offline' && n.machineId != null && n.machineId !== 0);
+      /* online 为空（机器没加载到 / 全部离线）：仅落定 loading，不覆盖式清空——否则抹掉乐观更新；
+         陈旧 id 不在 RENDER_NODES 里自然不渲染，无害。 */
+      if (!online.length) { setStatusLoading(false); return; }
+      const gen = ++readGenRef.current;
+      setStatusLoading(true);
+      Promise.allSettled(online.map((n) =>
+        Promise.allSettled([
+          getMachineEnvVar(n.machineId, 'UE-LocalDataCachePath'),
+          getMachineEnvVar(n.machineId, 'UE-SharedDataCachePath'),
+        ]).then((rs) => ({ id: n.id,
+          local: rs[0].status === 'fulfilled' ? rs[0].value : null,
+          shared: rs[1].status === 'fulfilled' ? rs[1].value : null }))
+      )).then((rs) => {
+        if (gen !== readGenRef.current) return; /* 被更新的读取取代（或已卸载）→ 丢弃 */
+        const dep = []; const joined = {};
+        rs.forEach((r) => { if (r.status === 'fulfilled') { const v = r.value; if (v.local) dep.push(v.id); if (v.shared) joined[v.id] = v.shared; } });
+        /* 与乐观更新合并而非覆盖：保留读取期间用户「部署/加入」的乐观结果（prev），不被旧快照刷回；
+           同时对「取消部署/退出」进行中的机器，剔除本次旧快照可能复活的项——对称保护两个方向。 */
+        const lp = lpRef.current, jp = jpRef.current;
+        setLocalDeployed((prev) => {
+          const next = new Set(prev.concat(dep));
+          Object.keys(lp).forEach((id) => { if (lp[id] === 'undeploy') next.delete(id); });
+          return Array.from(next);
+        });
+        setShareJoined((prev) => {
+          const next = Object.assign({}, joined, prev);
+          Object.keys(jp).forEach((id) => { if (jp[id] === 'leave') delete next[id]; });
+          return next;
+        });
+        setStatusLoading(false);
+      });
+    };
+    /* 挂载 / 机器集合或在线态变化时自动重读；卸载或重跑时 bump 代次令牌作废在途读取。 */
+    const midSig = RENDER_NODES.map((n) => n.id + ':' + n.status).join(',');
+    useEffect(() => { readStatus(); return () => { readGenRef.current++; }; /* eslint-disable-line react-hooks/exhaustive-deps */ }, [midSig]);
+
     const g = gate(s); if (g) return g;
 
     /* resolve the chosen server to a real node — persisted `srv` may be a stale mock id
        now that machines come from the backend; fall back to the first non-shared node. */
     const sharedNode = CX.node(srv) || RENDER_NODES.find((n) => n.roleKey !== 'shared') || RENDER_NODES[0];
     const srvOpts = RENDER_NODES.map((n) => ({ id: n.id, label: n.host, sub: n.ip }));
+    const onlineLocalTargets = RENDER_NODES.filter((n) => n.status !== 'offline');
+    const badge = (cls, icon, txt) => h('span', { className: 'cli-badge ' + cls }, h(Icon, { name: icon, size: 11 }), txt);
 
+    /* ===== ① 共享 DDC（SMB）服务器：创建 / 解除纳管 / 拆除部署（破坏性，走确认门）===== */
     /* 真实 create_share：host=sharedNode.machineId，mode 序列化 'open'|'managed'；
        operator_credential_alias 传 null（SSH key 鉴权）；Mode B 的 svc_username 留空 → 后端默认 'ddc-svc'。 */
     const deploySMB = () => CX.openPreview(s, {
       title: '创建共享 DDC（SMB）', icon: 'folder', cli: 'create_share', destructive: false, channel: 'ssh', confirmLabel: '创建共享',
       steps: ['在 ' + sharedNode.host + ' 上新建共享缓存文件夹 ' + shareLocal,
         '共享名 ' + shareName + (shareMode === 'managed' ? '（Mode B · 专用账号 ddc-svc）' : '（Mode A · 开放）'),
-        '集群缓存指向该共享，客户端自动接入'],
+        '集群缓存指向该共享，其余机器再到「② 其他服务器加入共享 DDC」逐台加入'],
       simpleScope: [{ host: sharedNode.host, ip: sharedNode.ip, msg: shareLocal }],
       onConfirm: () => {
         if (!sharedNode || !shareName.trim() || !shareLocal.trim()) return;
@@ -470,7 +533,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
           .then(() => s.reloadCache(), () => {});
       },
     });
-    /* 删除共享 DDC：仅从 Volo 解除纳管，不删远端共享文件夹（后端暂不支持 also_remove_remote）*/
+    /* 解除共享 DDC 纳管：仅从 Volo 解除纳管，不删远端共享文件夹（后端暂不支持 also_remove_remote）*/
     const deleteShare = (sh) => CX.openPreview(s, {
       title: '解除共享纳管 · ' + sh.path, icon: 'trash', cli: 'delete_share', destructive: true, channel: 'ssh', confirmLabel: '解除纳管',
       steps: ['从 Volo 解除对该共享的纳管（不再分发 / 不再注入客户端）', '不会删除远端共享文件夹本身（后端暂不支持远端删共享）'],
@@ -482,64 +545,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
           .then(() => s.reloadCache(), () => {});
       },
     });
-    /* 接入共享 DDC：对每台设环境变量 UE-SharedDataCachePath，并对该机已扫描到的工程写
-       [DerivedDataBackendGraph] Shared 的 Path + EnvPathOverride（没有 EnvPathOverride 时 UE 会忽略环境变量）。 */
-    const joinShareToMachines = (targets, unc) => {
-      let envOk = 0, iniProjOk = 0, fail = 0;
-      return Promise.allSettled(targets.map((mid) =>
-        setMachineEnvVar(mid, 'UE-SharedDataCachePath', unc).then(() => {
-          envOk++;
-          const projs = (UE_PROJECTS || []).filter((p) => (p.machines || []).includes(String(mid)));
-          return Promise.allSettled(projs.map((p) => {
-            const base = (p.locByMachine && p.locByMachine[String(mid)]) || p.root;
-            const ini = String(base).replace(/\\+$/, '') + '\\Config\\DefaultEngine.ini';
-            return Promise.all([
-              setMachineBackendField(mid, ini, 'DerivedDataBackendGraph', 'Shared', 'Path', unc),
-              setMachineBackendField(mid, ini, 'DerivedDataBackendGraph', 'Shared', 'EnvPathOverride', 'UE-SharedDataCachePath'),
-            ]);
-          })).then((rs) => { iniProjOk += rs.filter((r) => r.status === 'fulfilled').length; });
-        }, () => { fail++; })
-      )).then(() => {
-        if (envOk === 0) throw new Error('全部目标设置失败');
-        return { envOk, iniProjOk, fail };
-      });
-    };
-    const joinShare = (sh) => CX.openPreview(s, {
-      title: '接入共享 DDC · ' + sh.path, icon: 'folder', cli: 'set UE-SharedDataCachePath (+ BackendGraph)', destructive: false, channel: 'ssh', confirmLabel: '接入',
-      steps: ['对选中机器设环境变量 UE-SharedDataCachePath = ' + sh.path,
-        '该机已扫描到的工程，同时写 DefaultEngine.ini [DerivedDataBackendGraph] Shared 的 Path + EnvPathOverride（UE 才认这个环境变量）',
-        '未扫描到工程的机器只设环境变量 —— 需该工程已配 EnvPathOverride 才生效'],
-      scope: RENDER_NODES.filter((n) => n.status !== 'offline').map((n) => n.id),
-      onConfirm: (sel) => {
-        const targets = (sel || []).map((id) => (CX.node(id) || {}).machineId).filter((x) => x != null);
-        if (!targets.length) return;
-        s.runCmd({ domain: 'share', action: 'join', target: targets.length + ' 台', chan: 'ssh', note: '接入共享 DDC · ' + sh.path },
-          () => joinShareToMachines(targets, sh.path),
-          { okMsg: (r) => '已接入 · ' + r.envOk + ' 台设环境变量' + (r.iniProjOk ? ('，写 ' + r.iniProjOk + ' 个工程 INI') : '') + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
-          .then(() => s.reloadCache(), () => {});
-      },
-    });
-    /* 退出共享 DDC：清空选中机器的 UE-SharedDataCachePath（不动工程 INI）。 */
-    const leaveShare = (sh) => CX.openPreview(s, {
-      title: '退出共享 DDC · ' + sh.path, icon: 'minus', cli: 'set UE-SharedDataCachePath=""', destructive: true, channel: 'ssh', confirmLabel: '退出',
-      steps: ['对选中机器清空环境变量 UE-SharedDataCachePath', '不改工程 INI —— 环境变量为空时 UE 自动回退本地缓存'],
-      scope: RENDER_NODES.filter((n) => n.status !== 'offline').map((n) => n.id),
-      onConfirm: (sel) => {
-        const targets = (sel || []).map((id) => (CX.node(id) || {}).machineId).filter((x) => x != null);
-        if (!targets.length) return;
-        s.runCmd({ domain: 'share', action: 'leave', target: targets.length + ' 台', chan: 'ssh', note: '退出共享 DDC · ' + sh.path },
-          () => Promise.allSettled(targets.map((mid) => setMachineEnvVar(mid, 'UE-SharedDataCachePath', ''))).then((rs) => {
-            const ok = rs.filter((r) => r.status === 'fulfilled').length;
-            if (!ok) throw new Error('全部目标清空失败');
-            return { ok, fail: rs.length - ok };
-          }),
-          { okMsg: (r) => '已退出 · ' + r.ok + ' 台清空环境变量' + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
-          .then(() => s.reloadCache(), () => {});
-      },
-    });
-
-    /* 该服务器机器当前是否已部署共享（hostId = String(host_machine_id) 与 sharedNode.id 对齐）。
-       命中则部署面板显示「已部署于本机 / 取消该服务器部署」，主按钮变「重新部署」。 */
+    /* 该服务器机器当前是否已部署共享（hostId = String(host_machine_id) 与 sharedNode.id 对齐）。 */
     const srvShare = (SHARES || []).find((x) => x.hostId === sharedNode.id);
     /* 取消该服务器部署（teardown_share）：停止 SMB 共享（Remove-SmbShare）+（Mode B）注销 ddc-svc，
        保留远端文件夹与缓存（keep_files=true）。删 SQLite 行后 reloadCache 把它从列表移除。
@@ -565,8 +571,6 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
         h('div', { className: 'art-name mono' }, sh.path,
           sh.host && sh.host !== '—' ? h('span', { className: 'share-host' }, h(Icon, { name: 'server', size: 11 }), sh.host) : null),
         h('div', { className: 'art-sub' }, sh.mode + ' · ' + sh.clients + ' 客户端 · ' + sh.size)),
-      h('button', { className: 'mini-btn', onClick: () => joinShare(sh) }, h(Icon, { name: 'download', size: 12 }), '接入'),
-      h('button', { className: 'mini-btn', onClick: () => leaveShare(sh) }, h(Icon, { name: 'minus', size: 12 }), '退出'),
       h('button', { className: 'mini-btn danger', onClick: () => deleteShare(sh) }, h(Icon, { name: 'trash', size: 12 }), '取消服务器'));
 
     const smbPanel = h('div', { className: 'be-block' },
@@ -590,61 +594,152 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
           ? ('该机器已作为共享 DDC 服务器 · ' + srvShare.path + '；可随时取消部署，取消后保留远端文件夹与缓存。')
           : '链路在后台逐步执行（进度进任务抽屉）；凭据 / urlacl / 服务安装全部自动处理。')));
 
-    const onlineLocalTargets = RENDER_NODES.filter((n) => n.status !== 'offline');
+    /* ===== ② 其他服务器加入共享 DDC（直接执行，真实 env + 工程 INI 写入）===== */
+    const ENV_KEY = 'UE-SharedDataCachePath';
+    /* 接入：对每台设环境变量 UE-SharedDataCachePath，并对该机已扫描到的工程写
+       [DerivedDataBackendGraph] Shared 的 Path + EnvPathOverride（没有 EnvPathOverride 时 UE 会忽略环境变量）。 */
+    const joinShareToMachines = (targets, unc) => {
+      let envOk = 0, iniProjOk = 0, fail = 0;
+      return Promise.allSettled(targets.map((mid) =>
+        setMachineEnvVar(mid, ENV_KEY, unc).then(() => {
+          envOk++;
+          const projs = (UE_PROJECTS || []).filter((p) => (p.machines || []).includes(String(mid)));
+          return Promise.allSettled(projs.map((p) => {
+            const base = (p.locByMachine && p.locByMachine[String(mid)]) || p.root;
+            const ini = String(base).replace(/\\+$/, '') + '\\Config\\DefaultEngine.ini';
+            return Promise.all([
+              setMachineBackendField(mid, ini, 'DerivedDataBackendGraph', 'Shared', 'Path', unc),
+              setMachineBackendField(mid, ini, 'DerivedDataBackendGraph', 'Shared', 'EnvPathOverride', ENV_KEY),
+            ]);
+          })).then((rs) => { iniProjOk += rs.filter((r) => r.status === 'fulfilled').length; });
+        }, () => { fail++; })
+      )).then(() => {
+        if (envOk === 0) throw new Error('全部目标设置失败');
+        return { envOk, iniProjOk, fail };
+      });
+    };
+    const setJP = (id, kind) => setJoinPending((m) => Object.assign({}, m, { [id]: kind }));
+    const clrJP = (id) => setJoinPending((m) => { const x = Object.assign({}, m); delete x[id]; return x; });
+    const shareHostIds = (SHARES || []).map((sh) => sh.hostId);
+    const shareSelOpts = (SHARES || []).map((sh) => ({ id: sh.id, label: sh.path, sub: sh.host }));
+    const joinTargetShare = (SHARES || []).find((sh) => sh.id === joinTarget) || (SHARES || [])[0] || null;
+    const joinCandidates = onlineLocalTargets.filter((n) => !shareHostIds.includes(n.id));
+    const unjoinedCandidates = joinTargetShare
+      ? joinCandidates.filter((n) => shareJoined[n.id] !== joinTargetShare.path && !joinPending[n.id]) : [];
+    const joinShareOne = (n, sh) => {
+      if (!sh || joinPending[n.id]) return;
+      setJP(n.id, 'join');
+      s.runCmd({ domain: 'share', action: 'join', target: n.host, chan: 'ssh', note: '加入共享 DDC · ' + sh.path },
+        () => joinShareToMachines([n.machineId], sh.path),
+        { okMsg: (r) => n.host + ' 已加入 · 设环境变量' + (r.iniProjOk ? ('，写 ' + r.iniProjOk + ' 个工程 INI') : '') })
+        .then(() => { setShareJoined((m) => Object.assign({}, m, { [n.id]: sh.path })); clrJP(n.id); }, () => clrJP(n.id));
+    };
+    const leaveShareOne = (n) => {
+      if (joinPending[n.id]) return;
+      setJP(n.id, 'leave');
+      s.runCmd({ domain: 'share', action: 'leave', target: n.host, chan: 'ssh', note: '退出共享 DDC' },
+        () => setMachineEnvVar(n.machineId, ENV_KEY, ''),
+        { okMsg: () => n.host + ' 已退出 · 清空环境变量' })
+        .then(() => { setShareJoined((m) => { const x = Object.assign({}, m); delete x[n.id]; return x; }); clrJP(n.id); }, () => clrJP(n.id));
+    };
+    const joinShareAll = () => {
+      const sh = joinTargetShare;
+      if (!sh || !unjoinedCandidates.length) return;
+      const todo = unjoinedCandidates;
+      const ids = todo.map((n) => n.id);
+      ids.forEach((id) => setJP(id, 'join'));
+      s.runCmd({ domain: 'share', action: 'join', target: ids.length + ' 台', chan: 'ssh', note: '批量加入共享 DDC · ' + sh.path },
+        () => joinShareToMachines(todo.map((n) => n.machineId), sh.path),
+        { okMsg: (r) => '已加入 · ' + r.envOk + ' 台设环境变量' + (r.iniProjOk ? ('，写 ' + r.iniProjOk + ' 个工程 INI') : '') + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
+        .then(() => { setShareJoined((m) => { const x = Object.assign({}, m); ids.forEach((id) => { x[id] = sh.path; }); return x; }); ids.forEach(clrJP); },
+              () => ids.forEach(clrJP));
+    };
+    const joinRow = (n) => {
+      const pend = joinPending[n.id];
+      const cur = shareJoined[n.id];
+      const onThis = joinTargetShare && cur === joinTargetShare.path;
+      return h('div', { key: n.id, className: 'cli-row join' + (onThis ? ' on' : '') },
+        CX.dot(NODE_STATUS[n.status].visual),
+        h('div', { className: 'cli-meta' },
+          h('div', { className: 'cli-host mono' }, n.host),
+          h('div', { className: 'cli-sub' }, n.ip + ' · ' + n.role)),
+        h('div', { className: 'cli-envvar mono' },
+          h('span', { className: 'ev-k' }, ENV_KEY),
+          h('span', { className: 'ev-eq' }, '='),
+          h('span', { className: 'ev-v' + (cur ? '' : ' none') }, cur || (statusLoading ? '读取中…' : '未设置'))),
+        h('div', { className: 'local-act' },
+          pend === 'join' ? badge('pend', 'sync', '加入中…')
+            : pend === 'leave' ? badge('pend', 'sync', '退出中…')
+            : onThis ? badge('ok', 'check', '已加入')
+            : cur ? badge('alt', 'link', '加入其他')
+            : statusLoading ? badge('none', 'sync', '读取中…')
+            : badge('none', 'minus', '未加入'),
+          pend ? h('button', { className: 'mini-btn', disabled: true }, h(Icon, { name: 'sync', size: 12 }), '执行中')
+            : onThis ? h('button', { className: 'mini-btn danger', onClick: () => leaveShareOne(n) }, h(Icon, { name: 'x', size: 12 }), '退出')
+            : h('button', { className: 'mini-btn', onClick: () => joinShareOne(n, joinTargetShare) }, h(Icon, { name: 'link', size: 12 }), '加入')));
+    };
+
+    /* ===== ③ 本地 DDC（直接执行，真实 create_local_cache + 设 UE-LocalDataCachePath）===== */
     const setLocalDir = (id, v) => setLocalDirs((m) => Object.assign({}, m, { [id]: v }));
     /* localDirs 初值在 mount 时算（那会儿 RENDER_NODES 可能为空），机器异步到达后不会回填 →
        按机器盘符给默认值兜底，用户改过的覆盖优先。 */
     const localDirOf = (n) => localDirs[n.id] || ((/^([A-Za-z]):/.test(n.uePath || '') ? n.uePath[0].toUpperCase() : 'D') + ':\\UE_DDC\\Local');
-    /* 真实本地 DDC 部署：create_local_cache 在远端建目录 + 设 ACL（New-Item + icacls），
-       再 set UE-LocalDataCachePath 指向它（Local backend 默认带 EnvPathOverride，不必改工程 INI）。
-       取消部署（keep_files=true）：仅清空 UE-LocalDataCachePath，保留磁盘上已有缓存文件。 */
+    /* 真实本地 DDC：create_local_cache 远端建目录 + 设 ACL，再 set UE-LocalDataCachePath（Local backend
+       默认带 EnvPathOverride，不必改工程 INI）；取消部署（keep_files）= 仅清空 env var，保留磁盘缓存。 */
     const deployLocalExec = (machineId, dir) =>
       createLocalCache(machineId, dir).then(() => setMachineEnvVar(machineId, 'UE-LocalDataCachePath', dir));
     const undeployLocalExec = (machineId) => setMachineEnvVar(machineId, 'UE-LocalDataCachePath', '');
-    const deployLocalOne = (n) => CX.openPreview(s, {
-      title: '部署本地 DDC · ' + n.host, icon: 'server', cli: 'local-cache create', destructive: false, channel: 'ssh', confirmLabel: '部署',
-      steps: ['在 ' + n.host + ' 本地新建缓存目录 ' + localDirOf(n) + '（建目录 + 设 ACL）', '设环境变量 UE-LocalDataCachePath 指向它，作为找不到共享缓存时的本地兜底', '写入后回读 UE-LocalDataCachePath 校验'],
-      simpleScope: [{ host: n.host, ip: n.ip, msg: localDirOf(n) }],
-      onConfirm: () => {
-        const dir = localDirOf(n);
-        s.runCmd({ domain: 'local-cache', action: 'create', target: n.host, chan: 'ssh', note: '本地 DDC · ' + dir },
-          () => deployLocalExec(n.machineId, dir)
-            .then(() => getMachineEnvVar(n.machineId, 'UE-LocalDataCachePath').catch(() => null))
-            .then((v) => ({ dir, verified: v === dir })),
-          { okMsg: (r) => n.host + ' 本地 DDC 已部署 · ' + r.dir + (r.verified ? ' · 已回读校验' : '') })
-          .then(() => setLocalDeployed((d) => d.includes(n.id) ? d : d.concat(n.id)), () => {});
-      },
-    });
-    const undeployLocalOne = (n) => CX.openPreview(s, {
-      title: '取消部署本地 DDC · ' + n.host, icon: 'trash', cli: 'local-cache remove', destructive: true, channel: 'ssh', confirmLabel: '取消部署',
-      steps: ['清空 ' + n.host + ' 的环境变量 UE-LocalDataCachePath，从命中链路摘除本地兜底层', '不会删除磁盘上已有的缓存文件本身（keep_files）', '写入后回读校验'],
-      simpleScope: [{ host: n.host, ip: n.ip, msg: localDirOf(n) + ' · 保留文件' }],
-      onConfirm: () => {
-        s.runCmd({ domain: 'local-cache', action: 'remove', target: n.host, chan: 'ssh', note: '取消本地 DDC（缓存文件保留）· ' + n.host },
-          () => undeployLocalExec(n.machineId)
-            .then(() => getMachineEnvVar(n.machineId, 'UE-LocalDataCachePath').catch(() => null))
-            .then((v) => ({ cleared: !v })),
-          { okMsg: () => n.host + ' 本地 DDC 已取消部署 · 缓存文件保留' })
-          .then(() => setLocalDeployed((d) => d.filter((x) => x !== n.id)), () => {});
-      },
-    });
-    const deployLocalAll = () => CX.openPreview(s, {
-      title: '一键部署本地 DDC', icon: 'bolt', cli: 'local-cache create', destructive: false, channel: 'ssh', confirmLabel: '部署 ' + onlineLocalTargets.length + ' 台',
-      steps: ['为这些机器逐台在本地新建缓存目录并设 UE-LocalDataCachePath', '作为找不到共享缓存时的本地兜底', '逐台返回成败，部分失败不影响其它机器'],
-      simpleScope: onlineLocalTargets.map((n) => ({ host: n.host, ip: n.ip, msg: localDirOf(n) })),
-      onConfirm: () => {
-        s.runCmd({ domain: 'local-cache', action: 'create', target: onlineLocalTargets.length + ' 台', chan: 'ssh', note: '一键部署本地 DDC（' + onlineLocalTargets.length + ' 台）' },
-          () => Promise.allSettled(onlineLocalTargets.map((n) => deployLocalExec(n.machineId, localDirOf(n)))).then((rs) => {
-            const ok = rs.filter((r) => r.status === 'fulfilled').length;
-            if (!ok) throw new Error('全部目标部署失败');
-            return { ok, fail: rs.length - ok };
-          }),
-          { okMsg: (r) => r.ok + ' 台本地 DDC 已部署' + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
-          .then(() => setLocalDeployed((d) => Array.from(new Set(d.concat(onlineLocalTargets.map((n) => n.id))))), () => {});
-      },
-    });
-
-    /* ---- 多选批量部署 / 取消部署 ---- */
+    const markLP = (ids, kind) => setLocalPending((m) => { const x = Object.assign({}, m); ids.forEach((id) => { x[id] = kind; }); return x; });
+    const clrLP = (ids) => setLocalPending((m) => { const x = Object.assign({}, m); ids.forEach((id) => { delete x[id]; }); return x; });
+    const deployLocalOne = (n) => {
+      if (localPending[n.id]) return;
+      const dir = localDirOf(n);
+      markLP([n.id], 'deploy');
+      s.runCmd({ domain: 'local-cache', action: 'create', target: n.host, chan: 'ssh', note: '本地 DDC · ' + dir },
+        () => deployLocalExec(n.machineId, dir)
+          .then(() => getMachineEnvVar(n.machineId, 'UE-LocalDataCachePath').catch(() => null))
+          .then((v) => ({ dir, verified: v === dir })),
+        { okMsg: (r) => n.host + ' 本地 DDC 已部署 · ' + r.dir + (r.verified ? ' · 已回读校验' : '') })
+        .then(() => { setLocalDeployed((d) => d.includes(n.id) ? d : d.concat(n.id)); clrLP([n.id]); }, () => clrLP([n.id]));
+    };
+    const undeployLocalOne = (n) => {
+      if (localPending[n.id]) return;
+      markLP([n.id], 'undeploy');
+      s.runCmd({ domain: 'local-cache', action: 'remove', target: n.host, chan: 'ssh', note: '取消本地 DDC（缓存文件保留）· ' + n.host },
+        () => undeployLocalExec(n.machineId)
+          .then(() => getMachineEnvVar(n.machineId, 'UE-LocalDataCachePath').catch(() => null))
+          .then((v) => ({ cleared: !v })),
+        { okMsg: () => n.host + ' 本地 DDC 已取消部署 · 缓存文件保留' })
+        .then(() => { setLocalDeployed((d) => d.filter((x) => x !== n.id)); clrLP([n.id]); }, () => clrLP([n.id]));
+    };
+    /* 多选批量（直接执行）：allSettled 容部分失败；全程 pending，落地后翻状态并清空选择。 */
+    const runLocalBatch = (nodes, kind, note) => {
+      const todo = nodes.filter((n) => !localPending[n.id]);
+      if (!todo.length) return;
+      const ids = todo.map((n) => n.id);
+      markLP(ids, kind);
+      const exec = kind === 'deploy'
+        ? () => Promise.allSettled(todo.map((n) => deployLocalExec(n.machineId, localDirOf(n))))
+        : () => Promise.allSettled(todo.map((n) => undeployLocalExec(n.machineId)));
+      s.runCmd({ domain: 'local-cache', action: kind === 'deploy' ? 'create' : 'remove', target: todo.length + ' 台', chan: 'ssh', note },
+        () => exec().then((rs) => { const ok = rs.filter((r) => r.status === 'fulfilled').length; if (!ok) throw new Error('全部目标失败'); return { ok, fail: rs.length - ok }; }),
+        { okMsg: (r) => (kind === 'deploy' ? (r.ok + ' 台本地 DDC 已部署') : (r.ok + ' 台已取消部署 · 缓存文件保留')) + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
+        .then(() => { setLocalDeployed((d) => kind === 'deploy' ? Array.from(new Set(d.concat(ids))) : d.filter((x) => !ids.includes(x))); clrLP(ids); setSelLocal([]); },
+              () => clrLP(ids));
+    };
+    /* 统一路径一键：把全部在线机的本地路径设成 commonLocalDir，再批量部署。 */
+    const applyCommonLocal = () => {
+      const path = commonLocalDir.trim();
+      const todo = onlineLocalTargets.filter((n) => !localPending[n.id]);
+      if (!path || !todo.length) return;
+      const ids = todo.map((n) => n.id);
+      setLocalDirs((m) => { const x = Object.assign({}, m); ids.forEach((id) => { x[id] = path; }); return x; });
+      markLP(ids, 'deploy');
+      s.runCmd({ domain: 'local-cache', action: 'create', target: todo.length + ' 台', chan: 'ssh', note: '统一本地 DDC 路径并部署（' + todo.length + ' 台）· ' + path },
+        () => Promise.allSettled(todo.map((n) => deployLocalExec(n.machineId, path))).then((rs) => { const ok = rs.filter((r) => r.status === 'fulfilled').length; if (!ok) throw new Error('全部目标部署失败'); return { ok, fail: rs.length - ok }; }),
+        { okMsg: (r) => r.ok + ' 台已统一部署 · ' + path + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
+        .then(() => { setLocalDeployed((d) => Array.from(new Set(d.concat(ids)))); clrLP(ids); setSelLocal([]); }, () => clrLP(ids));
+    };
     const onlineIds = onlineLocalTargets.map((n) => n.id);
     const allSel = onlineIds.length > 0 && onlineIds.every((id) => selLocal.includes(id));
     const someSel = selLocal.length > 0;
@@ -653,41 +748,12 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
     const selNodes = onlineLocalTargets.filter((n) => selLocal.includes(n.id));
     const selDeployedNodes = selNodes.filter((n) => localDeployed.includes(n.id));
     const selUndeployedNodes = selNodes.filter((n) => !localDeployed.includes(n.id));
-    const deployLocalMany = (nodes) => CX.openPreview(s, {
-      title: '批量部署本地 DDC', icon: 'bolt', cli: 'local-cache create', destructive: false, channel: 'ssh', confirmLabel: '部署 ' + nodes.length + ' 台',
-      steps: ['为所选的 ' + nodes.length + ' 台机器逐台建缓存目录并设 UE-LocalDataCachePath', '作为本地兜底层', '逐台返回成败，部分失败不影响其它机器'],
-      simpleScope: nodes.map((n) => ({ host: n.host, ip: n.ip, msg: localDirOf(n) })),
-      onConfirm: () => {
-        s.runCmd({ domain: 'local-cache', action: 'create', target: nodes.length + ' 台', chan: 'ssh', note: '批量部署本地 DDC（' + nodes.length + ' 台）' },
-          () => Promise.allSettled(nodes.map((n) => deployLocalExec(n.machineId, localDirOf(n)))).then((rs) => {
-            const ok = rs.filter((r) => r.status === 'fulfilled').length;
-            if (!ok) throw new Error('全部目标部署失败');
-            return { ok, fail: rs.length - ok };
-          }),
-          { okMsg: (r) => r.ok + ' 台已部署' + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
-          .then(() => { setLocalDeployed((d) => Array.from(new Set(d.concat(nodes.map((n) => n.id))))); setSelLocal([]); }, () => {});
-      },
-    });
-    const undeployLocalMany = (nodes) => CX.openPreview(s, {
-      title: '批量取消部署本地 DDC', icon: 'trash', cli: 'local-cache remove', destructive: true, channel: 'ssh', confirmLabel: '取消部署 ' + nodes.length + ' 台',
-      steps: ['为所选的 ' + nodes.length + ' 台机器逐台清空 UE-LocalDataCachePath，从命中链路摘除本地兜底层', '不删除磁盘上已有的缓存文件本身（keep_files）', '逐台返回成败，部分失败不影响其它机器'],
-      simpleScope: nodes.map((n) => ({ host: n.host, ip: n.ip, msg: localDirOf(n) + ' · 保留文件' })),
-      onConfirm: () => {
-        const ids = nodes.map((n) => n.id);
-        s.runCmd({ domain: 'local-cache', action: 'remove', target: nodes.length + ' 台', chan: 'ssh', note: '批量取消本地 DDC（缓存文件保留）· ' + nodes.length + ' 台' },
-          () => Promise.allSettled(nodes.map((n) => undeployLocalExec(n.machineId))).then((rs) => {
-            const ok = rs.filter((r) => r.status === 'fulfilled').length;
-            if (!ok) throw new Error('全部目标取消失败');
-            return { ok, fail: rs.length - ok };
-          }),
-          { okMsg: (r) => r.ok + ' 台已取消部署 · 缓存文件保留' + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
-          .then(() => { setLocalDeployed((d) => d.filter((x) => !ids.includes(x))); setSelLocal([]); }, () => {});
-      },
-    });
+
     const localRow = (n) => {
       const dep = localDeployed.includes(n.id);
       const off = n.status === 'offline';
       const isSel = selLocal.includes(n.id);
+      const pend = localPending[n.id];
       return h('div', { key: n.id, className: 'cli-row local' + (off ? ' off' : '') + (isSel ? ' sel' : (dep ? ' on' : '')) },
         off ? h('span', { className: 'lcheck dis' }, h('span', { className: 'proj-mck dis' }))
           : h('button', { className: 'lcheck', title: isSel ? '取消选择' : '选择', onClick: () => toggleLocalSel(n.id) },
@@ -699,10 +765,14 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
         h('input', { className: 'cli-pathin mono', value: localDirOf(n), disabled: off,
           spellCheck: false, onChange: (e) => setLocalDir(n.id, e.target.value) }),
         h('div', { className: 'local-act' },
-          off ? h('span', { className: 'cli-badge off' }, h(Icon, { name: 'power', size: 11 }), '离线')
-            : dep ? h('span', { className: 'cli-badge ok' }, h(Icon, { name: 'check', size: 11 }), '已部署')
-            : h('span', { className: 'cli-badge none' }, h(Icon, { name: 'minus', size: 11 }), '未部署'),
+          off ? badge('off', 'power', '离线')
+            : pend === 'deploy' ? badge('pend', 'sync', '部署中…')
+            : pend === 'undeploy' ? badge('pend', 'sync', '取消中…')
+            : statusLoading ? badge('none', 'sync', '读取中…')
+            : dep ? badge('ok', 'check', '已部署')
+            : badge('none', 'minus', '未部署'),
           off ? null
+            : pend ? h('button', { className: 'mini-btn', disabled: true }, h(Icon, { name: 'sync', size: 12 }), '执行中')
             : dep ? h(React.Fragment, null,
                 h('button', { className: 'mini-btn', onClick: () => deployLocalOne(n) }, h(Icon, { name: 'sync', size: 12 }), '重新部署'),
                 h('button', { className: 'mini-btn danger', onClick: () => undeployLocalOne(n) }, h(Icon, { name: 'trash', size: 12 }), '取消部署'))
@@ -712,36 +782,63 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
     return h('div', { className: 'res ddc' },
       h('div', { className: 'canvas-head' },
         h('span', { className: 't' }, 'DDC · 文件系统 DDC'),
-        h('div', { className: 'right' })),
+        h('div', { className: 'right' },
+          h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'sync', size: 14 }), isDisabled: statusLoading, onPress: readStatus }, statusLoading ? '读取中…' : '刷新状态'))),
       h('div', { className: 'ddc-body' },
-        h('div', { className: 'ddc-sec-h' }, h('span', null, '① 共享 DDC（SMB）'), h('span', { className: 'dim' }, '局域网共享缓存盘 · 无独立服务器的小集群')),
-        smbPanel,
-        SHARES.length ? h(React.Fragment, null,
-          h('div', { className: 'ddc-sec-h' }, h('span', null, '已纳管的共享'), h('span', { className: 'dim' }, SHARES.length + ' 个 · 解除纳管不删除远端文件夹')),
-          h('div', { className: 'art-list' }, SHARES.map(shareRow))) : null,
-        h('div', { className: 'ddc-sec-h' },
-          h('span', null, '② 本地 DDC'),
-          h('span', { className: 'dim' }, localDeployed.length + ' / ' + RENDER_NODES.length + ' 已部署 · 每台可单独设置 data-dir')),
-        h('div', { className: 'cli-panel' },
-          h('div', { className: 'cli-top' },
-            h('div', { className: 'local-hint' }, h(Icon, { name: 'server', size: 15 }), '逐台开启本地缓存回退层 · 每台独立 data-dir，可单独部署'),
-            h('div', { className: 'cli-go' },
-              h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'bolt', size: 14 }), isDisabled: onlineLocalTargets.length === 0, onPress: deployLocalAll },
-                '一键部署（' + onlineLocalTargets.length + '）'))),
-          h('div', { className: 'cli-note' }, h(Icon, { name: 'shield', size: 13 }),
-            '本地 DDC 作为命中链路的回退层；部署链路在后台逐步执行，写入后自动回读校验。'),
-          h('div', { className: 'local-selbar' + (someSel ? ' on' : '') },
-            h('button', { className: 'lsb-all', onClick: toggleAllLocal },
-              h('span', { className: 'proj-mck' + (allSel ? ' on' : (someSel ? ' part' : '')) },
-                allSel ? h(Icon, { name: 'check', size: 12 }) : (someSel ? h(Icon, { name: 'minus', size: 12 }) : null)),
-              allSel ? '取消全选' : '全选在线机'),
-            h('span', { className: 'lsb-ct' }, someSel
-              ? ('已选 ' + selLocal.length + ' 台 · ' + selDeployedNodes.length + ' 已部署 / ' + selUndeployedNodes.length + ' 未部署')
-              : '勾选机器后可批量部署或一键取消部署'),
-            h('div', { className: 'lsb-acts' },
-              h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'bolt', size: 13 }), isDisabled: selUndeployedNodes.length === 0, onPress: () => deployLocalMany(selUndeployedNodes) }, '部署所选（' + selUndeployedNodes.length + '）'),
-              h(Button, { variant: 'negative', size: 'S', icon: h(Icon, { name: 'trash', size: 13 }), isDisabled: selDeployedNodes.length === 0, onPress: () => undeployLocalMany(selDeployedNodes) }, '取消部署所选（' + selDeployedNodes.length + '）'))),
-          h('div', { className: 'cli-list' }, RENDER_NODES.map(localRow)))));
+        h('div', { className: 'zen-2col' },
+          /* 左列：① 共享 DDC 服务器部署 + 已纳管共享 + ② 其他服务器加入 */
+          h('div', { className: 'zen-col' },
+            h('div', { className: 'ddc-sec-h' }, h('span', null, '① 共享 DDC（SMB）'), h('span', { className: 'dim' }, '先立一台机器为共享 DDC 服务器 · 创建网络共享映射路径，其余机器再加入')),
+            smbPanel,
+            SHARES.length ? h(React.Fragment, null,
+              h('div', { className: 'ddc-sec-h' }, h('span', null, '已纳管的共享服务器'), h('span', { className: 'dim' }, SHARES.length + ' 台 · 每台共享 DDC 服务器都可单独取消 · 取消不删除远端文件夹')),
+              h('div', { className: 'art-list' }, SHARES.map(shareRow))) : null,
+            SHARES.length ? h(React.Fragment, null,
+              h('div', { className: 'ddc-sec-h' },
+                h('span', null, '② 其他服务器加入共享 DDC'),
+                h('span', { className: 'dim' }, joinCandidates.filter((n) => joinTargetShare && shareJoined[n.id] === joinTargetShare.path).length + ' / ' + joinCandidates.length + ' 已加入 · 写环境变量 ' + ENV_KEY + ' 指向共享路径')),
+              h('div', { className: 'cli-panel' },
+                h('div', { className: 'cli-top' },
+                  h('div', { className: 'cli-server-chip' },
+                    h('span', { className: 'csc-ico' }, h(Icon, { name: 'folder', size: 15 })),
+                    h('div', { style: { minWidth: 0 } },
+                      h('div', { className: 'csc-t' }, '加入目标 · ' + (joinTargetShare ? joinTargetShare.host : '—')),
+                      h('div', { className: 'csc-s mono' }, joinTargetShare ? joinTargetShare.path : '—'))),
+                  SHARES.length > 1 ? h('div', { className: 'dp-field' }, h('label', null, '共享服务器'),
+                    h(Selector, { kpre: '共享', value: joinTargetShare ? joinTargetShare.id : null, options: shareSelOpts, width: 240, onChange: setJoinTarget })) : null,
+                  h('div', { className: 'cli-go' },
+                    h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'link', size: 14 }), isDisabled: unjoinedCandidates.length === 0, onPress: joinShareAll },
+                      '全部加入（' + unjoinedCandidates.length + '）'))),
+                h('div', { className: 'cli-note' }, h(Icon, { name: 'shield', size: 13 }),
+                  '加入 = 在该机写机器级环境变量 ' + ENV_KEY + ' 指向共享路径，并为该机已扫描到的工程写 BackendGraph（UE 才认这个变量）；退出仅清除变量，不动共享文件夹。'),
+                h('div', { className: 'cli-list' }, joinCandidates.map(joinRow)))) : null),
+          /* 右列：③ 本地 DDC */
+          h('div', { className: 'zen-col' },
+            h('div', { className: 'ddc-sec-h' },
+              h('span', null, '③ 本地 DDC'),
+              h('span', { className: 'dim' }, localDeployed.length + ' / ' + RENDER_NODES.length + ' 已部署 · 可逐台设置，或用上方统一路径一键应用到全部')),
+            h('div', { className: 'cli-panel' },
+              h('div', { className: 'cli-top' },
+                h('div', { className: 'local-hint' }, h(Icon, { name: 'server', size: 15 }), '逐台本地缓存回退层 · 命中链路兜底'),
+                h('div', { className: 'cli-unify' },
+                  h('label', null, '统一路径'),
+                  h('input', { className: 'dp-input mono', value: commonLocalDir, spellCheck: false, onChange: (e) => setCommonLocalDir(e.target.value), style: { width: 188 } }),
+                  h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'bolt', size: 14 }), isDisabled: !commonLocalDir.trim() || onlineLocalTargets.filter((n) => !localPending[n.id]).length === 0, onPress: applyCommonLocal },
+                    '全选并统一部署（' + onlineLocalTargets.length + '）'))),
+              h('div', { className: 'cli-note' }, h(Icon, { name: 'shield', size: 13 }),
+                '本地 DDC 作为命中链路的回退层；部署链路在后台逐步执行，写入后自动回读校验。'),
+              h('div', { className: 'local-selbar' + (someSel ? ' on' : '') },
+                h('button', { className: 'lsb-all', onClick: toggleAllLocal },
+                  h('span', { className: 'proj-mck' + (allSel ? ' on' : (someSel ? ' part' : '')) },
+                    allSel ? h(Icon, { name: 'check', size: 12 }) : (someSel ? h(Icon, { name: 'minus', size: 12 }) : null)),
+                  allSel ? '取消全选' : '全选在线机'),
+                h('span', { className: 'lsb-ct' }, someSel
+                  ? ('已选 ' + selLocal.length + ' 台 · ' + selDeployedNodes.length + ' 已部署 / ' + selUndeployedNodes.length + ' 未部署')
+                  : '勾选机器后可批量部署或一键取消部署'),
+                h('div', { className: 'lsb-acts' },
+                  h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'bolt', size: 13 }), isDisabled: selUndeployedNodes.length === 0, onPress: () => runLocalBatch(selUndeployedNodes, 'deploy', '批量部署本地 DDC（' + selUndeployedNodes.length + ' 台）') }, '部署所选（' + selUndeployedNodes.length + '）'),
+                  h(Button, { variant: 'negative', size: 'S', icon: h(Icon, { name: 'trash', size: 13 }), isDisabled: selDeployedNodes.length === 0, onPress: () => runLocalBatch(selDeployedNodes, 'undeploy', '批量取消本地 DDC（' + selDeployedNodes.length + ' 台）') }, '取消部署所选（' + selDeployedNodes.length + '）'))),
+              h('div', { className: 'cli-list' }, RENDER_NODES.map(localRow)))))));
   }
 
   /* =================== center router =================== */
