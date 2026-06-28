@@ -37,3 +37,6 @@ __pycache__/
 
 # Miro 板本地镜像（miro-code-spec 从 Miro 板抽取；板=规划真相、可重生覆盖，本地引用即可，不入库）
 .miro/
+
+# docs 本地文档与生成产物（PRD / 设计导出等），后续不入库
+docs/
