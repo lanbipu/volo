@@ -445,31 +445,43 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
   /* =================== overlay · machine detail (6.2) =================== */
   const KV = (k, v, mono) => h('div', { className: 'kv', key: k }, h('span', { className: 'k' }, k), h('span', { className: 'v' + (mono ? ' mono' : '') }, v));
 
+  /* BaseEngine.ini 路径：UE 引擎全局配置在 <EngineRoot>\Engine\Config\BaseEngine.ini。
+     ue_installs.install_path 通常是含 Engine\ 的引擎根；若它本身已指向 Engine 目录，
+     则不重复拼接（防御式，规避不同采集口径）。 */
+  const engineBaseIniPath = (p) => {
+    const root = String(p).replace(/[\\/]+$/, '');
+    return /\\engine$/i.test(root) ? (root + '\\Config\\BaseEngine.ini') : (root + '\\Engine\\Config\\BaseEngine.ini');
+  };
   /* ⑥ 已读到的 DDC 相关配置 — 真实读两项（离线机不读，由调用方门控）：
      ① 环境变量 UE-LocalDataCachePath / UE-SharedDataCachePath（get_machine_env_var）
-     ② 项目 DefaultEngine.ini 的 [StorageServers]（read_ini_section）
-     INI 路径无 UI 来源 → 从该机的工程 location 推（window.UE_PROJECTS 的 root + Config）。
-     这是读到的配置，不是「多层有效配置解析」。 */
+     ② 引擎全局 BaseEngine.ini 的 [StorageServers]（read_ini_section）——读「当前机器所安装
+        UE 引擎的全局 INI」，路径从该机 UE 安装（get_machine_detail → ue_installs primary）推，
+        不是某个项目的 DefaultEngine.ini。这是读到的配置，不是「多层有效配置解析」。 */
   function loadDdcConfig(mid) {
-    const proj = (window.UE_PROJECTS || []).find((p) => (p.machines || []).indexOf(String(mid)) >= 0);
-    const iniPath = proj ? (proj.root + '\\Config\\DefaultEngine.ini') : null;
-    return Promise.allSettled([
-      getMachineEnvVar(mid, 'UE-LocalDataCachePath'),
-      getMachineEnvVar(mid, 'UE-SharedDataCachePath'),
-      iniPath ? readIniSection(mid, iniPath, 'StorageServers') : Promise.resolve(null),
-    ]).then((rs) => {
-      const envLocal = rs[0].status === 'rejected' ? '读取失败' : (rs[0].value || '未设');
-      const envShared = rs[1].status === 'rejected' ? '读取失败' : (rs[1].value || '未设');
-      let ini;
-      if (!iniPath) ini = { ok: false, val: '该机未发现 UE 工程', note: '无项目配置路径，无法读取 [StorageServers]' };
-      else if (rs[2].status === 'rejected') ini = { ok: false, val: '读取失败', note: (rs[2].reason && rs[2].reason.message) ? rs[2].reason.message : '远程读取 INI 失败' };
-      else {
-        const sh = (rs[2].value || []).find((k) => k.name && k.name.toLowerCase() === 'shared');
-        ini = sh
-          ? { ok: true, val: '[StorageServers] Shared = ' + sh.value, note: '已配置共享上游' }
-          : { ok: false, val: '[StorageServers] 未配置 Shared', note: '未写入共享上游服务器' };
-      }
-      return { envLocal, envShared, ini };
+    return getMachineDetail(mid).then(
+      (md) => (md && md.ue_installs ? (md.ue_installs.find((u) => u.is_primary) || md.ue_installs[0]) : null),
+      () => null,
+    ).then((ueInst) => {
+      const enginePath = ueInst && ueInst.install_path ? ueInst.install_path : null;
+      const iniPath = enginePath ? engineBaseIniPath(enginePath) : null;
+      return Promise.allSettled([
+        getMachineEnvVar(mid, 'UE-LocalDataCachePath'),
+        getMachineEnvVar(mid, 'UE-SharedDataCachePath'),
+        iniPath ? readIniSection(mid, iniPath, 'StorageServers') : Promise.resolve(null),
+      ]).then((rs) => {
+        const envLocal = rs[0].status === 'rejected' ? '读取失败' : (rs[0].value || '未设');
+        const envShared = rs[1].status === 'rejected' ? '读取失败' : (rs[1].value || '未设');
+        let ini;
+        if (!iniPath) ini = { ok: false, val: '该机未检出 UE 引擎安装', note: '无引擎安装路径，无法读取 BaseEngine.ini [StorageServers]' };
+        else if (rs[2].status === 'rejected') ini = { ok: false, val: '读取失败', note: (rs[2].reason && rs[2].reason.message) ? rs[2].reason.message : '远程读取 INI 失败' };
+        else {
+          const sh = (rs[2].value || []).find((k) => k.name && k.name.toLowerCase() === 'shared');
+          ini = sh
+            ? { ok: true, val: '[StorageServers] Shared = ' + sh.value, note: '已配置共享上游' }
+            : { ok: false, val: '[StorageServers] 未配置 Shared', note: '未写入共享上游服务器' };
+        }
+        return { envLocal, envShared, ini };
+      });
     });
   }
 
@@ -607,7 +619,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
                     KV('本地缓存路径', ddc.envLocal, true),
                     KV('共享缓存路径', ddc.envShared, true)),
                   h('div', { className: 'ddc-read-row' + (ddc.ini.ok ? '' : ' miss') },
-                    h('div', { className: 'ddc-read-h' }, h('span', { className: 'ddc-read-k' }, '② 项目配置'), h('code', { className: 'ddc-tfile' }, 'DefaultEngine.ini')),
+                    h('div', { className: 'ddc-read-h' }, h('span', { className: 'ddc-read-k' }, '② 引擎全局配置'), h('code', { className: 'ddc-tfile' }, 'BaseEngine.ini')),
                     h('div', { className: 'ddc-read-val mono' + (ddc.ini.ok ? '' : ' empty') }, ddc.ini.val),
                     h('div', { className: 'ddc-read-sub' + (ddc.ini.ok ? '' : ' warn') }, ddc.ini.note)))) : null,
         recentHealth.length ? h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '⑦ 最近健康'),

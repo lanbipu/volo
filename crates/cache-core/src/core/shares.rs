@@ -91,6 +91,47 @@ pub fn create_mode_b(
     })
 }
 
+#[derive(Debug, Deserialize)]
+struct TeardownScriptResult {
+    ok: bool,
+    message: String,
+}
+
+/// Tear down an SMB share on `host`: `Remove-SmbShare` and, for Mode B, the
+/// dedicated svc local account (`Remove-LocalUser`). `keep_files = true` leaves
+/// the folder + cached files on disk (the default for "取消该服务器部署");
+/// `keep_files = false` also deletes `local_path`. Wraps `remove-share.ps1`.
+pub fn teardown(
+    host: &str,
+    share_name: &str,
+    svc_username: Option<&str>,
+    local_path: Option<&str>,
+    keep_files: bool,
+) -> UecmResult<String> {
+    let exec = SshExecutor::from_config()?;
+    let result: TeardownScriptResult = run_json(
+        &exec,
+        host,
+        &NodeScript {
+            name: "remove-share.ps1",
+            args: serde_json::json!({
+                "ShareName": share_name,
+                "SvcUsername": svc_username,
+                "LocalPath": local_path,
+                "KeepFiles": keep_files,
+            }),
+            ssh_user: None,
+        },
+    )?;
+    if !result.ok {
+        return Err(UecmError::OperationFailed(format!(
+            "share teardown failed: {}",
+            result.message
+        )));
+    }
+    Ok(result.message)
+}
+
 /// Generate a 24-byte random password, base64url-encoded (no padding) so
 /// the value is PowerShell-safe (no quotes, slashes, `$`, `+`, `=`, spaces
 /// — anything that would break `-Password` argv passing). 24 bytes ->

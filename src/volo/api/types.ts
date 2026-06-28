@@ -297,6 +297,14 @@ export interface CreateShareResponse {
   credential_alias: string | null;
 }
 
+export interface TeardownShareResult {
+  share_config_id: number;
+  host: string;
+  share_name: string;
+  kept_files: boolean;
+  message: string;
+}
+
 export interface InjectionResult {
   client_machine_id: number;
   ok: boolean;

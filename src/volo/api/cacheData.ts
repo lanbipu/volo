@@ -77,7 +77,9 @@ export async function loadCacheResources(): Promise<CacheResources> {
   return {
     machines,
     creds: creds.map(toCredVM),
-    shares: shares.map(toShareVM),
+    // toShareVM 需 machines 反查 host_machine_id → hostname / hostId（行内显示宿主 +
+    // 部署面板「该服务器是否已部署」匹配）。
+    shares: shares.map((sh) => toShareVM(sh, machinesRaw)),
     projects,
     gpuMatrix,
     health: health.vms,

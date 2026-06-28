@@ -11,6 +11,7 @@ pub mod gpu_consistency;
 pub mod health_check;
 pub mod ini_editor;
 pub mod ini_scanner;
+pub mod local_cache;
 pub mod log_verify;
 pub mod machines;
 // step 3c: mesh (LMT) command group. `mesh` holds the MeshDb state newtype;
