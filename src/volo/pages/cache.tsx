@@ -167,12 +167,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
               h('span', { className: 'nav-ico' }, h(Icon, { name: m.icon, size: 17 })),
               h('span', { className: 'nav-lbl' }, m.label)),
             h('div', { className: 'nav-children' }, DDC_NAV.map(child)));
-        })),
-      h('div', { className: 'sect', style: { marginTop: 'auto' } },
-        h('div', { className: 'nav-i nav-mod', onClick: () => s.setDrawer({ kind: 'creds' }) },
-          h('span', { className: 'nav-ico' }, h(Icon, { name: 'key', size: 17 })),
-          h('span', { className: 'nav-lbl' }, '凭据管理'),
-          h('span', { className: 'nav-sub' }, 'SecretStore'))));
+        })));
   }
 
   /* =================== 集群总览 (Cluster Overview) · 全局概览 + 机器管理 =================== */
@@ -472,13 +467,13 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
         const envLocal = rs[0].status === 'rejected' ? '读取失败' : (rs[0].value || '未设');
         const envShared = rs[1].status === 'rejected' ? '读取失败' : (rs[1].value || '未设');
         let ini;
-        if (!iniPath) ini = { ok: false, val: '该机未检出 UE 引擎安装', note: '无引擎安装路径，无法读取 BaseEngine.ini [StorageServers]' };
-        else if (rs[2].status === 'rejected') ini = { ok: false, val: '读取失败', note: (rs[2].reason && rs[2].reason.message) ? rs[2].reason.message : '远程读取 INI 失败' };
+        if (!iniPath) ini = { ok: false, val: '该机未检出 UE 引擎安装', note: '无引擎安装路径，无法读取 BaseEngine.ini [StorageServers]', plain: '没找到这台机器的虚幻引擎安装，读不到它的全局配置，因此无法判断是否连上了团队共享缓存。', path: null };
+        else if (rs[2].status === 'rejected') ini = { ok: false, val: '读取失败', note: (rs[2].reason && rs[2].reason.message) ? rs[2].reason.message : '远程读取 INI 失败', plain: '没能读到这台机器的引擎全局配置，暂时无法判断是否连上了团队共享缓存。', path: iniPath };
         else {
           const sh = (rs[2].value || []).find((k) => k.name && k.name.toLowerCase() === 'shared');
           ini = sh
-            ? { ok: true, val: '[StorageServers] Shared = ' + sh.value, note: '已配置共享上游' }
-            : { ok: false, val: '[StorageServers] 未配置 Shared', note: '未写入共享上游服务器' };
+            ? { ok: true, val: '[StorageServers] Shared = ' + sh.value, note: '已配置共享上游', plain: '这台机器已连上团队共享缓存服务器（' + sh.value + '），渲染时可以直接复用团队已经算好的缓存，不用从头重算。', path: iniPath }
+            : { ok: false, val: '[StorageServers] 未配置 Shared', note: '未写入共享上游服务器', plain: '这台机器还没连上团队共享缓存服务器，渲染结果只存在本地，不能复用别人已经算好的缓存，也无法共享给其他机器。', path: iniPath };
         }
         return { envLocal, envShared, ini };
       });
@@ -597,32 +592,40 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
           KV('版本', ueVer), KV('安装路径', uePath, true)),
         h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '③ GPU（入网后自动采集 · 已过滤虚拟适配器）'),
           KV('型号', gpuModel), KV('驱动', gpuDriver, true), KV('显存', gpuVram), KV('厂商', gpuVendor)),
-        h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '④ 入网账户（SSH key · 现场入网）'),
-          KV('登录账户', n.user, true), KV('认证方式', 'SSH 公钥'), KV('域', n.domain)),
-        h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '⑤ 关联（自动发现）'),
+        h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '④ 关联（自动发现）'),
           h('div', { className: 'rev-links' },
             n.zen ? h('span', { className: 'rev', onClick: () => { s.setDrawer(null); s.setCacheNav('ddc_zen'); } }, h(Icon, { name: 'cube', size: 13 }), n.zen) : null,
             n.share ? h('span', { className: 'rev', title: n.share, onClick: () => { s.setDrawer(null); s.setCacheNav('ddc_legacy'); } }, h(Icon, { name: 'folder', size: 13 }), '共享 DDC 宿主') : null,
             (n.proj || []).map((p) => h('span', { key: p, className: 'rev' }, h(Icon, { name: 'film', size: 13 }), p)),
             !n.zen && !n.share && !(n.proj || []).length ? h('span', { className: 'dim', style: { fontSize: 12 } }, '无关联资源') : null)),
         !off ? h('div', { className: 'insp-sect' },
-          h('div', { className: 'lh ddc-scan-h' }, h('span', { className: 'ddc-scan-title' }, '⑥ 已读到的 DDC 相关配置'),
+          h('div', { className: 'lh ddc-scan-h' }, h('span', { className: 'ddc-scan-title' }, '⑤ 已读到的 DDC 相关配置'),
             h('button', { className: 'mini-btn ddc-rescan', onClick: reloadDdc }, h(Icon, { name: 'search', size: 12 }), '重新读取')),
-          h('div', { className: 'ddc-read-note' }, h(Icon, { name: 'eye', size: 12 }), '这是从这台机器读到的配置，不是有效配置解析。'),
+          h('div', { className: 'ddc-read-note' }, h(Icon, { name: 'eye', size: 12 }), '以下是从这台机器实际读到的设置（用大白话说明），不是有效配置的综合解析。'),
           (!ddc || ddc.loading)
             ? h('div', { className: 'ddc-read-row' }, h('span', { className: 'dim', style: { fontSize: 12 } }, '读取中…'))
             : ddc.err
               ? h('div', { className: 'ddc-read-row miss' }, h('span', { className: 'dim', style: { fontSize: 12 } }, '读取失败'))
               : h(React.Fragment, null,
                   h('div', { className: 'ddc-read-row' },
-                    h('div', { className: 'ddc-read-h' }, h('span', { className: 'ddc-read-k' }, '① 环境变量'), h('code', { className: 'ddc-tfile' }, '系统环境变量')),
-                    KV('本地缓存路径', ddc.envLocal, true),
-                    KV('共享缓存路径', ddc.envShared, true)),
+                    h('div', { className: 'ddc-read-h' }, h('span', { className: 'ddc-read-k' }, '① 缓存目录在哪'), h('code', { className: 'ddc-tfile' }, '系统环境变量')),
+                    KV('本机缓存目录', ddc.envLocal, true),
+                    KV('团队共享缓存目录', ddc.envShared === '未设' ? '未设置（不使用团队共享缓存）' : ddc.envShared, ddc.envShared !== '未设' && ddc.envShared !== '读取失败')),
                   h('div', { className: 'ddc-read-row' + (ddc.ini.ok ? '' : ' miss') },
-                    h('div', { className: 'ddc-read-h' }, h('span', { className: 'ddc-read-k' }, '② 引擎全局配置'), h('code', { className: 'ddc-tfile' }, 'BaseEngine.ini')),
-                    h('div', { className: 'ddc-read-val mono' + (ddc.ini.ok ? '' : ' empty') }, ddc.ini.val),
-                    h('div', { className: 'ddc-read-sub' + (ddc.ini.ok ? '' : ' warn') }, ddc.ini.note)))) : null,
-        recentHealth.length ? h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '⑦ 最近健康'),
+                    h('div', { className: 'ddc-read-h' }, h('span', { className: 'ddc-read-k' }, '② 是否连上共享缓存'), h('code', { className: 'ddc-tfile' }, 'BaseEngine.ini')),
+                    h('div', { className: 'ddc-read-plain' + (ddc.ini.ok ? '' : ' warn') }, ddc.ini.plain),
+                    h('div', { className: 'ddc-read-sub' }, ddc.ini.note),
+                    h('details', { className: 'ddc-read-tech' },
+                      h('summary', null, '查看配置原文与文件位置'),
+                      ddc.ini.path ? h('div', { className: 'ddc-read-tline' },
+                        h('span', { className: 'ddc-read-tlabel' }, '配置文件位置'),
+                        h('div', { className: 'ddc-read-path mono' }, ddc.ini.path),
+                        h('div', { className: 'ddc-read-thint' }, '这是这台机器虚幻引擎的全局配置文件，所有项目共用。')) : null,
+                      h('div', { className: 'ddc-read-tline' },
+                        h('span', { className: 'ddc-read-tlabel' }, '当前配置原文'),
+                        h('div', { className: 'ddc-read-val mono' + (ddc.ini.ok ? '' : ' empty') }, ddc.ini.val),
+                        h('div', { className: 'ddc-read-thint' }, ddc.ini.ok ? 'Shared 这一项指明了团队共享缓存服务器的地址和端口。' : '缺少 Shared 这一项，引擎就不知道去哪里找团队共享缓存。')))))) : null,
+        recentHealth.length ? h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '⑥ 最近健康'),
           recentHealth.map((c) => h('div', { key: c.id, className: 'mini-health' }, dot(SEV[c.status].visual), h('span', null, c.label), h('span', { className: 'd' }, c.detail)))) : null),
       h('div', { className: 'drawer-f between' },
         h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'search', size: 14 }), isDisabled: off,

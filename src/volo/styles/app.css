@@ -1800,7 +1800,7 @@ html, body {
 .mt-ico.s-negative{ color: var(--negative-visual); background: color-mix(in srgb, var(--negative-visual) 12%, transparent); }
 .mt-ico.s-neutral { color: var(--chrome-faint); background: var(--wash); }
 .mt-host { font-family: var(--font-code); font-size: 11px; font-weight: 600; color: var(--chrome-text);
-  width: 100%; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  width: 100%; min-width: 0; white-space: normal; overflow-wrap: anywhere; word-break: break-word; line-height: 1.3; }
 .mt-ip   { font-family: var(--font-code); font-size: 10px; color: var(--chrome-faint); width: 100%; min-width: 0; }
 .mt-env  { font-size: 10px; font-weight: 600; padding: 1px 7px; border-radius: 5px; margin-top: 1px; white-space: nowrap; }
 .mt-env--ok      { color: var(--positive-visual); background: color-mix(in srgb, var(--positive-visual) 13%, transparent); }
@@ -1895,6 +1895,19 @@ html, body {
 .ddc-read-val.empty { color: var(--notice-visual); }
 .ddc-read-sub { font-size: 11px; color: var(--chrome-faint); margin-top: 5px; }
 .ddc-read-sub.warn { color: var(--notice-visual); }
+.ddc-read-path { font-size: 11px; color: var(--chrome-faint); margin-bottom: 7px; word-break: break-all; }
+.ddc-read-plain { font-size: 12.5px; line-height: 1.6; color: var(--chrome-text); }
+.ddc-read-plain.warn { color: color-mix(in srgb, var(--notice-visual) 85%, var(--chrome-text)); }
+.ddc-read-tech { margin-top: 9px; border-top: 1px solid var(--chrome-line); padding-top: 8px; }
+.ddc-read-tech > summary { font-size: 11px; color: var(--chrome-dim); cursor: pointer; list-style: none; -webkit-user-select: none; user-select: none;
+  display: inline-flex; align-items: center; gap: 5px; }
+.ddc-read-tech > summary::-webkit-details-marker { display: none; }
+.ddc-read-tech > summary::before { content: '▸'; font-size: 9px; color: var(--chrome-faint); transition: transform .12s; }
+.ddc-read-tech[open] > summary::before { transform: rotate(90deg); }
+.ddc-read-tech > summary:hover { color: var(--chrome-text); }
+.ddc-read-tline { margin-top: 9px; }
+.ddc-read-tlabel { display: block; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--chrome-faint); font-weight: 700; margin-bottom: 4px; }
+.ddc-read-thint { font-size: 10.5px; color: var(--chrome-faint); margin-top: 4px; line-height: 1.5; }
 
 /* ---- DDC PAK · 选中工程产物校验卡 ---- */
 .pak-verify { margin-top: 13px; }
