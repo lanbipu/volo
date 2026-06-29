@@ -50,18 +50,39 @@ fn host_hostname(db: &Db, machine_id: i64) -> UecmResult<String> {
         .hostname)
 }
 
-/// Host component of a share UNC: `\\LANPC\Volo_DDC` -> `LANPC`.
-///
-/// The Mode B credential cmdkey MUST target the host string clients actually
-/// connect to — that's the host in the share UNC (which the join writes into
-/// `UE-SharedDataCachePath`), NOT `machines.hostname`. The two diverge in
-/// practice: a machine added by IP has `hostname` = the IP (e.g. `192.168.10.20`)
-/// while the share UNC uses the host's COMPUTERNAME (`\\LANPC\...`). Keying
-/// cmdkey on the IP stores a credential Windows never matches against `\\LANPC\...`,
-/// so the share keeps prompting despite a "successful" injection.
-fn unc_host(unc_path: &str) -> Option<String> {
-    let host = unc_path.strip_prefix(r"\\")?.split('\\').next().unwrap_or("");
-    (!host.is_empty()).then(|| host.to_string())
+fn push_injection_results(
+    results: &mut Vec<InjectionResult>,
+    client_id: i64,
+    client_ip: &str,
+    cmdkey_targets: &[String],
+    svc_user: &str,
+    svc_pass: &str,
+    op_user: Option<&str>,
+    op_pass: Option<&str>,
+) {
+    let mut parts = Vec::with_capacity(cmdkey_targets.len());
+    let mut all_ok = true;
+    for target in cmdkey_targets {
+        match psexec::inject_system_credential(
+            client_ip,
+            target,
+            svc_user,
+            svc_pass,
+            op_user,
+            op_pass,
+        ) {
+            Ok(msg) => parts.push(format!("{target}: {msg}")),
+            Err(e) => {
+                all_ok = false;
+                parts.push(format!("{target}: {e}"));
+            }
+        }
+    }
+    results.push(InjectionResult {
+        client_machine_id: client_id,
+        ok: all_ok,
+        message: parts.join("; "),
+    });
 }
 
 #[tauri::command]
@@ -198,14 +219,7 @@ pub fn inject_share_credential_to_clients(
                 svc_alias
             ))
         })?;
-    // cmdkey target = the host in the share UNC clients connect to (\\LANPC\... ->
-    // LANPC), NOT machines.hostname (which can be the IP). See `unc_host`.
-    let cmdkey_target = unc_host(&share.unc_path).ok_or_else(|| {
-        UecmError::OperationFailed(format!(
-            "cannot parse host from share unc_path '{}'",
-            share.unc_path
-        ))
-    })?;
+    let cmdkey_targets = core_shares::cmdkey_targets_for_share(&db, &share)?;
     // SSH key auth: operator cred vestigial (param kept as shim, Vue compat).
     let _ = &operator_credential_alias;
     let (op_user, op_pass): (Option<String>, Option<String>) = (None, None);
@@ -223,14 +237,99 @@ pub fn inject_share_credential_to_clients(
                 continue;
             }
         };
-        match psexec::inject_system_credential(
+        push_injection_results(
+            &mut results,
+            client_id,
             &client_ip,
-            &cmdkey_target,
+            &cmdkey_targets,
             &svc_cred.username,
             &svc_pass,
             op_user.as_deref(),
             op_pass.as_deref(),
-        ) {
+        );
+    }
+    Ok(results)
+}
+
+/// Prepare Mode A (open) share clients: Guest cmdkey + net use for silent UNC access.
+#[tauri::command]
+pub fn prepare_open_share_clients(
+    db: State<'_, Db>,
+    share_config_id: i64,
+    client_machine_ids: Vec<i64>,
+) -> UecmResult<Vec<InjectionResult>> {
+    let share = data_shares::find_by_id(&db, share_config_id)?.ok_or_else(|| {
+        UecmError::InvalidInput(format!("share_config {} not found", share_config_id))
+    })?;
+    if share.mode != ShareMode::Open {
+        return Err(UecmError::InvalidInput(
+            "open share client prep only applies to Mode A (open) shares".to_string(),
+        ));
+    }
+    let target_uncs = core_shares::unc_variants_for_share(&db, &share)?;
+    let mut results = Vec::with_capacity(client_machine_ids.len());
+    for client_id in client_machine_ids {
+        let client_ip = match host_ip(&db, client_id) {
+            Ok(ip) => ip,
+            Err(e) => {
+                results.push(InjectionResult {
+                    client_machine_id: client_id,
+                    ok: false,
+                    message: e.to_string(),
+                });
+                continue;
+            }
+        };
+        match core_shares::prepare_open_share_client(&client_ip, &target_uncs) {
+            Ok(msg) => {
+                results.push(InjectionResult {
+                    client_machine_id: client_id,
+                    ok: true,
+                    message: msg,
+                });
+            }
+            Err(e) => results.push(InjectionResult {
+                client_machine_id: client_id,
+                ok: false,
+                message: e.to_string(),
+            }),
+        }
+    }
+    Ok(results)
+}
+
+/// Tear down Mode A (open) client prep for ONE share — remove the per-share
+/// scheduled tasks + targets file + live guest net use sessions on each client,
+/// so leaving/tearing down a share stops the client auto-reconnecting at logon.
+#[tauri::command]
+pub fn unprepare_open_share_clients(
+    db: State<'_, Db>,
+    share_config_id: i64,
+    client_machine_ids: Vec<i64>,
+) -> UecmResult<Vec<InjectionResult>> {
+    let share = data_shares::find_by_id(&db, share_config_id)?.ok_or_else(|| {
+        UecmError::InvalidInput(format!("share_config {} not found", share_config_id))
+    })?;
+    if share.mode != ShareMode::Open {
+        return Err(UecmError::InvalidInput(
+            "open share client unprep only applies to Mode A (open) shares".to_string(),
+        ));
+    }
+    let target_uncs = core_shares::unc_variants_for_share(&db, &share)?;
+    let mut results = Vec::with_capacity(client_machine_ids.len());
+    for client_id in client_machine_ids {
+        let client_ip = match host_ip(&db, client_id) {
+            Ok(ip) => ip,
+            Err(e) => {
+                results.push(InjectionResult {
+                    client_machine_id: client_id,
+                    ok: false,
+                    message: e.to_string(),
+                });
+                continue;
+            }
+        };
+        match core_shares::unprepare_open_share_client(&client_ip, &target_uncs) {
             Ok(msg) => results.push(InjectionResult {
                 client_machine_id: client_id,
                 ok: true,

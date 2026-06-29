@@ -8,6 +8,7 @@
 //! returns success — see `commands::shares::create_share`.
 
 use crate::core::ssh::{run_json, NodeScript, SshExecutor};
+use crate::data::{machines as data_machines, share_configs::ShareConfig, Db};
 use crate::error::{UecmError, UecmResult};
 use serde::{Deserialize, Serialize};
 
@@ -130,6 +131,118 @@ pub fn teardown(
         )));
     }
     Ok(result.message)
+}
+
+#[derive(Debug, Deserialize)]
+struct GuestAuthScriptResult {
+    ok: bool,
+    message: String,
+}
+
+/// Mode A client prep: AllowInsecureGuestAuth + Guest cmdkey/net use for each UNC
+/// variant so Explorer and UE reach the share without a credential dialog.
+pub fn prepare_open_share_client(host: &str, target_uncs: &[String]) -> UecmResult<String> {
+    if target_uncs.is_empty() {
+        return Err(UecmError::InvalidInput(
+            "prepare_open_share_client requires at least one target UNC".into(),
+        ));
+    }
+    let exec = SshExecutor::from_config()?;
+    let result: GuestAuthScriptResult = run_json(
+        &exec,
+        host,
+        &NodeScript {
+            name: "prepare-open-share-client.ps1",
+            args: serde_json::json!({ "TargetUncs": target_uncs }),
+            ssh_user: None,
+        },
+    )?;
+    if !result.ok {
+        return Err(UecmError::OperationFailed(format!(
+            "open share client prep failed: {}",
+            result.message
+        )));
+    }
+    Ok(result.message)
+}
+
+/// Mode A client teardown: undo `prepare_open_share_client` for one share —
+/// remove the per-share targets file + scheduled tasks and drop live guest net
+/// use sessions, so leaving/tearing down a share stops the client auto-reconnecting.
+pub fn unprepare_open_share_client(host: &str, target_uncs: &[String]) -> UecmResult<String> {
+    if target_uncs.is_empty() {
+        return Err(UecmError::InvalidInput(
+            "unprepare_open_share_client requires at least one target UNC".into(),
+        ));
+    }
+    let exec = SshExecutor::from_config()?;
+    let result: GuestAuthScriptResult = run_json(
+        &exec,
+        host,
+        &NodeScript {
+            name: "unprepare-open-share-client.ps1",
+            args: serde_json::json!({ "TargetUncs": target_uncs }),
+            ssh_user: None,
+        },
+    )?;
+    if !result.ok {
+        return Err(UecmError::OperationFailed(format!(
+            "open share client unprep failed: {}",
+            result.message
+        )));
+    }
+    Ok(result.message)
+}
+
+/// Build `\\HOST\ShareName` for every host alias clients may use (computer name, IP, inventory hostname).
+pub fn unc_variants_for_share(db: &Db, share: &ShareConfig) -> UecmResult<Vec<String>> {
+    let hosts = cmdkey_targets_for_share(db, share)?;
+    Ok(hosts
+        .into_iter()
+        .map(|h| format!(r"\\{}\{}", h, share.share_name))
+        .collect())
+}
+
+pub fn cmdkey_targets_for_share(db: &Db, share: &ShareConfig) -> UecmResult<Vec<String>> {
+    let unc_target = unc_host(&share.unc_path).ok_or_else(|| {
+        UecmError::OperationFailed(format!(
+            "cannot parse host from share unc_path '{}'",
+            share.unc_path
+        ))
+    })?;
+    let mut targets = vec![unc_target];
+    for candidate in [
+        host_ip(db, share.host_machine_id).ok(),
+        host_hostname(db, share.host_machine_id).ok(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !targets
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case(&candidate))
+        {
+            targets.push(candidate);
+        }
+    }
+    Ok(targets)
+}
+
+fn unc_host(unc_path: &str) -> Option<String> {
+    let host = unc_path.strip_prefix(r"\\")?.split('\\').next().unwrap_or("");
+    (!host.is_empty()).then(|| host.to_string())
+}
+
+fn host_ip(db: &Db, machine_id: i64) -> UecmResult<String> {
+    Ok(data_machines::find_by_id(db, machine_id)?
+        .ok_or_else(|| UecmError::InvalidInput(format!("machine {} not found", machine_id)))?
+        .ip)
+}
+
+fn host_hostname(db: &Db, machine_id: i64) -> UecmResult<String> {
+    Ok(data_machines::find_by_id(db, machine_id)?
+        .ok_or_else(|| UecmError::InvalidInput(format!("machine {} not found", machine_id)))?
+        .hostname)
 }
 
 /// Generate a 24-byte random password, base64url-encoded (no padding) so

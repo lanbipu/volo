@@ -14,6 +14,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
   generateDdcPak, startPsoCollection, verifyPakOutput, listPsoCacheFiles,
   distributeDdcPak, distributePsoCache,
   setMachineEnvVar, getMachineEnvVar, createLocalCache, injectShareCredentialToClients,
+  prepareOpenShareClients, unprepareOpenShareClients,
   setMachineBackendField, setProjectCacheBackend } from "../api/commands";
 
 (function () {
@@ -608,7 +609,6 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       return Promise.allSettled(targets.map((mid) =>
         setMachineEnvVar(mid, ENV_KEY, unc).then(() => {
           envOk++;
-          okMachineIds.push(mid);
           const projs = (UE_PROJECTS || []).filter((p) => (p.machines || []).includes(String(mid)));
           iniProjExpected += projs.length;
           return Promise.allSettled(projs.map((p) => {
@@ -618,7 +618,14 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
               setMachineBackendField(mid, ini, 'DerivedDataBackendGraph', 'Shared', 'Path', unc),
               setMachineBackendField(mid, ini, 'DerivedDataBackendGraph', 'Shared', 'EnvPathOverride', ENV_KEY),
             ]);
-          })).then((rs) => { iniProjOk += rs.filter((r) => r.status === 'fulfilled').length; });
+          })).then((rs) => {
+            const okN = rs.filter((r) => r.status === 'fulfilled').length;
+            iniProjOk += okN;
+            /* 只有 env 变量 + 该机所有工程 INI 都写成功，才算这台「完整加入」、可做 guest 预连接 /
+               凭据注入。否则 UE 没写上 EnvPathOverride，根本不会用共享 DDC，对它预连接是假成功。 */
+            if (okN === projs.length) okMachineIds.push(mid);
+            else errs.push('机器 ' + mid + '：工程 INI 部分写入失败（' + okN + '/' + projs.length + '）');
+          });
         }, (e) => { fail++; errs.push('机器 ' + mid + '：' + (e && e.message ? e.message : String(e))); })
       )).then(() => {
         if (envOk === 0) throw new Error('全部目标设置失败' + (errs.length ? ' · ' + errs.join('；') : ''));
@@ -637,6 +644,18 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
             return { envOk, iniProjOk, fail, okMachineIds, managed };
           });
         }
+        if (sh && sh.shareMode === 'open' && sh.shareConfigId && okMachineIds.length) {
+          /* Guest 预连接是「附加」步骤：env 变量 + 工程 INI 已写好（真正的「加入」已完成）。
+             预连接失败（headless 节点 / MS 账号 / 主机慢）绝不能把已成功的 env/INI 当失败扔掉，
+             只作为警告返回，不抛错。 */
+          return prepareOpenShareClients(sh.shareConfigId, okMachineIds).then((prep) => {
+            const prepFail = (prep || []).filter((r) => !r.ok);
+            const guestWarn = prepFail.length
+              ? 'Guest 预连接未即时确认 · ' + prepFail.length + '/' + (prep || []).length + ' 台（' + prepFail.map((r) => r.message || '失败').join('；') + '）'
+              : null;
+            return { envOk, iniProjOk, fail, okMachineIds, managed, guestPrep: !prepFail.length, guestWarn };
+          }, (e) => ({ envOk, iniProjOk, fail, okMachineIds, managed, guestPrep: false, guestWarn: 'Guest 预连接调用失败（已设环境变量，登录时由计划任务重试）：' + (e && e.message ? e.message : String(e)) }));
+        }
         return { envOk, iniProjOk, fail, okMachineIds, managed };
       });
     };
@@ -653,15 +672,21 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       setJP(n.id, 'join');
       s.runCmd({ domain: 'share', action: 'join', target: n.host, chan: 'ssh', note: '加入共享 DDC · ' + sh.path },
         () => joinShareToMachines([n.machineId], sh.path, sh),
-        { okMsg: (r) => n.host + ' 已加入 · 设系统环境变量' + (r.managed ? '，已注入访问凭据' : '') })
+        { okMsg: (r) => n.host + ' 已加入 · 设系统环境变量' + (r.managed ? '，已注入访问凭据（计算机名+IP）' : (r.guestPrep ? '，已预连接 Guest 共享（免凭据框）' : (r.guestWarn ? '，但 ' + r.guestWarn : ''))) })
         .then(() => { setShareJoined((m) => Object.assign({}, m, { [n.id]: sh.path })); clrJP(n.id); }, () => clrJP(n.id));
     };
     const leaveShareOne = (n) => {
       if (joinPending[n.id]) return;
       setJP(n.id, 'leave');
+      const joinedPath = shareJoined[n.id];
+      const sh = (SHARES || []).find((x) => x.path === joinedPath) || null;
+      const isOpen = !!(sh && sh.shareMode === 'open' && sh.shareConfigId);
       s.runCmd({ domain: 'share', action: 'leave', target: n.host, chan: 'ssh', note: '退出共享 DDC' },
-        () => setMachineEnvVar(n.machineId, ENV_KEY, ''),
-        { okMsg: () => n.host + ' 已退出 · 清空环境变量' })
+        () => setMachineEnvVar(n.machineId, ENV_KEY, '').then(() =>
+          /* Mode A：清环境变量后还要移除客户端的 Guest 自动重连（OnLogon 任务 + targets 文件 +
+             live net use），否则「退出」后每次登录仍重连一个可能已下线的共享。best-effort，不阻断退出。 */
+          isOpen ? unprepareOpenShareClients(sh.shareConfigId, [n.machineId]).then(() => {}, () => {}) : undefined),
+        { okMsg: () => n.host + ' 已退出 · 清空环境变量' + (isOpen ? '，已移除 Guest 自动重连' : '') })
         .then(() => { setShareJoined((m) => { const x = Object.assign({}, m); delete x[n.id]; return x; }); clrJP(n.id); }, () => clrJP(n.id));
     };
     const joinShareAll = () => {
@@ -672,7 +697,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       ids.forEach((id) => setJP(id, 'join'));
       s.runCmd({ domain: 'share', action: 'join', target: ids.length + ' 台', chan: 'ssh', note: '批量加入共享 DDC · ' + sh.path },
         () => joinShareToMachines(todo.map((n) => n.machineId), sh.path, sh),
-        { okMsg: (r) => '已加入 · ' + r.envOk + ' 台设环境变量' + (r.iniProjOk ? ('，写 ' + r.iniProjOk + ' 个工程 INI') : '') + (r.managed ? '，已注入访问凭据' : '') + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
+        { okMsg: (r) => '已加入 · ' + r.envOk + ' 台设环境变量' + (r.iniProjOk ? ('，写 ' + r.iniProjOk + ' 个工程 INI') : '') + (r.managed ? '，已注入访问凭据（计算机名+IP）' : (r.guestPrep ? '，已预连接 Guest 共享（免凭据框）' : '')) + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
         .then((r) => {
           const okSet = new Set(r.okMachineIds || []);
           setShareJoined((m) => { const x = Object.assign({}, m); todo.forEach((n) => { if (okSet.has(n.machineId)) x[n.id] = sh.path; }); return x; });
@@ -835,7 +860,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
                     h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'link', size: 14 }), isDisabled: unjoinedCandidates.length === 0, onPress: joinShareAll },
                       '全部加入（' + unjoinedCandidates.length + '）'))),
                 h('div', { className: 'cli-note' }, h(Icon, { name: 'shield', size: 13 }),
-                  '加入 = 在该机设机器级系统环境变量 ' + ENV_KEY + ' 指向共享路径（引擎默认即认此变量，无需改工程）；Mode B 专用账号共享会额外为客户端注入访问凭据；运行中的 UE 需重启生效。退出仅清除变量（不撤销已注入凭据、不动共享文件夹）。'),
+                  '加入 = 在该机设机器级系统环境变量 ' + ENV_KEY + ' 指向共享路径；Mode A 会预存 Guest 空密码会话（cmdkey + net use，资源管理器直接输入 UNC 不再弹框）；Mode B 会为计算机名与 IP 注入 ddc-svc 凭据；运行中的 UE 需重启生效。退出仅清除变量（不撤销已预连接会话）。'),
                 h('div', { className: 'cli-list' }, joinCandidates.map(joinRow)))) : null),
           /* 右列：③ 本地 DDC */
           h('div', { className: 'zen-col' },

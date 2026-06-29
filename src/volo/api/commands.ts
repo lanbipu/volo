@@ -182,6 +182,12 @@ export const createShare = (
 // 📝 no-ui: 新 ZenServer 客户端走 set_ini_key；inject 属 SMB Mode-B（无当前 UI）
 export const injectShareCredentialToClients = (shareConfigId: number, clientMachineIds: number[], operatorCredentialAlias?: string | null) =>
   call<InjectionResult[]>("inject_share_credential_to_clients", { shareConfigId, clientMachineIds, operatorCredentialAlias: operatorCredentialAlias ?? null });
+// ✅ wired: cacheDdc joinShare Mode A → prepareOpenShareClients（AllowInsecureGuestAuth）
+export const prepareOpenShareClients = (shareConfigId: number, clientMachineIds: number[]) =>
+  call<InjectionResult[]>("prepare_open_share_clients", { shareConfigId, clientMachineIds });
+// ✅ wired: cacheDdc leaveShare Mode A → unprepareOpenShareClients（移除 OnLogon 任务 + targets + net use）
+export const unprepareOpenShareClients = (shareConfigId: number, clientMachineIds: number[]) =>
+  call<InjectionResult[]>("unprepare_open_share_clients", { shareConfigId, clientMachineIds });
 // ✅ wired: shell → loadCacheResources → window.SHARES（已纳管共享列表）
 export const listShares = () => call<ShareConfig[]>("list_shares");
 // ✅ wired: cacheDdc deleteShare「取消服务器」（仅解除纳管）→ deleteShare(id,false) + reloadCache

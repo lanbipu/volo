@@ -21,8 +21,12 @@ try {
     if (-not (Test-Path -LiteralPath $LocalPath)) {
         New-Item -ItemType Directory -Path $LocalPath -Force | Out-Null
     }
-    $guest = Get-LocalUser -Name 'Guest' -ErrorAction Stop
-    if (-not $guest.Enabled) { Enable-LocalUser -Name 'Guest' }
+    # Find the built-in Guest by RID 501 (SID ends in -501), not by the literal
+    # name 'Guest' — the account name is localized/renameable and a name lookup
+    # would fail on such systems. Local RIDs start at 1000, so -501 is unambiguous.
+    $guest = Get-LocalUser | Where-Object { $_.SID.Value -like '*-501' } | Select-Object -First 1
+    if (-not $guest) { throw "built-in Guest account (RID 501) not found" }
+    if (-not $guest.Enabled) { $guest | Enable-LocalUser }
     $regPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
     Set-ItemProperty -Path $regPath -Name 'AutoShareWks' -Value 1 -Type DWord -ErrorAction SilentlyContinue
     Set-ItemProperty -Path $regPath -Name 'RestrictNullSessAccess' -Value 0 -Type DWord -ErrorAction SilentlyContinue
