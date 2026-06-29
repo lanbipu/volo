@@ -631,7 +631,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       if (!sh || joinPending[n.id]) return;
       setJP(n.id, 'join');
       s.runCmd({ domain: 'share', action: 'join', target: n.host, chan: 'ssh', note: '加入共享 DDC · ' + sh.path },
-        () => joinShareToMachines([n.machineId], sh),
+        () => joinShareToMachines([n.machineId], sh.path),
         { okMsg: (r) => n.host + ' 已加入 · 设系统环境变量' + (r.managed ? '，已注入访问凭据' : '') })
         .then(() => { setShareJoined((m) => Object.assign({}, m, { [n.id]: sh.path })); clrJP(n.id); }, () => clrJP(n.id));
     };
@@ -650,8 +650,8 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       const ids = todo.map((n) => n.id);
       ids.forEach((id) => setJP(id, 'join'));
       s.runCmd({ domain: 'share', action: 'join', target: ids.length + ' 台', chan: 'ssh', note: '批量加入共享 DDC · ' + sh.path },
-        () => joinShareToMachines(todo.map((n) => n.machineId), sh),
-        { okMsg: (r) => '已加入 · ' + r.envOk + ' 台设环境变量' + injNote(r) + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
+        () => joinShareToMachines(todo.map((n) => n.machineId), sh.path),
+        { okMsg: (r) => '已加入 · ' + r.envOk + ' 台设环境变量' + (r.iniProjOk ? ('，写 ' + r.iniProjOk + ' 个工程 INI') : '') + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
         .then((r) => { const okSet = new Set(r.okMachineIds || []); setShareJoined((m) => { const x = Object.assign({}, m); todo.forEach((n) => { if (okSet.has(n.machineId)) x[n.id] = sh.path; }); return x; }); ids.forEach(clrJP); },
               () => ids.forEach(clrJP));
     };
