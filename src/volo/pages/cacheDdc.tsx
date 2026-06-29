@@ -13,7 +13,7 @@ import "./cache";
 import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createShare,
   generateDdcPak, startPsoCollection, verifyPakOutput, listPsoCacheFiles,
   distributeDdcPak, distributePsoCache,
-  setMachineEnvVar, getMachineEnvVar, setMachineBackendField, createLocalCache } from "../api/commands";
+  setMachineEnvVar, getMachineEnvVar, createLocalCache, injectShareCredentialToClients } from "../api/commands";
 
 (function () {
   const { Button } = window.Spectrum2DesignSystem_b6d1b3;
@@ -630,8 +630,8 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       if (!sh || joinPending[n.id]) return;
       setJP(n.id, 'join');
       s.runCmd({ domain: 'share', action: 'join', target: n.host, chan: 'ssh', note: '加入共享 DDC · ' + sh.path },
-        () => joinShareToMachines([n.machineId], sh.path),
-        { okMsg: (r) => n.host + ' 已加入 · 设环境变量' + (r.iniProjOk ? ('，写 ' + r.iniProjOk + ' 个工程 INI') : '') })
+        () => joinShareToMachines([n.machineId], sh),
+        { okMsg: (r) => n.host + ' 已加入 · 设系统环境变量' + (r.managed ? '，已注入访问凭据' : '') })
         .then(() => { setShareJoined((m) => Object.assign({}, m, { [n.id]: sh.path })); clrJP(n.id); }, () => clrJP(n.id));
     };
     const leaveShareOne = (n) => {
@@ -649,9 +649,9 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       const ids = todo.map((n) => n.id);
       ids.forEach((id) => setJP(id, 'join'));
       s.runCmd({ domain: 'share', action: 'join', target: ids.length + ' 台', chan: 'ssh', note: '批量加入共享 DDC · ' + sh.path },
-        () => joinShareToMachines(todo.map((n) => n.machineId), sh.path),
-        { okMsg: (r) => '已加入 · ' + r.envOk + ' 台设环境变量' + (r.iniProjOk ? ('，写 ' + r.iniProjOk + ' 个工程 INI') : '') + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
-        .then(() => { setShareJoined((m) => { const x = Object.assign({}, m); ids.forEach((id) => { x[id] = sh.path; }); return x; }); ids.forEach(clrJP); },
+        () => joinShareToMachines(todo.map((n) => n.machineId), sh),
+        { okMsg: (r) => '已加入 · ' + r.envOk + ' 台设环境变量' + injNote(r) + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
+        .then((r) => { const okSet = new Set(r.okMachineIds || []); setShareJoined((m) => { const x = Object.assign({}, m); todo.forEach((n) => { if (okSet.has(n.machineId)) x[n.id] = sh.path; }); return x; }); ids.forEach(clrJP); },
               () => ids.forEach(clrJP));
     };
     const joinRow = (n) => {
@@ -810,7 +810,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
                     h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'link', size: 14 }), isDisabled: unjoinedCandidates.length === 0, onPress: joinShareAll },
                       '全部加入（' + unjoinedCandidates.length + '）'))),
                 h('div', { className: 'cli-note' }, h(Icon, { name: 'shield', size: 13 }),
-                  '加入 = 在该机写机器级环境变量 ' + ENV_KEY + ' 指向共享路径，并为该机已扫描到的工程写 BackendGraph（UE 才认这个变量）；退出仅清除变量，不动共享文件夹。'),
+                  '加入 = 在该机设机器级系统环境变量 ' + ENV_KEY + ' 指向共享路径（引擎默认即认此变量，无需改工程）；Mode B 专用账号共享会额外为客户端注入访问凭据；运行中的 UE 需重启生效。退出仅清除变量（不撤销已注入凭据、不动共享文件夹）。'),
                 h('div', { className: 'cli-list' }, joinCandidates.map(joinRow)))) : null),
           /* 右列：③ 本地 DDC */
           h('div', { className: 'zen-col' },
