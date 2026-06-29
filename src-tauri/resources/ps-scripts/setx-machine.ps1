@@ -11,7 +11,12 @@ try {
     $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
     [System.Environment]::SetEnvironmentVariable($p.Name, $p.Value, 'Machine')
     $readback = [System.Environment]::GetEnvironmentVariable($p.Name, 'Machine')
-    if ($readback -ne $p.Value) { throw "verify failed: read '$readback', expected '$($p.Value)'" }
+    # Clearing a Machine var (Value="") deletes it, so readback comes back $null.
+    # Normalize $null and "" to the same thing before comparing, otherwise
+    # `$null -ne ""` is $true and the "leave / undeploy" path always fails verify.
+    $expected = if ($null -eq $p.Value) { '' } else { "$($p.Value)" }
+    $actual   = if ($null -eq $readback) { '' } else { "$readback" }
+    if ($actual -ne $expected) { throw "verify failed: read '$actual', expected '$expected'" }
     @{ ok = $true; message = "set $($p.Name)" } | ConvertTo-Json -Compress
 }
 catch {
