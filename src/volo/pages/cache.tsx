@@ -9,7 +9,8 @@ import * as React from "react";
 import "../ds";
 import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
   getWinrmBootstrapScript, getMachineDetail, scanNetwork, addDiscoveredMachine,
-  runHealthCheck, scanInis, applyFinding, getMachineEnvVar, readIniSection } from "../api/commands";
+  runHealthCheck, scanInis, applyFinding, getMachineEnvVar, readIniSection,
+  packageSshBootstrap, pickDirectory, revealPath } from "../api/commands";
 
 (function () {
   const { Button, Badge } = window.Spectrum2DesignSystem_b6d1b3;
@@ -428,7 +429,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
     /* drawer 指向的机器/脚本目标若已被 reloadCache 剔除（node 找不到），回落到检查器空闲态，
        避免检查器永久空白（如详情开着时「立即巡检」刚好移除了该机）。 */
     const stale = d && (d.kind === 'machine' || d.kind === 'script') && !node(d.id);
-    if (d && !stale && (d.kind === 'machine' || d.kind === 'preview' || d.kind === 'script' || d.kind === 'creds')) {
+    if (d && !stale && (d.kind === 'machine' || d.kind === 'preview' || d.kind === 'script' || d.kind === 'creds' || d.kind === 'usb')) {
       return drawer(s);
     }
     if (/^ddc_p(ak|so)$/.test(s.cacheNav) && window.VOLO_CACHE_DDC && window.VOLO_CACHE_DDC.detail) {
@@ -517,6 +518,8 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
       h('div', { className: 'drawer-b' },
         h('div', { className: 'script-intro' }, h(Icon, { name: 'shield', size: 14 }),
           '全栈已统一 SSH key 现场入网，后端不再远程推送配置。把下面脚本拷到目标机、以管理员运行，回来点「刷新」。'),
+        h('div', { className: 'script-usb-hint' }, h(Icon, { name: 'usb', size: 14 }),
+          h('span', null, '这里只复制单个脚本文本。完整入网（含公钥 + PsExec64 + 双击入口）请用顶部「制作入网 U 盘」。')),
         h('div', { className: 'dblock' },
           h('div', { className: 'dblock-h' }, h('span', { className: 'no' }, '1'), '操作步骤'),
           h('div', { className: 'steps-list' },
@@ -785,6 +788,178 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
           : h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'plus', size: 15 }), onPress: () => setAdding(true) }, '新增凭据')));
   }
 
+  /* =================== 制作入网 U 盘（导出 SSH 入网包 · package_ssh_bootstrap）===================
+     全局动作：包与机器无关，做一次即可入网所有节点。复用右侧 drawer + dblock / step-line / cli-pill。
+     真接后端：packageSshBootstrap（Windows-only）/ pickDirectory（原生目录选择器）/ revealPath。 */
+  const USB_FILE_USE = {
+    'UECM-Bootstrap.cmd': '双击入口，自动以管理员提权运行',
+    'README.txt':          '中文使用说明',
+    'enable-ssh.ps1':      '开 OpenSSH · 授权公钥 · 写节点配置',
+    'uecm.pub':            'Volo 传输公钥（明文）',
+    'PsExec64.exe':        '凭据注入工具',
+  };
+  const USB_FAILS = {
+    dep:     { title: '缺少打包依赖', msg: '安装包未随附 PsExec64.exe，无法生成完整入网包。', fix: '重新安装 Volo 或联系管理员补齐打包组件，然后重试。' },
+    nowrite: { title: '输出目录不可写', msg: '无法写入所选目录，U 盘可能已被拔出、处于写保护或空间不足。', fix: '确认 U 盘已插好、未写保护、有剩余空间，换个目录后重试。' },
+    badpw:   { title: '密码含非法字符', msg: 'uecm-svc 密码包含 % " ^，cmd 解析会损坏密码。', fix: '回到输入区移除这些字符后重新生成。' },
+  };
+  const USB_PW_BAD = ['%', '"', '^'];
+  /* 把后端错误消息归到设计稿的三类卡片；认不出的回落到「其他」并原样显示后端消息。 */
+  function classifyUsbFail(msg) {
+    const m = (msg || '').toLowerCase();
+    if (m.includes('mangle') || m.includes('cmd.exe')) return 'badpw';
+    if (m.includes('psexec')) return 'dep';
+    if (m.includes('denied') || m.includes('not enough space') || m.includes('read-only') ||
+        m.includes('cannot') || m.includes('could not find') || m.includes('access to the path')) return 'nowrite';
+    return 'other';
+  }
+
+  function UsbPackPanel({ s }) {
+    const winOk = s.platform === 'win';
+    const [phase, setPhase] = useState('idle');   /* idle | gen | done | fail */
+    const [path, setPath] = useState('');
+    const [pw, setPw] = useState('');
+    const [advOpen, setAdvOpen] = useState(false);
+    const [copied, setCopied] = useState(false);
+    const [result, setResult] = useState(null);   /* PackageBootstrapResult（真实输出路径 + 文件列表） */
+    const [failReason, setFailReason] = useState('dep');
+    const [failMsg, setFailMsg] = useState('');
+
+    const close = () => s.setDrawer(null);
+    const badChars = USB_PW_BAD.filter((c) => pw.includes(c));
+    const pwBad = badChars.length > 0;
+    const outPath = path.trim();
+    const donePath = (result && result.output_directory) || outPath;
+    const canGen = winOk && phase === 'idle' && !!outPath && !pwBad;
+
+    const browse = () => { pickDirectory().then((p) => { if (p) setPath(p); }, () => {}); };
+    const copyPath = () => { try { navigator.clipboard.writeText(donePath); } catch (e) {} setCopied(true); setTimeout(() => setCopied(false), 1400); };
+    const showFolder = () => { revealPath(donePath).catch(() => {}); };
+
+    const generate = () => {
+      if (!canGen) return;
+      setResult(null);
+      setPhase('gen');
+      s.runCmd({ domain: 'usb', action: 'package-bootstrap', target: outPath, chan: 'ssh', note: '生成入网 U 盘包' },
+        () => packageSshBootstrap(outPath, pw.trim() || null),
+        { okMsg: (r) => '入网包已生成 · ' + r.output_directory + '（' + ((r.files || []).length) + ' 个文件）' })
+        .then(
+          (r) => { setResult(r); setPhase('done'); },
+          (e) => { const msg = e && e.message ? e.message : String(e); setFailMsg(msg); setFailReason(classifyUsbFail(msg)); setPhase('fail'); });
+    };
+
+    const step = (i, tx) => h('div', { className: 'step-line', key: i }, h('span', { className: 'sn' }, i), h('span', { className: 'step-tx' }, tx));
+
+    /* ---- body ---- */
+    let body;
+    if (!winOk) {
+      body = h('div', { className: 'usb-unavail' },
+        h('div', { className: 'usb-unavail-ico' }, h(Icon, { name: 'alert', size: 22 })),
+        h('div', { className: 'usb-unavail-t' }, '该功能仅 Windows 可用'),
+        h('div', { className: 'usb-unavail-d' }, '制作入网 U 盘依赖 PowerShell 打包，请在 Windows 上的 Volo 中操作。'));
+    } else if (phase === 'gen') {
+      body = h('div', { className: 'usb-gen' },
+        h('span', { className: 'spin usb-gen-spin' }, h(Icon, { name: 'sync', size: 22 })),
+        h('div', { className: 'usb-gen-t' }, '正在生成入网包…'),
+        h('div', { className: 'usb-gen-d' }, h('span', { className: 'mono' }, 'package_bootstrap'), ' → ', h('span', { className: 'mono' }, outPath)),
+        h('div', { className: 'usb-gen-bar' }, h('span', null)));
+    } else if (phase === 'done') {
+      const files = (result && result.files) || [];
+      body = h(React.Fragment, null,
+        h('div', { className: 'usb-done' },
+          h('div', { className: 'usb-done-ico' }, h(Icon, { name: 'check', size: 26 })),
+          h('div', { className: 'usb-done-t' }, '入网包已生成'),
+          h('div', { className: 'usb-done-d' }, '这个包全局通用 —— 做一次即可入网所有节点。')),
+        h('div', { className: 'usb-out' },
+          h('div', { className: 'usb-out-h' }, h(Icon, { name: 'folder', size: 13 }), '输出位置'),
+          h('div', { className: 'usb-out-row' },
+            h('code', { className: 'usb-out-path mono' }, donePath),
+            h('button', { className: 'mini-btn', onClick: copyPath }, h(Icon, { name: copied ? 'check' : 'copy', size: 12 }), copied ? '已复制' : '复制'),
+            h('button', { className: 'mini-btn', onClick: showFolder }, h(Icon, { name: 'eye', size: 12 }), '在文件夹中显示'))),
+        h('div', { className: 'dblock' },
+          h('div', { className: 'dblock-h' }, h('span', { className: 'no' }, '1'), '包内文件', h('span', { className: 'aff-sum' }, files.length + ' 个')),
+          h('div', { className: 'usb-files' }, files.map((name) => h('div', { key: name, className: 'usb-file' },
+            h('span', { className: 'usb-file-ico' }, h(Icon, { name: 'doc', size: 14 })),
+            h('div', { className: 'usb-file-meta' },
+              h('div', { className: 'usb-file-n mono' }, name),
+              h('div', { className: 'usb-file-u' }, USB_FILE_USE[name] || '')))))),
+        h('div', { className: 'dblock' },
+          h('div', { className: 'dblock-h' }, h('span', { className: 'no' }, '2'), '接下来三步'),
+          h('div', { className: 'steps-list' },
+            step(1, '插 U 盘到目标机'),
+            step(2, '双击 UECM-Bootstrap.cmd，按提示以管理员运行'),
+            step(3, '回到 Volo 点该机器「刷新」，确认已入网'))));
+    } else if (phase === 'fail') {
+      const fr = USB_FAILS[failReason] || { title: '生成失败', msg: failMsg || '未知错误', fix: '检查上面的输出位置与权限后重试；若反复失败，用 voloctl uecm ssh package-bootstrap 在命令行排查。' };
+      body = h(React.Fragment, null,
+        h('div', { className: 'usb-fail' },
+          h('div', { className: 'usb-fail-ico' }, h(Icon, { name: 'alert', size: 24 })),
+          h('div', { className: 'usb-fail-t' }, fr.title),
+          h('div', { className: 'usb-fail-d' }, fr.msg)),
+        h('div', { className: 'usb-fix' }, h(Icon, { name: 'bolt', size: 13 }), h('span', null, fr.fix)));
+    } else {
+      /* idle — 输入区 */
+      body = h(React.Fragment, null,
+        h('div', { className: 'usb-field' },
+          h('div', { className: 'usb-lbl' }, '输出位置', h('span', { className: 'usb-req' }, '必填')),
+          h('div', { className: 'usb-dirpick' },
+            h('span', { className: 'usb-dir-ico' }, h(Icon, { name: 'folder', size: 15 })),
+            h('input', { className: 'usb-input mono', value: path, autoFocus: true, spellCheck: false,
+              placeholder: '选择 U 盘所在文件夹，例如 E:\\UECM-SSH-Bootstrap',
+              onChange: (e) => setPath(e.target.value) }),
+            h('button', { className: 'mini-btn usb-browse', onClick: browse }, h(Icon, { name: 'folder', size: 12 }), '浏览…')),
+          h('div', { className: 'usb-hint' }, '可直接选 U 盘盘符，生成的文件会落在这里。')),
+        h('div', { className: 'usb-adv' },
+          h('button', { className: 'usb-adv-h' + (advOpen ? ' on' : ''), onClick: () => setAdvOpen((v) => !v) },
+            h(Icon, { name: 'chevr', size: 13, style: { transform: advOpen ? 'rotate(90deg)' : 'none' } }),
+            '高级 · uecm-svc 密码（可选）'),
+          advOpen ? h('div', { className: 'usb-adv-b' },
+            h('input', { type: 'password', className: 'usb-input' + (pwBad ? ' bad' : ''), value: pw, spellCheck: false,
+              placeholder: 'uecm-svc 密码（留空则现场人工填写）',
+              onChange: (e) => setPw(e.target.value) }),
+            pwBad
+              ? h('div', { className: 'usb-err' }, h(Icon, { name: 'alert', size: 13 }),
+                  h('span', null, '密码不能包含 ', h('b', null, badChars.join(' ')), ' —— cmd 解析会损坏密码，请移除。'))
+              : h('div', { className: 'usb-hint' }, '填了会烤进入网包，目标机双击即自动创建账户；留空则需现场人工填写。')) : null),
+        h('div', { className: 'usb-warn' }, h(Icon, { name: 'shield', size: 14 }),
+          h('span', null, '入网包内含明文公钥，若填了密码也会以明文写入。U 盘属敏感物料，请妥善保管。')));
+    }
+
+    /* ---- footer ---- */
+    let foot;
+    if (!winOk) {
+      foot = h('div', { className: 'drawer-f' },
+        h(Button, { variant: 'secondary', size: 'M', onPress: close }, '关闭'),
+        h(Button, { variant: 'accent', size: 'M', isDisabled: true, icon: h(Icon, { name: 'usb', size: 15 }) }, '生成入网包'));
+    } else if (phase === 'gen') {
+      foot = h('div', { className: 'drawer-f' },
+        h(Button, { variant: 'secondary', size: 'M', isDisabled: true }, '生成中…'));
+    } else if (phase === 'done') {
+      foot = h('div', { className: 'drawer-f' },
+        h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'usb', size: 14 }), onPress: () => { setResult(null); setPhase('idle'); } }, '再做一个'),
+        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'check', size: 15 }), onPress: close }, '完成'));
+    } else if (phase === 'fail') {
+      foot = h('div', { className: 'drawer-f' },
+        h(Button, { variant: 'secondary', size: 'M', onPress: close }, '关闭'),
+        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'sync', size: 15 }), onPress: () => setPhase('idle') }, '重新生成'));
+    } else {
+      foot = h('div', { className: 'drawer-f' },
+        h(Button, { variant: 'secondary', size: 'M', onPress: close }, '取消'),
+        h(Button, { variant: 'accent', size: 'M', isDisabled: !canGen, icon: h(Icon, { name: 'usb', size: 15 }), onPress: generate }, '生成入网包'));
+    }
+
+    return h('div', { className: 'drawer drawer--usb' },
+      h('div', { className: 'drawer-h' },
+        h('span', { className: 'di info' }, h(Icon, { name: 'usb', size: 18 })),
+        h('div', { style: { minWidth: 0 } },
+          h('h2', null, '制作入网 U 盘'),
+          h('div', { className: 'sub' }, h('span', { className: 'cli-pill' }, 'ssh package-bootstrap'),
+            h('span', null, ' · 全局通用'))),
+        h('button', { className: 'iconbtn x', onClick: close }, h(Icon, { name: 'x', size: 16 }))),
+      h('div', { className: 'drawer-b' }, body),
+      foot);
+  }
+
   function drawer(s) {
     const d = s.drawer;
     if (!d) return null;
@@ -792,6 +967,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
     if (d.kind === 'preview') return h(PreviewPanel, { s, d });
     if (d.kind === 'script') return h(ScriptPanel, { s, d });
     if (d.kind === 'creds') return h(CredsPanel, { s });
+    if (d.kind === 'usb') return h(UsbPackPanel, { s });
     return null;
   }
 

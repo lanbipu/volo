@@ -1866,6 +1866,87 @@ html, body {
 .script-code { font-family: var(--font-code); font-size: 11.5px; line-height: 1.65; color: var(--chrome-text);
   background: var(--sunken); border: 1px solid var(--chrome-line); border-radius: 9px; padding: 12px 14px; margin: 0;
   white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow-y: auto; }
+.script-usb-hint { display: flex; align-items: flex-start; gap: 9px; font-size: 12px; line-height: 1.55; color: var(--chrome-dim);
+  background: color-mix(in srgb, var(--volo-700) 8%, var(--chrome-card)); border: 1px solid color-mix(in srgb, var(--volo-700) 26%, transparent);
+  border-radius: 9px; padding: 9px 12px; margin-top: 9px; text-wrap: pretty; }
+.script-usb-hint svg { color: var(--volo-500); flex: 0 0 auto; margin-top: 1px; }
+
+/* ---- 制作入网 U 盘 drawer (package-bootstrap) ---- */
+.drawer--usb { width: 560px; }
+.usb-field { margin-top: 14px; }
+.usb-lbl { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; color: var(--chrome-text); margin-bottom: 7px; }
+.usb-req { font-size: 10px; font-weight: 700; letter-spacing: .04em; color: var(--notice-visual);
+  background: color-mix(in srgb, var(--notice-visual) 14%, transparent); padding: 1px 6px; border-radius: 4px; }
+.usb-dirpick { display: flex; align-items: center; gap: 8px; background: var(--sunken); border: 1px solid var(--chrome-line-2);
+  border-radius: 8px; padding: 4px 6px 4px 11px; }
+.usb-dirpick:focus-within { border-color: var(--volo-700); box-shadow: 0 0 0 2px color-mix(in srgb, var(--volo-700) 32%, transparent); }
+.usb-dir-ico { display: flex; color: var(--chrome-faint); flex: 0 0 auto; }
+.usb-input { all: unset; flex: 1; min-width: 0; font-size: 12.5px; color: var(--chrome-text); padding: 6px 2px; }
+.usb-input::placeholder { color: var(--chrome-faint); }
+.usb-browse { flex: 0 0 auto; white-space: nowrap; }
+.usb-hint { font-size: 11px; line-height: 1.55; color: var(--chrome-faint); margin-top: 7px; text-wrap: pretty; }
+.usb-adv { margin-top: 14px; }
+.usb-adv-h { all: unset; display: flex; align-items: center; gap: 7px; cursor: pointer; font-size: 12px; font-weight: 600;
+  color: var(--chrome-dim); }
+.usb-adv-h:hover { color: var(--chrome-text); }
+.usb-adv-h svg { transition: transform .15s var(--ease-default); color: var(--chrome-faint); }
+.usb-adv-h.on { color: var(--chrome-text); }
+.usb-adv-b { margin-top: 9px; display: flex; flex-direction: column; gap: 0; }
+.usb-adv-b .usb-input { background: var(--sunken); border: 1px solid var(--chrome-line-2); border-radius: 8px; padding: 8px 12px; }
+.usb-adv-b .usb-input:focus { border-color: var(--volo-700); box-shadow: 0 0 0 2px color-mix(in srgb, var(--volo-700) 32%, transparent); }
+.usb-adv-b .usb-input.bad { border-color: color-mix(in srgb, var(--negative-visual) 60%, transparent); }
+.usb-err { display: flex; align-items: flex-start; gap: 7px; font-size: 11.5px; line-height: 1.5; color: var(--negative-visual);
+  margin-top: 7px; text-wrap: pretty; }
+.usb-err svg { flex: 0 0 auto; margin-top: 1px; }
+.usb-err b { font-family: var(--font-code); }
+.usb-warn { display: flex; align-items: flex-start; gap: 9px; font-size: 11.5px; line-height: 1.55; color: var(--notice-visual);
+  background: color-mix(in srgb, var(--notice-visual) 9%, var(--chrome-card)); border: 1px solid color-mix(in srgb, var(--notice-visual) 28%, transparent);
+  border-radius: 9px; padding: 11px 13px; margin-top: 18px; text-wrap: pretty; }
+.usb-warn svg { flex: 0 0 auto; margin-top: 1px; }
+/* generating */
+.usb-gen { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 9px; padding: 30px 16px 18px; }
+.usb-gen-spin { color: var(--volo-500); display: flex; }
+.usb-gen-t { font-size: 15px; font-weight: 700; color: var(--chrome-text); }
+.usb-gen-d { font-size: 11.5px; color: var(--chrome-faint); }
+.usb-gen-d .mono { font-family: var(--font-code); color: var(--chrome-dim); }
+.usb-gen-bar { width: 220px; height: 5px; border-radius: 3px; background: var(--sunken); overflow: hidden; margin-top: 6px; }
+.usb-gen-bar span { display: block; height: 100%; width: 40%; border-radius: 3px; background: var(--volo-600); }
+@media (prefers-reduced-motion: no-preference) { .usb-gen-bar span { animation: usbgen 1.1s var(--ease-default) infinite; } }
+@keyframes usbgen { 0% { transform: translateX(-120%); } 100% { transform: translateX(360%); } }
+/* success */
+.usb-done { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding: 22px 16px 6px; }
+.usb-done-ico { width: 52px; height: 52px; border-radius: 50%; display: grid; place-items: center;
+  color: var(--positive-visual); background: color-mix(in srgb, var(--positive-visual) 15%, transparent); }
+.usb-done-t { font-size: 17px; font-weight: 800; color: var(--positive-visual); }
+.usb-done-d { font-size: 12px; line-height: 1.55; color: var(--chrome-dim); max-width: 340px; text-wrap: pretty; }
+.usb-out { margin-top: 16px; background: var(--sunken); border: 1px solid var(--chrome-line); border-radius: 10px; padding: 11px 13px; }
+.usb-out-h { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--chrome-faint); margin-bottom: 8px; }
+.usb-out-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.usb-out-path { flex: 1; min-width: 160px; font-size: 12px; color: var(--chrome-text); word-break: break-all; }
+.usb-files { display: flex; flex-direction: column; gap: 6px; }
+.usb-file { display: flex; align-items: flex-start; gap: 10px; background: var(--sunken); border: 1px solid var(--chrome-line);
+  border-radius: 8px; padding: 8px 11px; }
+.usb-file-ico { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; flex: 0 0 auto;
+  color: var(--volo-500); background: var(--highlight-selected); }
+.usb-file-meta { min-width: 0; }
+.usb-file-n { font-size: 12.5px; font-weight: 700; color: var(--chrome-text); }
+.usb-file-u { font-size: 11px; color: var(--chrome-faint); margin-top: 2px; line-height: 1.45; }
+/* failure */
+.usb-fail { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding: 24px 16px 8px; }
+.usb-fail-ico { width: 50px; height: 50px; border-radius: 50%; display: grid; place-items: center;
+  color: var(--negative-visual); background: color-mix(in srgb, var(--negative-visual) 14%, transparent); }
+.usb-fail-t { font-size: 16px; font-weight: 800; color: var(--negative-visual); }
+.usb-fail-d { font-size: 12px; line-height: 1.55; color: var(--chrome-dim); max-width: 340px; text-wrap: pretty; }
+.usb-fix { display: flex; align-items: flex-start; gap: 9px; font-size: 12px; line-height: 1.55; color: var(--chrome-dim);
+  background: var(--wash-3); border: 1px solid var(--chrome-line); border-radius: 9px; padding: 11px 13px; margin-top: 16px; text-wrap: pretty; }
+.usb-fix svg { color: var(--volo-500); flex: 0 0 auto; margin-top: 1px; }
+/* unavailable (not Windows) */
+.usb-unavail { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding: 30px 18px 12px; }
+.usb-unavail-ico { width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center;
+  color: var(--chrome-faint); background: var(--wash-2); }
+.usb-unavail-t { font-size: 15px; font-weight: 700; color: var(--chrome-text); }
+.usb-unavail-d { font-size: 12px; line-height: 1.55; color: var(--chrome-faint); max-width: 320px; text-wrap: pretty; }
 
 /* ---- 凭据管理 drawer ---- */
 .creds-note { display: flex; align-items: flex-start; gap: 9px; font-size: 12px; line-height: 1.5; color: var(--chrome-dim);

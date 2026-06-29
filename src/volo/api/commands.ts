@@ -13,7 +13,7 @@
    现状汇总：✅ 46 · 🔌 0 · 📝 39 = 85。 */
 import { call } from "./invoke";
 import type {
-  Machine, MachineDetail, WinrmBootstrapResult, EchoResult,
+  Machine, MachineDetail, WinrmBootstrapResult, PackageBootstrapResult, EchoResult,
   ScanResult, RefreshResult, CredentialRecord, CredentialKind,
   IniKey, WriteIniResponse, ScanInisRequest, ScanInisResponse, IniFinding, ScanRun,
   VerifyReport, DeployPlan, DeployStep, GpuMatrix, ConsistencyResult,
@@ -47,6 +47,13 @@ export const getWinrmBootstrapScript = () => call<string>("get_winrm_bootstrap_s
 // 📝 no-ui: 入网已改 SSH-key 现场（"后端不再远程推送"），WinRM bootstrap 被取代
 export const bootstrapWinrm = (machineId: number, credentialAlias: string, enableLocalAccountRemoteAdmin: boolean) =>
   call<WinrmBootstrapResult>("bootstrap_winrm", { machineId, credentialAlias, enableLocalAccountRemoteAdmin });
+// ✅ wired: UsbPackPanel「生成入网包」→ packageSshBootstrap（package-bootstrap.ps1，Windows-only；可选烤入 uecm-svc 密码）
+export const packageSshBootstrap = (out: string, localAdminPassword?: string | null) =>
+  call<PackageBootstrapResult>("package_ssh_bootstrap", { out, localAdminPassword: localAdminPassword ?? null });
+// ✅ wired: UsbPackPanel「浏览…」→ pickDirectory（原生目录选择器，取消返回 null）
+export const pickDirectory = () => call<string | null>("pick_directory");
+// ✅ wired: UsbPackPanel 成功态「在文件夹中显示」→ revealPath（系统文件管理器定位）
+export const revealPath = (path: string) => call<void>("reveal_path", { path });
 // 📝 no-ui: PowerShell 桥诊断用，无 UI 承载点
 export const testPowershellBridge = (message: string) => call<EchoResult>("test_powershell_bridge", { message });
 

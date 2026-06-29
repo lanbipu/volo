@@ -73,6 +73,12 @@ export interface WinrmBootstrapResult {
   manual_script: string | null;
 }
 
+/** Result of `package_ssh_bootstrap` — the assembled USB onboarding bundle. */
+export interface PackageBootstrapResult {
+  output_directory: string;
+  files: string[];
+}
+
 export interface EchoResult {
   received: string;
   timestamp: string;

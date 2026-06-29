@@ -5,6 +5,8 @@
 //! now returns a graceful "use the USB bootstrap" result and
 //! `get_winrm_bootstrap_script` returns the SSH node-onboarder script.
 
+use cache_core::core::keystore::KeyStore;
+use cache_core::core::powershell;
 use cache_core::data::{credentials as data_credentials, machines as data_machines, CredentialKind, Db};
 use cache_core::error::{UecmError, UecmResult};
 use serde::{Deserialize, Serialize};
@@ -67,4 +69,87 @@ pub fn bootstrap_winrm(
         changed: Vec::new(),
         manual_script: Some(ssh_onboarder_script()),
     })
+}
+
+/// Parsed stdout of `package-bootstrap.ps1` (extra keys ignored). Mirrors the
+/// CLI's `domain_ssh::PackageOut` so the GUI export and `voloctl uecm ssh
+/// package-bootstrap` share the identical packager.
+#[derive(Deserialize)]
+struct PackageBootstrapRaw {
+    ok: bool,
+    message: String,
+    output_directory: String,
+    #[serde(default)]
+    files: Vec<String>,
+}
+
+/// Result surfaced to the "制作入网 U 盘" drawer (snake_case DTO, like the CLI).
+#[derive(Serialize)]
+pub struct PackageBootstrapResult {
+    pub output_directory: String,
+    pub files: Vec<String>,
+}
+
+/// Assemble the USB SSH onboarding bundle into `out` (the GUI "制作入网 U 盘"
+/// action). Ensures the operator keystore keypair exists, then shells out to the
+/// Windows-only `package-bootstrap.ps1` — the same packager the CLI `voloctl uecm
+/// ssh package-bootstrap` uses — copying UECM-Bootstrap.cmd + enable-ssh.ps1 +
+/// uecm.pub + PsExec64.exe + README into `out`. The bundle is global: one package
+/// onboards every node. `local_admin_password` (optional) is baked into the .cmd
+/// for one-double-click onboarding; the packager rejects `% " ^` (cmd.exe mangles
+/// them) and surfaces that as the error message.
+#[tauri::command]
+pub fn package_ssh_bootstrap(
+    out: String,
+    local_admin_password: Option<String>,
+) -> UecmResult<PackageBootstrapResult> {
+    let cfg = cache_core::startup::resolve_config_dir()?;
+    let ks = KeyStore::at(&cfg);
+    ks.ensure_keypair()?;
+    let pubkey = ks.public_key_path().to_string_lossy().into_owned();
+
+    let mut args: Vec<&str> = vec!["-OutputDirectory", &out, "-UecmPublicKeyPath", &pubkey];
+    if let Some(p) = local_admin_password.as_deref() {
+        if !p.is_empty() {
+            args.push("-LocalAdminPassword");
+            args.push(p);
+        }
+    }
+    let raw: PackageBootstrapRaw =
+        powershell::run_json(&powershell::script_path("package-bootstrap.ps1"), &args)?;
+    if !raw.ok {
+        return Err(UecmError::OperationFailed(raw.message));
+    }
+    Ok(PackageBootstrapResult {
+        output_directory: raw.output_directory,
+        files: raw.files,
+    })
+}
+
+/// Native folder picker backing the USB-export drawer's "浏览…" button. Returns
+/// the chosen directory path, or `None` if the user cancelled. Runs the blocking
+/// picker on a worker thread (it dispatches the OS panel to the main thread and
+/// blocks the caller — calling it FROM the main thread would deadlock on macOS).
+#[tauri::command]
+pub async fn pick_directory(app: tauri::AppHandle) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .blocking_pick_folder()
+            .and_then(|fp| fp.into_path().ok())
+            .map(|p| p.to_string_lossy().into_owned())
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// Reveal a path in the OS file manager (the USB-export drawer's "在文件夹中显示").
+#[tauri::command]
+pub fn reveal_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .reveal_item_in_dir(&path)
+        .map_err(|e| e.to_string())
 }

@@ -283,6 +283,10 @@ import { deleteMachine, scanNetwork, addDiscoveredMachine } from "../api/command
             h('button', { className: 'vt-btn' + (machView === 'list' ? ' on' : ''), title: '列表视图', onClick: () => setMachView('list') }, h(Icon, { name: 'list', size: 14 }))),
           h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'sync', size: 14 }),
             onPress: () => s.runTask({ domain: 'machine', action: 'refresh', target: '全部在线机', chan: 'winrm', note: '重新探测在线 / UE / last-seen', lines: [{ msg: 'machine refresh（全部）…' }, { lv: 'ok', msg: '已刷新在线状态与 UE 安装' }] }) }, '刷新全部'),
+          /* 制作入网 U 盘：全局动作（包与机器无关，做一次入网所有节点）。仅 Windows 可用——
+             打包器是 PowerShell sidecar，非 Win 时禁用并解释。span 包裹让禁用态仍显 title。 */
+          h('span', { title: s.platform === 'win' ? '生成全局通用的 SSH 入网 U 盘包' : '该功能仅 Windows 可用（打包依赖 PowerShell）', style: { display: 'inline-flex' } },
+            h(Button, { variant: 'secondary', size: 'S', isDisabled: s.platform !== 'win', icon: h(Icon, { name: 'usb', size: 14 }), onPress: () => s.setDrawer({ kind: 'usb' }) }, '制作入网 U 盘')),
           h(Button, { variant: 'accent', size: 'S', icon: h(Icon, { name: 'search', size: 14 }), onPress: onScan }, '扫描网段…'))),
       h('div', { className: 'mlist' },
         machView === 'list'
