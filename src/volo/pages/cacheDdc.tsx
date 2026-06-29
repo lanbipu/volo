@@ -13,7 +13,8 @@ import "./cache";
 import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createShare,
   generateDdcPak, startPsoCollection, verifyPakOutput, listPsoCacheFiles,
   distributeDdcPak, distributePsoCache,
-  setMachineEnvVar, getMachineEnvVar, createLocalCache, injectShareCredentialToClients } from "../api/commands";
+  setMachineEnvVar, getMachineEnvVar, createLocalCache, injectShareCredentialToClients,
+  setMachineBackendField, setProjectCacheBackend } from "../api/commands";
 
 (function () {
   const { Button } = window.Spectrum2DesignSystem_b6d1b3;
@@ -149,15 +150,17 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       .then(() => s.reloadCache(), () => {});
   };
 
-  /* generate_ddc_pak（流式）：源机取工程 primary（检查器无 src 选择器）；backend 固定
-     'remote'（BackendChoice 是执行位置，与 UI 的 zen/legacy 存储后端无关）；ue_version null；
-     ue-runner-progress 'completed' 即终止，pak-verified 是次级校验。 */
-  const genPak = (s, p) => {
+  /* generate_ddc_pak（流式）：源机取工程 primary（检查器无 src 选择器）；invoke 的
+     BackendChoice='remote' 是执行位置；storageBackend（zen/legacy）写入 project_cache_backend
+     供后端路由（zen → 跳过 PAK 生成）；ue_version null；ue-runner-progress 'completed' 即终止。 */
+  const genPak = (s, p, storageBackend) => {
     const src = pickSrc(p);
     if (!src) { noSrcFail(s, 'ddc', 'generate', p); return; } /* 无可用在线源机：可见失败而非静默 */
+    const cacheBackend = storageBackend === 'zen' ? 'zen' : 'legacy_pak';
     s.runStreamingCmd(
-      { domain: 'ddc', action: 'generate', target: p.name, chan: 'winrm', note: '生成 DDC PAK · ' + p.name + '（长任务）· 源 ' + src.host },
-      () => generateDdcPak('remote', Number(p.id), src.machineId, null, null, null, null),
+      { domain: 'ddc', action: 'generate', target: p.name, chan: 'winrm', note: '生成 DDC PAK · ' + p.name + '（' + (storageBackend === 'zen' ? 'ZenServer' : '文件系统') + ' · 长任务）· 源 ' + src.host },
+      () => setProjectCacheBackend(Number(p.id), src.machineId, cacheBackend)
+        .then(() => generateDdcPak('remote', Number(p.id), src.machineId, null, null, null, null)),
       { mode: 'event', events: ['ue-runner-progress', 'pak-verified'], jobIdOf: (r) => r.job_id, reduce: genReduce, timeoutMs: 45 * 60 * 1000 });
   };
 
@@ -324,7 +327,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
         h('div', { className: 'id-field' }, h('label', null, '生成后端'),
           h(Selector, { kpre: '后端', value: backend, options: backendOpts, width: 200, onChange: setBackend })),
         h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'bolt', size: 14 }),
-          onPress: () => sel.forEach((p) => genPak(s, p)) },
+          onPress: () => sel.forEach((p) => genPak(s, p, backend)) },
           '生成 DDC Pack（' + sel.length + '）')) : null);
   }
 
@@ -598,13 +601,16 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
     const ENV_KEY = 'UE-SharedDataCachePath';
     /* 接入：对每台设环境变量 UE-SharedDataCachePath，并对该机已扫描到的工程写
        [DerivedDataBackendGraph] Shared 的 Path + EnvPathOverride（没有 EnvPathOverride 时 UE 会忽略环境变量）。 */
-    const joinShareToMachines = (targets, unc) => {
-      let envOk = 0, iniProjOk = 0, fail = 0;
+    const joinShareToMachines = (targets, unc, sh) => {
+      let envOk = 0, iniProjOk = 0, iniProjExpected = 0, fail = 0;
+      const okMachineIds = [];
       const errs = []; /* 收集每台机的真实错误——不再吞掉，否则只剩笼统的「全部目标设置失败」无从排查。 */
       return Promise.allSettled(targets.map((mid) =>
         setMachineEnvVar(mid, ENV_KEY, unc).then(() => {
           envOk++;
+          okMachineIds.push(mid);
           const projs = (UE_PROJECTS || []).filter((p) => (p.machines || []).includes(String(mid)));
+          iniProjExpected += projs.length;
           return Promise.allSettled(projs.map((p) => {
             const base = (p.locByMachine && p.locByMachine[String(mid)]) || p.root;
             const ini = String(base).replace(/\\+$/, '') + '\\Config\\DefaultEngine.ini';
@@ -616,7 +622,22 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
         }, (e) => { fail++; errs.push('机器 ' + mid + '：' + (e && e.message ? e.message : String(e))); })
       )).then(() => {
         if (envOk === 0) throw new Error('全部目标设置失败' + (errs.length ? ' · ' + errs.join('；') : ''));
-        return { envOk, iniProjOk, fail };
+        if (iniProjExpected > 0 && iniProjOk === 0) {
+          throw new Error('环境变量已设置，但工程 INI 写入全部失败' + (errs.length ? ' · ' + errs.join('；') : ''));
+        }
+        let managed = false;
+        if (sh && sh.shareConfigId && sh.shareMode === 'managed' && okMachineIds.length) {
+          managed = true;
+          return injectShareCredentialToClients(sh.shareConfigId, okMachineIds, null).then((inj) => {
+            const injFail = (inj || []).filter((r) => !r.ok);
+            if (injFail.length) {
+              injFail.forEach((r) => errs.push('机器 ' + r.client_machine_id + ' 凭据注入：' + (r.message || '失败')));
+              throw new Error('共享凭据注入失败 · ' + injFail.length + ' 台' + (errs.length ? ' · ' + errs.join('；') : ''));
+            }
+            return { envOk, iniProjOk, fail, okMachineIds, managed };
+          });
+        }
+        return { envOk, iniProjOk, fail, okMachineIds, managed };
       });
     };
     const setJP = (id, kind) => setJoinPending((m) => Object.assign({}, m, { [id]: kind }));
@@ -631,7 +652,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       if (!sh || joinPending[n.id]) return;
       setJP(n.id, 'join');
       s.runCmd({ domain: 'share', action: 'join', target: n.host, chan: 'ssh', note: '加入共享 DDC · ' + sh.path },
-        () => joinShareToMachines([n.machineId], sh.path),
+        () => joinShareToMachines([n.machineId], sh.path, sh),
         { okMsg: (r) => n.host + ' 已加入 · 设系统环境变量' + (r.managed ? '，已注入访问凭据' : '') })
         .then(() => { setShareJoined((m) => Object.assign({}, m, { [n.id]: sh.path })); clrJP(n.id); }, () => clrJP(n.id));
     };
@@ -650,10 +671,13 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       const ids = todo.map((n) => n.id);
       ids.forEach((id) => setJP(id, 'join'));
       s.runCmd({ domain: 'share', action: 'join', target: ids.length + ' 台', chan: 'ssh', note: '批量加入共享 DDC · ' + sh.path },
-        () => joinShareToMachines(todo.map((n) => n.machineId), sh.path),
-        { okMsg: (r) => '已加入 · ' + r.envOk + ' 台设环境变量' + (r.iniProjOk ? ('，写 ' + r.iniProjOk + ' 个工程 INI') : '') + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
-        .then((r) => { const okSet = new Set(r.okMachineIds || []); setShareJoined((m) => { const x = Object.assign({}, m); todo.forEach((n) => { if (okSet.has(n.machineId)) x[n.id] = sh.path; }); return x; }); ids.forEach(clrJP); },
-              () => ids.forEach(clrJP));
+        () => joinShareToMachines(todo.map((n) => n.machineId), sh.path, sh),
+        { okMsg: (r) => '已加入 · ' + r.envOk + ' 台设环境变量' + (r.iniProjOk ? ('，写 ' + r.iniProjOk + ' 个工程 INI') : '') + (r.managed ? '，已注入访问凭据' : '') + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
+        .then((r) => {
+          const okSet = new Set(r.okMachineIds || []);
+          setShareJoined((m) => { const x = Object.assign({}, m); todo.forEach((n) => { if (okSet.has(n.machineId)) x[n.id] = sh.path; }); return x; });
+          ids.forEach(clrJP);
+        }, () => ids.forEach(clrJP));
     };
     const joinRow = (n) => {
       const pend = joinPending[n.id];

@@ -239,6 +239,7 @@ pub fn run() {
             commands::projects::delete_project,
             commands::projects::delete_project_location,
             commands::projects::create_project_manual,
+            commands::projects::set_project_cache_backend,
             commands::ddc_pak::generate_ddc_pak,
             commands::ddc_pak::cancel_ue_job,
             commands::ddc_pak::verify_pak_output,

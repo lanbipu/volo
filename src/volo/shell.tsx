@@ -7,6 +7,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import "./ds";
 import { loadCacheResources } from "./api/cacheData";
+import { cancelUeJob } from "./api/commands";
 import { call, isTauri, VoloInvokeError } from "./api/invoke";
 
 (function () {
@@ -542,7 +543,12 @@ function App() {
       timer = setTimeout(() => {
         if (finished) return;
         pushLog({ lv: 'warn', cat: domain, ch: chan, task: no, msg: `超时 ${Math.round(wiring.timeoutMs / 60000)} 分钟无进度事件，停止等待` });
-        if (wiring.onTimeout && jobId != null) { try { wiring.onTimeout(jobId); } catch (e) {} }
+        if (jobId != null) {
+          try {
+            if (wiring.onTimeout) wiring.onTimeout(jobId);
+            else cancelUeJob(jobId).catch(() => {});
+          } catch (e) {}
+        }
         finalize(false, 124);
       }, wiring.timeoutMs);
     };

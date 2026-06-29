@@ -209,6 +209,9 @@ export const deleteProjectLocation = (locationId: number) => call<void>("delete_
 // 📝 no-ui: 无手动建工程 UI（工程靠 discover 发现）
 export const createProjectManual = (uprojectName: string, displayName?: string | null) =>
   call<number>("create_project_manual", { uprojectName, displayName: displayName ?? null });
+// ✅ wired: cacheDdc PakDetail「生成后端」选择器 → setProjectCacheBackend + generateDdcPak 路由
+export const setProjectCacheBackend = (projectId: number, machineId: number, backend: "zen" | "legacy_pak") =>
+  call<void>("set_project_cache_backend", { projectId, machineId, backend });
 
 /* ----------------------------- ddc pak ----------------------------- */
 // ✅ wired: cacheDdc genPak → generateDdcPak('remote') via runStreamingCmd（ue-runner-progress + pak-verified）

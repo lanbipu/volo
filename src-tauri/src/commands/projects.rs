@@ -3,8 +3,8 @@
 use cache_core::core::project_discovery::{self, DiscoveryResult};
 use cache_core::core::project_identity::stem_lower;
 use cache_core::data::{
-    machines as data_machines, project_locations, projects, Db,
-    DiscoveryStatus, Project, ProjectLocation,
+    machines as data_machines, project_cache_backend, project_locations, projects, Db,
+    DiscoveryStatus, Project, ProjectLocation, ProjectCacheBackend,
 };
 use cache_core::error::{UecmError, UecmResult};
 use serde::Serialize;
@@ -119,4 +119,33 @@ pub fn create_project_manual(
             engine_association_kind: None,
         },
     )
+}
+
+#[tauri::command]
+pub fn set_project_cache_backend(
+    db: State<'_, Db>,
+    project_id: i64,
+    machine_id: i64,
+    backend: String,
+) -> UecmResult<()> {
+    match backend.as_str() {
+        "zen" | "legacy_pak" | "auto" => {}
+        other => {
+            return Err(UecmError::InvalidInput(format!(
+                "backend must be 'zen', 'legacy_pak', or 'auto', got {other:?}"
+            )))
+        }
+    }
+    project_cache_backend::upsert(
+        &db,
+        &ProjectCacheBackend {
+            project_id,
+            machine_id,
+            backend,
+            zen_endpoint_id: None,
+            notes: None,
+            updated_at: None,
+        },
+    )?;
+    Ok(())
 }

@@ -4,7 +4,7 @@
    project the real `Serialize` DTOs onto the shapes the page reads, filling
    fields the backend cannot provide with safe placeholders ("—" / null / "na")
    so no consumer crashes and no fabricated metric is invented. */
-import type { Machine, CredentialRecord, ShareConfig, ProjectSummary, ProjectLocation, HealthCheckRow, IniFinding } from "./types";
+import type { Machine, CredentialRecord, ShareConfig, ShareMode, ProjectSummary, ProjectLocation, HealthCheckRow, IniFinding } from "./types";
 /* Machine is referenced by toShareVM (host_machine_id → hostname reverse-lookup). */
 
 /* ----------------------------- machine ----------------------------- */
@@ -138,6 +138,8 @@ export interface ShareVM {
   /** 宿主机器渲染 id = String(host_machine_id)，与 NodeVM.id 对齐，供部署面板
    *  匹配「该服务器是否已部署共享」（srvShare = shares.find(hostId === srv)）。 */
   hostId: string;
+  /** 原始共享模式，供 Mode B 凭据注入等逻辑判断。 */
+  shareMode: ShareMode;
   mode: string;
   clients: number;
   size: string;
@@ -152,6 +154,7 @@ export function toShareVM(s: ShareConfig, machines: Machine[] = []): ShareVM {
     path: s.unc_path,
     host: hostM ? hostM.hostname : "—",
     hostId: String(s.host_machine_id),
+    shareMode: s.mode,
     mode: s.mode === "open" ? "Mode A · 开放" : "Mode B · 专用账号",
     clients: 0,
     size: "—",
