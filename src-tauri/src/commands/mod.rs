@@ -14,6 +14,10 @@ pub mod ini_scanner;
 pub mod local_cache;
 pub mod log_verify;
 pub mod machines;
+// operations-table logging wrapper for the filesystem-DDC commands (join/leave
+// env write, project-INI backend field, local-cache create) — these otherwise
+// leave no `operations` row, so failures had no DB error trail to analyze.
+pub mod oplog;
 // step 3c: mesh (LMT) command group. `mesh` holds the MeshDb state newtype;
 // the `mesh_*` modules are the migrated LMT `#[tauri::command]` shims.
 pub mod mesh;

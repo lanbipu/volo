@@ -58,8 +58,21 @@ pub fn set_machine_backend_field(
     field: String,
     value: String,
 ) -> UecmResult<String> {
-    let host = ip_for(&db, machine_id)?;
-    ini_editor::set_backend_field(&host, &file_path, &section, &node_name, &field, &value)
+    // Logged so the join's project-INI half (wiring [DerivedDataBackendGraph]
+    // Shared Path / EnvPathOverride) leaves an `operations` row on failure.
+    let invocation = format!(
+        "set backend field [{section}] {node_name}.{field}=\"{value}\" in {file_path} on machine {machine_id}"
+    );
+    crate::commands::oplog::logged(
+        &db,
+        "ini.set_backend_field",
+        &[machine_id],
+        &invocation,
+        || {
+            let host = ip_for(&db, machine_id)?;
+            ini_editor::set_backend_field(&host, &file_path, &section, &node_name, &field, &value)
+        },
+    )
 }
 
 #[tauri::command]

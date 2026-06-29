@@ -18,8 +18,13 @@ pub fn set_machine_env_var(
     name: String,
     value: String,
 ) -> UecmResult<()> {
-    let host = ip_for(&db, machine_id)?;
-    env_vars::set(&host, &name, &value)
+    // Logged so a failed share join/leave (this is the join's env-var half) or
+    // local-DDC pointer write leaves an `operations` row with the exact error.
+    let invocation = format!("set env var {name}=\"{value}\" on machine {machine_id}");
+    crate::commands::oplog::logged(&db, "env.set_machine_var", &[machine_id], &invocation, || {
+        let host = ip_for(&db, machine_id)?;
+        env_vars::set(&host, &name, &value)
+    })
 }
 
 #[tauri::command]

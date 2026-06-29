@@ -17,9 +17,13 @@ pub fn create_local_cache(
     machine_id: i64,
     local_path: String,
 ) -> UecmResult<String> {
-    let host_ip = data_machines::find_by_id(&db, machine_id)?
-        .ok_or_else(|| UecmError::InvalidInput(format!("machine {} not found", machine_id)))?
-        .ip;
-    // SSH key auth: no per-call operator credential (kept None like create_share).
-    local_cache::create(&host_ip, &local_path, None, None)
+    // Logged so a failed local-DDC dir provision leaves an `operations` row.
+    let invocation = format!("create local DDC dir {local_path} on machine {machine_id}");
+    crate::commands::oplog::logged(&db, "local_cache.create", &[machine_id], &invocation, || {
+        let host_ip = data_machines::find_by_id(&db, machine_id)?
+            .ok_or_else(|| UecmError::InvalidInput(format!("machine {} not found", machine_id)))?
+            .ip;
+        // SSH key auth: no per-call operator credential (kept None like create_share).
+        local_cache::create(&host_ip, &local_path, None, None)
+    })
 }
