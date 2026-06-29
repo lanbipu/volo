@@ -50,6 +50,20 @@ fn host_hostname(db: &Db, machine_id: i64) -> UecmResult<String> {
         .hostname)
 }
 
+/// Host component of a share UNC: `\\LANPC\Volo_DDC` -> `LANPC`.
+///
+/// The Mode B credential cmdkey MUST target the host string clients actually
+/// connect to — that's the host in the share UNC (which the join writes into
+/// `UE-SharedDataCachePath`), NOT `machines.hostname`. The two diverge in
+/// practice: a machine added by IP has `hostname` = the IP (e.g. `192.168.10.20`)
+/// while the share UNC uses the host's COMPUTERNAME (`\\LANPC\...`). Keying
+/// cmdkey on the IP stores a credential Windows never matches against `\\LANPC\...`,
+/// so the share keeps prompting despite a "successful" injection.
+fn unc_host(unc_path: &str) -> Option<String> {
+    let host = unc_path.strip_prefix(r"\\")?.split('\\').next().unwrap_or("");
+    (!host.is_empty()).then(|| host.to_string())
+}
+
 #[tauri::command]
 pub fn create_share(
     db: State<'_, Db>,
@@ -184,7 +198,14 @@ pub fn inject_share_credential_to_clients(
                 svc_alias
             ))
         })?;
-    let host_hn = host_hostname(&db, share.host_machine_id)?;
+    // cmdkey target = the host in the share UNC clients connect to (\\LANPC\... ->
+    // LANPC), NOT machines.hostname (which can be the IP). See `unc_host`.
+    let cmdkey_target = unc_host(&share.unc_path).ok_or_else(|| {
+        UecmError::OperationFailed(format!(
+            "cannot parse host from share unc_path '{}'",
+            share.unc_path
+        ))
+    })?;
     // SSH key auth: operator cred vestigial (param kept as shim, Vue compat).
     let _ = &operator_credential_alias;
     let (op_user, op_pass): (Option<String>, Option<String>) = (None, None);
@@ -204,7 +225,7 @@ pub fn inject_share_credential_to_clients(
         };
         match psexec::inject_system_credential(
             &client_ip,
-            &host_hn,
+            &cmdkey_target,
             &svc_cred.username,
             &svc_pass,
             op_user.as_deref(),
