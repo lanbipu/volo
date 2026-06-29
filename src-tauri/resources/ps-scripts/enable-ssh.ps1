@@ -16,6 +16,7 @@ param(
     [switch]$EnableSmbServer,
     [switch]$EnableWmi,
     [switch]$EnableLongPaths,
+    [switch]$AllowInsecureSmbGuest,
     [ValidateSet('HighPerformance', 'Balanced', 'Skip')]
     [string]$PowerProfile = 'Skip',
     [ValidateSet('RemoteSigned', 'Bypass', 'Skip')]
@@ -248,6 +249,25 @@ function Enable-UecmLongPaths {
     Add-UecmChange $Changes 'LongPathsEnabled set to 1 (effective after reboot for some processes)'
 }
 
+function Enable-UecmInsecureSmbGuest {
+    param([System.Collections.Generic.List[string]]$Changes)
+    if (-not $AllowInsecureSmbGuest) { return }
+
+    # CLIENT side (LanmanWorkstation) - mirror of the LanmanServer prep above.
+    # Windows 10/11 default AllowInsecureGuestAuth=0 (or absent), which makes the
+    # client refuse anonymous/guest SMB and pop a "enter network credentials"
+    # prompt when mounting an open (Mode A / guest) UNC share. Setting it to 1
+    # lets the client connect to a guest share without a credential prompt.
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters'
+    $current = Get-UecmRegistryDword -Path $path -Name 'AllowInsecureGuestAuth'
+    if ($current -eq 1) {
+        Add-UecmChange $Changes 'AllowInsecureGuestAuth already 1'
+        return
+    }
+    New-ItemProperty -Path $path -Name 'AllowInsecureGuestAuth' -PropertyType DWord -Value 1 -Force | Out-Null
+    Add-UecmChange $Changes 'AllowInsecureGuestAuth set to 1 (insecure SMB guest logon allowed for open shares)'
+}
+
 function Set-UecmPowerPlan {
     param([System.Collections.Generic.List[string]]$Changes)
     if ($PowerProfile -eq 'Skip') { return }
@@ -434,6 +454,7 @@ try {
         try { Enable-UecmSmbServer  -Changes $prep }        catch { Note "WARNING: smb prep: $($_.Exception.Message)" }
         try { Enable-UecmWmi        -Changes $prep }        catch { Note "WARNING: wmi prep: $($_.Exception.Message)" }
         try { Enable-UecmLongPaths  -Changes $prep }        catch { Note "WARNING: longpaths prep: $($_.Exception.Message)" }
+        try { Enable-UecmInsecureSmbGuest -Changes $prep }  catch { Note "WARNING: smb guest prep: $($_.Exception.Message)" }
         try { Set-UecmLocalExecutionPolicy -Changes $prep } catch { Note "WARNING: execpolicy prep: $($_.Exception.Message)" }
         try { Set-UecmPowerPlan     -Changes $prep }        catch { Note "WARNING: power prep: $($_.Exception.Message)" }
         foreach ($m in $prep) { Note $m }

@@ -32,11 +32,25 @@ set "UECM_LOCAL_ADMIN=uecm-svc"
 set "UECM_LOCAL_ADMIN_PASSWORD=UecmRender@2026"
 REM =======================================================================
 
+REM ====== Insecure SMB guest logon (open / Mode A shares) ======
+REM  Mode A (open/guest) DDC shares pop a "enter network credentials" prompt
+REM  because Windows 10/11 disable insecure SMB guest auth by default. Leaving
+REM  this 1 relaxes the CLIENT-side policy so open shares mount without a prompt.
+REM  Set to empty if this node only uses SSH or Mode B (managed) SMB and you do
+REM  NOT want to lower that guest-auth baseline.
+set "ALLOW_INSECURE_SMB_GUEST=1"
+REM =============================================================
+
 REM The SSH service account is ALWAYS uecm-svc (SshExecutor logs in as uecm-svc).
 REM Hardcode it so enable-ssh.ps1 (which rejects any other name) never gets a
 REM mismatched account.
 set "SSH_ADMIN_ARGS="
 if not "%UECM_LOCAL_ADMIN_PASSWORD%"=="" set SSH_ADMIN_ARGS=-CreateLocalAdmin -LocalAdminName "uecm-svc" -LocalAdminPassword "%UECM_LOCAL_ADMIN_PASSWORD%"
+
+REM Opt-out (set ALLOW_INSECURE_SMB_GUEST empty above) drops the switch so the
+REM client-side guest-auth baseline is left untouched on SSH-only / Mode B nodes.
+set "SSH_SMB_GUEST_ARGS="
+if "%ALLOW_INSECURE_SMB_GUEST%"=="1" set "SSH_SMB_GUEST_ARGS=-AllowInsecureSmbGuest"
 
 REM ====== SSH transport onboarding (the UECM transport) ======
 REM machine refresh / env / ini / zen all connect over SSH, so SSH onboarding is
@@ -50,7 +64,7 @@ set "SSH_EXIT=0"
 if not exist "%SSH_PS1%" set "SSH_EXIT=9"
 if not exist "%UECM_PUB%" set "SSH_EXIT=9"
 if not "%SSH_EXIT%"=="0" goto ssh_done
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SSH_PS1%" -PublicKeyPath "%UECM_PUB%" -StagingSourceDir "%STAGING_DIR%" -EnableSmbServer -EnableWmi -EnableLongPaths -PowerProfile HighPerformance -SetExecutionPolicy RemoteSigned %SSH_ADMIN_ARGS%
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SSH_PS1%" -PublicKeyPath "%UECM_PUB%" -StagingSourceDir "%STAGING_DIR%" -EnableSmbServer -EnableWmi -EnableLongPaths -PowerProfile HighPerformance -SetExecutionPolicy RemoteSigned %SSH_SMB_GUEST_ARGS% %SSH_ADMIN_ARGS%
 set "SSH_EXIT=%ERRORLEVEL%"
 :ssh_done
 
