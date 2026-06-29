@@ -11,6 +11,7 @@
 
 use cache_core::data::{operations as data_operations, Db};
 use cache_core::error::UecmResult;
+use tauri::State;
 
 /// Run `f` inside an operations-table span: insert a `running` row, then finish
 /// it `ok`/`err` with `invocation` (+ the error on failure) as `log_text`.
@@ -32,4 +33,23 @@ pub fn logged<T>(
         let _ = data_operations::finish(db, id, status, Some(&log_text));
     }
     result
+}
+
+/// Frontend-facing: persist a finished operation row in one shot. The shell's
+/// `runCmd` calls this on the failure path so frontend-orchestrated operations
+/// (share join/leave, etc.) that fail BEFORE any backend command runs — i.e.
+/// the error never reaches a `logged(...)`-wrapped command — still leave a DB
+/// error trail to analyze. Best-effort: a logging failure must not surface to
+/// the UI as the operation's error, so the shell ignores this call's result.
+#[tauri::command]
+pub fn record_operation(
+    db: State<'_, Db>,
+    action_type: String,
+    target_machines: Vec<i64>,
+    status: String,
+    log_text: String,
+) -> UecmResult<()> {
+    let id = data_operations::start(&db, &action_type, &target_machines)?;
+    data_operations::finish(&db, id, &status, Some(&log_text))?;
+    Ok(())
 }

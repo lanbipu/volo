@@ -207,6 +207,7 @@ pub fn run() {
             commands::env_vars::set_machine_env_var_with_credential,
             commands::env_vars::get_machine_env_var_with_credential,
             commands::local_cache::create_local_cache,
+            commands::oplog::record_operation,
             commands::ini_editor::read_ini_section,
             commands::ini_editor::set_ini_key,
             commands::ini_editor::set_machine_backend_field,

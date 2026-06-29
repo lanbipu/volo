@@ -600,6 +600,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
        [DerivedDataBackendGraph] Shared 的 Path + EnvPathOverride（没有 EnvPathOverride 时 UE 会忽略环境变量）。 */
     const joinShareToMachines = (targets, unc) => {
       let envOk = 0, iniProjOk = 0, fail = 0;
+      const errs = []; /* 收集每台机的真实错误——不再吞掉，否则只剩笼统的「全部目标设置失败」无从排查。 */
       return Promise.allSettled(targets.map((mid) =>
         setMachineEnvVar(mid, ENV_KEY, unc).then(() => {
           envOk++;
@@ -612,9 +613,9 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
               setMachineBackendField(mid, ini, 'DerivedDataBackendGraph', 'Shared', 'EnvPathOverride', ENV_KEY),
             ]);
           })).then((rs) => { iniProjOk += rs.filter((r) => r.status === 'fulfilled').length; });
-        }, () => { fail++; })
+        }, (e) => { fail++; errs.push('机器 ' + mid + '：' + (e && e.message ? e.message : String(e))); })
       )).then(() => {
-        if (envOk === 0) throw new Error('全部目标设置失败');
+        if (envOk === 0) throw new Error('全部目标设置失败' + (errs.length ? ' · ' + errs.join('；') : ''));
         return { envOk, iniProjOk, fail };
       });
     };

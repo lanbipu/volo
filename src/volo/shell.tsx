@@ -7,7 +7,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import "./ds";
 import { loadCacheResources } from "./api/cacheData";
-import { isTauri, VoloInvokeError } from "./api/invoke";
+import { call, isTauri, VoloInvokeError } from "./api/invoke";
 
 (function () {
 const { useState, useRef, useEffect } = React;
@@ -479,6 +479,11 @@ function App() {
       const m = e && e.message ? e.message : String(e);
       setTasks((prev) => prev.map((t) => t.id === id ? { ...t, state: 'failed', pct: 100, exit: 2, elapsed: secs() } : t));
       pushLog({ lv: 'err', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 失败 · ${esc(m)}` });
+      /* Persist the failure to the operations table. Frontend-orchestrated ops
+         (share join/leave, …) can fail BEFORE any backend command runs, so they
+         leave no `logged(...)` row — without this the error has no DB trail.
+         Best-effort: never let logging mask the real failure. */
+      call<void>("record_operation", { actionType: `${domain}.${action}`, targetMachines: [], status: "err", logText: `${note || ""} · ${target || ""} · ${m}`.trim() }).catch(() => {});
       throw e;
     }
   };
