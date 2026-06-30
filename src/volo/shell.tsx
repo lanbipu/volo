@@ -225,6 +225,12 @@ function LogPanel({ s }) {
   const running = s.tasks ? s.tasks.filter((t) => t.state === 'running').length : 0;
   const activeTasks = s.tasks ? s.tasks.filter((t) => t.state === 'running' || t.state === 'queued') : [];
   const [runOpen, setRunOpen] = React.useState(false);
+  /* 触发运行时自动弹出一次「运行中」气泡；用户再次点击或点击别处即关闭 */
+  const prevRunning = React.useRef(running);
+  React.useEffect(() => {
+    if (running > prevRunning.current) setRunOpen(true);
+    prevRunning.current = running;
+  }, [running]);
   const histTasks = s.tasks ? s.tasks.filter((t) => t.state === 'success' || t.state === 'failed') : [];
   const TaskCard = window.VOLO_CX && window.VOLO_CX.TaskCard;
   const conTab = s.conTab || 'stream';
