@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Volo —— LanX 出品的虚拟制作桌面工具（**Tauri 2 + React + Adobe React Spectrum 2**）。本仓是单一 monorepo，设计文档与代码同仓。
+Volo —— LanX 出品的虚拟制作桌面工具（**Tauri 2 + React**，UI 按 Claude Design 原型 1:1 自定义 CSS 移植）。本仓是单一 monorepo，设计文档与代码同仓。
 
 ## 先读这些（设计真相源）
 
@@ -14,13 +14,11 @@ Volo —— LanX 出品的虚拟制作桌面工具（**Tauri 2 + React + Adobe R
 
 数据模型见 `docs/architecture/`（Step 3 = `stage-data-model.md`，待写）。
 
-## 设计系统：React Spectrum 2
+## 设计系统：Claude Design 1:1 自定义实现
 
-- **UI 流程**：先在 Claude Design（基于 RS 的 design system）设计 / 迭代 → handoff，本仓照确认后的设计稿 + `WIREFRAMES.md` 用 `@react-spectrum/s2` 实现。
-- 用 `@react-spectrum/s2` 现成组件，**不自建 token、不写自定义视觉**。
-  > 例外：`feat/cache-frontend` 分支的 Cache 页按 Claude Design 原型**全自定义 CSS 1:1 移植**（不依赖 RS2），平台 chrome 随运行 OS（mac 走原生系统菜单栏）——是 1:1 还原的有意决策。
-- 组件用法查 repo 自带 **S2 MCP server**：`../../person/design/react-spectrum/packages/dev/mcp/s2`。
-- 暗 / 亮双主题（`colorScheme`）；中文 fallback 思源黑体；状态三通道（色 + 图标 + 文字）。
+- **UI 流程**：先在 Claude Design（claude.ai/design，底层基于 RS 的 design system）设计 / 迭代 → handoff（HTML/JSX 原型 + 它自带的 design token CSS），本仓照确认后的设计稿用**全自定义 CSS 1:1 移植**实现，不接 `@react-spectrum/s2` 组件库。
+- **全部模块都走这条路**，不只 Cache 页——Cache 页是这套做法最早落地的范例，不是例外。RS2 只作**视觉参考**（间距/字阶/状态色这类设计直觉可以借鉴），代码里不实际引入其组件；需要参考时查 repo 自带 **S2 MCP server**：`../../person/design/react-spectrum/packages/dev/mcp/s2`。
+- 暗 / 亮双主题走 Claude Design 原型自带的 `data-theme` attribute + CSS 变量机制（不是 RS2 的 `colorScheme` Provider）；中文 fallback 思源黑体；状态三通道（色 + 图标 + 文字）。
 
 ## 来源工具（在 `../`，将迁入 / 整合）
 
@@ -34,7 +32,7 @@ Volo —— LanX 出品的虚拟制作桌面工具（**Tauri 2 + React + Adobe R
 
 - 业务逻辑放服务层 / Rust crates，`src-tauri` 只做 transport 翻译；新功能从设计阶段就考虑 CLI 暴露（沿用 LMT 的 CLI 底座契约，见 `../led-mesh-toolkit/CLAUDE.md`）。
 - **换栈只换前端（Vue → React）；Rust 后端 / Tauri commands / Python sidecar 保留。**
-- 视觉全交给 React Spectrum 2，不硬编码颜色 / 不自建 token。
+- 视觉走 Claude Design 原型 1:1 自定义 CSS（颜色/间距取设计稿给的 token 值，不是自己拍脑袋编），不接 RS2 组件库。
 - 暗 / 亮双主题；状态永远「色 + 图标 + 文字」；CJK 排版（中文 sans fallback 思源黑体，mono 仅标识符，行高放宽）。
 
 ## 代码状态
@@ -45,11 +43,11 @@ Volo —— LanX 出品的虚拟制作桌面工具（**Tauri 2 + React + Adobe R
 
 - 前端验证：`pnpm exec tsc --noEmit` + `pnpm exec vite build`；后端快验：`cargo check --manifest-path src-tauri/Cargo.toml`。
 - 跑原生 App：`pnpm tauri dev`（devUrl :1420）。在 `.claude/worktrees/*` 里 target/ 是空的会从头编 → 用 `CARGO_TARGET_DIR=/Users/bip.lan/AIWorkspace/vp/volo/target` 复用主仓热缓存，增量编译数秒。
-- `tauri dev` 后台 detached 启动时**不会**自动重编 Rust 改动 → 改了 `src-tauri` 要手动重启。
+- `tauri dev` 后台 detached 启动时**不会**自动重编 Rust 改动 → 改了 `src-tauri` 要手动重启，跑 `./scripts/restart-dev.sh`（kill 旧进程 + 重新后台启动，日志写到仓库根目录 `volo-dev.log`，已 gitignore）。
 
 ## Tauri v2 接线 / 窗口（最易踩）
 
 - invoke 参数 key：Rust snake_case 函数参数 → JS **camelCase**（`machine_id`→`machineId`）；struct 入参（request/input/cred/plan）整体一个 key、内部字段保持 snake_case。
-- 返回 DTO 字段 = **snake_case**（crates 全 `#[derive(Serialize)]` 无 rename_all）；例外看各自 `#[serde(rename)]`（如 `ProjectDir.Path` 是 PascalCase）/ enum `rename_all`。前端封装见 `src/features/cache/api/commands.ts`。
+- 返回 DTO 字段 = **snake_case**（crates 全 `#[derive(Serialize)]` 无 rename_all）；例外看各自 `#[serde(rename)]`（如 `ProjectDir.Path` 是 PascalCase）/ enum `rename_all`。前端封装见 `src/volo/api/commands.ts`。
 - 无边框窗口拖动用 `data-tauri-drag-region` 属性（不是 `-webkit-app-region`），需在 `src-tauri/capabilities/default.json` 开 `core:window:allow-start-dragging`（+ close/minimize/toggle-maximize）。
 - 禁界面文字选中用 `-webkit-user-select`（macOS WKWebView 不认裸 `user-select`）。
