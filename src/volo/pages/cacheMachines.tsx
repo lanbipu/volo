@@ -5,7 +5,7 @@
 import * as React from "react";
 import "../ds";
 import "./cache";
-import { deleteMachine, scanNetwork, addDiscoveredMachine } from "../api/commands";
+import { deleteMachine, scanNetwork, addDiscoveredMachine, refreshMachine } from "../api/commands";
 
 (function () {
   const { Button } = window.Spectrum2DesignSystem_b6d1b3;
@@ -253,6 +253,31 @@ import { deleteMachine, scanNetwork, addDiscoveredMachine } from "../api/command
         },
       });
     };
+    /* 真实「刷新全部」：并行调用 refresh_machine（真 SSH probe + mark_seen，与 delSelected
+       同一个 Promise.allSettled 写法）——refresh_machine 是同步 command 但无连接池/信号量，
+       Db 锁只包单条 SQL，probe() 每次起独立 ssh 子进程，没有需要串行的资源争用。
+       soft-failure（r.error，含「探测到离线」）只计入失败计数，不让整批任务标红——巡检一圈
+       里有机器离线是正常态，不是操作失败；全部失败才标红。 */
+    const refreshAll = () => {
+      const nodes = visible.filter((n) => n.machineId != null && n.machineId !== 0);
+      if (!nodes.length) return;
+      s.runCmd({ domain: 'machine', action: 'refresh', target: nodes.length + ' 台', chan: 'winrm', note: '重新探测在线 / UE / GPU' },
+        async () => {
+          const results = await Promise.allSettled(nodes.map((n) => refreshMachine(n.machineId)));
+          const failed = [];
+          results.forEach((res, i) => {
+            if (res.status === 'rejected') failed.push(nodes[i].host + '（' + (res.reason && res.reason.message ? res.reason.message : String(res.reason)) + '）');
+            else if (res.value && res.value.error) failed.push(nodes[i].host + '（' + res.value.error + '）');
+          });
+          if (failed.length === nodes.length) throw new Error('全部探测失败');
+          return failed;
+        },
+        { okMsg: (failed) => failed.length
+            ? ((nodes.length - failed.length) + ' / ' + nodes.length + ' 台在线 · ' + failed.join('、'))
+            : '全部 ' + nodes.length + ' 台已刷新在线状态与 UE 安装' })
+        .then(() => s.reloadCache(), () => s.reloadCache());
+    };
+
     /* 行 / 图标内的复选框（自带 stopPropagation，避免触发打开详情） */
     const checkbox = (n, cls) => h('span', { className: (cls ? cls + ' ' : '') + 'mck' + (isSel(n) ? ' on' : ''),
       title: '选择', onClick: (e) => { e.stopPropagation(); toggleOne(n.id); } },
@@ -284,8 +309,7 @@ import { deleteMachine, scanNetwork, addDiscoveredMachine } from "../api/command
           h('div', { className: 'view-toggle' },
             h('button', { className: 'vt-btn' + (machView === 'grid' ? ' on' : ''), title: '图标视图', onClick: () => setMachView('grid') }, h(Icon, { name: 'grid', size: 14 })),
             h('button', { className: 'vt-btn' + (machView === 'list' ? ' on' : ''), title: '列表视图', onClick: () => setMachView('list') }, h(Icon, { name: 'list', size: 14 }))),
-          h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'sync', size: 14 }),
-            onPress: () => s.runTask({ domain: 'machine', action: 'refresh', target: '全部在线机', chan: 'winrm', note: '重新探测在线 / UE / last-seen', lines: [{ msg: 'machine refresh（全部）…' }, { lv: 'ok', msg: '已刷新在线状态与 UE 安装' }] }) }, '刷新全部'),
+          h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'sync', size: 14 }), onPress: refreshAll }, '刷新全部'),
           /* 制作入网 U 盘：全局动作（包与机器无关，做一次入网所有节点）。仅 Windows 可用——
              打包器是 PowerShell sidecar，非 Win 时禁用并解释。span 包裹让禁用态仍显 title。 */
           h('span', { title: s.platform === 'win' ? '生成全局通用的 SSH 入网 U 盘包' : '该功能仅 Windows 可用（打包依赖 PowerShell）', style: { display: 'inline-flex' } },

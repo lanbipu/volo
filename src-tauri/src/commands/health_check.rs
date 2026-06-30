@@ -152,6 +152,13 @@ pub async fn run_health_check(
                     scan_run_id: scan_id, machine_id: mid, done: true,
                     error: Some(e.to_string()),
                 });
+                // Only an actual SSH connect failure means the host is unreachable —
+                // health_probes::run also surfaces NodeScript/OperationFailed when SSH
+                // succeeded but the probe script itself errored, which says nothing
+                // about connectivity and must not flip the machine to offline.
+                if matches!(e, UecmError::SshConnect(_)) {
+                    data_machines::mark_seen(&db, mid, "offline")?;
+                }
                 // Offline branch: fill registry keys with `offline`, then inject L1
                 // (operator may have lost WinRM but kept TCP visibility).
                 let mut row = HashMap::<String, CheckOutcome>::new();

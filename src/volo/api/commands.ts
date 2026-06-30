@@ -63,7 +63,7 @@ export const scanNetwork = (cidr: string) => call<ScanResult>("scan_network", { 
 // ✅ wired: ScanWizard confirmAdd → addDiscoveredMachine（逐 IP）+ reloadCache
 export const addDiscoveredMachine = (ip: string, hostname?: string | null) =>
   call<number>("add_discovered_machine", { ip, hostname: hostname ?? null });
-// ✅ wired: machineDetail「刷新」→ refreshMachine（软失败 = Ok+.error）+ reloadCache（注：MachineSection「刷新全部」串行阻塞，仍待接）
+// ✅ wired: machineDetail「刷新」→ refreshMachine（软失败 = Ok+.error）+ reloadCache；MachineSection「刷新全部」并行（allSettled）逐台调用同一 command
 export const refreshMachine = (machineId: number) => call<RefreshResult>("refresh_machine", { machineId });
 
 /* ----------------------------- credentials ----------------------------- */
