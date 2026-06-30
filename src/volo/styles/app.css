@@ -4,6 +4,10 @@
    Built on Spectrum 2 semantic tokens (which adapt to dark).
    ============================================================ */
 
+/* Headings default to the app's chrome text (DS sets them dark — wrong on our
+   dark chrome；否则对话框标题 h2 在深色面板继承成纯黑)。Class / inline colors still override. */
+.desktop h1, .desktop h2, .desktop h3, .desktop h4, .desktop h5, .desktop h6 { color: var(--chrome-text); }
+
 /* ---- Volo brand accent (shared across themes) ------------- */
 :root {
   /* Chinese-capable font stack: Latin from Source Sans 3,
@@ -1067,20 +1071,7 @@ html, body {
 .tk-pct { font-variant-numeric: tabular-nums; color: var(--volo-400); font-weight: 700; text-align: right; }
 .tk-el { font-variant-numeric: tabular-nums; color: var(--chrome-faint); text-align: right; }
 .tk-note { color: var(--chrome-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-/* ---- task drawer (right column) ---- */
-.task-drawer { display: flex; flex-direction: column; height: 100%; }
-.td-head { padding: 12px 13px 0; border-bottom: 1px solid var(--chrome-line); position: sticky; top: 0; background: var(--chrome-panel); z-index: 2; }
-.td-title { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; color: var(--chrome-text); }
-.td-tabs { display: flex; gap: 4px; margin-top: 11px; }
-.td-tabs button { all: unset; font-size: 12px; font-weight: 600; color: var(--chrome-dim); padding: 6px 11px; border-bottom: 2px solid transparent; cursor: pointer; display: flex; align-items: center; gap: 6px; }
-.td-tabs button:hover { color: var(--chrome-text); }
-.td-tabs button.on { color: var(--volo-400); border-bottom-color: var(--volo-700); }
-.td-tabs button .n { font-size: 10.5px; font-variant-numeric: tabular-nums; background: var(--wash); color: var(--chrome-faint); padding: 0 6px; border-radius: 8px; }
-.td-tabs button.on .n { color: var(--volo-400); background: rgba(240,78,42,.16); }
-.td-body { flex: 1; overflow-y: auto; padding: 11px; display: flex; flex-direction: column; gap: 9px; }
-.td-empty { text-align: center; color: var(--chrome-faint); padding: 40px 18px; display: flex; flex-direction: column; align-items: center; gap: 12px; font-size: 12px; }
-.td-empty .ph { width: 60px; height: 60px; border-radius: 14px; border: 1.5px dashed var(--chrome-line-2); display: grid; place-items: center; color: var(--chrome-line-2); }
+/* 旧检查器任务抽屉(.task-drawer/.td-*)的样式已随 taskPanel 移除而删除（无引用）。 */
 
 .tcard { background: var(--chrome-card); border: 1px solid var(--chrome-line); border-radius: 10px; padding: 11px 12px; }
 .tcard--running { border-color: color-mix(in srgb, var(--volo-700) 38%, transparent); }
@@ -1688,7 +1679,7 @@ html, body {
 .local-selbar { display: flex; align-items: center; gap: 12px; margin-top: 12px; padding: 9px 12px; background: var(--chrome-card); border: 1px dashed var(--chrome-line-2); border-radius: 9px; }
 .local-selbar.on { border-style: solid; border-color: color-mix(in srgb, var(--volo-500) 40%, transparent); background: color-mix(in srgb, var(--volo-500) 6%, var(--chrome-card)); }
 .lsb-all { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: var(--chrome-text); flex: 0 0 auto; }
-.lsb-ct { font-size: 11.5px; color: var(--chrome-faint); margin-right: auto; }
+.lsb-ct { font-size: 11.5px; color: var(--chrome-faint); white-space: nowrap; flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .lsb-acts { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .content-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .content-grid.single { grid-template-columns: minmax(0, 560px); }
@@ -1801,10 +1792,10 @@ html, body {
 .vt-btn.on { background: var(--wash-2); color: var(--chrome-text); }
 
 /* 机器图标网格视图 */
-.mach-grid { display: grid; grid-template-columns: repeat(auto-fill, 110px); gap: 8px; padding-top: 4px; justify-content: start; }
+.mach-grid { display: grid; grid-template-columns: repeat(auto-fill, 132px); gap: 8px; padding-top: 4px; justify-content: start; }
 .mach-tile { background: var(--chrome-card); border: 1px solid var(--chrome-line); border-radius: 10px; padding: 16px 10px 13px; cursor: pointer;
   display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center;
-  width: 110px; transition: border-color .13s, background .13s; }
+  width: 132px; transition: border-color .13s, background .13s; }
 .mach-tile:hover { background: var(--chrome-card-hover); border-color: var(--chrome-line-2); }
 .mach-tile.off { opacity: .52; }
 .mt-ico { width: 44px; height: 44px; border-radius: 11px; display: grid; place-items: center; background: var(--wash); color: var(--chrome-dim); margin-bottom: 2px; flex: 0 0 auto; }
@@ -1813,7 +1804,7 @@ html, body {
 .mt-ico.s-negative{ color: var(--negative-visual); background: color-mix(in srgb, var(--negative-visual) 12%, transparent); }
 .mt-ico.s-neutral { color: var(--chrome-faint); background: var(--wash); }
 .mt-host { font-family: var(--font-code); font-size: 11px; font-weight: 600; color: var(--chrome-text);
-  width: 100%; min-width: 0; white-space: normal; overflow-wrap: anywhere; word-break: break-word; line-height: 1.3; }
+  width: 100%; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.3; }
 .mt-ip   { font-family: var(--font-code); font-size: 10px; color: var(--chrome-faint); width: 100%; min-width: 0; }
 .mt-env  { font-size: 10px; font-weight: 600; padding: 1px 7px; border-radius: 5px; margin-top: 1px; white-space: nowrap; }
 .mt-env--ok      { color: var(--positive-visual); background: color-mix(in srgb, var(--positive-visual) 13%, transparent); }
@@ -2062,10 +2053,6 @@ html, body {
   background: var(--wash); color: var(--chrome-dim); flex: 0 0 auto; }
 .insp-head .tt { font-size: 13px; font-weight: 800; color: var(--chrome-text); }
 .insp-head .sub { font-size: 11px; color: var(--chrome-faint); margin-top: 1px; }
-.insp-idle-hint { display: flex; align-items: flex-start; gap: 9px; font-size: 12px; line-height: 1.5;
-  color: var(--chrome-dim); background: var(--wash-3); border: 1px solid var(--chrome-line);
-  border-radius: 9px; padding: 10px 12px; margin: 12px 13px 4px; text-wrap: pretty; }
-.insp-idle-hint svg { flex: 0 0 auto; margin-top: 1px; color: var(--chrome-faint); }
 .insp-tasks-h { padding: 4px 14px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
   color: var(--chrome-faint); font-weight: 700; display: flex; align-items: center; gap: 7px; margin-top: 6px; }
 .insp-tasks-h .n { font-size: 10.5px; font-variant-numeric: tabular-nums; background: var(--wash);
@@ -2172,3 +2159,84 @@ html, body {
 @media (max-width: 1180px) {
   .zen-2col { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ============================================================
+   居中二级对话框（ModalPreview）+ 控制台「运行中」气泡 / 历史任务
+   —— 本轮设计：部署 / 修复 / 巡检改弹居中 modal（preview → 实时进度 → 成功 / 失败）。
+   ============================================================ */
+.modal-scrim { position: absolute; inset: 0; z-index: 80; display: grid; place-items: center;
+  background: rgba(0,0,0,.42); padding: 32px; }
+.modal-host { width: 520px; max-width: 100%; max-height: 100%; display: flex; flex-direction: column;
+  border-radius: 16px; overflow: hidden; box-shadow: var(--shadow-dragged); }
+@media (prefers-reduced-motion: no-preference) { .modal-host { animation: modalpop .18s var(--ease-default) both; } }
+@keyframes modalpop { from { transform: translateY(8px) scale(.98); } to { transform: none; } }
+.modal-host > .drawer { position: static; width: 100%; height: auto; max-height: 100%;
+  border-left: 0; box-shadow: none; animation: none; background: var(--chrome-panel); }
+.modal-host > .drawer .drawer-b { max-height: 56vh; }
+.drawer-h .di.ok { background: color-mix(in srgb, var(--positive-visual) 16%, transparent); color: var(--positive-visual); }
+.drawer-h .di.err { background: color-mix(in srgb, var(--negative-visual) 16%, transparent); color: var(--negative-visual); }
+.mprog { height: 8px; border-radius: 99px; background: var(--wash-2); overflow: hidden; }
+.mprog__fill { height: 100%; border-radius: 99px; background: var(--informative-visual);
+  transition: width .5s var(--ease-default); }
+.mprog__fill.is-done { background: var(--positive-visual); }
+.mprog__fill.is-fail { background: var(--negative-visual); }
+.steps-list.run .step-line { transition: background .2s, border-color .2s, opacity .2s; }
+.steps-list.run .step-line.pending { opacity: .5; }
+.steps-list.run .step-line.active { border-color: color-mix(in srgb, var(--informative-visual) 40%, transparent); }
+.steps-list.run .step-line.active .sn { background: color-mix(in srgb, var(--informative-visual) 20%, transparent); color: var(--informative-visual); }
+.steps-list.run .step-line.ok .sn { background: color-mix(in srgb, var(--positive-visual) 20%, transparent); color: var(--positive-visual); }
+.steps-list.run .step-line.fail .sn { background: color-mix(in srgb, var(--negative-visual) 20%, transparent); color: var(--negative-visual); }
+.mdone { display: flex; align-items: center; gap: 11px; font-size: 13px; color: var(--chrome-text);
+  background: color-mix(in srgb, var(--positive-visual) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--positive-visual) 30%, transparent);
+  border-radius: 10px; padding: 13px 15px; text-wrap: pretty; }
+.mdone__ic { width: 26px; height: 26px; border-radius: 8px; flex: 0 0 auto; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--positive-visual) 18%, transparent); color: var(--positive-visual); }
+.mfail { display: flex; align-items: center; gap: 11px; font-size: 13px; color: var(--chrome-text);
+  background: color-mix(in srgb, var(--negative-visual) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--negative-visual) 30%, transparent);
+  border-radius: 10px; padding: 13px 15px; text-wrap: pretty; word-break: break-word; }
+.mfail__ic { width: 26px; height: 26px; border-radius: 8px; flex: 0 0 auto; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--negative-visual) 18%, transparent); color: var(--negative-visual); }
+
+/* 控制台：可点的「运行中」状态 → 正上方临时浮层显示进行中任务实时进度 */
+.log-run { all: unset; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 11px; font-weight: 700;
+  color: var(--chrome-dim); padding: 3px 9px; border-radius: 99px; border: 1px solid var(--chrome-line); }
+.log-run:hover { background: var(--wash); color: var(--chrome-text); border-color: var(--chrome-line-2); }
+.log-run.on { color: var(--volo-400); border-color: color-mix(in srgb, var(--volo-700) 50%, transparent); background: color-mix(in srgb, var(--volo-500) 10%, transparent); }
+.log-run .log-run-tx { font-variant-numeric: tabular-nums; }
+.log-run-wrap { position: relative; display: inline-flex; }
+.log-run-backdrop { position: fixed; inset: 0; z-index: 88; }
+.log-run-pop { position: absolute; bottom: calc(100% + 9px); right: 0; z-index: 90; width: 304px;
+  background: var(--chrome-panel-2); border: 1px solid var(--chrome-line-2); border-radius: 12px;
+  box-shadow: var(--shadow-dragged); padding: 11px 12px 12px; }
+@media (prefers-reduced-motion: no-preference) { .log-run-pop { animation: runpop .16s var(--ease-default) both; } }
+@keyframes runpop { from { transform: translateY(6px); } to { transform: none; } }
+.log-run-pop::after { content: ''; position: absolute; top: 100%; right: 16px; width: 11px; height: 11px;
+  background: var(--chrome-panel-2); border-right: 1px solid var(--chrome-line-2); border-bottom: 1px solid var(--chrome-line-2);
+  transform: translateY(-6px) rotate(45deg); }
+.lrp-h { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--chrome-faint); margin-bottom: 9px; font-family: var(--font-sans); }
+.lrp-h svg { color: var(--volo-500); }
+.lrp-h .lrp-n { margin-left: auto; font-variant-numeric: tabular-nums; background: var(--wash-2); color: var(--chrome-dim);
+  padding: 0 7px; border-radius: 8px; letter-spacing: 0; }
+.lrp-empty { font-size: 12px; color: var(--chrome-faint); padding: 12px 2px; text-align: center; font-family: var(--font-sans); }
+.lrp-list { display: flex; flex-direction: column; gap: 11px; font-family: var(--font-sans); }
+.lrp-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.lrp-title { font-size: 12.5px; font-weight: 700; color: var(--chrome-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.lrp-pct { font-size: 11px; font-weight: 700; color: var(--volo-400); font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+.lrp-title .lrp-no { margin-left: 5px; font-size: 11px; font-weight: 600; color: var(--chrome-faint); }
+.lrp-bar { height: 6px; border-radius: 99px; background: var(--wash-2); overflow: hidden; margin: 6px 0 5px; }
+.lrp-fill { height: 100%; border-radius: 99px; background: var(--volo-600); transition: width .4s var(--ease-default); }
+/* 原子任务(runCmd 无逐步进度)的不确定进度条：一段滑块来回扫，不冒充确定百分比 */
+.lrp-fill.indet { width: 42%; animation: lrpindet 1.15s var(--ease-default) infinite; }
+@keyframes lrpindet { 0% { transform: translateX(-105%); } 100% { transform: translateX(240%); } }
+.lrp-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--chrome-faint); }
+.lrp-target { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.lrp-el { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+
+/* 控制台：历史任务标签 + 任务卡片网格 */
+.log-tab--hist { gap: 5px; }
+.log-tab--hist svg { opacity: .85; }
+.log-body--hist { font-family: var(--font-sans); padding: 10px 12px; }
+.log-hist { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px; align-content: start; }

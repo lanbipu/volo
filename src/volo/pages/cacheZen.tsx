@@ -212,14 +212,15 @@ import {
 
     const pickServer = (id) => { setSrvId(id); setStarted(false); setRun({}); setDeploying(false); epRef.current = null; };
 
-    /* 预览部署计划（展示解析后的 7 步）→ 确认 → 跑 runner（DeployPlan 是通用 DDC 部署、
-       不适配 zen 链路，故不调 deploy_ddc_plan_preview；预览即解析后的步骤清单）*/
-    const previewDeploy = () => CX.openPreview(s, {
+    /* 部署 → 居中二级对话框（modal）确认后执行；真实 7 步进度在页面下方步骤器中逐步呈现
+       （liveProgress:false：对话框只做计划确认，进度不在对话框内重复）。 */
+    const modalDeploy = () => CX.openModalPreview(s, {
       title: (deployed ? '重新部署' : '部署') + ' Zen 缓存服务器', icon: 'cube',
       cli: 'zen_register → … → zen_probe', destructive: false, channel: 'ssh', confirmLabel: deployed ? '重新部署' : '开始部署',
+      liveProgress: false,
       steps: DEPLOY_STEPS.map((st) => st.label + '（' + st.cli + '）'),
       simpleScope: [{ host: srvNode.host, ip: srvNode.ip, msg: protocol + '://…:' + port + ' · ' + dataDir }],
-      onConfirm: () => { epRef.current = null; runFrom(0); },
+      run: () => { epRef.current = null; runFrom(0); },
     });
 
     /* —— 管理动作（已部署）—— */
@@ -401,8 +402,7 @@ import {
           h('div', { className: 'dp-field' }, h('label', null, 'HTTP 服务类型'),
             h(Selector, { kpre: '类型', value: httpType, options: httpOpts, width: 200, onChange: setHttpType }))) : null),
       h('div', { className: 'zform-actions' },
-        h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'eye', size: 14 }), isDisabled: deploying, onPress: previewDeploy }, '预览计划'),
-        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'bolt', size: 14 }), isDisabled: deploying, onPress: previewDeploy }, deploying ? '部署中…' : (deployed ? '重新部署' : '部署'))));
+        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'bolt', size: 14 }), isDisabled: deploying, onPress: modalDeploy }, deploying ? '部署中…' : (deployed ? '重新部署' : '部署'))));
 
     /* 步骤列表 */
     const stepIco = (st, i) => {

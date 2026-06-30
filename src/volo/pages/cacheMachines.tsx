@@ -218,7 +218,10 @@ import { deleteMachine, scanNetwork, addDiscoveredMachine } from "../api/command
     const open = (id) => s.setDrawer({ kind: 'machine', id });
     const isDeployed = (n) => n.env !== 'pending' || (s.enrolled || []).includes(n.id);
 
-    const visible = RENDER_NODES.filter((n) => !removed.includes(n.id));
+    /* 排序：主机名按「前缀 + 数字后缀」数字升序；纯 IP 按点分数值升序。numeric localeCompare
+       同时正确处理两种情况（RNODE-2 在 RNODE-10 前，10.20.8.2 在 10.20.8.10 前）。 */
+    const machCmp = (a, b) => (a.host || '').localeCompare(b.host || '', undefined, { numeric: true, sensitivity: 'base' });
+    const visible = RENDER_NODES.filter((n) => !removed.includes(n.id)).slice().sort(machCmp);
     const online = visible.filter((n) => n.status !== 'offline').length;
     const allSel = visible.length > 0 && visible.every((n) => selected.includes(n.id));
     const isSel = (n) => selected.includes(n.id);

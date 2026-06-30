@@ -223,6 +223,11 @@ function LogPanel({ s }) {
   const rows = q ? byLevel.filter((l) => strip(l.msg).toLowerCase().includes(q) || (l.cat || '').includes(q) || (l.ch || '').includes(q)) : byLevel;
   const tabs = [['all', '全部'], ['info', '信息'], ['warn', '警告'], ['err', '错误']];
   const running = s.tasks ? s.tasks.filter((t) => t.state === 'running').length : 0;
+  const activeTasks = s.tasks ? s.tasks.filter((t) => t.state === 'running' || t.state === 'queued') : [];
+  const [runOpen, setRunOpen] = React.useState(false);
+  const histTasks = s.tasks ? s.tasks.filter((t) => t.state === 'success' || t.state === 'failed') : [];
+  const TaskCard = window.VOLO_CX && window.VOLO_CX.TaskCard;
+  const conTab = s.conTab || 'stream';
   return React.createElement('div', { className: 'logpanel' },
     s.logOpen ? React.createElement('div', {
       className: 'resizer resizer--row',
@@ -234,9 +239,13 @@ function LogPanel({ s }) {
         React.createElement('span', { className: 'ndjson-tag' }, 'NDJSON')),
       React.createElement('div', { className: 'log-tabs' },
         tabs.map(([id, lbl]) => React.createElement('div', {
-          key: id, className: 'log-tab' + (s.logFilter === id ? ' on' : ''),
-          onClick: () => { s.setLogFilter(id); s.setLogOpen(true); },
-        }, lbl, React.createElement('span', { className: 'n' }, counts[id])))),
+          key: id, className: 'log-tab' + (conTab === 'stream' && s.logFilter === id ? ' on' : ''),
+          onClick: () => { s.setConTab('stream'); s.setLogFilter(id); s.setLogOpen(true); },
+        }, lbl, React.createElement('span', { className: 'n' }, counts[id]))),
+        React.createElement('div', {
+          className: 'log-tab log-tab--hist' + (conTab === 'hist' ? ' on' : ''),
+          onClick: () => { s.setConTab('hist'); s.setLogOpen(true); },
+        }, React.createElement(Icon, { name: 'list', size: 12 }), '历史任务', React.createElement('span', { className: 'n' }, histTasks.length))),
       React.createElement('div', { className: 'right log-tools' },
         React.createElement('div', { className: 'log-search' },
           React.createElement(Icon, { name: 'search', size: 13 }),
@@ -248,16 +257,40 @@ function LogPanel({ s }) {
           className: 'log-pause' + (s.logPaused ? ' on' : ''), title: s.logPaused ? '已暂停 — 点击恢复' : '暂停自动滚动',
           onClick: (e) => { e.stopPropagation(); s.setLogPaused((v) => !v); } },
           React.createElement(Icon, { name: s.logPaused ? 'play' : 'pause', size: 13 }), s.logPaused ? '已暂停' : '实时'),
-        React.createElement('span', { className: 'rec-dot', style: { width: 7, height: 7, background: running ? 'var(--volo-600)' : 'var(--positive-visual)', animationPlayState: s.logPaused ? 'paused' : 'running' } }),
-        running ? React.createElement('span', { style: { fontSize: 11, color: 'var(--volo-400)', fontWeight: 700 } }, running + ' 运行中') : null,
+        React.createElement('span', { className: 'log-run-wrap' },
+          React.createElement('button', {
+            className: 'log-run' + (runOpen ? ' on' : ''),
+            title: running ? '查看进行中任务的完整进度' : '当前没有运行中的任务',
+            onClick: (e) => { e.stopPropagation(); setRunOpen((v) => !v); } },
+            React.createElement('span', { className: 'rec-dot', style: { width: 7, height: 7, background: running ? 'var(--volo-600)' : 'var(--positive-visual)', animationPlayState: s.logPaused ? 'paused' : 'running' } }),
+            React.createElement('span', { className: 'log-run-tx' }, running ? (running + ' 运行中') : '空闲')),
+          runOpen ? React.createElement('div', { className: 'log-run-backdrop', onClick: (e) => { e.stopPropagation(); setRunOpen(false); } }) : null,
+          runOpen ? React.createElement('div', { className: 'log-run-pop', onClick: (e) => e.stopPropagation() },
+            React.createElement('div', { className: 'lrp-h' },
+              React.createElement(Icon, { name: 'sync', size: 13 }), '进行中任务',
+              React.createElement('span', { className: 'lrp-n' }, activeTasks.length)),
+            activeTasks.length === 0
+              ? React.createElement('div', { className: 'lrp-empty' }, '当前没有运行中的任务')
+              : React.createElement('div', { className: 'lrp-list' }, activeTasks.map((t) => React.createElement('div', { key: t.id, className: 'lrp-row' },
+                  React.createElement('div', { className: 'lrp-top' },
+                    React.createElement('span', { className: 'lrp-title' }, t.title, React.createElement('span', { className: 'lrp-no' }, '#' + t.no)),
+                    React.createElement('span', { className: 'lrp-pct' }, t.stream ? ((t.pct || 0) + '%') : '运行中')),
+                  /* 流式任务(runStreamingCmd)有真实逐步 pct → 确定进度；原子任务(runCmd)只有 4%→100% 两点，
+                     无中间进度 → 用不确定动画条，不显冻结在 4% 的误导百分比。 */
+                  React.createElement('div', { className: 'lrp-bar' }, React.createElement('div', { className: 'lrp-fill' + (t.stream ? '' : ' indet'), style: t.stream ? { width: (t.pct || 0) + '%' } : null })),
+                  React.createElement('div', { className: 'lrp-meta' }, React.createElement('span', { className: 'lrp-target' }, t.target), React.createElement('span', { className: 'lrp-el' }, t.elapsed)))))) : null),
         React.createElement('button', { className: 'iconbtn', style: { width: 22, height: 22 } }, React.createElement(Icon, { name: s.logOpen ? 'chevd' : 'chevr', size: 15, style: { transform: s.logOpen ? 'rotate(180deg)' : 'none' } })))),
-    s.logOpen ? React.createElement('div', { className: 'log-body' + (s.logPaused ? ' paused' : ''), style: { height: s.logH } },
-      rows.length === 0 ? React.createElement('div', { className: 'log-empty' }, q ? `无匹配「${s.logSearch}」的流` : '暂无日志')
+    s.logOpen ? React.createElement('div', { className: 'log-body' + (s.logPaused ? ' paused' : '') + (conTab === 'hist' ? ' log-body--hist' : ''), style: { height: s.logH } },
+      conTab === 'hist'
+        ? (histTasks.length === 0
+            ? React.createElement('div', { className: 'log-empty' }, '暂无历史任务')
+            : React.createElement('div', { className: 'log-hist' }, histTasks.map((t) => TaskCard ? React.createElement(TaskCard, { key: t.id, s, t }) : null)))
+        : (rows.length === 0 ? React.createElement('div', { className: 'log-empty' }, q ? `无匹配「${s.logSearch}」的流` : '暂无日志')
         : rows.map((l, i) => React.createElement('div', { key: i, className: 'log-row' },
         React.createElement('span', { className: 'ts' }, l.ts),
         React.createElement('span', { className: 'lv ' + l.lv }, l.lv === 'ok' ? 'OK' : l.lv.toUpperCase()),
         React.createElement('span', { className: 'ch' + (l.ch ? ' ch-' + l.ch : '') }, l.ch ? CHANNEL[l.ch].short : '·'),
-        React.createElement('span', { className: 'msg', dangerouslySetInnerHTML: { __html: l.msg } }))))
+        React.createElement('span', { className: 'msg', dangerouslySetInnerHTML: { __html: l.msg } })))))
       : null);
 }
 
@@ -326,6 +359,8 @@ function App() {
   const [cacheNav, setCacheNav] = useState(CACHE_NAVS.includes(persisted.cacheNav) ? persisted.cacheNav : 'home');
   const [ddcOpen, setDdcOpen] = useState(persisted.ddcOpen != null ? persisted.ddcOpen : /^ddc_/.test(persisted.cacheNav || ''));
   const [drawer, setDrawer] = useState(null);
+  /* 居中二级对话框（部署 / 修复 / 巡检走此，见 cache.tsx 的 ModalPreview / ModalLayer）。 */
+  const [modal, setModal] = useState(null);
   /* DDC PAK / PSO 工程选择（主视图勾选 · 检查器就地显示 + 操作）。pakSel 多选(数组)，
      psoSel 单选。提到 shell：主视图(center)写选择，检查器(inspector)读选择，两栏共享。 */
   const [pakSel, setPakSel] = useState([]);
@@ -336,7 +371,9 @@ function App() {
   /* task drawer + NDJSON console */
   const [tasks, setTasks] = useState([]);
   const taskSeq = useRef(1);
-  const [taskTab, setTaskTab] = useState('active');
+  /* 控制台标签页：stream(NDJSON 流) | hist(历史任务卡片)。检查器旧「进行中/历史」tab 已移除，
+     原 taskTab 随之删除（无消费者）。 */
+  const [conTab, setConTab] = useState('stream');
   const [logSearch, setLogSearch] = useState('');
   const [logPaused, setLogPaused] = useState(false);
   /* calibrate */
@@ -435,7 +472,7 @@ function App() {
     const id = 't_' + no;
     setTasks((prev) => [{ id, no, domain, action, title: `${domain} ${action}`, state: 'running',
       pct: 4, chan, started: nowHM(), elapsed: '0s', target, note, stream: lines.length > 2 }, ...prev]);
-    setTaskTab('active');
+    setConTab('stream'); /* 派发命令即切回控制台实时流（否则停在「历史任务」页会看不到新流） */
     setLogOpen(true);
     const n = Math.max(lines.length, 1);
     lines.forEach((ln, i) => setTimeout(() => {
@@ -468,7 +505,7 @@ function App() {
     const t0 = Date.now();
     const secs = () => Math.max(1, Math.round((Date.now() - t0) / 1000)) + 's';
     setTasks((prev) => [{ id, no, domain, action, title, state: 'running', pct: 4, chan, started: nowHM(), elapsed: '0s', target, note, stream: false }, ...prev]);
-    setTaskTab('active');
+    setConTab('stream'); /* 派发命令即切回控制台实时流（否则停在「历史任务」页会看不到新流） */
     setLogOpen(true);
     pushLog({ lv: 'info', cat: domain, ch: chan, task: no, msg: esc(opts.startMsg || `${title} …`) });
     try {
@@ -506,7 +543,7 @@ function App() {
     const t0 = Date.now();
     const secs = () => Math.max(1, Math.round((Date.now() - t0) / 1000)) + 's';
     setTasks((prev) => [{ id, no, domain, action, title, state: 'running', pct: 4, chan, started: nowHM(), elapsed: '0s', target, note, stream: true }, ...prev]);
-    setTaskTab('active');
+    setConTab('stream'); /* 派发命令即切回控制台实时流（否则停在「历史任务」页会看不到新流） */
     setLogOpen(true);
     pushLog({ lv: 'info', cat: domain, ch: chan, task: no, msg: esc(note || `${title} …`) });
 
@@ -603,10 +640,11 @@ function App() {
   const s = { theme, toggleTheme, platform, setPlatform, toolsNav, setToolsNav, page, setPage, logOpen, setLogOpen, logFilter, setLogFilter,
     logs, pushLog, pushLogs, logH, setLogH,
     selNode, setSelNode, cacheNav, setCacheNav: goCacheNav, ddcOpen, setDdcOpen, drawer, setDrawer: openDrawer,
+    modal, setModal,
     pakSel, setPakSel, psoSel, setPsoSel, pakVerify, setPakVerify,
     freshSetup, setFreshSetup, machinesAdded, setMachinesAdded,
     enrolled, setEnrolled, creds, setCreds,
-    tasks, setTasks, runTask, runCmd, runStreamingCmd, taskTab, setTaskTab, logSearch, setLogSearch, logPaused, setLogPaused,
+    tasks, setTasks, runTask, runCmd, runStreamingCmd, conTab, setConTab, logSearch, setLogSearch, logPaused, setLogPaused,
     calStep, setCalStep, calScreen, setCalScreen, calMethod, setCalMethod, calSel, setCalSel,
     leftCollapsed, setLeftCollapsed, rightCollapsed, setRightCollapsed, maximized,
     machines, setMachines, shares, setShares, projects, setProjects, gpuMatrix, cluster, cacheLoading, cacheError, reloadCache };
@@ -643,6 +681,9 @@ function App() {
         h('div', { className: 'inspector' + (rightCollapsed ? ' is-collapsed' : '') }, guard('inspector', () => pg.inspector(s)))),
       h(LogPanel, { s }),
       h(PageTabs, { s })),
+    /* 居中二级对话框层（部署 / 修复 / 巡检的 preview→进度→成功/失败），挂在 .desktop 顶层覆盖全窗。
+       包进 ErrBoundary（同其它渲染槽）：modal 渲染操作驱动的动态内容，是最易抛错的覆盖层，崩了不该黑屏整树。 */
+    guard('modal', () => (window.VOLO_CACHE ? window.VOLO_CACHE.modalLayer(s) : null)),
     TweaksPanel ? h(TweaksPanel, { title: 'Tweaks' },
       h(TweakSection, { label: '集群总览 · Cluster' }),
       TweakToggle ? h(TweakToggle, { label: '全新设置（空集群）', value: freshSetup,

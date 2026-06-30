@@ -524,30 +524,32 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
     /* ===== ① 共享 DDC（SMB）服务器：创建 / 解除纳管 / 拆除部署（破坏性，走确认门）===== */
     /* 真实 create_share：host=sharedNode.machineId，mode 序列化 'open'|'managed'；
        operator_credential_alias 传 null（SSH key 鉴权）；Mode B 的 svc_username 留空 → 后端默认 'ddc-svc'。 */
-    const deploySMB = () => CX.openPreview(s, {
+    const deploySMB = () => CX.openModalPreview(s, {
       title: '创建共享 DDC（SMB）', icon: 'folder', cli: 'create_share', destructive: false, channel: 'ssh', confirmLabel: '创建共享',
+      doneTitle: '已成功部署', doneMsg: sharedNode.host + ' 已设为共享 DDC 服务器 · ' + shareLocal,
       steps: ['在 ' + sharedNode.host + ' 上新建共享缓存文件夹 ' + shareLocal,
         '共享名 ' + shareName + (shareMode === 'managed' ? '（Mode B · 专用账号 ddc-svc）' : '（Mode A · 开放）'),
         '集群缓存指向该共享，其余机器再到「② 其他服务器加入共享 DDC」逐台加入'],
       simpleScope: [{ host: sharedNode.host, ip: sharedNode.ip, msg: shareLocal }],
-      onConfirm: () => {
-        if (!sharedNode || !shareName.trim() || !shareLocal.trim()) return;
-        s.runCmd({ domain: 'share', action: 'create', target: sharedNode.host, chan: 'ssh', note: 'SMB 共享 DDC（' + shareMode + '）' },
+      run: () => {
+        if (!sharedNode || !shareName.trim() || !shareLocal.trim()) return Promise.reject(new Error('缺少服务器机器 / 共享名 / 本地路径'));
+        return s.runCmd({ domain: 'share', action: 'create', target: sharedNode.host, chan: 'ssh', note: 'SMB 共享 DDC（' + shareMode + '）' },
           () => createShare(sharedNode.machineId, shareMode, shareName.trim(), shareLocal.trim(), null, null),
           { okMsg: (r) => '共享已创建 · ' + r.unc_path })
-          .then(() => s.reloadCache(), () => {});
+          .then((r) => { s.reloadCache(); return r; });
       },
     });
     /* 解除共享 DDC 纳管：仅从 Volo 解除纳管，不删远端共享文件夹（后端暂不支持 also_remove_remote）*/
-    const deleteShare = (sh) => CX.openPreview(s, {
+    const deleteShare = (sh) => CX.openModalPreview(s, {
       title: '解除共享纳管 · ' + sh.path, icon: 'trash', cli: 'delete_share', destructive: true, channel: 'ssh', confirmLabel: '解除纳管',
+      doneTitle: '已解除纳管', doneMsg: sh.path + ' 已解除纳管 · 远端文件夹保留',
       steps: ['从 Volo 解除对该共享的纳管（不再分发 / 不再注入客户端）', '不会删除远端共享文件夹本身（后端暂不支持远端删共享）'],
       simpleScope: [{ host: sh.path, ip: sh.clients + ' 客户端', msg: '仅解除纳管' }],
-      onConfirm: () => {
-        if (!sh.shareConfigId) return;
-        s.runCmd({ domain: 'share', action: 'delete', target: sh.path, chan: 'ssh', note: '解除共享纳管（远端保留）' },
+      run: () => {
+        if (!sh.shareConfigId) return Promise.reject(new Error('缺少 shareConfigId'));
+        return s.runCmd({ domain: 'share', action: 'delete', target: sh.path, chan: 'ssh', note: '解除共享纳管（远端保留）' },
           () => deleteShareCmd(sh.shareConfigId, false), { okMsg: () => sh.path + ' 已解除纳管 · 远端文件夹保留' })
-          .then(() => s.reloadCache(), () => {});
+          .then((r) => { s.reloadCache(); return r; });
       },
     });
     /* 该服务器机器当前是否已部署共享（hostId = String(host_machine_id) 与 sharedNode.id 对齐）。 */
@@ -555,18 +557,19 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
     /* 取消该服务器部署（teardown_share）：停止 SMB 共享（Remove-SmbShare）+（Mode B）注销 ddc-svc，
        保留远端文件夹与缓存（keep_files=true）。删 SQLite 行后 reloadCache 把它从列表移除。
        区别于 deleteShare（仅解除纳管，不动远端共享服务）。 */
-    const undeploySMB = (sh) => CX.openPreview(s, {
+    const undeploySMB = (sh) => CX.openModalPreview(s, {
       title: '取消该服务器部署 · ' + (sh.host && sh.host !== '—' ? sh.host : sh.path), icon: 'trash', cli: 'teardown_share', destructive: true, channel: 'ssh', confirmLabel: '取消部署',
+      doneTitle: '已取消部署', doneMsg: (sh.host && sh.host !== '—' ? sh.host : sh.path) + ' 共享 DDC 部署已取消 · 文件夹保留',
       steps: ['停止并移除该机上的 SMB 共享' + (/Mode B/.test(sh.mode || '') ? '（含注销专用账号 ddc-svc）' : '') + ' —— ' + sh.path,
         '从集群缓存图中摘除该上游，客户端回退到本地 / 其他上游',
         '保留远端共享文件夹与已有缓存文件，不做删除'],
       simpleScope: [{ host: sh.host && sh.host !== '—' ? sh.host : sh.path, ip: sh.clients + ' 客户端', msg: sh.path + ' · 保留文件夹' }],
-      onConfirm: () => {
-        if (!sh.shareConfigId) return;
-        s.runCmd({ domain: 'share', action: 'teardown', target: sh.host && sh.host !== '—' ? sh.host : sh.path, chan: 'ssh', note: '取消共享 DDC 服务器部署（文件夹保留）' },
+      run: () => {
+        if (!sh.shareConfigId) return Promise.reject(new Error('缺少 shareConfigId'));
+        return s.runCmd({ domain: 'share', action: 'teardown', target: sh.host && sh.host !== '—' ? sh.host : sh.path, chan: 'ssh', note: '取消共享 DDC 服务器部署（文件夹保留）' },
           () => teardownShare(sh.shareConfigId, true),
           { okMsg: (r) => (r.host || sh.path) + ' 共享 DDC 部署已取消 · 文件夹保留' })
-          .then(() => s.reloadCache(), () => {});
+          .then((r) => { s.reloadCache(); return r; });
       },
     });
 
@@ -825,18 +828,28 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
         .then(() => { setLocalDeployed((d) => kind === 'deploy' ? Array.from(new Set(d.concat(ids))) : d.filter((x) => !ids.includes(x))); clrLP(ids); setSelLocal([]); },
               () => clrLP(ids));
     };
-    /* 统一路径一键：把全部在线机的本地路径设成 commonLocalDir，再批量部署。 */
+    /* 统一路径一键：弹居中 modal 确认 → 把全部在线机的本地路径设成 commonLocalDir，再批量部署。 */
     const applyCommonLocal = () => {
       const path = commonLocalDir.trim();
       const todo = onlineLocalTargets.filter((n) => !localPending[n.id]);
       if (!path || !todo.length) return;
       const ids = todo.map((n) => n.id);
-      setLocalDirs((m) => { const x = Object.assign({}, m); ids.forEach((id) => { x[id] = path; }); return x; });
-      markLP(ids, 'deploy');
-      s.runCmd({ domain: 'local-cache', action: 'create', target: todo.length + ' 台', chan: 'ssh', note: '统一本地 DDC 路径并部署（' + todo.length + ' 台）· ' + path },
-        () => Promise.allSettled(todo.map((n) => deployLocalExec(n.machineId, path))).then((rs) => { const ok = rs.filter((r) => r.status === 'fulfilled').length; if (!ok) throw new Error('全部目标部署失败'); return { ok, fail: rs.length - ok }; }),
-        { okMsg: (r) => r.ok + ' 台已统一部署 · ' + path + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
-        .then(() => { setLocalDeployed((d) => Array.from(new Set(d.concat(ids)))); clrLP(ids); setSelLocal([]); }, () => clrLP(ids));
+      CX.openModalPreview(s, {
+        title: '全选并统一部署本地 DDC · ' + todo.length + ' 台', icon: 'bolt', cli: 'create_local_cache --all-online', destructive: false, channel: 'ssh',
+        confirmLabel: '统一部署 ' + todo.length + ' 台',
+        /* run() resolve 出 {ok,fail}：部分失败也 resolve（非全挂不抛），据它如实显示，不把部分失败误报全绿 */
+        doneTitle: '已部署', doneMsg: (r) => (r && r.ok != null) ? (r.ok + ' 台已统一部署 · ' + path + (r.fail ? ('，' + r.fail + ' 台失败') : '')) : (todo.length + ' 台已统一设置并部署 · ' + path),
+        steps: ['把 ' + todo.length + ' 台在线机的本地 DDC 路径统一设为 ' + path, '在每台机器上创建本地缓存层（create_local_cache）', '写入后自动回读校验命中链路'],
+        simpleScope: todo.map((n) => ({ host: n.host, ip: n.ip, msg: path })),
+        run: () => {
+          setLocalDirs((m) => { const x = Object.assign({}, m); ids.forEach((id) => { x[id] = path; }); return x; });
+          markLP(ids, 'deploy');
+          return s.runCmd({ domain: 'local-cache', action: 'create', target: todo.length + ' 台', chan: 'ssh', note: '统一本地 DDC 路径并部署（' + todo.length + ' 台）· ' + path },
+            () => Promise.allSettled(todo.map((n) => deployLocalExec(n.machineId, path))).then((rs) => { const ok = rs.filter((r) => r.status === 'fulfilled').length; if (!ok) throw new Error('全部目标部署失败'); return { ok, fail: rs.length - ok }; }),
+            { okMsg: (r) => r.ok + ' 台已统一部署 · ' + path + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
+            .then((r) => { setLocalDeployed((d) => Array.from(new Set(d.concat(ids)))); clrLP(ids); setSelLocal([]); return r; }, (e) => { clrLP(ids); throw e; });
+        },
+      });
     };
     const onlineIds = onlineLocalTargets.map((n) => n.id);
     const allSel = onlineIds.length > 0 && onlineIds.every((id) => selLocal.includes(id));

@@ -88,6 +88,9 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
 
   /* open the preview→confirm→execute overlay (pattern 5.1) */
   function openPreview(s, spec) { s.setDrawer(Object.assign({ kind: 'preview' }, spec)); }
+  /* same spec, but as a centered modal dialog (preview → 实时进度 → 成功/失败) instead of
+     the inspector drawer. 部署 / 修复 / 巡检类操作走此（见 ModalPreview）。 */
+  function openModalPreview(s, spec) { s.setModal(Object.assign({ kind: 'preview' }, spec)); }
 
   /* =================== cluster status + actions =================== */
   /* 真实「立即巡检」：顺序跑 scan_inis → run_health_check（后端已改 async，不冻结 UI）。
@@ -96,12 +99,14 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
      · 串行而非并行：健康检查的 ini_consistency 探测读 DB 里最新 INI 结果，先扫 INI 再巡检才不读旧数据；
        两条都对同批机器开远程会话，串行更稳。
      · 局部失败不掩成全绿：记录失败项，仅两条全挂才整体失败，否则 okMsg 显式标「部分完成 + 原因」。 */
-  function refreshScan(s) {
+  /* 真实健康巡检的执行体（scan_inis → run_health_check），返回 runCmd promise（成功后 reloadCache）。
+     供「立即巡检」modal 与健康项「处理」modal 复用——不直接弹 modal，由调用方包进 openModalPreview。 */
+  function healthScanRun(s) {
     const nodes = RENDER_NODES.filter((n) => n.roleKey !== 'shared' && n.status !== 'offline');
     const ids = nodes.map((n) => n.machineId).filter((x) => x != null && x !== 0);
-    if (!ids.length) return;
+    if (!ids.length) return Promise.reject(new Error('没有在线机器可巡检'));
     const roots = Array.from(new Set((window.UE_PROJECTS || []).map((p) => p.root).filter((r) => r && r !== '—')));
-    s.runCmd({ domain: 'health', action: 'run', target: ids.length + ' 台', chan: 'winrm', note: '健康巡检 + INI 一致性检查' },
+    return s.runCmd({ domain: 'health', action: 'run', target: ids.length + ' 台', chan: 'winrm', note: '健康巡检 + INI 一致性检查' },
       async () => {
         const fail = [];
         try { await scanInis({ machine_ids: ids, credential_alias: '', project_paths: roots, user_profile_path: null }); }
@@ -112,7 +117,19 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
         return fail;
       },
       { okMsg: (fail) => fail.length ? ('部分完成 · ' + fail.join(' / ') + ' 失败，其余结果已更新') : '巡检完成 · 已更新健康与 INI 结果' })
-      .then(() => s.reloadCache(), () => {});
+      .then((fail) => { s.reloadCache(); return fail; });
+  }
+  /* 「立即巡检」改弹居中二级对话框（autostart：点击即进进度阶段），进度 / 成功 / 失败都在对话框内呈现。 */
+  function refreshScan(s) {
+    const nodes = RENDER_NODES.filter((n) => n.roleKey !== 'shared' && n.status !== 'offline');
+    if (!nodes.map((n) => n.machineId).filter((x) => x != null && x !== 0).length) return;
+    openModalPreview(s, {
+      title: '立即巡检集群', icon: 'sync', cli: 'scan_inis → run_health_check', destructive: false, channel: 'winrm', autostart: true,
+      /* healthScanRun resolve 出 fail 数组：部分失败也 resolve（非全挂不抛），故据它如实区分全绿 / 部分完成 */
+      doneTitle: '巡检完成', doneMsg: (fail) => (fail && fail.length) ? ('部分完成 · ' + fail.join(' / ') + ' 失败，其余结果已更新') : '已更新集群健康与 INI 一致性结果',
+      steps: ['扫描各机 INI 配置一致性（scan_inis）', '运行 L1 / L2 / L3 健康巡检并汇总（run_health_check）', '回填集群健康与待处理问题'],
+      run: () => healthScanRun(s),
+    });
   }
   function clusterChips() {
     const hv = CLUSTER.health;
@@ -227,23 +244,25 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
       + INI_FINDINGS.filter((f) => f.sev !== 'info').length;
     const overall = HEALTH_CHECKS.some((c) => c.status === 'critical') ? 'critical'
       : HEALTH_CHECKS.some((c) => c.status === 'warning') ? 'warning' : 'healthy';
-    /* 健康项无「一键修复」后端命令（remediation 是建议文案）：展示建议 + 确认后重新巡检验证。 */
-    const fixCheck = (c) => CX.openPreview(s, {
-      title: '处理 · ' + c.label, icon: 'pulse', cli: 'health remediation', destructive: false, channel: 'winrm', confirmLabel: '重新巡检',
-      steps: [c.remediation || '按提示在目标机处理后重新巡检', '巡检会重新评估这一项是否恢复'], scope: [],
+    /* 健康项无「一键修复」后端命令（remediation 是建议文案）：弹 modal 展示建议，确认后重新巡检验证。 */
+    const fixCheck = (c) => CX.openModalPreview(s, {
+      title: '处理 · ' + c.label, icon: 'pulse', cli: 'scan_inis → run_health_check', destructive: false, channel: 'winrm', confirmLabel: '重新巡检',
+      doneTitle: '已重新巡检', doneMsg: (fail) => (fail && fail.length) ? ('部分完成 · ' + fail.join(' / ') + ' 失败，已尽力重新评估该项') : '已重新评估该项 · 请在「待处理问题」中确认是否恢复',
+      steps: [c.remediation || '按提示在目标机处理后重新巡检', '巡检会重新评估这一项是否恢复'],
       simpleScope: [{ host: c.label, ip: c.layer, msg: c.remediation || '—' }],
-      onConfirm: () => refreshScan(s),
+      run: () => healthScanRun(s),
     });
-    /* 真实 apply_finding：写远端 INI（先备份）；需真实数字 findingId（来自 list_findings）。 */
-    const fixIni = (f) => CX.openPreview(s, {
+    /* 真实 apply_finding：写远端 INI（先备份）；需真实数字 findingId（来自 list_findings）。改弹居中 modal。 */
+    const fixIni = (f) => CX.openModalPreview(s, {
       title: '应用修复 · ' + f.rule + ' · ' + f.machine, icon: 'pulse', cli: 'apply_finding', destructive: false, channel: 'ssh', confirmLabel: '应用修复',
-      steps: [f.file + ' ' + f.section + '：' + f.cur + ' → ' + f.rec, '后端先创建 .bak.<时间戳> 备份再写'], scope: [],
+      doneTitle: '修复完成', doneMsg: f.id + ' 已修复 · ' + f.cur + ' → ' + f.rec,
+      steps: [f.file + ' ' + f.section + '：' + f.cur + ' → ' + f.rec, '后端先创建 .bak.<时间戳> 备份再写，应用后自动 re-scan'],
       simpleScope: [{ host: f.machine, ip: f.file, msg: f.rec }],
-      onConfirm: () => {
-        if (f.findingId == null) return;
-        s.runCmd({ domain: 'ini', action: 'apply', target: f.machine + ' · ' + f.file, chan: 'ssh', note: f.rule + ' ' + f.cur + ' → ' + f.rec },
+      run: () => {
+        if (f.findingId == null) return Promise.reject(new Error('缺少 findingId（请先重新巡检以获取可修复项）'));
+        return s.runCmd({ domain: 'ini', action: 'apply', target: f.machine + ' · ' + f.file, chan: 'ssh', note: f.rule + ' ' + f.cur + ' → ' + f.rec },
           () => applyFinding(f.findingId, ''), { okMsg: (backup) => '已修复 · 备份 ' + backup })
-          .then(() => s.reloadCache(), () => {});
+          .then((r) => { s.reloadCache(); return r; });
       },
     });
 
@@ -347,9 +366,9 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
         h('div', { className: 'dash-col' },
           h('div', { className: 'dash-card' },
             h('div', { className: 'dc-h' }, h('span', { className: 't' }, h(Icon, { name: 'list', size: 14 }), '最近任务'),
-              h('span', { className: 'dc-n', style: { cursor: 'pointer' }, onClick: () => s.setLogOpen(true) }, 'NDJSON 流 →')),
+              h('span', { className: 'dc-n', style: { cursor: 'pointer' }, onClick: () => { s.setConTab('stream'); s.setLogOpen(true); } }, 'NDJSON 流 →')),
             h('div', { className: 'recent' },
-              s.tasks.slice(0, 5).map((t) => h('div', { key: t.id, className: 'recent-row compact', onClick: () => { s.setLogSearch('#' + t.no); s.setLogOpen(true); } },
+              s.tasks.slice(0, 5).map((t) => h('div', { key: t.id, className: 'recent-row compact', onClick: () => { s.setConTab('stream'); s.setLogSearch('#' + t.no); s.setLogOpen(true); } },
                 h('span', { className: 'tk-state s-' + taskVis(t.state) }, taskIcon(t)),
                 h('span', { className: 'tk-title' }, t.title, h('span', { className: 'no' }, '#' + t.no)),
                 h(ChannelTag, { ch: t.chan, mini: true }),
@@ -373,7 +392,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
 
   function TaskCard({ s, t }) {
     const [open, setOpen] = useState(false);
-    const seeStream = () => { s.setLogSearch('#' + t.no); s.setLogFilter('all'); s.setLogOpen(true); };
+    const seeStream = () => { s.setConTab && s.setConTab('stream'); s.setLogSearch('#' + t.no); s.setLogFilter('all'); s.setLogOpen(true); };
     return h('div', { className: 'tcard tcard--' + t.state },
       h('div', { className: 'tcard-h' },
         h('span', { className: 'tk-state s-' + taskVis(t.state) }, taskIcon(t)),
@@ -399,25 +418,13 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
 
   /* =================== 检查器 (right column · detail-display) ===================
      选中机器/工程或预览操作时，内容直接在右侧检查器中就地展开（不再弹出滑窗）。
-     无选中时回落为「检查器」空闲态：顶部说明 + 下方当前的任务与活动列表。 */
-  function taskPanel(s) {
-    const active = s.tasks.filter((t) => t.state === 'running' || t.state === 'queued');
-    const history = s.tasks.filter((t) => t.state === 'success' || t.state === 'failed');
-    const list = s.taskTab === 'active' ? active : history;
-    return h('div', { className: 'task-drawer' },
-      h('div', { className: 'td-head' },
-        h('div', { className: 'td-title' }, h(Icon, { name: 'panel', size: 15 }), '检查器'),
-        h('div', { className: 'insp-idle-hint', style: { margin: '9px 0 2px' } },
-          h(Icon, { name: 'eye', size: 14 }),
-          '选择机器或工程，相关细节与操作会直接在这里展开。下方是当前的任务与活动。'),
-        h('div', { className: 'td-tabs' },
-          h('button', { className: s.taskTab === 'active' ? 'on' : '', onClick: () => s.setTaskTab('active') }, '进行中', h('span', { className: 'n' }, active.length)),
-          h('button', { className: s.taskTab === 'history' ? 'on' : '', onClick: () => s.setTaskTab('history') }, '历史', h('span', { className: 'n' }, history.length)))),
-      h('div', { className: 'td-body' },
-        list.length === 0
-          ? h('div', { className: 'td-empty' }, h('div', { className: 'ph' }, h(Icon, { name: s.taskTab === 'active' ? 'sync' : 'list', size: 26 })),
-              h('div', null, s.taskTab === 'active' ? '当前没有运行中的任务' : '暂无历史任务'))
-          : list.map((t) => h(TaskCard, { key: t.id, s, t }))));
+     无选中时只显示「未选择对象」空闲态 —— 进行中走控制台「运行中」气泡，历史走控制台「历史任务」标签。 */
+  function inspIdle(s) {
+    return h('div', { className: 'insp-empty' },
+      h('div', { className: 'ph' }, h(Icon, { name: 'panel', size: 30 })),
+      h('div', null,
+        h('div', { style: { color: 'var(--chrome-dim)', fontWeight: 600, marginBottom: 4 } }, '未选择对象'),
+        '选择机器或工程，相关细节与操作会在此就地展开'));
   }
 
   /* inspector dispatcher（就地细节显示）：
@@ -435,7 +442,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
     if (/^ddc_p(ak|so)$/.test(s.cacheNav) && window.VOLO_CACHE_DDC && window.VOLO_CACHE_DDC.detail) {
       return window.VOLO_CACHE_DDC.detail(s);
     }
-    return taskPanel(s);
+    return inspIdle(s);
   }
 
   /* =================== overlay · machine detail (6.2) =================== */
@@ -650,8 +657,9 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
           }) }, '删除机器')));
   }
 
-  /* =================== overlay · preview→confirm→execute (5.1) =================== */
-  function PreviewPanel({ s, d }) {
+  /* =================== overlay · preview→confirm→execute (5.1) ===================
+     close/onConfirm 可由调用方覆盖（ModalPreview 的 preview 阶段复用此面板，自带居中关闭与确认）。 */
+  function PreviewPanel({ s, d, close: closeProp, onConfirm: onConfirmProp }) {
     const [scope, setScope] = useState(d.scope || []);
     const [confirmCk, setConfirmCk] = useState(false);
     const simple = d.simpleScope || null;
@@ -660,12 +668,12 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
     const willSkip = simple ? 0 : rows.filter((r) => r.skip).length;
     const count = simple ? simple.length : scope.length;
     const blocked = d.destructive && d.confirmInput && count > 1 && !confirmCk;
-    const close = () => s.setDrawer(null);
-    const confirm = () => {
+    const close = closeProp || (() => s.setDrawer(null));
+    const confirm = onConfirmProp || (() => {
       close();
       if (d.task) s.runTask(Object.assign({}, d.task, { chan: d.channel || d.task.chan }));
       if (d.onConfirm) d.onConfirm(scope); /* 把编辑后的目标机选择传出（分发流要用） */
-    };
+    });
     return h('div', { className: 'drawer drawer--preview' + (d.destructive ? ' danger' : '') },
       h('div', { className: 'drawer-h' },
         h('span', { className: 'di' + (d.destructive ? '' : ' info') }, h(Icon, { name: d.icon || 'eye', size: 17 })),
@@ -722,6 +730,114 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
         h(Button, { variant: 'secondary', size: 'M', onPress: close }, '取消'),
         h(Button, { variant: d.destructive ? 'negative' : 'accent', size: 'M', isDisabled: blocked || count === 0,
           icon: h(Icon, { name: 'check', size: 15 }), onPress: confirm }, d.confirmLabel || '确认执行')));
+  }
+
+  /* =================== centered modal: preview → 实时进度 → 成功 / 失败 ===================
+     与原型不同：进度 / 成败由真实后端命令（d.run() 返回的 runCmd promise）驱动，不是 setTimeout 模拟。
+     - d.run(): () => Promise —— 真实操作（自带 runCmd + 成功后 reloadCache）；resolve→成功阶段，reject→失败阶段。
+     - d.liveProgress === false：preview 阶段确认即 close + 后台跑 d.run()（进度在页面别处呈现，如 Zen 步骤器）。
+     - d.autostart：跳过 preview 直接进进度阶段（如「立即巡检」）。
+     running 阶段的步骤勾选是「随真实命令在跑」的视觉提示（命令是原子的，无逐步进度）：定时推进但封顶在末步，
+     只有真实 promise 落定才翻成功 / 失败。 */
+  function ModalPreview({ s, d, close, busyRef }) {
+    const [phase, setPhase] = useState(d.autostart ? 'running' : 'preview'); /* preview | running | done | failed */
+    const [done, setDone] = useState(0);
+    const [doneResult, setDoneResult] = useState(null); /* run() 的 resolve 值 → 供动态 doneMsg 显示真实 ok/fail */
+    const [errMsg, setErrMsg] = useState(null);
+    const timer = React.useRef(null);
+    const started = React.useRef(false);
+    const steps = d.steps || [];
+    const total = Math.max(steps.length, 1);
+
+    const start = () => {
+      if (started.current) return;
+      started.current = true;
+      setPhase('running'); setDone(0); setErrMsg(null);
+      /* 视觉推进：随命令在跑逐步点亮，封顶在末步（total-1）；真实 promise 落定才翻成功 / 失败 */
+      let i = 0;
+      const tick = () => { if (i < total - 1) { i += 1; setDone(i); timer.current = setTimeout(tick, 520); } };
+      timer.current = setTimeout(tick, 520);
+      Promise.resolve().then(() => (d.run ? d.run() : (d.onConfirm && d.onConfirm()))).then(
+        (r) => { if (timer.current) clearTimeout(timer.current); setDoneResult(r); setDone(total); setPhase('done'); },
+        (e) => { if (timer.current) clearTimeout(timer.current); setErrMsg(e && e.message ? e.message : String(e)); setPhase('failed'); });
+    };
+
+    useEffect(() => {
+      if (d.autostart) start();
+      return () => { if (timer.current) clearTimeout(timer.current); };
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+    if (phase === 'preview') {
+      /* liveProgress:false → 确认即关闭对话框 + 后台执行（进度在页面别处）；否则进对话框内进度阶段 */
+      const plainConfirm = () => { close(); if (d.run) d.run(); else if (d.onConfirm) d.onConfirm(); };
+      return h(PreviewPanel, { s, d, close, onConfirm: d.liveProgress === false ? plainConfirm : start });
+    }
+
+    const fail = phase === 'failed';
+    /* running 阶段不可被遮罩点击关闭（无 X 按钮，命令仍在跑）；preview/done/failed 可关 */
+    if (busyRef) busyRef.current = (phase === 'running');
+    const pct = phase === 'done' ? 100 : Math.min(92, Math.round(((done + 0.6) / total) * 100));
+    /* doneMsg 可为 (runResult)=>string，据真实 ok/fail 结果显示（避免 partial-failure 误报全绿）*/
+    const okMsg = (typeof d.doneMsg === 'function' ? d.doneMsg(doneResult) : d.doneMsg) || '操作已完成';
+    const okTitle = d.doneTitle || (d.destructive ? '已完成' : '已成功部署');
+    const failTitle = d.failTitle || '执行失败';
+    return h('div', { className: 'drawer drawer--preview' + (d.destructive ? ' danger' : '') },
+      h('div', { className: 'drawer-h' },
+        h('span', { className: 'di' + (phase === 'done' ? ' ok' : fail ? ' err' : d.destructive ? '' : ' info') },
+          h(Icon, { name: phase === 'done' ? 'check' : fail ? 'alert' : (d.icon || 'eye'), size: 17 })),
+        h('div', { style: { minWidth: 0 } },
+          h('h2', null, phase === 'done' ? okTitle : fail ? failTitle : d.title),
+          h('div', { className: 'sub' },
+            h('span', { className: 'cli-pill' }, d.cli),
+            h('span', null, phase === 'done' ? ' · 完成' : fail ? ' · 失败' : ' · 执行中…'))),
+        (phase === 'done' || fail) ? h('button', { className: 'iconbtn x', onClick: close }, h(Icon, { name: 'x', size: 16 })) : null),
+      h('div', { className: 'drawer-b' },
+        h('div', { className: 'dblock' },
+          h('div', { className: 'dblock-h' }, h('span', { className: 'no' }, '1'),
+            phase === 'done' ? '已执行' : fail ? '执行中断' : '正在执行',
+            h(ChannelTag, { ch: d.channel || 'winrm', mini: true }),
+            h('span', { className: 'aff-sum' }, pct + '%')),
+          h('div', { className: 'mprog' }, h('div', { className: 'mprog__fill' + (phase === 'done' ? ' is-done' : fail ? ' is-fail' : ''), style: { width: pct + '%' } })),
+          h('div', { className: 'steps-list run', style: { marginTop: 12 } },
+            steps.map((st, i) => {
+              /* 仅成功阶段或运行中已点亮的步骤才算「完成」；失败阶段不伪造成功勾——
+                 命令是原子的，失败时此前步骤并未真正完成。 */
+              const finn = phase === 'done' || (phase === 'running' && i < done);
+              const active = i === done && phase === 'running';
+              const failedStep = fail && i === done;
+              return h('div', { key: i, className: 'step-line' + (finn ? ' ok' : failedStep ? ' fail' : active ? ' active' : ' pending') },
+                h('span', { className: 'sn' }, finn ? h(Icon, { name: 'check', size: 12 }) : failedStep ? h(Icon, { name: 'alert', size: 12 }) : (i + 1)),
+                h('span', { className: 'step-tx' }, st));
+            }))),
+        phase === 'done' ? h('div', { className: 'dblock' },
+          h('div', { className: 'mdone' },
+            h('span', { className: 'mdone__ic' }, h(Icon, { name: 'check', size: 16 })),
+            h('span', null, okMsg))) : null,
+        fail ? h('div', { className: 'dblock' },
+          h('div', { className: 'mfail' },
+            h('span', { className: 'mfail__ic' }, h(Icon, { name: 'alert', size: 16 })),
+            h('span', null, errMsg || '操作失败 · 详见控制台日志流'))) : null),
+      h('div', { className: 'drawer-f' },
+        phase === 'done'
+          ? h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'check', size: 15 }), onPress: close }, 'OK')
+          : fail
+            ? h(React.Fragment, null,
+                h(Button, { variant: 'secondary', size: 'M', onPress: close }, '关闭'),
+                h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'sync', size: 15 }), onPress: () => { started.current = false; start(); } }, '重试'))
+            : h(Button, { variant: 'secondary', size: 'M', isDisabled: true }, '执行中…')));
+  }
+
+  function ModalLayer({ s }) {
+    /* busyRef 由 ModalPreview 在 running 阶段置 true → 此时点遮罩不关闭（命令仍在跑、无 X 按钮）。
+       useRef 必须在条件 return 之前（Rules of Hooks）。 */
+    const busyRef = React.useRef(false);
+    const d = s.modal;
+    if (!d) return null;
+    const close = () => s.setModal(null);
+    const tryClose = () => { if (!busyRef.current) close(); };
+    return h('div', { className: 'modal-scrim', onClick: tryClose },
+      h('div', { className: 'modal-host' + (d.destructive ? ' danger' : ''), onClick: (e) => e.stopPropagation() },
+        h(ModalPreview, { s, d, close, busyRef })));
   }
 
   function CredsPanel({ s }) {
@@ -975,9 +1091,9 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
 
   /* shared helpers for the playbook + resource files */
   Object.assign(CX, { dot, StatusPill, SevPill, ChannelTag, SEV, healthVisual, ringStyle, node,
-    MachineSelector, predict, openPreview, refreshScan, taskVis, taskIcon });
+    MachineSelector, predict, openPreview, openModalPreview, refreshScan, taskVis, taskIcon, TaskCard });
 
-  window.VOLO_CACHE = { isCacheNav, left, ctx, actions, center, inspector, drawer };
+  window.VOLO_CACHE = { isCacheNav, left, ctx, actions, center, inspector, drawer, modalLayer: (s) => h(ModalLayer, { s }) };
 })();
 
 export {};
