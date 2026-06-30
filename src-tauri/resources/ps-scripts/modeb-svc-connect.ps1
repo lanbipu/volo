@@ -11,15 +11,6 @@ $ProgressPreference = 'SilentlyContinue'
 $statusDir = 'C:\ProgramData\UECM\status'
 $base = 'C:\ProgramData\UECM'
 
-function Write-DebugLog([string]$msg, [hashtable]$data) {
-    # #region agent log
-    try {
-        $line = (@{ sessionId = '9b0675'; hypothesisId = 'H5'; location = 'modeb-svc-connect.ps1'; message = $msg; data = $data; timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() } | ConvertTo-Json -Compress)
-        Add-Content -LiteralPath (Join-Path $base 'volo-debug-9b0675.log') -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
-    } catch {}
-    # #endregion
-}
-
 try {
     $cfg = Get-Content -LiteralPath $ConfigFile -Raw -ErrorAction Stop | ConvertFrom-Json
     $targets = @($cfg.TargetUncs | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -58,13 +49,10 @@ $r['ok'] = $false
 New-Item -ItemType Directory -Path $statusDir -Force | Out-Null
 $statusFile = Join-Path $statusDir ("modeb-$sid-$key.json")
 
-Write-DebugLog 'worker_start' @{ sid = $sid; key = $key; targetCount = $targets.Count; serverName = $serverName }
-
 if ($targets.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($serverName)) {
     $primary = Connect-Managed $targets[0]
     $r['conn'] += $primary
     $r['ok'] = (($primary.code -eq 0) -and $primary.testpath)
-    Write-DebugLog 'primary_result' @{ code = $primary.code; testpath = $primary.testpath; unc = $primary.unc }
     if ($r['ok']) {
         try {
             $f = Join-Path $targets[0] ('__volo_' + ([guid]::NewGuid().ToString('N').Substring(0, 8)) + '.tmp')

@@ -211,6 +211,7 @@ pub fn run() {
             commands::ini_editor::read_ini_section,
             commands::ini_editor::set_ini_key,
             commands::ini_editor::set_machine_backend_field,
+            commands::ini_editor::remove_machine_backend_field,
             commands::ini_editor::read_ini_section_with_credential,
             commands::ini_editor::set_ini_key_with_credential,
             commands::ini_scanner::scan_inis,

@@ -75,6 +75,34 @@ pub fn set_machine_backend_field(
     )
 }
 
+/// Inverse of [`set_machine_backend_field`]: drop one field of a backend node
+/// (the `Shared` node's `Path` / `EnvPathOverride`). Used by leave to roll back
+/// the join's project-INI wiring so no dormant shared-DDC config lingers once the
+/// env var is cleared. Idempotent on the remote side (absent field = success).
+#[tauri::command]
+pub fn remove_machine_backend_field(
+    db: State<'_, Db>,
+    machine_id: i64,
+    file_path: String,
+    section: String,
+    node_name: String,
+    field: String,
+) -> UecmResult<String> {
+    let invocation = format!(
+        "remove backend field [{section}] {node_name}.{field} in {file_path} on machine {machine_id}"
+    );
+    crate::commands::oplog::logged(
+        &db,
+        "ini.remove_backend_field",
+        &[machine_id],
+        &invocation,
+        || {
+            let host = ip_for(&db, machine_id)?;
+            ini_editor::remove_backend_field(&host, &file_path, &section, &node_name, &field)
+        },
+    )
+}
+
 #[tauri::command]
 pub fn read_ini_section_with_credential(
     db: State<'_, Db>,

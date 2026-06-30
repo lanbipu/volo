@@ -321,6 +321,81 @@ fn write_backend_field_local(
     Ok(())
 }
 
+/// Inverse of [`write_backend_field_local`]: drop a single field from a
+/// struct-style backend node. Idempotent — a missing file/section/node/field is
+/// a no-op success (returns false), matching the remote sidecar (which treats an
+/// absent file as ok), because leave() rolls back best-effort and must not fail
+/// just because an INI was hand-edited, deleted, or never had the join's fields.
+/// Best-effort note: with no pre-join snapshot we can only remove the fields the
+/// join wrote, not restore prior values.
+fn remove_backend_field_local(
+    file_path: &str, section: &str, node_name: &str, field: &str,
+) -> UecmResult<bool> {
+    use std::fs;
+    let body = match fs::read_to_string(file_path) {
+        Ok(b) => b,
+        // Missing file == nothing wired to roll back (parity with remote sidecar).
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(UecmError::OperationFailed(format!("read {}: {}", file_path, e))),
+    };
+    let mut out: Vec<String> = Vec::with_capacity(body.lines().count() + 1);
+    let mut in_section = false;
+    let mut changed = false;
+    for raw in body.lines() {
+        let trimmed = raw.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_section = trimmed[1..trimmed.len() - 1].eq_ignore_ascii_case(section);
+            out.push(raw.to_string()); continue;
+        }
+        if in_section && !changed {
+            if let Ok(mut node) = crate::core::ini_backend_graph::parse_node(raw, 0) {
+                if node.name.eq_ignore_ascii_case(node_name)
+                    && crate::core::ini_backend_graph::remove_field(&mut node, field)
+                {
+                    out.push(crate::core::ini_backend_graph::write_node(&node));
+                    changed = true;
+                    continue;
+                }
+            }
+        }
+        out.push(raw.to_string());
+    }
+    if changed {
+        out.push(String::new());
+        fs::write(file_path, out.join("\n"))
+            .map_err(|e| UecmError::OperationFailed(format!("write {}: {}", file_path, e)))?;
+    }
+    Ok(changed)
+}
+
+pub fn remove_backend_field(
+    host: &str, file_path: &str, section: &str, node_name: &str, field: &str,
+) -> UecmResult<String> {
+    if loopback::is_loopback_target(host) {
+        let changed = remove_backend_field_local(file_path, section, node_name, field)?;
+        return Ok(if changed {
+            format!("removed {}.{} locally", node_name, field)
+        } else {
+            format!("{}.{} already absent locally", node_name, field)
+        });
+    }
+    let exec = SshExecutor::from_config()?;
+    let r: BackendFieldResult = run_json(
+        &exec,
+        host,
+        &NodeScript {
+            name: "remove-backend-field.ps1",
+            args: serde_json::json!({
+                "FilePath": file_path, "SectionName": section, "NodeName": node_name,
+                "FieldName": field
+            }),
+            ssh_user: None,
+        },
+    )?;
+    if !r.ok { return Err(UecmError::OperationFailed(r.message)); }
+    Ok(r.message)
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct BackendFieldResult { ok: bool, message: String }
 
@@ -536,5 +611,46 @@ mod tests {
         std::fs::write(&path, "[DerivedDataBackendGraph]\nBoot=(Type=Boot)\n").unwrap();
         let r = write_backend_field_local(path.to_str().unwrap(), "DerivedDataBackendGraph", "Shared", "ReadOnly", "false");
         assert!(matches!(r, Err(UecmError::OperationFailed(_))));
+    }
+
+    #[test]
+    fn remove_backend_field_drops_join_fields_and_preserves_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("DefaultEngine.ini");
+        std::fs::write(
+            &path,
+            "[DerivedDataBackendGraph]\nShared=(Type=FileSystem, ReadOnly=false, Path=\\\\LANPC\\Volo_DDC, EnvPathOverride=UE-SharedDataCachePath)\n",
+        )
+        .unwrap();
+        assert!(remove_backend_field_local(path.to_str().unwrap(), "DerivedDataBackendGraph", "Shared", "Path").unwrap());
+        assert!(remove_backend_field_local(path.to_str().unwrap(), "DerivedDataBackendGraph", "Shared", "EnvPathOverride").unwrap());
+        let body = std::fs::read_to_string(&path).unwrap();
+        let line = body.lines().find(|l| l.starts_with("Shared=")).unwrap();
+        assert!(!line.contains("Path="));
+        assert!(!line.contains("EnvPathOverride="));
+        assert!(line.contains("Type=FileSystem"));
+        assert!(line.contains("ReadOnly=false"));
+    }
+
+    #[test]
+    fn remove_backend_field_missing_file_is_ok() {
+        // Parity with the remote sidecar (file-absent -> ok): a project whose
+        // DefaultEngine.ini was deleted/moved must not fail the best-effort leave.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist").join("DefaultEngine.ini");
+        let changed = remove_backend_field_local(path.to_str().unwrap(), "DerivedDataBackendGraph", "Shared", "Path").unwrap();
+        assert!(!changed);
+    }
+
+    #[test]
+    fn remove_backend_field_is_idempotent_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("DefaultEngine.ini");
+        std::fs::write(&path, "[DerivedDataBackendGraph]\nShared=(Type=FileSystem)\n").unwrap();
+        // Field not present -> false, file untouched. Missing node -> false too.
+        assert!(!remove_backend_field_local(path.to_str().unwrap(), "DerivedDataBackendGraph", "Shared", "Path").unwrap());
+        assert!(!remove_backend_field_local(path.to_str().unwrap(), "DerivedDataBackendGraph", "Boot", "Path").unwrap());
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("Shared=(Type=FileSystem)"));
     }
 }

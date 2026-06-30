@@ -104,6 +104,9 @@ export const setIniKey = (machineId: number, filePath: string, section: string, 
 // ✅ wired: cacheDdc 接入共享 → 写工程 [DerivedDataBackendGraph] Shared 的 Path/EnvPathOverride（不写 EnvPathOverride 时 UE 会忽略 UE-SharedDataCachePath）
 export const setMachineBackendField = (machineId: number, filePath: string, section: string, nodeName: string, field: string, value: string) =>
   call<string>("set_machine_backend_field", { machineId, filePath, section, nodeName, field, value });
+// ✅ wired: cacheDdc 退出共享 → best-effort 回滚工程 [DerivedDataBackendGraph] Shared 的 Path/EnvPathOverride（远端 idempotent，缺字段也成功）
+export const removeMachineBackendField = (machineId: number, filePath: string, section: string, nodeName: string, field: string) =>
+  call<string>("remove_machine_backend_field", { machineId, filePath, section, nodeName, field });
 // 📝 no-ui: 凭据变体，无 UI 入口
 export const readIniSectionWithCredential = (machineId: number, filePath: string, section: string, credentialAlias: string) =>
   call<IniKey[]>("read_ini_section_with_credential", { machineId, filePath, section, credentialAlias });

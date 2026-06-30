@@ -22,15 +22,6 @@ function Get-UncHost([string]$u) {
     if ($u -match '^\\\\([^\\]+)\\') { return $Matches[1] } else { return $null }
 }
 
-function Write-DebugLog([string]$msg, [hashtable]$data) {
-    # #region agent log
-    try {
-        $line = (@{ sessionId = '9b0675'; hypothesisId = 'H5'; location = 'prepare-managed-share-client.ps1'; message = $msg; data = $data; timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() } | ConvertTo-Json -Compress)
-        Add-Content -LiteralPath (Join-Path $base 'volo-debug-9b0675.log') -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
-    } catch {}
-    # #endregion
-}
-
 $base = 'C:\ProgramData\UECM'
 
 try {
@@ -45,8 +36,6 @@ try {
     if ([string]::IsNullOrWhiteSpace($serverName)) { throw 'SvcServerName is required' }
     if ([string]::IsNullOrWhiteSpace($user)) { throw 'SvcUsername is required' }
     if ([string]::IsNullOrEmpty($pass)) { throw 'SvcPassword is required' }
-
-    Write-DebugLog 'prep_start' @{ targetCount = $targets.Count; serverName = $serverName; cmdkeyCount = $cmdkeyTargets.Count }
 
     $statusDir = Join-Path $base 'status'
     New-Item -ItemType Directory -Path $statusDir -Force | Out-Null
@@ -114,15 +103,12 @@ try {
                 $verified = [bool]$st.ok
                 $gotStatus = $true
                 $steps.Add("interactive $consoleUser verified=$verified (write=$($st.write))") | Out-Null
-                Write-DebugLog 'interactive_verify' @{ verified = $verified; consoleUser = $consoleUser }
                 Unregister-ScheduledTask -TaskName $taskNow -Confirm:$false -ErrorAction SilentlyContinue
             } else {
                 $steps.Add('interactive verify deferred (no status within timeout)') | Out-Null
-                Write-DebugLog 'interactive_deferred' @{ consoleUser = $consoleUser }
             }
         } catch {
             $steps.Add("interactive verify skipped: $($_.Exception.Message)") | Out-Null
-            Write-DebugLog 'interactive_skipped' @{ error = $_.Exception.Message }
         }
     } else {
         $steps.Add('no console user logged on; applies at next logon') | Out-Null
@@ -153,11 +139,9 @@ try {
     }
 
     $ok = if ($gotStatus) { $verified } else { $true }
-    Write-DebugLog 'prep_done' @{ ok = $ok; verified = $verified }
     @{ ok = $ok; verified = $verified; message = ($steps -join '; ') } | ConvertTo-Json -Compress
 }
 catch {
-    Write-DebugLog 'prep_error' @{ error = $_.Exception.Message }
     @{ ok = $false; verified = $false; message = $_.Exception.Message } | ConvertTo-Json -Compress
     exit 1
 }

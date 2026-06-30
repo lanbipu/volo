@@ -248,7 +248,13 @@ pub fn prepare_managed_share_client(
 }
 
 /// Mode B client teardown: undo `prepare_managed_share_client` for one share.
-pub fn unprepare_managed_share_client(host: &str, target_uncs: &[String]) -> UecmResult<String> {
+/// `cmdkey_targets` mirrors prepare so the teardown clears the same vault aliases
+/// it added (interactive user + SYSTEM); empty falls back to the UNC hosts in PS.
+pub fn unprepare_managed_share_client(
+    host: &str,
+    target_uncs: &[String],
+    cmdkey_targets: &[String],
+) -> UecmResult<String> {
     if target_uncs.is_empty() {
         return Err(UecmError::InvalidInput(
             "unprepare_managed_share_client requires at least one target UNC".into(),
@@ -260,7 +266,10 @@ pub fn unprepare_managed_share_client(host: &str, target_uncs: &[String]) -> Uec
         host,
         &NodeScript {
             name: "unprepare-managed-share-client.ps1",
-            args: serde_json::json!({ "TargetUncs": target_uncs }),
+            args: serde_json::json!({
+                "TargetUncs": target_uncs,
+                "CmdkeyTargets": cmdkey_targets,
+            }),
             ssh_user: None,
         },
     )?;

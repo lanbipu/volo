@@ -16,7 +16,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
   setMachineEnvVar, getMachineEnvVar, createLocalCache,
   prepareManagedShareClients, unprepareManagedShareClients,
   prepareOpenShareClients, unprepareOpenShareClients,
-  setMachineBackendField, setProjectCacheBackend } from "../api/commands";
+  setMachineBackendField, removeMachineBackendField, setProjectCacheBackend } from "../api/commands";
 
 (function () {
   const { Button } = window.Spectrum2DesignSystem_b6d1b3;
@@ -636,14 +636,8 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
         let managed = false;
         if (sh && sh.shareConfigId && sh.shareMode === 'managed' && okMachineIds.length) {
           managed = true;
-          // #region agent log
-          fetch('http://127.0.0.1:7278/ingest/ba6b3c44-cc27-40da-8bf6-deca990c38bf',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'9b0675'},body:JSON.stringify({sessionId:'9b0675',hypothesisId:'H5',location:'cacheDdc.tsx:joinShareToMachines',message:'managed_prep_start',data:{shareConfigId:sh.shareConfigId,okMachineIds,unc},timestamp:Date.now()})}).catch(()=>{});
-          // #endregion
           return prepareManagedShareClients(sh.shareConfigId, okMachineIds).then((prep) => {
             const prepFail = (prep || []).filter((r) => !r.ok);
-            // #region agent log
-            fetch('http://127.0.0.1:7278/ingest/ba6b3c44-cc27-40da-8bf6-deca990c38bf',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'9b0675'},body:JSON.stringify({sessionId:'9b0675',hypothesisId:'H5',location:'cacheDdc.tsx:joinShareToMachines',message:'managed_prep_done',data:{failCount:prepFail.length,results:prep},timestamp:Date.now()})}).catch(()=>{});
-            // #endregion
             if (prepFail.length) {
               prepFail.forEach((r) => errs.push('机器 ' + r.client_machine_id + ' Mode B 预连接：' + (r.message || '失败')));
               throw new Error('Mode B 共享预连接失败 · ' + prepFail.length + ' 台' + (errs.length ? ' · ' + errs.join('；') : ''));
@@ -652,11 +646,6 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
               ? '交互用户预连接将在下次登录时由计划任务重试'
               : null;
             return { envOk, iniProjOk, fail, okMachineIds, managed, managedWarn };
-          }, (e) => {
-            // #region agent log
-            fetch('http://127.0.0.1:7278/ingest/ba6b3c44-cc27-40da-8bf6-deca990c38bf',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'9b0675'},body:JSON.stringify({sessionId:'9b0675',hypothesisId:'H5',location:'cacheDdc.tsx:joinShareToMachines',message:'managed_prep_error',data:{error:e&&e.message?e.message:String(e)},timestamp:Date.now()})}).catch(()=>{});
-            // #endregion
-            throw e;
           });
         }
         if (sh && sh.shareMode === 'open' && sh.shareConfigId && okMachineIds.length) {
@@ -690,6 +679,26 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
         { okMsg: (r) => n.host + ' 已加入 · 设系统环境变量' + (r.managed ? '，已预连接 Mode B 共享（交互用户+SYSTEM）' + (r.managedWarn ? '（' + r.managedWarn + '）' : '') : (r.guestPrep ? '，已预连接 Guest 共享（免凭据框）' : (r.guestWarn ? '，但 ' + r.guestWarn : ''))) })
         .then(() => { setShareJoined((m) => Object.assign({}, m, { [n.id]: sh.path })); clrJP(n.id); }, () => clrJP(n.id));
     };
+    /* 退出时回滚加入写入的工程 INI——joinShareToMachines 对每台机每个工程写了
+       Shared 的 Path + EnvPathOverride，退出 best-effort 移除这两个 key，避免 env 清空后
+       INI 残留 dormant 共享配置。无加入前快照只能 remove（不恢复旧值）；远端 remove 是
+       idempotent（缺字段/缺文件也成功）。单步失败用 allSettled 不阻断 env 清空，但返回失败
+       计数供提示如实反映（不无条件宣称已回滚）。仅回滚当前 UE_PROJECTS 列出的工程——加入后被
+       移出列表的工程不会被回滚（与 join 同一局限，无持久化的 join 工程快照）。 */
+    const rollbackShareIni = (mid) => {
+      const projs = (UE_PROJECTS || []).filter((p) => (p.machines || []).includes(String(mid)));
+      /* 先删 Path 再删 EnvPathOverride：命令在 Tauri 主线程串行执行，若 Path 删成而 Override
+         删败，残留「有 Override 无 Path」对 UE 安全（env 已空 → 回退本地）；反序则可能残留
+         「有 Path 无 Override」，UE 会按字面 Path 继续读写共享缓存——与退出意图相反。 */
+      return Promise.allSettled(projs.flatMap((p) => {
+        const base = (p.locByMachine && p.locByMachine[String(mid)]) || p.root;
+        const ini = String(base).replace(/\\+$/, '') + '\\Config\\DefaultEngine.ini';
+        return [
+          removeMachineBackendField(mid, ini, 'DerivedDataBackendGraph', 'Shared', 'Path'),
+          removeMachineBackendField(mid, ini, 'DerivedDataBackendGraph', 'Shared', 'EnvPathOverride'),
+        ];
+      })).then((rs) => rs.filter((r) => r.status === 'rejected').length);
+    };
     const leaveShareOne = (n) => {
       if (joinPending[n.id]) return;
       setJP(n.id, 'leave');
@@ -698,11 +707,34 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       const isOpen = !!(sh && sh.shareMode === 'open' && sh.shareConfigId);
       const isManaged = !!(sh && sh.shareMode === 'managed' && sh.shareConfigId);
       s.runCmd({ domain: 'share', action: 'leave', target: n.host, chan: 'ssh', note: '退出共享 DDC' },
-        () => setMachineEnvVar(n.machineId, ENV_KEY, '').then(() =>
-          isOpen ? unprepareOpenShareClients(sh.shareConfigId, [n.machineId]).then(() => {}, () => {}) :
-          isManaged ? unprepareManagedShareClients(sh.shareConfigId, [n.machineId]).then(() => {}, () => {}) :
-          undefined),
-        { okMsg: () => n.host + ' 已退出 · 清空环境变量' + (isOpen ? '，已移除 Guest 自动重连' : (isManaged ? '，已移除 Mode B 自动重连' : '')) })
+        /* 顺序：清 env（关键，UE 即刻回退本地）→ 回滚工程 INI（best-effort）→ 解除自动重连 +
+           交互用户/SYSTEM 凭据清理（best-effort）。后两步失败不阻断「已退出」，但其真实结果会
+           反映进提示，绝不无条件宣称已清理（清不掉时如实告警，避免用户误以为已彻底退出）。 */
+        () => setMachineEnvVar(n.machineId, ENV_KEY, '')
+          .then(() => rollbackShareIni(n.machineId))
+          .then((iniFail) => {
+            const unprep = isOpen ? unprepareOpenShareClients(sh.shareConfigId, [n.machineId])
+              : isManaged ? unprepareManagedShareClients(sh.shareConfigId, [n.machineId])
+              : Promise.resolve(null);
+            return unprep.then((prep) => ({ iniFail, prep }), (e) => ({ iniFail, prepErr: e && e.message ? e.message : String(e) }));
+          }),
+        { okMsg: (r) => {
+            let msg = n.host + ' 已退出 · 清空环境变量';
+            msg += (r && r.iniFail) ? '（工程 INI 回滚 ' + r.iniFail + ' 项失败，需手动检查）' : ' · 已回滚工程 INI 接线';
+            if (isManaged || isOpen) {
+              const label = isManaged ? 'Mode B 凭据与自动重连' : 'Guest 自动重连';
+              /* 计划任务已移除（自动重连必断），但交互用户当前会话的清理是 best-effort：
+                 transport 失败 → 告警；Mode B 无交互会话时 cmdkey 残留 vault（脚本回 deferred /
+                 manual cleanup），如实提示需手动清，不谎称已移除。 */
+              const arr = r && Array.isArray(r.prep) ? r.prep : [];
+              const failed = (r && r.prepErr) || arr.some((x) => x && !x.ok);
+              const deferred = arr.some((x) => x && x.message && (x.message.indexOf('deferred') >= 0 || x.message.indexOf('manual cleanup') >= 0));
+              msg += failed ? '；' + label + ' 清理未确认（best-effort，需手动检查）'
+                : deferred ? '；自动重连已移除，但交互用户凭据未即时清理（无活动会话，需手动 cmdkey /delete）'
+                : ' · 已移除 ' + label;
+            }
+            return msg;
+          } })
         .then(() => { setShareJoined((m) => { const x = Object.assign({}, m); delete x[n.id]; return x; }); clrJP(n.id); }, () => clrJP(n.id));
     };
     const joinShareAll = () => {

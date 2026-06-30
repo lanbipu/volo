@@ -343,6 +343,8 @@ pub fn unprepare_managed_share_clients(
         ));
     }
     let target_uncs = core_shares::unc_variants_for_share(&db, &share)?;
+    // Same cmdkey aliases prepare added, so teardown clears exactly those.
+    let cmdkey_targets = core_shares::cmdkey_targets_for_share(&db, &share)?;
     let mut results = Vec::with_capacity(client_machine_ids.len());
     for client_id in client_machine_ids {
         let client_ip = match host_ip(&db, client_id) {
@@ -356,7 +358,7 @@ pub fn unprepare_managed_share_clients(
                 continue;
             }
         };
-        match core_shares::unprepare_managed_share_client(&client_ip, &target_uncs) {
+        match core_shares::unprepare_managed_share_client(&client_ip, &target_uncs, &cmdkey_targets) {
             Ok(msg) => results.push(InjectionResult {
                 client_machine_id: client_id,
                 ok: true,

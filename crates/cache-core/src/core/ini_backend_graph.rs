@@ -45,6 +45,15 @@ pub fn upsert_field(node: &mut BackendNode, name: &str, value: &str) {
     }
 }
 
+/// Removes a field by case-insensitive name. Returns true if a field was
+/// removed. Inverse of [`upsert_field`]; used to roll back the join's
+/// `Shared.Path` / `Shared.EnvPathOverride` on leave.
+pub fn remove_field(node: &mut BackendNode, name: &str) -> bool {
+    let before = node.fields.len();
+    node.fields.retain(|(k, _)| !k.eq_ignore_ascii_case(name));
+    node.fields.len() != before
+}
+
 pub fn write_node(node: &BackendNode) -> String {
     let body = node.fields.iter()
         .map(|(k, v)| format!("{}={}", k, v))
@@ -94,6 +103,21 @@ mod tests {
         upsert_field(&mut n, "ReadOnly", "false");
         assert_eq!(n.fields.len(), 2);
         assert_eq!(n.fields[1].0, "ReadOnly");
+    }
+
+    #[test]
+    fn remove_field_drops_named_field_case_insensitively() {
+        let mut n = parse_node(
+            r"Shared=(Type=FileSystem, Path=\\LANPC\Volo_DDC, EnvPathOverride=UE-SharedDataCachePath)",
+            1,
+        )
+        .unwrap();
+        assert!(remove_field(&mut n, "path"));
+        assert!(remove_field(&mut n, "EnvPathOverride"));
+        let keys: Vec<&str> = n.fields.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, vec!["Type"]);
+        // Removing an absent field is a no-op returning false.
+        assert!(!remove_field(&mut n, "Path"));
     }
 
     #[test]
