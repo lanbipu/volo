@@ -23,6 +23,7 @@ struct InjectScriptResult {
 pub fn inject_system_credential(
     client_host: &str,
     target_host: &str,
+    svc_server_name: Option<&str>,
     svc_user: &str,
     svc_pass: &str,
     operator_user: Option<&str>,
@@ -30,16 +31,20 @@ pub fn inject_system_credential(
 ) -> UecmResult<String> {
     let _ = (operator_user, operator_pass);
     let exec = SshExecutor::from_config()?;
+    let mut args = serde_json::json!({
+        "TargetHost": target_host,
+        "SvcUsername": svc_user,
+        "SvcPassword": svc_pass,
+    });
+    if let Some(server) = svc_server_name.filter(|s| !s.is_empty()) {
+        args["SvcServerName"] = serde_json::Value::String(server.to_string());
+    }
     let result: InjectScriptResult = run_json(
         &exec,
         client_host,
         &NodeScript {
             name: "inject-system-credential.ps1",
-            args: serde_json::json!({
-                "TargetHost": target_host,
-                "SvcUsername": svc_user,
-                "SvcPassword": svc_pass,
-            }),
+            args,
             ssh_user: None,
         },
     )?;

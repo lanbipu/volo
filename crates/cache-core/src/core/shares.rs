@@ -139,6 +139,14 @@ struct GuestAuthScriptResult {
     message: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ManagedPrepScriptResult {
+    ok: bool,
+    #[allow(dead_code)]
+    verified: bool,
+    message: String,
+}
+
 /// Mode A client prep: AllowInsecureGuestAuth + Guest cmdkey/net use for each UNC
 /// variant so Explorer and UE reach the share without a credential dialog.
 pub fn prepare_open_share_client(host: &str, target_uncs: &[String]) -> UecmResult<String> {
@@ -194,7 +202,102 @@ pub fn unprepare_open_share_client(host: &str, target_uncs: &[String]) -> UecmRe
     Ok(result.message)
 }
 
-/// Build `\\HOST\ShareName` for every host alias clients may use (computer name, IP, inventory hostname).
+/// Mode B client prep: scheduled tasks in the interactive user session + SYSTEM
+/// cmdkey so Explorer and LocalSystem services reach the managed share.
+pub fn prepare_managed_share_client(
+    host: &str,
+    target_uncs: &[String],
+    cmdkey_targets: &[String],
+    svc_server_name: &str,
+    svc_user: &str,
+    svc_pass: &str,
+) -> UecmResult<String> {
+    if target_uncs.is_empty() {
+        return Err(UecmError::InvalidInput(
+            "prepare_managed_share_client requires at least one target UNC".into(),
+        ));
+    }
+    if cmdkey_targets.is_empty() {
+        return Err(UecmError::InvalidInput(
+            "prepare_managed_share_client requires at least one cmdkey target".into(),
+        ));
+    }
+    let exec = SshExecutor::from_config()?;
+    let result: ManagedPrepScriptResult = run_json(
+        &exec,
+        host,
+        &NodeScript {
+            name: "prepare-managed-share-client.ps1",
+            args: serde_json::json!({
+                "TargetUncs": target_uncs,
+                "CmdkeyTargets": cmdkey_targets,
+                "SvcServerName": svc_server_name,
+                "SvcUsername": svc_user,
+                "SvcPassword": svc_pass,
+            }),
+            ssh_user: None,
+        },
+    )?;
+    if !result.ok {
+        return Err(UecmError::OperationFailed(format!(
+            "managed share client prep failed: {}",
+            result.message
+        )));
+    }
+    Ok(result.message)
+}
+
+/// Mode B client teardown: undo `prepare_managed_share_client` for one share.
+pub fn unprepare_managed_share_client(host: &str, target_uncs: &[String]) -> UecmResult<String> {
+    if target_uncs.is_empty() {
+        return Err(UecmError::InvalidInput(
+            "unprepare_managed_share_client requires at least one target UNC".into(),
+        ));
+    }
+    let exec = SshExecutor::from_config()?;
+    let result: GuestAuthScriptResult = run_json(
+        &exec,
+        host,
+        &NodeScript {
+            name: "unprepare-managed-share-client.ps1",
+            args: serde_json::json!({ "TargetUncs": target_uncs }),
+            ssh_user: None,
+        },
+    )?;
+    if !result.ok {
+        return Err(UecmError::OperationFailed(format!(
+            "managed share client unprep failed: {}",
+            result.message
+        )));
+    }
+    Ok(result.message)
+}
+
+/// NetBIOS/computer name of the share host for `SERVER\ddc-svc` SMB auth.
+pub fn smb_server_name_for_share(db: &Db, share: &ShareConfig) -> UecmResult<String> {
+    let unc_target = unc_host(&share.unc_path).ok_or_else(|| {
+        UecmError::OperationFailed(format!(
+            "cannot parse host from share unc_path '{}'",
+            share.unc_path
+        ))
+    })?;
+    if !looks_like_ipv4(&unc_target) {
+        return Ok(unc_target);
+    }
+    let hostname = host_hostname(db, share.host_machine_id)?;
+    if !looks_like_ipv4(&hostname) {
+        return Ok(hostname);
+    }
+    Err(UecmError::OperationFailed(format!(
+        "share unc_path host '{unc_target}' and machine hostname '{hostname}' are both IPs; \
+         set the share host machine's hostname to its NetBIOS name (e.g. LANPC) so Mode B \
+         clients can authenticate as SERVER\\ddc-svc"
+    )))
+}
+
+fn looks_like_ipv4(host: &str) -> bool {
+    host.parse::<std::net::Ipv4Addr>().is_ok()
+}
 pub fn unc_variants_for_share(db: &Db, share: &ShareConfig) -> UecmResult<Vec<String>> {
     let hosts = cmdkey_targets_for_share(db, share)?;
     Ok(hosts

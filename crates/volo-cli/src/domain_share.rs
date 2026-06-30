@@ -67,12 +67,7 @@ pub fn handle(ctx: &mut Ctx<'_>, action: ShareAction) -> UecmResult<()> {
                 // target, without decrypting it. The real `--yes` path runs
                 // `find_share_svc_password` which reads the SecretStore; doing
                 // that here would read secret material unnecessarily.
-                let alias_prefix = format!("share-{}-", target_host);
-                let alias_present = data_shares::list_all(db)?.into_iter().any(|s| {
-                    s.credential_alias
-                        .as_deref()
-                        .is_some_and(|a| a.starts_with(&alias_prefix))
-                });
+                let alias_present = find_managed_share_for_target(db, &target_host).is_ok();
                 if !alias_present {
                     return Err(UecmError::InvalidInput(format!(
                         "no Mode B share found for host '{}'; create one via `share create --mode b` first",
@@ -247,10 +242,14 @@ fn inject_system_cred(
     // inject-system-cred we only know target_host + svc_user, so we look for
     // ANY alias starting with `share-<target_host>-`.
     let svc_pass = find_share_svc_password(db, target_host, svc_user)?;
+    let share = find_managed_share_for_target(db, target_host)?;
+    let svc_server =
+        cache_core::core::shares::smb_server_name_for_share(db, &share)?;
 
     let message = cache_core::core::psexec::inject_system_credential(
         client_host,
         target_host,
+        Some(&svc_server),
         svc_user,
         &svc_pass,
         op_user,
@@ -270,33 +269,49 @@ fn inject_system_cred(
     Ok(())
 }
 
-/// Looks up the svc password for any Mode-B share on `target_host`. Returns
-/// `InvalidInput` if no matching alias exists in the SecretStore / SQLite.
+/// Resolve the managed share whose cmdkey targets include `target_host`.
+fn find_managed_share_for_target(
+    db: &cache_core::data::Db,
+    target_host: &str,
+) -> UecmResult<data_shares::ShareConfig> {
+    use cache_core::core::shares;
+    for share in data_shares::list_all(db)? {
+        if share.mode != ShareMode::Managed {
+            continue;
+        }
+        if let Ok(targets) = shares::cmdkey_targets_for_share(db, &share) {
+            if targets
+                .iter()
+                .any(|t| t.eq_ignore_ascii_case(target_host))
+            {
+                return Ok(share);
+            }
+        }
+    }
+    Err(UecmError::InvalidInput(format!(
+        "no Mode B share found for host '{target_host}'; create one via `share create --mode b` first"
+    )))
+}
+
+/// Looks up the svc password for any Mode-B share on `target_host`.
 fn find_share_svc_password(
     db: &cache_core::data::Db,
     target_host: &str,
     _svc_user: &str,
 ) -> UecmResult<String> {
-    let prefix = format!("share-{}-", target_host);
-    let candidates: Vec<_> = data_shares::list_all(db)?
-        .into_iter()
-        .filter_map(|s| s.credential_alias)
-        .filter(|a| a.starts_with(&prefix))
-        .collect();
-    let alias = candidates.into_iter().next().ok_or_else(|| {
+    let share = find_managed_share_for_target(db, target_host)?;
+    let alias = share.credential_alias.ok_or_else(|| {
         UecmError::InvalidInput(format!(
-            "no Mode B share found for host '{}'; create one via `share create --mode b` first",
-            target_host
+            "managed share for host '{target_host}' has no credential_alias"
         ))
     })?;
-    cache_core::core::secrets::get_share_secret_migrating(&alias)?
-        .ok_or_else(|| {
-            UecmError::InvalidInput(format!(
-                "no stored svc password for alias '{}'. The share may have been created \
-                 outside this CLI; re-create it via `share create --mode b`.",
-                alias
-            ))
-        })
+    cache_core::core::secrets::get_share_secret_migrating(&alias)?.ok_or_else(|| {
+        UecmError::InvalidInput(format!(
+            "no stored svc password for alias '{}'. The share may have been created \
+             outside this CLI; re-create it via `share create --mode b`.",
+            alias
+        ))
+    })
 }
 
 #[cfg(test)]

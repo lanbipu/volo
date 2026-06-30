@@ -20,6 +20,7 @@ $ErrorActionPreference = 'Stop'
 try {
     $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
     $TargetHost  = $p.TargetHost
+    $SvcServerName = if ($p.SvcServerName) { [string]$p.SvcServerName } else { '' }
     $SvcUsername = $p.SvcUsername
     $SvcPassword = $p.SvcPassword
     if ([string]::IsNullOrWhiteSpace($TargetHost) -or
@@ -27,6 +28,8 @@ try {
         [string]::IsNullOrEmpty($SvcPassword)) {
         throw "TargetHost, SvcUsername, SvcPassword are required"
     }
+    # Remote Mode B shares authenticate as SERVER\ddc-svc (local account on the host).
+    $CredUser = if (-not [string]::IsNullOrWhiteSpace($SvcServerName)) { "$SvcServerName\$SvcUsername" } else { $SvcUsername }
     # TargetHost is interpolated into a `cmd.exe /c` string for the SYSTEM /list
     # verify, so restrict it to hostname/IP characters — this blocks cmd
     # metacharacters (& | > < ^ " % ...) that would otherwise run as SYSTEM on
@@ -56,8 +59,8 @@ try {
     $prevPref = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        cmdkey.exe "/add:$TargetHost" "/user:$SvcUsername" "/pass:$SvcPassword" 2>&1 | Out-Null
-        & $psexec -accepteula -nobanner -s cmdkey.exe "/add:$TargetHost" "/user:$SvcUsername" "/pass:$SvcPassword" 2>&1 | Out-Null
+        cmdkey.exe "/add:$TargetHost" "/user:$CredUser" "/pass:$SvcPassword" 2>&1 | Out-Null
+        & $psexec -accepteula -nobanner -s cmdkey.exe "/add:$TargetHost" "/user:$CredUser" "/pass:$SvcPassword" 2>&1 | Out-Null
         Remove-Item -LiteralPath $listFile -ErrorAction SilentlyContinue
         & $psexec -accepteula -nobanner -s cmd.exe /c "cmdkey /list:$TargetHost > `"$listFile`" 2>&1" 2>$null | Out-Null
         $listOut = if (Test-Path -LiteralPath $listFile) { Get-Content -LiteralPath $listFile -Raw -ErrorAction SilentlyContinue } else { "" }
@@ -67,10 +70,10 @@ try {
         $ErrorActionPreference = $prevPref
     }
 
-    if ([string]::IsNullOrEmpty($listOut) -or ($listOut -notmatch [regex]::Escape($SvcUsername))) {
-        throw "SYSTEM cred verify failed; cmdkey /list under SYSTEM did not show '$SvcUsername'. Got: $listOut"
+    if ([string]::IsNullOrEmpty($listOut) -or ($listOut -notmatch [regex]::Escape($CredUser))) {
+        throw "SYSTEM cred verify failed; cmdkey /list under SYSTEM did not show '$CredUser'. Got: $listOut"
     }
-    @{ ok = $true; message = "user + SYSTEM creds injected for $TargetHost" } | ConvertTo-Json -Compress
+    @{ ok = $true; message = "user + SYSTEM creds injected for $TargetHost as $CredUser" } | ConvertTo-Json -Compress
 }
 catch {
     @{ ok = $false; message = $_.Exception.Message } | ConvertTo-Json -Compress

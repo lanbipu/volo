@@ -13,7 +13,8 @@ import "./cache";
 import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createShare,
   generateDdcPak, startPsoCollection, verifyPakOutput, listPsoCacheFiles,
   distributeDdcPak, distributePsoCache,
-  setMachineEnvVar, getMachineEnvVar, createLocalCache, injectShareCredentialToClients,
+  setMachineEnvVar, getMachineEnvVar, createLocalCache,
+  prepareManagedShareClients, unprepareManagedShareClients,
   prepareOpenShareClients, unprepareOpenShareClients,
   setMachineBackendField, setProjectCacheBackend } from "../api/commands";
 
@@ -635,13 +636,27 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
         let managed = false;
         if (sh && sh.shareConfigId && sh.shareMode === 'managed' && okMachineIds.length) {
           managed = true;
-          return injectShareCredentialToClients(sh.shareConfigId, okMachineIds, null).then((inj) => {
-            const injFail = (inj || []).filter((r) => !r.ok);
-            if (injFail.length) {
-              injFail.forEach((r) => errs.push('机器 ' + r.client_machine_id + ' 凭据注入：' + (r.message || '失败')));
-              throw new Error('共享凭据注入失败 · ' + injFail.length + ' 台' + (errs.length ? ' · ' + errs.join('；') : ''));
+          // #region agent log
+          fetch('http://127.0.0.1:7278/ingest/ba6b3c44-cc27-40da-8bf6-deca990c38bf',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'9b0675'},body:JSON.stringify({sessionId:'9b0675',hypothesisId:'H5',location:'cacheDdc.tsx:joinShareToMachines',message:'managed_prep_start',data:{shareConfigId:sh.shareConfigId,okMachineIds,unc},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
+          return prepareManagedShareClients(sh.shareConfigId, okMachineIds).then((prep) => {
+            const prepFail = (prep || []).filter((r) => !r.ok);
+            // #region agent log
+            fetch('http://127.0.0.1:7278/ingest/ba6b3c44-cc27-40da-8bf6-deca990c38bf',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'9b0675'},body:JSON.stringify({sessionId:'9b0675',hypothesisId:'H5',location:'cacheDdc.tsx:joinShareToMachines',message:'managed_prep_done',data:{failCount:prepFail.length,results:prep},timestamp:Date.now()})}).catch(()=>{});
+            // #endregion
+            if (prepFail.length) {
+              prepFail.forEach((r) => errs.push('机器 ' + r.client_machine_id + ' Mode B 预连接：' + (r.message || '失败')));
+              throw new Error('Mode B 共享预连接失败 · ' + prepFail.length + ' 台' + (errs.length ? ' · ' + errs.join('；') : ''));
             }
-            return { envOk, iniProjOk, fail, okMachineIds, managed };
+            const managedWarn = prep.some((r) => r.message && r.message.indexOf('deferred') >= 0)
+              ? '交互用户预连接将在下次登录时由计划任务重试'
+              : null;
+            return { envOk, iniProjOk, fail, okMachineIds, managed, managedWarn };
+          }, (e) => {
+            // #region agent log
+            fetch('http://127.0.0.1:7278/ingest/ba6b3c44-cc27-40da-8bf6-deca990c38bf',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'9b0675'},body:JSON.stringify({sessionId:'9b0675',hypothesisId:'H5',location:'cacheDdc.tsx:joinShareToMachines',message:'managed_prep_error',data:{error:e&&e.message?e.message:String(e)},timestamp:Date.now()})}).catch(()=>{});
+            // #endregion
+            throw e;
           });
         }
         if (sh && sh.shareMode === 'open' && sh.shareConfigId && okMachineIds.length) {
@@ -672,7 +687,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       setJP(n.id, 'join');
       s.runCmd({ domain: 'share', action: 'join', target: n.host, chan: 'ssh', note: '加入共享 DDC · ' + sh.path },
         () => joinShareToMachines([n.machineId], sh.path, sh),
-        { okMsg: (r) => n.host + ' 已加入 · 设系统环境变量' + (r.managed ? '，已注入访问凭据（计算机名+IP）' : (r.guestPrep ? '，已预连接 Guest 共享（免凭据框）' : (r.guestWarn ? '，但 ' + r.guestWarn : ''))) })
+        { okMsg: (r) => n.host + ' 已加入 · 设系统环境变量' + (r.managed ? '，已预连接 Mode B 共享（交互用户+SYSTEM）' + (r.managedWarn ? '（' + r.managedWarn + '）' : '') : (r.guestPrep ? '，已预连接 Guest 共享（免凭据框）' : (r.guestWarn ? '，但 ' + r.guestWarn : ''))) })
         .then(() => { setShareJoined((m) => Object.assign({}, m, { [n.id]: sh.path })); clrJP(n.id); }, () => clrJP(n.id));
     };
     const leaveShareOne = (n) => {
@@ -681,12 +696,13 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       const joinedPath = shareJoined[n.id];
       const sh = (SHARES || []).find((x) => x.path === joinedPath) || null;
       const isOpen = !!(sh && sh.shareMode === 'open' && sh.shareConfigId);
+      const isManaged = !!(sh && sh.shareMode === 'managed' && sh.shareConfigId);
       s.runCmd({ domain: 'share', action: 'leave', target: n.host, chan: 'ssh', note: '退出共享 DDC' },
         () => setMachineEnvVar(n.machineId, ENV_KEY, '').then(() =>
-          /* Mode A：清环境变量后还要移除客户端的 Guest 自动重连（OnLogon 任务 + targets 文件 +
-             live net use），否则「退出」后每次登录仍重连一个可能已下线的共享。best-effort，不阻断退出。 */
-          isOpen ? unprepareOpenShareClients(sh.shareConfigId, [n.machineId]).then(() => {}, () => {}) : undefined),
-        { okMsg: () => n.host + ' 已退出 · 清空环境变量' + (isOpen ? '，已移除 Guest 自动重连' : '') })
+          isOpen ? unprepareOpenShareClients(sh.shareConfigId, [n.machineId]).then(() => {}, () => {}) :
+          isManaged ? unprepareManagedShareClients(sh.shareConfigId, [n.machineId]).then(() => {}, () => {}) :
+          undefined),
+        { okMsg: () => n.host + ' 已退出 · 清空环境变量' + (isOpen ? '，已移除 Guest 自动重连' : (isManaged ? '，已移除 Mode B 自动重连' : '')) })
         .then(() => { setShareJoined((m) => { const x = Object.assign({}, m); delete x[n.id]; return x; }); clrJP(n.id); }, () => clrJP(n.id));
     };
     const joinShareAll = () => {
@@ -697,7 +713,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       ids.forEach((id) => setJP(id, 'join'));
       s.runCmd({ domain: 'share', action: 'join', target: ids.length + ' 台', chan: 'ssh', note: '批量加入共享 DDC · ' + sh.path },
         () => joinShareToMachines(todo.map((n) => n.machineId), sh.path, sh),
-        { okMsg: (r) => '已加入 · ' + r.envOk + ' 台设环境变量' + (r.iniProjOk ? ('，写 ' + r.iniProjOk + ' 个工程 INI') : '') + (r.managed ? '，已注入访问凭据（计算机名+IP）' : (r.guestPrep ? '，已预连接 Guest 共享（免凭据框）' : '')) + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
+        { okMsg: (r) => '已加入 · ' + r.envOk + ' 台设环境变量' + (r.iniProjOk ? ('，写 ' + r.iniProjOk + ' 个工程 INI') : '') + (r.managed ? '，已预连接 Mode B 共享' : (r.guestPrep ? '，已预连接 Guest 共享（免凭据框）' : '')) + (r.fail ? ('，' + r.fail + ' 台失败') : '') })
         .then((r) => {
           const okSet = new Set(r.okMachineIds || []);
           setShareJoined((m) => { const x = Object.assign({}, m); todo.forEach((n) => { if (okSet.has(n.machineId)) x[n.id] = sh.path; }); return x; });

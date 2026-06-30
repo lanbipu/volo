@@ -231,6 +231,8 @@ pub fn run() {
             commands::shares::inject_share_credential_to_clients,
             commands::shares::prepare_open_share_clients,
             commands::shares::unprepare_open_share_clients,
+            commands::shares::prepare_managed_share_clients,
+            commands::shares::unprepare_managed_share_clients,
             commands::shares::list_shares,
             commands::shares::delete_share,
             commands::shares::teardown_share,

@@ -55,6 +55,7 @@ fn push_injection_results(
     client_id: i64,
     client_ip: &str,
     cmdkey_targets: &[String],
+    svc_server_name: &str,
     svc_user: &str,
     svc_pass: &str,
     op_user: Option<&str>,
@@ -66,6 +67,7 @@ fn push_injection_results(
         match psexec::inject_system_credential(
             client_ip,
             target,
+            Some(svc_server_name),
             svc_user,
             svc_pass,
             op_user,
@@ -220,6 +222,7 @@ pub fn inject_share_credential_to_clients(
             ))
         })?;
     let cmdkey_targets = core_shares::cmdkey_targets_for_share(&db, &share)?;
+    let svc_server_name = core_shares::smb_server_name_for_share(&db, &share)?;
     // SSH key auth: operator cred vestigial (param kept as shim, Vue compat).
     let _ = &operator_credential_alias;
     let (op_user, op_pass): (Option<String>, Option<String>) = (None, None);
@@ -242,11 +245,129 @@ pub fn inject_share_credential_to_clients(
             client_id,
             &client_ip,
             &cmdkey_targets,
+            &svc_server_name,
             &svc_cred.username,
             &svc_pass,
             op_user.as_deref(),
             op_pass.as_deref(),
         );
+    }
+    Ok(results)
+}
+
+/// Prepare Mode B (managed) share clients: interactive-user scheduled tasks +
+/// SYSTEM cmdkey so Explorer and LocalSystem services reach the share.
+#[tauri::command]
+pub fn prepare_managed_share_clients(
+    db: State<'_, Db>,
+    share_config_id: i64,
+    client_machine_ids: Vec<i64>,
+) -> UecmResult<Vec<InjectionResult>> {
+    let share = data_shares::find_by_id(&db, share_config_id)?.ok_or_else(|| {
+        UecmError::InvalidInput(format!("share_config {} not found", share_config_id))
+    })?;
+    if share.mode != ShareMode::Managed {
+        return Err(UecmError::InvalidInput(
+            "managed share client prep only applies to Mode B (managed) shares".to_string(),
+        ));
+    }
+    let svc_alias = share.credential_alias.as_ref().ok_or_else(|| {
+        UecmError::OperationFailed("managed share missing credential_alias".to_string())
+    })?;
+    let svc_cred = data_creds::find_by_alias(&db, svc_alias)?.ok_or_else(|| {
+        UecmError::OperationFailed(format!(
+            "credential alias '{}' from share row not found in credentials",
+            svc_alias
+        ))
+    })?;
+    let svc_pass = cache_core::core::secrets::get_share_secret_migrating(svc_alias)?
+        .ok_or_else(|| {
+            UecmError::InvalidInput(format!(
+                "no stored svc password for alias '{}'; re-create the share via Mode B deploy",
+                svc_alias
+            ))
+        })?;
+    let target_uncs = core_shares::unc_variants_for_share(&db, &share)?;
+    let cmdkey_targets = core_shares::cmdkey_targets_for_share(&db, &share)?;
+    let svc_server_name = core_shares::smb_server_name_for_share(&db, &share)?;
+
+    let mut results = Vec::with_capacity(client_machine_ids.len());
+    for client_id in client_machine_ids {
+        let client_ip = match host_ip(&db, client_id) {
+            Ok(ip) => ip,
+            Err(e) => {
+                results.push(InjectionResult {
+                    client_machine_id: client_id,
+                    ok: false,
+                    message: e.to_string(),
+                });
+                continue;
+            }
+        };
+        match core_shares::prepare_managed_share_client(
+            &client_ip,
+            &target_uncs,
+            &cmdkey_targets,
+            &svc_server_name,
+            &svc_cred.username,
+            &svc_pass,
+        ) {
+            Ok(msg) => results.push(InjectionResult {
+                client_machine_id: client_id,
+                ok: true,
+                message: msg,
+            }),
+            Err(e) => results.push(InjectionResult {
+                client_machine_id: client_id,
+                ok: false,
+                message: e.to_string(),
+            }),
+        }
+    }
+    Ok(results)
+}
+
+/// Tear down Mode B (managed) client prep for ONE share.
+#[tauri::command]
+pub fn unprepare_managed_share_clients(
+    db: State<'_, Db>,
+    share_config_id: i64,
+    client_machine_ids: Vec<i64>,
+) -> UecmResult<Vec<InjectionResult>> {
+    let share = data_shares::find_by_id(&db, share_config_id)?.ok_or_else(|| {
+        UecmError::InvalidInput(format!("share_config {} not found", share_config_id))
+    })?;
+    if share.mode != ShareMode::Managed {
+        return Err(UecmError::InvalidInput(
+            "managed share client unprep only applies to Mode B (managed) shares".to_string(),
+        ));
+    }
+    let target_uncs = core_shares::unc_variants_for_share(&db, &share)?;
+    let mut results = Vec::with_capacity(client_machine_ids.len());
+    for client_id in client_machine_ids {
+        let client_ip = match host_ip(&db, client_id) {
+            Ok(ip) => ip,
+            Err(e) => {
+                results.push(InjectionResult {
+                    client_machine_id: client_id,
+                    ok: false,
+                    message: e.to_string(),
+                });
+                continue;
+            }
+        };
+        match core_shares::unprepare_managed_share_client(&client_ip, &target_uncs) {
+            Ok(msg) => results.push(InjectionResult {
+                client_machine_id: client_id,
+                ok: true,
+                message: msg,
+            }),
+            Err(e) => results.push(InjectionResult {
+                client_machine_id: client_id,
+                ok: false,
+                message: e.to_string(),
+            }),
+        }
     }
     Ok(results)
 }

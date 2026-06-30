@@ -179,7 +179,11 @@ export const createShare = (
   hostMachineId, mode, shareName, localPath,
   operatorCredentialAlias: operatorCredentialAlias ?? null, svcUsername: svcUsername ?? null,
 });
-// 📝 no-ui: 新 ZenServer 客户端走 set_ini_key；inject 属 SMB Mode-B（无当前 UI）
+export const prepareManagedShareClients = (shareConfigId: number, clientMachineIds: number[]) =>
+  call<InjectionResult[]>("prepare_managed_share_clients", { shareConfigId, clientMachineIds });
+export const unprepareManagedShareClients = (shareConfigId: number, clientMachineIds: number[]) =>
+  call<InjectionResult[]>("unprepare_managed_share_clients", { shareConfigId, clientMachineIds });
+// 📝 legacy: superseded by prepareManagedShareClients (SYSTEM + interactive user)
 export const injectShareCredentialToClients = (shareConfigId: number, clientMachineIds: number[], operatorCredentialAlias?: string | null) =>
   call<InjectionResult[]>("inject_share_credential_to_clients", { shareConfigId, clientMachineIds, operatorCredentialAlias: operatorCredentialAlias ?? null });
 // ✅ wired: cacheDdc joinShare Mode A → prepareOpenShareClients（AllowInsecureGuestAuth）
