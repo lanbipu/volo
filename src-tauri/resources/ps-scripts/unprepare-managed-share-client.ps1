@@ -37,6 +37,15 @@ try {
 
     $steps = New-Object System.Collections.Generic.List[string]
 
+    function Write-DebugLog([string]$msg, [hashtable]$data) {
+        # #region agent log
+        try {
+            $line = (@{ sessionId = 'fb81f3'; hypothesisId = 'H1'; location = 'unprepare-managed-share-client.ps1'; message = $msg; data = $data; timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() } | ConvertTo-Json -Compress)
+            Add-Content -LiteralPath (Join-Path $base 'volo-debug-fb81f3.log') -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
+        } catch {}
+        # #endregion
+    }
+
     # 1) Interactive cleanup — delete the desktop user's cmdkey + net use from
     #    inside their own session (mirrors prepare's interactive verify task).
     $worker = Join-Path $PSScriptRoot 'modeb-svc-disconnect.ps1'
@@ -44,7 +53,12 @@ try {
     $taskDiscNow = "UECM-ModeB-Disc-$key-Now"
     $consoleUser = (Get-CimInstance Win32_ComputerSystem).UserName
     $discDone = $false
+    $gotStatus = $false
+    $verified = $false
+    $interactiveAttempted = $false
+    $interactiveDeferred = $false
     if ((Test-Path -LiteralPath $worker) -and -not [string]::IsNullOrWhiteSpace($consoleUser)) {
+        $interactiveAttempted = $true
         try {
             @{ TargetUncs = $targets; CmdkeyTargets = $cmdkeyTargets; Key = $key } |
                 ConvertTo-Json -Compress | Set-Content -LiteralPath $discConfig -Encoding UTF8
@@ -64,14 +78,22 @@ try {
                 if (Test-Path -LiteralPath $statusFile) { break }
             }
             if (Test-Path -LiteralPath $statusFile) {
-                $steps.Add("interactive $consoleUser cleaned") | Out-Null
-                # Verified done — safe to drop the one-shot task + its config.
+                $st = Get-Content -LiteralPath $statusFile -Raw | ConvertFrom-Json
+                $verified = [bool]$st.ok
+                $gotStatus = $true
+                if ($verified) {
+                    $steps.Add("interactive $consoleUser cleaned") | Out-Null
+                } else {
+                    $after = if ($st.reachable_after) { ($st.reachable_after -join ', ') } else { 'unknown' }
+                    $steps.Add("interactive $consoleUser still reachable: $after") | Out-Null
+                }
                 Unregister-ScheduledTask -TaskName $taskDiscNow -Confirm:$false -ErrorAction SilentlyContinue
-                $discDone = $true
+                if ($verified) { $discDone = $true }
             } else {
                 # Slow worker — leave the task AND $discConfig in place so it can
                 # still finish + clean up (mirrors prepare's "DON'T tear down a
                 # possibly-running worker"). -Force replaces it on the next teardown.
+                $interactiveDeferred = $true
                 $steps.Add('interactive cleanup deferred (no status within timeout)') | Out-Null
             }
         } catch {
@@ -83,7 +105,12 @@ try {
     }
 
     # 2) Remove the prepare-side scheduled tasks so nothing reconnects at logon.
-    foreach ($t in @("UECM-ModeB-Svc-$key-Now", "UECM-ModeB-Svc-$key")) {
+    #    Also drop legacy POC task names that predate per-share keying.
+    foreach ($t in @(
+        "UECM-ModeB-Svc-$key-Now", "UECM-ModeB-Svc-$key",
+        "UECM-ModeA-Guest-$key-Now", "UECM-ModeA-Guest-$key",
+        "UECM-ModeA-Guest-OnLogon"
+    )) {
         if (Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue) {
             Unregister-ScheduledTask -TaskName $t -Confirm:$false -ErrorAction SilentlyContinue
             $steps.Add("removed task $t") | Out-Null
@@ -125,7 +152,14 @@ try {
     $ErrorActionPreference = $eap
     $steps.Add('net use + cmdkey removed (uecm-svc + SYSTEM)') | Out-Null
 
-    @{ ok = $true; message = ($steps -join '; ') } | ConvertTo-Json -Compress
+    # ok=true only when the interactive worker ran and verified UNC is unreachable.
+    # Deferred / skipped / no-console-user / still-reachable all report ok=false.
+    $ok = $false
+    if ($interactiveAttempted) {
+        $ok = ($gotStatus -and $verified)
+    }
+    Write-DebugLog 'unprepare_final_ok' @{ ok = $ok; gotStatus = $gotStatus; verified = $verified; deferred = $interactiveDeferred; attempted = $interactiveAttempted }
+    @{ ok = $ok; verified = $verified; deferred = $interactiveDeferred; message = ($steps -join '; ') } | ConvertTo-Json -Compress
 }
 catch {
     @{ ok = $false; message = $_.Exception.Message } | ConvertTo-Json -Compress
