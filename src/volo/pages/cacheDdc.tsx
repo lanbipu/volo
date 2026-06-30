@@ -514,11 +514,23 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
 
     const g = gate(s); if (g) return g;
 
+    /* IP 升序：按点分十进制数值比较（非字符串字典序），机器选择器 / 加入列表 / 本地 DDC 列表统一用此序。
+       IP 缺失/不合法时排到末尾（Infinity），不与合法的 0.0.0.0 混为一谈排到最前。 */
+    const ipVal = (ip) => {
+      const octs = String(ip || '').split('.');
+      if (octs.length !== 4 || octs.some((o) => o === '' || isNaN(o))) return Infinity;
+      return octs.reduce((acc, o) => acc * 256 + parseInt(o, 10), 0);
+    };
+    const IP_SORTED_NODES = RENDER_NODES.slice().sort((a, b) => ipVal(a.ip) - ipVal(b.ip));
+
     /* resolve the chosen server to a real node — persisted `srv` may be a stale mock id
-       now that machines come from the backend; fall back to the first non-shared node. */
-    const sharedNode = CX.node(srv) || RENDER_NODES.find((n) => n.roleKey !== 'shared') || RENDER_NODES[0];
-    const srvOpts = RENDER_NODES.map((n) => ({ id: n.id, label: n.host, sub: n.ip }));
-    const onlineLocalTargets = RENDER_NODES.filter((n) => n.status !== 'offline');
+       now that machines come from the backend; fall back to an already-deployed shared
+       server first（默认展示已部署的服务器，n.share 即 adapters.ts 用同一份 shares 算出的
+       托管 unc_path，与「已纳管共享」判定同源），否则退到第一台非共享角色机器。 */
+    const deployedNode = IP_SORTED_NODES.find((n) => n.share);
+    const sharedNode = CX.node(srv) || deployedNode || IP_SORTED_NODES.find((n) => n.roleKey !== 'shared') || IP_SORTED_NODES[0];
+    const srvOpts = IP_SORTED_NODES.map((n) => ({ id: n.id, label: n.host, sub: n.ip }));
+    const onlineLocalTargets = IP_SORTED_NODES.filter((n) => n.status !== 'offline');
     const badge = (cls, icon, txt) => h('span', { className: 'cli-badge ' + cls }, h(Icon, { name: icon, size: 11 }), txt);
 
     /* ===== ① 共享 DDC（SMB）服务器：创建 / 解除纳管 / 拆除部署（破坏性，走确认门）===== */
@@ -554,6 +566,9 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
     });
     /* 该服务器机器当前是否已部署共享（hostId = String(host_machine_id) 与 sharedNode.id 对齐）。 */
     const srvShare = (SHARES || []).find((x) => x.hostId === sharedNode.id);
+    /* sharedNode 可能因「默认选已部署服务器」落在一台当前离线的机器上——三通道提示，避免用户在
+       不知情时对不可达主机发起 SSH 操作（create_share / teardown_share 会直接失败）。 */
+    const sharedOffline = sharedNode.status === 'offline';
     /* 取消该服务器部署（teardown_share）：停止 SMB 共享（Remove-SmbShare）+（Mode B）注销 ddc-svc，
        保留远端文件夹与缓存（keep_files=true）。删 SQLite 行后 reloadCache 把它从列表移除。
        区别于 deleteShare（仅解除纳管，不动远端共享服务）。 */
@@ -595,6 +610,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
             h(Selector, { kpre: '模式', value: shareMode, width: 200, onChange: setShareMode,
               options: [{ id: 'open', label: 'Mode A · 开放' }, { id: 'managed', label: 'Mode B · 专用账号' }] })),
           h('div', { className: 'dp-go' },
+            sharedOffline ? h('span', { className: 'dp-deployed', style: { color: 'var(--negative-visual)' } }, h(Icon, { name: 'power', size: 13 }), '离线') : null,
             srvShare ? h('span', { className: 'dp-deployed' }, h(Icon, { name: 'check', size: 13 }), '已部署于本机') : null,
             srvShare ? h(Button, { variant: 'negative', size: 'M', icon: h(Icon, { name: 'trash', size: 14 }), onPress: () => undeploySMB(srvShare) }, '取消该服务器部署') : null,
             h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'bolt', size: 14 }), onPress: deploySMB }, srvShare ? '重新部署' : '部署 共享 DDC'))),
@@ -949,7 +965,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
                 h('div', { className: 'lsb-acts' },
                   h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'bolt', size: 13 }), isDisabled: selUndeployedNodes.length === 0, onPress: () => runLocalBatch(selUndeployedNodes, 'deploy', '批量部署本地 DDC（' + selUndeployedNodes.length + ' 台）') }, '部署所选（' + selUndeployedNodes.length + '）'),
                   h(Button, { variant: 'negative', size: 'S', icon: h(Icon, { name: 'trash', size: 13 }), isDisabled: selDeployedNodes.length === 0, onPress: () => runLocalBatch(selDeployedNodes, 'undeploy', '批量取消本地 DDC（' + selDeployedNodes.length + ' 台）') }, '取消部署所选（' + selDeployedNodes.length + '）'))),
-              h('div', { className: 'cli-list' }, RENDER_NODES.map(localRow)))))));
+              h('div', { className: 'cli-list' }, IP_SORTED_NODES.map(localRow)))))));
   }
 
   /* =================== center router =================== */
