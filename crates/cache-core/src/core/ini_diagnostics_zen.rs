@@ -423,7 +423,7 @@ fn rule_r012(file: &ParsedFile, ctx: &ZenRuleContext<'_>) -> Vec<Finding> {
             "工程是 UE {}+ 且已登记集群 zen 端点，但没接上 `{}` 上游。",
             resolved.matched_version, rule.key
         ),
-        rationale: "没有 ZenShared，工程只能用本地 zen，集群间不共享任何缓存。运行 `uecm-cli zen enable` 从集群主端点生成该值。".into(),
+        rationale: "没有 [StorageServers] Shared 上游时，工程只能用本地 zen，集群间不共享任何缓存。运行 `uecm-cli zen enable` 从集群主端点生成该值。".into(),
     }]
 }
 
@@ -621,7 +621,7 @@ fn rule_r015(
                         smb.key
                     )
                 },
-                rationale: "两个缓存后端争抢同一次 DDC 查找，UE 可能任选其一或互相冲突，导致集群内缓存命中不一致。".into(),
+                rationale: "Volo 在启用 Zen 共享后会清理并存的旧式 SMB 路径，避免集群内两套上游配置混用、命中不一致（UE 过渡期内可共存；这是 Volo 的配置管理策略，非引擎禁止双后端）。".into(),
             });
         }
     }
@@ -672,7 +672,7 @@ fn rule_r015(
                     "已配置 ZenShared 上游，但旧式 `{}` 环境变量还设着（{}）。",
                     var_name, env_value
                 ),
-                rationale: "UE 会同时往两个后端写 —— zen 集群缓存，以及环境变量指向的旧式 SMB 路径。集群内缓存命中会变得不一致。清除该环境变量（机器级 + 用户级），只保留 ZenShared 这条路。".into(),
+                rationale: "Volo 建议只保留 Zen 共享上游：旧式环境变量会让 UE 同时写 Zen 与 SMB 两路缓存，集群命中不一致。清除该环境变量（机器级 + 用户级），只保留 [StorageServers] Shared（UE 过渡期内可共存；此为 Volo 运维建议）。".into(),
             });
         }
     }

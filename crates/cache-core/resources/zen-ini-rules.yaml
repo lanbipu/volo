@@ -3,7 +3,9 @@
 # v1 (2026-05-18) — M0 T0.5 deliverable. Schema per plan §6.1 (v4).
 # Direction: UE 5.4+ local zen auto-starts (no INI needed); these rules
 # manage (a) ZenShared upstream to a cluster master endpoint, and
-# (b) legacy SMB/Pak DDC cleanup so the two backends don't double up.
+# (b) legacy SMB/Pak DDC cleanup when Volo enables ZenShared — a Volo product
+#     policy for simplified cluster config (UE can run both during transition;
+#     we remove stale legacy paths so operators don't keep two upstreams by accident).
 #
 # Verification basis: docs/research/zen-launch-mechanism.md §1 / appendix C.
 # Real-machine T0.5 sandbox on lanPC UE 5.7.4 with running zen 5.8.10:
@@ -49,7 +51,8 @@ zen_ini:
       #     override this Host — this is the multi-region routing path (ZEN-4).
       #   * DeactivateAt=60 (ms latency threshold) auto-disables the node when
       #     the server is slow, protecting workstation perf — matches the
-      #     BaseEngine.ini default for the Shared entry.
+      #     BaseEngine.ini default for the Shared entry. Official UE guidance
+      #     for typical round-trip: local ~0.1–10 ms, shared ~1–60 ms.
       #   * A struct value FULLY REPLACES the BaseEngine default, so the whole
       #     struct (not just Host) must be written.
       value_template: '(Host="http://{host}:{port}", Namespace="{namespace}", EnvHostOverride=UE-ZenSharedDataCacheHost, CommandLineHostOverride=ZenSharedDataCacheHost, DeactivateAt=60)'
@@ -67,6 +70,8 @@ zen_ini:
 
     disable_legacy_smb_shared:
       ini_file: DefaultEngine.ini
+      # Legacy projects only: old SMB Shared= lived here pre–UE 5.4 graph refactor.
+      # Modern Zen activation uses [StorageServers] Shared (see enable_zen_shared).
       section: InstalledDerivedDataBackendGraph
       key: Shared
       action: remove
@@ -91,6 +96,7 @@ zen_ini:
 
     disable_legacy_pak:
       ini_file: DefaultEngine.ini
+      # Legacy Pak backends in InstalledDerivedDataBackendGraph — cleanup only, not Zen wiring.
       section: InstalledDerivedDataBackendGraph
       # Multiple keys — INI removal does exact key-name match, so each backend
       # entry must be listed separately. "Pak,CompressedPak" as a single string
@@ -129,12 +135,13 @@ overrides: {}
   #     key: ZenShared.Host
   #     value_template: "{host}"
 
-# === Notes on multi-sponsor zen behaviour (from T0.5 observations) ===
+# === Notes on multi-sponsor zen behaviour (Volo T0.5 经验观察 — 非官方 UE 文档) ===
 #
 # A second UE editor opening a project while another UE editor already
 # owns a local zen will SHUTDOWN the running zen and re-launch under the
 # new editor's --owner-pid. This is NOT cooperative sponsoring — it's
-# preemption. Implication for cluster design:
+# preemption (observed on lanPC UE 5.7.4; treat as operational tip, not
+# documented engine contract). Implication for cluster design:
 #   * On render nodes, only one editor should own local zen at a time.
 #   * Cluster master should run zen via `zen service install` (lifecycle
 #     mode = 'installed_service' in plan §1.1), NOT via UE editor sponsor.
