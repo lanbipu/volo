@@ -42,6 +42,33 @@ function Get-CmdkeyTargetsMatching([string[]]$needles) {
     @($out | Select-Object -Unique)
 }
 
+function Get-ServerNeedles([string[]]$extra, [string[]]$targets) {
+    $set = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($t in $extra) { if ($t) { [void]$set.Add($t.Trim()) } }
+    foreach ($u in $targets) {
+        if ($u -match '^\\\\([^\\]+)\\') { [void]$set.Add($Matches[1]) }
+    }
+    @($set)
+}
+
+function Remove-SmbConnectionsForServers([string[]]$needles, [System.Collections.Generic.List[string]]$removed) {
+    if (-not (Get-Command Get-SmbConnection -ErrorAction SilentlyContinue)) { return }
+    $conns = @(Get-SmbConnection -ErrorAction SilentlyContinue | Where-Object {
+        $server = $_.ServerName
+        foreach ($n in $needles) { if ($n -and $server -ieq $n) { return $true } }
+        $false
+    })
+    foreach ($c in $conns) {
+        $unc = "\\$($c.ServerName)\$($c.ShareName)"
+        if (Get-Command Remove-SmbMapping -ErrorAction SilentlyContinue) {
+            Remove-SmbMapping -RemotePath $unc -Force -UpdateProfile -ErrorAction SilentlyContinue
+            $removed.Add("Remove-SmbMapping $unc") | Out-Null
+        }
+        cmd.exe /c "net use `"$unc`" /delete /y" 2>&1 | Out-Null
+        $removed.Add("net use $unc") | Out-Null
+    }
+}
+
 try {
     $cfg = Get-Content -LiteralPath $ConfigFile -Raw -ErrorAction Stop | ConvertFrom-Json
     $targets = @($cfg.TargetUncs | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -94,9 +121,28 @@ foreach ($t in @($allCmdkey | Select-Object -Unique)) {
     $r['removed'] += "cmdkey $t"
 }
 
+$serverNeedles = @(Get-ServerNeedles $cmdkeyTargets $targets)
+Remove-SmbConnectionsForServers $serverNeedles ([System.Collections.Generic.List[string]]$r['removed'])
+
 foreach ($u in $targets) {
     if (Test-Path -LiteralPath $u -ErrorAction SilentlyContinue) {
         $r['reachable_after'] += $u
+    }
+}
+
+if ($r['reachable_after'].Count -gt 0) {
+    try {
+        Restart-Service -Name LanmanWorkstation -Force -ErrorAction Stop
+        $r['removed'] += 'Restart-Service LanmanWorkstation'
+        Start-Sleep -Seconds 2
+        $r['reachable_after'] = @()
+        foreach ($u in $targets) {
+            if (Test-Path -LiteralPath $u -ErrorAction SilentlyContinue) {
+                $r['reachable_after'] += $u
+            }
+        }
+    } catch {
+        $r['removed'] += "Restart-Service failed: $($_.Exception.Message)"
     }
 }
 
