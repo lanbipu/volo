@@ -1,4 +1,4 @@
-/* Volo — Cache/UECM typed Tauri invoke core.
+/* Volo — Cache typed Tauri invoke core.
    The single transport seam between the Cache page (custom-CSS port) and the
    ~85 Rust `#[tauri::command]` handlers registered in src-tauri/src/lib.rs.
 

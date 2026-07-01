@@ -1,7 +1,7 @@
 //! CRUD for the `pso_cache_files` table.
 
 use crate::data::Db;
-use crate::error::UecmResult;
+use crate::error::VoloResult;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
@@ -17,7 +17,7 @@ pub struct PsoCacheFile {
     pub collected_at: Option<String>,
 }
 
-pub fn upsert(db: &Db, file: &PsoCacheFile) -> UecmResult<i64> {
+pub fn upsert(db: &Db, file: &PsoCacheFile) -> VoloResult<i64> {
     let conn = db.lock().unwrap();
     conn.execute(
         "INSERT INTO pso_cache_files
@@ -48,7 +48,7 @@ pub fn upsert(db: &Db, file: &PsoCacheFile) -> UecmResult<i64> {
     Ok(id)
 }
 
-pub fn list_by_project(db: &Db, project_id: i64) -> UecmResult<Vec<PsoCacheFile>> {
+pub fn list_by_project(db: &Db, project_id: i64) -> VoloResult<Vec<PsoCacheFile>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, project_id, source_machine_id, file_path, file_name, size_bytes, gpu_signature, ue_version, collected_at
@@ -64,7 +64,7 @@ pub fn list_by_project(db: &Db, project_id: i64) -> UecmResult<Vec<PsoCacheFile>
     Ok(out)
 }
 
-pub fn get(db: &Db, file_id: i64) -> UecmResult<Option<PsoCacheFile>> {
+pub fn get(db: &Db, file_id: i64) -> VoloResult<Option<PsoCacheFile>> {
     let conn = db.lock().unwrap();
     let result = conn.query_row(
         "SELECT id, project_id, source_machine_id, file_path, file_name, size_bytes, gpu_signature, ue_version, collected_at
@@ -79,7 +79,7 @@ pub fn get(db: &Db, file_id: i64) -> UecmResult<Option<PsoCacheFile>> {
     }
 }
 
-pub fn delete(db: &Db, file_id: i64) -> UecmResult<()> {
+pub fn delete(db: &Db, file_id: i64) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     conn.execute("DELETE FROM pso_cache_files WHERE id = ?", [file_id])?;
     Ok(())

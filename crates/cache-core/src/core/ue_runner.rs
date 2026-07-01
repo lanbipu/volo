@@ -1,6 +1,6 @@
 //! Async UE process orchestrator. Spawns UE and tails the project log.
 
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
@@ -294,12 +294,12 @@ fn parse_line(line: &str) -> ParsedLine {
     parsed
 }
 
-fn parse_pid(raw: &str) -> UecmResult<i64> {
+fn parse_pid(raw: &str) -> VoloResult<i64> {
     let pid = raw.trim().parse::<i64>().map_err(|_| {
-        UecmError::OperationFailed(format!("invalid process id returned by UE launcher: {:?}", raw))
+        VoloError::OperationFailed(format!("invalid process id returned by UE launcher: {:?}", raw))
     })?;
     if pid <= 0 {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "invalid process id returned by UE launcher: {}",
             pid
         )));
@@ -323,7 +323,7 @@ fn extract_pct_in_parens(line: &str) -> Option<f32> {
     Some(current / total)
 }
 
-async fn start_process(spec: &UeRunSpec) -> UecmResult<StartScriptResult> {
+async fn start_process(spec: &UeRunSpec) -> VoloResult<StartScriptResult> {
     match spec.backend {
         UeRunnerBackend::Remote if crate::core::loopback::is_loopback_target(&spec.host) => {
             tracing::debug!(
@@ -337,7 +337,7 @@ async fn start_process(spec: &UeRunSpec) -> UecmResult<StartScriptResult> {
     }
 }
 
-fn start_remote_process(spec: &UeRunSpec) -> UecmResult<StartScriptResult> {
+fn start_remote_process(spec: &UeRunSpec) -> VoloResult<StartScriptResult> {
     // SSH key auth; per-call WinRM cred ignored (kept on spec until A5).
     let exec = crate::core::ssh::SshExecutor::from_config()?;
     let result: StartScriptResult = crate::core::ssh::run_json(
@@ -354,14 +354,14 @@ fn start_remote_process(spec: &UeRunSpec) -> UecmResult<StartScriptResult> {
         },
     )?;
     if !result.ok {
-        return Err(UecmError::OperationFailed(
+        return Err(VoloError::OperationFailed(
             result.message.unwrap_or_else(|| "spawn failed".into()),
         ));
     }
     Ok(result)
 }
 
-async fn start_local_process(spec: &UeRunSpec) -> UecmResult<StartScriptResult> {
+async fn start_local_process(spec: &UeRunSpec) -> VoloResult<StartScriptResult> {
     #[cfg(windows)]
     {
         let exe = std::path::Path::new(&spec.engine_path)
@@ -370,14 +370,14 @@ async fn start_local_process(spec: &UeRunSpec) -> UecmResult<StartScriptResult> 
             .join("Win64")
             .join("UnrealEditor.exe");
         if !exe.exists() {
-            return Err(UecmError::InvalidInput(format!(
+            return Err(VoloError::InvalidInput(format!(
                 "UnrealEditor.exe not found at {}",
                 exe.display()
             )));
         }
         let project = std::path::Path::new(&spec.project_path);
         if !project.exists() {
-            return Err(UecmError::InvalidInput(format!(
+            return Err(VoloError::InvalidInput(format!(
                 ".uproject not found at {}",
                 project.display()
             )));
@@ -387,14 +387,14 @@ async fn start_local_process(spec: &UeRunSpec) -> UecmResult<StartScriptResult> 
         for arg in &spec.extra_args {
             command.arg(arg);
         }
-        let child = command.spawn().map_err(UecmError::Io)?;
+        let child = command.spawn().map_err(VoloError::Io)?;
         let pid = child.id().unwrap_or_default() as i64;
         let project_dir = project
             .parent()
-            .ok_or_else(|| UecmError::InvalidInput("project parent missing".into()))?;
+            .ok_or_else(|| VoloError::InvalidInput("project parent missing".into()))?;
         let project_name = project
             .file_stem()
-            .ok_or_else(|| UecmError::InvalidInput("project stem missing".into()))?
+            .ok_or_else(|| VoloError::InvalidInput("project stem missing".into()))?
             .to_string_lossy();
         Ok(StartScriptResult {
             ok: true,
@@ -411,7 +411,7 @@ async fn start_local_process(spec: &UeRunSpec) -> UecmResult<StartScriptResult> 
     #[cfg(not(windows))]
     {
         let _ = spec;
-        Err(UecmError::OperationFailed(
+        Err(VoloError::OperationFailed(
             "local UE backend requires Windows".into(),
         ))
     }
@@ -424,7 +424,7 @@ async fn read_tail(
     offset: i64,
     user: Option<&str>,
     pass: Option<&str>,
-) -> UecmResult<TailScriptResult> {
+) -> VoloResult<TailScriptResult> {
     match backend {
         UeRunnerBackend::Remote => {
             if crate::core::loopback::is_loopback_target(host) {
@@ -450,7 +450,7 @@ async fn read_tail(
     }
 }
 
-fn read_tail_local(log_path: &str, offset: i64) -> UecmResult<TailScriptResult> {
+fn read_tail_local(log_path: &str, offset: i64) -> VoloResult<TailScriptResult> {
     use std::io::{Read, Seek, SeekFrom};
     let path = std::path::Path::new(log_path);
     if !path.exists() {
@@ -461,8 +461,8 @@ fn read_tail_local(log_path: &str, offset: i64) -> UecmResult<TailScriptResult> 
             new_text: String::new(),
         });
     }
-    let mut file = std::fs::File::open(path).map_err(UecmError::Io)?;
-    let size = file.metadata().map_err(UecmError::Io)?.len() as i64;
+    let mut file = std::fs::File::open(path).map_err(VoloError::Io)?;
+    let size = file.metadata().map_err(VoloError::Io)?.len() as i64;
     if size <= offset {
         return Ok(TailScriptResult {
             ok: true,
@@ -472,10 +472,10 @@ fn read_tail_local(log_path: &str, offset: i64) -> UecmResult<TailScriptResult> 
         });
     }
     file.seek(SeekFrom::Start(offset as u64))
-        .map_err(UecmError::Io)?;
+        .map_err(VoloError::Io)?;
     let to_read = std::cmp::min(65536, (size - offset) as usize);
     let mut buf = vec![0u8; to_read];
-    let read = file.read(&mut buf).map_err(UecmError::Io)?;
+    let read = file.read(&mut buf).map_err(VoloError::Io)?;
     Ok(TailScriptResult {
         ok: true,
         exists: true,
@@ -490,7 +490,7 @@ async fn stop_process(
     pid: i64,
     user: Option<&str>,
     pass: Option<&str>,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     match backend {
         UeRunnerBackend::Remote => {
             if crate::core::loopback::is_loopback_target(host) {
@@ -512,7 +512,7 @@ async fn stop_process(
                 },
             )?;
             if !result.ok || !result.killed {
-                return Err(UecmError::OperationFailed(result.message));
+                return Err(VoloError::OperationFailed(result.message));
             }
             Ok(())
         }
@@ -520,19 +520,19 @@ async fn stop_process(
     }
 }
 
-fn stop_local_process(pid: i64) -> UecmResult<()> {
+fn stop_local_process(pid: i64) -> VoloResult<()> {
     #[cfg(windows)]
     {
         std::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/F"])
             .output()
-            .map_err(UecmError::Io)?;
+            .map_err(VoloError::Io)?;
         Ok(())
     }
     #[cfg(not(windows))]
     {
         let _ = pid;
-        Err(UecmError::OperationFailed("local stop requires Windows".into()))
+        Err(VoloError::OperationFailed("local stop requires Windows".into()))
     }
 }
 

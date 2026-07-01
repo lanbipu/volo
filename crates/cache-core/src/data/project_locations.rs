@@ -1,7 +1,7 @@
 //! CRUD for the `project_locations` table.
 
 use crate::data::Db;
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
@@ -22,12 +22,12 @@ impl DiscoveryStatus {
         }
     }
 
-    pub fn parse(value: &str) -> UecmResult<Self> {
+    pub fn parse(value: &str) -> VoloResult<Self> {
         match value {
             "auto" => Ok(DiscoveryStatus::Auto),
             "manual_alias" => Ok(DiscoveryStatus::ManualAlias),
             "manual_path" => Ok(DiscoveryStatus::ManualPath),
-            other => Err(UecmError::InvalidInput(format!(
+            other => Err(VoloError::InvalidInput(format!(
                 "unknown discovery_status: {}",
                 other
             ))),
@@ -46,7 +46,7 @@ pub struct ProjectLocation {
     pub discovered_at: Option<String>,
 }
 
-pub fn upsert(db: &Db, loc: &ProjectLocation) -> UecmResult<i64> {
+pub fn upsert(db: &Db, loc: &ProjectLocation) -> VoloResult<i64> {
     let conn = db.lock().unwrap();
     conn.execute(
         "INSERT INTO project_locations (project_id, machine_id, abs_path, uproject_path, discovery_status)
@@ -72,11 +72,11 @@ pub fn upsert(db: &Db, loc: &ProjectLocation) -> UecmResult<i64> {
     Ok(id)
 }
 
-pub fn list_by_project(db: &Db, project_id: i64) -> UecmResult<Vec<ProjectLocation>> {
+pub fn list_by_project(db: &Db, project_id: i64) -> VoloResult<Vec<ProjectLocation>> {
     list_where(db, "project_id", project_id, "machine_id")
 }
 
-pub fn list_by_machine(db: &Db, machine_id: i64) -> UecmResult<Vec<ProjectLocation>> {
+pub fn list_by_machine(db: &Db, machine_id: i64) -> VoloResult<Vec<ProjectLocation>> {
     list_where(db, "machine_id", machine_id, "project_id")
 }
 
@@ -84,7 +84,7 @@ pub fn get_for_project_machine(
     db: &Db,
     project_id: i64,
     machine_id: i64,
-) -> UecmResult<Option<ProjectLocation>> {
+) -> VoloResult<Option<ProjectLocation>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, project_id, machine_id, abs_path, uproject_path, discovery_status, discovered_at
@@ -98,7 +98,7 @@ pub fn get_for_project_machine(
     }
 }
 
-pub fn delete(db: &Db, location_id: i64) -> UecmResult<()> {
+pub fn delete(db: &Db, location_id: i64) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     conn.execute(
         "DELETE FROM project_locations WHERE id = ?",
@@ -112,7 +112,7 @@ fn list_where(
     column: &'static str,
     value: i64,
     order_column: &'static str,
-) -> UecmResult<Vec<ProjectLocation>> {
+) -> VoloResult<Vec<ProjectLocation>> {
     let conn = db.lock().unwrap();
     let sql = format!(
         "SELECT id, project_id, machine_id, abs_path, uproject_path, discovery_status, discovered_at

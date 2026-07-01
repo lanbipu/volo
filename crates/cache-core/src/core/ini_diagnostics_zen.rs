@@ -411,7 +411,7 @@ fn rule_r012(file: &ParsedFile, ctx: &ZenRuleContext<'_>) -> Vec<Finding> {
         // informative for an operator reading the report) but DO NOT set
         // `recommended_value` — `ini_apply::apply` would write the raw
         // template into the INI verbatim. Wiring ZenShared requires
-        // materialized host/port/namespace which only `uecm-cli zen enable`
+        // materialized host/port/namespace which only `voloctl cache zen enable`
         // has; mark this finding `Manual` so auto-apply skips it.
         snippet_after: Some(format!(
             "[{}]\n{}={}",
@@ -423,7 +423,7 @@ fn rule_r012(file: &ParsedFile, ctx: &ZenRuleContext<'_>) -> Vec<Finding> {
             "工程是 UE {}+ 且已登记集群 zen 端点，但没接上 `{}` 上游。",
             resolved.matched_version, rule.key
         ),
-        rationale: "没有 [StorageServers] Shared 上游时，工程只能用本地 zen，集群间不共享任何缓存。运行 `uecm-cli zen enable` 从集群主端点生成该值。".into(),
+        rationale: "没有 [StorageServers] Shared 上游时，工程只能用本地 zen，集群间不共享任何缓存。运行 `voloctl cache zen enable` 从集群主端点生成该值。".into(),
     }]
 }
 
@@ -454,14 +454,14 @@ fn rule_r013(file: &ParsedFile, ctx: &ZenRuleContext<'_>) -> Vec<Finding> {
         // Same auto-apply hazard as R012: the template still has
         // `{host}` / `{port}` / `{namespace}` placeholders. Mark Manual so
         // `ini_apply::apply` skips it; the operator must re-run
-        // `uecm-cli zen enable` to wire a materialized value.
+        // `voloctl cache zen enable` to wire a materialized value.
         recommended_action: RecommendedAction::Manual,
         recommended_value: None,
         symptom: format!(
             "`{}` 的值不符合 [StorageServers] 的格式（Host=\"http://host:port\", Namespace=...）。裸主机名或单独的 `Port=` 都是错的 —— 端口必须写进 Host URI 里。",
             rule.key
         ),
-        rationale: "值解析不了时 Zen 会拒绝接入后端（URI 缺端口时还会连错端口），工程会悄悄回退到只用本地 DDC。重跑 `uecm-cli zen enable` 用生成的值覆盖。".into(),
+        rationale: "值解析不了时 Zen 会拒绝接入后端（URI 缺端口时还会连错端口），工程会悄悄回退到只用本地 DDC。重跑 `voloctl cache zen enable` 用生成的值覆盖。".into(),
     }]
 }
 

@@ -1,4 +1,4 @@
-//! clap-derive structures for all `uecm-cli` subcommands.
+//! clap-derive structures for all `voloctl cache` subcommands.
 
 use clap::{Parser, Subcommand};
 
@@ -63,7 +63,7 @@ pub fn effective_log_level(base: &str, verbose: u8, quiet: bool) -> String {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "uecm-cli", version, about = "UECM command-line interface")]
+#[command(name = "cache", version, about = "Volo cache/fleet command-line interface")]
 pub struct Cli {
     /// DEPRECATED 别名：等价 `--output json`。保留以兼容现有 docs/scripts。
     #[arg(long, global = true)]
@@ -98,7 +98,7 @@ pub struct Cli {
     pub input_format: Option<InputFormat>,
 
     /// Override DB path (otherwise resolved via startup module).
-    #[arg(long, global = true, env = "UECM_DB_PATH")]
+    #[arg(long, global = true, env = "VOLO_DB_PATH")]
     pub db_path: Option<String>,
 
     /// Log level for tracing output to stderr.
@@ -1642,22 +1642,22 @@ mod tests {
     #[test]
     fn output_flag_round_trips_through_clap() {
         let cli =
-            Cli::try_parse_from(["uecm-cli", "system", "version", "--output", "json"]).unwrap();
+            Cli::try_parse_from(["cache", "system", "version", "--output", "json"]).unwrap();
         assert_eq!(cli.output, Some(OutputFormat::Json));
 
-        let cli = Cli::try_parse_from(["uecm-cli", "system", "version", "-o", "ndjson"]).unwrap();
+        let cli = Cli::try_parse_from(["cache", "system", "version", "-o", "ndjson"]).unwrap();
         assert_eq!(cli.output, Some(OutputFormat::Ndjson));
 
         // `stream-json` is a clap alias for `ndjson` (spec §3.5).
         let cli =
-            Cli::try_parse_from(["uecm-cli", "system", "version", "--output", "stream-json"])
+            Cli::try_parse_from(["cache", "system", "version", "--output", "stream-json"])
                 .unwrap();
         assert_eq!(cli.output, Some(OutputFormat::Ndjson));
     }
 
     #[test]
     fn parses_machine_scan() {
-        let cli = Cli::try_parse_from(["uecm-cli", "machine", "scan", "192.168.10.0/24"]).unwrap();
+        let cli = Cli::try_parse_from(["cache", "machine", "scan", "192.168.10.0/24"]).unwrap();
         match cli.command {
             Domain::Machine { action: MachineAction::Scan { cidr, timeout_ms } } => {
                 assert_eq!(cidr, "192.168.10.0/24");
@@ -1671,7 +1671,7 @@ mod tests {
     #[test]
     fn parses_machine_deep_scan() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "machine", "deep-scan", "--machine-ids", "3,4,5", "--cred-alias", "prod",
+            "cache", "machine", "deep-scan", "--machine-ids", "3,4,5", "--cred-alias", "prod",
         ])
         .unwrap();
         match cli.command {
@@ -1686,7 +1686,7 @@ mod tests {
     #[test]
     fn parses_machine_authorize_with_save_as() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "machine", "authorize", "--all", "--user", "Administrator", "--pass-stdin",
+            "cache", "machine", "authorize", "--all", "--user", "Administrator", "--pass-stdin",
             "--save-as", "prod",
         ])
         .unwrap();
@@ -1701,13 +1701,13 @@ mod tests {
 
     #[test]
     fn parses_global_json_flag_before_subcommand() {
-        let cli = Cli::try_parse_from(["uecm-cli", "--json", "system", "version"]).unwrap();
+        let cli = Cli::try_parse_from(["cache", "--json", "system", "version"]).unwrap();
         assert!(cli.json);
     }
 
     #[test]
     fn parses_machine_refresh_by_id() {
-        let cli = Cli::try_parse_from(["uecm-cli", "machine", "refresh", "3"]).unwrap();
+        let cli = Cli::try_parse_from(["cache", "machine", "refresh", "3"]).unwrap();
         match cli.command {
             Domain::Machine { action: MachineAction::Refresh { id, cred } } => {
                 assert_eq!(id, 3);
@@ -1720,7 +1720,7 @@ mod tests {
     #[test]
     fn refresh_rejects_unknown_flag() {
         let res = Cli::try_parse_from([
-            "uecm-cli", "machine", "refresh", "3", "--bogus-flag", "value",
+            "cache", "machine", "refresh", "3", "--bogus-flag", "value",
         ]);
         assert!(res.is_err());
     }
@@ -1728,7 +1728,7 @@ mod tests {
     #[test]
     fn parses_machine_refresh_with_cred_alias() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "machine", "refresh", "3", "--cred-alias", "winrm-admin",
+            "cache", "machine", "refresh", "3", "--cred-alias", "winrm-admin",
         ])
         .unwrap();
         match cli.command {
@@ -1743,7 +1743,7 @@ mod tests {
     #[test]
     fn parses_cred_save_with_alias_and_user() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "cred", "save",
+            "cache", "cred", "save",
             "--alias", "winrm-admin",
             "--user", "Administrator",
             "--pass-stdin",
@@ -1762,7 +1762,7 @@ mod tests {
     #[test]
     fn cred_save_rejects_both_pass_and_pass_stdin() {
         let r = Cli::try_parse_from([
-            "uecm-cli", "cred", "save",
+            "cache", "cred", "save",
             "--alias", "a", "--user", "u",
             "--pass", "p", "--pass-stdin",
         ]);
@@ -1772,7 +1772,7 @@ mod tests {
     #[test]
     fn env_set_rejects_both_host_and_hosts() {
         let r = Cli::try_parse_from([
-            "uecm-cli", "env", "set",
+            "cache", "env", "set",
             "--host", "a", "--hosts", "b,c",
             "--name", "X", "--value", "Y",
         ]);
@@ -1782,7 +1782,7 @@ mod tests {
     #[test]
     fn env_set_accepts_hosts_list() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "env", "set",
+            "cache", "env", "set",
             "--hosts", "a,b,c",
             "--name", "X", "--value", "Y",
         ]).unwrap();
@@ -1799,7 +1799,7 @@ mod tests {
     #[test]
     fn parses_ini_backend_graph_set() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "ini", "backend-graph", "set",
+            "cache", "ini", "backend-graph", "set",
             "--hosts", "R01,R02", "--file-path", r"D:\Proj\Config\DefaultEngine.ini",
             "--node", "Shared", "--field", "ReadOnly", "--value", "false",
             "--cred-alias", "admin", "--yes",
@@ -1817,7 +1817,7 @@ mod tests {
     #[test]
     fn parses_local_cache_create_batch() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "local-cache", "create",
+            "cache", "local-cache", "create",
             "--hosts", "RENDER-01,RENDER-02",
             "--path", r"D:\UE-DDC-Local",
             "--cred-alias", "admin",
@@ -1835,7 +1835,7 @@ mod tests {
     #[test]
     fn parses_log_verify_startup() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "log", "verify-startup",
+            "cache", "log", "verify-startup",
             "--host", "RENDER-01",
             "--editor-exe", r"C:\UE\Engine\Binaries\Win64\UnrealEditor.exe",
             "--project", r"D:\Projects\MyVP\MyVP.uproject",
@@ -1855,7 +1855,7 @@ mod tests {
     #[test]
     fn parses_deploy_ddc() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "deploy", "ddc",
+            "cache", "deploy", "ddc",
             "--plan", "/tmp/plan.json",
             "--stop-on-failure",
             "--cred-alias", "admin",
@@ -1874,7 +1874,7 @@ mod tests {
     #[test]
     fn parses_ini_gc_pause() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "ini", "gc-pause",
+            "cache", "ini", "gc-pause",
             "--hosts", "R01,R02",
             "--project-id", "1",
             "--cred-alias", "admin", "--yes",
@@ -1891,7 +1891,7 @@ mod tests {
     #[test]
     fn parses_ini_gc_resume_with_age() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "ini", "gc-resume",
+            "cache", "ini", "gc-resume",
             "--hosts", "R01",
             "--project-id", "1",
             "--unused-file-age", "30",
@@ -1908,7 +1908,7 @@ mod tests {
     #[test]
     fn parses_ini_zen_gc_pause() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "ini", "zen-gc-pause",
+            "cache", "ini", "zen-gc-pause",
             "--hosts", "R01",
             "--project-id", "7",
             "--cred-alias", "admin", "--yes",
@@ -1926,7 +1926,7 @@ mod tests {
     fn parses_ini_zen_gc_resume_default_and_override() {
         // default gc_seconds = 14-day engine default
         let cli = Cli::try_parse_from([
-            "uecm-cli", "ini", "zen-gc-resume",
+            "cache", "ini", "zen-gc-resume",
             "--hosts", "R01", "--project-id", "1",
             "--cred-alias", "admin", "--yes",
         ]).unwrap();
@@ -1941,7 +1941,7 @@ mod tests {
     #[test]
     fn parses_health_run_with_expected_paths() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "health", "run",
+            "cache", "health", "run",
             "--machine-ids", "1,2",
             "--expected-local-path", r"D:\UE-DDC-Local",
             "--expected-shared-path", r"\\NAS\DDC",
@@ -1962,7 +1962,7 @@ mod tests {
     #[test]
     fn parses_health_run_without_expected_paths_defaults_to_empty() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "health", "run",
+            "cache", "health", "run",
             "--machine-ids", "1",
         ])
         .unwrap();
@@ -1980,7 +1980,7 @@ mod tests {
     #[test]
     fn parses_health_scan_command_line() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "health", "scan-command-line",
+            "cache", "health", "scan-command-line",
             "--host", "RENDER-01",
             "--cred-alias", "admin",
         ]).unwrap();
@@ -1995,7 +1995,7 @@ mod tests {
     #[test]
     fn parses_health_file_stats() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "health", "file-stats",
+            "cache", "health", "file-stats",
             "--host", "RENDER-01",
             "--local-path", r"D:\UE-DDC-Local",
             "--shared-path", r"\\NAS\DDC",
@@ -2012,7 +2012,7 @@ mod tests {
     #[test]
     fn parses_health_analyze_advisories() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "health", "analyze-advisories",
+            "cache", "health", "analyze-advisories",
             "--host", "RENDER-01",
             "--editor-exe", r"C:\UE\UnrealEditor.exe",
             "--project", r"D:\Proj\Foo.uproject",
@@ -2030,7 +2030,7 @@ mod tests {
 
     #[test]
     fn parses_health_run_with_machine_ids() {
-        let cli = Cli::try_parse_from(["uecm-cli", "health", "run", "--machine-ids", "1,2,3"]).unwrap();
+        let cli = Cli::try_parse_from(["cache", "health", "run", "--machine-ids", "1,2,3"]).unwrap();
         match cli.command {
             Domain::Health { action: HealthAction::Run { machine_ids, cidr, all, .. } } => {
                 assert_eq!(machine_ids, vec![1, 2, 3]);
@@ -2043,7 +2043,7 @@ mod tests {
 
     #[test]
     fn parses_health_run_with_cidr() {
-        let cli = Cli::try_parse_from(["uecm-cli", "health", "run", "--cidr", "192.168.10.0/24"]).unwrap();
+        let cli = Cli::try_parse_from(["cache", "health", "run", "--cidr", "192.168.10.0/24"]).unwrap();
         match cli.command {
             Domain::Health { action: HealthAction::Run { cidr, .. } } => {
                 assert_eq!(cidr.as_deref(), Some("192.168.10.0/24"));
@@ -2054,7 +2054,7 @@ mod tests {
 
     #[test]
     fn parses_health_run_with_all_flag() {
-        let cli = Cli::try_parse_from(["uecm-cli", "health", "run", "--all"]).unwrap();
+        let cli = Cli::try_parse_from(["cache", "health", "run", "--all"]).unwrap();
         match cli.command {
             Domain::Health { action: HealthAction::Run { all, .. } } => assert!(all),
             _ => panic!("expected Health::Run"),
@@ -2063,7 +2063,7 @@ mod tests {
 
     #[test]
     fn parses_health_run_with_no_target_mode() {
-        let cli = Cli::try_parse_from(["uecm-cli", "health", "run"]).unwrap();
+        let cli = Cli::try_parse_from(["cache", "health", "run"]).unwrap();
         match cli.command {
             Domain::Health { action: HealthAction::Run { machine_ids, cidr, all, .. } } => {
                 assert!(machine_ids.is_empty());
@@ -2076,13 +2076,13 @@ mod tests {
 
     #[test]
     fn rejects_cidr_and_machine_ids_together() {
-        let r = Cli::try_parse_from(["uecm-cli", "health", "run", "--cidr", "10.0.0.0/24", "--machine-ids", "1"]);
+        let r = Cli::try_parse_from(["cache", "health", "run", "--cidr", "10.0.0.0/24", "--machine-ids", "1"]);
         assert!(r.is_err(), "should reject --cidr + --machine-ids");
     }
 
     #[test]
     fn rejects_all_and_cidr_together() {
-        let r = Cli::try_parse_from(["uecm-cli", "health", "run", "--all", "--cidr", "10.0.0.0/24"]);
+        let r = Cli::try_parse_from(["cache", "health", "run", "--all", "--cidr", "10.0.0.0/24"]);
         assert!(r.is_err(), "should reject --all + --cidr");
     }
 
@@ -2091,7 +2091,7 @@ mod tests {
     #[test]
     fn ddc_generate_backend_defaults_to_auto() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "ddc", "generate",
+            "cache", "ddc", "generate",
             "--project-id", "1",
             "--source-machine", "1",
         ]).unwrap();
@@ -2106,7 +2106,7 @@ mod tests {
     #[test]
     fn ddc_generate_accepts_backend_zen() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "ddc", "generate",
+            "cache", "ddc", "generate",
             "--project-id", "1",
             "--source-machine", "1",
             "--backend", "zen",
@@ -2122,7 +2122,7 @@ mod tests {
     #[test]
     fn ddc_verify_accepts_backend_legacy() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "ddc", "verify",
+            "cache", "ddc", "verify",
             "--project-id", "1",
             "--source-machine", "1",
             "--backend", "legacy",
@@ -2138,7 +2138,7 @@ mod tests {
     #[test]
     fn ddc_distribute_accepts_backend_zen() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "ddc", "distribute",
+            "cache", "ddc", "distribute",
             "--project-id", "1",
             "--source-machine", "1",
             "--targets", "2,3",
@@ -2158,7 +2158,7 @@ mod tests {
     #[test]
     fn zen_enable_parses_required_flags() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "zen", "enable",
+            "cache", "zen", "enable",
             "--project-id", "7",
             "--machines", "1,2,3",
             "--upstream-endpoint-id", "9",
@@ -2184,7 +2184,7 @@ mod tests {
     #[test]
     fn zen_enable_accepts_custom_namespace_and_dry_run() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "zen", "enable",
+            "cache", "zen", "enable",
             "--project-id", "1",
             "--machines", "5",
             "--upstream-endpoint-id", "2",
@@ -2205,7 +2205,7 @@ mod tests {
     #[test]
     fn zen_disable_parses_required_flags() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "zen", "disable",
+            "cache", "zen", "disable",
             "--project-id", "1",
             "--machines", "1,2",
             "--yes",
@@ -2228,7 +2228,7 @@ mod tests {
     #[test]
     fn zen_verify_rules_parses_required_flags() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "zen", "verify-rules",
+            "cache", "zen", "verify-rules",
             "--ue-version", "5.7",
             "--ue-install", "C:\\UE\\5.7",
         ]).unwrap();
@@ -2254,7 +2254,7 @@ mod tests {
     #[test]
     fn zen_verify_rules_accepts_write_verified() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "zen", "verify-rules",
+            "cache", "zen", "verify-rules",
             "--ue-version", "5.8.0",
             "--ue-install", "/Users/lan/UE",
             "--write-verified",
@@ -2274,7 +2274,7 @@ mod tests {
     #[test]
     fn zen_verify_rules_accepts_run_editor_flags() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "zen", "verify-rules",
+            "cache", "zen", "verify-rules",
             "--ue-version", "5.7",
             "--ue-install", "D:\\UE_5.7",
             "--run-editor",
@@ -2307,7 +2307,7 @@ mod tests {
     #[test]
     fn zen_verify_rules_rejects_missing_ue_version() {
         let r = Cli::try_parse_from([
-            "uecm-cli", "zen", "verify-rules",
+            "cache", "zen", "verify-rules",
             "--ue-install", "C:\\UE\\5.7",
         ]);
         assert!(r.is_err());
@@ -2316,7 +2316,7 @@ mod tests {
     #[test]
     fn ddc_generate_rejects_unknown_backend_value() {
         let r = Cli::try_parse_from([
-            "uecm-cli", "ddc", "generate",
+            "cache", "ddc", "generate",
             "--project-id", "1",
             "--source-machine", "1",
             "--backend", "garbage",
@@ -2327,7 +2327,7 @@ mod tests {
     #[test]
     fn parses_ini_config_with_domain() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "ini", "config", "37", "--domain", "ddc",
+            "cache", "ini", "config", "37", "--domain", "ddc",
         ]).unwrap();
         match cli.command {
             Domain::Ini { action: IniAction::Config { scan_run_id, domain } } => {
@@ -2341,7 +2341,7 @@ mod tests {
     #[test]
     fn parses_ini_scan_project_id() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "ini", "scan", "--project-id", "5", "--machine-id", "11",
+            "cache", "ini", "scan", "--project-id", "5", "--machine-id", "11",
         ]).unwrap();
         match cli.command {
             Domain::Ini { action: IniAction::Scan { project_id, machine_id, machine_ids, .. } } => {
@@ -2356,7 +2356,7 @@ mod tests {
     #[test]
     fn ini_scan_project_id_conflicts_with_machine_ids() {
         let res = Cli::try_parse_from([
-            "uecm-cli", "ini", "scan", "--project-id", "5", "--machine-ids", "1,2",
+            "cache", "ini", "scan", "--project-id", "5", "--machine-ids", "1,2",
         ]);
         assert!(res.is_err(), "project-id and machine-ids must conflict");
     }
@@ -2387,15 +2387,15 @@ mod tests {
 
     #[test]
     fn no_input_flag_parses() {
-        let cli = Cli::try_parse_from(["uecm-cli", "--no-input", "system", "version"]).unwrap();
+        let cli = Cli::try_parse_from(["cache", "--no-input", "system", "version"]).unwrap();
         assert!(cli.no_input);
-        let cli2 = Cli::try_parse_from(["uecm-cli", "system", "version"]).unwrap();
+        let cli2 = Cli::try_parse_from(["cache", "system", "version"]).unwrap();
         assert!(!cli2.no_input);
     }
 
     #[test]
     fn completion_command_parses_shell() {
-        let cli = Cli::try_parse_from(["uecm-cli", "system", "completion", "bash"]).unwrap();
+        let cli = Cli::try_parse_from(["cache", "system", "completion", "bash"]).unwrap();
         match cli.command {
             Domain::System { action: SystemAction::Completion { shell } } => {
                 assert_eq!(shell, clap_complete::Shell::Bash);
@@ -2407,7 +2407,7 @@ mod tests {
     #[test]
     fn parses_zen_sponsor_down() {
         let cli = Cli::try_parse_from([
-            "uecm-cli", "zen", "sponsor-down", "--endpoint-id", "1", "--dry-run",
+            "cache", "zen", "sponsor-down", "--endpoint-id", "1", "--dry-run",
         ])
         .expect("sponsor-down should parse");
         match cli.command {

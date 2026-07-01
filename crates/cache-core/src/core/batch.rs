@@ -5,7 +5,7 @@
 //! BatchEvent updates to an unbounded mpsc sender so callers can stream
 //! progress to the frontend.
 
-use crate::error::UecmResult;
+use crate::error::VoloResult;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::sync::Arc;
@@ -39,7 +39,7 @@ pub async fn run_batch<F, Fut, T>(
 ) -> mpsc::UnboundedReceiver<BatchEvent>
 where
     F: Fn(i64) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = UecmResult<T>> + Send + 'static,
+    Fut: Future<Output = VoloResult<T>> + Send + 'static,
     T: Send + 'static,
 {
     let (tx, rx) = mpsc::unbounded_channel();
@@ -82,12 +82,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::UecmError;
+    use crate::error::VoloError;
 
     #[tokio::test]
     async fn run_batch_emits_running_then_ok_for_each_machine() {
         let mut rx = run_batch(vec![1, 2, 3], 8, |id| async move {
-            Ok::<_, UecmError>(id)
+            Ok::<_, VoloError>(id)
         })
         .await;
 
@@ -104,7 +104,7 @@ mod tests {
     #[tokio::test]
     async fn run_batch_reports_errors_with_message() {
         let mut rx = run_batch(vec![1], 4, |_id| async move {
-            Err::<(), _>(UecmError::OperationFailed("nope".to_string()))
+            Err::<(), _>(VoloError::OperationFailed("nope".to_string()))
         })
         .await;
 
@@ -135,7 +135,7 @@ mod tests {
                 max_observed.fetch_max(now, Ordering::SeqCst);
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                 in_flight.fetch_sub(1, Ordering::SeqCst);
-                Ok::<_, UecmError>(())
+                Ok::<_, VoloError>(())
             }
         })
         .await;

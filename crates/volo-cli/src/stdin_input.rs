@@ -3,17 +3,17 @@
 //! one shared, format-aware path instead of ad-hoc flags.
 
 use crate::args::InputFormat;
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 use std::io::Read;
 
 /// Parse an in-memory byte buffer per the declared input format into a JSON value.
 /// (Separated from stdin I/O so it is unit-testable without a real stdin.)
-pub fn parse(buf: &str, fmt: InputFormat) -> UecmResult<serde_json::Value> {
+pub fn parse(buf: &str, fmt: InputFormat) -> VoloResult<serde_json::Value> {
     match fmt {
         InputFormat::Json => serde_json::from_str(buf)
-            .map_err(|e| UecmError::InvalidInput(format!("parse json stdin: {}", e))),
+            .map_err(|e| VoloError::InvalidInput(format!("parse json stdin: {}", e))),
         InputFormat::Yaml => serde_yaml::from_str(buf)
-            .map_err(|e| UecmError::InvalidInput(format!("parse yaml stdin: {}", e))),
+            .map_err(|e| VoloError::InvalidInput(format!("parse yaml stdin: {}", e))),
         InputFormat::Ndjson => {
             let mut items = Vec::new();
             for (n, line) in buf.lines().enumerate() {
@@ -21,7 +21,7 @@ pub fn parse(buf: &str, fmt: InputFormat) -> UecmResult<serde_json::Value> {
                     continue;
                 }
                 let v: serde_json::Value = serde_json::from_str(line).map_err(|e| {
-                    UecmError::InvalidInput(format!("parse ndjson stdin line {}: {}", n + 1, e))
+                    VoloError::InvalidInput(format!("parse ndjson stdin line {}: {}", n + 1, e))
                 })?;
                 items.push(v);
             }
@@ -31,11 +31,11 @@ pub fn parse(buf: &str, fmt: InputFormat) -> UecmResult<serde_json::Value> {
 }
 
 /// Read all of stdin and parse it. Thin I/O wrapper over [`parse`].
-pub fn read_stdin(fmt: InputFormat) -> UecmResult<serde_json::Value> {
+pub fn read_stdin(fmt: InputFormat) -> VoloResult<serde_json::Value> {
     let mut buf = String::new();
     std::io::stdin()
         .read_to_string(&mut buf)
-        .map_err(|e| UecmError::InvalidInput(format!("read stdin: {}", e)))?;
+        .map_err(|e| VoloError::InvalidInput(format!("read stdin: {}", e)))?;
     parse(&buf, fmt)
 }
 
@@ -64,6 +64,6 @@ mod tests {
     #[test]
     fn parse_bad_json_is_invalid_input() {
         let err = parse("{not json", InputFormat::Json).unwrap_err();
-        assert!(matches!(err, UecmError::InvalidInput(_)));
+        assert!(matches!(err, VoloError::InvalidInput(_)));
     }
 }

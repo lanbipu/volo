@@ -9,7 +9,7 @@ use cache_core::data::{
     ini_config_snapshots, ini_findings, machine_ue_installs,
     machines as data_machines, scan_runs, Db, IniFinding,
 };
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::State;
@@ -51,10 +51,10 @@ pub struct ScanInisResponse {
 pub async fn scan_inis(
     db: State<'_, Db>,
     request: ScanInisRequest,
-) -> UecmResult<ScanInisResponse> {
+) -> VoloResult<ScanInisResponse> {
     // 改 async + spawn_blocking：原 body 同步阻塞 SSH 读 INI，跑主线程会冻结 UI。
     let db: Db = (*db).clone();
-    tokio::task::spawn_blocking(move || -> UecmResult<ScanInisResponse> {
+    tokio::task::spawn_blocking(move || -> VoloResult<ScanInisResponse> {
     let summary = scan_inis_summary(
         &db,
         request.machine_ids.clone(),
@@ -77,7 +77,7 @@ pub async fn scan_inis(
     })
     })
     .await
-    .map_err(|e| UecmError::OperationFailed(format!("ini scan task join: {}", e)))?
+    .map_err(|e| VoloError::OperationFailed(format!("ini scan task join: {}", e)))?
 }
 
 fn scan_inis_summary(
@@ -86,9 +86,9 @@ fn scan_inis_summary(
     project_paths_per_machine: std::collections::HashMap<i64, Vec<String>>,
     user_profile: String,
     credential_alias: String,
-) -> UecmResult<ScanRunSummary> {
+) -> VoloResult<ScanRunSummary> {
     if machine_ids.is_empty() {
-        return Err(UecmError::InvalidInput("machine_ids must not be empty".into()));
+        return Err(VoloError::InvalidInput("machine_ids must not be empty".into()));
     }
     let _ = credential_alias; // accepted-but-ignored shim (SSH key auth); Vue still sends it.
     let scan_id = scan_runs::insert(&db, "ini", &machine_ids)?;
@@ -102,7 +102,7 @@ fn scan_inis_summary(
 
     for &mid in &machine_ids {
         let machine = data_machines::find_by_id(&db, mid)?
-            .ok_or_else(|| UecmError::InvalidInput(format!("machine {} not found", mid)))?;
+            .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", mid)))?;
         let installs_rows = machine_ue_installs::list_for_machine(&db, mid)?;
         let installs: Vec<(String, String)> = installs_rows.into_iter()
             .map(|i| (i.version, i.install_path)).collect();
@@ -118,7 +118,7 @@ fn scan_inis_summary(
 
         // Auto-enable zen rules when the machine has a registered endpoint.
         // No flag — fewer surprises; the moment an operator runs
-        // `uecm-cli zen register` the next INI scan starts reporting
+        // `voloctl cache zen register` the next INI scan starts reporting
         // R012-R018. UE version hint = highest install on this machine
         // by NUMERIC (major, minor) order. Codex P2: lexicographic max
         // would pick "5.9" over "5.10", routing R012-R015 through wrong
@@ -225,14 +225,14 @@ fn scan_inis_summary(
     // that into a wizard error.
     if total_read == 0 {
         if !all_errors.is_empty() {
-            return Err(UecmError::OperationFailed(format!(
+            return Err(VoloError::OperationFailed(format!(
                 "INI scan read no files; {} read error(s). First: {}",
                 all_errors.len(),
                 all_errors.first().cloned().unwrap_or_default()
             )));
         }
         if !all_not_found.is_empty() {
-            return Err(UecmError::OperationFailed(format!(
+            return Err(VoloError::OperationFailed(format!(
                 "INI scan read no files: all {} target(s) missing. First: {}",
                 all_not_found.len(),
                 all_not_found.first().cloned().unwrap_or_default()
@@ -260,17 +260,17 @@ fn paths_for_machines(
 
 
 #[tauri::command]
-pub fn list_findings_for_run(db: State<'_, Db>, scan_run_id: i64) -> UecmResult<Vec<IniFinding>> {
+pub fn list_findings_for_run(db: State<'_, Db>, scan_run_id: i64) -> VoloResult<Vec<IniFinding>> {
     ini_findings::list_for_run(&db, scan_run_id)
 }
 
 #[tauri::command]
-pub fn list_findings(db: State<'_, Db>, scan_run_id: i64) -> UecmResult<Vec<IniFinding>> {
+pub fn list_findings(db: State<'_, Db>, scan_run_id: i64) -> VoloResult<Vec<IniFinding>> {
     ini_findings::list_for_run(&db, scan_run_id)
 }
 
 #[tauri::command]
-pub fn list_recent_ini_runs(db: State<'_, Db>, limit: i64) -> UecmResult<Vec<scan_runs::ScanRun>> {
+pub fn list_recent_ini_runs(db: State<'_, Db>, limit: i64) -> VoloResult<Vec<scan_runs::ScanRun>> {
     scan_runs::list_recent(&db, "ini", limit)
 }
 
@@ -279,12 +279,12 @@ pub fn list_scan_runs(
     db: State<'_, Db>,
     scan_type: String,
     limit: i64,
-) -> UecmResult<Vec<scan_runs::ScanRun>> {
+) -> VoloResult<Vec<scan_runs::ScanRun>> {
     scan_runs::list_recent(&db, &scan_type, limit)
 }
 
 #[tauri::command]
-pub fn get_finding(db: State<'_, Db>, finding_id: i64) -> UecmResult<Option<IniFinding>> {
+pub fn get_finding(db: State<'_, Db>, finding_id: i64) -> VoloResult<Option<IniFinding>> {
     ini_findings::find_by_id(&db, finding_id)
 }
 
@@ -293,14 +293,14 @@ pub async fn apply_finding(
     db: State<'_, Db>,
     finding_id: i64,
     credential_alias: String,
-) -> UecmResult<String> {
+) -> VoloResult<String> {
     // 改 async + spawn_blocking：ini_apply::apply 是阻塞 SSH 远程写，跑主线程会卡 UI。
     let db: Db = (*db).clone();
-    tokio::task::spawn_blocking(move || -> UecmResult<String> {
+    tokio::task::spawn_blocking(move || -> VoloResult<String> {
     let f = ini_findings::find_by_id(&db, finding_id)?
-        .ok_or_else(|| UecmError::InvalidInput(format!("finding {} not found", finding_id)))?;
+        .ok_or_else(|| VoloError::InvalidInput(format!("finding {} not found", finding_id)))?;
     let machine = data_machines::find_by_id(&db, f.machine_id)?
-        .ok_or_else(|| UecmError::InvalidInput(format!("machine {} not found", f.machine_id)))?;
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", f.machine_id)))?;
     // SSH key auth: ini_apply uses the no-credential ini_editor fns, so there's
     // nothing to resolve. The credential_alias param stays as an accepted-ignored
     // shim (Vue compat).
@@ -311,11 +311,11 @@ pub async fn apply_finding(
     Ok(backup)
     })
     .await
-    .map_err(|e| UecmError::OperationFailed(format!("apply finding task join: {}", e)))?
+    .map_err(|e| VoloError::OperationFailed(format!("apply finding task join: {}", e)))?
 }
 
 #[tauri::command]
-pub fn skip_finding(db: State<'_, Db>, finding_id: i64) -> UecmResult<()> {
+pub fn skip_finding(db: State<'_, Db>, finding_id: i64) -> VoloResult<()> {
     ini_findings::mark_skipped(&db, finding_id)
 }
 
@@ -323,9 +323,9 @@ pub fn skip_finding(db: State<'_, Db>, finding_id: i64) -> UecmResult<()> {
 pub async fn verify_pso_precaching(
     db: State<'_, Db>,
     request: ScanInisRequest,
-) -> UecmResult<ScanInisResponse> {
+) -> VoloResult<ScanInisResponse> {
     if request.project_paths.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "project_paths cannot be empty for PSO precaching verification".into(),
         ));
     }

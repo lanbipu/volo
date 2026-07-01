@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use crate::core::zen::cb_parser::{self, CbValue};
 use crate::data;
-use crate::error::UecmResult;
+use crate::error::VoloResult;
 
 /// The cache provider name used by zen. Plan §1.1 baseline only persists
 /// stats for this provider; other names from `/stats` are tracked in
@@ -142,7 +142,7 @@ pub fn fetch_cache_stats(
 
 /// Persist every record in `outcome` via `data::zen_cache_stats::insert`.
 /// Returns the new row ids in insertion order.
-pub fn persist(db: &data::Db, outcome: &CacheStatsOutcome) -> UecmResult<Vec<i64>> {
+pub fn persist(db: &data::Db, outcome: &CacheStatsOutcome) -> VoloResult<Vec<i64>> {
     let mut ids = Vec::with_capacity(outcome.records.len());
     for record in &outcome.records {
         ids.push(data::zen_cache_stats::insert(db, record)?);
@@ -156,7 +156,7 @@ pub fn fetch_and_persist(
     endpoint: &data::zen_endpoints::ZenEndpoint,
     host: &str,
     timeout: Duration,
-) -> UecmResult<Vec<i64>> {
+) -> VoloResult<Vec<i64>> {
     let outcome = fetch_cache_stats(endpoint, host, timeout);
     persist(db, &outcome)
 }

@@ -1,7 +1,7 @@
 //! CRUD for the `zen_binary_intree` table.
 
 use crate::data::Db;
-use crate::error::UecmResult;
+use crate::error::VoloResult;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +15,7 @@ pub struct ZenBinaryIntree {
     pub last_seen_at: Option<String>,
 }
 
-pub fn upsert(db: &Db, row: &ZenBinaryIntree) -> UecmResult<()> {
+pub fn upsert(db: &Db, row: &ZenBinaryIntree) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     conn.execute(
         "INSERT INTO zen_binary_intree (
@@ -38,7 +38,7 @@ pub fn upsert(db: &Db, row: &ZenBinaryIntree) -> UecmResult<()> {
     Ok(())
 }
 
-pub fn list(db: &Db) -> UecmResult<Vec<ZenBinaryIntree>> {
+pub fn list(db: &Db) -> VoloResult<Vec<ZenBinaryIntree>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT ue_version_major, ue_version_minor, binary_kind,
@@ -59,7 +59,7 @@ pub fn find(
     ue_major: i64,
     ue_minor: i64,
     binary_kind: &str,
-) -> UecmResult<Option<ZenBinaryIntree>> {
+) -> VoloResult<Option<ZenBinaryIntree>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT ue_version_major, ue_version_minor, binary_kind,
@@ -80,7 +80,7 @@ pub fn delete(
     ue_major: i64,
     ue_minor: i64,
     binary_kind: &str,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     conn.execute(
         "DELETE FROM zen_binary_intree

@@ -2,12 +2,12 @@ use std::process::Command;
 
 #[test]
 fn invalid_flag_json_is_error_envelope_exit_64() {
-    // Migrated to `voloctl uecm`: the unknown flag rides the `uecm` subtree, so
-    // the top-level parse fails → uecm `usage_error` envelope / exit 64 (NOT the
+    // Migrated to `voloctl cache`: the unknown flag rides the `cache` subtree, so
+    // the top-level parse fails → cache `usage_error` envelope / exit 64 (NOT the
     // lmt `invalid_input`/exit-2 path; review #2 keeps the two distinct).
     let exe = env!("CARGO_BIN_EXE_voloctl");
     let out = Command::new(exe)
-        .args(["uecm", "--no-such-flag", "--output", "json"])
+        .args(["cache", "--no-such-flag", "--output", "json"])
         .env("NO_COLOR", "1")
         .output()
         .unwrap();
@@ -28,9 +28,9 @@ fn bad_config_json_is_full_error_envelope_on_stderr() {
     let exe = env!("CARGO_BIN_EXE_voloctl");
     let out = Command::new(exe)
         .args([
-            "uecm",
+            "cache",
             "--config",
-            "/nonexistent/uecm-cli-no-such-config.yml",
+            "/nonexistent/voloctl-no-such-config.yml",
             "--output",
             "json",
             "system",

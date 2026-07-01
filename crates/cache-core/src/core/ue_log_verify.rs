@@ -3,7 +3,7 @@
 
 use crate::core::ssh::{run_json, NodeScript, SshExecutor};
 use crate::core::ue_log_parser::{self, DdcEvent};
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -83,7 +83,7 @@ pub fn run_for_host(
     project_path: &str,
     timeout_seconds: u32,
     creds: Option<(&str, &str)>,
-) -> UecmResult<VerifyReport> {
+) -> VoloResult<VerifyReport> {
     let _ = creds; // SSH key auth; per-call WinRM cred no longer used (kept until A5).
     let exec = SshExecutor::from_config()?;
     let result: ScriptResult = run_json(
@@ -100,7 +100,7 @@ pub fn run_for_host(
         },
     )?;
     if !result.ok {
-        return Err(UecmError::OperationFailed(
+        return Err(VoloError::OperationFailed(
             result.message.unwrap_or_else(|| "log verify failed".into()),
         ));
     }

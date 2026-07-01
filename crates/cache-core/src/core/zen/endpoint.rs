@@ -33,7 +33,7 @@
 
 use crate::data::zen_endpoints::{self, ZenEndpoint};
 use crate::data::Db;
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use rusqlite::Connection;
 
 /// Canonical role: this machine runs its own zen and (optionally) forwards
@@ -93,7 +93,7 @@ pub struct RegisterOutcome {
 /// The validation reads, conflict probe, and insert all run inside one
 /// SQLite transaction so concurrent mutators cannot invalidate the upstream /
 /// self-id invariants between the checks and the write.
-pub fn register(db: &Db, input: &EndpointInput) -> UecmResult<RegisterOutcome> {
+pub fn register(db: &Db, input: &EndpointInput) -> VoloResult<RegisterOutcome> {
     // Field-level validation needs no DB access — do it before grabbing the
     // mutex so obviously bad input bails fast.
     validate_port(input.declared_port)?;
@@ -148,12 +148,12 @@ pub fn register(db: &Db, input: &EndpointInput) -> UecmResult<RegisterOutcome> {
 ///
 /// Existence check, dependents scan, and the delete all run in one
 /// transaction.
-pub fn unregister(db: &Db, endpoint_id: i64) -> UecmResult<()> {
+pub fn unregister(db: &Db, endpoint_id: i64) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     let tx = conn.unchecked_transaction()?;
 
     if zen_endpoints::get_tx(&tx, endpoint_id)?.is_none() {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "zen endpoint {endpoint_id} does not exist"
         )));
     }
@@ -164,7 +164,7 @@ pub fn unregister(db: &Db, endpoint_id: i64) -> UecmResult<()> {
             .iter()
             .filter_map(|e| e.id.map(|i| i.to_string()))
             .collect();
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "cannot unregister zen endpoint {endpoint_id}: still referenced as upstream by endpoint(s) [{}]; un-point them first",
             ids.join(", ")
         )));
@@ -196,7 +196,7 @@ pub fn change_role(
     endpoint_id: i64,
     new_role: &str,
     new_upstream: Option<i64>,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     validate_role(new_role)?;
 
     let conn = db.lock().unwrap();
@@ -220,17 +220,17 @@ pub fn change_role(
 }
 
 /// Thin pass-through to [`zen_endpoints::get`].
-pub fn get(db: &Db, endpoint_id: i64) -> UecmResult<Option<ZenEndpoint>> {
+pub fn get(db: &Db, endpoint_id: i64) -> VoloResult<Option<ZenEndpoint>> {
     zen_endpoints::get(db, endpoint_id)
 }
 
 /// Thin pass-through to [`zen_endpoints::list`].
-pub fn list(db: &Db) -> UecmResult<Vec<ZenEndpoint>> {
+pub fn list(db: &Db) -> VoloResult<Vec<ZenEndpoint>> {
     zen_endpoints::list(db)
 }
 
 /// Thin pass-through to [`zen_endpoints::list_for_machine`].
-pub fn list_for_machine(db: &Db, machine_id: i64) -> UecmResult<Vec<ZenEndpoint>> {
+pub fn list_for_machine(db: &Db, machine_id: i64) -> VoloResult<Vec<ZenEndpoint>> {
     zen_endpoints::list_for_machine(db, machine_id)
 }
 
@@ -248,7 +248,7 @@ pub fn validate_change_role(
     endpoint_id: i64,
     new_role: &str,
     new_upstream: Option<i64>,
-) -> UecmResult<ZenEndpoint> {
+) -> VoloResult<ZenEndpoint> {
     validate_role(new_role)?;
     let conn = db.lock().unwrap();
     // The read-only path doesn't need a transaction (no writes), but
@@ -267,9 +267,9 @@ fn validate_change_role_tx(
     endpoint_id: i64,
     new_role: &str,
     new_upstream: Option<i64>,
-) -> UecmResult<ZenEndpoint> {
+) -> VoloResult<ZenEndpoint> {
     let current = zen_endpoints::get_tx(tx, endpoint_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("zen endpoint {endpoint_id} does not exist"))
+        VoloError::InvalidInput(format!("zen endpoint {endpoint_id} does not exist"))
     })?;
 
     // The new role must be compatible with the current lifecycle_mode.
@@ -291,25 +291,25 @@ fn validate_change_role_tx(
 
 // ---- internal helpers ------------------------------------------------------
 
-fn validate_port(port: i64) -> UecmResult<()> {
+fn validate_port(port: i64) -> VoloResult<()> {
     if !(1..=65535).contains(&port) {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "declared_port must be in 1..=65535, got {port}"
         )));
     }
     Ok(())
 }
 
-fn validate_enum(field: &str, value: &str, allowed: &[&str]) -> UecmResult<()> {
+fn validate_enum(field: &str, value: &str, allowed: &[&str]) -> VoloResult<()> {
     if !allowed.contains(&value) {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "{field} must be one of {allowed:?}, got {value:?}"
         )));
     }
     Ok(())
 }
 
-fn validate_role(role: &str) -> UecmResult<()> {
+fn validate_role(role: &str) -> VoloResult<()> {
     validate_enum("role", role, &[ROLE_LOCAL, ROLE_SHARED_UPSTREAM])
 }
 
@@ -318,9 +318,9 @@ fn validate_role(role: &str) -> UecmResult<()> {
 /// and tied to the sponsoring Editor's lifecycle — remote render nodes cannot
 /// reach it, and it is not a stable Shared upstream. `local` endpoints can run
 /// either lifecycle.
-fn validate_role_lifecycle(role: &str, lifecycle_mode: &str) -> UecmResult<()> {
+fn validate_role_lifecycle(role: &str, lifecycle_mode: &str) -> VoloResult<()> {
     if role == ROLE_SHARED_UPSTREAM && lifecycle_mode != "installed_service" {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "shared_upstream endpoint must have lifecycle_mode {:?} (got {:?}); \
              editor-sponsored zen is loopback-only and editor-tied, not a stable LAN Shared upstream",
             "installed_service", lifecycle_mode
@@ -361,10 +361,10 @@ fn validate_role_lifecycle(role: &str, lifecycle_mode: &str) -> UecmResult<()> {
 ///   same path later, but `editor_owned` / `local` lifecycles never
 ///   reach that guard. Refuse at register time so every code path
 ///   sees a fully-qualified path.
-fn validate_data_dir(data_dir: &str) -> UecmResult<()> {
+fn validate_data_dir(data_dir: &str) -> VoloResult<()> {
     let trimmed = data_dir.trim();
     if trimmed.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "data_dir must not be empty or whitespace".to_string(),
         ));
     }
@@ -375,7 +375,7 @@ fn validate_data_dir(data_dir: &str) -> UecmResult<()> {
     // misinterpret them as UNC `\\?\` with the host `?` (codex P2).
     let normalized = trimmed.replace('/', r"\");
     if normalized.starts_with(r"\\?\") || normalized.starts_with(r"\\.\") {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "data_dir {data_dir:?} uses a Win32 device namespace prefix \
              (\\\\?\\ or \\\\.\\); these bypass path canonicalization and \
              would defeat the system-root safety check. Register without \
@@ -394,7 +394,7 @@ fn validate_data_dir(data_dir: &str) -> UecmResult<()> {
         && bytes[2] == b'\\';
     let is_unc = normalized.starts_with(r"\\");
     if !(is_drive_absolute || is_unc) {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "data_dir {data_dir:?} must be a fully-qualified absolute path \
              (e.g. 'D:\\ZenCache' or '\\\\host\\share\\Zen'); drive-relative \
              or root-relative paths resolve against process CWD on Windows \
@@ -410,7 +410,7 @@ fn validate_data_dir(data_dir: &str) -> UecmResult<()> {
     ];
     for root in FORBIDDEN {
         if canonical_lower == *root || canonical_lower.starts_with(&format!("{root}\\")) {
-            return Err(UecmError::InvalidInput(format!(
+            return Err(VoloError::InvalidInput(format!(
                 "data_dir {data_dir:?} resolves under a forbidden system location ({root}); \
                  pick a writable path on a non-system drive (e.g. D:\\ZenCache)"
             )));
@@ -491,27 +491,27 @@ fn validate_upstream_tx(
     role: &str,
     upstream: Option<i64>,
     self_id: Option<i64>,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     match (role, upstream) {
-        (ROLE_SHARED_UPSTREAM, Some(id)) => Err(UecmError::InvalidInput(format!(
+        (ROLE_SHARED_UPSTREAM, Some(id)) => Err(VoloError::InvalidInput(format!(
             "shared_upstream endpoint must not have an upstream_endpoint_id (got {id}); cluster master cannot forward upstream"
         ))),
         (_, None) => Ok(()),
         (ROLE_LOCAL, Some(target_id)) => {
             if let Some(s) = self_id {
                 if s == target_id {
-                    return Err(UecmError::InvalidInput(format!(
+                    return Err(VoloError::InvalidInput(format!(
                         "upstream_endpoint_id {target_id} cannot point at self"
                     )));
                 }
             }
             let target = zen_endpoints::get_tx(conn, target_id)?.ok_or_else(|| {
-                UecmError::InvalidInput(format!(
+                VoloError::InvalidInput(format!(
                     "upstream_endpoint_id {target_id} does not exist"
                 ))
             })?;
             if target.role != ROLE_SHARED_UPSTREAM {
-                return Err(UecmError::InvalidInput(format!(
+                return Err(VoloError::InvalidInput(format!(
                     "upstream_endpoint_id {target_id} has role {:?}; must be {:?}",
                     target.role, ROLE_SHARED_UPSTREAM
                 )));
@@ -520,7 +520,7 @@ fn validate_upstream_tx(
         }
         // Any unknown role is rejected earlier by validate_role; this arm keeps
         // the match exhaustive without an unreachable!.
-        (_, Some(_)) => Err(UecmError::InvalidInput(format!(
+        (_, Some(_)) => Err(VoloError::InvalidInput(format!(
             "role {role:?} cannot carry an upstream_endpoint_id"
         ))),
     }
@@ -532,7 +532,7 @@ fn lookup_existing_id_tx(
     conn: &Connection,
     machine_id: i64,
     declared_port: i64,
-) -> UecmResult<Option<i64>> {
+) -> VoloResult<Option<i64>> {
     let rows = zen_endpoints::list_for_machine_tx(conn, machine_id)?;
     Ok(rows
         .into_iter()
@@ -543,7 +543,7 @@ fn lookup_existing_id_tx(
 /// Return all endpoints whose `upstream_endpoint_id == Some(target)`. Used by
 /// [`unregister`] to refuse deletion when dependents exist. With cluster-scale
 /// endpoint counts (10s), a full table scan + filter is fine.
-fn list_dependents_of_tx(conn: &Connection, target: i64) -> UecmResult<Vec<ZenEndpoint>> {
+fn list_dependents_of_tx(conn: &Connection, target: i64) -> VoloResult<Vec<ZenEndpoint>> {
     let all = zen_endpoints::list_tx(conn)?;
     Ok(all
         .into_iter()
@@ -555,7 +555,7 @@ fn list_dependents_of_tx(conn: &Connection, target: i64) -> UecmResult<Vec<ZenEn
 /// still reference `id` as their upstream. Keeps the topology invariant
 /// "an upstream pointer must reference a `shared_upstream` row" intact
 /// without silently mutating dependents.
-fn ensure_no_dependents_on_demote_tx(conn: &Connection, id: i64) -> UecmResult<()> {
+fn ensure_no_dependents_on_demote_tx(conn: &Connection, id: i64) -> VoloResult<()> {
     let dependents = list_dependents_of_tx(conn, id)?;
     if dependents.is_empty() {
         return Ok(());
@@ -564,7 +564,7 @@ fn ensure_no_dependents_on_demote_tx(conn: &Connection, id: i64) -> UecmResult<(
         .iter()
         .filter_map(|e| e.id.map(|i| i.to_string()))
         .collect();
-    Err(UecmError::InvalidInput(format!(
+    Err(VoloError::InvalidInput(format!(
         "cannot demote zen endpoint {id} from shared_upstream: still referenced as upstream by endpoint(s) [{}]; un-point them first",
         ids.join(", ")
     )))
@@ -587,7 +587,7 @@ mod tests {
     }
 
     /// Test helper: callers that only need the id can drop `inserted`.
-    fn register_id(db: &Db, input: &EndpointInput) -> UecmResult<i64> {
+    fn register_id(db: &Db, input: &EndpointInput) -> VoloResult<i64> {
         register(db, input).map(|o| o.id)
     }
 
@@ -621,9 +621,9 @@ mod tests {
         }
     }
 
-    fn assert_invalid_input(err: &UecmError, needle: &str) {
+    fn assert_invalid_input(err: &VoloError, needle: &str) {
         match err {
-            UecmError::InvalidInput(msg) => assert!(
+            VoloError::InvalidInput(msg) => assert!(
                 msg.contains(needle),
                 "expected InvalidInput message to contain {needle:?}, got {msg:?}"
             ),

@@ -2,7 +2,7 @@
 //! username); the actual secret lives in the cross-platform SecretStore (AES-GCM).
 
 use crate::data::Db;
-use crate::error::UecmResult;
+use crate::error::VoloResult;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
@@ -45,7 +45,7 @@ pub struct CredentialRecord {
     pub username: String,
 }
 
-pub fn insert(db: &Db, cred: &CredentialRecord) -> UecmResult<i64> {
+pub fn insert(db: &Db, cred: &CredentialRecord) -> VoloResult<i64> {
     let conn = db.lock().unwrap();
     conn.execute(
         "INSERT INTO credentials (alias, kind, username) VALUES (?, ?, ?)",
@@ -54,7 +54,7 @@ pub fn insert(db: &Db, cred: &CredentialRecord) -> UecmResult<i64> {
     Ok(conn.last_insert_rowid())
 }
 
-pub fn list_all(db: &Db) -> UecmResult<Vec<CredentialRecord>> {
+pub fn list_all(db: &Db) -> VoloResult<Vec<CredentialRecord>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, alias, kind, username FROM credentials ORDER BY alias",
@@ -74,7 +74,7 @@ pub fn list_all(db: &Db) -> UecmResult<Vec<CredentialRecord>> {
     Ok(result)
 }
 
-pub fn find_by_alias(db: &Db, alias: &str) -> UecmResult<Option<CredentialRecord>> {
+pub fn find_by_alias(db: &Db, alias: &str) -> VoloResult<Option<CredentialRecord>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, alias, kind, username FROM credentials WHERE alias = ?",
@@ -92,7 +92,7 @@ pub fn find_by_alias(db: &Db, alias: &str) -> UecmResult<Option<CredentialRecord
     }
 }
 
-pub fn delete_by_alias(db: &Db, alias: &str) -> UecmResult<()> {
+pub fn delete_by_alias(db: &Db, alias: &str) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     conn.execute("DELETE FROM credentials WHERE alias = ?", params![alias])?;
     Ok(())

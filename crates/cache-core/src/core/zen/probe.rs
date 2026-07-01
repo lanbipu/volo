@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use crate::core::zen::cb_parser::{self, CbValue};
 use crate::data;
-use crate::error::UecmResult;
+use crate::error::VoloResult;
 
 /// Result of one round-trip probe. The record is ready to insert as-is.
 ///
@@ -162,7 +162,7 @@ pub fn probe_endpoint(
 
 /// Persist `outcome.record` via `data::zen_probes::insert`. Returns the
 /// new row id.
-pub fn persist(db: &data::Db, outcome: &ProbeOutcome) -> UecmResult<i64> {
+pub fn persist(db: &data::Db, outcome: &ProbeOutcome) -> VoloResult<i64> {
     data::zen_probes::insert(db, &outcome.record)
 }
 
@@ -172,7 +172,7 @@ pub fn probe_and_persist(
     endpoint: &data::zen_endpoints::ZenEndpoint,
     host: &str,
     timeout: Duration,
-) -> UecmResult<i64> {
+) -> VoloResult<i64> {
     let outcome = probe_endpoint(endpoint, host, timeout);
     persist(db, &outcome)
 }

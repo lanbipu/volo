@@ -10,7 +10,7 @@ use crate::data::{
     credentials as data_creds, machine_ue_installs, machines as data_machines, project_locations,
     pso_cache_files, share_configs, CredentialKind, CredentialRecord, Db, ShareConfig, ShareMode,
 };
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,14 +33,14 @@ impl DeployPlan {
     /// deserialization on both the CLI and Tauri entry points so an
     /// enabled-but-incomplete plan fails with a clear error instead of running
     /// with an empty resolution / editor path.
-    pub fn validate(&self) -> UecmResult<()> {
+    pub fn validate(&self) -> VoloResult<()> {
         if self.pso.enabled && self.pso.resolution.trim().is_empty() {
-            return Err(UecmError::InvalidInput(
+            return Err(VoloError::InvalidInput(
                 "pso.resolution is required when pso.enabled is true".into(),
             ));
         }
         if self.verify.run_log_verify && self.verify.editor_exe.trim().is_empty() {
-            return Err(UecmError::InvalidInput(
+            return Err(VoloError::InvalidInput(
                 "verify.editor_exe is required when verify.run_log_verify is true".into(),
             ));
         }
@@ -149,10 +149,10 @@ pub struct RunOptions {
 // Step executor
 // ---------------------------------------------------------------------------
 
-fn host_for(db: &Db, machine_id: i64) -> UecmResult<String> {
+fn host_for(db: &Db, machine_id: i64) -> VoloResult<String> {
     data_machines::find_by_id(db, machine_id)?
         .map(|m| m.ip)
-        .ok_or_else(|| UecmError::InvalidInput(format!("machine {} not found", machine_id)))
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))
 }
 
 /// Source SMB credential for a deploy distribution step. The targets mount the
@@ -162,7 +162,7 @@ fn host_for(db: &Db, machine_id: i64) -> UecmResult<String> {
 /// wrote; a Mode A (open) share needs no credential. Derived from the plan's own
 /// share spec (not a DB share lookup), so a same-run open share that was never
 /// persisted to `share_configs` still distributes.
-fn deploy_source_smb(db: &Db, plan: &DeployPlan) -> UecmResult<(Option<String>, Option<String>)> {
+fn deploy_source_smb(db: &Db, plan: &DeployPlan) -> VoloResult<(Option<String>, Option<String>)> {
     match plan.shared_cache.mode.as_str() {
         "b" | "B" => {
             let server_host = host_for(db, plan.shared_cache.server_machine_id)?;
@@ -170,7 +170,7 @@ fn deploy_source_smb(db: &Db, plan: &DeployPlan) -> UecmResult<(Option<String>, 
             let pass = crate::core::secrets::SecretStore::from_config()?
                 .get(&alias)?
                 .ok_or_else(|| {
-                    UecmError::OperationFailed(format!(
+                    VoloError::OperationFailed(format!(
                         "Mode B share secret '{alias}' missing from the SecretStore; \
                          re-run the share-creation step"
                     ))
@@ -181,11 +181,11 @@ fn deploy_source_smb(db: &Db, plan: &DeployPlan) -> UecmResult<(Option<String>, 
     }
 }
 
-fn project_root_for(db: &Db, project_id: i64, machine_id: i64) -> UecmResult<String> {
+fn project_root_for(db: &Db, project_id: i64, machine_id: i64) -> VoloResult<String> {
     project_locations::get_for_project_machine(db, project_id, machine_id)?
         .map(|loc| loc.abs_path)
         .ok_or_else(|| {
-            UecmError::InvalidInput(format!(
+            VoloError::InvalidInput(format!(
                 "project {} not located on machine {}",
                 project_id, machine_id
             ))
@@ -196,19 +196,19 @@ fn project_location_for(
     db: &Db,
     project_id: i64,
     machine_id: i64,
-) -> UecmResult<project_locations::ProjectLocation> {
+) -> VoloResult<project_locations::ProjectLocation> {
     project_locations::get_for_project_machine(db, project_id, machine_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!(
+        VoloError::InvalidInput(format!(
             "project {} not located on machine {}",
             project_id, machine_id
         ))
     })
 }
 
-fn resolve_primary_engine_path(db: &Db, machine_id: i64) -> UecmResult<String> {
+fn resolve_primary_engine_path(db: &Db, machine_id: i64) -> VoloResult<String> {
     let installs = machine_ue_installs::list_for_machine(db, machine_id)?;
     if installs.is_empty() {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "machine {} has no detected UE installs",
             machine_id
         )));
@@ -221,16 +221,16 @@ fn resolve_primary_engine_path(db: &Db, machine_id: i64) -> UecmResult<String> {
     Ok(install.install_path)
 }
 
-fn parse_resolution(text: &str) -> UecmResult<(u32, u32)> {
+fn parse_resolution(text: &str) -> VoloResult<(u32, u32)> {
     let mut parts = text.split(|c| c == 'x' || c == 'X');
     let w = parts
         .next()
         .and_then(|v| v.trim().parse::<u32>().ok())
-        .ok_or_else(|| UecmError::InvalidInput(format!("bad resolution: {}", text)))?;
+        .ok_or_else(|| VoloError::InvalidInput(format!("bad resolution: {}", text)))?;
     let h = parts
         .next()
         .and_then(|v| v.trim().parse::<u32>().ok())
-        .ok_or_else(|| UecmError::InvalidInput(format!("bad resolution: {}", text)))?;
+        .ok_or_else(|| VoloError::InvalidInput(format!("bad resolution: {}", text)))?;
     Ok((w, h))
 }
 
@@ -306,7 +306,7 @@ fn execute_one(
     machine_id: i64,
     host: &str,
     creds: Option<(&str, &str)>,
-) -> UecmResult<Option<String>> {
+) -> VoloResult<Option<String>> {
     use DeployStep::*;
     match step {
         ProvisionLocalDir => local_cache::create(
@@ -380,7 +380,7 @@ fn execute_one(
                     r
                 }
                 other => {
-                    return Err(UecmError::InvalidInput(format!(
+                    return Err(VoloError::InvalidInput(format!(
                         "unknown share mode '{}'",
                         other
                     )));
@@ -432,7 +432,7 @@ fn execute_one(
         DistributeDdcPak => {
             let source_machine = data_machines::find_by_id(db, plan.source_machine_id)?
                 .ok_or_else(|| {
-                    UecmError::InvalidInput(format!(
+                    VoloError::InvalidInput(format!(
                         "machine {} not found",
                         plan.source_machine_id
                     ))
@@ -460,11 +460,11 @@ fn execute_one(
                 .into_iter()
                 .find(|i| i.target_machine_id == machine_id)
                 .ok_or_else(|| {
-                    UecmError::InvalidInput("no plan item for target".into())
+                    VoloError::InvalidInput("no plan item for target".into())
                 })?;
             let outcome = block_on_async(pak_distribute::run_one_with_profile(&profile, item))?;
             if !outcome.ok {
-                return Err(UecmError::OperationFailed(format!(
+                return Err(VoloError::OperationFailed(format!(
                     "robocopy exit {}: {}",
                     outcome.exit_code,
                     outcome
@@ -511,7 +511,7 @@ fn execute_one(
         DistributePso => {
             let source_machine = data_machines::find_by_id(db, plan.source_machine_id)?
                 .ok_or_else(|| {
-                    UecmError::InvalidInput(format!(
+                    VoloError::InvalidInput(format!(
                         "machine {} not found",
                         plan.source_machine_id
                     ))
@@ -521,7 +521,7 @@ fn execute_one(
                 .filter(|f| f.source_machine_id == plan.source_machine_id)
                 .collect::<Vec<_>>();
             if files.is_empty() {
-                return Err(UecmError::OperationFailed(
+                return Err(VoloError::OperationFailed(
                     "no PSO cache files collected on source".into(),
                 ));
             }
@@ -544,13 +544,13 @@ fn execute_one(
                     .into_iter()
                     .find(|i| i.target_machine_id == machine_id)
                     .ok_or_else(|| {
-                        UecmError::InvalidInput(
+                        VoloError::InvalidInput(
                             "no pso plan item for target".into(),
                         )
                     })?;
                 let outcome = block_on_async(pso_distribute::run_one(item))?;
                 if !outcome.ok {
-                    return Err(UecmError::OperationFailed(format!(
+                    return Err(VoloError::OperationFailed(format!(
                         "robocopy exit {} ({}): {}",
                         outcome.exit_code,
                         file.file_name,
@@ -588,7 +588,7 @@ fn execute_one(
                     report.shared_path.as_deref().unwrap_or("?")
                 )))
             } else {
-                Err(UecmError::OperationFailed(format!(
+                Err(VoloError::OperationFailed(format!(
                     "verify failed: local={:?} shared={:?} deactivated={:?} collisions={}",
                     report.local_path,
                     report.shared_path,
@@ -600,9 +600,9 @@ fn execute_one(
     }
 }
 
-fn block_on_async<F, T>(fut: F) -> UecmResult<T>
+fn block_on_async<F, T>(fut: F) -> VoloResult<T>
 where
-    F: std::future::Future<Output = UecmResult<T>>,
+    F: std::future::Future<Output = VoloResult<T>>,
 {
     match tokio::runtime::Handle::try_current().ok() {
         // Called from spawn_blocking (or any dedicated blocking thread):
@@ -612,7 +612,7 @@ where
         Some(h) => h.block_on(fut),
         None => {
             let rt = tokio::runtime::Runtime::new()
-                .map_err(|e| UecmError::OperationFailed(format!("tokio rt: {}", e)))?;
+                .map_err(|e| VoloError::OperationFailed(format!("tokio rt: {}", e)))?;
             rt.block_on(fut)
         }
     }
@@ -633,7 +633,7 @@ fn generate_pak_sync(
     uproject_path: &str,
     project_dir: &str,
     creds: Option<(&str, &str)>,
-) -> UecmResult<ddc_pak::PakOutput> {
+) -> VoloResult<ddc_pak::PakOutput> {
     let (user, pass) = match creds {
         Some((u, p)) => (Some(u), Some(p)),
         None => (None, None),
@@ -672,23 +672,23 @@ fn generate_pak_sync(
                 _ => {}
             }
         }
-        Ok::<Outcome, UecmError>(Outcome::StreamEnded)
+        Ok::<Outcome, VoloError>(Outcome::StreamEnded)
     })?;
 
     let exit = match outcome {
         Outcome::Completed(code) => code,
         Outcome::Cancelled => {
-            return Err(UecmError::OperationFailed("ue runner cancelled".into()));
+            return Err(VoloError::OperationFailed("ue runner cancelled".into()));
         }
-        Outcome::Error(msg) => return Err(UecmError::OperationFailed(msg)),
+        Outcome::Error(msg) => return Err(VoloError::OperationFailed(msg)),
         Outcome::StreamEnded => {
-            return Err(UecmError::OperationFailed(
+            return Err(VoloError::OperationFailed(
                 "ue runner event stream ended without completion".into(),
             ));
         }
     };
     if exit != 0 {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "UE exited with code {}",
             exit
         )));
@@ -716,7 +716,7 @@ fn collect_pso_sync(
     project_dir: &str,
     spec: &PsoSpec,
     creds: Option<(&str, &str)>,
-) -> UecmResult<usize> {
+) -> VoloResult<usize> {
     let (user, pass) = match creds {
         Some((u, p)) => (Some(u), Some(p)),
         None => (None, None),
@@ -771,14 +771,14 @@ fn collect_pso_sync(
                 _ => {}
             }
         }
-        Ok::<PsoOutcome, UecmError>(PsoOutcome::StreamEnded)
+        Ok::<PsoOutcome, VoloError>(PsoOutcome::StreamEnded)
     })?;
 
     match outcome {
         PsoOutcome::Done => {}
-        PsoOutcome::Error(msg) => return Err(UecmError::OperationFailed(msg)),
+        PsoOutcome::Error(msg) => return Err(VoloError::OperationFailed(msg)),
         PsoOutcome::StreamEnded => {
-            return Err(UecmError::OperationFailed(
+            return Err(VoloError::OperationFailed(
                 "pso runner event stream ended without completion".into(),
             ));
         }
@@ -909,7 +909,7 @@ mod tests {
         let plan: DeployPlan = serde_json::from_str(&json).unwrap();
         let err = plan.validate().expect_err("pso.enabled=true with empty resolution must fail");
         match err {
-            UecmError::InvalidInput(m) => assert!(m.contains("pso.resolution"), "msg={m}"),
+            VoloError::InvalidInput(m) => assert!(m.contains("pso.resolution"), "msg={m}"),
             other => panic!("expected InvalidInput, got {other:?}"),
         }
     }
@@ -923,7 +923,7 @@ mod tests {
         let plan: DeployPlan = serde_json::from_str(&json).unwrap();
         let err = plan.validate().expect_err("run_log_verify=true with empty editor_exe must fail");
         match err {
-            UecmError::InvalidInput(m) => assert!(m.contains("editor_exe"), "msg={m}"),
+            VoloError::InvalidInput(m) => assert!(m.contains("editor_exe"), "msg={m}"),
             other => panic!("expected InvalidInput, got {other:?}"),
         }
     }
@@ -996,7 +996,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(async {
             tokio::task::spawn_blocking(|| {
-                block_on_async(async { Ok::<i32, UecmError>(42) })
+                block_on_async(async { Ok::<i32, VoloError>(42) })
             })
             .await
             .unwrap()

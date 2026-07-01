@@ -53,7 +53,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 
 /// Behaviour when the requested UE version is not in `verified_versions`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -293,9 +293,9 @@ impl From<ZenRulesWire> for ZenRules {
 // --- Public API -----------------------------------------------------------
 
 /// Read and parse the rules YAML at `path`.
-pub fn load_from_path(path: &Path) -> UecmResult<ZenRules> {
+pub fn load_from_path(path: &Path) -> VoloResult<ZenRules> {
     let text = std::fs::read_to_string(path).map_err(|e| {
-        UecmError::Configuration(format!(
+        VoloError::Configuration(format!(
             "failed to read zen rules file {}: {}",
             path.display(),
             e
@@ -303,7 +303,7 @@ pub fn load_from_path(path: &Path) -> UecmResult<ZenRules> {
     })?;
     parse_str(&text).map_err(|e| {
         // Surface the file path so an operator can find the offending YAML.
-        UecmError::Configuration(format!(
+        VoloError::Configuration(format!(
             "failed to parse zen rules file {}: {}",
             path.display(),
             e
@@ -313,9 +313,9 @@ pub fn load_from_path(path: &Path) -> UecmResult<ZenRules> {
 
 /// Parse a YAML string into [`ZenRules`]. Useful for tests; production code
 /// goes through [`load_from_path`] / [`load_default`].
-pub fn parse_str(text: &str) -> UecmResult<ZenRules> {
+pub fn parse_str(text: &str) -> VoloResult<ZenRules> {
     let wire: ZenRulesWire = serde_yaml::from_str(text)
-        .map_err(|e| UecmError::Configuration(format!("zen rules yaml: {}", e)))?;
+        .map_err(|e| VoloError::Configuration(format!("zen rules yaml: {}", e)))?;
     let rules: ZenRules = wire.into();
 
     // Override keys must be exactly `major.minor`. The resolver looks them
@@ -332,25 +332,25 @@ pub fn parse_str(text: &str) -> UecmResult<ZenRules> {
 /// Override keys are `major.minor` only — anything else (`"5.7.4"`, `"5.7-pre"`,
 /// `"5"`, `"foo"`) is rejected with a clear error so an operator doesn't
 /// configure an override that silently never matches.
-fn validate_override_key(key: &str) -> UecmResult<()> {
+fn validate_override_key(key: &str) -> VoloResult<()> {
     // Reuse the same strictness as the version parser: reject patch, suffix,
     // empty parts. Then explicitly check the key has exactly two dot-parts.
     let parts: Vec<&str> = key.split('.').collect();
     if parts.len() != 2 {
-        return Err(UecmError::Configuration(format!(
+        return Err(VoloError::Configuration(format!(
             "override key '{}' must be exactly 'major.minor' \
              (patch components or missing minor are not supported)",
             key
         )));
     }
     let _: u32 = parts[0].parse().map_err(|_| {
-        UecmError::Configuration(format!(
+        VoloError::Configuration(format!(
             "override key '{}': major component '{}' is not a number",
             key, parts[0]
         ))
     })?;
     let _: u32 = parts[1].parse().map_err(|_| {
-        UecmError::Configuration(format!(
+        VoloError::Configuration(format!(
             "override key '{}': minor component '{}' is not a number",
             key, parts[1]
         ))
@@ -377,11 +377,11 @@ const EMBEDDED_RULES_YAML: &str =
 /// embedded copy — otherwise a typo in the override would have the operator
 /// thinking custom rules are in effect when in fact the build-time snapshot
 /// is.
-pub fn load_default() -> UecmResult<ZenRules> {
+pub fn load_default() -> VoloResult<ZenRules> {
     if let Ok(over) = std::env::var("UECM_ZEN_RULES_PATH") {
         let p = PathBuf::from(&over);
         if !p.is_file() {
-            return Err(UecmError::Configuration(format!(
+            return Err(VoloError::Configuration(format!(
                 "UECM_ZEN_RULES_PATH points at '{}' but that file does not exist; \
                  fix the override or unset it to use defaults",
                 p.display()
@@ -397,7 +397,7 @@ pub fn load_default() -> UecmResult<ZenRules> {
     // embedded snapshot so packaged binaries always have a rule set.
     parse_str(EMBEDDED_RULES_YAML).map_err(|e| match e {
         // Tag the message so an operator can tell the embedded copy was used.
-        UecmError::Configuration(msg) => UecmError::Configuration(format!(
+        VoloError::Configuration(msg) => VoloError::Configuration(format!(
             "embedded zen rules (build-time snapshot): {}",
             msg
         )),
@@ -462,7 +462,7 @@ pub fn default_path() -> PathBuf {
 /// `refuse` → `warn` for the scope of the call so diagnostics still run,
 /// while [`resolve`] (used by destructive paths like `zen enable`) keeps
 /// the strict refuse semantics. Codex round-14 P2.
-pub fn resolve_for_diagnostics(rules: &ZenRules, ue_version: &str) -> UecmResult<ResolvedRules> {
+pub fn resolve_for_diagnostics(rules: &ZenRules, ue_version: &str) -> VoloResult<ResolvedRules> {
     let mut relaxed = rules.clone();
     relaxed.unverified_policy = UnverifiedPolicy::Warn;
     resolve(&relaxed, ue_version)
@@ -472,16 +472,16 @@ pub fn resolve_for_diagnostics(rules: &ZenRules, ue_version: &str) -> UecmResult
 ///
 /// The patch component is discarded — overrides and verified-version lookups
 /// are keyed by `major.minor` only.
-pub fn resolve(rules: &ZenRules, ue_version: &str) -> UecmResult<ResolvedRules> {
+pub fn resolve(rules: &ZenRules, ue_version: &str) -> VoloResult<ResolvedRules> {
     let (major, minor) = parse_version(ue_version).map_err(|msg| {
-        UecmError::InvalidInput(format!("invalid UE version '{}': {}", ue_version, msg))
+        VoloError::InvalidInput(format!("invalid UE version '{}': {}", ue_version, msg))
     })?;
     let major_minor = format!("{}.{}", major, minor);
 
     // 1. applies_to gate.
     let (req_major, req_minor) = parse_applies_to(&rules.applies_to)?;
     if (major, minor) < (req_major, req_minor) {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "UE {} is below the supported floor (applies_to: {})",
             ue_version, rules.applies_to
         )));
@@ -498,7 +498,7 @@ pub fn resolve(rules: &ZenRules, ue_version: &str) -> UecmResult<ResolvedRules> 
     if !is_verified {
         match rules.unverified_policy {
             UnverifiedPolicy::Refuse => {
-                return Err(UecmError::InvalidInput(format!(
+                return Err(VoloError::InvalidInput(format!(
                     "UE {} not in verified_versions {:?}; \
                      unverified_policy=refuse (set policy=warn after fact-finding)",
                     major_minor, rules.verified_versions
@@ -579,10 +579,10 @@ fn parse_version(v: &str) -> Result<(u32, u32), String> {
 /// Parse `">=5.4"` → `(5, 4)`. Only `>=X.Y` is supported (the only form the
 /// current YAML uses); any other operator, or a patch component (`>=5.4.2`),
 /// returns an error so the floor doesn't silently widen.
-fn parse_applies_to(spec: &str) -> UecmResult<(u32, u32)> {
+fn parse_applies_to(spec: &str) -> VoloResult<(u32, u32)> {
     let trimmed = spec.trim();
     let rest = trimmed.strip_prefix(">=").ok_or_else(|| {
-        UecmError::Configuration(format!(
+        VoloError::Configuration(format!(
             "applies_to '{}' is unsupported; only '>=X.Y' is implemented",
             spec
         ))
@@ -594,7 +594,7 @@ fn parse_applies_to(spec: &str) -> UecmResult<(u32, u32)> {
     if rest_trim.contains('.') {
         let dot_count = rest_trim.chars().filter(|c| *c == '.').count();
         if dot_count > 1 {
-            return Err(UecmError::Configuration(format!(
+            return Err(VoloError::Configuration(format!(
                 "applies_to '{}' must be exactly '>=major.minor' \
                  (patch / pre-release components are not supported)",
                 spec
@@ -602,14 +602,14 @@ fn parse_applies_to(spec: &str) -> UecmResult<(u32, u32)> {
         }
     }
     if rest_trim.contains(['-', '+']) {
-        return Err(UecmError::Configuration(format!(
+        return Err(VoloError::Configuration(format!(
             "applies_to '{}' must be exactly '>=major.minor' \
              (pre-release / build-metadata suffixes are not supported)",
             spec
         )));
     }
     parse_version(rest_trim).map_err(|msg| {
-        UecmError::Configuration(format!("applies_to '{}': {}", spec, msg))
+        VoloError::Configuration(format!("applies_to '{}': {}", spec, msg))
     })
 }
 
@@ -831,7 +831,7 @@ overrides: {}
         let rules = sample();
         let err = resolve(&rules, "5.8").unwrap_err();
         match err {
-            UecmError::InvalidInput(msg) => {
+            VoloError::InvalidInput(msg) => {
                 assert!(msg.contains("5.8"));
                 assert!(msg.contains("verified_versions"));
             }
@@ -883,7 +883,7 @@ overrides: {}
         for low in ["5.3", "5.0", "4.27"] {
             let err = resolve(&rules, low).unwrap_err();
             assert!(
-                matches!(err, UecmError::InvalidInput(_)),
+                matches!(err, VoloError::InvalidInput(_)),
                 "{} should be refused under applies_to",
                 low
             );
@@ -946,7 +946,7 @@ overrides: {}
     #[test]
     fn empty_yaml_errors_clearly() {
         let err = parse_str("").unwrap_err();
-        assert!(matches!(err, UecmError::Configuration(_)));
+        assert!(matches!(err, VoloError::Configuration(_)));
     }
 
     #[test]
@@ -1018,7 +1018,7 @@ overrides: {{}}
             let rules = parse_str(&yaml).expect("yaml parses");
             let err = resolve(&rules, "5.7").unwrap_err();
             match err {
-                UecmError::Configuration(msg) => {
+                VoloError::Configuration(msg) => {
                     assert!(
                         msg.contains(bad),
                         "expected error to name '{}', got: {}",
@@ -1063,7 +1063,7 @@ overrides: {}
         // applies_to is validated at resolve() time.
         let err = resolve(&rules, "5.7").unwrap_err();
         match err {
-            UecmError::Configuration(msg) => assert!(msg.contains("^5.4")),
+            VoloError::Configuration(msg) => assert!(msg.contains("^5.4")),
             other => panic!("expected Configuration error, got {:?}", other),
         }
     }
@@ -1086,7 +1086,7 @@ overrides: {}
         ] {
             let err = resolve(&rules, bad).unwrap_err();
             assert!(
-                matches!(err, UecmError::InvalidInput(_)),
+                matches!(err, VoloError::InvalidInput(_)),
                 "{:?} should be rejected, got {:?}",
                 bad,
                 err
@@ -1139,7 +1139,7 @@ overrides:
 "#;
         let err = parse_str(bad).unwrap_err();
         match err {
-            UecmError::Configuration(msg) => {
+            VoloError::Configuration(msg) => {
                 assert!(msg.contains("5.7.4"), "should name the bad key: {}", msg);
             }
             other => panic!("expected Configuration error, got {:?}", other),
@@ -1178,7 +1178,7 @@ overrides:
       section: SomeNewName
 "#;
         let err = parse_str(bad).unwrap_err();
-        assert!(matches!(err, UecmError::Configuration(_)));
+        assert!(matches!(err, VoloError::Configuration(_)));
     }
 
     #[test]
@@ -1274,7 +1274,7 @@ overrides:
         let _guard = EnvVarGuard::set("UECM_ZEN_RULES_PATH", &missing);
         let err = load_default().unwrap_err();
         match err {
-            UecmError::Configuration(msg) => {
+            VoloError::Configuration(msg) => {
                 assert!(msg.contains("UECM_ZEN_RULES_PATH"));
                 assert!(msg.contains("definitely-not-here.yaml"));
             }

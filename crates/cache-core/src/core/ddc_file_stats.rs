@@ -2,7 +2,7 @@
 //! remote host, then classify imbalance signals (the SOP case study).
 
 use crate::core::ssh::{run_json, NodeScript, RemoteExecutor};
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -30,7 +30,7 @@ pub fn run(
     host: &str,
     local_path: &str,
     shared_path: &str,
-) -> UecmResult<Stats> {
+) -> VoloResult<Stats> {
     let s: Stats = run_json(
         exec,
         host,
@@ -41,7 +41,7 @@ pub fn run(
         },
     )?;
     if !s.ok {
-        return Err(UecmError::OperationFailed("ddc-file-stats failed".into()));
+        return Err(VoloError::OperationFailed("ddc-file-stats failed".into()));
     }
     Ok(s)
 }
@@ -89,10 +89,10 @@ mod tests {
 
     struct FakeExec(String);
     impl RemoteExecutor for FakeExec {
-        fn run(&self, _h: &str, _s: &NodeScript) -> UecmResult<ScriptOutput> {
+        fn run(&self, _h: &str, _s: &NodeScript) -> VoloResult<ScriptOutput> {
             Ok(ScriptOutput { stdout: self.0.clone(), stderr: String::new(), exit_code: 0 })
         }
-        fn probe(&self, _h: &str, _u: Option<&str>) -> UecmResult<ProbeResult> {
+        fn probe(&self, _h: &str, _u: Option<&str>) -> VoloResult<ProbeResult> {
             unreachable!()
         }
     }

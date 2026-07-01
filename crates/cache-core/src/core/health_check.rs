@@ -6,7 +6,7 @@ use crate::data::machine_gpus::GpuInfo;
 use crate::data::{
     machine_zen_install, zen_binary_expected, zen_endpoints, Db,
 };
-use crate::error::UecmResult;
+use crate::error::VoloResult;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -87,7 +87,7 @@ pub async fn probe_tcp_ports(host: &str, timeout_ms: u64) -> HashMap<String, Che
         port_outcome(
             "WinRM 5985",
             probed.winrm_open,
-            "Onboard the node over SSH: build a USB bundle with `uecm-cli ssh package-bootstrap` and run UECM-Bootstrap.cmd on the node (installs OpenSSH + SMB + node prep). 5985 is a legacy diagnostic port; UECM transport is SSH (22).",
+            "Onboard the node over SSH: build a USB bundle with `voloctl cache ssh package-bootstrap` and run UECM-Bootstrap.cmd on the node (installs OpenSSH + SMB + node prep). 5985 is a legacy diagnostic port; Volo transport is SSH (22).",
         ),
     );
     out.insert(
@@ -103,7 +103,7 @@ pub async fn probe_tcp_ports(host: &str, timeout_ms: u64) -> HashMap<String, Che
         port_outcome(
             "RPC 135 (Endpoint Mapper)",
             probed.rpc_open,
-            "RPC 135 is no longer required for UECM transport (SSH). This row is informational; switch the network profile to Private only if you still rely on legacy DCOM tooling.",
+            "RPC 135 is no longer required for Volo transport (SSH). This row is informational; switch the network profile to Private only if you still rely on legacy DCOM tooling.",
         ),
     );
     out
@@ -197,7 +197,7 @@ pub fn zen_health_for_machine(
     db: &Db,
     machine_id: i64,
     cluster_scope: Option<&[i64]>,
-) -> UecmResult<HashMap<String, CheckOutcome>> {
+) -> VoloResult<HashMap<String, CheckOutcome>> {
     let mut out = HashMap::new();
 
     // Codex round-19 P2: machines without ANY zen endpoint registered
@@ -218,7 +218,7 @@ pub fn zen_health_for_machine(
             sample: String::new(),
             remediation: format!(
                 "If this host should run zen, register an endpoint first: \
-                 `uecm-cli zen register --machine {machine_id} --declared-port 8558 \
+                 `voloctl cache zen register --machine {machine_id} --declared-port 8558 \
                  --role local --lifecycle installed_service`."
             ),
         };
@@ -245,7 +245,7 @@ pub fn zen_health_for_machine(
     Ok(out)
 }
 
-fn check_zen_reachable(db: &Db, machine_id: i64) -> UecmResult<CheckOutcome> {
+fn check_zen_reachable(db: &Db, machine_id: i64) -> VoloResult<CheckOutcome> {
     // Endpoint presence was already checked at `zen_health_for_machine`
     // entry; reaching this function means the machine has at least one.
     // Keep the defensive `is_empty` branch so a future caller calling
@@ -257,7 +257,7 @@ fn check_zen_reachable(db: &Db, machine_id: i64) -> UecmResult<CheckOutcome> {
             message: "no zen endpoints registered for this machine".into(),
             sample: "no endpoints".into(),
             remediation: format!(
-                "Run `uecm-cli zen register --machine {machine_id} --declared-port 8558 \
+                "Run `voloctl cache zen register --machine {machine_id} --declared-port 8558 \
                  --role local --lifecycle installed_service` after installing zen \
                  on this machine."
             ),
@@ -327,7 +327,7 @@ fn check_zen_reachable(db: &Db, machine_id: i64) -> UecmResult<CheckOutcome> {
             // the CLI takes `--machine <ID>` or `--all`. Interpolate the
             // current machine id so the operator can copy-paste.
             remediation: format!(
-                "Run `uecm-cli zen probe --machine {machine_id}` to record a baseline probe."
+                "Run `voloctl cache zen probe --machine {machine_id}` to record a baseline probe."
             ),
         });
     }
@@ -350,7 +350,7 @@ fn check_zen_version_consistent(
     db: &Db,
     machine_id: i64,
     cluster_scope: Option<&[i64]>,
-) -> UecmResult<CheckOutcome> {
+) -> VoloResult<CheckOutcome> {
     // Codex round-21 P2: filter to the in-scan cluster BEFORE computing
     // majority. The current machine must always be included (else the
     // "current" lookup below would fail spuriously); other machines are
@@ -368,7 +368,7 @@ fn check_zen_version_consistent(
             status: "unknown".into(),
             message: "No zen install record for this machine".into(),
             sample: "no install".into(),
-            remediation: "Run `uecm-cli zen detect-binary` against this machine to record the install version.".into(),
+            remediation: "Run `voloctl cache zen detect-binary` against this machine to record the install version.".into(),
         });
     };
     let Some(current_version) = current.zenserver_build_version.clone() else {
@@ -376,7 +376,7 @@ fn check_zen_version_consistent(
             status: "unknown".into(),
             message: "No zenserver_build_version recorded for this machine".into(),
             sample: "no version".into(),
-            remediation: "Run `uecm-cli zen detect-binary` to record the install version.".into(),
+            remediation: "Run `voloctl cache zen detect-binary` to record the install version.".into(),
         });
     };
 
@@ -451,13 +451,13 @@ fn check_zen_version_consistent(
     })
 }
 
-fn check_zen_binary_intact(db: &Db, machine_id: i64) -> UecmResult<CheckOutcome> {
+fn check_zen_binary_intact(db: &Db, machine_id: i64) -> VoloResult<CheckOutcome> {
     let Some(install) = machine_zen_install::find(db, machine_id)? else {
         return Ok(CheckOutcome {
             status: "unknown".into(),
             message: "No zen install record for this machine".into(),
             sample: "no install".into(),
-            remediation: "Run `uecm-cli zen detect-binary` against this machine.".into(),
+            remediation: "Run `voloctl cache zen detect-binary` against this machine.".into(),
         });
     };
     let (Some(version), Some(actual)) = (
@@ -468,7 +468,7 @@ fn check_zen_binary_intact(db: &Db, machine_id: i64) -> UecmResult<CheckOutcome>
             status: "unknown".into(),
             message: "Missing zenserver build_version or sha256 in install record".into(),
             sample: "incomplete".into(),
-            remediation: "Re-run `uecm-cli zen detect-binary` to capture build_version + sha256."
+            remediation: "Re-run `voloctl cache zen detect-binary` to capture build_version + sha256."
                 .into(),
         });
     };
@@ -489,8 +489,8 @@ fn check_zen_binary_intact(db: &Db, machine_id: i64) -> UecmResult<CheckOutcome>
             // only exposes `baseline list / lock / unlock`, never an
             // insert. Point operators at the right path.
             remediation: format!(
-                "Re-run `uecm-cli zen detect-binary --machine <machine-id>` to record a \
-                 baseline for build {version}. Use `uecm-cli zen baseline list \
+                "Re-run `voloctl cache zen detect-binary --machine <machine-id>` to record a \
+                 baseline for build {version}. Use `voloctl cache zen baseline list \
                  --zen-build-version {version}` to confirm the row landed."
             ),
         });
@@ -540,14 +540,14 @@ pub const ZEN_CACHE_STATS_FRESHNESS_WINDOW: &str = "-1 hour";
 fn check_zen_cache_provider_ready(
     db: &Db,
     machine_id: i64,
-) -> UecmResult<CheckOutcome> {
+) -> VoloResult<CheckOutcome> {
     let endpoints = zen_endpoints::list_for_machine(db, machine_id)?;
     if endpoints.is_empty() {
         return Ok(CheckOutcome {
             status: "warning".into(),
             message: "No zen endpoints registered for this machine".into(),
             sample: "no endpoints".into(),
-            remediation: "Run `uecm-cli zen register` then `uecm-cli zen cache-stats` to record provider info.".into(),
+            remediation: "Run `voloctl cache zen register` then `voloctl cache zen cache-stats` to record provider info.".into(),
         });
     }
     // Find the latest cache-stats row across all this machine's endpoints
@@ -560,7 +560,7 @@ fn check_zen_cache_provider_ready(
             status: "warning".into(),
             message: "No zen endpoints registered for this machine".into(),
             sample: "no endpoints".into(),
-            remediation: "Run `uecm-cli zen register` then `uecm-cli zen cache-stats` to record provider info.".into(),
+            remediation: "Run `voloctl cache zen register` then `voloctl cache zen cache-stats` to record provider info.".into(),
         });
     }
     let placeholders: Vec<String> = (0..endpoint_ids.len()).map(|i| format!("?{}", i + 2)).collect();
@@ -596,7 +596,7 @@ fn check_zen_cache_provider_ready(
             status: "warning".into(),
             message: "No zen cache-stats sample recorded for this machine".into(),
             sample: format!("{} endpoint(s)", endpoints.len()),
-            remediation: "Run `uecm-cli zen cache-stats` to record provider info.".into(),
+            remediation: "Run `voloctl cache zen cache-stats` to record provider info.".into(),
         });
     }
     let (provider_path, fresh) = latest.unwrap();
@@ -612,7 +612,7 @@ fn check_zen_cache_provider_ready(
                 ZEN_CACHE_STATS_FRESHNESS_WINDOW.trim_start_matches('-')
             ),
             sample: provider_path,
-            remediation: "Re-run `uecm-cli zen cache-stats` to refresh provider info.".into(),
+            remediation: "Re-run `voloctl cache zen cache-stats` to refresh provider info.".into(),
         });
     }
     // The provider list should mention `z$` (UE-side DDC namespace). The
@@ -634,7 +634,7 @@ fn check_zen_cache_provider_ready(
             provider_path
         ),
         sample: provider_path,
-        remediation: "Re-run `uecm-cli zen cache-stats`; if z$ is still missing, confirm zen has the DDC namespace enabled.".into(),
+        remediation: "Re-run `voloctl cache zen cache-stats`; if z$ is still missing, confirm zen has the DDC namespace enabled.".into(),
     })
 }
 

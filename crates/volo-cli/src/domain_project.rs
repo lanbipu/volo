@@ -1,4 +1,4 @@
-//! `uecm-cli project <action>` handlers.
+//! `voloctl cache project <action>` handlers.
 
 use crate::args::ProjectAction;
 use crate::destructive::{self, Outcome};
@@ -9,10 +9,10 @@ use cache_core::data::{
     machines as data_machines, project_locations as data_locations, projects as data_projects,
     DiscoveryStatus, Project, ProjectLocation,
 };
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 use rusqlite::OptionalExtension;
 
-pub fn handle(ctx: &mut Ctx<'_>, action: ProjectAction) -> UecmResult<()> {
+pub fn handle(ctx: &mut Ctx<'_>, action: ProjectAction) -> VoloResult<()> {
     match action {
         ProjectAction::List => list(ctx),
         ProjectAction::Locations { project_id } => locations(ctx, project_id),
@@ -30,14 +30,14 @@ pub fn handle(ctx: &mut Ctx<'_>, action: ProjectAction) -> UecmResult<()> {
     }
 }
 
-fn list(ctx: &mut Ctx<'_>) -> UecmResult<()> {
+fn list(ctx: &mut Ctx<'_>) -> VoloResult<()> {
     let db = ctx.require_db()?;
     let rows = data_projects::list(db)?;
     ctx.emitter.emit_result(&rows).ok();
     Ok(())
 }
 
-fn locations(ctx: &mut Ctx<'_>, project_id: i64) -> UecmResult<()> {
+fn locations(ctx: &mut Ctx<'_>, project_id: i64) -> VoloResult<()> {
     let db = ctx.require_db()?;
     let rows = data_locations::list_by_project(db, project_id)?;
     ctx.emitter.emit_result(&rows).ok();
@@ -49,12 +49,12 @@ fn discover(
     machine_id: i64,
     roots: &[String],
     cred: &crate::credential_args::CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     // Look up host IP via machine_id.
     let host = {
         let db = ctx.require_db()?;
         let machine = data_machines::find_by_id(db, machine_id)?.ok_or_else(|| {
-            UecmError::InvalidInput(format!("machine id={} not found", machine_id))
+            VoloError::InvalidInput(format!("machine id={} not found", machine_id))
         })?;
         machine.ip.clone()
     };
@@ -96,7 +96,7 @@ fn create_manual(
     ctx: &mut Ctx<'_>,
     uproject_name: &str,
     display_name: Option<String>,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?;
     let project_id = data_projects::upsert(
         db,
@@ -132,7 +132,7 @@ fn set_location(
     abs_path: &str,
     uproject_path: &str,
     manual_path: bool,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let discovery_status = if manual_path {
         DiscoveryStatus::ManualPath
     } else {
@@ -162,11 +162,11 @@ fn set_location(
     Ok(())
 }
 
-fn delete(ctx: &mut Ctx<'_>, id: i64, yes: bool, dry_run: bool) -> UecmResult<()> {
+fn delete(ctx: &mut Ctx<'_>, id: i64, yes: bool, dry_run: bool) -> VoloResult<()> {
     let outcome = destructive::check(yes, dry_run, "project.delete")?;
     let db = ctx.require_db()?;
     if data_projects::get(db, id)?.is_none() {
-        return Err(UecmError::InvalidInput(format!("project id={} not found", id)));
+        return Err(VoloError::InvalidInput(format!("project id={} not found", id)));
     }
     if outcome == Outcome::DryRun {
         let locations = data_locations::list_by_project(db, id)?;
@@ -189,7 +189,7 @@ fn delete(ctx: &mut Ctx<'_>, id: i64, yes: bool, dry_run: bool) -> UecmResult<()
     Ok(())
 }
 
-fn delete_location(ctx: &mut Ctx<'_>, id: i64, yes: bool, dry_run: bool) -> UecmResult<()> {
+fn delete_location(ctx: &mut Ctx<'_>, id: i64, yes: bool, dry_run: bool) -> VoloResult<()> {
     let outcome = destructive::check(yes, dry_run, "project.delete-location")?;
     let db = ctx.require_db()?;
     // Mirror `project delete` / `machine delete`: refuse to pretend success
@@ -204,10 +204,10 @@ fn delete_location(ctx: &mut Ctx<'_>, id: i64, yes: bool, dry_run: bool) -> Uecm
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()
-        .map_err(cache_core::error::UecmError::from)?
+        .map_err(cache_core::error::VoloError::from)?
     };
     let (project_id, machine_id) = row.ok_or_else(|| {
-        UecmError::InvalidInput(format!("project_location id={} not found", id))
+        VoloError::InvalidInput(format!("project_location id={} not found", id))
     })?;
     if outcome == Outcome::DryRun {
         destructive::emit_plan(

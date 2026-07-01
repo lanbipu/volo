@@ -11,17 +11,17 @@ use crate::core::zen::lua_config::{self, UpstreamInfo};
 use crate::core::zen::redaction::redact;
 use crate::data::{machines, operations, Db, Machine, ZenEndpoint};
 use crate::core::zen::endpoint as zen_endpoint;
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 
 /// Default Windows service name for zenserver.
 ///
 /// **Not** `"ZenServer"` — UE's `ConditionalUpdateSystemServiceInstall()`
 /// hardcodes that name and tries to update/uninstall the service when the
 /// ImagePath doesn't match the running UE version's expectations. Using a
-/// distinct name makes the UECM-managed service invisible to UE's built-in
+/// distinct name makes the Volo-managed service invisible to UE's built-in
 /// service management so multiple UE versions (5.7, 5.8, …) can all connect
 /// to it via HTTP without triggering conflict dialogs.
-pub const DEFAULT_SERVICE_NAME: &str = "UECMZenServer";
+pub const DEFAULT_SERVICE_NAME: &str = "VoloZenServer";
 
 /// Apply Plan §1.1 defaults when the operator didn't pin lifecycle:
 /// `shared_upstream` requires `installed_service` (T2.1 enforces),
@@ -40,19 +40,19 @@ pub fn default_lifecycle_for(role: &str) -> &'static str {
 /// Resolve the upstream UpstreamInfo for an endpoint that has
 /// `upstream_endpoint_id = Some(_)`. Returns `Ok(None)` when the row has no
 /// upstream pointer (consumer should pass `None` to `lua_config::render`).
-pub fn resolve_upstream_info(db: &Db, ep: &ZenEndpoint) -> UecmResult<Option<UpstreamInfo>> {
+pub fn resolve_upstream_info(db: &Db, ep: &ZenEndpoint) -> VoloResult<Option<UpstreamInfo>> {
     let Some(upstream_id) = ep.upstream_endpoint_id else {
         return Ok(None);
     };
     let upstream = zen_endpoint::get(db, upstream_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!(
+        VoloError::InvalidInput(format!(
             "endpoint id={} references upstream id={} which no longer exists",
             ep.id.unwrap_or(-1),
             upstream_id,
         ))
     })?;
     let upstream_machine = machines::find_by_id(db, upstream.machine_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!(
+        VoloError::InvalidInput(format!(
             "upstream endpoint id={} points at machine id={} which is missing",
             upstream_id, upstream.machine_id,
         ))
@@ -64,9 +64,9 @@ pub fn resolve_upstream_info(db: &Db, ep: &ZenEndpoint) -> UecmResult<Option<Ups
     }))
 }
 
-pub fn render_lua_for(db: &Db, endpoint_id: i64) -> UecmResult<(ZenEndpoint, String)> {
+pub fn render_lua_for(db: &Db, endpoint_id: i64) -> VoloResult<(ZenEndpoint, String)> {
     let ep = zen_endpoint::get(db, endpoint_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("endpoint id={} not found", endpoint_id))
+        VoloError::InvalidInput(format!("endpoint id={} not found", endpoint_id))
     })?;
     let upstream = resolve_upstream_info(db, &ep)?;
     let lua = lua_config::render(&ep, upstream.as_ref())?;
@@ -87,17 +87,17 @@ pub fn verify_write_response(
     response: &serde_json::Value,
     expected_sha: &str,
     expected_bytes: usize,
-) -> UecmResult<serde_json::Value> {
+) -> VoloResult<serde_json::Value> {
     let remote_sha = response
         .get("sha256")
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            UecmError::PowerShell(
+            VoloError::PowerShell(
                 "zen-write-lua-config: missing sha256 field in success envelope".into(),
             )
         })?;
     if !remote_sha.eq_ignore_ascii_case(expected_sha) {
-        return Err(UecmError::PowerShell(format!(
+        return Err(VoloError::PowerShell(format!(
             "zen-write-lua-config: remote sha256 {remote_sha} does not match locally rendered {expected_sha} \
              — the file on disk does NOT match the requested config",
         )));
@@ -106,12 +106,12 @@ pub fn verify_write_response(
         .get("bytes_written")
         .and_then(|v| v.as_i64())
         .ok_or_else(|| {
-            UecmError::PowerShell(
+            VoloError::PowerShell(
                 "zen-write-lua-config: missing bytes_written field in success envelope".into(),
             )
         })?;
     if remote_bytes != expected_bytes as i64 {
-        return Err(UecmError::PowerShell(format!(
+        return Err(VoloError::PowerShell(format!(
             "zen-write-lua-config: remote bytes_written={remote_bytes} does not match local len={expected_bytes}"
         )));
     }
@@ -123,7 +123,7 @@ pub fn invoke_write_lua(
     lua_text: &str,
     dest_path: &str,
     creds: Option<&(String, String)>,
-) -> UecmResult<serde_json::Value> {
+) -> VoloResult<serde_json::Value> {
     // SSH key auth (uecm-svc); operator creds ignored (param kept as a shim).
     let _ = creds;
     let raw = run_node(
@@ -150,7 +150,7 @@ pub fn write_and_verify_lua(
     dest_path: &str,
     creds: Option<(String, String)>,
     op_kind: &'static str,
-) -> UecmResult<(String, serde_json::Value)> {
+) -> VoloResult<(String, serde_json::Value)> {
     let invocation = redact(&format!(
         "zen-write-lua-config.ps1 -DestPath {dest_path} (lua {} bytes)",
         lua.len()
@@ -167,9 +167,9 @@ pub fn write_and_verify_lua(
 /// Directory component of a remote Windows path (string-level backslash/
 /// forward-slash split — describes a path on the remote host, not the local
 /// OS Volo runs on).
-fn win_dirname(path: &str) -> UecmResult<&str> {
+fn win_dirname(path: &str) -> VoloResult<&str> {
     path.rfind(['\\', '/']).map(|idx| &path[..idx]).ok_or_else(|| {
-        UecmError::InvalidInput(format!("{path:?} has no directory component"))
+        VoloError::InvalidInput(format!("{path:?} has no directory component"))
     })
 }
 
@@ -185,7 +185,7 @@ pub fn copy_binary_if_needed(
     machine_id: i64,
     host: &str,
     resolved: &ResolvedZenPaths,
-) -> UecmResult<Option<serde_json::Value>> {
+) -> VoloResult<Option<serde_json::Value>> {
     if !resolved.needs_copy {
         return Ok(None);
     }
@@ -213,7 +213,7 @@ pub fn copy_binary_if_needed(
 /// already stopped shouldn't block the start that matters); a failed start
 /// is fatal — the whole point of restarting is to come back up on the new
 /// config.
-pub fn restart_service(db: &Db, machine_id: i64, host: &str) -> UecmResult<()> {
+pub fn restart_service(db: &Db, machine_id: i64, host: &str) -> VoloResult<()> {
     let stop_invocation = redact(&format!("zen-down.ps1 -ServiceName {DEFAULT_SERVICE_NAME}"));
     let stop_op_id = operations::start(db, "zen.gc_settings_update.stop", &[machine_id])?;
     let stop_result = run_node(
@@ -272,7 +272,7 @@ pub fn pick_service_zen_exe(
 pub fn workstation_colocation_warning(
     db: &Db,
     machine_id: i64,
-) -> UecmResult<Option<String>> {
+) -> VoloResult<Option<String>> {
     Ok(machines::get_ue_runtime_user(db, machine_id)?.map(|user| {
         format!(
             "machine id={machine_id} looks like a UE workstation (ue_runtime_user={user:?} is \
@@ -293,13 +293,13 @@ pub fn url_prefix_for(ep: &ZenEndpoint) -> String {
 /// [`pick_service_zen_exe`]). Shared by `zen_apply_config` and
 /// `zen_service_install` (CLI + Tauri) so both derive `{ZenInstall}` the
 /// same way and can never disagree on where zenserver.exe lives.
-pub fn resolve_service_zen_exe(db: &Db, machine_id: i64) -> UecmResult<String> {
+pub fn resolve_service_zen_exe(db: &Db, machine_id: i64) -> VoloResult<String> {
     let install = crate::data::machine_zen_install::find(db, machine_id)?;
     let intree_cli = crate::data::machine_ue_installs::list_for_machine(db, machine_id)
         .ok()
         .and_then(|installs| installs.into_iter().find_map(|i| i.zen_cli_intree_path));
     pick_service_zen_exe(intree_cli, install.as_ref().and_then(|m| m.zen_cli_path.clone())).ok_or_else(|| {
-        UecmError::InvalidInput(format!(
+        VoloError::InvalidInput(format!(
             "machine id={machine_id} has no zen.exe recorded — run \
              `machine refresh {machine_id}` then `zen detect-binary --machine {machine_id}` first"
         ))
@@ -318,10 +318,10 @@ pub fn resolve_service_zen_exe(db: &Db, machine_id: i64) -> UecmResult<String> {
 /// this replaces. String-level backslash/forward-slash splitting (not
 /// `std::path::Path`) because this path describes a remote Windows host, not
 /// the local OS Volo happens to run on.
-pub fn zen_config_lua_path(zen_exe_path: &str) -> UecmResult<String> {
+pub fn zen_config_lua_path(zen_exe_path: &str) -> VoloResult<String> {
     match zen_exe_path.rfind(|c| c == '\\' || c == '/') {
         Some(idx) => Ok(format!("{}\\zen_config.lua", &zen_exe_path[..idx])),
-        None => Err(UecmError::InvalidInput(format!(
+        None => Err(VoloError::InvalidInput(format!(
             "cannot derive zen_config.lua location: {zen_exe_path:?} has no directory component"
         ))),
     }
@@ -331,7 +331,7 @@ pub fn zen_config_lua_path(zen_exe_path: &str) -> UecmResult<String> {
 /// are always used as a pair (CLI's `apply_config`/`service_install`, Tauri's
 /// `zen_apply_config`/`zen_service_install`), so callers get both values
 /// without repeating the pairing at each of the 4 call sites.
-pub fn resolve_zen_exe_and_config_path(db: &Db, machine_id: i64) -> UecmResult<(String, String)> {
+pub fn resolve_zen_exe_and_config_path(db: &Db, machine_id: i64) -> VoloResult<(String, String)> {
     let zen_exe = resolve_service_zen_exe(db, machine_id)?;
     let config_path = zen_config_lua_path(&zen_exe)?;
     Ok((zen_exe, config_path))
@@ -368,7 +368,7 @@ pub struct ResolvedZenPaths {
 /// caller (`zen_apply_config`) is responsible for actually copying
 /// `source_exe` to `target_exe` when `needs_copy` is true, *before* writing
 /// `target_config` — this function only resolves paths, it does no I/O.
-pub fn resolve_install_paths(db: &Db, endpoint: &ZenEndpoint) -> UecmResult<ResolvedZenPaths> {
+pub fn resolve_install_paths(db: &Db, endpoint: &ZenEndpoint) -> VoloResult<ResolvedZenPaths> {
     let source_exe = resolve_service_zen_exe(db, endpoint.machine_id)?;
     let mut resolved = match endpoint.install_dir.as_deref() {
         None => {
@@ -431,7 +431,7 @@ pub fn resolve_install_paths(db: &Db, endpoint: &ZenEndpoint) -> UecmResult<Reso
 /// row never repopulated after a rescan, etc). Detection is only needed —
 /// and only then does this function require it — on the legacy
 /// `install_dir == None` path, exactly like `resolve_install_paths`.
-pub fn resolve_service_paths(db: &Db, endpoint: &ZenEndpoint) -> UecmResult<(String, String)> {
+pub fn resolve_service_paths(db: &Db, endpoint: &ZenEndpoint) -> VoloResult<(String, String)> {
     let (target_exe, mut target_config) = match endpoint.install_dir.as_deref() {
         Some(dir) => install_dir_target_paths(dir)?,
         None => {
@@ -447,10 +447,10 @@ pub fn resolve_service_paths(db: &Db, endpoint: &ZenEndpoint) -> UecmResult<(Str
 /// Shared by [`resolve_install_paths`] and [`resolve_service_paths`]: derive
 /// `{dir}\zenserver.exe` / `{dir}\zen_config.lua` from a trimmed
 /// `install_dir`, rejecting a blank value.
-fn install_dir_target_paths(dir: &str) -> UecmResult<(String, String)> {
+fn install_dir_target_paths(dir: &str) -> VoloResult<(String, String)> {
     let dir = dir.trim().trim_end_matches(['\\', '/']);
     if dir.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "install_dir is blank — clear it to None instead of an empty string".into(),
         ));
     }
@@ -460,11 +460,11 @@ fn install_dir_target_paths(dir: &str) -> UecmResult<(String, String)> {
 /// Shared by [`resolve_install_paths`] and [`resolve_service_paths`]: apply
 /// `endpoint.config_path_override` on top of an install_dir-derived config
 /// path, if set.
-fn apply_config_path_override(endpoint: &ZenEndpoint, target_config: &mut String) -> UecmResult<()> {
+fn apply_config_path_override(endpoint: &ZenEndpoint, target_config: &mut String) -> VoloResult<()> {
     if let Some(override_path) = endpoint.config_path_override.as_deref() {
         let trimmed = override_path.trim();
         if trimmed.is_empty() {
-            return Err(UecmError::InvalidInput(
+            return Err(VoloError::InvalidInput(
                 "config_path_override is blank — clear it to None instead of an empty string"
                     .into(),
             ));
@@ -488,7 +488,7 @@ fn paths_equal_ci(a: &str, b: &str) -> bool {
 /// run_remote contract). SSH key auth (uecm-svc); operator creds are gone.
 /// Replaces build_param_script + run_remote (WinRM) as zen migrates in P2.
 /// pub(crate) so the Tauri `commands/zen.rs` backend reuses the same SSH path.
-pub fn run_node(host: &str, script_name: &'static str, args: serde_json::Value) -> UecmResult<String> {
+pub fn run_node(host: &str, script_name: &'static str, args: serde_json::Value) -> VoloResult<String> {
     use crate::core::ssh::RemoteExecutor;
     let exec = crate::core::ssh::SshExecutor::from_config()?;
     let out = exec.run(
@@ -507,9 +507,9 @@ pub fn run_node(host: &str, script_name: &'static str, args: serde_json::Value) 
 /// failures. Anything else is a stale/overridden sidecar or a corrupted
 /// envelope; surfacing it as "success" would let bad remote state masquerade
 /// as a successful operation.
-pub fn parse_envelope(raw: &str, sidecar: &str) -> UecmResult<serde_json::Value> {
+pub fn parse_envelope(raw: &str, sidecar: &str) -> VoloResult<serde_json::Value> {
     let envelope: serde_json::Value = serde_json::from_str(raw).map_err(|e| {
-        UecmError::PowerShell(format!(
+        VoloError::PowerShell(format!(
             "{sidecar} returned non-JSON output: {e}; raw: {}",
             raw.chars().take(200).collect::<String>()
         ))
@@ -521,12 +521,12 @@ pub fn parse_envelope(raw: &str, sidecar: &str) -> UecmResult<serde_json::Value>
                 .get("message")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown sidecar error");
-            Err(UecmError::PowerShell(format!("{sidecar}: {msg}")))
+            Err(VoloError::PowerShell(format!("{sidecar}: {msg}")))
         }
         None => {
             // `ok` missing OR present-but-non-bool (e.g. `ok: null`, `ok: "true"`).
             // Treat as protocol violation, not success.
-            Err(UecmError::PowerShell(format!(
+            Err(VoloError::PowerShell(format!(
                 "{sidecar} returned envelope without a boolean `ok` field; raw: {}",
                 raw.chars().take(200).collect::<String>()
             )))
@@ -604,7 +604,7 @@ pub fn validate_service_account_pair(
     service_user: Option<&str>,
     service_pass: Option<&str>,
     service_pass_stdin: bool,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let Some(u) = service_user else {
         return Ok(());
     };
@@ -614,7 +614,7 @@ pub fn validate_service_account_pair(
     let pass_supplied = service_pass.map(|p| !p.is_empty()).unwrap_or(false)
         || service_pass_stdin;
     if !is_builtin_service_account(u) && !is_gmsa_account(u) && !pass_supplied {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "service_user {u:?} is not a Windows built-in account or a gMSA \
              (trailing '$'); a password is required (built-in accounts: \
              LocalSystem / LocalService / NetworkService). Pass \
@@ -625,10 +625,10 @@ pub fn validate_service_account_pair(
     Ok(())
 }
 
-pub fn validate_service_data_dir(p: &str) -> UecmResult<()> {
+pub fn validate_service_data_dir(p: &str) -> VoloResult<()> {
     let trimmed = p.trim();
     if trimmed.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "service data_dir is empty — re-register the endpoint with a valid path".into(),
         ));
     }
@@ -637,7 +637,7 @@ pub fn validate_service_data_dir(p: &str) -> UecmResult<()> {
         || trimmed.starts_with("//?/")
         || trimmed.starts_with("//./")
     {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "service data_dir {p:?} uses a Win32 device namespace prefix; \
              re-register without the prefix"
         )));
@@ -649,7 +649,7 @@ pub fn validate_service_data_dir(p: &str) -> UecmResult<()> {
         && (bytes[2] == b'\\' || bytes[2] == b'/');
     let is_unc = trimmed.starts_with(r"\\") || trimmed.starts_with("//");
     if !(is_drive_abs || is_unc) {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "service data_dir must be a fully-qualified absolute path \
              (e.g. 'D:\\ZenCache' or '\\\\host\\share\\Zen'); \
              drive-relative / root-relative paths are rejected by zen.exe. Got: {p}"
@@ -673,10 +673,10 @@ fn reject_forbidden_root(
     forbidden: &[&str],
     subject: &str,
     hint: &str,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     for root in forbidden {
         if canonical_lower == *root || canonical_lower.starts_with(&format!("{root}\\")) {
-            return Err(UecmError::InvalidInput(format!(
+            return Err(VoloError::InvalidInput(format!(
                 "{subject} {original:?} resolves under a forbidden system location ({root}); {hint}"
             )));
         }
@@ -692,10 +692,10 @@ fn reject_forbidden_root(
 /// code path that bypassed `core::zen::endpoint::register`) could send
 /// `D:ZenCache` / `\ZenCache` / `ZenCache` straight into `zen.lua`,
 /// where Windows / zen would resolve against process CWD.
-pub fn validate_data_dir_safe(p: &str) -> UecmResult<()> {
+pub fn validate_data_dir_safe(p: &str) -> VoloResult<()> {
     let trimmed = p.trim();
     if trimmed.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "endpoint data_dir is empty — re-register with a valid path".into(),
         ));
     }
@@ -707,7 +707,7 @@ pub fn validate_data_dir_safe(p: &str) -> UecmResult<()> {
         || trimmed.starts_with("//?/")
         || trimmed.starts_with("//./")
     {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "endpoint data_dir {p:?} uses a Win32 device namespace prefix (\\\\?\\ / \\\\.\\); \
              re-register without the prefix"
         )));
@@ -724,7 +724,7 @@ pub fn validate_data_dir_safe(p: &str) -> UecmResult<()> {
         && (bytes[2] == b'\\' || bytes[2] == b'/');
     let is_unc = trimmed.starts_with(r"\\") || trimmed.starts_with("//");
     if !(is_drive_abs || is_unc) {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "endpoint data_dir {p:?} must be a fully-qualified absolute path \
              (e.g. 'D:\\ZenCache' or '\\\\host\\share\\Zen'); drive-relative / \
              root-relative paths resolve against process CWD on Windows. \
@@ -771,10 +771,10 @@ pub fn sha256_hex_of(text: &str) -> String {
 /// binary commonly lives under `C:\Program Files\Epic Games\...\Win64` — the
 /// destination is no longer free-text operator input, so blocking Program
 /// Files here would reject the standard UE install layout with no override.
-pub fn validate_dest_path(p: &str) -> UecmResult<()> {
+pub fn validate_dest_path(p: &str) -> VoloResult<()> {
     let trimmed = p.trim();
     if trimmed.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "dest-path must be a non-empty absolute Windows path".into(),
         ));
     }
@@ -783,7 +783,7 @@ pub fn validate_dest_path(p: &str) -> UecmResult<()> {
         s.starts_with(r"\\?\") || s.starts_with(r"\\.\") || s.starts_with("//?/") || s.starts_with("//./")
     };
     if device_ns(trimmed) {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             r"dest-path must not use Win32 device namespace prefixes (\\?\ / \\.\): {p}"
         )));
     }
@@ -793,7 +793,7 @@ pub fn validate_dest_path(p: &str) -> UecmResult<()> {
     let trim_for_tail = trimmed.trim_end();
     let last_char = trim_for_tail.chars().last();
     if matches!(last_char, Some('\\') | Some('/')) {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "dest-path must point at a file, not a directory (ends in path separator): {p}"
         )));
     }
@@ -802,7 +802,7 @@ pub fn validate_dest_path(p: &str) -> UecmResult<()> {
         .next()
         .unwrap_or("");
     if last_seg == "." || last_seg == ".." {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "dest-path must end in a file name, not '.' or '..': {p}"
         )));
     }
@@ -815,7 +815,7 @@ pub fn validate_dest_path(p: &str) -> UecmResult<()> {
         && (bytes[2] == b'\\' || bytes[2] == b'/');
     let is_unc = trimmed.starts_with(r"\\") || trimmed.starts_with("//");
     if !(is_drive_abs || is_unc) {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             r"dest-path must be a fully-qualified absolute path (e.g. 'C:\Zen\zen.lua' or '\\host\share\zen.lua'); got: {p}"
         )));
     }
@@ -829,7 +829,7 @@ pub fn validate_dest_path(p: &str) -> UecmResult<()> {
     if is_drive_abs && canonical_pre.trim_end_matches('\\').len() <= 2 {
         // `D:` (after trimming trailing `\`) means we collapsed back to the
         // drive root with no file component.
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "dest-path must include a file component, not just a drive root: {p}"
         )));
     }
@@ -841,7 +841,7 @@ pub fn validate_dest_path(p: &str) -> UecmResult<()> {
             let rest = &check[2..];
             let parts: Vec<&str> = rest.split('\\').filter(|s| !s.is_empty()).collect();
             if parts.len() < 3 {
-                return Err(UecmError::InvalidInput(format!(
+                return Err(VoloError::InvalidInput(format!(
                     r"dest-path must be a complete UNC file path \\host\share\file...; got: {p}"
                 )));
             }
@@ -915,15 +915,15 @@ pub fn collapse_path_segments(p: &str) -> String {
 
 /// Lookup helpers that turn "not found" into `InvalidInput` so the CLI exits
 /// with code 2 (operator input error) instead of 1 (operation failed).
-pub fn require_endpoint(db: &Db, endpoint_id: i64) -> UecmResult<ZenEndpoint> {
+pub fn require_endpoint(db: &Db, endpoint_id: i64) -> VoloResult<ZenEndpoint> {
     zen_endpoint::get(db, endpoint_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("endpoint id={} not found", endpoint_id))
+        VoloError::InvalidInput(format!("endpoint id={} not found", endpoint_id))
     })
 }
 
-pub fn require_machine(db: &Db, machine_id: i64) -> UecmResult<Machine> {
+pub fn require_machine(db: &Db, machine_id: i64) -> VoloResult<Machine> {
     machines::find_by_id(db, machine_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("machine id={} not found", machine_id))
+        VoloError::InvalidInput(format!("machine id={} not found", machine_id))
     })
 }
 
@@ -934,7 +934,7 @@ pub fn require_machine(db: &Db, machine_id: i64) -> UecmResult<Machine> {
 pub fn finalize_op(
     db: &Db,
     op_id: i64,
-    result: &UecmResult<serde_json::Value>,
+    result: &VoloResult<serde_json::Value>,
     invocation: &str,
 ) {
     let status = if result.is_ok() { "ok" } else { "err" };
@@ -996,7 +996,7 @@ mod service_account_tests {
     #[test]
     fn validate_service_account_pair_still_rejects_plain_domain_account_without_password() {
         let err = validate_service_account_pair(Some("CONTOSO\\zen-svc"), None, false).unwrap_err();
-        assert!(matches!(err, UecmError::InvalidInput(_)));
+        assert!(matches!(err, VoloError::InvalidInput(_)));
     }
 }
 

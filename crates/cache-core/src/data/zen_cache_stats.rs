@@ -1,7 +1,7 @@
 //! CRUD for the `zen_cache_stats` table (append-only time series).
 
 use crate::data::Db;
-use crate::error::UecmResult;
+use crate::error::VoloResult;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +20,7 @@ pub struct ZenCacheStats {
     pub schema_version: i64,
 }
 
-pub fn insert(db: &Db, stats: &ZenCacheStats) -> UecmResult<i64> {
+pub fn insert(db: &Db, stats: &ZenCacheStats) -> VoloResult<i64> {
     let conn = db.lock().unwrap();
     conn.execute(
         "INSERT INTO zen_cache_stats (
@@ -43,7 +43,7 @@ pub fn insert(db: &Db, stats: &ZenCacheStats) -> UecmResult<i64> {
     Ok(conn.last_insert_rowid())
 }
 
-pub fn list(db: &Db) -> UecmResult<Vec<ZenCacheStats>> {
+pub fn list(db: &Db) -> VoloResult<Vec<ZenCacheStats>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, endpoint_id, sampled_at, cache_hit_ratio,
@@ -59,7 +59,7 @@ pub fn list(db: &Db) -> UecmResult<Vec<ZenCacheStats>> {
     Ok(out)
 }
 
-pub fn list_recent(db: &Db, endpoint_id: i64, limit: i64) -> UecmResult<Vec<ZenCacheStats>> {
+pub fn list_recent(db: &Db, endpoint_id: i64, limit: i64) -> VoloResult<Vec<ZenCacheStats>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, endpoint_id, sampled_at, cache_hit_ratio,
@@ -77,7 +77,7 @@ pub fn list_recent(db: &Db, endpoint_id: i64, limit: i64) -> UecmResult<Vec<ZenC
     Ok(out)
 }
 
-pub fn get(db: &Db, stats_id: i64) -> UecmResult<Option<ZenCacheStats>> {
+pub fn get(db: &Db, stats_id: i64) -> VoloResult<Option<ZenCacheStats>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, endpoint_id, sampled_at, cache_hit_ratio,
@@ -93,7 +93,7 @@ pub fn get(db: &Db, stats_id: i64) -> UecmResult<Option<ZenCacheStats>> {
     }
 }
 
-pub fn delete(db: &Db, stats_id: i64) -> UecmResult<()> {
+pub fn delete(db: &Db, stats_id: i64) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     conn.execute(
         "DELETE FROM zen_cache_stats WHERE id = ?",

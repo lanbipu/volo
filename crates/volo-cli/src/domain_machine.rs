@@ -1,4 +1,4 @@
-//! `uecm-cli machine <action>` handlers.
+//! `voloctl cache machine <action>` handlers.
 
 use crate::args::MachineAction;
 use crate::destructive::{self, Outcome};
@@ -7,11 +7,11 @@ use crate::run::Ctx;
 use crate::EmitSerialize;
 use cache_core::core::ssh::{RemoteExecutor, SshExecutor};
 use cache_core::data::{machines, machine_ue_installs, machine_gpus};
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 use cache_core::data::machines::Machine;
 use serde_json::json;
 
-pub fn handle(ctx: &mut Ctx<'_>, action: MachineAction) -> UecmResult<()> {
+pub fn handle(ctx: &mut Ctx<'_>, action: MachineAction) -> VoloResult<()> {
     match action {
         MachineAction::List => list(ctx),
         MachineAction::Scan { cidr, timeout_ms } => scan(ctx, &cidr, timeout_ms),
@@ -62,14 +62,14 @@ fn render_gpus_table(gpus: &[machine_gpus::GpuInfo]) -> String {
     out.trim_end().to_string()
 }
 
-fn list(ctx: &mut Ctx<'_>) -> UecmResult<()> {
+fn list(ctx: &mut Ctx<'_>) -> VoloResult<()> {
     let db = ctx.require_db()?;
     let rows = machines::list_all(db)?;
     ctx.emitter.emit_result(&rows).ok();
     Ok(())
 }
 
-fn add(ctx: &mut Ctx<'_>, ip: String, hostname: Option<String>) -> UecmResult<()> {
+fn add(ctx: &mut Ctx<'_>, ip: String, hostname: Option<String>) -> VoloResult<()> {
     let db = ctx.require_db()?;
     let hostname = hostname.unwrap_or_else(|| ip.clone());
 
@@ -100,11 +100,11 @@ fn add(ctx: &mut Ctx<'_>, ip: String, hostname: Option<String>) -> UecmResult<()
     Ok(())
 }
 
-fn detail(ctx: &mut Ctx<'_>, id: i64) -> UecmResult<()> {
+fn detail(ctx: &mut Ctx<'_>, id: i64) -> VoloResult<()> {
     let db = ctx.require_db()?;
 
     let machine = machines::find_by_id(db, id)?
-        .ok_or_else(|| UecmError::InvalidInput(format!("machine id={} not found", id)))?;
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine id={} not found", id)))?;
     let ue_installs = machine_ue_installs::list_for_machine(db, id)?;
     let gpus = machine_gpus::list_for_machine(db, id)?;
 
@@ -136,7 +136,7 @@ fn delete(
     all: bool,
     yes: bool,
     dry_run: bool,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let outcome = destructive::check(yes, dry_run, "machine.delete")?;
 
     // Resolve the target set, validating existence up front so a typo / bad id
@@ -148,7 +148,7 @@ fn delete(
             // Single positional id (back-compat).
             Some(single) => {
                 if machines::find_by_id(db, single)?.is_none() {
-                    return Err(UecmError::InvalidInput(format!(
+                    return Err(VoloError::InvalidInput(format!(
                         "machine id={} not found (already deleted or wrong id)",
                         single
                     )));
@@ -164,7 +164,7 @@ fn delete(
             // batch is rejected (no partial deletes).
             None => {
                 if machine_ids.is_empty() {
-                    return Err(UecmError::InvalidInput(
+                    return Err(VoloError::InvalidInput(
                         "one of <id> / --machine-ids / --all is required".into(),
                     ));
                 }
@@ -175,7 +175,7 @@ fn delete(
                     }
                 }
                 if !missing.is_empty() {
-                    return Err(UecmError::InvalidInput(format!(
+                    return Err(VoloError::InvalidInput(format!(
                         "machine id(s) not found: {:?} (nothing deleted)",
                         missing
                     )));
@@ -211,7 +211,7 @@ fn delete(
     Ok(())
 }
 
-fn rename(ctx: &mut Ctx<'_>, id: i64, hostname: String) -> UecmResult<()> {
+fn rename(ctx: &mut Ctx<'_>, id: i64, hostname: String) -> VoloResult<()> {
     let db = ctx.require_db()?;
     machines::rename(db, id, &hostname)?;
 
@@ -223,7 +223,7 @@ fn rename(ctx: &mut Ctx<'_>, id: i64, hostname: String) -> UecmResult<()> {
     Ok(())
 }
 
-fn set_ue_user(ctx: &mut Ctx<'_>, machine_id: i64, ue_user: &str) -> UecmResult<()> {
+fn set_ue_user(ctx: &mut Ctx<'_>, machine_id: i64, ue_user: &str) -> VoloResult<()> {
     let db = ctx.require_db()?;
     let user_opt: Option<&str> = if ue_user.is_empty() { None } else { Some(ue_user) };
     machines::set_ue_runtime_user(db, machine_id, user_opt)?;
@@ -237,7 +237,7 @@ fn set_ue_user(ctx: &mut Ctx<'_>, machine_id: i64, ue_user: &str) -> UecmResult<
     Ok(())
 }
 
-fn scan(ctx: &mut Ctx<'_>, cidr: &str, timeout_ms: u64) -> UecmResult<()> {
+fn scan(ctx: &mut Ctx<'_>, cidr: &str, timeout_ms: u64) -> VoloResult<()> {
     ctx.emitter
         .emit_event(&Event::Started {
             task_type: "machine_scan".into(),
@@ -249,7 +249,7 @@ fn scan(ctx: &mut Ctx<'_>, cidr: &str, timeout_ms: u64) -> UecmResult<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|e| UecmError::Configuration(format!("tokio runtime: {}", e)))?;
+        .map_err(|e| VoloError::Configuration(format!("tokio runtime: {}", e)))?;
     let hosts = runtime.block_on(cache_core::core::network::scan_cidr(cidr, timeout_ms))?;
     let total = hosts.len() as i64;
     for h in &hosts {
@@ -270,14 +270,14 @@ fn scan(ctx: &mut Ctx<'_>, cidr: &str, timeout_ms: u64) -> UecmResult<()> {
     Ok(())
 }
 
-fn refresh(ctx: &mut Ctx<'_>, id: i64, cred: &crate::credential_args::CredentialArgs, exec: &dyn RemoteExecutor) -> UecmResult<()> {
+fn refresh(ctx: &mut Ctx<'_>, id: i64, cred: &crate::credential_args::CredentialArgs, exec: &dyn RemoteExecutor) -> VoloResult<()> {
     // Fetch machine, grab IP (canonical connect target — matches the UI's
     // `commands::discovery::refresh_machine`). Hostname can drift if the user
     // renames the row, so IP is the only reliable WinRM target.
     let (host, hostname_for_log) = {
         let db = ctx.require_db()?;
         let machine = machines::find_by_id(db, id)?
-            .ok_or_else(|| UecmError::InvalidInput(format!("machine id={} not found", id)))?;
+            .ok_or_else(|| VoloError::InvalidInput(format!("machine id={} not found", id)))?;
         (machine.ip.clone(), machine.hostname.clone())
     };
 
@@ -328,7 +328,7 @@ fn refresh(ctx: &mut Ctx<'_>, id: i64, cred: &crate::credential_args::Credential
                 let db = ctx.require_db()?;
                 machines::mark_seen(db, id, "offline")?;
             }
-            return Err(UecmError::SshConnect(format!(
+            return Err(VoloError::SshConnect(format!(
                 "ssh probe failed: {}",
                 p.message
             )));
@@ -375,7 +375,7 @@ fn refresh(ctx: &mut Ctx<'_>, id: i64, cred: &crate::credential_args::Credential
     {
         let db = ctx.require_db()?;
         // Mirror commands/discovery.rs: snapshot existing rows so intree_*
-        // metadata written by Plan 7 T1.6 survives a `uecm-cli machine refresh`.
+        // metadata written by Plan 7 T1.6 survives a `voloctl cache machine refresh`.
         let existing = machine_ue_installs::list_for_machine(db, id)?;
         machine_ue_installs::delete_for_machine(db, id)?;
         for (idx, detected) in detected_ue.iter().enumerate() {
@@ -454,14 +454,14 @@ fn refresh(ctx: &mut Ctx<'_>, id: i64, cred: &crate::credential_args::Credential
 
 /// Expand a `--machine-ids` / `--all` selection into concrete machine ids.
 /// Shared by `deep_scan` and `authorize`.
-fn resolve_target_ids(db: &cache_core::data::Db, machine_ids: &[i64], all: bool) -> UecmResult<Vec<i64>> {
+fn resolve_target_ids(db: &cache_core::data::Db, machine_ids: &[i64], all: bool) -> VoloResult<Vec<i64>> {
     if all {
         Ok(machines::list_all(db)?
             .into_iter()
             .filter_map(|m| m.id)
             .collect())
     } else if machine_ids.is_empty() {
-        Err(UecmError::InvalidInput(
+        Err(VoloError::InvalidInput(
             "one of --machine-ids or --all is required".into(),
         ))
     } else {
@@ -475,7 +475,7 @@ fn deep_scan(
     all: bool,
     cred: &crate::credential_args::CredentialArgs,
     exec: &dyn RemoteExecutor,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let ids = {
         let db = ctx.require_db()?;
         resolve_target_ids(db, &machine_ids, all)?
@@ -618,7 +618,7 @@ fn authorize(
     all: bool,
     save_as: Option<String>,
     cred: &crate::credential_args::CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     // Remote WinRM push has been retired (SSH migration P5a). `machine authorize`
     // no longer probes / bootstraps; it points the operator at the USB SSH bundle.
     // `save_as` / `cred` are accepted-and-ignored shims (CLI surface frozen).
@@ -632,7 +632,7 @@ fn authorize(
             summary: json!({
                 "machines": ids.len(),
                 "remote_push": "retired",
-                "hint": "Remote WinRM push is retired. Build a USB onboarding bundle with `uecm-cli ssh package-bootstrap --out <dir>`, run UECM-Bootstrap.cmd on each node, then `uecm-cli machine refresh <id>` over SSH.",
+                "hint": "Remote WinRM push is retired. Build a USB onboarding bundle with `voloctl cache ssh package-bootstrap --out <dir>`, run UECM-Bootstrap.cmd on each node, then `voloctl cache machine refresh <id>` over SSH.",
             }),
         })
         .ok();
@@ -651,11 +651,11 @@ mod tests {
     /// so machines are skipped without spawning real ssh / touching the keystore.
     struct UnreachableExec;
     impl RemoteExecutor for UnreachableExec {
-        fn run(&self, _host: &str, _script: &NodeScript) -> UecmResult<ScriptOutput> {
-            Err(UecmError::SshConnect("unreachable (test)".into()))
+        fn run(&self, _host: &str, _script: &NodeScript) -> VoloResult<ScriptOutput> {
+            Err(VoloError::SshConnect("unreachable (test)".into()))
         }
-        fn probe(&self, _host: &str, _user: Option<&str>) -> UecmResult<ProbeResult> {
-            Err(UecmError::SshConnect("unreachable (test)".into()))
+        fn probe(&self, _host: &str, _user: Option<&str>) -> VoloResult<ProbeResult> {
+            Err(VoloError::SshConnect("unreachable (test)".into()))
         }
     }
 
@@ -784,7 +784,7 @@ mod tests {
         let result = delete(&mut ctx, Some(1), vec![], false, false, false);
         assert!(result.is_err(), "delete without --yes or --dry-run should fail");
 
-        if let Err(UecmError::InvalidInput(msg)) = result {
+        if let Err(VoloError::InvalidInput(msg)) = result {
             assert!(
                 msg.contains("destructive"),
                 "error message should mention destructive"
@@ -961,7 +961,7 @@ mod tests {
     /// detect_gpus get plausible output.
     struct FakeRefreshExec;
     impl RemoteExecutor for FakeRefreshExec {
-        fn run(&self, _host: &str, script: &NodeScript) -> UecmResult<ScriptOutput> {
+        fn run(&self, _host: &str, script: &NodeScript) -> VoloResult<ScriptOutput> {
             let stdout = match script.name {
                 "query-ue-versions.ps1" =>
                     r#"[{"version":"5.4","install_path":"C:\\UE_5.4"}]"#.to_string(),
@@ -971,7 +971,7 @@ mod tests {
             };
             Ok(ScriptOutput { stdout, stderr: String::new(), exit_code: 0 })
         }
-        fn probe(&self, _host: &str, _user: Option<&str>) -> UecmResult<ProbeResult> {
+        fn probe(&self, _host: &str, _user: Option<&str>) -> VoloResult<ProbeResult> {
             Ok(ProbeResult { ok: true, message: "ok".into(), latency_ms: 1 })
         }
     }

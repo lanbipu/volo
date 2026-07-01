@@ -1,7 +1,7 @@
 //! Database schema migrations. Runs idempotently on app startup.
 //! Each migration is wrapped in a transaction.
 
-use crate::error::UecmResult;
+use crate::error::VoloResult;
 use rusqlite::Connection;
 
 const MIGRATIONS: &[(&str, &str)] = &[
@@ -413,7 +413,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ),
 ];
 
-pub fn migrate(conn: &mut Connection) -> UecmResult<()> {
+pub fn migrate(conn: &mut Connection) -> VoloResult<()> {
     // Bootstrap: ensure migrations table exists.
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations (

@@ -1,7 +1,7 @@
 //! `lmt` subcommand group — LMT's agent-friendly CLI, platformed under
 //! `voloctl lmt ...` (step 3c).
 //!
-//! Mirrors how step 2b mounted UECM under `uecm`: the LMT clap tree
+//! Mirrors how step 2b mounted the cache CLI under `cache`: the LMT clap tree
 //! (`cli::Cli`) is reparented onto a subcommand named `lmt` by `main.rs`, and
 //! `commands::dispatch` runs the matched subcommand. The envelope / exit-code /
 //! E2E contract is preserved verbatim — only crate-path references were

@@ -2,12 +2,12 @@
 
 use cache_core::core::env_vars;
 use cache_core::data::{machines as data_machines, Db};
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 use tauri::State;
 
-fn ip_for(db: &Db, machine_id: i64) -> UecmResult<String> {
+fn ip_for(db: &Db, machine_id: i64) -> VoloResult<String> {
     Ok(data_machines::find_by_id(db, machine_id)?
-        .ok_or_else(|| UecmError::InvalidInput(format!("machine {} not found", machine_id)))?
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?
         .ip)
 }
 
@@ -17,7 +17,7 @@ pub fn set_machine_env_var(
     machine_id: i64,
     name: String,
     value: String,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     // Logged so a failed share join/leave (this is the join's env-var half) or
     // local-DDC pointer write leaves an `operations` row with the exact error.
     let invocation = format!("set env var {name}=\"{value}\" on machine {machine_id}");
@@ -32,7 +32,7 @@ pub fn get_machine_env_var(
     db: State<'_, Db>,
     machine_id: i64,
     name: String,
-) -> UecmResult<Option<String>> {
+) -> VoloResult<Option<String>> {
     let host = ip_for(&db, machine_id)?;
     env_vars::get(&host, &name)
 }
@@ -44,7 +44,7 @@ pub fn set_machine_env_var_with_credential(
     name: String,
     value: String,
     credential_alias: String,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let _ = credential_alias; // accepted-but-ignored shim (SSH key auth); Vue still sends it.
     let host = ip_for(&db, machine_id)?;
     env_vars::set(&host, &name, &value)
@@ -56,7 +56,7 @@ pub fn get_machine_env_var_with_credential(
     machine_id: i64,
     name: String,
     credential_alias: String,
-) -> UecmResult<Option<String>> {
+) -> VoloResult<Option<String>> {
     let _ = credential_alias; // accepted-but-ignored shim (SSH key auth); Vue still sends it.
     let host = ip_for(&db, machine_id)?;
     env_vars::get(&host, &name)

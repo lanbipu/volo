@@ -1,7 +1,7 @@
 //! CRUD for the `projects` table.
 
 use crate::data::Db;
-use crate::error::UecmResult;
+use crate::error::VoloResult;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
@@ -27,7 +27,7 @@ pub struct Project {
     pub engine_association_kind: Option<String>,
 }
 
-pub fn upsert(db: &Db, project: &Project) -> UecmResult<i64> {
+pub fn upsert(db: &Db, project: &Project) -> VoloResult<i64> {
     let conn = db.lock().unwrap();
     conn.execute(
         "INSERT INTO projects (
@@ -70,7 +70,7 @@ pub fn upsert(db: &Db, project: &Project) -> UecmResult<i64> {
     Ok(id)
 }
 
-pub fn list(db: &Db) -> UecmResult<Vec<Project>> {
+pub fn list(db: &Db) -> VoloResult<Vec<Project>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, uproject_name, uproject_stem_lower, uproject_guid, display_name,
@@ -87,7 +87,7 @@ pub fn list(db: &Db) -> UecmResult<Vec<Project>> {
     Ok(out)
 }
 
-pub fn get(db: &Db, project_id: i64) -> UecmResult<Option<Project>> {
+pub fn get(db: &Db, project_id: i64) -> VoloResult<Option<Project>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, uproject_name, uproject_stem_lower, uproject_guid, display_name,
@@ -104,7 +104,7 @@ pub fn get(db: &Db, project_id: i64) -> UecmResult<Option<Project>> {
     }
 }
 
-pub fn delete(db: &Db, project_id: i64) -> UecmResult<()> {
+pub fn delete(db: &Db, project_id: i64) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     conn.execute("DELETE FROM projects WHERE id = ?", params![project_id])?;
     Ok(())

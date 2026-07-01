@@ -1,14 +1,14 @@
-//! `uecm-cli cred <action>` handlers.
+//! `voloctl cache cred <action>` handlers.
 
 use crate::args::CredAction;
 use crate::destructive::{self, Outcome};
 use crate::output::EmitSerialize;
 use crate::run::Ctx;
 use cache_core::data::credentials as data_creds;
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 use std::io::{self, BufRead};
 
-pub fn handle(ctx: &mut Ctx<'_>, action: CredAction) -> UecmResult<()> {
+pub fn handle(ctx: &mut Ctx<'_>, action: CredAction) -> VoloResult<()> {
     match action {
         CredAction::List => list(ctx),
         CredAction::Save {
@@ -22,25 +22,25 @@ pub fn handle(ctx: &mut Ctx<'_>, action: CredAction) -> UecmResult<()> {
     }
 }
 
-fn list(ctx: &mut Ctx<'_>) -> UecmResult<()> {
+fn list(ctx: &mut Ctx<'_>) -> VoloResult<()> {
     let db = ctx.require_db()?;
     let rows = data_creds::list_all(db)?;
     ctx.emitter.emit_result(&rows).ok();
     Ok(())
 }
 
-fn read_password(pass_inline: Option<&str>, pass_stdin: bool) -> UecmResult<String> {
+fn read_password(pass_inline: Option<&str>, pass_stdin: bool) -> VoloResult<String> {
     if let Some(p) = pass_inline {
         return Ok(p.to_string());
     }
     if pass_stdin {
         let mut line = String::new();
         io::stdin().lock().read_line(&mut line).map_err(|e| {
-            UecmError::InvalidInput(format!("read password from stdin: {}", e))
+            VoloError::InvalidInput(format!("read password from stdin: {}", e))
         })?;
         return Ok(line.trim_end_matches(['\r', '\n']).to_string());
     }
-    Err(UecmError::InvalidInput(
+    Err(VoloError::InvalidInput(
         "either --pass or --pass-stdin is required".into(),
     ))
 }
@@ -52,7 +52,7 @@ fn save(
     pass_inline: Option<&str>,
     pass_stdin: bool,
     kind: &str,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let password = read_password(pass_inline, pass_stdin)?;
     save_resolved(ctx, alias, user, &password, kind)
 }
@@ -66,7 +66,7 @@ pub(crate) fn save_resolved(
     user: &str,
     password: &str,
     kind: &str,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     use cache_core::core::credentials as core_creds;
 
     let username = core_creds::normalize_username_for_storage(user);
@@ -97,12 +97,12 @@ pub(crate) fn save_resolved(
     Ok(())
 }
 
-fn parse_credential_kind(kind_str: &str) -> UecmResult<data_creds::CredentialKind> {
+fn parse_credential_kind(kind_str: &str) -> VoloResult<data_creds::CredentialKind> {
     use data_creds::CredentialKind;
     match kind_str.to_lowercase().as_str() {
         "winrm" => Ok(CredentialKind::Winrm),
         "share" => Ok(CredentialKind::Share),
-        other => Err(UecmError::InvalidInput(format!(
+        other => Err(VoloError::InvalidInput(format!(
             "unknown credential kind '{}'; expected 'winrm' or 'share'",
             other
         ))),
@@ -113,7 +113,7 @@ fn build_credential_record(
     alias: &str,
     username: &str,
     kind_str: &str,
-) -> UecmResult<data_creds::CredentialRecord> {
+) -> VoloResult<data_creds::CredentialRecord> {
     use data_creds::CredentialRecord;
     let kind = parse_credential_kind(kind_str)?;
     Ok(CredentialRecord {
@@ -124,7 +124,7 @@ fn build_credential_record(
     })
 }
 
-fn delete(ctx: &mut Ctx<'_>, alias: &str, yes: bool, dry_run: bool) -> UecmResult<()> {
+fn delete(ctx: &mut Ctx<'_>, alias: &str, yes: bool, dry_run: bool) -> VoloResult<()> {
     let outcome = destructive::check(yes, dry_run, "cred.delete")?;
 
     let db = ctx.require_db()?;

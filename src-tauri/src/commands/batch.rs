@@ -4,15 +4,15 @@
 
 use cache_core::core::{batch, env_vars, ini_editor};
 use cache_core::data::{machines as data_machines, Db};
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
 const BATCH_EVENT_NAME: &str = "batch-progress";
 
-fn ip_for(db: &Db, machine_id: i64) -> UecmResult<String> {
+fn ip_for(db: &Db, machine_id: i64) -> VoloResult<String> {
     Ok(data_machines::find_by_id(db, machine_id)?
-        .ok_or_else(|| UecmError::InvalidInput(format!("machine {} not found", machine_id)))?
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?
         .ip)
 }
 
@@ -24,12 +24,12 @@ pub async fn batch_set_env_var(
     name: String,
     value: String,
     credential_alias: String,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let _ = credential_alias; // accepted-but-ignored shim (SSH key auth); Vue still sends it.
     let ips: Vec<(i64, String)> = machine_ids
         .iter()
         .map(|id| ip_for(&db, *id).map(|ip| (*id, ip)))
-        .collect::<UecmResult<Vec<_>>>()?;
+        .collect::<VoloResult<Vec<_>>>()?;
     let ip_lookup: std::collections::HashMap<i64, String> = ips.into_iter().collect();
     let name = Arc::new(name);
     let value = Arc::new(value);
@@ -44,13 +44,13 @@ pub async fn batch_set_env_var(
             let host = ip_lookup.get(&machine_id).cloned();
             async move {
                 let host = host.ok_or_else(|| {
-                    UecmError::InvalidInput(format!("machine {} not in lookup", machine_id))
+                    VoloError::InvalidInput(format!("machine {} not in lookup", machine_id))
                 })?;
                 tokio::task::spawn_blocking(move || {
                     env_vars::set(&host, &name, &value)
                 })
                 .await
-                .map_err(|e| UecmError::OperationFailed(format!("join error: {}", e)))?
+                .map_err(|e| VoloError::OperationFailed(format!("join error: {}", e)))?
             }
         }
     })
@@ -72,12 +72,12 @@ pub async fn batch_set_ini_key(
     name: String,
     value: String,
     credential_alias: String,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let _ = credential_alias; // accepted-but-ignored shim (SSH key auth); Vue still sends it.
     let ips: Vec<(i64, String)> = machine_ids
         .iter()
         .map(|id| ip_for(&db, *id).map(|ip| (*id, ip)))
-        .collect::<UecmResult<Vec<_>>>()?;
+        .collect::<VoloResult<Vec<_>>>()?;
     let ip_lookup: std::collections::HashMap<i64, String> = ips.into_iter().collect();
     let file_path = Arc::new(file_path);
     let section = Arc::new(section);
@@ -98,14 +98,14 @@ pub async fn batch_set_ini_key(
             let host = ip_lookup.get(&machine_id).cloned();
             async move {
                 let host = host.ok_or_else(|| {
-                    UecmError::InvalidInput(format!("machine {} not in lookup", machine_id))
+                    VoloError::InvalidInput(format!("machine {} not in lookup", machine_id))
                 })?;
                 tokio::task::spawn_blocking(move || {
                     ini_editor::set_key(&host, &file_path, &section, &name, &value)
                         .map(|_backup| ())
                 })
                 .await
-                .map_err(|e| UecmError::OperationFailed(format!("join error: {}", e)))?
+                .map_err(|e| VoloError::OperationFailed(format!("join error: {}", e)))?
             }
         }
     })

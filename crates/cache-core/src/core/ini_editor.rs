@@ -2,7 +2,7 @@
 
 use crate::core::loopback;
 use crate::core::ssh::{run_json, NodeScript, SshExecutor};
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -26,7 +26,7 @@ pub struct WriteResult {
     pub message: String,
 }
 
-pub fn read_section(host: &str, file_path: &str, section: &str) -> UecmResult<Vec<IniKey>> {
+pub fn read_section(host: &str, file_path: &str, section: &str) -> VoloResult<Vec<IniKey>> {
     if loopback::is_loopback_target(host) {
         return read_section_local(file_path, section);
     }
@@ -42,7 +42,7 @@ pub fn read_section(host: &str, file_path: &str, section: &str) -> UecmResult<Ve
         },
     )?;
     if !result.ok {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "read INI failed: {}",
             result.message
         )));
@@ -56,7 +56,7 @@ pub fn set_key(
     section: &str,
     name: &str,
     value: &str,
-) -> UecmResult<String> {
+) -> VoloResult<String> {
     if loopback::is_loopback_target(host) {
         return write_key_local(file_path, section, name, Some(value));
     }
@@ -75,7 +75,7 @@ pub fn set_key(
         },
     )?;
     if !result.ok {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "write INI failed: {}",
             result.message
         )));
@@ -93,7 +93,7 @@ pub fn set_key_create(
     section: &str,
     name: &str,
     value: &str,
-) -> UecmResult<String> {
+) -> VoloResult<String> {
     if loopback::is_loopback_target(host) {
         // Local path: create parent dir + empty file if missing, then write.
         if let Some(parent) = std::path::Path::new(file_path).parent() {
@@ -119,7 +119,7 @@ pub fn set_key_create(
         },
     )?;
     if !result.ok {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "write INI (create) failed: {}",
             result.message
         )));
@@ -134,7 +134,7 @@ pub fn remove_key(
     file_path: &str,
     section: &str,
     name: &str,
-) -> UecmResult<String> {
+) -> VoloResult<String> {
     if loopback::is_loopback_target(host) {
         return write_key_local(file_path, section, name, None);
     }
@@ -153,7 +153,7 @@ pub fn remove_key(
         },
     )?;
     if !result.ok {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "remove key failed: {}",
             result.message
         )));
@@ -161,7 +161,7 @@ pub fn remove_key(
     Ok(result.backup_path)
 }
 
-fn read_section_local(file_path: &str, section: &str) -> UecmResult<Vec<IniKey>> {
+fn read_section_local(file_path: &str, section: &str) -> VoloResult<Vec<IniKey>> {
     let contents = std::fs::read_to_string(file_path)?;
     let mut keys = Vec::new();
     let mut in_section = false;
@@ -200,7 +200,7 @@ fn write_key_local(
     section: &str,
     name: &str,
     value: Option<&str>,
-) -> UecmResult<String> {
+) -> VoloResult<String> {
     let contents = std::fs::read_to_string(file_path)?;
     let backup = local_backup_path(file_path);
     std::fs::copy(file_path, &backup)?;
@@ -286,10 +286,10 @@ fn local_backup_path(file_path: &str) -> String {
 
 fn write_backend_field_local(
     file_path: &str, section: &str, node_name: &str, field: &str, value: &str,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     use std::fs;
     let body = fs::read_to_string(file_path)
-        .map_err(|e| UecmError::OperationFailed(format!("read {}: {}", file_path, e)))?;
+        .map_err(|e| VoloError::OperationFailed(format!("read {}: {}", file_path, e)))?;
     let mut out: Vec<String> = Vec::with_capacity(body.lines().count() + 1);
     let mut in_section = false;
     let mut handled = false;
@@ -312,12 +312,12 @@ fn write_backend_field_local(
         out.push(raw.to_string());
     }
     if !handled {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "section [{}] node {} not found in {}", section, node_name, file_path)));
     }
     out.push(String::new());
     fs::write(file_path, out.join("\n"))
-        .map_err(|e| UecmError::OperationFailed(format!("write {}: {}", file_path, e)))?;
+        .map_err(|e| VoloError::OperationFailed(format!("write {}: {}", file_path, e)))?;
     Ok(())
 }
 
@@ -330,13 +330,13 @@ fn write_backend_field_local(
 /// join wrote, not restore prior values.
 fn remove_backend_field_local(
     file_path: &str, section: &str, node_name: &str, field: &str,
-) -> UecmResult<bool> {
+) -> VoloResult<bool> {
     use std::fs;
     let body = match fs::read_to_string(file_path) {
         Ok(b) => b,
         // Missing file == nothing wired to roll back (parity with remote sidecar).
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(e) => return Err(UecmError::OperationFailed(format!("read {}: {}", file_path, e))),
+        Err(e) => return Err(VoloError::OperationFailed(format!("read {}: {}", file_path, e))),
     };
     let mut out: Vec<String> = Vec::with_capacity(body.lines().count() + 1);
     let mut in_section = false;
@@ -363,14 +363,14 @@ fn remove_backend_field_local(
     if changed {
         out.push(String::new());
         fs::write(file_path, out.join("\n"))
-            .map_err(|e| UecmError::OperationFailed(format!("write {}: {}", file_path, e)))?;
+            .map_err(|e| VoloError::OperationFailed(format!("write {}: {}", file_path, e)))?;
     }
     Ok(changed)
 }
 
 pub fn remove_backend_field(
     host: &str, file_path: &str, section: &str, node_name: &str, field: &str,
-) -> UecmResult<String> {
+) -> VoloResult<String> {
     if loopback::is_loopback_target(host) {
         let changed = remove_backend_field_local(file_path, section, node_name, field)?;
         return Ok(if changed {
@@ -392,7 +392,7 @@ pub fn remove_backend_field(
             ssh_user: None,
         },
     )?;
-    if !r.ok { return Err(UecmError::OperationFailed(r.message)); }
+    if !r.ok { return Err(VoloError::OperationFailed(r.message)); }
     Ok(r.message)
 }
 
@@ -402,7 +402,7 @@ struct BackendFieldResult { ok: bool, message: String }
 pub fn set_backend_field(
     host: &str, file_path: &str, section: &str, node_name: &str,
     field: &str, value: &str,
-) -> UecmResult<String> {
+) -> VoloResult<String> {
     if loopback::is_loopback_target(host) {
         write_backend_field_local(file_path, section, node_name, field, value)?;
         return Ok(format!("wrote {}.{} locally", node_name, field));
@@ -420,7 +420,7 @@ pub fn set_backend_field(
             ssh_user: None,
         },
     )?;
-    if !r.ok { return Err(UecmError::OperationFailed(r.message)); }
+    if !r.ok { return Err(VoloError::OperationFailed(r.message)); }
     Ok(r.message)
 }
 
@@ -610,7 +610,7 @@ mod tests {
         let path = dir.path().join("DefaultEngine.ini");
         std::fs::write(&path, "[DerivedDataBackendGraph]\nBoot=(Type=Boot)\n").unwrap();
         let r = write_backend_field_local(path.to_str().unwrap(), "DerivedDataBackendGraph", "Shared", "ReadOnly", "false");
-        assert!(matches!(r, Err(UecmError::OperationFailed(_))));
+        assert!(matches!(r, Err(VoloError::OperationFailed(_))));
     }
 
     #[test]

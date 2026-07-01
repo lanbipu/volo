@@ -1,4 +1,4 @@
-/* Volo — Cache/UECM DTO types (1:1 with the Rust `Serialize` shapes).
+/* Volo — Cache DTO types (1:1 with the Rust `Serialize` shapes).
    Field names are snake_case to match the wire format (crates use plain
    `#[derive(Serialize)]` without rename_all unless noted). Enums map to the
    serde `rename_all` casing. `unknown` stands in for `serde_json::Value`.

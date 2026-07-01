@@ -6,7 +6,7 @@ use cache_core::data::{
     machine_ue_installs, machines as data_machines, operations,
     project_locations, Db,
 };
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -80,10 +80,10 @@ fn resolve_engine_path(
     db: &Db,
     machine_id: i64,
     preferred_version: Option<&str>,
-) -> UecmResult<String> {
+) -> VoloResult<String> {
     let installs = machine_ue_installs::list_for_machine(db, machine_id)?;
     if installs.is_empty() {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "machine {} has no detected UE installs",
             machine_id
         )));
@@ -93,7 +93,7 @@ fn resolve_engine_path(
             .into_iter()
             .find(|install| install.version == version)
             .ok_or_else(|| {
-                UecmError::InvalidInput(format!("UE {} not on machine {}", version, machine_id))
+                VoloError::InvalidInput(format!("UE {} not on machine {}", version, machine_id))
             })?;
         return Ok(install.install_path);
     }
@@ -105,7 +105,7 @@ fn resolve_engine_path(
     Ok(install.install_path)
 }
 
-fn resolve_operator_engine_path(_preferred_version: Option<&str>) -> UecmResult<String> {
+fn resolve_operator_engine_path(_preferred_version: Option<&str>) -> VoloResult<String> {
     if let Some(local_app) = std::env::var_os("LOCALAPPDATA") {
         let cfg_path = std::path::Path::new(&local_app)
             .join("UECM")
@@ -115,14 +115,14 @@ fn resolve_operator_engine_path(_preferred_version: Option<&str>) -> UecmResult<
             struct OperatorConfig {
                 engine_path: String,
             }
-            let text = std::fs::read_to_string(&cfg_path).map_err(UecmError::Io)?;
+            let text = std::fs::read_to_string(&cfg_path).map_err(VoloError::Io)?;
             let cfg: OperatorConfig = serde_json::from_str(&text).map_err(|e| {
-                UecmError::OperationFailed(format!("operator-config.json parse: {}", e))
+                VoloError::OperationFailed(format!("operator-config.json parse: {}", e))
             })?;
             return Ok(cfg.engine_path);
         }
     }
-    Err(UecmError::InvalidInput(
+    Err(VoloError::InvalidInput(
         "local_engine_path is required when operator-config.json is absent".into(),
     ))
 }
@@ -145,19 +145,19 @@ pub async fn generate_ddc_pak(
     local_engine_path: Option<String>,
     ue_version: Option<String>,
     operator_credential_alias: Option<String>,
-) -> UecmResult<GenerateJobResponse> {
+) -> VoloResult<GenerateJobResponse> {
     let (host, engine_path, uproject_path, runtime_backend) = match backend {
         ExecutionLocation::Remote => {
             let machine_id = source_machine_id.ok_or_else(|| {
-                UecmError::InvalidInput("source_machine_id required for remote backend".into())
+                VoloError::InvalidInput("source_machine_id required for remote backend".into())
             })?;
             let machine = data_machines::find_by_id(&db, machine_id)?.ok_or_else(|| {
-                UecmError::InvalidInput(format!("machine {} not found", machine_id))
+                VoloError::InvalidInput(format!("machine {} not found", machine_id))
             })?;
             let location =
                 project_locations::get_for_project_machine(&db, project_id, machine_id)?
                     .ok_or_else(|| {
-                        UecmError::InvalidInput(format!(
+                        VoloError::InvalidInput(format!(
                             "project {} not located on machine {}",
                             project_id, machine_id
                         ))
@@ -185,12 +185,12 @@ pub async fn generate_ddc_pak(
         }
         ExecutionLocation::Local => {
             let uproject_path = local_uproject_path.ok_or_else(|| {
-                UecmError::InvalidInput("local_uproject_path required for local backend".into())
+                VoloError::InvalidInput("local_uproject_path required for local backend".into())
             })?;
             let engine_path = local_engine_path
                 .or_else(|| resolve_operator_engine_path(ue_version.as_deref()).ok())
                 .ok_or_else(|| {
-                    UecmError::InvalidInput(
+                    VoloError::InvalidInput(
                         "local_engine_path required for local backend".into(),
                     )
                 })?;
@@ -336,7 +336,7 @@ pub async fn generate_ddc_pak(
 pub async fn cancel_ue_job(
     registry: State<'_, UeJobRegistry>,
     job_id: String,
-) -> UecmResult<bool> {
+) -> VoloResult<bool> {
     Ok(registry.cancel(&job_id).await)
 }
 
@@ -346,12 +346,12 @@ pub async fn verify_pak_output(
     machine_id: i64,
     project_id: i64,
     operator_credential_alias: Option<String>,
-) -> UecmResult<ddc_pak::PakOutput> {
+) -> VoloResult<ddc_pak::PakOutput> {
     let machine = data_machines::find_by_id(&db, machine_id)?
-        .ok_or_else(|| UecmError::InvalidInput(format!("machine {} not found", machine_id)))?;
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?;
     let location = project_locations::get_for_project_machine(&db, project_id, machine_id)?
         .ok_or_else(|| {
-            UecmError::InvalidInput(format!(
+            VoloError::InvalidInput(format!(
                 "project {} not located on machine {}",
                 project_id, machine_id
             ))
@@ -369,7 +369,7 @@ pub async fn verify_pak_output(
         )
     })
     .await
-    .map_err(|err| UecmError::OperationFailed(format!("verify_pak_output task failed: {err}")))?
+    .map_err(|err| VoloError::OperationFailed(format!("verify_pak_output task failed: {err}")))?
 }
 
 #[tauri::command]
@@ -382,13 +382,13 @@ pub async fn distribute_ddc_pak(
     named_share_unc: Option<String>,
     operator_credential_alias: Option<String>,
     source_smb_credential_alias: Option<String>,
-) -> UecmResult<DistributeJobResponse> {
+) -> VoloResult<DistributeJobResponse> {
     let source_machine = data_machines::find_by_id(&db, source_machine_id)?
-        .ok_or_else(|| UecmError::InvalidInput(format!("machine {} not found", source_machine_id)))?;
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", source_machine_id)))?;
     let source_location =
         project_locations::get_for_project_machine(&db, project_id, source_machine_id)?
             .ok_or_else(|| {
-                UecmError::InvalidInput(format!(
+                VoloError::InvalidInput(format!(
                     "project {} not located on machine {}",
                     project_id, source_machine_id
                 ))
@@ -434,7 +434,7 @@ pub async fn distribute_ddc_pak(
                     // from the credential record, else the `ddc-svc` convention.
                     let pass = cache_core::core::secrets::get_share_secret_migrating(a)?
                         .ok_or_else(|| {
-                            UecmError::InvalidInput(format!(
+                            VoloError::InvalidInput(format!(
                                 "source SMB alias '{a}' has no stored secret; re-create the share via `share create --mode b`"
                             ))
                         })?;
@@ -473,14 +473,14 @@ pub async fn distribute_ddc_pak(
         smb_pass,
     )?;
     if plan.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "distribution plan has no non-source targets".into(),
         ));
     }
 
     for item in &plan {
         pak_distribute::preflight_one_with_profile(&distribute_profile, item).await.map_err(|e| {
-            UecmError::OperationFailed(format!(
+            VoloError::OperationFailed(format!(
                 "target {} cannot reach source UNC: {}",
                 item.target_machine_id, e
             ))
@@ -518,7 +518,7 @@ pub async fn distribute_ddc_pak(
                         .iter()
                         .find(|item| item.target_machine_id == machine_id)
                         .ok_or_else(|| {
-                            UecmError::InvalidInput(format!(
+                            VoloError::InvalidInput(format!(
                                 "distribution plan missing machine {}",
                                 machine_id
                             ))
@@ -530,7 +530,7 @@ pub async fn distribute_ddc_pak(
                     )
                     .await?;
                     if !outcome.ok {
-                        return Err(UecmError::OperationFailed(format!(
+                        return Err(VoloError::OperationFailed(format!(
                             "robocopy exit {}: {}",
                             outcome.exit_code,
                             outcome
@@ -538,7 +538,7 @@ pub async fn distribute_ddc_pak(
                                 .unwrap_or_else(|| outcome.stdout_tail.clone())
                         )));
                     }
-                    Ok::<_, UecmError>(outcome)
+                    Ok::<_, VoloError>(outcome)
                 }
             },
         )

@@ -9,7 +9,7 @@
 
 use crate::core::ssh::{run_json, NodeScript, SshExecutor};
 use crate::data::{machines as data_machines, share_configs::ShareConfig, Db};
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -31,7 +31,7 @@ pub fn create_mode_a(
     local_path: &str,
     operator_user: Option<&str>,
     operator_pass: Option<&str>,
-) -> UecmResult<ShareCreateResult> {
+) -> VoloResult<ShareCreateResult> {
     let _ = (operator_user, operator_pass); // SSH key auth; per-call WinRM cred ignored until A5.
     let exec = SshExecutor::from_config()?;
     let result: ShareScriptResult = run_json(
@@ -44,7 +44,7 @@ pub fn create_mode_a(
         },
     )?;
     if !result.ok {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "Mode A share creation failed: {}",
             result.message
         )));
@@ -63,7 +63,7 @@ pub fn create_mode_b(
     svc_pass: &str,
     operator_user: Option<&str>,
     operator_pass: Option<&str>,
-) -> UecmResult<ShareCreateResult> {
+) -> VoloResult<ShareCreateResult> {
     let _ = (operator_user, operator_pass); // SSH key auth; per-call WinRM cred ignored until A5.
     let exec = SshExecutor::from_config()?;
     let result: ShareScriptResult = run_json(
@@ -81,7 +81,7 @@ pub fn create_mode_b(
         },
     )?;
     if !result.ok {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "Mode B share creation failed: {}",
             result.message
         )));
@@ -108,7 +108,7 @@ pub fn teardown(
     svc_username: Option<&str>,
     local_path: Option<&str>,
     keep_files: bool,
-) -> UecmResult<String> {
+) -> VoloResult<String> {
     let exec = SshExecutor::from_config()?;
     let result: TeardownScriptResult = run_json(
         &exec,
@@ -125,7 +125,7 @@ pub fn teardown(
         },
     )?;
     if !result.ok {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "share teardown failed: {}",
             result.message
         )));
@@ -149,9 +149,9 @@ struct ManagedPrepScriptResult {
 
 /// Mode A client prep: AllowInsecureGuestAuth + Guest cmdkey/net use for each UNC
 /// variant so Explorer and UE reach the share without a credential dialog.
-pub fn prepare_open_share_client(host: &str, target_uncs: &[String]) -> UecmResult<String> {
+pub fn prepare_open_share_client(host: &str, target_uncs: &[String]) -> VoloResult<String> {
     if target_uncs.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "prepare_open_share_client requires at least one target UNC".into(),
         ));
     }
@@ -166,7 +166,7 @@ pub fn prepare_open_share_client(host: &str, target_uncs: &[String]) -> UecmResu
         },
     )?;
     if !result.ok {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "open share client prep failed: {}",
             result.message
         )));
@@ -177,9 +177,9 @@ pub fn prepare_open_share_client(host: &str, target_uncs: &[String]) -> UecmResu
 /// Mode A client teardown: undo `prepare_open_share_client` for one share —
 /// remove the per-share targets file + scheduled tasks and drop live guest net
 /// use sessions, so leaving/tearing down a share stops the client auto-reconnecting.
-pub fn unprepare_open_share_client(host: &str, target_uncs: &[String]) -> UecmResult<String> {
+pub fn unprepare_open_share_client(host: &str, target_uncs: &[String]) -> VoloResult<String> {
     if target_uncs.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "unprepare_open_share_client requires at least one target UNC".into(),
         ));
     }
@@ -194,7 +194,7 @@ pub fn unprepare_open_share_client(host: &str, target_uncs: &[String]) -> UecmRe
         },
     )?;
     if !result.ok {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "open share client unprep failed: {}",
             result.message
         )));
@@ -211,14 +211,14 @@ pub fn prepare_managed_share_client(
     svc_server_name: &str,
     svc_user: &str,
     svc_pass: &str,
-) -> UecmResult<String> {
+) -> VoloResult<String> {
     if target_uncs.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "prepare_managed_share_client requires at least one target UNC".into(),
         ));
     }
     if cmdkey_targets.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "prepare_managed_share_client requires at least one cmdkey target".into(),
         ));
     }
@@ -239,7 +239,7 @@ pub fn prepare_managed_share_client(
         },
     )?;
     if !result.ok {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "managed share client prep failed: {}",
             result.message
         )));
@@ -254,9 +254,9 @@ pub fn unprepare_managed_share_client(
     host: &str,
     target_uncs: &[String],
     cmdkey_targets: &[String],
-) -> UecmResult<String> {
+) -> VoloResult<String> {
     if target_uncs.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "unprepare_managed_share_client requires at least one target UNC".into(),
         ));
     }
@@ -274,7 +274,7 @@ pub fn unprepare_managed_share_client(
         },
     )?;
     if !result.ok {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "managed share client unprep failed: {}",
             result.message
         )));
@@ -283,9 +283,9 @@ pub fn unprepare_managed_share_client(
 }
 
 /// NetBIOS/computer name of the share host for `SERVER\ddc-svc` SMB auth.
-pub fn smb_server_name_for_share(db: &Db, share: &ShareConfig) -> UecmResult<String> {
+pub fn smb_server_name_for_share(db: &Db, share: &ShareConfig) -> VoloResult<String> {
     let unc_target = unc_host(&share.unc_path).ok_or_else(|| {
-        UecmError::OperationFailed(format!(
+        VoloError::OperationFailed(format!(
             "cannot parse host from share unc_path '{}'",
             share.unc_path
         ))
@@ -297,7 +297,7 @@ pub fn smb_server_name_for_share(db: &Db, share: &ShareConfig) -> UecmResult<Str
     if !looks_like_ipv4(&hostname) {
         return Ok(hostname);
     }
-    Err(UecmError::OperationFailed(format!(
+    Err(VoloError::OperationFailed(format!(
         "share unc_path host '{unc_target}' and machine hostname '{hostname}' are both IPs; \
          set the share host machine's hostname to its NetBIOS name (e.g. LANPC) so Mode B \
          clients can authenticate as SERVER\\ddc-svc"
@@ -307,7 +307,7 @@ pub fn smb_server_name_for_share(db: &Db, share: &ShareConfig) -> UecmResult<Str
 fn looks_like_ipv4(host: &str) -> bool {
     host.parse::<std::net::Ipv4Addr>().is_ok()
 }
-pub fn unc_variants_for_share(db: &Db, share: &ShareConfig) -> UecmResult<Vec<String>> {
+pub fn unc_variants_for_share(db: &Db, share: &ShareConfig) -> VoloResult<Vec<String>> {
     let hosts = cmdkey_targets_for_share(db, share)?;
     Ok(hosts
         .into_iter()
@@ -315,9 +315,9 @@ pub fn unc_variants_for_share(db: &Db, share: &ShareConfig) -> UecmResult<Vec<St
         .collect())
 }
 
-pub fn cmdkey_targets_for_share(db: &Db, share: &ShareConfig) -> UecmResult<Vec<String>> {
+pub fn cmdkey_targets_for_share(db: &Db, share: &ShareConfig) -> VoloResult<Vec<String>> {
     let unc_target = unc_host(&share.unc_path).ok_or_else(|| {
-        UecmError::OperationFailed(format!(
+        VoloError::OperationFailed(format!(
             "cannot parse host from share unc_path '{}'",
             share.unc_path
         ))
@@ -345,15 +345,15 @@ fn unc_host(unc_path: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_string())
 }
 
-fn host_ip(db: &Db, machine_id: i64) -> UecmResult<String> {
+fn host_ip(db: &Db, machine_id: i64) -> VoloResult<String> {
     Ok(data_machines::find_by_id(db, machine_id)?
-        .ok_or_else(|| UecmError::InvalidInput(format!("machine {} not found", machine_id)))?
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?
         .ip)
 }
 
-fn host_hostname(db: &Db, machine_id: i64) -> UecmResult<String> {
+fn host_hostname(db: &Db, machine_id: i64) -> VoloResult<String> {
     Ok(data_machines::find_by_id(db, machine_id)?
-        .ok_or_else(|| UecmError::InvalidInput(format!("machine {} not found", machine_id)))?
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?
         .hostname)
 }
 

@@ -8,7 +8,7 @@
 use cache_core::core::keystore::KeyStore;
 use cache_core::core::powershell;
 use cache_core::data::{credentials as data_credentials, machines as data_machines, CredentialKind, Db};
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -31,7 +31,7 @@ fn ssh_onboarder_script() -> String {
 }
 
 #[tauri::command]
-pub fn get_winrm_bootstrap_script() -> UecmResult<String> {
+pub fn get_winrm_bootstrap_script() -> VoloResult<String> {
     // Remote WinRM push retired; the manual onboarder is now the SSH node script.
     Ok(ssh_onboarder_script())
 }
@@ -42,17 +42,17 @@ pub fn bootstrap_winrm(
     machine_id: i64,
     credential_alias: String,
     enable_local_account_remote_admin: bool,
-) -> UecmResult<WinrmBootstrapResult> {
+) -> VoloResult<WinrmBootstrapResult> {
     let _ = enable_local_account_remote_admin; // accepted for back-compat; unused.
 
     // Validate inputs so the UI still gets precise errors, but do NOT push.
     let _machine = data_machines::find_by_id(&db, machine_id)?
-        .ok_or_else(|| UecmError::InvalidInput(format!("machine {} not found", machine_id)))?;
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?;
     let credential = data_credentials::find_by_alias(&db, &credential_alias)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("credential alias '{}' not found", credential_alias))
+        VoloError::InvalidInput(format!("credential alias '{}' not found", credential_alias))
     })?;
     if credential.kind != CredentialKind::Winrm {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "credential alias '{}' is not a WinRM credential",
             credential_alias
         )));
@@ -62,7 +62,7 @@ pub fn bootstrap_winrm(
         ok: false,
         method: "ssh-onboard-required".into(),
         message: "Remote WinRM push has been retired. Onboard this node with the \
-                  UECM-Bootstrap.cmd USB bundle (build it via `voloctl uecm ssh package-bootstrap`), \
+                  UECM-Bootstrap.cmd USB bundle (build it via `voloctl cache ssh package-bootstrap`), \
                   then use machine refresh over SSH."
             .into(),
         winrm_ok: false,
@@ -72,7 +72,7 @@ pub fn bootstrap_winrm(
 }
 
 /// Parsed stdout of `package-bootstrap.ps1` (extra keys ignored). Mirrors the
-/// CLI's `domain_ssh::PackageOut` so the GUI export and `voloctl uecm ssh
+/// CLI's `domain_ssh::PackageOut` so the GUI export and `voloctl cache ssh
 /// package-bootstrap` share the identical packager.
 #[derive(Deserialize)]
 struct PackageBootstrapRaw {
@@ -92,7 +92,7 @@ pub struct PackageBootstrapResult {
 
 /// Assemble the USB SSH onboarding bundle into `out` (the GUI "制作入网 U 盘"
 /// action). Ensures the operator keystore keypair exists, then shells out to the
-/// Windows-only `package-bootstrap.ps1` — the same packager the CLI `voloctl uecm
+/// Windows-only `package-bootstrap.ps1` — the same packager the CLI `voloctl cache
 /// ssh package-bootstrap` uses — copying UECM-Bootstrap.cmd + enable-ssh.ps1 +
 /// uecm.pub + PsExec64.exe + README into `out`. The bundle is global: one package
 /// onboards every node. `local_admin_password` (optional) is baked into the .cmd
@@ -102,7 +102,7 @@ pub struct PackageBootstrapResult {
 pub fn package_ssh_bootstrap(
     out: String,
     local_admin_password: Option<String>,
-) -> UecmResult<PackageBootstrapResult> {
+) -> VoloResult<PackageBootstrapResult> {
     let cfg = cache_core::startup::resolve_config_dir()?;
     let ks = KeyStore::at(&cfg);
     ks.ensure_keypair()?;
@@ -118,7 +118,7 @@ pub fn package_ssh_bootstrap(
     let raw: PackageBootstrapRaw =
         powershell::run_json(&powershell::script_path("package-bootstrap.ps1"), &args)?;
     if !raw.ok {
-        return Err(UecmError::OperationFailed(raw.message));
+        return Err(VoloError::OperationFailed(raw.message));
     }
     Ok(PackageBootstrapResult {
         output_directory: raw.output_directory,

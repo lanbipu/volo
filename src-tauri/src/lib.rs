@@ -1,6 +1,6 @@
 //! volo Tauri backend entry point.
 //!
-//! step 2c platformed UECM's transport layer here: `commands/` holds the
+//! step 2c platformed Volo's transport layer here: `commands/` holds the
 //! ~80 `#[tauri::command]` thin wrappers that drive `cache_core`
 //! (core/data/startup/error). The DB handle + `UeJobRegistry` are `app.manage`d
 //! in `setup` so `State<Db>` / `State<UeJobRegistry>` injection works.
@@ -111,7 +111,7 @@ pub fn run() {
 
     tauri::Builder::default()
         // step 3c: mesh `save_instruction_pdf` uses tauri-plugin-dialog (LMT
-        // wired it for the native save dialog); opener is shared with UECM.
+        // wired it for the native save dialog); opener is shared with Volo.
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         // Windows Win11 Snap Layouts：在自绘最大化按钮（前端 id="snap-btn"）上叠一个
@@ -119,7 +119,7 @@ pub fn run() {
         // WebView2 覆盖标题栏下还原 Snap Layouts 的标准做法（issue #4531）。跨平台 no-op。
         .plugin(tauri_plugin_snap_layout::init().button_id("snap-btn").build())
         .setup(|app| {
-            // UECM setup: open + migrate the SQLite DB, manage it as shared
+            // Volo setup: open + migrate the SQLite DB, manage it as shared
             // state, and register the long-running UE job tracker.
             let db_path =
                 cache_core::startup::resolve_db_path().expect("failed to resolve DB path");

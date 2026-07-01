@@ -17,7 +17,7 @@
 
 use crate::core::ini_editor;
 use crate::data::{machines as data_machines, project_locations, Db};
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 
 /// `[Zen.AutoLaunch]` `ExtraArgs` 里控制 Zen GC 留存窗口的 flag。
 pub const GC_DURATION_FLAG: &str = "--gc-cache-duration-seconds";
@@ -38,16 +38,16 @@ const ZEN_AUTOLAUNCH_SECTION: &str = "Zen.AutoLaunch";
 const EXTRA_ARGS_KEY: &str = "ExtraArgs";
 
 /// 解析 host(ip) + project_id → 该机器上项目的 `DefaultEngine.ini` 绝对路径。
-fn project_default_engine_ini(db: &Db, project_id: i64, host: &str) -> UecmResult<String> {
+fn project_default_engine_ini(db: &Db, project_id: i64, host: &str) -> VoloResult<String> {
     let machine = data_machines::find_by_ip(db, host)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("machine {} not in inventory", host))
+        VoloError::InvalidInput(format!("machine {} not in inventory", host))
     })?;
     let machine_id = machine
         .id
-        .ok_or_else(|| UecmError::InvalidInput("machine has no id".into()))?;
+        .ok_or_else(|| VoloError::InvalidInput("machine has no id".into()))?;
     let location = project_locations::get_for_project_machine(db, project_id, machine_id)?
         .ok_or_else(|| {
-            UecmError::InvalidInput(format!("project {} not located on {}", project_id, host))
+            VoloError::InvalidInput(format!("project {} not located on {}", project_id, host))
         })?;
     Ok(format!(
         "{}\\Config\\DefaultEngine.ini",
@@ -56,7 +56,7 @@ fn project_default_engine_ini(db: &Db, project_id: i64, host: &str) -> UecmResul
 }
 
 /// 停 FileSystem Shared DDC 的 GC（`DeleteUnused=false`）—— 项目期内缓存常驻。
-pub fn pause_gc(db: &Db, project_id: i64, host: &str) -> UecmResult<String> {
+pub fn pause_gc(db: &Db, project_id: i64, host: &str) -> VoloResult<String> {
     let ini = project_default_engine_ini(db, project_id, host)?;
     ini_editor::set_backend_field(
         host, &ini, BACKEND_GRAPH_SECTION, SHARED_NODE, "DeleteUnused", "false",
@@ -69,7 +69,7 @@ pub fn resume_gc(
     project_id: i64,
     host: &str,
     unused_file_age: u32,
-) -> UecmResult<String> {
+) -> VoloResult<String> {
     let ini = project_default_engine_ini(db, project_id, host)?;
     ini_editor::set_backend_field(
         host, &ini, BACKEND_GRAPH_SECTION, SHARED_NODE, "DeleteUnused", "true",
@@ -87,7 +87,7 @@ pub fn set_zen_gc_duration(
     project_id: i64,
     host: &str,
     seconds: u64,
-) -> UecmResult<String> {
+) -> VoloResult<String> {
     let ini = project_default_engine_ini(db, project_id, host)?;
     let current = ini_editor::read_section(host, &ini, ZEN_AUTOLAUNCH_SECTION)?
         .into_iter()

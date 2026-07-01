@@ -66,7 +66,7 @@ const ICON_PATHS = {
   wmin:     '<path d="M4 10h12"/>',
   wmax:     '<rect x="4.5" y="4.5" width="11" height="11" rx="1"/>',
   wrestore: '<rect x="6.5" y="4" width="9" height="9" rx="1"/><path d="M4.5 7.5v8h8v-8z"/>',
-  /* --- added for UECM cache redesign --- */
+  /* --- added for cache redesign --- */
   minus:    '<path d="M4.5 10h11"/>',
   pause:    '<path d="M7 4.5v11M13 4.5v11"/>',
   filter:   '<path d="M3 4.5h14l-5.4 6.4V16L8.4 14v-3.1Z"/>',
@@ -100,7 +100,7 @@ const PAGES = [
 ];
 
 /* ============================================================
-   CACHE — UECM (UE Cache Manager) · operator 单机操控渲染集群缓存
+   CACHE — operator 单机操控渲染集群缓存
    IA: 任务中心(Playbooks) + 资产域(Resources) + 常驻任务抽屉
    ============================================================ */
 /* NODE_STATUS / CHANNEL / ROLES / CACHE_MODULES / DDC_NAV (presentation config)

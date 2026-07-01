@@ -1,4 +1,4 @@
-//! `uecm-cli zen <action>` handlers (Plan 7 M1 T1.9).
+//! `voloctl cache zen <action>` handlers (Plan 7 M1 T1.9).
 //!
 //! # NDJSON event schema
 //!
@@ -58,7 +58,7 @@ use cache_core::data::{
     machine_zen_install, machines, operations, project_locations, projects, zen_binary_expected,
     zen_endpoints, zen_probes, Db, Machine, ZenEndpoint,
 };
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 use serde::Serialize;
 use std::time::Duration;
 
@@ -88,7 +88,7 @@ pub(crate) use cache_core::core::zen::ops::{
 const KIND_ZEN_CLI: &str = "zen_cli";
 const KIND_ZENSERVER: &str = "zenserver";
 
-pub fn handle(ctx: &mut Ctx<'_>, action: ZenAction) -> UecmResult<()> {
+pub fn handle(ctx: &mut Ctx<'_>, action: ZenAction) -> VoloResult<()> {
     match action {
         ZenAction::Status { machine, all } => status(ctx, machine, all),
         ZenAction::Probe { machine, all, timeout, cred } => probe(ctx, machine, all, timeout, &cred),
@@ -206,7 +206,7 @@ pub fn handle(ctx: &mut Ctx<'_>, action: ZenAction) -> UecmResult<()> {
                         .map(|u| u.trim().is_empty())
                         .unwrap_or(true)
                 {
-                    return Err(UecmError::InvalidInput(
+                    return Err(VoloError::InvalidInput(
                         "--service-pass / --service-pass-stdin / --service-cred-alias requires \
                          --service-user; the password is forwarded to zen only when the user is set"
                             .into(),
@@ -265,7 +265,7 @@ pub fn handle(ctx: &mut Ctx<'_>, action: ZenAction) -> UecmResult<()> {
                 global_enable(ctx, &machines, upstream_endpoint_id, &namespace, yes, dry_run, &cred)
             } else {
                 let pid = project_id.ok_or_else(|| {
-                    UecmError::InvalidInput(
+                    VoloError::InvalidInput(
                         "must supply --project-id or --global".to_string(),
                     )
                 })?;
@@ -277,7 +277,7 @@ pub fn handle(ctx: &mut Ctx<'_>, action: ZenAction) -> UecmResult<()> {
                 global_disable(ctx, &machines, yes, dry_run, &cred)
             } else {
                 let pid = project_id.ok_or_else(|| {
-                    UecmError::InvalidInput(
+                    VoloError::InvalidInput(
                         "must supply --project-id or --global".to_string(),
                     )
                 })?;
@@ -348,7 +348,7 @@ struct EndpointStatus {
     ok: bool,
 }
 
-fn status(ctx: &mut Ctx<'_>, machine: Option<i64>, _all: bool) -> UecmResult<()> {
+fn status(ctx: &mut Ctx<'_>, machine: Option<i64>, _all: bool) -> VoloResult<()> {
     let db = ctx.require_db()?;
     let endpoints = resolve_endpoints(db, machine, None)?;
     let mut out = Vec::with_capacity(endpoints.len());
@@ -398,7 +398,7 @@ fn probe(
     _all: bool,
     timeout_secs: u64,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     // The credential pair is accepted today for forward compatibility (plan
     // notes anticipate a WinRM-tunneled probe variant). Validate flag
     // combinations against the DB so a typo'd alias fails fast.
@@ -467,17 +467,17 @@ fn probe(
         "unreachable": unreachable,
     });
     ctx.emitter.emit_event(&Event::Completed { summary: final_summary }).ok();
-    // Partial failure → exit 1. UecmError::OperationFailed maps to exit 1 per
+    // Partial failure → exit 1. VoloError::OperationFailed maps to exit 1 per
     // cli::output::exit_code_for, which keeps the dual-channel contract intact.
     if unreachable > 0 && reachable > 0 {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "{}/{} endpoints unreachable",
             unreachable, total
         )));
     }
     // All-failure stays as full failure → exit 1 too. All-success → exit 0.
     if unreachable == total && total > 0 {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "all {} endpoints unreachable",
             total
         )));
@@ -494,7 +494,7 @@ fn cache_stats(
     endpoint_id: Option<i64>,
     _all: bool,
     timeout_secs: u64,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?.clone();
     let endpoints = resolve_endpoints(&db, None, endpoint_id)?;
     let total = endpoints.len() as i64;
@@ -553,13 +553,13 @@ fn cache_stats(
     // not see exit 0 when literally nothing was sampled. The intermediate
     // partial_errors < total branch covers mixed-success runs.
     if total > 0 && partial_errors == total {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "all {} endpoint(s) failed to fetch cache stats; no rows inserted",
             total
         )));
     }
     if partial_errors > 0 && partial_errors < total {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "{}/{} endpoints had errors fetching cache stats",
             partial_errors, total
         )));
@@ -576,7 +576,7 @@ fn detect_binary(
     machine: Option<i64>,
     all: bool,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?.clone();
     cred.preflight(&db)?;
 
@@ -585,7 +585,7 @@ fn detect_binary(
     let target_machines: Vec<cache_core::data::Machine> = match machine {
         Some(id) => {
             let m = machines::find_by_id(&db, id)?.ok_or_else(|| {
-                UecmError::InvalidInput(format!("machine id={} not found", id))
+                VoloError::InvalidInput(format!("machine id={} not found", id))
             })?;
             vec![m]
         }
@@ -629,7 +629,7 @@ fn detect_binary(
                             ok: false,
                             message: Some(format!(
                                 "detect-binary found intree zen.exe but machine_ue_installs is empty \
-                                 for machine id={machine_id}; run `uecm-cli machine refresh {machine_id}` first"
+                                 for machine id={machine_id}; run `voloctl cache machine refresh {machine_id}` first"
                             )),
                         })
                         .ok();
@@ -670,13 +670,13 @@ fn detect_binary(
     });
     ctx.emitter.emit_event(&Event::Completed { summary: final_summary }).ok();
     if failed > 0 && ok_count > 0 {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "{}/{} machines failed detect-binary",
             failed, total
         )));
     }
     if failed == total && total > 0 {
-        return Err(UecmError::PowerShell(format!(
+        return Err(VoloError::PowerShell(format!(
             "all {} machines failed detect-binary",
             total
         )));
@@ -691,7 +691,7 @@ fn detect_binary(
 fn invoke_detect_binary(
     host: &str,
     creds: Option<&(String, String)>,
-) -> UecmResult<zen_binary::BinaryDetection> {
+) -> VoloResult<zen_binary::BinaryDetection> {
     // SSH key auth (uecm-svc); operator creds ignored (param kept as a shim).
     // zen-detect-binary takes no args (param-less; ignores stdin).
     let _ = creds;
@@ -706,7 +706,7 @@ fn invoke_detect_binary(
     // would be sidecar failure silently nuking inventory, the exact bug
     // codex flagged. Inspect ok first.
     let envelope: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
-        UecmError::OperationFailed(format!(
+        VoloError::OperationFailed(format!(
             "zen-detect-binary returned non-JSON output: {e}; raw: {}",
             raw.chars().take(200).collect::<String>()
         ))
@@ -716,7 +716,7 @@ fn invoke_detect_binary(
             .get("message")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown sidecar error");
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "zen-detect-binary on {host} reported failure: {msg}"
         )));
     }
@@ -727,7 +727,7 @@ fn invoke_detect_binary(
 // list-endpoints
 // -----------------------------------------------------------------------------
 
-fn list_endpoints(ctx: &mut Ctx<'_>, machine: Option<i64>) -> UecmResult<()> {
+fn list_endpoints(ctx: &mut Ctx<'_>, machine: Option<i64>) -> VoloResult<()> {
     let db = ctx.require_db()?;
     let rows = match machine {
         Some(id) => zen_endpoints::list_for_machine(db, id)?,
@@ -745,7 +745,7 @@ fn baseline_list(
     ctx: &mut Ctx<'_>,
     version_filter: Option<&str>,
     kind_filter: Option<&str>,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     if let Some(k) = kind_filter {
         validate_kind(k)?;
     }
@@ -768,7 +768,7 @@ fn baseline_lock(
     locked_by: &str,
     yes: bool,
     dry_run: bool,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     validate_kind(kind)?;
     let outcome = destructive::check(yes, dry_run, "zen.baseline.lock")?;
     let db = ctx.require_db()?;
@@ -776,7 +776,7 @@ fn baseline_lock(
     // Existence check up front so the operator gets a clear message rather than
     // a silent no-op (UPDATE ... WHERE doesn't fail on zero rows in SQLite).
     if zen_binary_expected::find(db, version, kind)?.is_none() {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "no baseline row for zen_build_version={} kind={}; run detect-binary first",
             version, kind
         )));
@@ -812,13 +812,13 @@ fn baseline_unlock(
     kind: &str,
     yes: bool,
     dry_run: bool,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     validate_kind(kind)?;
     let outcome = destructive::check(yes, dry_run, "zen.baseline.unlock")?;
     let db = ctx.require_db()?;
 
     if zen_binary_expected::find(db, version, kind)?.is_none() {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "no baseline row for zen_build_version={} kind={}",
             version, kind
         )));
@@ -860,17 +860,17 @@ fn resolve_endpoints(
     db: &Db,
     machine: Option<i64>,
     endpoint_id: Option<i64>,
-) -> UecmResult<Vec<ZenEndpoint>> {
+) -> VoloResult<Vec<ZenEndpoint>> {
     if let Some(id) = endpoint_id {
         let ep = zen_endpoints::get(db, id)?
-            .ok_or_else(|| UecmError::InvalidInput(format!("endpoint id={} not found", id)))?;
+            .ok_or_else(|| VoloError::InvalidInput(format!("endpoint id={} not found", id)))?;
         return Ok(vec![ep]);
     }
     if let Some(mid) = machine {
         // Sanity check: empty result on an unknown machine id should fail loudly
         // rather than silently no-op, matching the rest of the CLI.
         if machines::find_by_id(db, mid)?.is_none() {
-            return Err(UecmError::InvalidInput(format!("machine id={} not found", mid)));
+            return Err(VoloError::InvalidInput(format!("machine id={} not found", mid)));
         }
         return zen_endpoints::list_for_machine(db, mid);
     }
@@ -880,15 +880,15 @@ fn resolve_endpoints(
 /// Look up the IP for a machine row. Hostname can drift if the operator
 /// renamed the row, so IP is the canonical connect target (matches the rest of
 /// the CLI / discovery code path).
-fn resolve_host(db: &Db, machine_id: i64) -> UecmResult<Option<String>> {
+fn resolve_host(db: &Db, machine_id: i64) -> VoloResult<Option<String>> {
     Ok(machines::find_by_id(db, machine_id)?.map(|m| m.ip))
 }
 
-fn validate_kind(kind: &str) -> UecmResult<()> {
+fn validate_kind(kind: &str) -> VoloResult<()> {
     if kind == KIND_ZEN_CLI || kind == KIND_ZENSERVER {
         Ok(())
     } else {
-        Err(UecmError::InvalidInput(format!(
+        Err(VoloError::InvalidInput(format!(
             "invalid binary kind '{}'; expected '{}' or '{}'",
             kind, KIND_ZEN_CLI, KIND_ZENSERVER
         )))
@@ -913,12 +913,12 @@ fn register(
     lifecycle: Option<&str>,
     install_dir: Option<String>,
     config_path_override: Option<String>,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?.clone();
     // Sanity check that the machine row exists before we hit the endpoint
     // validator — gives a clearer error than the FK violation would.
     if machines::find_by_id(&db, machine)?.is_none() {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "machine id={} not found",
             machine
         )));
@@ -948,7 +948,7 @@ fn register(
     // lifecycle / data_dir would see JSON claiming success while subsequent
     // `lua-preview` / `apply-config` still observe the old row.
     let persisted = zen_endpoint::get(&db, outcome.id)?.ok_or_else(|| {
-        UecmError::OperationFailed(format!(
+        VoloError::OperationFailed(format!(
             "register: row id={} disappeared between insert and readback",
             outcome.id
         ))
@@ -972,11 +972,11 @@ fn register(
     Ok(())
 }
 
-fn unregister(ctx: &mut Ctx<'_>, endpoint_id: i64, yes: bool, dry_run: bool) -> UecmResult<()> {
+fn unregister(ctx: &mut Ctx<'_>, endpoint_id: i64, yes: bool, dry_run: bool) -> VoloResult<()> {
     let outcome = destructive::check(yes, dry_run, "zen.unregister")?;
     let db = ctx.require_db()?.clone();
     let ep = zen_endpoint::get(&db, endpoint_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("endpoint id={} not found", endpoint_id))
+        VoloError::InvalidInput(format!("endpoint id={} not found", endpoint_id))
     })?;
 
     // Surface "still referenced as upstream" in dry-run too. A dry-run plan
@@ -996,7 +996,7 @@ fn unregister(ctx: &mut Ctx<'_>, endpoint_id: i64, yes: bool, dry_run: bool) -> 
             .map(|i| i.to_string())
             .collect::<Vec<_>>()
             .join(", ");
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "cannot unregister endpoint {endpoint_id}: still referenced as upstream by [{list}]; un-point them first"
         )));
     }
@@ -1041,7 +1041,7 @@ fn change_role(
     new_upstream: Option<i64>,
     yes: bool,
     dry_run: bool,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let outcome = destructive::check(yes, dry_run, "zen.change-role")?;
     let db = ctx.require_db()?.clone();
 
@@ -1079,7 +1079,7 @@ fn change_role(
     // Re-fetch so the JSON reflects the persisted row (in particular,
     // confirms the upstream pointer landed where the caller asked).
     let after = zen_endpoint::get(&db, endpoint_id)?.ok_or_else(|| {
-        UecmError::OperationFailed(format!(
+        VoloError::OperationFailed(format!(
             "endpoint id={endpoint_id} disappeared between change_role and re-fetch"
         ))
     })?;
@@ -1103,7 +1103,7 @@ fn change_role(
 // -----------------------------------------------------------------------------
 
 
-fn lua_preview(ctx: &mut Ctx<'_>, endpoint_id: i64) -> UecmResult<()> {
+fn lua_preview(ctx: &mut Ctx<'_>, endpoint_id: i64) -> VoloResult<()> {
     let db = ctx.require_db()?.clone();
     let (ep, lua) = render_lua_for(&db, endpoint_id)?;
     // Codex P2: run the same data_dir safety guard as `apply-config` so
@@ -1133,7 +1133,7 @@ fn apply_config(
     yes: bool,
     dry_run: bool,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?.clone();
     cred.preflight(&db)?;
     let (ep, lua) = render_lua_for(&db, endpoint_id)?;
@@ -1184,7 +1184,7 @@ fn apply_config(
     }
 
     if !yes {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "zen.apply-config is destructive; pass --yes to confirm or --dry-run to preview".into(),
         ));
     }
@@ -1239,7 +1239,7 @@ fn gc_set(
     yes: bool,
     dry_run: bool,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     cache_core::core::zen::lua_config::validate_positive_seconds(
         "gc_interval_seconds",
         Some(gc_interval_seconds),
@@ -1263,7 +1263,7 @@ fn gc_set(
     // to touch, and blindly restarting DEFAULT_SERVICE_NAME could stop/start
     // an unrelated stale service left over from a different endpoint.
     if ep.lifecycle_mode != "installed_service" {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "zen.gc-set requires endpoint id={endpoint_id} to have lifecycle_mode=\"installed_service\" \
              (got {:?}); `editor_owned` endpoints have no SCM service to restart",
             ep.lifecycle_mode
@@ -1301,7 +1301,7 @@ fn gc_set(
         return Ok(());
     }
     if !yes {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "zen.gc-set is destructive (rewrites config + restarts the service); \
              pass --yes to confirm or --dry-run to preview"
                 .into(),
@@ -1353,7 +1353,7 @@ fn gc_set(
 /// least-privilege alternative to SYSTEM). Not gated by `--yes`/`--dry-run`:
 /// creating the account has no effect on any running service until `zen
 /// service install --service-cred-alias` is actually called with it.
-fn account_create(ctx: &mut Ctx<'_>, machine: i64) -> UecmResult<()> {
+fn account_create(ctx: &mut Ctx<'_>, machine: i64) -> VoloResult<()> {
     let db = ctx.require_db()?.clone();
     let m = require_machine(&db, machine)?;
     let result = cache_core::core::zen::service_account::create_dedicated_account(machine, &m.ip)?;
@@ -1390,7 +1390,7 @@ fn service_install(
     yes: bool,
     dry_run: bool,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?.clone();
     cred.preflight(&db)?;
     let ep = require_endpoint(&db, endpoint_id)?;
@@ -1431,7 +1431,7 @@ fn service_install(
         // `zen change-lifecycle` command; until then point the operator at
         // unregister + register so they don't loop on a "just re-register"
         // suggestion that doesn't apply.
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "endpoint id={endpoint_id} has lifecycle_mode={:?}; service install \
              requires lifecycle_mode=\"installed_service\". To recover: \
              `zen unregister --endpoint-id {endpoint_id} --yes` followed by \
@@ -1500,7 +1500,7 @@ fn service_install(
         return Ok(());
     }
     if !yes {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "zen.service.install is destructive; pass --yes to confirm or --dry-run to preview".into(),
         ));
     }
@@ -1511,7 +1511,7 @@ fn service_install(
     let resolved_pass: Option<String> = if let Some(alias) = service_cred_alias {
         Some(
             cache_core::core::zen::service_account::resolve_password(alias)?.ok_or_else(|| {
-                UecmError::InvalidInput(format!(
+                VoloError::InvalidInput(format!(
                     "service_cred_alias {alias:?} has no stored password — the managed \
                      account may have been deleted; run `zen account-create` again"
                 ))
@@ -1521,7 +1521,7 @@ fn service_install(
         use std::io::BufRead;
         let mut line = String::new();
         std::io::stdin().lock().read_line(&mut line).map_err(|e| {
-            UecmError::InvalidInput(format!(
+            VoloError::InvalidInput(format!(
                 "read --service-pass-stdin from stdin: {e}"
             ))
         })?;
@@ -1608,7 +1608,7 @@ fn service_uninstall(
     yes: bool,
     dry_run: bool,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let outcome = destructive::check(yes, dry_run, "zen.service.uninstall")?;
     let db = ctx.require_db()?.clone();
     cred.preflight(&db)?;
@@ -1638,9 +1638,9 @@ fn service_uninstall(
                 .and_then(|installs| installs.into_iter().find_map(|i| i.zen_cli_intree_path))
         })
         .ok_or_else(|| {
-            UecmError::InvalidInput(format!(
+            VoloError::InvalidInput(format!(
                 "machine id={} has no zen.exe (zen_cli) recorded — run \
-                 `uecm-cli zen detect-binary --machine {}` first so we can \
+                 `voloctl cache zen detect-binary --machine {}` first so we can \
                  invoke `zen.exe service uninstall` against the real binary",
                 ep.machine_id, ep.machine_id,
             ))
@@ -1695,7 +1695,7 @@ fn service_simple(
     yes: bool,
     dry_run: bool,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let (script, op_kind, op_label, destructive_check) = match verb {
         ServiceVerb::Start => ("zen-up.ps1", "zen.service_start", "zen.service.start", false),
         // Stop is destructive — codex P2 fix. A stray `zen service stop` on a
@@ -1714,7 +1714,7 @@ fn service_simple(
     // anyway would touch whatever stale install exists, creating exactly
     // the DB/SCM drift `service install` already guards against. Refuse.
     if ep.lifecycle_mode != "installed_service" {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "service {} requires endpoint id={} to have lifecycle_mode=\"installed_service\" \
              (got {:?}); `editor_owned` endpoints are sponsored by UE editor and have no SCM service",
             op_label, endpoint_id, ep.lifecycle_mode
@@ -1770,7 +1770,7 @@ fn sponsor_down(
     yes: bool,
     dry_run: bool,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let outcome = destructive::check(yes, dry_run, "zen.sponsor_down")?;
     let db = ctx.require_db()?.clone();
     cred.preflight(&db)?;
@@ -1788,9 +1788,9 @@ fn sponsor_down(
                 .and_then(|v| v.into_iter().find_map(|i| i.zen_cli_intree_path))
         })
         .ok_or_else(|| {
-            UecmError::InvalidInput(format!(
+            VoloError::InvalidInput(format!(
                 "machine id={} has no zen.exe (zen_cli) recorded — run \
-                 `uecm-cli zen detect-binary --machine {}` first",
+                 `voloctl cache zen detect-binary --machine {}` first",
                 ep.machine_id, ep.machine_id,
             ))
         })?;
@@ -1831,7 +1831,7 @@ fn service_status(
     ctx: &mut Ctx<'_>,
     endpoint_id: i64,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?.clone();
     cred.preflight(&db)?;
     let ep = require_endpoint(&db, endpoint_id)?;
@@ -1870,13 +1870,13 @@ fn urlacl_add(
     yes: bool,
     dry_run: bool,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let outcome = destructive::check(yes, dry_run, "zen.urlacl.add")?;
     // Codex P3: empty / whitespace principal would make `zen-urlacl-add.ps1`
     // throw on its `IsNullOrWhiteSpace` check. Reject before dry-run so the
     // plan matches what `--yes` would actually accept.
     if principal.trim().is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "--principal must not be empty or whitespace (URL ACL needs a real account)".into(),
         ));
     }
@@ -1935,7 +1935,7 @@ fn urlacl_list(
     machine: i64,
     port_filter: Option<&str>,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?.clone();
     cred.preflight(&db)?;
     let m = require_machine(&db, machine)?;
@@ -1968,7 +1968,7 @@ fn urlacl_remove(
     yes: bool,
     dry_run: bool,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let outcome = destructive::check(yes, dry_run, "zen.urlacl.remove")?;
     let db = ctx.require_db()?.clone();
     cred.preflight(&db)?;
@@ -2085,10 +2085,10 @@ struct EnvCleanupResultView {
 /// Both halves must be populated — a project with an unresolved EngineAssociation
 /// (e.g. raw GUID) has no version to gate rules on, so we refuse rather than
 /// guess. Operator can re-discover or set the version manually.
-fn project_ue_version_string(project: &cache_core::data::Project) -> UecmResult<String> {
+fn project_ue_version_string(project: &cache_core::data::Project) -> VoloResult<String> {
     match (project.ue_version_major, project.ue_version_minor) {
         (Some(major), Some(minor)) => Ok(format!("{major}.{minor}")),
-        _ => Err(UecmError::InvalidInput(format!(
+        _ => Err(VoloError::InvalidInput(format!(
             "project id={} has no resolved UE version (engine_association_kind={:?}); \
              zen enable/disable needs major.minor to pick the rule set. Re-run project \
              discovery or set the location with an EngineAssociation-bearing .uproject.",
@@ -2108,7 +2108,7 @@ fn project_ue_version_string(project: &cache_core::data::Project) -> UecmResult<
 fn project_ini_path(abs_path: &str) -> String {
     let trimmed = abs_path.trim_end_matches(['\\', '/']);
     // Stick to backslashes — `abs_path` is a remote Windows path and that's
-    // the convention every other UECM module uses (`core::ini_apply`,
+    // the convention every other Volo module uses (`core::ini_apply`,
     // `core::project_discovery`).
     format!("{trimmed}\\Config\\DefaultEngine.ini")
 }
@@ -2122,15 +2122,15 @@ fn resolve_cluster_master(
     db: &Db,
     upstream_endpoint_id: i64,
     namespace: &str,
-) -> UecmResult<zen_enable::ClusterMaster> {
+) -> VoloResult<zen_enable::ClusterMaster> {
     let ep = zen_endpoints::get(db, upstream_endpoint_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!(
+        VoloError::InvalidInput(format!(
             "upstream endpoint id={} not found",
             upstream_endpoint_id
         ))
     })?;
     if ep.role != zen_endpoint::ROLE_SHARED_UPSTREAM {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "upstream endpoint id={} has role={:?}; expected {:?}. \
              Register or pick a shared_upstream endpoint as the cluster master.",
             upstream_endpoint_id,
@@ -2139,7 +2139,7 @@ fn resolve_cluster_master(
         )));
     }
     let machine = machines::find_by_id(db, ep.machine_id)?.ok_or_else(|| {
-        UecmError::OperationFailed(format!(
+        VoloError::OperationFailed(format!(
             "upstream endpoint id={} references machine id={} which is missing",
             upstream_endpoint_id, ep.machine_id,
         ))
@@ -2159,7 +2159,7 @@ fn invoke_env_cleanup(
     var: &str,
     scope: &str,
     creds: Option<&(String, String)>,
-) -> UecmResult<serde_json::Value> {
+) -> VoloResult<serde_json::Value> {
     // SSH key auth (uecm-svc); operator creds ignored (param kept as a shim).
     let _ = creds;
     // Scopes is an array on the node side (`foreach ($s in $Scopes)`); we fan
@@ -2184,7 +2184,7 @@ fn invoke_env_cleanup(
                     .get("scope")
                     .and_then(|v| v.as_str())
                     .unwrap_or("<unknown>");
-                return Err(UecmError::OperationFailed(format!(
+                return Err(VoloError::OperationFailed(format!(
                     "zen-env-cleanup.ps1: scope {scope_name} for {var} failed: {err}"
                 )));
             }
@@ -2208,18 +2208,18 @@ fn clean_env(
     yes: bool,
     dry_run: bool,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let gate = destructive::check(yes, dry_run, "zen.clean_env")?;
     if machine_ids.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "--machines must list at least one machine id".into(),
         ));
     }
     if name.trim().is_empty() {
-        return Err(UecmError::InvalidInput("--name must be non-empty".into()));
+        return Err(VoloError::InvalidInput("--name must be non-empty".into()));
     }
     if scopes.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "--scopes must list at least one of: machine, user".into(),
         ));
     }
@@ -2227,7 +2227,7 @@ fn clean_env(
     for s in scopes {
         let sl = s.to_ascii_lowercase();
         if sl != "machine" && sl != "user" {
-            return Err(UecmError::InvalidInput(format!(
+            return Err(VoloError::InvalidInput(format!(
                 "invalid scope {s:?}; allowed: machine, user"
             )));
         }
@@ -2238,7 +2238,7 @@ fn clean_env(
     let mut targets: Vec<Machine> = Vec::with_capacity(machine_ids.len());
     for &mid in machine_ids {
         let m = machines::find_by_id(&db, mid)?
-            .ok_or_else(|| UecmError::InvalidInput(format!("machine id={mid} not found")))?;
+            .ok_or_else(|| VoloError::InvalidInput(format!("machine id={mid} not found")))?;
         targets.push(m);
     }
 
@@ -2301,7 +2301,7 @@ fn clean_env(
         })
         .ok();
     if fail_count > 0 {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "{fail_count}/{total} machines failed zen clean-env"
         )));
     }
@@ -2314,30 +2314,30 @@ fn clean_env(
 /// 8558), and returns `scheme://host:port`. Validates the hostname charset so a
 /// malformed value can't be written into a machine env var. Handles bracketed
 /// IPv6 literals (`[::1]:8558`).
-fn normalize_region_host(raw: &str) -> UecmResult<String> {
+fn normalize_region_host(raw: &str) -> VoloResult<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err(UecmError::InvalidInput("--host must be non-empty".into()));
+        return Err(VoloError::InvalidInput("--host must be non-empty".into()));
     }
     let (scheme, rest) = match trimmed.split_once("://") {
         Some((s, r)) => (s.to_ascii_lowercase(), r),
         None => ("http".to_string(), trimmed),
     };
     if scheme != "http" && scheme != "https" {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "--host scheme must be http or https, got {scheme:?}"
         )));
     }
     let authority = rest.split(['/', '?']).next().unwrap_or(rest).trim();
     if authority.is_empty() {
-        return Err(UecmError::InvalidInput("--host must include a hostname".into()));
+        return Err(VoloError::InvalidInput("--host must include a hostname".into()));
     }
     // An unbracketed authority with more than one ':' is an IPv6 literal that
     // wasn't bracketed — the host:port split below (rsplit_once(':')) would
     // mis-parse it (host=":", port=last hextet) and the loose charset check
     // would let that malformed value through. Require RFC-3986 bracketing.
     if !authority.starts_with('[') && authority.matches(':').count() > 1 {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "--host looks like an unbracketed IPv6 literal; wrap it in brackets, \
              e.g. http://[{authority}]:8558"
         )));
@@ -2345,7 +2345,7 @@ fn normalize_region_host(raw: &str) -> UecmResult<String> {
     let (host, port): (String, Option<String>) = if let Some(r) = authority.strip_prefix('[') {
         let end = r
             .find(']')
-            .ok_or_else(|| UecmError::InvalidInput("--host has an unterminated IPv6 literal".into()))?;
+            .ok_or_else(|| VoloError::InvalidInput("--host has an unterminated IPv6 literal".into()))?;
         let h = format!("[{}]", &r[..end]);
         let p = r[end + 1..].strip_prefix(':').map(|x| x.to_string());
         (h, p)
@@ -2360,13 +2360,13 @@ fn normalize_region_host(raw: &str) -> UecmResult<String> {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':'))
     {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "--host contains an invalid hostname: {host:?}"
         )));
     }
     let port = match port {
         Some(p) => p.parse::<u16>().map_err(|_| {
-            UecmError::InvalidInput(format!("--host port must be 1-65535, got {p:?}"))
+            VoloError::InvalidInput(format!("--host port must be 1-65535, got {p:?}"))
         })?,
         None => 8558,
     };
@@ -2386,11 +2386,11 @@ fn set_region_host(
     yes: bool,
     dry_run: bool,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     const VAR: &str = "UE-ZenSharedDataCacheHost";
     let gate = destructive::check(yes, dry_run, "zen.set_region_host")?;
     if machine_ids.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "--machines must list at least one machine id".into(),
         ));
     }
@@ -2400,7 +2400,7 @@ fn set_region_host(
     let mut targets: Vec<Machine> = Vec::with_capacity(machine_ids.len());
     for &mid in machine_ids {
         let m = machines::find_by_id(&db, mid)?
-            .ok_or_else(|| UecmError::InvalidInput(format!("machine id={mid} not found")))?;
+            .ok_or_else(|| VoloError::InvalidInput(format!("machine id={mid} not found")))?;
         targets.push(m);
     }
 
@@ -2455,7 +2455,7 @@ fn set_region_host(
         })
         .ok();
     if fail_count > 0 {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "{fail_count}/{total} machines failed zen set-region-host"
         )));
     }
@@ -2467,7 +2467,7 @@ fn set_region_host(
 /// `unverified_policy` from `refuse` → `warn`, so the base rule set applies
 /// on all UE ≥ 5.4 machines regardless of which UE version each machine runs.
 /// The namespace is embedded in `ClusterMaster` at call time, not here.
-fn build_global_rules() -> UecmResult<zen_rules::ResolvedRules> {
+fn build_global_rules() -> VoloResult<zen_rules::ResolvedRules> {
     // 5.4 is the minimum version `applies_to: >=5.4` accepts; using it here
     // picks up the base rules without any per-version overrides.  This is
     // intentional: global UserEngine.ini should use the conservative defaults.
@@ -2484,10 +2484,10 @@ fn global_enable(
     yes: bool,
     dry_run: bool,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let outcome_gate = destructive::check(yes, dry_run, "zen.enable_global")?;
     if machine_ids.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "--machines must list at least one machine id".into(),
         ));
     }
@@ -2497,9 +2497,9 @@ fn global_enable(
     let mut targets: Vec<(Machine, String)> = Vec::with_capacity(machine_ids.len());
     for &mid in machine_ids {
         let m = machines::find_by_id(&db, mid)?
-            .ok_or_else(|| UecmError::InvalidInput(format!("machine id={mid} not found")))?;
+            .ok_or_else(|| VoloError::InvalidInput(format!("machine id={mid} not found")))?;
         let ue_user = machines::get_ue_runtime_user(&db, mid)?.ok_or_else(|| {
-            UecmError::InvalidInput(format!(
+            VoloError::InvalidInput(format!(
                 "machine id={mid} has no ue_runtime_user set — run \
                  `machine set-ue-user --machine {mid} --ue-user <USERNAME>` first"
             ))
@@ -2589,7 +2589,7 @@ fn global_enable(
     if all_ok {
         Ok(())
     } else {
-        Err(UecmError::OperationFailed(format!(
+        Err(VoloError::OperationFailed(format!(
             "zen.enable_global: {}/{} machine(s) failed",
             fail_count, total
         )))
@@ -2602,10 +2602,10 @@ fn global_disable(
     yes: bool,
     dry_run: bool,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let outcome_gate = destructive::check(yes, dry_run, "zen.disable_global")?;
     if machine_ids.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "--machines must list at least one machine id".into(),
         ));
     }
@@ -2614,9 +2614,9 @@ fn global_disable(
     let mut targets: Vec<(Machine, String)> = Vec::with_capacity(machine_ids.len());
     for &mid in machine_ids {
         let m = machines::find_by_id(&db, mid)?
-            .ok_or_else(|| UecmError::InvalidInput(format!("machine id={mid} not found")))?;
+            .ok_or_else(|| VoloError::InvalidInput(format!("machine id={mid} not found")))?;
         let ue_user = machines::get_ue_runtime_user(&db, mid)?.ok_or_else(|| {
-            UecmError::InvalidInput(format!(
+            VoloError::InvalidInput(format!(
                 "machine id={mid} has no ue_runtime_user set — run \
                  `machine set-ue-user --machine {mid} --ue-user <USERNAME>` first"
             ))
@@ -2701,7 +2701,7 @@ fn global_disable(
     if all_ok {
         Ok(())
     } else {
-        Err(UecmError::OperationFailed(format!(
+        Err(VoloError::OperationFailed(format!(
             "zen.disable_global: {}/{} machine(s) failed",
             fail_count, total
         )))
@@ -2718,10 +2718,10 @@ fn project_enable(
     yes: bool,
     dry_run: bool,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let outcome_gate = destructive::check(yes, dry_run, "zen.enable")?;
     if machine_ids.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "--machines must list at least one machine id".into(),
         ));
     }
@@ -2731,7 +2731,7 @@ fn project_enable(
     // Resolve project + UE version up front so a bad project id / missing
     // version fails before any per-machine I/O.
     let project = projects::get(&db, project_id)?
-        .ok_or_else(|| UecmError::InvalidInput(format!("project id={} not found", project_id)))?;
+        .ok_or_else(|| VoloError::InvalidInput(format!("project id={} not found", project_id)))?;
     let ue_version = project_ue_version_string(&project)?;
 
     // Load + resolve rules (frozen — we never modify rules_loader from here).
@@ -2745,12 +2745,12 @@ fn project_enable(
     let mut targets: Vec<(Machine, String)> = Vec::with_capacity(machine_ids.len());
     for mid in machine_ids {
         let m = machines::find_by_id(&db, *mid)?
-            .ok_or_else(|| UecmError::InvalidInput(format!("machine id={} not found", mid)))?;
+            .ok_or_else(|| VoloError::InvalidInput(format!("machine id={} not found", mid)))?;
         let loc = project_locations::get_for_project_machine(&db, project_id, *mid)?
             .ok_or_else(|| {
-                UecmError::InvalidInput(format!(
+                VoloError::InvalidInput(format!(
                     "no project_location for project_id={} machine_id={}; bind the project to \
-                     this machine first via `uecm-cli project set-location`",
+                     this machine first via `voloctl cache project set-location`",
                     project_id, mid
                 ))
             })?;
@@ -2970,12 +2970,12 @@ fn project_enable(
     if fail_count == 0 {
         Ok(())
     } else if ok_count == 0 {
-        Err(UecmError::OperationFailed(format!(
+        Err(VoloError::OperationFailed(format!(
             "zen.enable: all {} machine(s) failed",
             total
         )))
     } else {
-        Err(UecmError::OperationFailed(format!(
+        Err(VoloError::OperationFailed(format!(
             "zen.enable: {}/{} machine(s) failed",
             fail_count, total
         )))
@@ -2989,10 +2989,10 @@ fn project_disable(
     yes: bool,
     dry_run: bool,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let outcome_gate = destructive::check(yes, dry_run, "zen.disable")?;
     if machine_ids.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "--machines must list at least one machine id".into(),
         ));
     }
@@ -3000,7 +3000,7 @@ fn project_disable(
     cred.preflight(&db)?;
 
     let project = projects::get(&db, project_id)?
-        .ok_or_else(|| UecmError::InvalidInput(format!("project id={} not found", project_id)))?;
+        .ok_or_else(|| VoloError::InvalidInput(format!("project id={} not found", project_id)))?;
     let ue_version = project_ue_version_string(&project)?;
     let rules_raw = zen_rules::load_default()?;
     let resolved = zen_rules::resolve(&rules_raw, &ue_version)?;
@@ -3008,12 +3008,12 @@ fn project_disable(
     let mut targets: Vec<(Machine, String)> = Vec::with_capacity(machine_ids.len());
     for mid in machine_ids {
         let m = machines::find_by_id(&db, *mid)?
-            .ok_or_else(|| UecmError::InvalidInput(format!("machine id={} not found", mid)))?;
+            .ok_or_else(|| VoloError::InvalidInput(format!("machine id={} not found", mid)))?;
         let loc = project_locations::get_for_project_machine(&db, project_id, *mid)?
             .ok_or_else(|| {
-                UecmError::InvalidInput(format!(
+                VoloError::InvalidInput(format!(
                     "no project_location for project_id={} machine_id={}; bind the project to \
-                     this machine first via `uecm-cli project set-location`",
+                     this machine first via `voloctl cache project set-location`",
                     project_id, mid
                 ))
             })?;
@@ -3158,12 +3158,12 @@ fn project_disable(
     if fail_count == 0 {
         Ok(())
     } else if ok_count == 0 {
-        Err(UecmError::OperationFailed(format!(
+        Err(VoloError::OperationFailed(format!(
             "zen.disable: all {} machine(s) failed",
             total
         )))
     } else {
-        Err(UecmError::OperationFailed(format!(
+        Err(VoloError::OperationFailed(format!(
             "zen.disable: {}/{} machine(s) failed",
             fail_count, total
         )))
@@ -3233,16 +3233,16 @@ fn writable_rules_path() -> Option<std::path::PathBuf> {
 /// `verified_versions` array — this preserves the wire-format `zen_ini:`
 /// wrapping (which the public `ZenRules` flat serialization would lose) and
 /// keeps unrelated fields intact. Comments are lost (serde_yaml limitation).
-fn append_verified_version(path: &std::path::Path, version: &str) -> UecmResult<bool> {
+fn append_verified_version(path: &std::path::Path, version: &str) -> VoloResult<bool> {
     let text = std::fs::read_to_string(path).map_err(|e| {
-        UecmError::Configuration(format!(
+        VoloError::Configuration(format!(
             "verify-rules: failed to read yaml at {} for write: {}",
             path.display(),
             e
         ))
     })?;
     let mut doc: serde_yaml::Value = serde_yaml::from_str(&text).map_err(|e| {
-        UecmError::Configuration(format!(
+        VoloError::Configuration(format!(
             "verify-rules: yaml at {} did not parse as a generic document: {}",
             path.display(),
             e
@@ -3250,7 +3250,7 @@ fn append_verified_version(path: &std::path::Path, version: &str) -> UecmResult<
     })?;
     // verified_versions must be a top-level sequence per the schema.
     let Some(map) = doc.as_mapping_mut() else {
-        return Err(UecmError::Configuration(format!(
+        return Err(VoloError::Configuration(format!(
             "verify-rules: yaml at {} is not a mapping at the top level",
             path.display()
         )));
@@ -3258,7 +3258,7 @@ fn append_verified_version(path: &std::path::Path, version: &str) -> UecmResult<
     let key = serde_yaml::Value::String("verified_versions".to_string());
     let entry = map.entry(key).or_insert(serde_yaml::Value::Sequence(Vec::new()));
     let Some(seq) = entry.as_sequence_mut() else {
-        return Err(UecmError::Configuration(format!(
+        return Err(VoloError::Configuration(format!(
             "verify-rules: yaml at {} has `verified_versions` but it isn't a sequence",
             path.display()
         )));
@@ -3271,13 +3271,13 @@ fn append_verified_version(path: &std::path::Path, version: &str) -> UecmResult<
     seq.push(serde_yaml::Value::String(version.to_string()));
 
     let new_text = serde_yaml::to_string(&doc).map_err(|e| {
-        UecmError::Configuration(format!(
+        VoloError::Configuration(format!(
             "verify-rules: failed to re-serialize yaml: {}",
             e
         ))
     })?;
     std::fs::write(path, new_text).map_err(|e| {
-        UecmError::Configuration(format!(
+        VoloError::Configuration(format!(
             "verify-rules: failed to write yaml at {}: {}",
             path.display(),
             e
@@ -3300,7 +3300,7 @@ fn verify_rules(
     expected_port: Option<i64>,
     expected_namespace: Option<&str>,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     // Codex P2: verifier-only flags without --run-editor are a script bug
     // we must surface, not silently drop. The resolve-only branch never
     // consults these fields, so accepting them would let CI/operators
@@ -3318,7 +3318,7 @@ fn verify_rules(
             || expected_namespace.is_some()
             || cred_set
         {
-            return Err(UecmError::InvalidInput(
+            return Err(VoloError::InvalidInput(
                 "--machine / --uproject-path / --timeout-seconds / --expected-* / \
                  credential flags require --run-editor; without it the resolve-only \
                  path ignores them and would falsely report a successful verifier run"
@@ -3374,7 +3374,7 @@ fn verify_rules(
                 let already = verified_after.iter().any(|v| v == &resolved.matched_version);
                 if !already {
                     let path = writable_rules_path().ok_or_else(|| {
-                        UecmError::Configuration(
+                        VoloError::Configuration(
                             "verify-rules --write-verified: no on-disk yaml to write \
                              (only the embedded build-time snapshot is available; set \
                              UECM_ZEN_RULES_PATH or place zen-ini-rules.yaml next to the binary)"
@@ -3437,7 +3437,7 @@ fn verify_rules(
             ctx.emitter.emit_result(&doc).ok();
             Ok(())
         }
-        Err(UecmError::InvalidInput(msg)) => {
+        Err(VoloError::InvalidInput(msg)) => {
             // Resolve refused (e.g. version unverified under policy=refuse,
             // or below applies_to floor). Emit ok:false and exit 0 — the
             // JSON `ok` flag is the contract; exit code stays clean per the
@@ -3497,26 +3497,26 @@ fn run_verify_editor(
     expected_port: Option<i64>,
     expected_namespace: Option<&str>,
     cred: &CredentialArgs,
-) -> UecmResult<serde_json::Value> {
+) -> VoloResult<serde_json::Value> {
     let machine_id = machine.ok_or_else(|| {
-        UecmError::InvalidInput(
+        VoloError::InvalidInput(
             "zen verify-rules --run-editor: --machine <id> is required".into(),
         )
     })?;
     let up = uproject_path.ok_or_else(|| {
-        UecmError::InvalidInput(
+        VoloError::InvalidInput(
             "zen verify-rules --run-editor: --uproject-path <PATH> is required".into(),
         )
     })?;
     if timeout_seconds == 0 {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "zen verify-rules --run-editor: --timeout-seconds must be > 0".into(),
         ));
     }
 
     let db = ctx.require_db()?.clone();
     let m = machines::find_by_id(&db, machine_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("machine id={} not found", machine_id))
+        VoloError::InvalidInput(format!("machine id={} not found", machine_id))
     })?;
     cred.preflight(&db)?;
 
@@ -3553,9 +3553,9 @@ fn run_verify_editor(
                 "machine_id": machine_id,
                 "host": m.ip.clone(),
             });
-            (Some(v), Ok::<serde_json::Value, UecmError>(serde_json::Value::Null))
+            (Some(v), Ok::<serde_json::Value, VoloError>(serde_json::Value::Null))
         }
-        Err(UecmError::PowerShell(msg)) => {
+        Err(VoloError::PowerShell(msg)) => {
             // Codex P2: distinguish between
             //   (a) a sidecar that ran and returned `{ok:false,...}` →
             //       semantic failure; surface as JSON with ok=false and
@@ -3596,7 +3596,7 @@ fn run_verify_editor(
                     }
                     (
                         Some(doc),
-                        Err::<serde_json::Value, UecmError>(UecmError::PowerShell(msg)),
+                        Err::<serde_json::Value, VoloError>(VoloError::PowerShell(msg)),
                     )
                 }
                 None => {
@@ -3604,7 +3604,7 @@ fn run_verify_editor(
                     // Log and re-raise as Err so the CLI exits with the
                     // powershell_failed code, mirroring zen probe /
                     // service-install / etc.
-                    (None, Err(UecmError::PowerShell(msg)))
+                    (None, Err(VoloError::PowerShell(msg)))
                 }
             }
         }
@@ -3625,7 +3625,7 @@ fn run_verify_editor(
     // rather than 0.
     match op_result_for_log {
         Err(e) => Err(e),
-        Ok(_) => Err(UecmError::OperationFailed(
+        Ok(_) => Err(VoloError::OperationFailed(
             "verify_endpoint produced no envelope and no error".into(),
         )),
     }
@@ -3772,7 +3772,7 @@ mod tests {
         seed_baseline(&db, "5.8.10-aaa", KIND_ZEN_CLI, "sha");
         let err = baseline_lock(&mut ctx, "5.8.10-aaa", KIND_ZEN_CLI, "op1", false, false)
             .unwrap_err();
-        assert!(matches!(err, UecmError::InvalidInput(_)));
+        assert!(matches!(err, VoloError::InvalidInput(_)));
     }
 
     #[test]
@@ -3818,7 +3818,7 @@ mod tests {
         let err = baseline_lock(&mut ctx, "nope-version", KIND_ZEN_CLI, "op1", true, false)
             .unwrap_err();
         match err {
-            UecmError::InvalidInput(msg) => assert!(msg.contains("no baseline row")),
+            VoloError::InvalidInput(msg) => assert!(msg.contains("no baseline row")),
             other => panic!("expected InvalidInput, got {:?}", other),
         }
     }
@@ -3828,7 +3828,7 @@ mod tests {
         let mut ctx = fresh_ctx();
         let err = baseline_list(&mut ctx, None, Some("bogus")).unwrap_err();
         match err {
-            UecmError::InvalidInput(msg) => assert!(msg.contains("invalid binary kind")),
+            VoloError::InvalidInput(msg) => assert!(msg.contains("invalid binary kind")),
             other => panic!("expected InvalidInput, got {:?}", other),
         }
     }
@@ -3842,14 +3842,14 @@ mod tests {
             pass: None,
             pass_stdin: false,        };
         let err = probe(&mut ctx, Some(9999), false, 2, &cred).unwrap_err();
-        assert!(matches!(err, UecmError::InvalidInput(_)));
+        assert!(matches!(err, VoloError::InvalidInput(_)));
     }
 
     #[test]
     fn cache_stats_unknown_endpoint_errors() {
         let mut ctx = fresh_ctx();
         let err = cache_stats(&mut ctx, Some(9999), false, 2).unwrap_err();
-        assert!(matches!(err, UecmError::InvalidInput(_)));
+        assert!(matches!(err, VoloError::InvalidInput(_)));
     }
 
     #[test]
@@ -3894,7 +3894,7 @@ mod tests {
             None,
         )
         .unwrap_err();
-        assert!(matches!(err, UecmError::InvalidInput(_)));
+        assert!(matches!(err, VoloError::InvalidInput(_)));
     }
 
     #[test]
@@ -3925,14 +3925,14 @@ mod tests {
     fn unregister_without_yes_or_dry_run_returns_invalid_input() {
         let mut ctx = fresh_ctx();
         let err = unregister(&mut ctx, 1, false, false).unwrap_err();
-        assert!(matches!(err, UecmError::InvalidInput(_)));
+        assert!(matches!(err, VoloError::InvalidInput(_)));
     }
 
     #[test]
     fn unregister_unknown_endpoint_with_yes_returns_invalid_input() {
         let mut ctx = fresh_ctx();
         let err = unregister(&mut ctx, 9999, true, false).unwrap_err();
-        assert!(matches!(err, UecmError::InvalidInput(_)));
+        assert!(matches!(err, VoloError::InvalidInput(_)));
     }
 
     #[test]
@@ -3951,7 +3951,7 @@ mod tests {
     fn validate_dest_path_rejects_empty() {
         assert!(matches!(
             validate_dest_path("   ").unwrap_err(),
-            UecmError::InvalidInput(_)
+            VoloError::InvalidInput(_)
         ));
     }
 
@@ -3982,7 +3982,7 @@ mod tests {
         ] {
             let err = validate_dest_path(bad).unwrap_err();
             assert!(
-                matches!(err, UecmError::InvalidInput(_)),
+                matches!(err, VoloError::InvalidInput(_)),
                 "should reject {bad}"
             );
         }
@@ -4015,7 +4015,7 @@ mod tests {
         ] {
             let err = validate_dest_path(bad).unwrap_err();
             assert!(
-                matches!(err, UecmError::InvalidInput(_)),
+                matches!(err, VoloError::InvalidInput(_)),
                 "should reject traversal: {bad}"
             );
         }
@@ -4063,7 +4063,7 @@ mod tests {
             assert!(
                 matches!(
                     validate_data_dir_safe(bad).unwrap_err(),
-                    UecmError::InvalidInput(_)
+                    VoloError::InvalidInput(_)
                 ),
                 "should reject {bad}"
             );
@@ -4085,7 +4085,7 @@ mod tests {
         ] {
             let err = validate_data_dir_safe(bad).unwrap_err();
             match err {
-                UecmError::InvalidInput(msg) => assert!(
+                VoloError::InvalidInput(msg) => assert!(
                     msg.contains("fully-qualified absolute path"),
                     "wrong error for {bad}: {msg}"
                 ),
@@ -4110,7 +4110,7 @@ mod tests {
             assert!(
                 matches!(
                     validate_dest_path(bad).unwrap_err(),
-                    UecmError::InvalidInput(_)
+                    VoloError::InvalidInput(_)
                 ),
                 "should reject root-only path {bad}"
             );
@@ -4133,7 +4133,7 @@ mod tests {
             assert!(
                 matches!(
                     validate_dest_path(bad).unwrap_err(),
-                    UecmError::InvalidInput(_)
+                    VoloError::InvalidInput(_)
                 ),
                 "should reject dir-like dest {bad}"
             );
@@ -4191,7 +4191,7 @@ mod tests {
         // not the dry-run flag).
         let err = service_install(&mut ctx, endpoint_id, None, None, false, None, false, true, &cred).unwrap_err();
         match err {
-            UecmError::InvalidInput(msg) => {
+            VoloError::InvalidInput(msg) => {
                 assert!(msg.contains("lifecycle"), "msg={msg}");
             }
             other => panic!("expected InvalidInput, got {:?}", other),
@@ -4278,22 +4278,22 @@ mod tests {
         // empty --machines → InvalidInput
         assert!(matches!(
             clean_env(&mut ctx, &[], var, &["machine".into()], false, true, &cred),
-            Err(UecmError::InvalidInput(_))
+            Err(VoloError::InvalidInput(_))
         ));
         // invalid scope → InvalidInput
         assert!(matches!(
             clean_env(&mut ctx, &[machine_id], var, &["bogus".into()], false, true, &cred),
-            Err(UecmError::InvalidInput(_))
+            Err(VoloError::InvalidInput(_))
         ));
         // neither --yes nor --dry-run → destructive guard
         assert!(matches!(
             clean_env(&mut ctx, &[machine_id], var, &["machine".into()], false, false, &cred),
-            Err(UecmError::InvalidInput(_))
+            Err(VoloError::InvalidInput(_))
         ));
         // unknown machine id → InvalidInput (resolved before any side effect)
         assert!(matches!(
             clean_env(&mut ctx, &[99999], var, &["machine".into()], false, true, &cred),
-            Err(UecmError::InvalidInput(_))
+            Err(VoloError::InvalidInput(_))
         ));
         // valid dry-run → Ok (emits a plan, performs no SSH/env mutation)
         assert!(clean_env(
@@ -4319,17 +4319,17 @@ mod tests {
         // empty --machines → InvalidInput
         assert!(matches!(
             set_region_host(&mut ctx, &[], "http://h:8558", false, true, &cred),
-            Err(UecmError::InvalidInput(_))
+            Err(VoloError::InvalidInput(_))
         ));
         // bad host (rejected by normalize_region_host) → InvalidInput
         assert!(matches!(
             set_region_host(&mut ctx, &[machine_id], "ftp://h:21", false, true, &cred),
-            Err(UecmError::InvalidInput(_))
+            Err(VoloError::InvalidInput(_))
         ));
         // unknown machine id → InvalidInput
         assert!(matches!(
             set_region_host(&mut ctx, &[99999], "render-master", false, true, &cred),
-            Err(UecmError::InvalidInput(_))
+            Err(VoloError::InvalidInput(_))
         ));
         // valid dry-run (bare host normalized) → Ok
         assert!(set_region_host(&mut ctx, &[machine_id], "render-master", false, true, &cred).is_ok());
@@ -4350,7 +4350,7 @@ mod tests {
             assert!(
                 matches!(
                     validate_dest_path(bad).unwrap_err(),
-                    UecmError::InvalidInput(_)
+                    VoloError::InvalidInput(_)
                 ),
                 "should reject path that collapses to root: {bad}"
             );
@@ -4373,7 +4373,7 @@ mod tests {
             assert!(
                 matches!(
                     validate_service_data_dir(bad).unwrap_err(),
-                    UecmError::InvalidInput(_)
+                    VoloError::InvalidInput(_)
                 ),
                 "should reject service data_dir {bad}"
             );
@@ -4395,14 +4395,14 @@ mod tests {
             r"\\.\C:\Windows\Zen",
             r"//?/C:/Windows/Zen",
             r"//./C:/Windows/Zen",
-            // Even when targeted at a normally-safe location — UECM never
+            // Even when targeted at a normally-safe location — Volo never
             // wants to drive the device namespace.
             r"\\?\D:\ZenData",
         ] {
             assert!(
                 matches!(
                     validate_data_dir_safe(bad).unwrap_err(),
-                    UecmError::InvalidInput(_)
+                    VoloError::InvalidInput(_)
                 ),
                 "should reject device-ns path {bad}"
             );
@@ -4442,7 +4442,7 @@ mod tests {
         });
         let err = verify_write_response(&env, &sha256_hex_of(lua), lua.len()).unwrap_err();
         match err {
-            UecmError::PowerShell(msg) => assert!(msg.contains("sha256")),
+            VoloError::PowerShell(msg) => assert!(msg.contains("sha256")),
             other => panic!("expected PowerShell err, got {:?}", other),
         }
     }
@@ -4458,7 +4458,7 @@ mod tests {
         });
         let err = verify_write_response(&env, &sha256_hex_of(lua), lua.len()).unwrap_err();
         match err {
-            UecmError::PowerShell(msg) => assert!(msg.contains("bytes_written")),
+            VoloError::PowerShell(msg) => assert!(msg.contains("bytes_written")),
             other => panic!("expected PowerShell err, got {:?}", other),
         }
     }
@@ -4468,7 +4468,7 @@ mod tests {
         let env = serde_json::json!({ "ok": true, "bytes_written": 12 });
         assert!(matches!(
             verify_write_response(&env, "deadbeef", 12).unwrap_err(),
-            UecmError::PowerShell(_)
+            VoloError::PowerShell(_)
         ));
     }
 
@@ -4480,26 +4480,26 @@ mod tests {
 
         // Codex P2 fix: missing `ok` is rejected, not silently treated as ok.
         let err = parse_envelope(r#"{"error": "bad"}"#, "test").unwrap_err();
-        assert!(matches!(err, UecmError::PowerShell(_)));
+        assert!(matches!(err, VoloError::PowerShell(_)));
 
         // String "true" is not boolean true → rejected.
         let err = parse_envelope(r#"{"ok": "true"}"#, "test").unwrap_err();
-        assert!(matches!(err, UecmError::PowerShell(_)));
+        assert!(matches!(err, VoloError::PowerShell(_)));
 
         // Null `ok` → rejected.
         let err = parse_envelope(r#"{"ok": null}"#, "test").unwrap_err();
-        assert!(matches!(err, UecmError::PowerShell(_)));
+        assert!(matches!(err, VoloError::PowerShell(_)));
 
         // Explicit false → rejected with the embedded message.
         let err = parse_envelope(r#"{"ok": false, "message": "bad path"}"#, "test").unwrap_err();
         match err {
-            UecmError::PowerShell(msg) => assert!(msg.contains("bad path")),
+            VoloError::PowerShell(msg) => assert!(msg.contains("bad path")),
             other => panic!("expected PowerShell err with bad path, got {:?}", other),
         }
 
         // Non-JSON input → PowerShell error with raw snippet.
         let err = parse_envelope("not json", "test").unwrap_err();
-        assert!(matches!(err, UecmError::PowerShell(_)));
+        assert!(matches!(err, VoloError::PowerShell(_)));
     }
 
     /// Codex P2 fix: a dry-run for an endpoint that is still pointed-at by a
@@ -4545,7 +4545,7 @@ mod tests {
         )
         .unwrap();
         let err = unregister(&mut ctx, master, false, true).unwrap_err();
-        assert!(matches!(err, UecmError::InvalidInput(_)));
+        assert!(matches!(err, VoloError::InvalidInput(_)));
         // Master row must still be present after the refused dry-run.
         assert!(cache_core::core::zen::endpoint::get(&db, master).unwrap().is_some());
     }
@@ -4673,17 +4673,17 @@ mod tests {
         let p = make_project_with_version(None, Some(7));
         assert!(matches!(
             project_ue_version_string(&p).unwrap_err(),
-            UecmError::InvalidInput(_)
+            VoloError::InvalidInput(_)
         ));
         let p2 = make_project_with_version(Some(5), None);
         assert!(matches!(
             project_ue_version_string(&p2).unwrap_err(),
-            UecmError::InvalidInput(_)
+            VoloError::InvalidInput(_)
         ));
         let p3 = make_project_with_version(None, None);
         assert!(matches!(
             project_ue_version_string(&p3).unwrap_err(),
-            UecmError::InvalidInput(_)
+            VoloError::InvalidInput(_)
         ));
     }
 
@@ -4745,7 +4745,7 @@ mod tests {
         .id;
         let err = resolve_cluster_master(&db, endpoint_id, "ue.ddc").unwrap_err();
         match err {
-            UecmError::InvalidInput(msg) => {
+            VoloError::InvalidInput(msg) => {
                 assert!(msg.contains("shared_upstream"), "msg={msg}");
             }
             other => panic!("expected InvalidInput, got {:?}", other),
@@ -4760,7 +4760,7 @@ mod tests {
             cache_core::data::schema::migrate(&mut conn).unwrap();
         }
         let err = resolve_cluster_master(&db, 9999, "ue.ddc").unwrap_err();
-        assert!(matches!(err, UecmError::InvalidInput(_)));
+        assert!(matches!(err, VoloError::InvalidInput(_)));
     }
 
     #[test]
@@ -4772,7 +4772,7 @@ mod tests {
             pass: None,
             pass_stdin: false,        };
         let err = project_enable(&mut ctx, 1, &[1], 1, "ue.ddc", false, false, &cred).unwrap_err();
-        assert!(matches!(err, UecmError::InvalidInput(_)));
+        assert!(matches!(err, VoloError::InvalidInput(_)));
     }
 
     #[test]
@@ -4781,7 +4781,7 @@ mod tests {
         let cred = CredentialArgs::default_for_test();
         let err = project_enable(&mut ctx, 1, &[], 1, "ue.ddc", true, false, &cred).unwrap_err();
         match err {
-            UecmError::InvalidInput(msg) => assert!(msg.contains("--machines")),
+            VoloError::InvalidInput(msg) => assert!(msg.contains("--machines")),
             other => panic!("expected InvalidInput, got {:?}", other),
         }
     }
@@ -4792,7 +4792,7 @@ mod tests {
         let cred = CredentialArgs::default_for_test();
         let err = project_disable(&mut ctx, 1, &[], true, false, &cred).unwrap_err();
         match err {
-            UecmError::InvalidInput(msg) => assert!(msg.contains("--machines")),
+            VoloError::InvalidInput(msg) => assert!(msg.contains("--machines")),
             other => panic!("expected InvalidInput, got {:?}", other),
         }
     }
@@ -4894,7 +4894,7 @@ mod tests {
         )
         .unwrap_err();
         match err {
-            UecmError::InvalidInput(msg) => {
+            VoloError::InvalidInput(msg) => {
                 assert!(msg.contains("project_location"), "msg={msg}");
             }
             other => panic!("expected InvalidInput, got {:?}", other),
@@ -5006,7 +5006,7 @@ overrides: {}
         ue_version: &str,
         ue_install: &str,
         write_verified: bool,
-    ) -> UecmResult<()> {
+    ) -> VoloResult<()> {
         verify_rules(
             ctx,
             ue_version,
@@ -5198,7 +5198,7 @@ overrides: {}
         let invocation = redact("zen.exe service install --password leaked_in_invocation");
         // Simulate an error message that quotes the original command line
         // back with the secret embedded — the canonical leak shape.
-        let err = UecmError::OperationFailed(
+        let err = VoloError::OperationFailed(
             "zen.exe service install --password leaked_in_error failed (exit 1)".to_string(),
         );
         finalize_op(&db, op_id, &Err(err), &invocation);

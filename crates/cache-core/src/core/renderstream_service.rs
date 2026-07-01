@@ -3,7 +3,7 @@
 //! `into_check_outcome` for embedding in the health round-trip.
 
 use crate::core::ssh::{run_json, NodeScript, RemoteExecutor};
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,7 +57,7 @@ pub fn classify_risks(services: &[ServiceFact]) -> Vec<String> {
     out
 }
 
-pub fn report(exec: &dyn RemoteExecutor, host: &str) -> UecmResult<RsServiceReport> {
+pub fn report(exec: &dyn RemoteExecutor, host: &str) -> VoloResult<RsServiceReport> {
     let r: ScriptResult = run_json(
         exec,
         host,
@@ -68,7 +68,7 @@ pub fn report(exec: &dyn RemoteExecutor, host: &str) -> UecmResult<RsServiceRepo
         },
     )?;
     if !r.ok {
-        return Err(UecmError::OperationFailed(
+        return Err(VoloError::OperationFailed(
             r.message.unwrap_or_else(|| "probe failed".into()),
         ));
     }
@@ -111,10 +111,10 @@ mod tests {
 
     struct FakeExec(String);
     impl RemoteExecutor for FakeExec {
-        fn run(&self, _h: &str, _s: &NodeScript) -> UecmResult<ScriptOutput> {
+        fn run(&self, _h: &str, _s: &NodeScript) -> VoloResult<ScriptOutput> {
             Ok(ScriptOutput { stdout: self.0.clone(), stderr: String::new(), exit_code: 0 })
         }
-        fn probe(&self, _h: &str, _u: Option<&str>) -> UecmResult<ProbeResult> {
+        fn probe(&self, _h: &str, _u: Option<&str>) -> VoloResult<ProbeResult> {
             unreachable!()
         }
     }

@@ -2,13 +2,13 @@
 
 use cache_core::core::ini_editor;
 use cache_core::data::{machines as data_machines, Db};
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 use serde::Serialize;
 use tauri::State;
 
-fn ip_for(db: &Db, machine_id: i64) -> UecmResult<String> {
+fn ip_for(db: &Db, machine_id: i64) -> VoloResult<String> {
     Ok(data_machines::find_by_id(db, machine_id)?
-        .ok_or_else(|| UecmError::InvalidInput(format!("machine {} not found", machine_id)))?
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?
         .ip)
 }
 
@@ -23,7 +23,7 @@ pub fn read_ini_section(
     machine_id: i64,
     file_path: String,
     section: String,
-) -> UecmResult<Vec<ini_editor::IniKey>> {
+) -> VoloResult<Vec<ini_editor::IniKey>> {
     let host = ip_for(&db, machine_id)?;
     ini_editor::read_section(&host, &file_path, &section)
 }
@@ -36,7 +36,7 @@ pub fn set_ini_key(
     section: String,
     name: String,
     value: String,
-) -> UecmResult<WriteIniResponse> {
+) -> VoloResult<WriteIniResponse> {
     let host = ip_for(&db, machine_id)?;
     let backup_path = ini_editor::set_key(&host, &file_path, &section, &name, &value)?;
     Ok(WriteIniResponse { backup_path })
@@ -57,7 +57,7 @@ pub fn set_machine_backend_field(
     node_name: String,
     field: String,
     value: String,
-) -> UecmResult<String> {
+) -> VoloResult<String> {
     // Logged so the join's project-INI half (wiring [DerivedDataBackendGraph]
     // Shared Path / EnvPathOverride) leaves an `operations` row on failure.
     let invocation = format!(
@@ -87,7 +87,7 @@ pub fn remove_machine_backend_field(
     section: String,
     node_name: String,
     field: String,
-) -> UecmResult<String> {
+) -> VoloResult<String> {
     let invocation = format!(
         "remove backend field [{section}] {node_name}.{field} in {file_path} on machine {machine_id}"
     );
@@ -110,7 +110,7 @@ pub fn read_ini_section_with_credential(
     file_path: String,
     section: String,
     credential_alias: String,
-) -> UecmResult<Vec<ini_editor::IniKey>> {
+) -> VoloResult<Vec<ini_editor::IniKey>> {
     let _ = credential_alias; // accepted-but-ignored shim (SSH key auth); Vue still sends it.
     let host = ip_for(&db, machine_id)?;
     ini_editor::read_section(&host, &file_path, &section)
@@ -125,7 +125,7 @@ pub fn set_ini_key_with_credential(
     name: String,
     value: String,
     credential_alias: String,
-) -> UecmResult<WriteIniResponse> {
+) -> VoloResult<WriteIniResponse> {
     let _ = credential_alias; // accepted-but-ignored shim (SSH key auth); Vue still sends it.
     let host = ip_for(&db, machine_id)?;
     let backup_path = ini_editor::set_key(&host, &file_path, &section, &name, &value)?;

@@ -18,7 +18,7 @@ use cache_core::data::{
     credentials as data_creds, machines as data_machines, share_configs as data_shares,
     CredentialKind, CredentialRecord, Db, ShareConfig, ShareMode,
 };
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 use serde::Serialize;
 use tauri::State;
 
@@ -38,15 +38,15 @@ pub struct InjectionResult {
 }
 
 
-fn host_ip(db: &Db, machine_id: i64) -> UecmResult<String> {
+fn host_ip(db: &Db, machine_id: i64) -> VoloResult<String> {
     Ok(data_machines::find_by_id(db, machine_id)?
-        .ok_or_else(|| UecmError::InvalidInput(format!("machine {} not found", machine_id)))?
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?
         .ip)
 }
 
-fn host_hostname(db: &Db, machine_id: i64) -> UecmResult<String> {
+fn host_hostname(db: &Db, machine_id: i64) -> VoloResult<String> {
     Ok(data_machines::find_by_id(db, machine_id)?
-        .ok_or_else(|| UecmError::InvalidInput(format!("machine {} not found", machine_id)))?
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?
         .hostname)
 }
 
@@ -96,7 +96,7 @@ pub fn create_share(
     local_path: String,
     operator_credential_alias: Option<String>,
     svc_username: Option<String>,
-) -> UecmResult<CreateShareResponse> {
+) -> VoloResult<CreateShareResponse> {
     let host_ip = host_ip(&db, host_machine_id)?;
     // SSH key auth: operator cred vestigial (param kept as shim, Vue compat).
     let _ = &operator_credential_alias;
@@ -194,20 +194,20 @@ pub fn inject_share_credential_to_clients(
     share_config_id: i64,
     client_machine_ids: Vec<i64>,
     operator_credential_alias: Option<String>,
-) -> UecmResult<Vec<InjectionResult>> {
+) -> VoloResult<Vec<InjectionResult>> {
     let share = data_shares::find_by_id(&db, share_config_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("share_config {} not found", share_config_id))
+        VoloError::InvalidInput(format!("share_config {} not found", share_config_id))
     })?;
     if share.mode != ShareMode::Managed {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "credential injection only applies to Mode B (managed) shares".to_string(),
         ));
     }
     let svc_alias = share.credential_alias.as_ref().ok_or_else(|| {
-        UecmError::OperationFailed("managed share missing credential_alias".to_string())
+        VoloError::OperationFailed("managed share missing credential_alias".to_string())
     })?;
     let svc_cred = data_creds::find_by_alias(&db, svc_alias)?.ok_or_else(|| {
-        UecmError::OperationFailed(format!(
+        VoloError::OperationFailed(format!(
             "credential alias '{}' from share row not found in credentials",
             svc_alias
         ))
@@ -216,7 +216,7 @@ pub fn inject_share_credential_to_clients(
     // cli/domain_share.rs::find_share_svc_password.
     let svc_pass = cache_core::core::secrets::get_share_secret_migrating(svc_alias)?
         .ok_or_else(|| {
-            UecmError::InvalidInput(format!(
+            VoloError::InvalidInput(format!(
                 "no stored svc password for alias '{}'; re-create the share via `share create --mode b`",
                 svc_alias
             ))
@@ -262,27 +262,27 @@ pub fn prepare_managed_share_clients(
     db: State<'_, Db>,
     share_config_id: i64,
     client_machine_ids: Vec<i64>,
-) -> UecmResult<Vec<InjectionResult>> {
+) -> VoloResult<Vec<InjectionResult>> {
     let share = data_shares::find_by_id(&db, share_config_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("share_config {} not found", share_config_id))
+        VoloError::InvalidInput(format!("share_config {} not found", share_config_id))
     })?;
     if share.mode != ShareMode::Managed {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "managed share client prep only applies to Mode B (managed) shares".to_string(),
         ));
     }
     let svc_alias = share.credential_alias.as_ref().ok_or_else(|| {
-        UecmError::OperationFailed("managed share missing credential_alias".to_string())
+        VoloError::OperationFailed("managed share missing credential_alias".to_string())
     })?;
     let svc_cred = data_creds::find_by_alias(&db, svc_alias)?.ok_or_else(|| {
-        UecmError::OperationFailed(format!(
+        VoloError::OperationFailed(format!(
             "credential alias '{}' from share row not found in credentials",
             svc_alias
         ))
     })?;
     let svc_pass = cache_core::core::secrets::get_share_secret_migrating(svc_alias)?
         .ok_or_else(|| {
-            UecmError::InvalidInput(format!(
+            VoloError::InvalidInput(format!(
                 "no stored svc password for alias '{}'; re-create the share via Mode B deploy",
                 svc_alias
             ))
@@ -333,12 +333,12 @@ pub fn unprepare_managed_share_clients(
     db: State<'_, Db>,
     share_config_id: i64,
     client_machine_ids: Vec<i64>,
-) -> UecmResult<Vec<InjectionResult>> {
+) -> VoloResult<Vec<InjectionResult>> {
     let share = data_shares::find_by_id(&db, share_config_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("share_config {} not found", share_config_id))
+        VoloError::InvalidInput(format!("share_config {} not found", share_config_id))
     })?;
     if share.mode != ShareMode::Managed {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "managed share client unprep only applies to Mode B (managed) shares".to_string(),
         ));
     }
@@ -380,12 +380,12 @@ pub fn prepare_open_share_clients(
     db: State<'_, Db>,
     share_config_id: i64,
     client_machine_ids: Vec<i64>,
-) -> UecmResult<Vec<InjectionResult>> {
+) -> VoloResult<Vec<InjectionResult>> {
     let share = data_shares::find_by_id(&db, share_config_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("share_config {} not found", share_config_id))
+        VoloError::InvalidInput(format!("share_config {} not found", share_config_id))
     })?;
     if share.mode != ShareMode::Open {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "open share client prep only applies to Mode A (open) shares".to_string(),
         ));
     }
@@ -429,12 +429,12 @@ pub fn unprepare_open_share_clients(
     db: State<'_, Db>,
     share_config_id: i64,
     client_machine_ids: Vec<i64>,
-) -> UecmResult<Vec<InjectionResult>> {
+) -> VoloResult<Vec<InjectionResult>> {
     let share = data_shares::find_by_id(&db, share_config_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("share_config {} not found", share_config_id))
+        VoloError::InvalidInput(format!("share_config {} not found", share_config_id))
     })?;
     if share.mode != ShareMode::Open {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "open share client unprep only applies to Mode A (open) shares".to_string(),
         ));
     }
@@ -469,7 +469,7 @@ pub fn unprepare_open_share_clients(
 }
 
 #[tauri::command]
-pub fn list_shares(db: State<'_, Db>) -> UecmResult<Vec<ShareConfig>> {
+pub fn list_shares(db: State<'_, Db>) -> VoloResult<Vec<ShareConfig>> {
     data_shares::list_all(&db)
 }
 
@@ -478,7 +478,7 @@ pub fn delete_share(
     db: State<'_, Db>,
     share_config_id: i64,
     also_remove_remote: bool,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     // delete_share = pure unmanage: drop the SQLite row only, leave the remote
     // share serving. To actually un-deploy the share on the host (Remove-SmbShare
     // + Mode-B account, keep folder) use `teardown_share` instead.
@@ -506,9 +506,9 @@ pub fn teardown_share(
     db: State<'_, Db>,
     share_config_id: i64,
     keep_files: bool,
-) -> UecmResult<TeardownShareResult> {
+) -> VoloResult<TeardownShareResult> {
     let share = data_shares::find_by_id(&db, share_config_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("share_config {} not found", share_config_id))
+        VoloError::InvalidInput(format!("share_config {} not found", share_config_id))
     })?;
     let host_ip = host_ip(&db, share.host_machine_id)?;
     let host_hn = host_hostname(&db, share.host_machine_id)?;

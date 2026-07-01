@@ -8,7 +8,7 @@
 //! `set_sha256` so any baseline mutation is auditable.
 
 use crate::data::Db;
-use crate::error::UecmResult;
+use crate::error::VoloResult;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +24,7 @@ pub struct ZenBinaryExpected {
 /// First-write-wins baseline insert. If a row already exists for
 /// (zen_build_version, binary_kind), this is a no-op and returns
 /// `Ok(false)`. Returns `Ok(true)` when a new baseline row is recorded.
-pub fn insert_baseline(db: &Db, row: &ZenBinaryExpected) -> UecmResult<bool> {
+pub fn insert_baseline(db: &Db, row: &ZenBinaryExpected) -> VoloResult<bool> {
     let conn = db.lock().unwrap();
     let changed = conn.execute(
         "INSERT INTO zen_binary_expected (zen_build_version, binary_kind, sha256, locked_by)
@@ -35,14 +35,14 @@ pub fn insert_baseline(db: &Db, row: &ZenBinaryExpected) -> UecmResult<bool> {
     Ok(changed > 0)
 }
 
-/// Operator-driven explicit baseline override (e.g. `uecm-cli zen baseline
+/// Operator-driven explicit baseline override (e.g. `voloctl cache zen baseline
 /// lock --sha256 ...`). Use sparingly — the audit trail is `locked_by`.
 pub fn set_sha256(
     db: &Db,
     zen_build_version: &str,
     binary_kind: &str,
     sha256: &str,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     conn.execute(
         "UPDATE zen_binary_expected
@@ -61,7 +61,7 @@ pub fn lock(
     zen_build_version: &str,
     binary_kind: &str,
     locked_by: &str,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     conn.execute(
         "UPDATE zen_binary_expected
@@ -73,7 +73,7 @@ pub fn lock(
 }
 
 /// Clears the lock marker. `sha256` is untouched.
-pub fn unlock(db: &Db, zen_build_version: &str, binary_kind: &str) -> UecmResult<()> {
+pub fn unlock(db: &Db, zen_build_version: &str, binary_kind: &str) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     conn.execute(
         "UPDATE zen_binary_expected
@@ -84,7 +84,7 @@ pub fn unlock(db: &Db, zen_build_version: &str, binary_kind: &str) -> UecmResult
     Ok(())
 }
 
-pub fn list(db: &Db) -> UecmResult<Vec<ZenBinaryExpected>> {
+pub fn list(db: &Db) -> VoloResult<Vec<ZenBinaryExpected>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT zen_build_version, binary_kind, sha256, locked_by, first_seen_at
@@ -103,7 +103,7 @@ pub fn find(
     db: &Db,
     zen_build_version: &str,
     binary_kind: &str,
-) -> UecmResult<Option<ZenBinaryExpected>> {
+) -> VoloResult<Option<ZenBinaryExpected>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT zen_build_version, binary_kind, sha256, locked_by, first_seen_at
@@ -118,7 +118,7 @@ pub fn find(
     }
 }
 
-pub fn delete(db: &Db, zen_build_version: &str, binary_kind: &str) -> UecmResult<()> {
+pub fn delete(db: &Db, zen_build_version: &str, binary_kind: &str) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     conn.execute(
         "DELETE FROM zen_binary_expected

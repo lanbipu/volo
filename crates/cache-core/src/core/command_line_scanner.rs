@@ -2,7 +2,7 @@
 //! command-line overrides like -LocalDataCachePath / -SharedDataCachePath.
 
 use crate::core::ssh::{run_json, NodeScript, RemoteExecutor};
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -24,7 +24,7 @@ struct ScriptResult {
     message: Option<String>,
 }
 
-pub fn scan(exec: &dyn RemoteExecutor, host: &str) -> UecmResult<Vec<CmdLineHit>> {
+pub fn scan(exec: &dyn RemoteExecutor, host: &str) -> VoloResult<Vec<CmdLineHit>> {
     let r: ScriptResult = run_json(
         exec,
         host,
@@ -35,7 +35,7 @@ pub fn scan(exec: &dyn RemoteExecutor, host: &str) -> UecmResult<Vec<CmdLineHit>
         },
     )?;
     if !r.ok {
-        return Err(UecmError::OperationFailed(r.message.unwrap_or_default()));
+        return Err(VoloError::OperationFailed(r.message.unwrap_or_default()));
     }
     Ok(r.findings.unwrap_or_default())
 }
@@ -47,14 +47,14 @@ mod tests {
 
     struct FakeExec(String);
     impl RemoteExecutor for FakeExec {
-        fn run(&self, _h: &str, _s: &NodeScript) -> UecmResult<ScriptOutput> {
+        fn run(&self, _h: &str, _s: &NodeScript) -> VoloResult<ScriptOutput> {
             Ok(ScriptOutput {
                 stdout: self.0.clone(),
                 stderr: String::new(),
                 exit_code: 0,
             })
         }
-        fn probe(&self, _h: &str, _u: Option<&str>) -> UecmResult<ProbeResult> {
+        fn probe(&self, _h: &str, _u: Option<&str>) -> VoloResult<ProbeResult> {
             unreachable!()
         }
     }
@@ -74,6 +74,6 @@ mod tests {
     #[test]
     fn scan_surfaces_not_ok_as_error() {
         let exec = FakeExec(r#"{"ok":false,"message":"boom","findings":[]}"#.to_string());
-        assert!(matches!(scan(&exec, "H"), Err(UecmError::OperationFailed(_))));
+        assert!(matches!(scan(&exec, "H"), Err(VoloError::OperationFailed(_))));
     }
 }

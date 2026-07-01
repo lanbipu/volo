@@ -5,7 +5,7 @@ use crate::core::{
     ue_runner::{self, UeRunSpec, UeRunnerBackend},
 };
 use crate::data::{machine_gpus, pso_cache_files, Db, PsoCacheFile};
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -98,7 +98,7 @@ pub fn enumerate_remote(
     project_dir: &str,
     user: Option<&str>,
     pass: Option<&str>,
-) -> UecmResult<Vec<EnumeratedFile>> {
+) -> VoloResult<Vec<EnumeratedFile>> {
     if crate::core::loopback::is_loopback_target(host) {
         return enumerate_local(project_dir);
     }
@@ -115,7 +115,7 @@ pub fn enumerate_remote(
         },
     )?;
     if !result.ok {
-        return Err(UecmError::OperationFailed(
+        return Err(VoloError::OperationFailed(
             result.message.unwrap_or_else(|| "PSO file enumeration failed".into()),
         ));
     }
@@ -130,20 +130,20 @@ pub fn enumerate_remote(
         .collect())
 }
 
-fn enumerate_local(project_dir: &str) -> UecmResult<Vec<EnumeratedFile>> {
+fn enumerate_local(project_dir: &str) -> VoloResult<Vec<EnumeratedFile>> {
     let dir = std::path::Path::new(project_dir)
         .join("Saved")
         .join("CollectedPSOs");
     let mut files = Vec::new();
-    let entries = std::fs::read_dir(&dir).map_err(UecmError::Io)?;
+    let entries = std::fs::read_dir(&dir).map_err(VoloError::Io)?;
     for entry in entries {
-        let entry = entry.map_err(UecmError::Io)?;
+        let entry = entry.map_err(VoloError::Io)?;
         let path = entry.path();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let lower = name.to_lowercase();
         let is_target = lower.ends_with(".upipelinecache") || lower.ends_with(".stablepc.csv");
         if !is_target { continue; }
-        let metadata = entry.metadata().map_err(UecmError::Io)?;
+        let metadata = entry.metadata().map_err(VoloError::Io)?;
         files.push(EnumeratedFile {
             file_path: path.to_string_lossy().to_string(),
             file_name: entry.file_name().to_string_lossy().to_string(),
@@ -153,11 +153,11 @@ fn enumerate_local(project_dir: &str) -> UecmResult<Vec<EnumeratedFile>> {
     Ok(files)
 }
 
-pub fn gpu_signature_for_machine(db: &Db, machine_id: i64) -> UecmResult<String> {
+pub fn gpu_signature_for_machine(db: &Db, machine_id: i64) -> VoloResult<String> {
     let rows = machine_gpus::list_for_machine(db, machine_id)?;
     let gpu = rows
         .first()
-        .ok_or_else(|| UecmError::InvalidInput(format!("machine {} has no GPU rows", machine_id)))?;
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} has no GPU rows", machine_id)))?;
     Ok(gpu_consistency::signature_from_gpu(gpu).as_string())
 }
 
@@ -167,7 +167,7 @@ pub fn finalize_persist(
     source_machine_id: i64,
     ue_version: Option<&str>,
     files: &[EnumeratedFile],
-) -> UecmResult<Vec<i64>> {
+) -> VoloResult<Vec<i64>> {
     let signature = gpu_signature_for_machine(db, source_machine_id)?;
     let mut ids = Vec::with_capacity(files.len());
     for file in files {

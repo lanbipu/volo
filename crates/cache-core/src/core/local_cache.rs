@@ -1,7 +1,7 @@
 //! Provision a local DDC directory on a remote host: New-Item + icacls.
 
 use crate::core::ssh::{run_json, NodeScript, SshExecutor};
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -14,17 +14,17 @@ struct CreateResult {
 /// On Windows: create the directory and set ACLs via icacls locally.
 /// On non-Windows (dev/CI): just create the directory (icacls is not available).
 #[cfg(windows)]
-fn provision_local_cache_dir(local_path: &str, service_account: Option<&str>) -> UecmResult<String> {
+fn provision_local_cache_dir(local_path: &str, service_account: Option<&str>) -> VoloResult<String> {
     use std::process::Command;
     std::fs::create_dir_all(local_path)
-        .map_err(|e| UecmError::OperationFailed(format!("mkdir {}: {}", local_path, e)))?;
+        .map_err(|e| VoloError::OperationFailed(format!("mkdir {}: {}", local_path, e)))?;
     for grant in ["SYSTEM:(OI)(CI)F", "Administrators:(OI)(CI)F"] {
         let status = Command::new("icacls")
             .args([local_path, "/grant", grant, "/T", "/C"])
             .status()
-            .map_err(|e| UecmError::OperationFailed(format!("icacls: {}", e)))?;
+            .map_err(|e| VoloError::OperationFailed(format!("icacls: {}", e)))?;
         if !status.success() {
-            return Err(UecmError::OperationFailed(format!("icacls {} failed", grant)));
+            return Err(VoloError::OperationFailed(format!("icacls {} failed", grant)));
         }
     }
     if let Some(svc) = service_account {
@@ -32,18 +32,18 @@ fn provision_local_cache_dir(local_path: &str, service_account: Option<&str>) ->
         let status = Command::new("icacls")
             .args([local_path, "/grant", &grant, "/T", "/C"])
             .status()
-            .map_err(|e| UecmError::OperationFailed(format!("icacls: {}", e)))?;
+            .map_err(|e| VoloError::OperationFailed(format!("icacls: {}", e)))?;
         if !status.success() {
-            return Err(UecmError::OperationFailed(format!("icacls {} failed", grant)));
+            return Err(VoloError::OperationFailed(format!("icacls {} failed", grant)));
         }
     }
     Ok(local_path.to_string())
 }
 
 #[cfg(not(windows))]
-fn provision_local_cache_dir(local_path: &str, _service_account: Option<&str>) -> UecmResult<String> {
+fn provision_local_cache_dir(local_path: &str, _service_account: Option<&str>) -> VoloResult<String> {
     std::fs::create_dir_all(local_path)
-        .map_err(|e| UecmError::OperationFailed(format!("mkdir {}: {}", local_path, e)))?;
+        .map_err(|e| VoloError::OperationFailed(format!("mkdir {}: {}", local_path, e)))?;
     Ok(local_path.to_string())
 }
 
@@ -52,7 +52,7 @@ pub fn create(
     local_path: &str,
     service_account: Option<&str>,
     operator: Option<(&str, &str)>,
-) -> UecmResult<String> {
+) -> VoloResult<String> {
     let _ = operator; // SSH key auth; per-call WinRM cred ignored (kept until A5).
     if crate::core::loopback::is_loopback_target(host) {
         return provision_local_cache_dir(local_path, service_account);
@@ -69,7 +69,7 @@ pub fn create(
         },
     )?;
     if !r.ok {
-        return Err(UecmError::OperationFailed(r.message));
+        return Err(VoloError::OperationFailed(r.message));
     }
     Ok(r.path.unwrap_or(r.message))
 }

@@ -1,4 +1,4 @@
-/* Volo — Cache/UECM typed command bindings.
+/* Volo — Cache typed command bindings.
    One wrapper per registered `#[tauri::command]` (85 total). Arg keys are
    camelCase (Rust snake_case → JS camelCase); a struct/request input is passed
    whole under one camelCase key, its inner fields staying snake_case. Optional

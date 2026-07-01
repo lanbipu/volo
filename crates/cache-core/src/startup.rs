@@ -4,7 +4,7 @@
 //! lookups so the CLI can initialize without a Tauri Builder context.
 
 use crate::data::{self, Db};
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use directories::BaseDirs;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -18,18 +18,18 @@ use std::path::{Path, PathBuf};
 pub const APP_IDENTIFIER: &str = "com.lanbipu.uecm";
 
 /// Resolves the SQLite DB path. Same location for UI and CLI so both share state.
-/// Override with `UECM_DB_PATH` env var (used in tests and ad-hoc debug sessions).
+/// Override with `VOLO_DB_PATH` env var (used in tests and ad-hoc debug sessions).
 ///
 /// Resolution mirrors Tauri 2 `app_data_dir()`:
 /// - Windows: `%APPDATA%\com.lanbipu.uecm\uecm.sqlite`
 /// - macOS:   `~/Library/Application Support/com.lanbipu.uecm/uecm.sqlite`
 /// - Linux:   `$XDG_DATA_HOME/com.lanbipu.uecm/uecm.sqlite` (or `~/.local/share/...`)
-pub fn resolve_db_path() -> UecmResult<PathBuf> {
-    if let Ok(override_path) = env::var("UECM_DB_PATH") {
+pub fn resolve_db_path() -> VoloResult<PathBuf> {
+    if let Ok(override_path) = env::var("VOLO_DB_PATH") {
         return Ok(PathBuf::from(override_path));
     }
     let base = BaseDirs::new().ok_or_else(|| {
-        UecmError::Configuration("failed to resolve user base directories".into())
+        VoloError::Configuration("failed to resolve user base directories".into())
     })?;
     // Side-effect-free: no `create_dir_all` here. `open_and_migrate_db` creates
     // the parent directory when it actually opens the DB, so DB-free commands
@@ -40,33 +40,33 @@ pub fn resolve_db_path() -> UecmResult<PathBuf> {
 
 /// Resolves the UECM config directory (where the SSH transport key, public
 /// key, and known_hosts live). Mirrors `resolve_db_path`'s parent so a
-/// `UECM_DB_PATH` test override keeps key material next to the test DB.
-pub fn resolve_config_dir() -> UecmResult<PathBuf> {
-    if let Ok(override_path) = env::var("UECM_DB_PATH") {
+/// `VOLO_DB_PATH` test override keeps key material next to the test DB.
+pub fn resolve_config_dir() -> VoloResult<PathBuf> {
+    if let Ok(override_path) = env::var("VOLO_DB_PATH") {
         if let Some(parent) = Path::new(&override_path).parent() {
             return Ok(parent.to_path_buf());
         }
     }
     let base = BaseDirs::new().ok_or_else(|| {
-        UecmError::Configuration("failed to resolve user base directories".into())
+        VoloError::Configuration("failed to resolve user base directories".into())
     })?;
     Ok(base.data_dir().join(APP_IDENTIFIER))
 }
 
 /// Opens the DB (WAL mode is set inside `data::open`) and runs idempotent
 /// migrations. Both binaries call this. Creates the parent directory if it
-/// does not exist — important for `UECM_DB_PATH` overrides that point at a
+/// does not exist — important for `VOLO_DB_PATH` overrides that point at a
 /// fresh location.
 ///
 /// After migrations succeed, runs Plan 7 §1.4 retention GC on zen_probes /
 /// zen_cache_stats as best-effort. A failed GC must not block startup — the
 /// app should still come up and serve cached state, so we log via tracing
 /// and continue.
-pub fn open_and_migrate_db(path: &Path) -> UecmResult<Db> {
+pub fn open_and_migrate_db(path: &Path) -> VoloResult<Db> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                UecmError::Configuration(format!(
+                VoloError::Configuration(format!(
                     "create DB parent dir {}: {}",
                     parent.display(),
                     e
@@ -161,16 +161,16 @@ mod tests {
     fn resolve_db_path_uses_env_override() {
         let _lock = ENV_TEST_LOCK.lock().unwrap();
         let custom = "/tmp/test-override-uecm.sqlite";
-        env::set_var("UECM_DB_PATH", custom);
+        env::set_var("VOLO_DB_PATH", custom);
         let path = resolve_db_path().unwrap();
         assert_eq!(path, PathBuf::from(custom));
-        env::remove_var("UECM_DB_PATH");
+        env::remove_var("VOLO_DB_PATH");
     }
 
     #[test]
     fn resolve_db_path_uses_tauri_identifier_subdir() {
         let _lock = ENV_TEST_LOCK.lock().unwrap();
-        env::remove_var("UECM_DB_PATH");
+        env::remove_var("VOLO_DB_PATH");
         let path = resolve_db_path().unwrap();
         assert!(path.ends_with("uecm.sqlite"));
         // Path must include the Tauri identifier so UI and CLI converge on the same DB.
@@ -193,10 +193,10 @@ mod tests {
     #[test]
     fn config_dir_follows_db_path_override() {
         let _lock = ENV_TEST_LOCK.lock().unwrap();
-        env::set_var("UECM_DB_PATH", "/tmp/uecm-test-abc/uecm.sqlite");
+        env::set_var("VOLO_DB_PATH", "/tmp/uecm-test-abc/uecm.sqlite");
         let dir = resolve_config_dir().unwrap();
         assert_eq!(dir, PathBuf::from("/tmp/uecm-test-abc"));
-        env::remove_var("UECM_DB_PATH");
+        env::remove_var("VOLO_DB_PATH");
     }
 
     #[test]

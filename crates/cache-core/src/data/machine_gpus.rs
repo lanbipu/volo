@@ -1,7 +1,7 @@
 //! CRUD for the `machine_gpus` table.
 
 use crate::data::Db;
-use crate::error::UecmResult;
+use crate::error::VoloResult;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
@@ -44,7 +44,7 @@ pub struct GpuInfo {
     pub vram_mb: Option<i64>,
 }
 
-pub fn insert(db: &Db, gpu: &GpuInfo) -> UecmResult<i64> {
+pub fn insert(db: &Db, gpu: &GpuInfo) -> VoloResult<i64> {
     let conn = db.lock().unwrap();
     conn.execute(
         "INSERT INTO machine_gpus (machine_id, gpu_model, driver_version, vendor, vram_mb)
@@ -60,7 +60,7 @@ pub fn insert(db: &Db, gpu: &GpuInfo) -> UecmResult<i64> {
     Ok(conn.last_insert_rowid())
 }
 
-pub fn list_for_machine(db: &Db, machine_id: i64) -> UecmResult<Vec<GpuInfo>> {
+pub fn list_for_machine(db: &Db, machine_id: i64) -> VoloResult<Vec<GpuInfo>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, machine_id, gpu_model, driver_version, vendor, vram_mb
@@ -83,7 +83,7 @@ pub fn list_for_machine(db: &Db, machine_id: i64) -> UecmResult<Vec<GpuInfo>> {
     Ok(result)
 }
 
-pub fn replace_for_machine(db: &Db, machine_id: i64, gpus: &[GpuInfo]) -> UecmResult<()> {
+pub fn replace_for_machine(db: &Db, machine_id: i64, gpus: &[GpuInfo]) -> VoloResult<()> {
     let mut conn = db.lock().unwrap();
     let tx = conn.transaction()?;
     tx.execute("DELETE FROM machine_gpus WHERE machine_id = ?", params![machine_id])?;

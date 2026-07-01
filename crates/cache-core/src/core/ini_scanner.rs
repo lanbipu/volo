@@ -12,7 +12,7 @@ use crate::core::zen::rules_loader as zen_rules_loader;
 use crate::core::loopback;
 use crate::core::ssh::{run_json, NodeScript, SshExecutor};
 use crate::data::{machine_zen_install, zen_binary_expected, zen_endpoints, Db};
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use rusqlite::params;
 use serde::Deserialize;
 use std::io::ErrorKind;
@@ -80,7 +80,7 @@ pub fn read_file(
     host: &str,
     target: &TargetFile,
     cred: Option<(&str, &str)>,
-) -> UecmResult<Option<ParsedFile>> {
+) -> VoloResult<Option<ParsedFile>> {
     // SSH key auth: per-call WinRM cred no longer used (param kept until A5 cleanup).
     let _ = cred;
     if loopback::is_loopback_target(host) {
@@ -98,7 +98,7 @@ pub fn read_file(
         },
     )?;
     if !result.ok {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "read-ini-file failed: {}",
             result.message
         )));
@@ -121,12 +121,12 @@ pub fn read_file(
     }))
 }
 
-fn read_local_file(target: &TargetFile) -> UecmResult<Option<ParsedFile>> {
+fn read_local_file(target: &TargetFile) -> VoloResult<Option<ParsedFile>> {
     let raw = match std::fs::read_to_string(&target.path) {
         Ok(contents) => contents,
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
         Err(e) => {
-            return Err(UecmError::OperationFailed(format!(
+            return Err(VoloError::OperationFailed(format!(
                 "read local INI failed: {}",
                 e
             )));
@@ -249,7 +249,7 @@ pub struct ScanOutcome {
     pub config_snapshots: Vec<crate::core::ini_config_extract::ConfigEntry>,
 }
 
-pub fn scan_machine(inputs: &ScanInputs) -> UecmResult<ScanOutcome> {
+pub fn scan_machine(inputs: &ScanInputs) -> VoloResult<ScanOutcome> {
     let mut targets: Vec<TargetFile> = Vec::new();
     targets.extend(enumerate_engine_paths(inputs.installs));
     targets.extend(enumerate_user_paths(inputs.installs, inputs.user_profile));
@@ -326,7 +326,7 @@ pub fn build_zen_ctx_for_machine(
     machine_id: i64,
     ue_version_hint: Option<&str>,
     cluster_scope: Option<&[i64]>,
-) -> UecmResult<Option<ZenRuleContextOwned>> {
+) -> VoloResult<Option<ZenRuleContextOwned>> {
     let endpoints = zen_endpoints::list_for_machine(db, machine_id)?;
     if endpoints.is_empty() {
         // Auto-enable contract: no endpoint registered → no zen rules.
@@ -384,7 +384,7 @@ pub fn build_zen_ctx_for_machine(
     let mut endpoint_reachability = Vec::with_capacity(endpoints.len() * 2);
     {
         let conn = db.lock().unwrap();
-        let probe_for = |endpoint_id: i64| -> UecmResult<bool> {
+        let probe_for = |endpoint_id: i64| -> VoloResult<bool> {
             let mut stmt = conn.prepare(
                 "SELECT reachable,
                         datetime(probed_at) > datetime('now', ?2) AS fresh
@@ -531,7 +531,7 @@ pub fn pick_highest_ue_version(installs: &[(String, String)]) -> Option<String> 
 /// reachability table held only the hostname → R014 reported "no match"
 /// for an otherwise-correct deployment. Return both addresses so the
 /// rule's host-equality check accepts whichever form the operator used.
-fn lookup_machine_addresses(db: &Db, machine_id: i64) -> UecmResult<(String, String)> {
+fn lookup_machine_addresses(db: &Db, machine_id: i64) -> VoloResult<(String, String)> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare("SELECT hostname, ip FROM machines WHERE id = ?1")?;
     let mut rows = stmt.query(params![machine_id])?;

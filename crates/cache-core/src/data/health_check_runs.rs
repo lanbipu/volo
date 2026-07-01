@@ -1,7 +1,7 @@
 //! Per-machine results within a single health-check `scan_runs` session.
 
 use crate::data::Db;
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -13,10 +13,10 @@ pub struct HealthCheckRow {
     pub machine_results: JsonValue,
 }
 
-pub fn upsert(db: &Db, scan_run_id: i64, machine_id: i64, results: &JsonValue) -> UecmResult<()> {
+pub fn upsert(db: &Db, scan_run_id: i64, machine_id: i64, results: &JsonValue) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     let results_json = serde_json::to_string(results)
-        .map_err(|e| UecmError::OperationFailed(e.to_string()))?;
+        .map_err(|e| VoloError::OperationFailed(e.to_string()))?;
     conn.execute(
         "INSERT INTO health_check_runs (scan_run_id, machine_id, machine_results_json)
          VALUES (?, ?, ?)
@@ -47,7 +47,7 @@ fn row_to_health_check_row(row: &rusqlite::Row) -> rusqlite::Result<HealthCheckR
     })
 }
 
-pub fn find(db: &Db, scan_run_id: i64, machine_id: i64) -> UecmResult<Option<HealthCheckRow>> {
+pub fn find(db: &Db, scan_run_id: i64, machine_id: i64) -> VoloResult<Option<HealthCheckRow>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT scan_run_id, machine_id, machine_results_json
@@ -62,7 +62,7 @@ pub fn find(db: &Db, scan_run_id: i64, machine_id: i64) -> UecmResult<Option<Hea
     }
 }
 
-pub fn list_for_run(db: &Db, scan_run_id: i64) -> UecmResult<Vec<HealthCheckRow>> {
+pub fn list_for_run(db: &Db, scan_run_id: i64) -> VoloResult<Vec<HealthCheckRow>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT scan_run_id, machine_id, machine_results_json

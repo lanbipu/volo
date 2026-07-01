@@ -60,7 +60,7 @@ use crate::data::{
     zen_binary_intree::{self, ZenBinaryIntree},
     Db,
 };
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use serde::Deserialize;
 
 // ---------------------------------------------------------------------------
@@ -189,11 +189,11 @@ struct IntreeBinaryJson {
 // ---------------------------------------------------------------------------
 
 /// Parse the JSON payload emitted by `zen-detect-binary.ps1`. Returns
-/// [`UecmError::InvalidInput`] with the underlying parse error wrapped in the
+/// [`VoloError::InvalidInput`] with the underlying parse error wrapped in the
 /// message when the input is malformed.
-pub fn parse_detection_json(json: &str) -> UecmResult<BinaryDetection> {
+pub fn parse_detection_json(json: &str) -> VoloResult<BinaryDetection> {
     let raw: DetectionJson = serde_json::from_str(json)
-        .map_err(|e| UecmError::InvalidInput(format!("zen-detect-binary JSON parse error: {e}")))?;
+        .map_err(|e| VoloError::InvalidInput(format!("zen-detect-binary JSON parse error: {e}")))?;
 
     let install = raw.install.map(|i| {
         let (cli_path, cli_ver, cli_sha) = split_install_bin(i.zen_cli);
@@ -253,7 +253,7 @@ pub fn persist(
     db: &Db,
     machine_id: i64,
     detection: &BinaryDetection,
-) -> UecmResult<PersistReport> {
+) -> VoloResult<PersistReport> {
     let mut report = PersistReport {
         warnings: detection.warnings.clone(),
         ..Default::default()
@@ -345,7 +345,7 @@ fn split_intree_bin(
     }
 }
 
-fn write_install_record(db: &Db, machine_id: i64, install: &InstallBinaries) -> UecmResult<()> {
+fn write_install_record(db: &Db, machine_id: i64, install: &InstallBinaries) -> VoloResult<()> {
     machine_zen_install::upsert(
         db,
         &MachineZenInstall {
@@ -365,7 +365,7 @@ fn write_install_record(db: &Db, machine_id: i64, install: &InstallBinaries) -> 
 /// Insert baseline rows for each install binary that has both a version and a
 /// sha256 to anchor. Returns the number of *new* rows written (first-write-
 /// wins; duplicate PKs are no-ops).
-fn write_install_baselines(db: &Db, install: &InstallBinaries) -> UecmResult<usize> {
+fn write_install_baselines(db: &Db, install: &InstallBinaries) -> VoloResult<usize> {
     let mut n = 0;
     if let (Some(v), Some(s)) = (
         install.zen_cli_build_version.as_ref(),
@@ -409,7 +409,7 @@ fn write_install_baselines(db: &Db, install: &InstallBinaries) -> UecmResult<usi
 /// Writes reference rows for whichever InTree binaries are present. Returns
 /// the count of rows touched (upsert doesn't distinguish insert vs update;
 /// callers just need a non-zero signal that the reference table was hit).
-fn write_intree_reference(db: &Db, entry: &IntreeBinaries) -> UecmResult<usize> {
+fn write_intree_reference(db: &Db, entry: &IntreeBinaries) -> VoloResult<usize> {
     let mut n = 0;
     if entry.zen_cli_path.is_some()
         || entry.zen_cli_version.is_some()
@@ -609,7 +609,7 @@ mod tests {
     fn parse_detection_json_rejects_malformed() {
         let err = parse_detection_json("not json at all").unwrap_err();
         match err {
-            UecmError::InvalidInput(msg) => {
+            VoloError::InvalidInput(msg) => {
                 assert!(
                     msg.contains("zen-detect-binary JSON parse error"),
                     "expected wrapped parse error, got: {msg}"

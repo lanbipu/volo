@@ -1,4 +1,4 @@
-/* Volo — Cache/UECM presentation config (NOT backend data).
+/* Volo — Cache presentation config (NOT backend data).
    These are the status-three-channel maps (color + icon + text) and the static
    left-nav definitions. They were lifted out of data.tsx because they have no
    backend equivalent — they are design config, not mock payloads. Published on

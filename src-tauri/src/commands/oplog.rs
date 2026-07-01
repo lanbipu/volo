@@ -10,7 +10,7 @@
 //! masks the real result — a failed start/finish is swallowed.
 
 use cache_core::data::{operations as data_operations, Db};
-use cache_core::error::UecmResult;
+use cache_core::error::VoloResult;
 use tauri::State;
 
 /// Run `f` inside an operations-table span: insert a `running` row, then finish
@@ -21,8 +21,8 @@ pub fn logged<T>(
     action_type: &str,
     targets: &[i64],
     invocation: &str,
-    f: impl FnOnce() -> UecmResult<T>,
-) -> UecmResult<T> {
+    f: impl FnOnce() -> VoloResult<T>,
+) -> VoloResult<T> {
     let op_id = data_operations::start(db, action_type, targets).ok();
     let result = f();
     if let Some(id) = op_id {
@@ -48,7 +48,7 @@ pub fn record_operation(
     target_machines: Vec<i64>,
     status: String,
     log_text: String,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let id = data_operations::start(&db, &action_type, &target_machines)?;
     data_operations::finish(&db, id, &status, Some(&log_text))?;
     Ok(())
