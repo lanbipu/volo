@@ -483,11 +483,13 @@ fn execute_one(
             for key in [
                 "r.ShaderPipelineCache.Enabled",
                 "r.PSOPrecaching",
-                "r.PSOPrecache.Compile",
                 "r.PSOPrecache.GlobalShaders",
             ] {
                 ini_editor::set_key(host, &ini, "ConsoleVariables", key, "1")?;
             }
+            // r.PSOPrecache.Compile 不是真实存在的 CVar（UE 5.8 源码核实过），已从这里删除；
+            // R009 巡检的是 r.PSOPrecache.Mode，健康值是 0（Full PSO），不是 1。
+            ini_editor::set_key(host, &ini, "ConsoleVariables", "r.PSOPrecache.Mode", "0")?;
             Ok(Some("4 CVars set".into()))
         }
         CollectPso => {

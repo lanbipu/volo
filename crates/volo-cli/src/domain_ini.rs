@@ -204,7 +204,9 @@ pub fn handle(ctx: &mut Ctx<'_>, action: IniAction) -> UecmResult<()> {
         }
         IniAction::Skip { finding_id } => skip_finding(ctx, finding_id),
         IniAction::Config { scan_run_id, domain } => config(ctx, scan_run_id, domain.as_deref()),
-        IniAction::VerifyPsoPrecaching { project_id } => verify_pso_precaching(ctx, project_id),
+        IniAction::VerifyPsoPrecaching { project_id, cred } => {
+            scan_dispatch(ctx, vec![], Some(project_id), None, &cred)
+        }
         IniAction::GcPause { target, project_id, yes, dry_run, cred } => {
             let hosts: Vec<String> = match target.require_one()? {
                 HostTarget::Single(h) => vec![h],
@@ -582,7 +584,7 @@ fn remove_batch(
 /// `project_locations` table is queried for the registered (machine, abs_path)
 /// pairs; if none exist, returns `InvalidInput` so the operator is told to run
 /// `project discover` first.
-fn scan_dispatch(
+pub(crate) fn scan_dispatch(
     ctx: &mut Ctx<'_>,
     machine_ids: Vec<i64>,
     project_id: Option<i64>,
@@ -1038,38 +1040,6 @@ fn skip_finding(ctx: &mut Ctx<'_>, finding_id: i64) -> UecmResult<()> {
                 "skipped": true,
             }),
         })
-        .ok();
-    Ok(())
-}
-
-/// Verify PSO precaching CVars on a project. The UI command (`verify_pso_precaching`)
-/// delegates to `scan_inis` with non-empty project_paths. In the CLI, project_paths
-/// are looked up from the project_locations table for the given project_id, and the
-/// scan is run across all machines that have a location for that project.
-fn verify_pso_precaching(ctx: &mut Ctx<'_>, project_id: i64) -> UecmResult<()> {
-    // Resolve project locations to get (machine_id, abs_path) pairs.
-    let db = ctx.require_db()?;
-    let locations = cache_core::data::project_locations::list_by_project(db, project_id)?;
-    if locations.is_empty() {
-        return Err(UecmError::InvalidInput(format!(
-            "project {} has no locations registered; add locations first",
-            project_id
-        )));
-    }
-    use std::collections::HashSet;
-    let machine_ids: Vec<i64> = locations
-        .iter()
-        .map(|l| l.machine_id)
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-
-    ctx.emitter
-        .emit_result(&serde_json::json!({
-            "project_id": project_id,
-            "machine_ids": machine_ids,
-            "note": "use `ini scan --machine-ids <ids>` with project paths; PSO CVar check (R008-R010) runs as part of the full ini scan",
-        }))
         .ok();
     Ok(())
 }
