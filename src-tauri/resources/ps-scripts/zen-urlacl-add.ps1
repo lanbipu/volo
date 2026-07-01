@@ -51,6 +51,24 @@ try {
         throw "UserAccount must be non-empty"
     }
 
+    # netsh http add urlacl resolves `user=` via LookupAccountName → SDDL.
+    # SCM accepts the short built-in names (`LocalSystem`, …) but netsh on some
+    # hosts (notably Chinese-locale Windows) fails with Win32 1332
+    # (ERROR_NONE_MAPPED) for `LocalSystem` while `NT AUTHORITY\SYSTEM` works.
+    # Normalize built-ins to their long forms before hitting netsh; owner
+    # comparison below still uses SID equivalence via Test-SamePrincipal.
+    function Normalize-NetshUserAccount([string]$a) {
+        if ([string]::IsNullOrWhiteSpace($a)) { return $a }
+        $t = $a.Trim().ToLowerInvariant()
+        switch -Regex ($t) {
+            '^(localsystem|nt authority\\system|nt authority\\localsystem|\.\\localsystem)$' { 'NT AUTHORITY\SYSTEM' }
+            '^(localservice|nt authority\\localservice|\.\\localservice)$' { 'NT AUTHORITY\LocalService' }
+            '^(networkservice|nt authority\\networkservice|\.\\networkservice)$' { 'NT AUTHORITY\NetworkService' }
+            default { $a.Trim() }
+        }
+    }
+    $UserAccount = Normalize-NetshUserAccount $UserAccount
+
     # Use the call operator with separate string args so PowerShell's argument
     # quoting handles space-containing principals correctly. Start-Process
     # `-ArgumentList` would flatten the array and `NT SERVICE\ZenServer` would

@@ -521,7 +521,13 @@ pub fn parse_envelope(raw: &str, sidecar: &str) -> VoloResult<serde_json::Value>
                 .get("message")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown sidecar error");
-            Err(VoloError::PowerShell(format!("{sidecar}: {msg}")))
+            let detail = envelope
+                .get("netsh_combined")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| format!(" ({})", s.trim()))
+                .unwrap_or_default();
+            Err(VoloError::PowerShell(format!("{sidecar}: {msg}{detail}")))
         }
         None => {
             // `ok` missing OR present-but-non-bool (e.g. `ok: null`, `ok: "true"`).
