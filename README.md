@@ -45,7 +45,16 @@ vp/volo/
 
 - **UX 设计**：IA + Cache/Calibrate wireframe ✅ · Stage 数据模型 ⬜ → `docs/architecture/`
 - **设计系统**：用 Adobe React Spectrum 2（不自建），组件查 repo 自带 S2 MCP
-- **代码**：未初始化
+- **代码**：脚手架已落地（`src/` · `src-tauri/` · `crates/`）
+
+## 快速开始
+
+```bash
+pnpm install
+pnpm tauri dev          # 原生 App，dev server :1420
+pnpm exec tsc --noEmit  # 前端类型检查
+cargo check --manifest-path src-tauri/Cargo.toml  # 后端快验
+```
 
 ## 工作流
 
