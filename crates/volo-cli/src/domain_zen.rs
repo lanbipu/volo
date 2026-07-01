@@ -70,9 +70,10 @@ use std::time::Duration;
 pub(crate) use cache_core::core::zen::ops::{
     copy_binary_if_needed, default_lifecycle_for, finalize_op, parse_envelope, render_lua_for,
     require_endpoint, require_machine, resolve_install_paths, resolve_service_paths,
-    resolve_upstream_info, restart_service, run_node, url_prefix_for, validate_data_dir_safe,
-    validate_dest_path, validate_service_account_pair, validate_service_data_dir,
-    workstation_colocation_warning, write_and_verify_lua, DEFAULT_SERVICE_NAME,
+    resolve_upstream_info, restart_service, run_node, url_prefix_for, urlacl_needed_for,
+    validate_data_dir_safe, validate_dest_path, validate_service_account_pair,
+    validate_service_data_dir, workstation_colocation_warning, write_and_verify_lua,
+    DEFAULT_SERVICE_NAME,
 };
 // Only the tests below reach for these directly (the prod path uses
 // `sha256_hex_of`/`verify_write_response` transitively via
@@ -1898,6 +1899,31 @@ fn urlacl_add(
                 "principal": principal,
             }),
         );
+        return Ok(());
+    }
+
+    if !urlacl_needed_for(principal) {
+        let invocation = redact(&format!(
+            "zen.urlacl.add skipped for {principal}: LocalSystem needs no netsh reservation"
+        ));
+        let op_id = operations::start(&db, "zen.urlacl_add", &[ep.machine_id])?;
+        let response = serde_json::json!({
+            "ok": true,
+            "skipped": true,
+            "reason": "LocalSystem can bind http.sys URLs without a netsh reservation; \
+                       adding one on http://*:<port>/ conflicts with zen and causes probe HTTP 503"
+        });
+        finalize_op(&db, op_id, &Ok(response.clone()), &invocation);
+        let summary = serde_json::json!({
+            "ok": true,
+            "endpoint_id": endpoint_id,
+            "machine_id": ep.machine_id,
+            "host": machine.ip,
+            "url_prefix": url_prefix,
+            "principal": principal,
+            "remote": response,
+        });
+        ctx.emitter.emit_event(&Event::Completed { summary }).ok();
         return Ok(());
     }
 

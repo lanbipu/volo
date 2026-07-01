@@ -1696,6 +1696,28 @@ pub fn zen_urlacl_add(
         }));
     }
 
+    if !zen_cli_shared::urlacl_needed_for(&principal) {
+        let invocation = redact(&format!(
+            "zen.urlacl.add skipped for {principal}: LocalSystem needs no netsh reservation"
+        ));
+        let op_id = operations::start(&db, "zen.urlacl_add", &[ep.machine_id])?;
+        let response = serde_json::json!({
+            "ok": true,
+            "skipped": true,
+            "reason": "LocalSystem can bind http.sys URLs without a netsh reservation; \
+                       adding one on http://*:<port>/ conflicts with zen and causes probe HTTP 503"
+        });
+        zen_cli_shared::finalize_op(&db, op_id, &Ok(response.clone()), &invocation);
+        return Ok(ZenUrlaclResult::Completed(ZenUrlaclSummary {
+            endpoint_id,
+            machine_id: ep.machine_id,
+            host: machine.ip,
+            url_prefix,
+            principal: Some(principal),
+            remote: response,
+        }));
+    }
+
     // SSH key auth (uecm-svc); operator creds/auth_method ignored. Keep the
     // resolve() so the credential preflight side-effect still runs.
     let creds = cred.resolve(&db)?;

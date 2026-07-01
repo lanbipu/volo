@@ -42,7 +42,7 @@ import {
     { id: 'config',   label: '下发配置文件到服务器',   cli: 'zen_apply_config',
       desc: (f) => `写入 ${f.configPath}（zen_config.lua，落地后回读 SHA256 校验；安装目录与探测位置不同时先拷贝 zen.exe 过去）` },
     { id: 'urlacl',   label: '开放网络访问权限',       cli: 'zen_urlacl_add',
-      desc: (f) => `netsh http add urlacl url=${f.protocol}://+:${f.port}/ · 账号 ${f.acct}` },
+      desc: (f) => `netsh http add urlacl url=${f.protocol}://*:${f.port}/ · 账号 ${f.acct}${f.acctKind === 'system' ? '（系统账号跳过）' : ''}` },
     { id: 'service',  label: '安装为 Windows 服务',     cli: 'zen_service_install',
       desc: (f) => `sc create VoloZenServer · 启动 auto · 服务账号 ${f.acct}` },
     { id: 'start',    label: '启动服务',               cli: 'zen_service_start',
@@ -274,7 +274,7 @@ import {
     /* 配置文件落地路径：默认跟随安装目录自动生成 {安装目录}\zen_config.lua，可手动覆写 */
     const derivedConfigPath = installDir.replace(/[\\/]+$/, '') + '\\zen_config.lua';
     const configPath = configOverride == null ? derivedConfigPath : configOverride;
-    const formObj = { port, protocol, dataDir, configPath, acct: acctLabel };
+    const formObj = { port, protocol, dataDir, configPath, acct: acctLabel, acctKind };
     /* 机器列表按主机名自然排序：数字小的在前、大的在后（RNODE-07 不再落到 WS-ART-01 之后）*/
     const srvOpts = RN.slice()
       .sort((a, b) => a.host.localeCompare(b.host, undefined, { numeric: true }))

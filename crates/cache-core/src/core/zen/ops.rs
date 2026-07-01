@@ -283,9 +283,28 @@ pub fn workstation_colocation_warning(
     }))
 }
 
-/// Build the canonical `<scheme>://+:<port>/` reservation URL for an endpoint.
+/// Build the canonical `<scheme>://*:<port>/` reservation URL for an endpoint.
+///
+/// Must use `*` (strong wildcard), not `+`, to match zen's http.sys
+/// `HttpAddUrl` registrations. A `+` reservation without a matching `+`
+/// registration hijacks IP-based requests and yields http.sys HTTP 503 on probe.
 pub fn url_prefix_for(ep: &ZenEndpoint) -> String {
-    format!("{}://+:{}/", ep.scheme, ep.declared_port)
+    format!("{}://*:{}/", ep.scheme, ep.declared_port)
+}
+
+/// Whether a netsh URL ACL reservation is required for this service principal.
+///
+/// `LocalSystem` already has sufficient privilege to bind http.sys URLs; adding
+/// a reservation also conflicts with zen's `http://*:<port>/` registration.
+pub fn urlacl_needed_for(principal: &str) -> bool {
+    let t = principal.trim().to_ascii_lowercase();
+    !matches!(
+        t.as_str(),
+        "localsystem"
+            | "nt authority\\system"
+            | "nt authority\\localsystem"
+            | ".\\localsystem"
+    )
 }
 
 /// Resolve the zen.exe Volo hands `zen service install` for `machine_id`
@@ -976,6 +995,35 @@ mod zen_config_lua_path_tests {
     #[test]
     fn rejects_path_with_no_directory_component() {
         assert!(zen_config_lua_path("zen.exe").is_err());
+    }
+}
+
+#[cfg(test)]
+mod urlacl_tests {
+    use super::*;
+
+    #[test]
+    fn url_prefix_uses_strong_wildcard_to_match_zen() {
+        let ep = ZenEndpoint {
+            declared_port: 8558,
+            scheme: "http".into(),
+            ..Default::default()
+        };
+        assert_eq!(url_prefix_for(&ep), "http://*:8558/");
+    }
+
+    #[test]
+    fn urlacl_not_needed_for_localsystem_variants() {
+        for name in [
+            "LocalSystem",
+            "NT AUTHORITY\\SYSTEM",
+            "NT AUTHORITY\\LocalSystem",
+            ".\\LocalSystem",
+        ] {
+            assert!(!urlacl_needed_for(name), "{name}");
+        }
+        assert!(urlacl_needed_for(r"DOMAIN\zen-svc"));
+        assert!(urlacl_needed_for("NT AUTHORITY\\LocalService"));
     }
 }
 
