@@ -888,9 +888,11 @@ fn path_matches_target_ini(file_path: &str, target: &str) -> bool {
 /// R026 — warns when both `UserEngine.ini` (global) and at least one project's
 /// `DefaultEngine.ini` contain a `ZenShared` key on the same machine.
 ///
-/// UE INI merge order: project `DefaultEngine.ini` overrides user `UserEngine.ini`.
-/// Having ZenShared in both files is redundant and can cause confusion when the
-/// global setting is updated but the project-level override shadows it.
+/// UE Config merge order (later files override earlier): project
+/// `DefaultEngine.ini` loads before user-scoped `UserEngine.ini` (Engine
+/// category positions ~5 vs ~10–12), so **UserEngine wins** on conflicting keys.
+/// Having ZenShared in both files is redundant; edits to DefaultEngine may
+/// appear to have no effect while UserEngine still holds the upstream.
 pub fn evaluate_r026(
     host: &str,
     user_engine_ini_path: &str,
@@ -945,11 +947,12 @@ pub fn evaluate_r026(
         snippet_after: None,
         recommended_action: RecommendedAction::Manual,
         recommended_value: None,
-        symptom: "全局 ZenShared（UserEngine.ini）和工程级 ZenShared 同时存在 \
-                  —— 工程级配置优先，会遮蔽全局设置"
+        symptom: "全局 UserEngine.ini 与工程 DefaultEngine.ini 中同时存在 ZenShared \
+                  —— UserEngine 后加载、优先级更高，工程级条目对同名键实际不生效"
             .to_string(),
-        rationale: "UE 的 INI 合并顺序：工程 DefaultEngine.ini 覆盖用户 UserEngine.ini。\
-                    删掉两处 ZenShared 中的一个即可。"
+        rationale: "UE 按 Config 加载顺序合并 INI：工程 DefaultEngine.ini（约第 5 位）先于 \
+                    用户 UserEngine.ini（约第 10–12 位）加载，后加载的覆盖先加载的。\
+                    两处都写容易造成「改了工程 DefaultEngine 却不生效」的误解；保留一处即可。"
             .to_string(),
     }]
 }

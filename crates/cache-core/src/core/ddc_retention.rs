@@ -11,8 +11,10 @@
 //!     `--gc-cache-duration-seconds`（`BaseEngine.ini` 默认 1209600 秒 = 14 天）。Zen 没有
 //!     `DeleteUnused` 等价物，"永不过期"只能把这个秒数设得极大。
 //!
-//! 注意：UE 配置有继承层级（BaseEngine → DefaultEngine → 用户层）。本模块只写
-//! **项目 `DefaultEngine.ini`**（最常见的覆盖点）；探测侧（R027/R028）同样只看显式声明，
+//! 注意：UE Config 按加载顺序合并（后加载覆盖先加载）：BaseEngine.ini →
+//! 工程 DefaultEngine.ini（约第 5 位）→ UserEngine.ini（约第 10–12 位）。
+//! 本模块只写 **项目 `DefaultEngine.ini`**；若同机 UserEngine.ini 也有同名键，
+//! 实际生效的是 UserEngine。探测侧（R027/R028）同样只看显式声明，
 //! 不做全层级合并——纯继承引擎默认值的情况是已知盲区（见 ini_diagnostics 规则注释）。
 
 use crate::core::ini_editor;
