@@ -651,7 +651,7 @@ export interface ZenServicePlan {
   host: string;
   service_name: string;
   zen_exe_path?: string | null;
-  data_dir?: string | null;
+  config_path?: string | null;
   service_user?: string | null;
   service_pass_supplied?: boolean | null;
 }

@@ -185,6 +185,55 @@ pub fn url_prefix_for(ep: &ZenEndpoint) -> String {
     format!("{}://+:{}/", ep.scheme, ep.declared_port)
 }
 
+/// Resolve the zen.exe Volo hands `zen service install` for `machine_id`
+/// (in-tree UE binary preferred over the user-private install copy — see
+/// [`pick_service_zen_exe`]). Shared by `zen_apply_config` and
+/// `zen_service_install` (CLI + Tauri) so both derive `{ZenInstall}` the
+/// same way and can never disagree on where zenserver.exe lives.
+pub fn resolve_service_zen_exe(db: &Db, machine_id: i64) -> UecmResult<String> {
+    let install = crate::data::machine_zen_install::find(db, machine_id)?;
+    let intree_cli = crate::data::machine_ue_installs::list_for_machine(db, machine_id)
+        .ok()
+        .and_then(|installs| installs.into_iter().find_map(|i| i.zen_cli_intree_path));
+    pick_service_zen_exe(intree_cli, install.as_ref().and_then(|m| m.zen_cli_path.clone())).ok_or_else(|| {
+        UecmError::InvalidInput(format!(
+            "machine id={machine_id} has no zen.exe recorded — run \
+             `machine refresh {machine_id}` then `zen detect-binary --machine {machine_id}` first"
+        ))
+    })
+}
+
+/// Derive the fixed `zen_config.lua` destination Epic's official guide
+/// requires (source cited in `core::zen::lua_config`'s module doc): alongside
+/// zenserver.exe in `{ZenInstall}`. The service is launched with
+/// `--config={ZenInstall}\zen_config.lua` and nothing else tells zenserver
+/// where to find its config, so `zen_apply_config` (write) and
+/// `zen_service_install` (launch)
+/// MUST derive the identical path from the same zen_exe — an operator-chosen
+/// override here would silently detach the written config from the running
+/// service, exactly like the pre-fix `zen.lua`-at-an-arbitrary-path scheme
+/// this replaces. String-level backslash/forward-slash splitting (not
+/// `std::path::Path`) because this path describes a remote Windows host, not
+/// the local OS Volo happens to run on.
+pub fn zen_config_lua_path(zen_exe_path: &str) -> UecmResult<String> {
+    match zen_exe_path.rfind(|c| c == '\\' || c == '/') {
+        Some(idx) => Ok(format!("{}\\zen_config.lua", &zen_exe_path[..idx])),
+        None => Err(UecmError::InvalidInput(format!(
+            "cannot derive zen_config.lua location: {zen_exe_path:?} has no directory component"
+        ))),
+    }
+}
+
+/// `resolve_service_zen_exe` + `zen_config_lua_path` in one call — the two
+/// are always used as a pair (CLI's `apply_config`/`service_install`, Tauri's
+/// `zen_apply_config`/`zen_service_install`), so callers get both values
+/// without repeating the pairing at each of the 4 call sites.
+pub fn resolve_zen_exe_and_config_path(db: &Db, machine_id: i64) -> UecmResult<(String, String)> {
+    let zen_exe = resolve_service_zen_exe(db, machine_id)?;
+    let config_path = zen_config_lua_path(&zen_exe)?;
+    Ok((zen_exe, config_path))
+}
+
 /// Run a staged node-pure zen script over SSH (`-File`), args via stdin JSON.
 /// Returns stdout (the `{ok,...}` envelope; the script's `ok` flag is the source
 /// of truth, so a non-zero exit still surfaces its stdout — mirrors the old
@@ -329,6 +378,31 @@ pub fn validate_service_data_dir(p: &str) -> UecmResult<()> {
     validate_data_dir_safe(trimmed)
 }
 
+/// Shared "is this canonicalized path under one of these forbidden system
+/// roots" check for `validate_data_dir_safe` and `validate_dest_path`. The
+/// two intentionally use DIFFERENT root lists (`data_dir` still forbids
+/// Program Files; `dest_path` no longer does, since it's always the
+/// machine-derived `zen_config.lua` sibling, not operator input) — sharing
+/// this comparison keeps that divergence explicit as two separate `FORBIDDEN`
+/// consts, instead of two hand-maintained copies of the same loop that could
+/// silently drift out of sync with each other.
+fn reject_forbidden_root(
+    original: &str,
+    canonical_lower: &str,
+    forbidden: &[&str],
+    subject: &str,
+    hint: &str,
+) -> UecmResult<()> {
+    for root in forbidden {
+        if canonical_lower == *root || canonical_lower.starts_with(&format!("{root}\\")) {
+            return Err(UecmError::InvalidInput(format!(
+                "{subject} {original:?} resolves under a forbidden system location ({root}); {hint}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Validate a `data_dir` value that is about to be rendered into
 /// `server.datadir` (lua-preview / apply-config / service-install all
 /// share this guard). Codex round-20 P2: previously this helper only
@@ -384,17 +458,13 @@ pub fn validate_data_dir_safe(p: &str) -> UecmResult<()> {
         r"c:\program files",
         r"c:\program files (x86)",
     ];
-    for root in FORBIDDEN {
-        if canonical_lower == *root
-            || canonical_lower.starts_with(&format!("{root}\\"))
-        {
-            return Err(UecmError::InvalidInput(format!(
-                "endpoint data_dir {p:?} resolves under a forbidden system location ({root}); \
-                 re-register the endpoint with a writable path under D:\\ or similar"
-            )));
-        }
-    }
-    Ok(())
+    reject_forbidden_root(
+        p,
+        &canonical_lower,
+        FORBIDDEN,
+        "endpoint data_dir",
+        "re-register the endpoint with a writable path under D:\\ or similar",
+    )
 }
 
 /// Compute SHA-256 of the bytes we *intended* to write, for cross-checking
@@ -412,8 +482,14 @@ pub fn sha256_hex_of(text: &str) -> String {
 ///   - non-empty after trim,
 ///   - no Win32 device namespace prefix (`\\?\`, `\\.\`, `//?/`, `//./`),
 ///   - fully-qualified drive-absolute (`C:\...` / `C:/...`) or UNC (`\\host\...`),
-///   - not equal to or under `C:\Windows`, `C:\Program Files`,
-///     `C:\Program Files (x86)` (case-insensitive).
+///   - not equal to or under `C:\Windows` (case-insensitive).
+///
+/// Program Files is deliberately NOT forbidden: `dest_path` is always the
+/// fixed `{ZenInstall}\zen_config.lua` derived from the machine's detected
+/// zen.exe (see `zen_config_lua_path`), which for the preferred in-tree
+/// binary commonly lives under `C:\Program Files\Epic Games\...\Win64` — the
+/// destination is no longer free-text operator input, so blocking Program
+/// Files here would reject the standard UE install layout with no override.
 pub fn validate_dest_path(p: &str) -> UecmResult<()> {
     let trimmed = p.trim();
     if trimmed.is_empty() {
@@ -499,21 +575,10 @@ pub fn validate_dest_path(p: &str) -> UecmResult<()> {
     let normalized = trimmed.replace('/', r"\");
     let canonical = collapse_path_segments(&normalized);
     let canonical_lower = canonical.trim_end_matches('\\').to_lowercase();
-    const FORBIDDEN: &[&str] = &[
-        r"c:\windows",
-        r"c:\program files",
-        r"c:\program files (x86)",
-    ];
-    for root in FORBIDDEN {
-        if canonical_lower == *root
-            || canonical_lower.starts_with(&format!("{root}\\"))
-        {
-            return Err(UecmError::InvalidInput(format!(
-                "dest-path {p:?} resolves under a forbidden system location ({root}); choose a writable app directory"
-            )));
-        }
-    }
-    Ok(())
+    // Program Files is deliberately NOT forbidden here (see the doc comment
+    // above) — the fixed zen_config.lua destination commonly lives there.
+    const FORBIDDEN: &[&str] = &[r"c:\windows"];
+    reject_forbidden_root(p, &canonical_lower, FORBIDDEN, "dest-path", "choose a writable app directory")
 }
 
 /// Collapse `.` and `..` segments in a backslash-normalized Windows path.
@@ -597,4 +662,32 @@ pub fn finalize_op(
         Err(e) => format!("{invocation}\nerror: {}", redact(&e.to_string())),
     };
     let _ = operations::finish(db, op_id, status, Some(&log_text));
+}
+
+#[cfg(test)]
+mod zen_config_lua_path_tests {
+    use super::zen_config_lua_path;
+
+    #[test]
+    fn derives_sibling_path_from_intree_zen_exe() {
+        assert_eq!(
+            zen_config_lua_path(r"D:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\zen.exe")
+                .unwrap(),
+            r"D:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\zen_config.lua",
+        );
+    }
+
+    #[test]
+    fn derives_sibling_path_from_install_copy_zen_exe() {
+        assert_eq!(
+            zen_config_lua_path(r"C:\Users\me\AppData\Local\UnrealEngine\Common\Zen\Install\zen.exe")
+                .unwrap(),
+            r"C:\Users\me\AppData\Local\UnrealEngine\Common\Zen\Install\zen_config.lua",
+        );
+    }
+
+    #[test]
+    fn rejects_path_with_no_directory_component() {
+        assert!(zen_config_lua_path("zen.exe").is_err());
+    }
 }

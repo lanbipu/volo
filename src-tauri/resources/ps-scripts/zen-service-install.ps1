@@ -8,13 +8,28 @@
 #   hardcoded "ZenServer" name that collides with UE's built-in service
 #   management (ConditionalUpdateSystemServiceInstall in ZenServerInterface.cpp).
 #
+#   2026-07-01: switched the launch args from `--data-dir/--port/--http` to
+#   `--config=<ConfigPath>`, matching Epic's official "Set up Zen Storage
+#   Server as Shared DDC" guide exactly (source cited in
+#   core::zen::lua_config's module doc). The prior CLI-flags form worked
+#   (zenserver.exe does accept `--data-dir`/`--port`/`--http`, and separately
+#   `--gc-cache-duration-seconds`/`--gc-interval-seconds` — those are real
+#   flags too, confirmed against a captured UE launch log), but this repo
+#   never wired the `--gc-*` flags into this script, so switching to
+#   `--config=` (which also carries `gc.intervalseconds` /
+#   `gc.lightweightintervalseconds` / `cache.maxdurationseconds` from
+#   zen_config.lua) is what actually makes those settings reachable here.
+#   `zen-apply-config`/`zen_apply_config` renders and writes that file to the
+#   exact same path (see core::zen::ops::zen_config_lua_path) before this
+#   script runs, so `--config=` always resolves.
+#
 # Parameters:
-#   -ZenExePath       <string>  absolute path to zen.exe (the sibling
-#                               zenserver.exe is resolved from this).
-#   -ServiceName      <string>  Windows service name. Default "UECMZenServer".
-#   -DataDir          <string>  absolute path to the zen data directory.
-#   -Port             <string>  optional listen port (default: zen's built-in 8558).
-#   -HttpServerClass  <string>  optional HTTP backend ("asio" or "httpsys").
+#   -ZenExePath   <string>  absolute path to zen.exe (the sibling
+#                           zenserver.exe is resolved from this).
+#   -ServiceName  <string>  Windows service name. Default "UECMZenServer".
+#   -ConfigPath   <string>  absolute path to zen_config.lua (written by
+#                           zen-write-lua-config.ps1 beforehand — this script
+#                           only references it, never writes it).
 #   -ServiceUser      <string>  optional service account (default: LocalService).
 #   -ServicePassword  <string>  optional password for non-built-in accounts.
 #
@@ -22,7 +37,7 @@
 #   {
 #     "ok": true,
 #     "service_name": "UECMZenServer",
-#     "binpath": "\"...\\zenserver.exe\" --data-dir \"...\" --port 8558",
+#     "binpath": "\"...\\zenserver.exe\" --config=\"...\\zen_config.lua\"",
 #     "message": "service 'UECMZenServer' created successfully"
 #   }
 #
@@ -35,9 +50,9 @@ $ErrorActionPreference = 'Stop'
 
 # Resolve the service binary (exe) from an SCM ImagePath / Win32_Service
 # PathName. The first token can take three shapes:
-#   - double-quoted:           "D:\Program Files\...\zenserver.exe" --data-dir ...
-#   - unquoted WITH spaces:    D:\Program Files\...\zenserver.exe --data-dir ...
-#   - unquoted without spaces: C:\Users\...\Install\zenserver.exe --data-dir ...
+#   - double-quoted:           "D:\Program Files\...\zenserver.exe" --config=...
+#   - unquoted WITH spaces:    D:\Program Files\...\zenserver.exe --config=...
+#   - unquoted without spaces: C:\Users\...\Install\zenserver.exe --config=...
 # Bug A (2026-06-05 lanPC E2E): zen registers the service with the in-tree exe
 # path UNQUOTED, and once Bug 4 moved resolution to the in-tree copy that path
 # lives under `D:\Program Files\Epic Games\...` (spaces). A naive whitespace
@@ -63,19 +78,16 @@ function Resolve-ServiceExe([string]$imagePath) {
     return ($s -split '\s+', 2)[0]
 }
 
-# Rebuild a service ImagePath for the Bug 1 drift-repair path: re-quote the
-# existing exe and restore the runtime `--data-dir / --port / --http` args. The
-# exe is resolved with Resolve-ServiceExe so an unquoted spaced path
-# (`D:\Program Files\...`) is handled — the old inline
-# `$curBin.TrimStart('"').Split('"')[0]` returned the WHOLE string for an
-# unquoted ImagePath and made GetFullPath throw "path format not supported".
-function Build-PatchedImagePath([string]$curImagePath, [string]$dataDir, [string]$port, [string]$http) {
+# Rebuild a service ImagePath for the drift-repair path: re-quote the
+# existing exe and restore the `--config` arg. The exe is resolved with
+# Resolve-ServiceExe so an unquoted spaced path (`D:\Program Files\...`) is
+# handled — the old inline `$curBin.TrimStart('"').Split('"')[0]` returned the
+# WHOLE string for an unquoted ImagePath and made GetFullPath throw "path
+# format not supported".
+function Build-PatchedImagePath([string]$curImagePath, [string]$configPath) {
     $exe = Resolve-ServiceExe $curImagePath
     $exePart = '"' + ([System.IO.Path]::GetFullPath($exe).TrimEnd('\')) + '"'
-    $runtimeArgs = '--data-dir "' + $dataDir + '"'
-    if (-not [string]::IsNullOrWhiteSpace($port)) { $runtimeArgs += " --port $port" }
-    if (-not [string]::IsNullOrWhiteSpace($http)) { $runtimeArgs += " --http $http" }
-    return "$exePart $runtimeArgs"
+    return "$exePart --config=`"$configPath`""
 }
 
 # --- Test seam ---------------------------------------------------------------
@@ -88,7 +100,7 @@ if ($env:UECM_PS_DEFINE_ONLY -eq '1') { return }
 
 # Read named parameters from stdin (JSON). Bound here BEFORE the pre-try
 # `--full` hard-block so that block still inspects the real values. The
-# mandatory ZenExePath / DataDir get a null-guard; ServiceName falls back to
+# mandatory ZenExePath / ConfigPath get a null-guard; ServiceName falls back to
 # its old default; ServiceUser / ServicePassword default to empty string
 # (zen keeps its hardcoded NT AUTHORITY\LocalService when both are empty).
 # ServicePassword is a SECRET — never interpolate it into any error / log line.
@@ -97,17 +109,15 @@ if ([string]::IsNullOrWhiteSpace($p.ZenExePath)) {
     @{ ok = $false; message = "ZenExePath is required" } | ConvertTo-Json -Compress
     exit 0
 }
-if ([string]::IsNullOrWhiteSpace($p.DataDir)) {
-    @{ ok = $false; message = "DataDir is required" } | ConvertTo-Json -Compress
+if ([string]::IsNullOrWhiteSpace($p.ConfigPath)) {
+    @{ ok = $false; message = "ConfigPath is required" } | ConvertTo-Json -Compress
     exit 0
 }
 $ZenExePath = $p.ZenExePath
 $ServiceName = if ($p.ServiceName) { $p.ServiceName } else { 'ZenServer' }
-$DataDir = $p.DataDir
+$ConfigPath = $p.ConfigPath
 $ServiceUser = if ($p.ServiceUser) { $p.ServiceUser } else { '' }
 $ServicePassword = if ($p.ServicePassword) { $p.ServicePassword } else { '' }
-$Port = if ($p.Port) { [string]$p.Port } else { '' }
-$HttpServerClass = if ($p.HttpServerClass) { $p.HttpServerClass } else { '' }
 
 # ----------------------------------------------------------------------------
 # Helpers (script scope so both the idempotency path and the post-install
@@ -201,51 +211,34 @@ try {
         }
     }
 
-    # --- Validate DataDir ----------------------------------------------------
-    if ([string]::IsNullOrWhiteSpace($DataDir)) {
-        throw "DataDir must be non-empty"
+    # --- Validate ConfigPath --------------------------------------------------
+    if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
+        throw "ConfigPath must be non-empty"
     }
-    # `IsPathRooted` accepts drive-relative paths like `D:ZenCache` (relative
-    # to D:'s current directory) and root-relative paths like `\ZenCache`
-    # (relative to the current drive). Both would be resolved by
-    # `GetFullPath` against whatever the remote PowerShell session happens
-    # to have as its current location — non-deterministic and likely
-    # outside the operator's intent. Require a fully-qualified path:
-    # either `<letter>:\...` (drive-absolute) or `\\<host>\...` (UNC).
-    $dataDirTrim = $DataDir.Trim()
-    # Reject Win32 device-namespace prefixes (`\\?\C:\...`, `\\.\X:\...`)
-    # outright — GetFullPath preserves the prefix, which would let a
-    # caller bypass the forbidden-system-root guard below (the
-    # `\\?\C:\Windows\...` form would not match `c:\windows\...`). Allow
-    # only "normal" drive-absolute or UNC paths.
-    if ($dataDirTrim -match '^\\\\[\?\.]\\' -or $dataDirTrim -match '^//[\?\.]/') {
-        throw ("DataDir must not use the Win32 device namespace prefix " +
-               "(\\?\ / \\.\); got: $DataDir")
+    # Same fully-qualified-path requirement as zen-write-lua-config.ps1's
+    # DestPath: `IsPathRooted` accepts drive-relative (`D:zen_config.lua`) and
+    # root-relative (`\zen_config.lua`) paths that `GetFullPath` would resolve
+    # against whatever the remote session's CWD happens to be.
+    $configPathTrim = $ConfigPath.Trim()
+    if ($configPathTrim -match '^\\\\[\?\.]\\' -or $configPathTrim -match '^//[\?\.]/') {
+        throw ("ConfigPath must not use the Win32 device namespace prefix " +
+               "(\\?\ / \\.\); got: $ConfigPath")
     }
-    $isDriveAbsolute = $dataDirTrim -match '^[A-Za-z]:[\\/]'
-    $isUnc = ($dataDirTrim.StartsWith('\\') -or $dataDirTrim.StartsWith('//')) -and
-             -not ($dataDirTrim -match '^\\\\[\?\.]\\') -and
-             -not ($dataDirTrim -match '^//[\?\.]/')
+    $isDriveAbsolute = $configPathTrim -match '^[A-Za-z]:[\\/]'
+    $isUnc = ($configPathTrim.StartsWith('\\') -or $configPathTrim.StartsWith('//')) -and
+             -not ($configPathTrim -match '^\\\\[\?\.]\\') -and
+             -not ($configPathTrim -match '^//[\?\.]/')
     if (-not ($isDriveAbsolute -or $isUnc)) {
-        throw ("DataDir must be a fully-qualified absolute path " +
-               "(e.g. 'D:\ZenCache' or '\\host\share\Zen'); " +
-               "drive-relative or root-relative paths are not accepted. Got: $DataDir")
+        throw ("ConfigPath must be a fully-qualified absolute path " +
+               "(e.g. 'D:\ZenData\zen_config.lua' or '\\host\share\zen_config.lua'); " +
+               "drive-relative or root-relative paths are not accepted. Got: $ConfigPath")
     }
-    $normalizedDataDir = [System.IO.Path]::GetFullPath($dataDirTrim)
-    # Compare with and without trailing slash so the exact system root
-    # itself is rejected too, not just child paths. Without this, passing
-    # `C:\Windows` (no trailing backslash) would slip past a StartsWith
-    # check that only matched `c:\windows\`.
-    $lowerDataDir = $normalizedDataDir.TrimEnd('\').ToLowerInvariant()
-    $forbiddenRoots = @(
-        'c:\windows',
-        'c:\program files',
-        'c:\program files (x86)'
-    )
-    foreach ($root in $forbiddenRoots) {
-        if ($lowerDataDir -eq $root -or $lowerDataDir.StartsWith($root + '\')) {
-            throw "DataDir '$normalizedDataDir' is under a forbidden system location ($root)"
-        }
+    $normalizedConfigPath = [System.IO.Path]::GetFullPath($configPathTrim)
+    # zen-write-lua-config.ps1 (apply-config) must have already written this
+    # file — the service can't start with `--config=` pointing at nothing.
+    if (-not (Test-Path -LiteralPath $normalizedConfigPath -PathType Leaf)) {
+        throw ("ConfigPath '$normalizedConfigPath' does not exist — run zen-apply-config " +
+               "(zen_apply_config) first to render and write zen_config.lua")
     }
 
     # --- Legacy service name migration -------------------------------------------
@@ -271,14 +264,14 @@ try {
     # --- Handle an already-installed service ----------------------------------
     # `zen service install` (without --full, which Plan §12 forbids) is a
     # no-op when the service is already registered: it exits 0 without
-    # changing the existing service's binary path / command line / data-dir.
+    # changing the existing service's binary path / command line / config.
     # We split the cases:
     #
-    # - Existing service with the SAME ZenExePath + same `--data-dir` →
+    # - Existing service with the SAME ZenExePath + same `--config` →
     #   idempotent no-op, ok=true with `already_installed=true`. Lets
     #   `zen enable` retries succeed when the service is already in the
     #   desired state.
-    # - Existing service with a DIFFERENT path or data-dir → refuse with
+    # - Existing service with a DIFFERENT path or config → refuse with
     #   a clear error pointing the operator at `service uninstall`. Telling
     #   the caller ok=true here would silently leave UECM thinking the
     #   desired config is live when actually the prior config is.
@@ -310,16 +303,16 @@ try {
         }
 
         # Token-parse the existing PathName and compare the recorded
-        # `--data-dir <value>` and exe path against the requested config.
-        # Substring matching is unsafe because `D:\ZenCache` is a substring
-        # of `D:\ZenCache2`, which would falsely report idempotent no-op
-        # while the SCM actually points at a different data dir.
+        # `--config <value>` and exe path against the requested config.
+        # Substring matching is unsafe because `D:\zen_config.lua` is a
+        # substring of `D:\zen_config.lua.bak`, which would falsely report
+        # idempotent no-op while the SCM actually points at a different file.
         $matchesExpected = $false
         $exeMatches = $false
-        $dirMatches = $false
+        $configMatches = $false
         if ($null -ne $existingPathName -and $existingPathName.Length -gt 0) {
             $expectedExe = Normalize-ZenExe $ZenExePath
-            $expectedDir = $normalizedDataDir.TrimEnd('\').ToLowerInvariant()
+            $expectedConfig = $normalizedConfigPath.TrimEnd('\').ToLowerInvariant()
 
             # Naive token split honoring "..." quoted args.
             $tokens = New-Object System.Collections.ArrayList
@@ -348,61 +341,36 @@ try {
             # handed compares equal to the registered zenserver.exe sibling.
             $existingExe = Normalize-ZenExe (Resolve-ServiceExe $existingPathName)
 
-            # Find `--data-dir <value>` or `--data-dir=<value>`.
-            $existingDir = $null
+            # Find `--config <value>` or `--config=<value>`. Our own binpath
+            # (below, and Build-PatchedImagePath) only ever emits the latter
+            # as `--config="path"` — the quote-aware tokenizer above collapses
+            # that to a single `--config=path` token, so the space-form match
+            # is unreachable for anything this script itself installs; kept
+            # only as defense-in-depth in case the ImagePath was hand-edited.
+            $existingConfig = $null
             for ($i = 0; $i -lt $tokens.Count; $i++) {
                 $t = $tokens[$i].ToString()
-                if ($t -ieq '--data-dir' -and ($i + 1) -lt $tokens.Count) {
-                    $existingDir = $tokens[$i + 1].ToString()
+                if ($t -ieq '--config' -and ($i + 1) -lt $tokens.Count) {
+                    $existingConfig = $tokens[$i + 1].ToString()
                     break
                 }
-                if ($t -match '^--data-dir=(.*)$') {
-                    $existingDir = $Matches[1]
+                if ($t -match '^--config=(.*)$') {
+                    $existingConfig = $Matches[1]
                     break
                 }
             }
-            if ($null -ne $existingDir) {
+            if ($null -ne $existingConfig) {
                 try {
-                    $existingDir = [System.IO.Path]::GetFullPath(
-                        $existingDir).TrimEnd('\').ToLowerInvariant()
+                    $existingConfig = [System.IO.Path]::GetFullPath(
+                        $existingConfig).TrimEnd('\').ToLowerInvariant()
                 } catch {
-                    $existingDir = $existingDir.TrimEnd('\').ToLowerInvariant()
+                    $existingConfig = $existingConfig.TrimEnd('\').ToLowerInvariant()
                 }
             }
-
-            # Find `--port <value>` or `--port=<value>`.
-            $existingPort = $null
-            for ($i = 0; $i -lt $tokens.Count; $i++) {
-                $t = $tokens[$i].ToString()
-                if ($t -ieq '--port' -and ($i + 1) -lt $tokens.Count) {
-                    $existingPort = $tokens[$i + 1].ToString(); break
-                }
-                if ($t -match '^--port=(.*)$') {
-                    $existingPort = $Matches[1]; break
-                }
-            }
-
-            # Find `--http <value>` or `--http=<value>`.
-            $existingHttp = $null
-            for ($i = 0; $i -lt $tokens.Count; $i++) {
-                $t = $tokens[$i].ToString()
-                if ($t -ieq '--http' -and ($i + 1) -lt $tokens.Count) {
-                    $existingHttp = $tokens[$i + 1].ToString(); break
-                }
-                if ($t -match '^--http=(.*)$') {
-                    $existingHttp = $Matches[1]; break
-                }
-            }
-
-            # Port: only compare when caller requested a specific port.
-            $portMatches = [string]::IsNullOrWhiteSpace($Port) -or ($existingPort -eq $Port)
-            # Http: case-insensitive (asio / httpsys are lowercase conventions).
-            $httpMatches = [string]::IsNullOrWhiteSpace($HttpServerClass) -or
-                           ($existingHttp -ieq $HttpServerClass)
 
             $exeMatches = ($existingExe -eq $expectedExe)
-            $dirMatches = ($null -ne $existingDir) -and ($existingDir -eq $expectedDir)
-            $matchesExpected = $exeMatches -and $dirMatches -and $portMatches -and $httpMatches
+            $configMatches = ($null -ne $existingConfig) -and ($existingConfig -eq $expectedConfig)
+            $matchesExpected = $exeMatches -and $configMatches
         }
 
         # Codex P2: ServiceUser must match too. Without this an
@@ -433,18 +401,17 @@ try {
             exit 0
         }
 
-        # Bug 1 (2026-06-05 lanPC E2E): exe + data-dir + account all match and
-        # only the runtime --port / --http drifted. Patch the SCM ImagePath in
+        # exe + account match and only --config drifted (e.g. zen_config.lua
+        # got re-applied at a different path). Patch the SCM ImagePath in
         # place and report repaired=true. This is the same surgical registry
         # edit the fresh-install path does below, NOT `zen service install
         # --full`, so it stays on the right side of the Plan 7 §12 red line.
         # The running process keeps its old command line until a stop+start.
-        if ($exeMatches -and $dirMatches -and $userMatches -and
-            (-not ($portMatches -and $httpMatches))) {
+        if ($exeMatches -and $userMatches -and (-not $configMatches)) {
             try {
                 $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName"
                 $curBin = (Get-ItemProperty -LiteralPath $regPath -Name 'ImagePath' -ErrorAction Stop).ImagePath
-                $newBin = Build-PatchedImagePath $curBin $normalizedDataDir $Port $HttpServerClass
+                $newBin = Build-PatchedImagePath $curBin $normalizedConfigPath
                 Set-ItemProperty -LiteralPath $regPath -Name 'ImagePath' -Value $newBin -ErrorAction Stop
                 @{
                     ok = $true
@@ -455,9 +422,9 @@ try {
                     new_path_name = $newBin
                     existing_service_account = $existingStartName
                     message = ("patched ImagePath drift on existing service '{0}' " +
-                               "(port: '{1}'->'{2}', http: '{3}'->'{4}'); run " +
+                               "(config: '{1}'->'{2}'); run " +
                                "'zen service stop' then 'start' to apply.") `
-                              -f $ServiceName, $existingPort, $Port, $existingHttp, $HttpServerClass
+                              -f $ServiceName, $existingConfig, $normalizedConfigPath
                 } | ConvertTo-Json -Compress -Depth 4
                 exit 0
             } catch {
@@ -472,12 +439,10 @@ try {
 
         $reason = if (-not $userMatches) {
             "different service account (existing: '$existingStartName', requested: '$ServiceUser')"
-        } elseif (($existingExe -ne $expectedExe) -or ($existingDir -ne $expectedDir)) {
-            'different ZenExePath / DataDir'
-        } elseif (-not $portMatches) {
-            "different --port (existing: '$existingPort', requested: '$Port')"
-        } elseif (-not $httpMatches) {
-            "different --http (existing: '$existingHttp', requested: '$HttpServerClass')"
+        } elseif ($existingExe -ne $expectedExe) {
+            'different ZenExePath'
+        } elseif (-not $configMatches) {
+            "different --config (existing: '$existingConfig', requested: '$normalizedConfigPath')"
         } else {
             'unknown drift'
         }
@@ -485,7 +450,7 @@ try {
             ok = $false
             message = ("Service '{0}' is already installed (status: {1}) with {2}. " +
                        "Refusing to re-install without --full (Plan 7 §12 red line). " +
-                       "Run zen-service-uninstall.ps1 first to change DataDir / zen.exe path / service account.") `
+                       "Run zen-service-uninstall.ps1 first to change ConfigPath / zen.exe path / service account.") `
                       -f $ServiceName, $existingSvc.Status, $reason
             existing_service_account = $existingStartName
             service_name = $ServiceName
@@ -510,11 +475,12 @@ try {
         throw "zenserver.exe not found at $zenserverExe (expected sibling of $ZenExePath)"
     }
 
-    # Build the ImagePath with all runtime args baked in.
+    # Build the ImagePath. Epic's official "Set up Zen Storage Server as
+    # Shared DDC" guide launches the service with `--config=` alone — port,
+    # data-dir, and GC settings all live inside zen_config.lua instead of
+    # being passed as separate CLI flags.
     $binpath = '"' + ([System.IO.Path]::GetFullPath($zenserverExe).TrimEnd('\')) + '"'
-    $binpath += ' --data-dir "' + $normalizedDataDir + '"'
-    if (-not [string]::IsNullOrWhiteSpace($Port)) { $binpath += " --port $Port" }
-    if (-not [string]::IsNullOrWhiteSpace($HttpServerClass)) { $binpath += " --http $HttpServerClass" }
+    $binpath += ' --config="' + $normalizedConfigPath + '"'
 
     # Determine the service account. Default to LocalService (same as zen.exe's
     # hardcoded default). Canonicalize built-in account names for sc.exe.

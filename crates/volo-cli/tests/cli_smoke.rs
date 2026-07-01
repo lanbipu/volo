@@ -404,9 +404,8 @@ fn zen_register_then_lua_preview_round_trip() {
         serde_json::from_str(String::from_utf8(preview.stdout).unwrap().trim_end()).unwrap();
     let preview_doc = &preview_env["data"];
     let lua = preview_doc["lua"].as_str().expect("lua string");
-    assert!(lua.contains("server = {"));
-    assert!(lua.contains("port = 8558"));
-    assert!(lua.contains("datadir = \"D:\\\\ZenData\""));
+    assert!(lua.contains("network.port = 8558"));
+    assert!(lua.contains("server.datadir = \"D:\\\\ZenData\""));
 }
 
 #[test]
@@ -1219,12 +1218,36 @@ fn zen_apply_config_dry_run_emits_plan_without_invoking_powershell() {
         serde_json::from_str(String::from_utf8(reg.stdout).unwrap().trim_end()).unwrap();
     let endpoint_id = reg_env["data"]["endpoint_id"].as_i64().unwrap();
 
+    // apply-config derives its destination from the machine's recorded
+    // zen.exe (no more caller-supplied --dest-path — see
+    // core::zen::ops::zen_config_lua_path), so seed that detection result
+    // directly (real detection needs a reachable Windows host; unavailable
+    // here). Mirrors domain_zen::tests::service_install_handler_refuses_
+    // editor_owned_endpoint's seeding for the same reason.
+    {
+        let db = cache_core::data::open(std::path::Path::new(&path)).unwrap();
+        cache_core::data::machine_zen_install::upsert(
+            &db,
+            &cache_core::data::MachineZenInstall {
+                machine_id: 1,
+                install_dir: Some("C:\\Tools\\UECM".into()),
+                zen_cli_path: Some("C:\\Tools\\UECM\\zen.exe".into()),
+                zen_cli_build_version: None,
+                zen_cli_sha256: None,
+                zenserver_path: Some("C:\\Tools\\UECM\\zenserver.exe".into()),
+                zenserver_build_version: None,
+                zenserver_sha256: None,
+                last_detected_at: None,
+            },
+        )
+        .unwrap();
+    }
+
     let out = uecm_cmd()
         .env("UECM_DB_PATH", &path)
         .args([
             "--json", "zen", "apply-config",
             "--endpoint-id", &endpoint_id.to_string(),
-            "--dest-path", "C:\\Tools\\UECM\\zen.lua",
             "--dry-run",
         ])
         .output()
@@ -1239,6 +1262,7 @@ fn zen_apply_config_dry_run_emits_plan_without_invoking_powershell() {
     assert_eq!(v["type"], "completed");
     assert_eq!(v["summary"]["dry_run"], serde_json::Value::Bool(true));
     assert_eq!(v["summary"]["operation"], "zen.apply-config");
-    assert!(v["summary"]["details"]["lua"].as_str().unwrap().contains("server = {"));
-    assert_eq!(v["summary"]["details"]["dest_path"], "C:\\Tools\\UECM\\zen.lua");
+    assert!(v["summary"]["details"]["lua"].as_str().unwrap().contains("server.datadir"));
+    // Derived from the seeded zen.exe's directory, not caller-supplied.
+    assert_eq!(v["summary"]["details"]["dest_path"], "C:\\Tools\\UECM\\zen_config.lua");
 }

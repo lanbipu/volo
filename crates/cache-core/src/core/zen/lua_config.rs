@@ -1,31 +1,31 @@
-//! Plan 7 T2.2: render the zen daemon's `zen.lua` config file from a
+//! Plan 7 T2.2: render zen's `zen_config.lua` config file from a
 //! `ZenEndpoint` row.
 //!
-//! The four real config keys come from plan v4 §8 T2.2:
+//! The real config keys come from plan v4 §8 T2.2:
 //! - `server.datadir`
 //! - `network.port`
 //! - `network.httpserverclass`
 //! - `cache.upstream.zen.url` — only emitted when the endpoint has an upstream
 //!
-//! ## Format assumption (UNVERIFIED — flagged for T4.4 `verify-rules`)
+//! ## Format: flat dotted-key assignments (confirmed 2026-07-01)
 //!
-//! Plan §8 names the keys but does not pin down the on-disk Lua syntax. Zen's
-//! source is closed and no real `zen.lua` sample lives in this repo's
-//! KnowledgeBase or fact-finding doc. We render the most natural Lua shape —
-//! nested tables, top-level assignments — because:
+//! Source: <https://dev.epicgames.com/documentation/unreal-engine/set-up-zen-storage-server-as-shared-ddc-for-unreal-engine>
+//! ("Set up Zen Storage Server as Shared DDC for Unreal Engine"). Epic's
+//! template there ships a `zen_config.lua` using flat dotted-key assignments
+//! — e.g. `server.datadir = "..."`, `network.port = 8558`,
+//! `gc.intervalseconds = 28800` — NOT nested Lua tables, and shows the
+//! Windows service install command as `sc create ... binpath="{ZenInstall}
+//! \zenserver.exe --config={ZenInstall}\zen_config.lua"`. An earlier
+//! revision of this module guessed at nested tables (`server = { datadir =
+//! ... }`) because no real sample was available at the time; that guess is
+//! now known wrong and this renderer emits the confirmed dotted-key form
+//! instead.
 //!
-//! 1. Lua's standard idiom for config files is `module = { key = value, ... }`
-//!    tables, which trivially round-trip through `dofile` / `loadfile`.
-//! 2. Dotted keys (`server.datadir = ...`) at the top level would require zen
-//!    to pre-create the `server` table, which Lua doesn't do automatically and
-//!    which would be unusual for a hand-edited config file.
-//! 3. The keys in plan §8 are spelled with dots (`server.datadir`), which maps
-//!    cleanly onto a nested-table representation.
-//!
-//! T4.4 (M4 `verify-rules`) runs this output against a real zen daemon and
-//! will either confirm the format or force us to switch to dotted assignments
-//! / TOML-style sections. If T4.4 changes the syntax, only `render_inner`
-//! below needs to be rewritten — the public API and all validation stay put.
+//! The destination filename matters too: Epic's guide requires the file at
+//! `{ZenInstall}\zen_config.lua` (alongside zenserver.exe), because the
+//! Windows service is launched with `--config={ZenInstall}\zen_config.lua`
+//! and has no other way to find its config. See
+//! `core::zen::ops::zen_config_lua_path`.
 //!
 //! ## Known gap: HTTPS endpoints (fail closed)
 //!
@@ -195,23 +195,19 @@ fn render_inner(endpoint: &ZenEndpoint, upstream: Option<&UpstreamInfo>) -> Stri
     );
     out.push('\n');
 
-    let _ = writeln!(out, "server = {{");
     let _ = writeln!(
         out,
-        "    datadir = \"{}\",",
+        "server.datadir = \"{}\"",
         escape_lua_string(&endpoint.data_dir)
     );
-    let _ = writeln!(out, "}}");
     out.push('\n');
 
-    let _ = writeln!(out, "network = {{");
-    let _ = writeln!(out, "    port = {},", endpoint.declared_port);
+    let _ = writeln!(out, "network.port = {}", endpoint.declared_port);
     let _ = writeln!(
         out,
-        "    httpserverclass = \"{}\",",
+        "network.httpserverclass = \"{}\"",
         escape_lua_string(&endpoint.httpserverclass)
     );
-    let _ = writeln!(out, "}}");
 
     if let Some(u) = upstream {
         out.push('\n');
@@ -230,13 +226,7 @@ fn render_inner(endpoint: &ZenEndpoint, upstream: Option<&UpstreamInfo>) -> Stri
             host_in_url,
             u.declared_port,
         );
-        let _ = writeln!(out, "cache = {{");
-        let _ = writeln!(out, "    upstream = {{");
-        let _ = writeln!(out, "        zen = {{");
-        let _ = writeln!(out, "            url = \"{}\",", url);
-        let _ = writeln!(out, "        }},");
-        let _ = writeln!(out, "    }},");
-        let _ = writeln!(out, "}}");
+        let _ = writeln!(out, "cache.upstream.zen.url = \"{}\"", url);
     }
 
     out
@@ -463,11 +453,9 @@ mod tests {
         let endpoint = endpoint_local_no_upstream();
         let out = render(&endpoint, None).unwrap();
 
-        assert!(out.contains("server = {"));
-        assert!(out.contains("datadir = \"F:\\\\Epic\\\\DDC\\\\Zen\""));
-        assert!(out.contains("network = {"));
-        assert!(out.contains("port = 8558"));
-        assert!(out.contains("httpserverclass = \"asio\""));
+        assert!(out.contains("server.datadir = \"F:\\\\Epic\\\\DDC\\\\Zen\""));
+        assert!(out.contains("network.port = 8558"));
+        assert!(out.contains("network.httpserverclass = \"asio\""));
 
         // No upstream section.
         assert!(!out.contains("cache"));
@@ -480,12 +468,9 @@ mod tests {
         let upstream = sample_upstream();
         let out = render(&endpoint, Some(&upstream)).unwrap();
 
-        assert!(out.contains("server = {"));
-        assert!(out.contains("network = {"));
-        assert!(out.contains("cache = {"));
-        assert!(out.contains("upstream = {"));
-        assert!(out.contains("zen = {"));
-        assert!(out.contains("url = \"http://192.168.10.20:8559\""));
+        assert!(out.contains("server.datadir = "));
+        assert!(out.contains("network.port = "));
+        assert!(out.contains("cache.upstream.zen.url = \"http://192.168.10.20:8559\""));
     }
 
     #[test]
@@ -498,13 +483,12 @@ mod tests {
         let out = render(&endpoint, None).unwrap();
 
         assert!(out.contains("role=shared_upstream"));
-        assert!(out.contains("datadir = \"D:\\\\ZenMaster\""));
-        assert!(out.contains("port = 8559"));
-        // No cache/upstream block — but the header's `role=shared_upstream`
-        // legitimately contains "upstream", so we check for the actual table
-        // declarations instead of the bare substring.
-        assert!(!out.contains("cache = {"));
-        assert!(!out.contains("upstream = {"));
+        assert!(out.contains("server.datadir = \"D:\\\\ZenMaster\""));
+        assert!(out.contains("network.port = 8559"));
+        // No cache/upstream line — but the header's `role=shared_upstream`
+        // legitimately contains "upstream", so we check for the actual
+        // dotted-key line instead of the bare substring.
+        assert!(!out.contains("cache.upstream"));
         assert!(!out.contains("url ="));
     }
 

@@ -68,17 +68,18 @@ use std::time::Duration;
 // CLI binary crate). Re-export them here so the rest of this module — and its
 // tests — keep referring to them by their original unqualified names.
 pub(crate) use cache_core::core::zen::ops::{
-    default_lifecycle_for, finalize_op, invoke_write_lua, parse_envelope, pick_service_zen_exe,
-    render_lua_for, require_endpoint, require_machine, run_node, sha256_hex_of, url_prefix_for,
-    validate_data_dir_safe, validate_dest_path, validate_service_account_pair,
+    default_lifecycle_for, finalize_op, invoke_write_lua, parse_envelope, render_lua_for,
+    require_endpoint, require_machine, resolve_zen_exe_and_config_path, run_node, sha256_hex_of,
+    url_prefix_for, validate_data_dir_safe, validate_dest_path, validate_service_account_pair,
     validate_service_data_dir, verify_write_response, workstation_colocation_warning,
     DEFAULT_SERVICE_NAME,
 };
-// Only the tests below reach for `collapse_path_segments` directly (the prod
-// path uses it transitively via the validators); keep the re-export test-gated
-// so the GUI/CLI binary build doesn't flag it as unused.
+// Only the tests below reach for `collapse_path_segments` / `pick_service_zen_exe`
+// directly (the prod path uses them transitively via `resolve_zen_exe_and_config_path` /
+// the validators); keep the re-export test-gated so the GUI/CLI binary build
+// doesn't flag them as unused.
 #[cfg(test)]
-pub(crate) use cache_core::core::zen::ops::collapse_path_segments;
+pub(crate) use cache_core::core::zen::ops::{collapse_path_segments, pick_service_zen_exe};
 
 
 const KIND_ZEN_CLI: &str = "zen_cli";
@@ -136,11 +137,10 @@ pub fn handle(ctx: &mut Ctx<'_>, action: ZenAction) -> UecmResult<()> {
         } => change_role(ctx, endpoint_id, &new_role, upstream_endpoint_id, yes, dry_run),
         ZenAction::ApplyConfig {
             endpoint_id,
-            dest_path,
             yes,
             dry_run,
             cred,
-        } => apply_config(ctx, endpoint_id, dest_path, yes, dry_run, &cred),
+        } => apply_config(ctx, endpoint_id, yes, dry_run, &cred),
         ZenAction::LuaPreview { endpoint_id } => lua_preview(ctx, endpoint_id),
         ZenAction::SponsorDown { endpoint_id, yes, dry_run, cred } => {
             sponsor_down(ctx, endpoint_id, yes, dry_run, &cred)
@@ -1084,23 +1084,9 @@ fn lua_preview(ctx: &mut Ctx<'_>, endpoint_id: i64) -> UecmResult<()> {
     Ok(())
 }
 
-/// Derive the zen.lua destination from an install-dir zen.exe path
-/// (`…\Zen\Install\zen.exe` → `…\Zen\Install\zen.lua`).
-/// Uses string-level backslash/forward-slash splitting so it works on both
-/// Windows (runtime) and macOS (unit tests).
-fn derive_lua_dest(zen_exe: &str) -> Option<String> {
-    // Find the last separator (backslash or forward-slash).
-    let last_sep = zen_exe.rfind(|c| c == '\\' || c == '/');
-    match last_sep {
-        Some(idx) => Some(format!("{}\\zen.lua", &zen_exe[..idx])),
-        None => Some("zen.lua".to_string()),
-    }
-}
-
 fn apply_config(
     ctx: &mut Ctx<'_>,
     endpoint_id: i64,
-    dest_path: Option<String>,
     yes: bool,
     dry_run: bool,
     cred: &CredentialArgs,
@@ -1110,26 +1096,14 @@ fn apply_config(
     let (ep, lua) = render_lua_for(&db, endpoint_id)?;
     let machine = require_machine(&db, ep.machine_id)?;
 
-    // F6: resolve dest_path — explicit value wins; when omitted, derive from
-    // the recorded install-dir zen.exe (intree zen.exe lives in
-    // Engine\Binaries\Win64 — wrong place for zen.lua, so intree-only
-    // machines still require an explicit --dest-path).
-    let dest_path: String = match dest_path {
-        Some(p) => p,
-        None => {
-            let install = machine_zen_install::find(&db, ep.machine_id)?;
-            let zen_exe = install
-                .as_ref()
-                .and_then(|m| m.zen_cli_path.clone())
-                .ok_or_else(|| UecmError::InvalidInput(format!(
-                    "cannot derive --dest-path: machine id={} has no install-dir zen.exe \
-                     recorded; run `zen detect-binary` or pass --dest-path explicitly",
-                    ep.machine_id
-                )))?;
-            derive_lua_dest(&zen_exe).ok_or_else(|| UecmError::InvalidInput(
-                "recorded zen.exe path has no usable parent dir".into()))?
-        }
-    };
+    // Fixed destination per Epic's official "Shared DDC" guide (source cited
+    // in core::zen::lua_config's module doc): the config MUST land at
+    // {ZenInstall}\zen_config.lua (alongside zenserver.exe)
+    // because `zen service install` launches the service with `--config={
+    // that path}` and nothing else tells zenserver where to look. No
+    // operator override — a mismatched path here would silently detach the
+    // written config from the running service.
+    let (_zen_exe, dest_path) = resolve_zen_exe_and_config_path(&db, ep.machine_id)?;
 
     // Codex P2 fix: mirror `zen-write-lua-config.ps1`'s destination-path
     // checks here so `--dry-run` doesn't approve a path the `--yes` apply
@@ -1153,8 +1127,9 @@ fn apply_config(
                 "endpoint_id": endpoint_id,
                 "machine_id": ep.machine_id,
                 "host": machine.ip,
-                // dest_path is operator-supplied, or (F6) derived from the
-                // detected install-dir zen.exe → …\Zen\Install\zen.lua.
+                // dest_path is always derived from the machine's detected
+                // zen.exe → {ZenInstall}\zen_config.lua (see
+                // zen_config_lua_path); never operator-supplied.
                 "dest_path": &dest_path,
                 "lua": lua,
             }),
@@ -1233,20 +1208,9 @@ fn service_install(
     // must win over the user-private install copy so the hardcoded
     // `NT AUTHORITY\LocalService` account can actually start that zenserver.exe
     // — see `pick_service_zen_exe`.
-    let install = machine_zen_install::find(&db, ep.machine_id)?;
-    let intree_cli = cache_core::data::machine_ue_installs::list_for_machine(&db, ep.machine_id)
-        .ok()
-        .and_then(|installs| installs.into_iter().find_map(|i| i.zen_cli_intree_path));
-    let zen_exe =
-        pick_service_zen_exe(intree_cli, install.as_ref().and_then(|m| m.zen_cli_path.clone()))
-            .ok_or_else(|| {
-                UecmError::InvalidInput(format!(
-                    "machine id={} has no zen.exe recorded — run \
-                     `uecm-cli machine refresh {}` then \
-                     `uecm-cli zen detect-binary --machine {}` first",
-                    ep.machine_id, ep.machine_id, ep.machine_id,
-                ))
-            })?;
+    // Same fixed {ZenInstall}\zen_config.lua path `zen apply-config` writes
+    // to — the service is launched with `--config=` pointing here.
+    let (zen_exe, config_path) = resolve_zen_exe_and_config_path(&db, ep.machine_id)?;
 
     // Codex P2: lifecycle is the DB source of truth. Refuse to install zen as
     // an OS service when the endpoint row claims `editor_owned` — otherwise
@@ -1272,10 +1236,11 @@ fn service_install(
         )));
     }
 
-    // Codex P2: `zen-service-install.ps1` rejects drive-relative, root-relative
-    // and forbidden-system-root data dirs before SCM registration. Mirror
-    // those checks here so `--dry-run` doesn't approve a plan the real apply
-    // path always rejects.
+    // `ep.data_dir` is no longer passed to zen-service-install.ps1 (it's
+    // ConfigPath now) — this is an independent DB-hygiene guard: the value
+    // is still baked into zen_config.lua by `zen_apply_config`, so a
+    // corrupt/relative data_dir row would produce a broken running service
+    // even though nothing on this command's own args would catch it.
     validate_service_data_dir(&ep.data_dir)?;
     // Codex P2: same idea for the service-account / password pair — the
     // sidecar would reject `.\\render-svc` without a password, so dry-run
@@ -1305,7 +1270,7 @@ fn service_install(
                 "host": machine.ip,
                 "service_name": DEFAULT_SERVICE_NAME,
                 "zen_exe_path": zen_exe,
-                "data_dir": ep.data_dir,
+                "config_path": config_path,
                 "service_user": service_user,
                 // Don't echo the password into the dry-run plan and don't
                 // read stdin yet — preview should be side-effect free.
@@ -1362,8 +1327,7 @@ fn service_install(
         .map(|u| format!(" -ServiceUser {u}"))
         .unwrap_or_default();
     let invocation = redact(&format!(
-        "zen-service-install.ps1 -ZenExePath {zen_exe} -ServiceName {DEFAULT_SERVICE_NAME} -DataDir {} -Port {} -HttpServerClass {}{user_marker}{pass_marker}",
-        ep.data_dir, ep.declared_port, ep.httpserverclass,
+        "zen-service-install.ps1 -ZenExePath {zen_exe} -ServiceName {DEFAULT_SERVICE_NAME} -ConfigPath {config_path}{user_marker}{pass_marker}",
     ));
     let op_id = operations::start(&db, "zen.service_install", &[ep.machine_id])?;
 
@@ -1373,12 +1337,7 @@ fn service_install(
     let mut args = serde_json::json!({
         "ZenExePath": zen_exe,
         "ServiceName": DEFAULT_SERVICE_NAME,
-        "DataDir": ep.data_dir,
-        // F2: zen's `service install` does NOT persist these into the SCM
-        // ImagePath; the sidecar patches the registry so the service starts on
-        // the declared port instead of relocating to base+100.
-        "Port": ep.declared_port,
-        "HttpServerClass": ep.httpserverclass,
+        "ConfigPath": config_path,
     });
     if let Some(obj) = args.as_object_mut() {
         if let Some(u) = service_user {
@@ -3777,8 +3736,6 @@ mod tests {
         for bad in [
             r"C:\Windows\zen.lua",
             r"c:\windows\system32\zen.lua",
-            r"C:\Program Files\Zen\zen.lua",
-            r"C:\Program Files (x86)\Zen\zen.lua",
             r"C:\Windows",
             r"C:\Windows\",
         ] {
@@ -3790,6 +3747,20 @@ mod tests {
         }
     }
 
+    /// dest_path is always the fixed `{ZenInstall}\zen_config.lua` derived
+    /// from the machine's detected zen.exe (never free-text operator input),
+    /// and the preferred in-tree binary commonly lives under
+    /// `C:\Program Files\Epic Games\...\Win64` — so Program Files must be
+    /// accepted, not rejected as a forbidden system location.
+    #[test]
+    fn validate_dest_path_accepts_program_files() {
+        assert!(validate_dest_path(
+            r"C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\zen_config.lua"
+        )
+        .is_ok());
+        assert!(validate_dest_path(r"C:\Program Files (x86)\Zen\zen_config.lua").is_ok());
+    }
+
     /// Codex P2 fix: `..` segments that resolve into a forbidden system
     /// location must be caught by the dry-run validator. Without
     /// `collapse_path_segments`, the path slipped through and the `--yes`
@@ -3799,7 +3770,6 @@ mod tests {
         for bad in [
             r"C:\Temp\..\Windows\zen.lua",
             r"C:\Temp\sub\..\..\Windows\zen.lua",
-            r"C:\Tools\..\Program Files\Zen\zen.lua",
             r"C:/Temp/../Windows/zen.lua",
         ] {
             let err = validate_dest_path(bad).unwrap_err();
@@ -5021,15 +4991,6 @@ overrides: {}
             }
             assert!(log_text.contains("[REDACTED]"));
         }
-    }
-
-    #[test]
-    fn derive_lua_dest_from_install_zen_exe() {
-        assert_eq!(
-            super::derive_lua_dest(r"C:\Users\me\AppData\Local\UnrealEngine\Common\Zen\Install\zen.exe").as_deref(),
-            Some(r"C:\Users\me\AppData\Local\UnrealEngine\Common\Zen\Install\zen.lua")
-        );
-        assert_eq!(super::derive_lua_dest("zen.exe").as_deref(), Some("zen.lua"));
     }
 
     #[test]

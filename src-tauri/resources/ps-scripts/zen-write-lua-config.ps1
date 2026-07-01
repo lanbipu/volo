@@ -20,10 +20,13 @@
 #   }
 #
 # Safety:
-#   - DestPath is rejected if it lies under C:\Windows, C:\Program Files, or
-#     C:\Program Files (x86). The T2.8 datadir guard owns the canonical list;
-#     this is defense in depth so a misconfigured caller can't drop a Lua
-#     payload into a system location.
+#   - DestPath is rejected if it lies under C:\Windows. (Program Files is
+#     NOT forbidden: 2026-07-01 apply-config switched to a fixed
+#     {ZenInstall}\zen_config.lua destination derived from the machine's
+#     detected zen.exe, which for the preferred in-tree binary commonly
+#     lives under C:\Program Files\Epic Games\...\Win64 — the destination
+#     is no longer free-text operator input, so blocking Program Files here
+#     would reject the standard UE install layout with no override.)
 #   - File is written UTF-8 *without* BOM via [System.IO.File]::WriteAllText
 #     (Set-Content emits a BOM by default - zen's Lua parser tolerates it but
 #     the Rust-side hash should match the rendered string exactly).
@@ -71,10 +74,10 @@ try {
     # itself is rejected too, not just child paths.
     $lower = $normalized.TrimEnd('\').ToLowerInvariant()
 
+    # Program Files is deliberately NOT forbidden here (see the Safety note
+    # above) — the fixed zen_config.lua destination commonly lives there.
     $forbiddenRoots = @(
-        'c:\windows',
-        'c:\program files',
-        'c:\program files (x86)'
+        'c:\windows'
     )
     foreach ($root in $forbiddenRoots) {
         if ($lower -eq $root -or $lower.StartsWith($root + '\')) {

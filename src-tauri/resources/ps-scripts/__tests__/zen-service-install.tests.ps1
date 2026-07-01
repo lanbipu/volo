@@ -25,27 +25,27 @@ function Assert-Exe($imagePath, $expected, $label) {
 # and every idempotent re-install / drift-repair falsely reported
 # 'different ZenExePath'.
 Assert-Exe `
-    'D:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\zenserver.exe --data-dir F:\Epic\DDC\Zen --port 8558 --http asio' `
+    'D:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\zenserver.exe --config="D:\ZenData\zen_config.lua"' `
     'D:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\zenserver.exe' `
     'unquoted-with-spaces'
 
 # Quoted exe path (what the script's own binpath-patch path writes).
 Assert-Exe `
-    '"D:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\zenserver.exe" --data-dir F:\Epic\DDC\Zen --port 8558 --http asio' `
+    '"D:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\zenserver.exe" --config="D:\ZenData\zen_config.lua"' `
     'D:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\zenserver.exe' `
     'quoted-with-spaces'
 
 # Unquoted, no spaces (the user-private AppData install copy — prior layout that
 # happened to tokenize fine).
 Assert-Exe `
-    'C:\Users\lanPC\AppData\Local\UnrealEngine\Common\Zen\Install\zenserver.exe --data-dir D:\ZenData' `
+    'C:\Users\lanPC\AppData\Local\UnrealEngine\Common\Zen\Install\zenserver.exe --config="D:\ZenData\zen_config.lua"' `
     'C:\Users\lanPC\AppData\Local\UnrealEngine\Common\Zen\Install\zenserver.exe' `
     'unquoted-no-spaces'
 
 # A parent directory literally containing '.exe' must not truncate the binary
 # (anchor the match on the FIRST '.exe' followed by whitespace / end).
 Assert-Exe `
-    'D:\weird.exe\Win64\zenserver.exe --port 8558' `
+    'D:\weird.exe\Win64\zenserver.exe --config="D:\ZenData\zen_config.lua"' `
     'D:\weird.exe\Win64\zenserver.exe' `
     'dir-with-dot-exe'
 
@@ -55,29 +55,29 @@ Assert-Exe `
     'D:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\zenserver.exe' `
     'bare-no-args'
 
-function Assert-Patched($curImagePath, $dataDir, $port, $http, $expected, $label) {
-    $got = Build-PatchedImagePath $curImagePath $dataDir $port $http
+function Assert-Patched($curImagePath, $configPath, $expected, $label) {
+    $got = Build-PatchedImagePath $curImagePath $configPath
     if ($got -ne $expected) {
         throw "[$label] expected '$expected' but got '$got'"
     }
 }
 
 # Bug 1 repair reconstruction (2026-06-05 lanPC E2E): the drifted ImagePath has
-# the exe UNQUOTED with spaces and is missing --port/--http. Rebuild it with the
-# exe re-quoted and the runtime args restored. The old code did
+# the exe UNQUOTED with spaces and a stale --config value. Rebuild it with the
+# exe re-quoted and the new config path restored. The old code did
 # `$curBin.TrimStart('"').Split('"')[0]` which returned the WHOLE string for an
 # unquoted path, so GetFullPath threw "path format not supported".
 Assert-Patched `
-    'D:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\zenserver.exe --data-dir F:\Epic\DDC\Zen' `
-    'F:\Epic\DDC\Zen' '8558' 'asio' `
-    '"D:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\zenserver.exe" --data-dir "F:\Epic\DDC\Zen" --port 8558 --http asio' `
+    'D:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\zenserver.exe --config="D:\ZenData\zen_config.lua"' `
+    'F:\Epic\DDC\Zen\zen_config.lua' `
+    '"D:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\zenserver.exe" --config="F:\Epic\DDC\Zen\zen_config.lua"' `
     'repair-unquoted-drift'
 
 # Already-quoted exe input rebuilds the same way.
 Assert-Patched `
-    '"C:\Users\lanPC\AppData\Local\UnrealEngine\Common\Zen\Install\zenserver.exe" --data-dir D:\ZenData' `
-    'D:\ZenData' '8558' 'asio' `
-    '"C:\Users\lanPC\AppData\Local\UnrealEngine\Common\Zen\Install\zenserver.exe" --data-dir "D:\ZenData" --port 8558 --http asio' `
+    '"C:\Users\lanPC\AppData\Local\UnrealEngine\Common\Zen\Install\zenserver.exe" --config="D:\ZenData\zen_config.lua"' `
+    'D:\ZenData\zen_config.lua' `
+    '"C:\Users\lanPC\AppData\Local\UnrealEngine\Common\Zen\Install\zenserver.exe" --config="D:\ZenData\zen_config.lua"' `
     'repair-quoted'
 
 "OK"

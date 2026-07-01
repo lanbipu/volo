@@ -1133,15 +1133,14 @@ pub enum ZenAction {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Render zen.lua from the endpoint row + optional upstream and write it
-    /// to the target host. `--dry-run` previews without invoking PowerShell.
+    /// Render zen_config.lua from the endpoint row + optional upstream and
+    /// write it to the target host at the fixed `{ZenInstall}\zen_config.lua`
+    /// path (alongside zenserver.exe — required so `service install`'s
+    /// `--config=` flag can find it). `--dry-run` previews without invoking
+    /// PowerShell.
     ApplyConfig {
         #[arg(long, value_name = "ID")]
         endpoint_id: i64,
-        /// Absolute zen.lua destination. Optional: when omitted, derived from
-        /// the detected zen install dir on the target (…\Zen\Install\zen.lua).
-        #[arg(long, value_name = "PATH")]
-        dest_path: Option<String>,
         #[arg(long)]
         yes: bool,
         #[arg(long)]

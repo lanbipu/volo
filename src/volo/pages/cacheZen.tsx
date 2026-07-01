@@ -37,7 +37,7 @@ import {
     { id: 'detect',   label: '前置检查 · 定位 Zen 程序', cli: 'zen_detect_binary', gate: true,
       desc: (f, host) => `在 ${host} 上查找 ZenServer.exe（找不到需先刷新这台机器）` },
     { id: 'config',   label: '下发配置文件到服务器',   cli: 'zen_apply_config',
-      desc: (f) => `写入 ${f.configPath}（Volo 渲染的 zen.lua 配置），落地后回读 SHA256 校验` },
+      desc: () => `写入 {ZenInstall}\\zen_config.lua（Volo 渲染，路径固定于 Zen 安装目录），落地后回读 SHA256 校验` },
     { id: 'urlacl',   label: '开放网络访问权限',       cli: 'zen_urlacl_add',
       desc: (f) => `netsh http add urlacl url=${f.protocol}://+:${f.port}/ · 账号 ${f.acct}` },
     { id: 'service',  label: '安装为 Windows 服务',     cli: 'zen_service_install',
@@ -75,9 +75,6 @@ import {
     const [port, setPort] = useState('8558');  /* UE ZenServer 真实默认端口 */
     const [protocol, setProtocol] = useState('http');
     const [dataDir, setDataDir] = useState('D:\\ZenData');
-    /* Volo 将渲染后的 Lua 配置写入 zen.lua（非 UE 安装包自带的 zen_config.lua 文件名）。
-       共享服务器常用自定义 data-dir；留空 detect 时可从 …\\Zen\\Install\\zen.exe 旁推导默认路径。 */
-    const [configPath, setConfigPath] = useState('D:\\ZenData\\zen.lua');
     const [httpType, setHttpType] = useState('httpsys');   /* asio | httpsys（后端合法值）*/
     const [acctKind, setAcctKind] = useState('local');     /* local | domain */
     const [domUser, setDomUser] = useState('VOLO\\zen-svc');
@@ -140,7 +137,7 @@ import {
 
     const acct = acctKind === 'local' ? 'NT SERVICE\\ZenServer（本地服务账号）' : (domUser.trim() || '（未填写域账号）');
     const principal = acctKind === 'domain' ? (domUser.trim() || 'NT AUTHORITY\\LocalService') : 'NT AUTHORITY\\LocalService';
-    const formObj = { port, protocol, dataDir, configPath, acct };
+    const formObj = { port, protocol, dataDir, acct };
     const srvOpts = RN.map((n) => ({ id: n.id, label: n.host, sub: n.ip }));
     const httpOpts = [{ id: 'httpsys', label: 'http.sys（默认）' }, { id: 'asio', label: 'asio' }];
     const cred = {}; /* SSH key — ZenCredentialInput 全 None */
@@ -167,7 +164,7 @@ import {
         return;
       }
       if (epRef.current == null) throw new Error('缺少 endpoint — 先成功完成「登记服务器」这一步');
-      if (id === 'config')  { await zenApplyConfig(epRef.current, configPath, true, false, cred); return; }
+      if (id === 'config')  { await zenApplyConfig(epRef.current, true, false, cred); return; }
       if (id === 'urlacl')  { await zenUrlaclAdd(epRef.current, principal, true, false, cred); return; }
       if (id === 'service') { await zenServiceInstall(epRef.current, true, false, cred, svcUser, svcPass); return; }
       if (id === 'start')   { await zenServiceStart(epRef.current, cred); return; }
@@ -386,10 +383,6 @@ import {
             h('input', { className: 'dp-input mono zep-port', value: port, spellCheck: false, 'aria-label': '端口', onChange: (e) => setPort(e.target.value) }))),
         h('div', { className: 'dp-field grow' }, h('label', null, '数据目录 · data-dir'),
           h('input', { className: 'dp-input mono', value: dataDir, spellCheck: false, onChange: (e) => setDataDir(e.target.value) })),
-        h('div', { className: 'dp-field grow' }, h('label', null, '配置文件落地路径（Volo 写 zen.lua）'),
-          h('input', { className: 'dp-input mono', value: configPath, spellCheck: false, placeholder: '如 D:\\ZenData\\zen.lua', onChange: (e) => setConfigPath(e.target.value) }),
-          h('div', { className: 'zform-tip', style: { marginTop: 4 } }, h(Icon, { name: 'eye', size: 12 }),
-            'Volo 固定将配置渲染为 zen.lua 并写入此路径。UE 编辑器自启的本地 Zen 可能使用安装目录旁的 zen_config.lua——两者文件名不同，以本页部署的共享服务为准。')),
         h('div', { className: 'dp-field grow' }, h('label', null, '服务运行账号 · 用于开放网络访问 + 安装服务'),
           h('div', { className: 'zacct' }, segAcct,
             acctKind === 'domain'

@@ -928,7 +928,6 @@ pub struct ZenApplyConfigSummary {
 pub fn zen_apply_config(
     db: State<'_, Db>,
     endpoint_id: i64,
-    dest_path: String,
     confirmed: bool,
     dry_run: bool,
     cred: ZenCredentialInput,
@@ -937,6 +936,14 @@ pub fn zen_apply_config(
     cred.preflight(&db)?;
     let (ep, lua) = zen_cli_shared::render_lua_for(&db, endpoint_id)?;
     let machine = zen_cli_shared::require_machine(&db, ep.machine_id)?;
+
+    // Fixed destination per Epic's official "Shared DDC" guide: the config
+    // MUST land at {ZenInstall}\zen_config.lua (alongside zenserver.exe)
+    // because `zen_service_install` launches the service with
+    // `--config={that path}` and nothing else tells zenserver where to look.
+    // An operator-chosen path here would silently detach the written config
+    // from the running service.
+    let (_zen_exe, dest_path) = zen_cli_shared::resolve_zen_exe_and_config_path(&db, ep.machine_id)?;
 
     // Mirror the CLI's `dest_path` + `data_dir` validation so dry-run plans
     // match what `--yes` would actually accept.
@@ -1000,9 +1007,11 @@ pub struct ZenServicePlan {
     /// Present for install/uninstall (sidecar needs the `zen.exe` path).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub zen_exe_path: Option<String>,
-    /// Present for install (sidecar writes `server.datadir` from this).
+    /// Install-only: the fixed `{ZenInstall}\zen_config.lua` path the
+    /// service is launched with via `--config=` (see
+    /// `core::zen::ops::zen_config_lua_path`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub data_dir: Option<String>,
+    pub config_path: Option<String>,
     /// Install-only: service account that `zen install` will run under. None
     /// means zen falls back to its built-in default (LocalService).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1068,21 +1077,9 @@ pub fn zen_service_install(
     // user-private install copy so the zenserver.exe zen registers runs under an
     // ACL the hardcoded `NT AUTHORITY\LocalService` account can start. See
     // `zen_cli_shared::pick_service_zen_exe`.
-    let install = cache_core::data::machine_zen_install::find(&db, ep.machine_id)?;
-    let intree_cli = cache_core::data::machine_ue_installs::list_for_machine(&db, ep.machine_id)
-        .ok()
-        .and_then(|installs| installs.into_iter().find_map(|i| i.zen_cli_intree_path));
-    let zen_exe = zen_cli_shared::pick_service_zen_exe(
-        intree_cli,
-        install.as_ref().and_then(|m| m.zen_cli_path.clone()),
-    )
-    .ok_or_else(|| {
-        UecmError::InvalidInput(format!(
-            "machine id={} has no zen.exe recorded — run `machine refresh {}` then \
-             `zen detect-binary --machine {}` first",
-            ep.machine_id, ep.machine_id, ep.machine_id,
-        ))
-    })?;
+    // Same fixed {ZenInstall}\zen_config.lua path `zen_apply_config` writes
+    // to — the service is launched with `--config=` pointing here.
+    let (zen_exe, config_path) = zen_cli_shared::resolve_zen_exe_and_config_path(&db, ep.machine_id)?;
 
     // Same lifecycle guard as the CLI: only `installed_service` endpoints
     // get an SCM service.
@@ -1096,6 +1093,11 @@ pub fn zen_service_install(
             ep.lifecycle_mode
         )));
     }
+    // `ep.data_dir` is no longer passed to zen-service-install.ps1 (it's
+    // ConfigPath now) — this is an independent DB-hygiene guard: the value
+    // is still baked into zen_config.lua by `zen_apply_config`, so a
+    // corrupt/relative data_dir row would produce a broken running service
+    // even though nothing on this command's own args would catch it.
     zen_cli_shared::validate_service_data_dir(&ep.data_dir)?;
     // Codex P2: mirror the sidecar's built-in-account / password check so
     // the dry-run plan doesn't claim an unworkable install is approved.
@@ -1113,7 +1115,7 @@ pub fn zen_service_install(
             host: machine.ip,
             service_name: zen_cli_shared::DEFAULT_SERVICE_NAME,
             zen_exe_path: Some(zen_exe),
-            data_dir: Some(ep.data_dir.clone()),
+            config_path: Some(config_path.clone()),
             service_user: service_user.clone(),
             // Empty `service_pass: ""` reported as not-supplied to keep
             // the preview honest with the sidecar's IsNullOrEmpty check.
@@ -1142,11 +1144,8 @@ pub fn zen_service_install(
         ""
     };
     let invocation = redact(&format!(
-        "zen-service-install.ps1 -ZenExePath {zen_exe} -ServiceName {} -DataDir {} -Port {} -HttpServerClass {}{user_marker}{pass_marker}",
+        "zen-service-install.ps1 -ZenExePath {zen_exe} -ServiceName {} -ConfigPath {config_path}{user_marker}{pass_marker}",
         zen_cli_shared::DEFAULT_SERVICE_NAME,
-        ep.data_dir,
-        ep.declared_port,
-        ep.httpserverclass,
     ));
     let op_id = operations::start(&db, "zen.service_install", &[ep.machine_id])?;
     // ServiceUser / ServicePassword only added when supplied — the node
@@ -1154,9 +1153,7 @@ pub fn zen_service_install(
     let mut args = serde_json::json!({
         "ZenExePath": zen_exe,
         "ServiceName": zen_cli_shared::DEFAULT_SERVICE_NAME,
-        "DataDir": ep.data_dir,
-        "Port": ep.declared_port,
-        "HttpServerClass": ep.httpserverclass,
+        "ConfigPath": config_path,
     });
     if let Some(obj) = args.as_object_mut() {
         if let Some(u) = service_user.as_deref() {
@@ -1217,7 +1214,7 @@ pub fn zen_service_uninstall(
             host: machine.ip,
             service_name: zen_cli_shared::DEFAULT_SERVICE_NAME,
             zen_exe_path: Some(zen_exe),
-            data_dir: None,
+            config_path: None,
             service_user: None,
             service_pass_supplied: None,
         }));
@@ -1322,7 +1319,7 @@ pub fn zen_service_stop(
             host: machine.ip,
             service_name: zen_cli_shared::DEFAULT_SERVICE_NAME,
             zen_exe_path: None,
-            data_dir: None,
+            config_path: None,
             service_user: None,
             service_pass_supplied: None,
         }));

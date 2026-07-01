@@ -307,11 +307,11 @@ export const zenUnregister = (endpointId: number, confirmed: boolean, dryRun: bo
 // 📝 no-ui: 无 Zen 角色变更 UI
 export const zenChangeRole = (endpointId: number, newRole: string, confirmed: boolean, dryRun: boolean, newUpstreamEndpointId?: number | null) =>
   call<ZenChangeRoleResult>("zen_change_role", { endpointId, newRole, newUpstreamEndpointId: newUpstreamEndpointId ?? null, confirmed, dryRun });
-// 📝 no-ui: 无 zen.lua 预览 UI（Volo 渲染产物固定为 zen.lua，与 UE 安装目录旁的 zen_config.lua 文件名不同）
+// 📝 no-ui: 无 zen_config.lua 预览 UI
 export const zenLuaPreview = (endpointId: number) => call<ZenLuaPreviewResult>("zen_lua_preview", { endpointId });
-// ✅ wired: cacheZen 部署链路 step3 → zenApplyConfig
-export const zenApplyConfig = (endpointId: number, destPath: string, confirmed: boolean, dryRun: boolean, cred: ZenCredentialInput) =>
-  call<ZenApplyConfigResult>("zen_apply_config", { endpointId, destPath, confirmed, dryRun, cred });
+// ✅ wired: cacheZen 部署链路 step3 → zenApplyConfig（落地路径固定为 {ZenInstall}\zen_config.lua，后端自动派生，不再接受调用方传路径）
+export const zenApplyConfig = (endpointId: number, confirmed: boolean, dryRun: boolean, cred: ZenCredentialInput) =>
+  call<ZenApplyConfigResult>("zen_apply_config", { endpointId, confirmed, dryRun, cred });
 // ✅ wired: cacheZen 部署链路 step5 → zenServiceInstall（本地/域账号）
 export const zenServiceInstall = (endpointId: number, confirmed: boolean, dryRun: boolean, cred: ZenCredentialInput, serviceUser?: string | null, servicePass?: string | null) =>
   call<ZenServiceResult>("zen_service_install", { endpointId, serviceUser: serviceUser ?? null, servicePass: servicePass ?? null, confirmed, dryRun, cred });
