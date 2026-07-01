@@ -13,7 +13,7 @@
 vp/volo/
 ├── Cargo.toml              workspace 根（members = crates/* + src-tauri）
 ├── package.json            前端（React + Vite + Tauri）
-├── README.md / PRODUCT.md / CLAUDE.md
+├── README.md / PRODUCT.md / AGENTS.md / CLAUDE.md
 ├── docs/
 │   ├── design/             UX / 设计文档（设计真相源）
 │   │   ├── BRAND-BRIEF.md        设计基线：React Spectrum 2 / 暗·亮双主题 / 中文 fallback
@@ -21,13 +21,19 @@ vp/volo/
 │   │   ├── UX-PLAN.md            信息架构 / 6-tab / 外壳四区 / Stage 模型
 │   │   └── WIREFRAMES.md         Cache + Calibrate 两页逐组件功能规格
 │   └── architecture/       repo-structure.md（移植蓝图）· stage-data-model.md（待写）
-├── src/                 React 前端：shell/ + stage/ + features/{cache,calibrate,color,previz,live,tools}
-├── src-tauri/           统一 Tauri host（thin transport，聚合各 feature command）
-├── crates/              Rust 核心：volo-shared · mesh-core/app/adapter-* · cache-core · volo-cli
-└── sidecars/            Python（各独立 venv）：mesh-vba · vpcal · tracksim
+├── src/
+│   ├── main.tsx            React 入口
+│   └── volo/               前端应用：shell · pages · api · styles
+│       ├── shell.tsx       外壳（tab / 工具条 / Inspector）
+│       ├── pages/          Cache · Calibrate 等功能页
+│       ├── api/            Tauri invoke 封装（commands / types / adapters）
+│       └── styles/         设计 token CSS
+├── src-tauri/              统一 Tauri host（thin transport，聚合各 feature command）
+├── crates/                 Rust 核心：volo-shared · mesh-core/app/adapter-* · cache-core · volo-cli
+└── sidecars/               Python（各独立 venv）：mesh-vba · vpcal · tracksim
 ```
 
-> 已用官方脚手架（`create-tauri-app` React）初始化；workspace 骨架已建，各 crate / sidecar / feature 当前为占位 stub，按 `docs/architecture/repo-structure.md` 的 cutover 顺序逐个填实。
+> 已用官方脚手架（`create-tauri-app` React）初始化；workspace 骨架、Rust crates / sidecar、前端 Cache / Calibrate 页与 Tauri command 层均已落地，其余 tab 与 Stage 数据模型按 `docs/architecture/repo-structure.md` 的 cutover 顺序继续填实。
 
 ## 6 个功能 tab（= 现场工作流阶段，线性排列，底部居中）
 
@@ -44,12 +50,18 @@ vp/volo/
 ## 状态
 
 - **UX 设计**：IA + Cache/Calibrate wireframe ✅ · Stage 数据模型 ⬜ → `docs/architecture/`
-- **设计系统**：用 Adobe React Spectrum 2（不自建），组件查 repo 自带 S2 MCP
-- **代码**：未初始化
+- **设计系统**：用 Adobe React Spectrum 2（不自建 token、不写自定义视觉），组件查 repo 自带 S2 MCP；Cache 页按 Codex Design 原型全自定义 CSS 1:1 移植（不依赖 RS2 组件库）为有意例外
+- **代码**：已脚手架 ✅ · 前端 Cache / Calibrate 页已移植（`src/volo/pages/`）✅ · Rust `crates/` + `src-tauri`（117 个 Tauri command，见 `lib.rs` invoke_handler）✅
+
+## 开发验证
+
+- 前端：`pnpm exec tsc --noEmit` + `pnpm exec vite build`
+- 后端：`cargo check --manifest-path src-tauri/Cargo.toml`
+- 跑原生 App：`pnpm tauri dev`（devUrl :1420）
 
 ## 工作流
 
-先定 UX（`docs/design/`）→ 在 **Claude Design**（基于 RS 的 design system）设计 UI（功能输入用 `WIREFRAMES.md`）→ handoff **Claude Code** 用真 `@react-spectrum/s2` 实现 React 前端；后端 Rust / Python sidecar 复用。
+先定 UX（`docs/design/`）→ 在 **Codex Design**（基于 RS 的 design system）设计 UI（功能输入用 `WIREFRAMES.md`）→ handoff 后用 `@react-spectrum/s2` 实现 React 前端；后端 Rust / Python sidecar 复用。详见 `AGENTS.md`。
 
 ## 链接
 
