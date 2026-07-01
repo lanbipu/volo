@@ -48,7 +48,7 @@ impl DistributeProfile {
     pub fn ddc_pak() -> Self {
         Self {
             source_subdir: "DerivedDataCache".into(),
-            file_globs: vec!["*.ddp".into()],
+            file_globs: vec!["DDC.ddp".into()],
             ps_script: "distribute-pak-file.ps1",
         }
     }
@@ -91,9 +91,6 @@ pub struct DistributePlanItem {
     pub target_local: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_name: Option<String>,
-    pub credential_user: Option<String>,
-    #[serde(skip_serializing)]
-    pub credential_pass: Option<String>,
     pub source_smb_user: Option<String>,
     #[serde(skip_serializing)]
     pub source_smb_pass: Option<String>,
@@ -109,8 +106,6 @@ pub fn plan(
     target_machine_ids: &[i64],
     project_id: i64,
     named_share_unc: Option<&str>,
-    credential_user: Option<String>,
-    credential_pass: Option<String>,
     source_smb_user: Option<String>,
     source_smb_pass: Option<String>,
 ) -> UecmResult<Vec<DistributePlanItem>> {
@@ -145,8 +140,6 @@ pub fn plan(
             source_unc: source_unc.clone(),
             target_local: append_source_subdir_once(&location.abs_path, &profile.source_subdir),
             file_name: None,
-            credential_user: credential_user.clone(),
-            credential_pass: credential_pass.clone(),
             source_smb_user: source_smb_user.clone(),
             source_smb_pass: source_smb_pass.clone(),
         });
@@ -342,8 +335,9 @@ pub fn resolve_source_smb(
     })
 }
 
-/// stdin JSON for the node-pure distribute scripts. The operator→target WinRM
-/// cred is gone (SSH key auth); only the target→source SMB cred is forwarded.
+/// stdin JSON for the node-pure distribute scripts. Operator→target auth is
+/// SSH key based and needs no forwarded credential; only the target→source
+/// SMB cred is forwarded.
 fn build_distribute_payload(item: &DistributePlanItem, preflight: bool) -> serde_json::Value {
     let mut obj = serde_json::json!({
         "SourceUnc": item.source_unc,
@@ -575,8 +569,6 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
         );
         assert!(matches!(result, Err(UecmError::InvalidInput(_))));
     }
@@ -605,8 +597,6 @@ mod tests {
             &source_loc(project_id, source),
             &[source, target],
             project_id,
-            None,
-            None,
             None,
             None,
             None,
@@ -644,8 +634,6 @@ mod tests {
             Some("\\\\HOST\\DDC"),
             None,
             None,
-            None,
-            None,
         )
         .unwrap();
         assert_eq!(items[0].source_unc, "\\\\HOST\\DDC\\DerivedDataCache");
@@ -676,8 +664,6 @@ mod tests {
             &[target],
             project_id,
             Some("\\\\HOST\\DDC\\DerivedDataCache"),
-            None,
-            None,
             None,
             None,
         )
@@ -729,7 +715,7 @@ mod tests {
     fn ddc_pak_profile_has_single_glob() {
         let profile = DistributeProfile::ddc_pak();
         assert_eq!(profile.file_globs.len(), 1);
-        assert_eq!(profile.primary_glob(), "*.ddp");
+        assert_eq!(profile.primary_glob(), "DDC.ddp");
     }
 
     #[test]

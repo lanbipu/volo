@@ -5,12 +5,12 @@
 //! verify   — checks that a .ddp file exists and is non-zero on the source machine.
 //! distribute — Robocopy fan-out from source to one or more target machines.
 
-use crate::args::{BackendChoice, DdcAction};
+use crate::args::{CacheBackendChoice, DdcAction};
 use crate::credential_args::CredentialArgs;
 use crate::destructive::{self, Outcome};
 use crate::output::{EmitSerialize, Event};
 use crate::run::Ctx;
-use cache_core::core::cache_backend::{self, Backend, Routing};
+use cache_core::core::cache_backend::{self, Routing};
 use cache_core::core::ddc_pak;
 use cache_core::core::pak_distribute;
 use cache_core::core::ue_runner::{UeRunnerBackend, UeRunnerEvent};
@@ -41,42 +41,28 @@ pub fn handle(ctx: &mut Ctx<'_>, action: DdcAction) -> UecmResult<()> {
     }
 }
 
-/// Outcome of the backend gate.
+/// Resolve the operator's `--backend` choice into a routing decision to
+/// report alongside the operation. `Legacy` / `Zen` force a backend and
+/// short-circuit the router (nothing to report — the operator already
+/// decided); `Auto` calls `core::cache_backend::resolve_for` and returns its
+/// `Routing` so callers can surface it. The resolution is purely
+/// informational: it never gates whether `generate` / `verify` / `distribute`
+/// run — any backend (including Zen) can produce/read/copy a DDC Pak.
 ///
-/// Carries the resolved backend plus the `Routing` payload when `--backend
-/// auto` triggered the router (None when the operator forced a backend, so
-/// callers can tell "operator chose this" apart from "router picked this").
-struct BackendResolution {
-    backend: Backend,
-    routing: Option<Routing>,
-}
-
-/// Resolve the operator's `--backend` choice into a concrete [`Backend`].
-///
-/// `Legacy` / `Zen` short-circuit the router; `Auto` calls
-/// `core::cache_backend::resolve_for`. This function **does not emit** the
-/// routing reason — callers decide how to surface it because emitting an
-/// extra event would break stdout shape for one-shot JSON commands like
-/// `ddc verify --json`. Streaming callers (`generate`, real `distribute`)
-/// emit `Started` via [`emit_routing_event`]; one-shot callers fold
-/// `routing` into their final result via [`augment_with_routing`].
-///
-/// Keeping this in one place lets `generate` / `verify` / `distribute` share
-/// the same gate logic without each duplicating the router invocation.
+/// Streaming callers (`generate`, real `distribute`) emit `Started` via
+/// [`emit_routing_event`]; one-shot callers fold the routing into their final
+/// result via [`augment_with_routing`].
 fn resolve_backend(
     db: &Db,
     project_id: i64,
     source_machine_id: i64,
-    choice: BackendChoice,
-) -> UecmResult<BackendResolution> {
-    if let Some(forced) = map_forced_choice(choice) {
-        return Ok(BackendResolution { backend: forced, routing: None });
+    choice: CacheBackendChoice,
+) -> UecmResult<Option<Routing>> {
+    if is_forced_choice(choice) {
+        return Ok(None);
     }
     let routing = cache_backend::resolve_for(db, project_id, source_machine_id)?;
-    Ok(BackendResolution {
-        backend: routing.backend,
-        routing: Some(routing),
-    })
+    Ok(Some(routing))
 }
 
 /// Build the structured routing-info JSON value. Re-used by both the
@@ -115,76 +101,24 @@ fn augment_with_routing(value: &mut serde_json::Value, routing: Option<&Routing>
     }
 }
 
-/// Emit the canonical "zen handles caching natively" no-op result.
-///
-/// Shared by all three handlers so the JSON shape stays identical (operators
-/// downstream key off `backend == "zen" && skipped == true`). When the
-/// backend was chosen by the router (`--backend auto`), the routing payload
-/// is folded into the same JSON object so consumers still see the reason —
-/// without splitting stdout into multiple lines.
-fn emit_zen_skip(
-    ctx: &mut Ctx<'_>,
-    operation: &str,
-    project_id: i64,
-    source_machine_id: i64,
-    routing: Option<&Routing>,
-) -> UecmResult<()> {
-    let mut summary = serde_json::json!({
-        "ok": true,
-        "operation": operation,
-        "backend": "zen",
-        "skipped": true,
-        "reason": "zen handles caching natively",
-        "project_id": project_id,
-        "source_machine_id": source_machine_id,
-    });
-    augment_with_routing(&mut summary, routing);
-    ctx.emitter.emit_result(&summary).ok();
-    Ok(())
-}
-
 // ─── generate ─────────────────────────────────────────────────────────────────
 
 fn generate(
     ctx: &mut Ctx<'_>,
     project_id: i64,
     source_machine_id: i64,
-    backend_choice: BackendChoice,
+    backend_choice: CacheBackendChoice,
     cred: &CredentialArgs,
 ) -> UecmResult<()> {
     let db = ctx.require_db()?.clone();
 
-    // Backend gate: forced `--backend zen` AND `auto` that resolves to zen
-    // both short-circuit. We still validate the (project, machine) pair so a
-    // typo doesn't silently return "skipped: zen". The router itself already
-    // requires the project / machine rows to exist, so for `auto` this check
-    // is a no-op; for forced `--backend zen` it provides parity with legacy.
-    let resolution = resolve_backend(&db, project_id, source_machine_id, backend_choice)?;
-    if resolution.backend == Backend::Zen {
-        let _ = data_machines::find_by_id(&db, source_machine_id)?.ok_or_else(|| {
-            UecmError::InvalidInput(format!("machine {} not found", source_machine_id))
-        })?;
-        let _ = project_locations::get_for_project_machine(&db, project_id, source_machine_id)?
-            .ok_or_else(|| {
-                UecmError::InvalidInput(format!(
-                    "project {} not located on machine {}",
-                    project_id, source_machine_id
-                ))
-            })?;
-        return emit_zen_skip(
-            ctx,
-            "ddc.generate",
-            project_id,
-            source_machine_id,
-            resolution.routing.as_ref(),
-        );
-    }
+    let routing = resolve_backend(&db, project_id, source_machine_id, backend_choice)?;
 
     // Streaming path: safe to emit the routing as a standalone Started event
     // — `generate` already streams Spawned/LogLine/Progress/Completed events
     // as NDJSON, so one more line at the top of the stream doesn't change the
     // output shape.
-    if let Some(routing) = resolution.routing.as_ref() {
+    if let Some(routing) = routing.as_ref() {
         emit_routing_event(ctx, "ddc.generate", routing);
     }
 
@@ -213,7 +147,7 @@ fn generate(
         UeRunnerBackend::Remote
     };
 
-    // Preflight only makes sense for remote (needs WinRM to check paths).
+    // Preflight only makes sense for remote (needs SSH to check paths).
     if matches!(backend, UeRunnerBackend::Remote) {
         ddc_pak::preflight(
             &machine.ip,
@@ -322,31 +256,12 @@ fn verify(
     ctx: &mut Ctx<'_>,
     project_id: i64,
     source_machine_id: i64,
-    backend_choice: BackendChoice,
+    backend_choice: CacheBackendChoice,
     cred: &CredentialArgs,
 ) -> UecmResult<()> {
     let db = ctx.require_db()?.clone();
 
-    let resolution = resolve_backend(&db, project_id, source_machine_id, backend_choice)?;
-    if resolution.backend == Backend::Zen {
-        let _ = data_machines::find_by_id(&db, source_machine_id)?.ok_or_else(|| {
-            UecmError::InvalidInput(format!("machine {} not found", source_machine_id))
-        })?;
-        let _ = project_locations::get_for_project_machine(&db, project_id, source_machine_id)?
-            .ok_or_else(|| {
-                UecmError::InvalidInput(format!(
-                    "project {} not located on machine {}",
-                    project_id, source_machine_id
-                ))
-            })?;
-        return emit_zen_skip(
-            ctx,
-            "ddc.verify",
-            project_id,
-            source_machine_id,
-            resolution.routing.as_ref(),
-        );
-    }
+    let routing = resolve_backend(&db, project_id, source_machine_id, backend_choice)?;
 
     let machine = data_machines::find_by_id(&db, source_machine_id)?.ok_or_else(|| {
         UecmError::InvalidInput(format!("machine {} not found", source_machine_id))
@@ -365,12 +280,7 @@ fn verify(
     // verify_output returns Err when .ddp is not found. For the CLI verify
     // command that's a valid query result ("no, the pak does not exist"),
     // not an operational failure — return it as a structured JSON result
-    // with found=false so the exit code stays 0 and behaviour is consistent
-    // with `ddc generate --backend auto` which returns skipped=true when
-    // zen is the active backend (a stale zen probe can flip the router to
-    // legacy between generate and verify, making verify hit this path even
-    // though generate skipped — the operator should see a clean result, not
-    // an error).
+    // with found=false so the exit code stays 0.
     let mut output_value = match ddc_pak::verify_output(
         &machine.ip,
         &location.abs_path,
@@ -408,7 +318,7 @@ fn verify(
     // One-shot JSON path: fold routing into the same result object so stdout
     // stays a single JSON document (consumers that parse stdout as one value
     // would break if we emitted a separate Started event before this).
-    augment_with_routing(&mut output_value, resolution.routing.as_ref());
+    augment_with_routing(&mut output_value, routing.as_ref());
     ctx.emitter.emit_result(&output_value).ok();
     Ok(())
 }
@@ -421,32 +331,13 @@ fn distribute(
     source_machine_id: i64,
     target_ids: &[i64],
     dry_run: bool,
-    backend_choice: BackendChoice,
+    backend_choice: CacheBackendChoice,
     source_smb_cred_alias: Option<&str>,
     cred: &CredentialArgs,
 ) -> UecmResult<()> {
     let db = ctx.require_db()?.clone();
 
-    let resolution = resolve_backend(&db, project_id, source_machine_id, backend_choice)?;
-    if resolution.backend == Backend::Zen {
-        let _ = data_machines::find_by_id(&db, source_machine_id)?.ok_or_else(|| {
-            UecmError::InvalidInput(format!("machine {} not found", source_machine_id))
-        })?;
-        let _ = project_locations::get_for_project_machine(&db, project_id, source_machine_id)?
-            .ok_or_else(|| {
-                UecmError::InvalidInput(format!(
-                    "project {} not located on machine {}",
-                    project_id, source_machine_id
-                ))
-            })?;
-        return emit_zen_skip(
-            ctx,
-            "ddc.distribute",
-            project_id,
-            source_machine_id,
-            resolution.routing.as_ref(),
-        );
-    }
+    let routing = resolve_backend(&db, project_id, source_machine_id, backend_choice)?;
 
     let source_machine = data_machines::find_by_id(&db, source_machine_id)?.ok_or_else(|| {
         UecmError::InvalidInput(format!("machine {} not found", source_machine_id))
@@ -461,29 +352,18 @@ fn distribute(
             })?;
 
     // Source SMB now comes from the SecretStore (explicit alias or auto-derived
-    // from the source host's Mode B/A share), not the operator WinRM cred — the
-    // operator->target leg is SSH key auth. Dry-run resolves the same share/UNC
-    // and runs the same validation, but skips reading the secret (read_secret =
-    // false), so previews stay side-effect-free yet show the real source UNC.
-    let (op_user, op_pass, smb) = if dry_run {
-        cred.preflight(&db)?;
-        let smb = pak_distribute::resolve_source_smb(
-            &db,
-            source_machine_id,
-            source_smb_cred_alias,
-            false,
-        )?;
-        (None, None, smb)
-    } else {
-        let (op_user, op_pass) = resolve_creds(&db, cred)?;
-        let smb = pak_distribute::resolve_source_smb(
-            &db,
-            source_machine_id,
-            source_smb_cred_alias,
-            true,
-        )?;
-        (op_user, op_pass, smb)
-    };
+    // from the source host's Mode B/A share) — the operator->target leg is SSH
+    // key auth and needs no forwarded credential. Dry-run resolves the same
+    // share/UNC and runs the same validation, but skips reading the secret
+    // (read_secret = false), so previews stay side-effect-free yet show the
+    // real source UNC.
+    cred.preflight(&db)?;
+    let smb = pak_distribute::resolve_source_smb(
+        &db,
+        source_machine_id,
+        source_smb_cred_alias,
+        !dry_run,
+    )?;
 
     let profile = pak_distribute::DistributeProfile::ddc_pak();
     let plan = pak_distribute::plan(
@@ -495,8 +375,6 @@ fn distribute(
         target_ids,
         project_id,
         smb.named_share_unc.as_deref(), // managed-share UNC paired with the SMB cred
-        op_user,
-        op_pass,
         smb.user,
         smb.pass,
     )?;
@@ -527,14 +405,14 @@ fn distribute(
             "source_machine": source_machine_id,
             "targets": summary_targets,
         });
-        augment_with_routing(&mut details, resolution.routing.as_ref());
+        augment_with_routing(&mut details, routing.as_ref());
         destructive::emit_plan(ctx.emitter.as_mut(), "ddc.distribute", details);
         return Ok(());
     }
 
     // Streaming real-run path: safe to emit routing as a standalone event —
     // the rest of distribute streams ItemStarted/ItemCompleted/Completed.
-    if let Some(routing) = resolution.routing.as_ref() {
+    if let Some(routing) = routing.as_ref() {
         emit_routing_event(ctx, "ddc.distribute", routing);
     }
 
@@ -638,17 +516,17 @@ fn resolve_engine_path(db: &cache_core::data::Db, machine_id: i64) -> UecmResult
     Ok(install.install_path)
 }
 
-/// Map a forced `BackendChoice` (`Legacy` / `Zen`) onto a concrete
-/// [`Backend`]. Returns `None` for `Auto` — the auto branch needs DB access
-/// to call `cache_backend::resolve_for`, so it can't be expressed as a pure
-/// mapping. Pulled out as a helper so it can be unit-tested without spinning
-/// up a `Ctx` + DB.
-fn map_forced_choice(choice: BackendChoice) -> Option<Backend> {
-    match choice {
-        BackendChoice::Zen => Some(Backend::Zen),
-        BackendChoice::Legacy => Some(Backend::LegacyPak),
-        BackendChoice::Auto => None,
-    }
+/// Whether the operator forced a `CacheBackendChoice` (`Legacy` / `Zen`)
+/// rather than asking for `Auto`. `resolve_backend` only needs this
+/// forced-vs-auto distinction — Zen and Legacy are no longer handled
+/// differently anywhere (any backend can generate/verify/distribute a DDC
+/// Pak), so this does not resolve to a concrete `Backend`; doing so would
+/// invite a future caller to branch on it and re-introduce a Zen special
+/// case. `Auto` needs DB access to call `cache_backend::resolve_for`, so it
+/// can't be folded into a pure mapping. Pulled out as a helper so it can be
+/// unit-tested without spinning up a `Ctx` + DB.
+fn is_forced_choice(choice: CacheBackendChoice) -> bool {
+    !matches!(choice, CacheBackendChoice::Auto)
 }
 
 #[cfg(test)]
@@ -656,22 +534,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn map_forced_choice_zen_maps_to_zen_backend() {
-        assert_eq!(map_forced_choice(BackendChoice::Zen), Some(Backend::Zen));
+    fn is_forced_choice_true_for_zen_and_legacy() {
+        assert!(is_forced_choice(CacheBackendChoice::Zen));
+        assert!(is_forced_choice(CacheBackendChoice::Legacy));
     }
 
     #[test]
-    fn map_forced_choice_legacy_maps_to_legacy_pak_backend() {
-        assert_eq!(
-            map_forced_choice(BackendChoice::Legacy),
-            Some(Backend::LegacyPak)
-        );
-    }
-
-    #[test]
-    fn map_forced_choice_auto_returns_none_so_caller_consults_router() {
+    fn is_forced_choice_false_for_auto_so_caller_consults_router() {
         // Auto must NOT be pre-mapped — the auto branch in `resolve_backend`
         // is the only place that gets to talk to `cache_backend::resolve_for`.
-        assert_eq!(map_forced_choice(BackendChoice::Auto), None);
+        assert!(!is_forced_choice(CacheBackendChoice::Auto));
     }
 }

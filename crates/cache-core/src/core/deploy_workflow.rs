@@ -453,8 +453,6 @@ fn execute_one(
                 &[machine_id],
                 plan.project_id,
                 plan.shared_cache.unc_path.as_deref(),
-                None,
-                None,
                 smb_user,
                 smb_pass,
             )?;
@@ -537,8 +535,6 @@ fn execute_one(
                     file,
                     &[machine_id],
                     plan.shared_cache.unc_path.as_deref(),
-                    None,
-                    None,
                     smb_user.clone(),
                     smb_pass.clone(),
                 )?;
@@ -699,26 +695,8 @@ fn generate_pak_sync(
     if matches!(backend, UeRunnerBackend::Remote) {
         ddc_pak::verify_output(host, project_dir, user, pass)
     } else {
-        verify_output_local(project_dir)
+        ddc_pak::verify_output_local(project_dir)
     }
-}
-
-fn verify_output_local(project_dir: &str) -> UecmResult<ddc_pak::PakOutput> {
-    for name in ["Compressed.ddp", "DDC.ddp"] {
-        let path = std::path::Path::new(project_dir)
-            .join("DerivedDataCache")
-            .join(name);
-        if path.exists() {
-            let size = std::fs::metadata(&path).map_err(UecmError::Io)?.len() as i64;
-            if size > 0 {
-                return Ok(ddc_pak::PakOutput {
-                    path: path.to_string_lossy().to_string(),
-                    size_bytes: size,
-                });
-            }
-        }
-    }
-    Err(UecmError::OperationFailed(".ddp not found locally".into()))
 }
 
 /// Run a PSO collection end-to-end synchronously: launch via ue_runner, drain

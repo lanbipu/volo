@@ -749,15 +749,24 @@ fn zen_verify_rules_resolve_only_unaffected_by_run_editor_addition() {
 // Plan 7 T3.6: `--backend` flag on ddc {generate, verify, distribute}
 // -------------------------------------------------------------------------
 
-/// Seed a minimal (machine + project + project_location) so the zen no-op
-/// path's existence checks pass. Helper kept in this file rather than a
-/// shared module — the smoke test target compiles each test file as its own
-/// crate, so a `mod helpers` would just duplicate.
+/// Seed a minimal (machine + project + project_location) so `ddc generate` /
+/// `verify` / `distribute` get past their machine/location existence checks.
+/// Helper kept in this file rather than a shared module — the smoke test
+/// target compiles each test file as its own crate, so a `mod helpers` would
+/// just duplicate.
 fn seed_machine_project_location(db_path: &str) -> (i64, i64) {
+    seed_machine_project_location_with_ip(db_path, "192.168.10.30")
+}
+
+/// Same as `seed_machine_project_location`, but with a caller-chosen machine
+/// IP — used by tests that need a loopback address so a real SSH attempt
+/// fails fast (connection refused / auth denied) instead of hanging on an
+/// unreachable-subnet connect timeout.
+fn seed_machine_project_location_with_ip(db_path: &str, ip: &str) -> (i64, i64) {
     // Add machine 1.
     let out = uecm_cmd()
         .env("UECM_DB_PATH", db_path)
-        .args(["--json", "machine", "add", "--ip", "192.168.10.30", "--hostname", "RENDER-01"])
+        .args(["--json", "machine", "add", "--ip", ip, "--hostname", "RENDER-01"])
         .output()
         .expect("spawn machine add");
     assert!(out.status.success(), "machine add stderr: {}", String::from_utf8_lossy(&out.stderr));
@@ -789,7 +798,12 @@ fn seed_machine_project_location(db_path: &str) -> (i64, i64) {
 }
 
 #[test]
-fn ddc_generate_with_backend_zen_returns_skipped_no_op() {
+fn ddc_generate_with_backend_zen_no_longer_short_circuits() {
+    // P1 rework: `--backend zen` is now purely informational (reported via
+    // `routing`) and must never skip the operation. With no UE install
+    // seeded, forcing zen must fail exactly like `auto`/`legacy` (see
+    // `ddc_generate_with_backend_auto_default_falls_through_to_legacy_path`),
+    // not return the old `skipped: true` no-op shape.
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
     let (project_id, machine_id) = seed_machine_project_location(&path);
@@ -804,33 +818,31 @@ fn ddc_generate_with_backend_zen_returns_skipped_no_op() {
         ])
         .output()
         .expect("spawn ddc generate");
-    assert!(
-        out.status.success(),
-        "exit={:?} stderr: {}",
-        out.status.code(),
-        String::from_utf8_lossy(&out.stderr)
-    );
 
-    // The zen no-op path emits a single JSON object (no NDJSON stream) since
-    // we short-circuit before the UE runner. The summary line is the last
-    // (and only) stdout payload.
-    let stdout = String::from_utf8(out.stdout).unwrap();
-    let last = stdout.trim_end().lines().last().expect("at least one line");
-    let env: serde_json::Value = serde_json::from_str(last).expect("valid JSON");
-    let v = &env["data"];
-    assert_eq!(v["backend"], "zen");
-    assert_eq!(v["skipped"], serde_json::Value::Bool(true));
-    assert_eq!(v["reason"], "zen handles caching natively");
-    assert_eq!(v["operation"], "ddc.generate");
-    assert_eq!(v["project_id"], serde_json::Value::from(project_id));
-    assert_eq!(v["source_machine_id"], serde_json::Value::from(machine_id));
+    assert!(
+        !out.status.success(),
+        "forced zen must no longer short-circuit to a successful no-op"
+    );
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(stderr.trim_end()).expect("stderr should be JSON envelope");
+    assert_eq!(v["error"]["code"], "invalid_input");
+    assert!(
+        v["error"]["message"].as_str().unwrap().contains("no detected UE installs"),
+        "forced zen must fall through to the same validation as any other backend; stderr: {stderr}"
+    );
 }
 
 #[test]
-fn ddc_verify_with_backend_zen_returns_skipped_no_op() {
+fn ddc_verify_with_backend_zen_no_longer_short_circuits() {
+    // P1 rework: forced `--backend zen` must no longer no-op for verify
+    // either. Seed the machine on loopback so the real SSH attempt this now
+    // takes fails fast (connection refused / auth denied) instead of hanging
+    // on an unreachable-subnet connect timeout.
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let (project_id, machine_id) = seed_machine_project_location(&path);
+    let (project_id, machine_id) = seed_machine_project_location_with_ip(&path, "127.0.0.1");
 
     let out = uecm_cmd()
         .env("UECM_DB_PATH", &path)
@@ -842,30 +854,29 @@ fn ddc_verify_with_backend_zen_returns_skipped_no_op() {
         ])
         .output()
         .expect("spawn ddc verify");
-    assert!(
-        out.status.success(),
-        "exit={:?} stderr: {}",
-        out.status.code(),
-        String::from_utf8_lossy(&out.stderr)
-    );
 
-    let stdout = String::from_utf8(out.stdout).unwrap();
-    let last = stdout.trim_end().lines().last().expect("at least one line");
-    let env: serde_json::Value = serde_json::from_str(last).expect("valid JSON");
-    let v = &env["data"];
-    assert_eq!(v["backend"], "zen");
-    assert_eq!(v["skipped"], serde_json::Value::Bool(true));
-    assert_eq!(v["operation"], "ddc.verify");
+    assert!(
+        !out.status.success(),
+        "forced zen must no longer short-circuit to a successful no-op"
+    );
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        !stderr.contains("zen handles caching natively") && !stderr.contains("\"skipped\":true"),
+        "forced zen must not return the old skip shape; stderr: {stderr}"
+    );
 }
 
 #[test]
-fn ddc_distribute_with_backend_zen_returns_skipped_no_op() {
+fn ddc_distribute_with_backend_zen_no_longer_short_circuits() {
+    // P1 rework: forced `--backend zen` must no longer no-op; distribute now
+    // runs the same source-share resolution as any other backend and fails
+    // because no share is registered on the source host.
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
     let (project_id, machine_id) = seed_machine_project_location(&path);
 
-    // distribute is a destructive op — must pass --yes (or --dry-run) even on
-    // the no-op path; the destructive gate runs before the backend gate.
+    // distribute is a destructive op — must pass --yes (or --dry-run)
+    // regardless of --backend; the destructive gate runs first.
     let out = uecm_cmd()
         .env("UECM_DB_PATH", &path)
         .args([
@@ -878,20 +889,20 @@ fn ddc_distribute_with_backend_zen_returns_skipped_no_op() {
         ])
         .output()
         .expect("spawn ddc distribute");
-    assert!(
-        out.status.success(),
-        "exit={:?} stderr: {}",
-        out.status.code(),
-        String::from_utf8_lossy(&out.stderr)
-    );
 
-    let stdout = String::from_utf8(out.stdout).unwrap();
-    let last = stdout.trim_end().lines().last().expect("at least one line");
-    let env: serde_json::Value = serde_json::from_str(last).expect("valid JSON");
-    let v = &env["data"];
-    assert_eq!(v["backend"], "zen");
-    assert_eq!(v["skipped"], serde_json::Value::Bool(true));
-    assert_eq!(v["operation"], "ddc.distribute");
+    assert!(
+        !out.status.success(),
+        "forced zen must no longer short-circuit to a successful no-op"
+    );
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(stderr.trim_end()).expect("stderr should be JSON envelope");
+    assert_eq!(v["error"]["code"], "invalid_input");
+    assert!(
+        v["error"]["message"].as_str().unwrap().contains("no registered share"),
+        "forced zen must fall through to the same source-share validation as any other backend; stderr: {stderr}"
+    );
 }
 
 #[test]
@@ -914,46 +925,6 @@ fn ddc_generate_rejects_invalid_backend_value() {
     assert!(
         matches!(out.status.code(), Some(code) if code != 0),
         "expected non-zero exit"
-    );
-}
-
-#[test]
-fn ddc_verify_with_backend_zen_emits_single_json_line_with_routing_folded_in() {
-    // Lock in the one-shot JSON contract for verify: `--backend auto` (default)
-    // resolves to zen via... actually we need to FORCE zen here and verify the
-    // result is still a single JSON line with the zen skip shape. The routing
-    // field is only present when --backend auto was used; for forced zen,
-    // routing is None and shouldn't appear in the result. Both cases must
-    // remain a single JSON document on stdout — never split into NDJSON.
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let path = tmp.path().to_string_lossy().to_string();
-    let (project_id, machine_id) = seed_machine_project_location(&path);
-
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
-        .args([
-            "--json", "ddc", "verify",
-            "--project-id", &project_id.to_string(),
-            "--source-machine", &machine_id.to_string(),
-            "--backend", "zen",
-        ])
-        .output()
-        .expect("spawn");
-    assert!(out.status.success());
-    let stdout = String::from_utf8(out.stdout).unwrap();
-    let lines: Vec<&str> = stdout.trim_end().lines().collect();
-    assert_eq!(
-        lines.len(),
-        1,
-        "forced --backend zen verify must emit ONE stdout line, got: {stdout}"
-    );
-    let env: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-    let v = &env["data"];
-    assert_eq!(v["backend"], "zen");
-    // Forced backend → no `routing` field folded in (router was never called).
-    assert!(
-        v.get("routing").is_none(),
-        "forced backend must not include routing payload"
     );
 }
 

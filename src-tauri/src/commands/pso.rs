@@ -290,9 +290,8 @@ pub async fn distribute_pso_cache(
     })?;
     // SSH key auth: operator cred no longer used (param kept as shim, Vue compat).
     let _ = &request.operator_credential_alias;
-    let (operator_user, operator_pass): (Option<String>, Option<String>) = (None, None);
     // Source SMB access from the SecretStore: explicit alias, else auto-derived
-    // from a Mode B share on the source host. No longer the operator WinRM cred.
+    // from a Mode B share on the source host.
     // NOTE (sub-project B): the UI's share-credential dropdown must pass a
     // SecretStore/share alias here, not a DPAPI cred alias; `None` now means
     // "auto-derive", not "same as operator".
@@ -339,8 +338,6 @@ pub async fn distribute_pso_cache(
         &file,
         &request.target_machine_ids,
         named_unc.as_deref(),
-        operator_user.clone(),
-        operator_pass.clone(),
         source_smb_user,
         source_smb_pass,
     )?;

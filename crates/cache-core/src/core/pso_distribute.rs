@@ -16,8 +16,6 @@ pub fn plan(
     file: &PsoCacheFile,
     target_machine_ids: &[i64],
     named_share_unc: Option<&str>,
-    credential_user: Option<String>,
-    credential_pass: Option<String>,
     source_smb_user: Option<String>,
     source_smb_pass: Option<String>,
 ) -> UecmResult<Vec<PsoDistributePlanItem>> {
@@ -33,8 +31,6 @@ pub fn plan(
         target_machine_ids,
         file.project_id,
         named_share_unc,
-        credential_user,
-        credential_pass,
         source_smb_user,
         source_smb_pass,
     )?;

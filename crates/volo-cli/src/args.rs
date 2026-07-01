@@ -2,20 +2,21 @@
 
 use clap::{Parser, Subcommand};
 
-/// Operator-facing override for the cache backend (T3.6).
+/// Operator-facing override for the cache *storage routing* (T3.6) — distinct
+/// from where the UE process executes (see `ddc_pak`'s remote/local backend).
 ///
 /// `Auto`   — defer to `core::cache_backend::resolve_for` decision table.
 /// `Legacy` — force the legacy `.ddp` pak workflow (skip the router).
-/// `Zen`    — force the zen no-op path. zen handles caching natively, so
-///            `generate` / `verify` / `distribute` are no-ops that emit a
-///            structured "skipped" summary and exit 0.
+/// `Zen`    — force the zen routing. Purely informational: `generate` /
+///            `verify` / `distribute` still run regardless of routing — any
+///            backend (including Zen) can produce/read/copy a DDC Pak.
 ///
 /// Exposed at the CLI layer only — `core::ddc_pak` / `core::pak_distribute`
-/// are intentionally unaware of this gate so they can keep being unit-tested
-/// without the routing surface.
+/// are intentionally unaware of this choice so they can keep being
+/// unit-tested without the routing surface.
 #[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 #[clap(rename_all = "snake_case")]
-pub enum BackendChoice {
+pub enum CacheBackendChoice {
     Auto,
     Legacy,
     Zen,
@@ -858,10 +859,11 @@ pub enum DdcAction {
         project_id: i64,
         #[arg(long)]
         source_machine: i64,
-        /// Cache backend gate (T3.6). `auto` consults the routing table;
-        /// `legacy` forces the .ddp pak workflow; `zen` is a no-op.
+        /// Cache storage routing to report alongside this operation (T3.6);
+        /// `auto` consults the routing table. Informational only — does not
+        /// gate whether generation runs.
         #[arg(long, default_value = "auto", value_enum)]
-        backend: BackendChoice,
+        backend: CacheBackendChoice,
         #[command(flatten)]
         cred: crate::credential_args::CredentialArgs,
     },
@@ -871,9 +873,9 @@ pub enum DdcAction {
         project_id: i64,
         #[arg(long)]
         source_machine: i64,
-        /// Cache backend gate (T3.6). See `ddc generate --help` for semantics.
+        /// Cache storage routing to report (T3.6). See `ddc generate --help`.
         #[arg(long, default_value = "auto", value_enum)]
-        backend: BackendChoice,
+        backend: CacheBackendChoice,
         #[command(flatten)]
         cred: crate::credential_args::CredentialArgs,
     },
@@ -889,9 +891,9 @@ pub enum DdcAction {
         yes: bool,
         #[arg(long)]
         dry_run: bool,
-        /// Cache backend gate (T3.6). See `ddc generate --help` for semantics.
+        /// Cache storage routing to report (T3.6). See `ddc generate --help`.
         #[arg(long, default_value = "auto", value_enum)]
-        backend: BackendChoice,
+        backend: CacheBackendChoice,
         /// SecretStore alias for the source share's SMB credential. Omit to
         /// auto-derive from a Mode B share registered on the source host.
         #[arg(long)]
@@ -2028,7 +2030,7 @@ mod tests {
         ]).unwrap();
         match cli.command {
             Domain::Ddc { action: DdcAction::Generate { backend, .. } } => {
-                assert_eq!(backend, BackendChoice::Auto);
+                assert_eq!(backend, CacheBackendChoice::Auto);
             }
             _ => panic!("expected Ddc::Generate"),
         }
@@ -2044,7 +2046,7 @@ mod tests {
         ]).unwrap();
         match cli.command {
             Domain::Ddc { action: DdcAction::Generate { backend, .. } } => {
-                assert_eq!(backend, BackendChoice::Zen);
+                assert_eq!(backend, CacheBackendChoice::Zen);
             }
             _ => panic!("expected Ddc::Generate"),
         }
@@ -2060,7 +2062,7 @@ mod tests {
         ]).unwrap();
         match cli.command {
             Domain::Ddc { action: DdcAction::Verify { backend, .. } } => {
-                assert_eq!(backend, BackendChoice::Legacy);
+                assert_eq!(backend, CacheBackendChoice::Legacy);
             }
             _ => panic!("expected Ddc::Verify"),
         }
@@ -2078,7 +2080,7 @@ mod tests {
         ]).unwrap();
         match cli.command {
             Domain::Ddc { action: DdcAction::Distribute { backend, .. } } => {
-                assert_eq!(backend, BackendChoice::Zen);
+                assert_eq!(backend, CacheBackendChoice::Zen);
             }
             _ => panic!("expected Ddc::Distribute"),
         }
