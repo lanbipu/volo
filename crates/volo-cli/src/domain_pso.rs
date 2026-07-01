@@ -313,25 +313,13 @@ fn distribute(
 
     // Dry-run resolves the same share/UNC + validation but skips the secret
     // read (see `domain_ddc::distribute`).
-    let (op_user, op_pass, smb) = if dry_run {
-        cred.preflight(db)?;
-        let smb = cache_core::core::pak_distribute::resolve_source_smb(
-            db,
-            source_machine_id,
-            source_smb_cred_alias,
-            false,
-        )?;
-        (None, None, smb)
-    } else {
-        let (op_user, op_pass) = resolve_creds(db, cred)?;
-        let smb = cache_core::core::pak_distribute::resolve_source_smb(
-            db,
-            source_machine_id,
-            source_smb_cred_alias,
-            true,
-        )?;
-        (op_user, op_pass, smb)
-    };
+    cred.preflight(db)?;
+    let smb = cache_core::core::pak_distribute::resolve_source_smb(
+        db,
+        source_machine_id,
+        source_smb_cred_alias,
+        !dry_run,
+    )?;
 
     // Find the most recent PSO cache file for this project + source machine.
     let files = pso_cache_files::list_by_project(db, project_id)?;
@@ -352,8 +340,6 @@ fn distribute(
         &file,
         target_ids,
         smb.named_share_unc.as_deref(), // managed-share UNC paired with the SMB cred
-        op_user,
-        op_pass,
         smb.user,
         smb.pass,
     )?;

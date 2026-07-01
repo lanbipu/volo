@@ -11,12 +11,10 @@ try {
     $ProjectDir = $p.ProjectDir
 
     $found = $false; $path = ""; $size = "0"
-    foreach ($name in @('Compressed.ddp', 'DDC.ddp')) {
-        $cand = Join-Path -Path $ProjectDir -ChildPath "DerivedDataCache\$name"
-        if (Test-Path -LiteralPath $cand) {
-            $sz = (Get-Item -LiteralPath $cand).Length
-            if ($sz -gt 0) { $found = $true; $path = "$cand"; $size = "$sz"; break }
-        }
+    $cand = Join-Path -Path $ProjectDir -ChildPath "DerivedDataCache\DDC.ddp"
+    if (Test-Path -LiteralPath $cand) {
+        $sz = (Get-Item -LiteralPath $cand).Length
+        if ($sz -gt 0) { $found = $true; $path = "$cand"; $size = "$sz" }
     }
     @{ ok = $true; found = $found; path = $path; size = $size } | ConvertTo-Json -Compress
 }

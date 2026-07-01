@@ -2077,6 +2077,8 @@ html, body {
   color: var(--chrome-dim); background: var(--wash-3); border: 1px solid var(--chrome-line);
   border-radius: 8px; padding: 9px 11px; text-wrap: pretty; }
 .id-note svg { flex: 0 0 auto; margin-top: 1px; color: var(--chrome-faint); }
+.id-foot-scope { display: flex; align-items: flex-start; gap: 6px; font-size: 11px; line-height: 1.4; color: var(--chrome-faint); }
+.id-foot-scope svg { flex: 0 0 auto; margin-top: 1px; }
 
 /* selected-project rows in the detail panel */
 .id-proj { background: var(--chrome-card); border: 1px solid var(--chrome-line); border-radius: 10px;

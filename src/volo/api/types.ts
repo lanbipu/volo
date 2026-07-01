@@ -9,7 +9,9 @@ export type GpuVendor = "nvidia" | "amd" | "intel" | "unknown";
 export type CredentialKind = "winrm" | "share";
 export type ShareMode = "open" | "managed";
 export type BatchStatus = "running" | "ok" | "err";
-export type BackendChoice = "remote" | "local";
+/** Where the UE process runs (remote source machine vs the operator's local
+ *  machine) — distinct from the project's cache storage routing (zen/legacy_pak). */
+export type ExecutionLocation = "remote" | "local";
 export type CellStatus = "match" | "deviation" | "unknown";
 export type DiscoveryStatus = "auto" | "manual_alias" | "manual_path";
 export type DeployStep =
@@ -367,7 +369,6 @@ export interface DistributePlanItem {
   source_unc: string;
   target_local: string;
   file_name?: string | null;
-  credential_user: string | null;
   source_smb_user: string | null;
 }
 

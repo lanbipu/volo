@@ -1,6 +1,5 @@
 //! DDC Pak generation, verification, cancellation, and distribution commands.
 
-use cache_core::core::cache_backend::{self, Backend};
 use cache_core::core::ue_runner::{RunnerCancel, UeRunnerBackend, UeRunnerEvent};
 use cache_core::core::{batch, ddc_pak, pak_distribute};
 use cache_core::data::{
@@ -43,9 +42,12 @@ impl UeJobRegistry {
     }
 }
 
+/// Where the UE process actually runs (remote source machine over SSH vs the
+/// operator's local machine) — distinct from the project's cache storage
+/// routing (zen/legacy_pak, see `cache_backend::Backend`).
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum BackendChoice {
+pub enum ExecutionLocation {
     Remote,
     Local,
 }
@@ -131,81 +133,12 @@ fn project_dir_from_uproject_path(path: &str) -> String {
         .unwrap_or_default()
 }
 
-fn verify_output_local(project_dir: &str) -> UecmResult<ddc_pak::PakOutput> {
-    for name in ["Compressed.ddp", "DDC.ddp"] {
-        let path = std::path::Path::new(project_dir)
-            .join("DerivedDataCache")
-            .join(name);
-        if path.exists() {
-            let size = std::fs::metadata(&path).map_err(UecmError::Io)?.len() as i64;
-            if size > 0 {
-                return Ok(ddc_pak::PakOutput {
-                    path: path.to_string_lossy().to_string(),
-                    size_bytes: size,
-                });
-            }
-        }
-    }
-    Err(UecmError::OperationFailed(".ddp not found locally".into()))
-}
-
-async fn emit_zen_skip_generate(
-    app: &AppHandle,
-    source_machine_id: i64,
-    project_id: i64,
-    reason: &str,
-) -> GenerateJobResponse {
-    let job_id = format!("ddc-pak-gen-{}-{}", source_machine_id, now_millis());
-    let app_clone = app.clone();
-    let job_id_for_task = job_id.clone();
-    let reason = reason.to_string();
-    tokio::spawn(async move {
-        #[derive(Clone, Serialize)]
-        struct Payload<'a> {
-            job_id: &'a str,
-            source_machine_id: i64,
-            project_id: i64,
-            event: &'a UeRunnerEvent,
-        }
-        let _ = app_clone.emit(
-            "ue-runner-progress",
-            Payload {
-                job_id: &job_id_for_task,
-                source_machine_id,
-                project_id,
-                event: &UeRunnerEvent::LogLine {
-                    text: format!("Zen 后端跳过 PAK 生成 · {reason}"),
-                    parsed_kind: Some("info".into()),
-                },
-            },
-        );
-        let _ = app_clone.emit(
-            "ue-runner-progress",
-            Payload {
-                job_id: &job_id_for_task,
-                source_machine_id,
-                project_id,
-                event: &UeRunnerEvent::Completed {
-                    exit_code: 0,
-                    log_tail: vec![],
-                },
-            },
-        );
-    });
-    GenerateJobResponse {
-        job_id,
-        source_machine_id,
-        project_id,
-        backend: "zen".into(),
-    }
-}
-
 #[tauri::command]
 pub async fn generate_ddc_pak(
     app: AppHandle,
     db: State<'_, Db>,
     registry: State<'_, UeJobRegistry>,
-    backend: BackendChoice,
+    backend: ExecutionLocation,
     source_machine_id: Option<i64>,
     project_id: i64,
     local_uproject_path: Option<String>,
@@ -213,24 +146,8 @@ pub async fn generate_ddc_pak(
     ue_version: Option<String>,
     operator_credential_alias: Option<String>,
 ) -> UecmResult<GenerateJobResponse> {
-    if matches!(backend, BackendChoice::Remote) {
-        if let Some(machine_id) = source_machine_id {
-            if data_machines::find_by_id(&db, machine_id)?.is_some()
-                && project_locations::get_for_project_machine(&db, project_id, machine_id)?
-                    .is_some()
-            {
-                let routing = cache_backend::resolve_for(&db, project_id, machine_id)?;
-                if routing.backend == Backend::Zen {
-                    return Ok(
-                        emit_zen_skip_generate(&app, machine_id, project_id, &routing.reason).await,
-                    );
-                }
-            }
-        }
-    }
-
     let (host, engine_path, uproject_path, runtime_backend) = match backend {
-        BackendChoice::Remote => {
+        ExecutionLocation::Remote => {
             let machine_id = source_machine_id.ok_or_else(|| {
                 UecmError::InvalidInput("source_machine_id required for remote backend".into())
             })?;
@@ -266,7 +183,7 @@ pub async fn generate_ddc_pak(
                 runtime_backend,
             )
         }
-        BackendChoice::Local => {
+        ExecutionLocation::Local => {
             let uproject_path = local_uproject_path.ok_or_else(|| {
                 UecmError::InvalidInput("local_uproject_path required for local backend".into())
             })?;
@@ -355,7 +272,7 @@ pub async fn generate_ddc_pak(
                             )
                             .ok(),
                             UeRunnerBackend::Local => {
-                                verify_output_local(&project_dir_for_verify).ok()
+                                ddc_pak::verify_output_local(&project_dir_for_verify).ok()
                             }
                         }
                     } else {
@@ -552,8 +469,6 @@ pub async fn distribute_ddc_pak(
         &target_machine_ids,
         project_id,
         effective_unc.as_deref(),
-        None,
-        None,
         smb_user,
         smb_pass,
     )?;

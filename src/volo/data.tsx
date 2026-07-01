@@ -30,6 +30,7 @@ const ICON_PATHS = {
   settings: '<circle cx="10" cy="10" r="2.6"/><path d="M10 2.5v2.2M10 15.3v2.2M3.4 6.2l1.9 1.1M14.7 12.7l1.9 1.1M16.6 6.2l-1.9 1.1M5.3 12.7l-1.9 1.1"/>',
   check:    '<path d="M4.5 10.5 8 14l7.5-8"/>',
   alert:    '<path d="M10 3.5 17.5 16.5h-15Z"/><path d="M10 8.5v3.5"/><circle cx="10" cy="14.3" r=".9" fill="currentColor" stroke="none"/>',
+  info:     '<circle cx="10" cy="10" r="7.5"/><circle cx="10" cy="6.5" r=".9" fill="currentColor" stroke="none"/><path d="M10 9.5v5"/>',
   x:        '<path d="M5 5l10 10M15 5 5 15"/>',
   terminal: '<rect x="2.5" y="4" width="15" height="12" rx="1.6"/><path d="M5.5 8 8 10.5 5.5 13M10 13h4"/>',
   eye:      '<path d="M2.5 10S5.5 5 10 5s7.5 5 7.5 5-3 5-7.5 5-7.5-5-7.5-5Z"/><circle cx="10" cy="10" r="2.2"/>',

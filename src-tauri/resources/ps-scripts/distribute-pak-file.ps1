@@ -29,8 +29,18 @@ try {
             New-PSDrive -Name $driveName -PSProvider FileSystem -Root $SourceUnc -Credential $smbCred -ErrorAction Stop | Out-Null
             $mounted = $true
         }
-        if (-not (Test-Path -LiteralPath $SourceUnc)) {
-            throw "source UNC unreachable: $SourceUnc"
+        # Exact-filename robocopy filter (see below) matches nothing and still
+        # exits 0 if the source has no DDC.ddp — check the file directly (one
+        # round-trip on the common/success path) and fail explicitly instead
+        # of a silent "0 bytes copied" success; only re-probe the bare UNC on
+        # failure to report the more specific "unreachable" cause.
+        $FileName = 'DDC.ddp'
+        $sourceFile = Join-Path -Path $SourceUnc -ChildPath $FileName
+        if (-not (Test-Path -LiteralPath $sourceFile)) {
+            if (-not (Test-Path -LiteralPath $SourceUnc)) {
+                throw "source UNC unreachable: $SourceUnc"
+            }
+            throw "source has no $FileName to distribute: $sourceFile"
         }
         if ($PreflightOnly) {
             @{ ok = $true; exit_code = "0"; bytes_copied = "0"; stdout_tail = "preflight ok"; preflight = $true } | ConvertTo-Json -Compress
@@ -38,7 +48,7 @@ try {
         }
         $stdoutPath = Join-Path -Path $env:TEMP -ChildPath "robocopy-stdout-$PID.log"
         $stderrPath = Join-Path -Path $env:TEMP -ChildPath "robocopy-stderr-$PID.log"
-        $roboArgs = @("$SourceUnc", "$TargetLocal", "*.ddp", '/E', '/R:3', '/W:5', '/NP', '/NDL', '/NJH', '/NJS', '/BYTES')
+        $roboArgs = @("$SourceUnc", "$TargetLocal", "$FileName", '/E', '/R:3', '/W:5', '/NP', '/NDL', '/NJH', '/NJS', '/BYTES')
         $proc = Start-Process -FilePath 'robocopy.exe' -ArgumentList $roboArgs -PassThru -Wait -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
         $code = $proc.ExitCode
         $stdout = Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue

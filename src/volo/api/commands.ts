@@ -19,7 +19,7 @@ import type {
   VerifyReport, DeployPlan, DeployStep, GpuMatrix, ConsistencyResult,
   ShareMode, CreateShareResponse, TeardownShareResult, InjectionResult, ShareConfig,
   ProjectSummary, ProjectLocation, DiscoveryResult,
-  BackendChoice, GenerateJobResponse, PakOutput, DistributeJobResponse,
+  ExecutionLocation, GenerateJobResponse, PakOutput, DistributeJobResponse,
   PsoCollectJobResponse, PsoCacheFile, DistributePsoCacheRequest, PsoDistributeJobResponse,
   RunHealthCheckRequest, HealthRunSummary, HealthCheckRow,
   ZenStatusRow, ZenProbeReport, ZenCacheStatsReport, ZenDetectBinaryReport, ZenEndpoint,
@@ -223,14 +223,15 @@ export const deleteProjectLocation = (locationId: number) => call<void>("delete_
 // 📝 no-ui: 无手动建工程 UI（工程靠 discover 发现）
 export const createProjectManual = (uprojectName: string, displayName?: string | null) =>
   call<number>("create_project_manual", { uprojectName, displayName: displayName ?? null });
-// ✅ wired: cacheDdc PakDetail「生成后端」选择器 → setProjectCacheBackend + generateDdcPak 路由
+// 📝 no-ui: 工程缓存路由（zen/legacy_pak）配置入口，供「文件系统 DDC」/「ZenServer」子页接线；
+// 不再被 DDC Pak 生成流程调用（任意路由都可直接生成 Pak，见 generateDdcPak）
 export const setProjectCacheBackend = (projectId: number, machineId: number, backend: "zen" | "legacy_pak") =>
   call<void>("set_project_cache_backend", { projectId, machineId, backend });
 
 /* ----------------------------- ddc pak ----------------------------- */
 // ✅ wired: cacheDdc genPak → generateDdcPak('remote') via runStreamingCmd（ue-runner-progress + pak-verified）
 export const generateDdcPak = (
-  backend: BackendChoice, projectId: number,
+  backend: ExecutionLocation, projectId: number,
   sourceMachineId?: number | null, localUprojectPath?: string | null, localEnginePath?: string | null,
   ueVersion?: string | null, operatorCredentialAlias?: string | null,
 ) => call<GenerateJobResponse>("generate_ddc_pak", {

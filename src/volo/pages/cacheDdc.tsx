@@ -16,7 +16,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
   setMachineEnvVar, getMachineEnvVar, createLocalCache,
   prepareManagedShareClients, unprepareManagedShareClients,
   prepareOpenShareClients, unprepareOpenShareClients,
-  setMachineBackendField, removeMachineBackendField, setProjectCacheBackend } from "../api/commands";
+  setMachineBackendField, removeMachineBackendField } from "../api/commands";
 
 (function () {
   const { Button } = window.Spectrum2DesignSystem_b6d1b3;
@@ -35,7 +35,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
   };
   /* 无可用源机时，派一个立即失败的任务给可见反馈，而不是静默 return（按钮点了像没反应）。 */
   const noSrcFail = (s, domain, action, p) =>
-    s.runCmd({ domain, action, target: p.name, chan: 'winrm', note: domain + ' ' + action + ' · ' + p.name },
+    s.runCmd({ domain, action, target: p.name, chan: 'ssh', note: domain + ' ' + action + ' · ' + p.name },
       () => Promise.reject(new Error('该工程没有可用的在线源机器')), {}).catch(() => {});
 
   const humanBytes = (b) => b == null ? '—'
@@ -107,7 +107,6 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
   const onlineNodes = () => RENDER_NODES.filter((n) => n.status !== 'offline');
   const scopeOpts = () => [{ id: 'all', label: '全部在线机' }]
     .concat(onlineNodes().map((n) => ({ id: n.id, label: n.host, sub: n.ip })));
-  const backendOpts = [{ id: 'zen', label: 'ZenServer 后端' }, { id: 'legacy', label: '文件系统后端' }];
   const resOpts = [{ id: '1920×1080', label: '1920 × 1080' }, { id: '2560×1440', label: '2560 × 1440' }, { id: '3840×2160', label: '3840 × 2160' }];
   const maxOpts = [{ id: '10', label: '10 分钟' }, { id: '20', label: '20 分钟' }, { id: '30', label: '30 分钟' }];
 
@@ -141,7 +140,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       : [CX.node(scope) ? CX.node(scope).machineId : null].filter((x) => x != null);
     if (!targets.length) return;
     const tgtLabel = scope === 'all' ? targets.length + ' 台在线机' : (CX.node(scope) || {}).host;
-    s.runCmd({ domain: 'project', action: 'discover', target: tgtLabel, chan: 'winrm', note: '远程扫描 UE 工程（.uproject）' },
+    s.runCmd({ domain: 'project', action: 'discover', target: tgtLabel, chan: 'ssh', note: '远程扫描 UE 工程（.uproject）' },
       () => Promise.allSettled(targets.map((mid) => discoverProjects(mid, roots, null))).then((rs) => {
         const ok = rs.filter((r) => r.status === 'fulfilled');
         if (!ok.length) throw new Error('全部目标扫描失败');
@@ -153,16 +152,15 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
   };
 
   /* generate_ddc_pak（流式）：源机取工程 primary（检查器无 src 选择器）；invoke 的
-     BackendChoice='remote' 是执行位置；storageBackend（zen/legacy）写入 project_cache_backend
-     供后端路由（zen → 跳过 PAK 生成）；ue_version null；ue-runner-progress 'completed' 即终止。 */
-  const genPak = (s, p, storageBackend) => {
+     ExecutionLocation='remote' 是执行位置（远端源机 vs 操作员本机），与工程的缓存路由（zen/legacy_pak）
+     无关——任意路由都直接生成 PAK，不再需要先切工程后端；ue_version null；
+     ue-runner-progress 'completed' 即终止。 */
+  const genPak = (s, p) => {
     const src = pickSrc(p);
     if (!src) { noSrcFail(s, 'ddc', 'generate', p); return; } /* 无可用在线源机：可见失败而非静默 */
-    const cacheBackend = storageBackend === 'zen' ? 'zen' : 'legacy_pak';
     s.runStreamingCmd(
-      { domain: 'ddc', action: 'generate', target: p.name, chan: 'winrm', note: '生成 DDC PAK · ' + p.name + '（' + (storageBackend === 'zen' ? 'ZenServer' : '文件系统') + ' · 长任务）· 源 ' + src.host },
-      () => setProjectCacheBackend(Number(p.id), src.machineId, cacheBackend)
-        .then(() => generateDdcPak('remote', Number(p.id), src.machineId, null, null, null, null)),
+      { domain: 'ddc', action: 'generate', target: p.name, chan: 'ssh', note: '生成 DDC PAK · ' + p.name + '（长任务）· 源 ' + src.host },
+      () => generateDdcPak('remote', Number(p.id), src.machineId, null, null, null, null),
       { mode: 'event', events: ['ue-runner-progress', 'pak-verified'], jobIdOf: (r) => r.job_id, reduce: genReduce, timeoutMs: 45 * 60 * 1000 });
   };
 
@@ -173,7 +171,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
     if (!src) return Promise.resolve({ found: false });
     return s.runCmd({ domain: 'ddc', action: 'verify', target: p.name, chan: 'ssh', note: '校验 DDC PAK 产物 · ' + p.name },
       () => verifyPakOutput(src.machineId, Number(p.id), null),
-      { okMsg: (r) => '产物存在 · ' + r.path + ' · ' + humanBytes(r.size_bytes) })
+      { okMsg: (r) => '找到 DDC.ddp · ' + r.path + ' · ' + humanBytes(r.size_bytes) })
       .then(
         (r) => ({ found: true, path: r.path, size: humanBytes(r.size_bytes), name: 'DDC_' + p.name, srcId: src.machineId }),
         () => ({ found: false }));
@@ -189,7 +187,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
     const rw = Number(parts[0]) || 1920, rh = Number(parts[1]) || 1080;
     const mm = parseInt(maxStr, 10) || 20;
     s.runStreamingCmd(
-      { domain: 'pso', action: 'collect', target: p.name, chan: 'winrm', note: '收集 PSO 缓存 · ' + p.name + '（长任务 · NDJSON）' },
+      { domain: 'pso', action: 'collect', target: p.name, chan: 'ssh', note: '收集 PSO 缓存 · ' + p.name + '（长任务 · NDJSON）' },
       () => startPsoCollection(src.machineId, Number(p.id), rw, rh, true, mm, null, null),
       { mode: 'event', events: ['ue-runner-progress', 'pso-collect-finalized'], jobIdOf: (r) => r.job_id, reduce: psoReduce,
         timeoutMs: (mm + 5) * 60 * 1000, onDone: () => { if (onDone) onDone(); } }) /* 真·完成才重载，不在 kickoff resolve 时重载空列表 */
@@ -206,7 +204,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
     if (!isPso && (srcId == null || art.projId == null)) return;
     const scopeIds = RENDER_NODES.filter((n) => n.status !== 'offline' && n.roleKey === 'render').map((n) => n.id);
     CX.openPreview(s, {
-      title: '分发 · ' + art.name, icon: 'download', cli: (isPso ? 'pso' : 'ddc') + ' distribute', destructive: false, channel: 'winrm',
+      title: '分发 · ' + art.name, icon: 'download', cli: (isPso ? 'pso' : 'ddc') + ' distribute', destructive: false, channel: 'ssh',
       steps: ['把这份缓存包复制分发到选中的渲染机',
         isPso ? 'PSO 与 GPU 绑定：目标机 GPU 签名不匹配时后端会拒绝' : '只传缺少的部分，已有的自动跳过',
         '逐台显示成功 / 失败'],
@@ -216,7 +214,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
         if (!targets.length) return;
         const evName = isPso ? 'pso-distribute-progress' : 'pak-distribute-progress';
         s.runStreamingCmd(
-          { domain: isPso ? 'pso' : 'ddc', action: 'distribute', target: art.name, chan: 'winrm', note: '分发 · ' + art.name + ' → ' + targets.length + ' 台' },
+          { domain: isPso ? 'pso' : 'ddc', action: 'distribute', target: art.name, chan: 'ssh', note: '分发 · ' + art.name + ' → ' + targets.length + ' 台' },
           () => isPso
             ? distributePsoCache({ file_id: art.id, target_machine_ids: targets, named_share_unc: null, operator_credential_alias: null, source_smb_credential_alias: null, force_gpu_mismatch: false })
             : distributeDdcPak(srcId, Number(art.projId), targets, null, null, null),
@@ -276,7 +274,6 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
 
   /* =================== DDC PAK — detail (inspector) =================== */
   function PakDetail({ s }) {
-    const [backend, setBackend] = useState('zen');
     const verify = s.pakVerify || {};   /* projId -> info（提到 shell：分发开 preview drawer 会卸载 PakDetail，本地态会丢）*/
     const sel = (s.pakSel || []).map((id) => UE_PROJECTS.find((p) => p.id === id)).filter(Boolean);
     const remove = (id) => s.setPakSel((s.pakSel || []).filter((x) => x !== id));
@@ -300,7 +297,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
         v ? h('div', { className: 'id-verify' + (v.found ? ' ok' : ' miss') },
           h('div', { className: 'id-verify-h' },
             h('span', { className: 's-' + (v.found ? 'positive' : 'notice') }, h(Icon, { name: v.found ? 'check' : 'alert', size: 13 })),
-            v.found ? '产物存在' : '未找到产物'),
+            v.found ? 'DDC.ddp 存在' : '未找到 DDC.ddp'),
           v.found ? h('div', { className: 'id-verify-kv' }, h('span', null, '路径'), h('span', { className: 'v' }, v.path)) : null,
           v.found ? h('div', { className: 'id-verify-kv' }, h('span', null, '大小'), h('span', { className: 'v' }, v.size)) : null,
           v.found
@@ -326,11 +323,11 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
           h('div', { className: 'sub' }, 'generate_ddc_pak / verify_pak_output'))),
       h('div', { className: 'id-body' }, body),
       sel.length ? h('div', { className: 'id-foot' },
-        h('div', { className: 'id-field' }, h('label', null, '生成后端'),
-          h(Selector, { kpre: '后端', value: backend, options: backendOpts, width: 200, onChange: setBackend })),
+        h('div', { className: 'id-foot-scope' }, h(Icon, { name: 'info', size: 12 }),
+          '仅处理工程级 Pak（DDC.ddp），不含引擎级 Pak'),
         h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'bolt', size: 14 }),
-          onPress: () => sel.forEach((p) => genPak(s, p, backend)) },
-          '生成 DDC Pack（' + sel.length + '）')) : null);
+          onPress: () => sel.forEach((p) => genPak(s, p)) },
+          '生成 DDC PAK（' + sel.length + '）')) : null);
   }
 
   /* =================== PSO 缓存 — master (center) =================== */

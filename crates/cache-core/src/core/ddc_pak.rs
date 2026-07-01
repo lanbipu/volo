@@ -116,6 +116,24 @@ pub fn verify_output(
     })
 }
 
+/// Local-backend counterpart of `verify_output`: checks the pak on the
+/// operator's own filesystem instead of over SSH.
+pub fn verify_output_local(project_dir: &str) -> UecmResult<PakOutput> {
+    let path = std::path::Path::new(project_dir)
+        .join("DerivedDataCache")
+        .join("DDC.ddp");
+    if path.exists() {
+        let size = std::fs::metadata(&path).map_err(UecmError::Io)?.len() as i64;
+        if size > 0 {
+            return Ok(PakOutput {
+                path: path.to_string_lossy().to_string(),
+                size_bytes: size,
+            });
+        }
+    }
+    Err(UecmError::OperationFailed("DDC.ddp not found locally".into()))
+}
+
 pub fn launch_generation(
     backend: UeRunnerBackend,
     host: &str,
