@@ -9,6 +9,7 @@ import "./ds";
 import { loadCacheResources } from "./api/cacheData";
 import { cancelUeJob } from "./api/commands";
 import { call, isTauri, VoloInvokeError } from "./api/invoke";
+import { fmtDetail, safeJson } from "./logDetail";
 
 (function () {
 const { useState, useRef, useEffect } = React;
@@ -205,11 +206,50 @@ function PageTabs({ s }) {
       React.createElement('span', null, '缓存健康分 ' + (s.cluster.health == null ? '—' : s.cluster.health))));
 }
 
-/* ---------- Log panel — NDJSON stream (search · pause · channel) ---------- */
+/* ---------- clipboard helper (falls back to execCommand inside sandboxed frames) ---------- */
+function copyToClipboard(text, done) {
+  const finish = () => { if (done) done(); };
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(finish, () => execCopy(text, finish));
+      return;
+    }
+  } catch (e) { /* fall through */ }
+  execCopy(text, finish);
+}
+function execCopy(text, finish) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none;';
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  try { document.execCommand('copy'); } catch (e) { /* ignore */ }
+  document.body.removeChild(ta);
+  finish();
+}
+
+/* ---------- Log panel — NDJSON stream (search · pause · channel · 展开 · 复制) ---------- */
 function LogPanel({ s }) {
   const allLogs = s.logs;
   const q = (s.logSearch || '').trim().toLowerCase();
-  const strip = (html) => html.replace(/<[^>]+>/g, '');
+  const strip = (html) => html.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  /* 展开的行（key = ts|msg）· 最近复制的目标（行 key 或 'ALL'）以便按钮回显 */
+  const [expanded, setExpanded] = React.useState(() => new Set());
+  const [copied, setCopied] = React.useState(null);
+  const copyTimer = React.useRef(null);
+  const flash = (key) => { setCopied(key); clearTimeout(copyTimer.current); copyTimer.current = setTimeout(() => setCopied(null), 1500); };
+  React.useEffect(() => () => clearTimeout(copyTimer.current), []);
+  const keyOf = (l) => l.ts + '|' + l.task + '|' + strip(l.msg);
+  const toggle = (key) => setExpanded((prev) => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
+  /* 单行 → 纯文本（首行摘要 + 缩进的完整明细）*/
+  const rowText = (l) => {
+    const lv = l.lv === 'ok' ? 'OK' : l.lv.toUpperCase();
+    const meta = [l.ch ? CHANNEL[l.ch].label : null, l.cat, l.task ? '#' + l.task : null, l.host].filter(Boolean).join(' · ');
+    const head = `[${l.ts}] ${lv.padEnd(4)}  ${strip(l.msg)}    (${meta})`;
+    return l.detail ? head + '\n' + l.detail + '\n' : head;
+  };
   const counts = {
     all: allLogs.length,
     info: allLogs.filter((l) => l.lv === 'info' || l.lv === 'ok').length,
@@ -263,6 +303,13 @@ function LogPanel({ s }) {
           className: 'log-pause' + (s.logPaused ? ' on' : ''), title: s.logPaused ? '已暂停 — 点击恢复' : '暂停自动滚动',
           onClick: (e) => { e.stopPropagation(); s.setLogPaused((v) => !v); } },
           React.createElement(Icon, { name: s.logPaused ? 'play' : 'pause', size: 13 }), s.logPaused ? '已暂停' : '实时'),
+        conTab === 'stream' ? React.createElement('button', {
+          className: 'log-copyall' + (copied === 'ALL' ? ' done' : ''),
+          title: rows.length ? `复制当前 ${rows.length} 条日志（含明细）到剪贴板` : '当前没有可复制的日志',
+          disabled: rows.length === 0,
+          onClick: (e) => { e.stopPropagation(); if (!rows.length) return; copyToClipboard(rows.map(rowText).join('\n'), () => flash('ALL')); } },
+          React.createElement(Icon, { name: copied === 'ALL' ? 'check' : 'copy', size: 13 }),
+          copied === 'ALL' ? '已复制' : '复制全部') : null,
         React.createElement('span', { className: 'log-run-wrap' },
           React.createElement('button', {
             className: 'log-run' + (runOpen ? ' on' : ''),
@@ -292,11 +339,30 @@ function LogPanel({ s }) {
             ? React.createElement('div', { className: 'log-empty' }, '暂无历史任务')
             : React.createElement('div', { className: 'log-hist' }, histTasks.map((t) => TaskCard ? React.createElement(TaskCard, { key: t.id, s, t }) : null)))
         : (rows.length === 0 ? React.createElement('div', { className: 'log-empty' }, q ? `无匹配「${s.logSearch}」的流` : '暂无日志')
-        : rows.map((l, i) => React.createElement('div', { key: i, className: 'log-row' },
-        React.createElement('span', { className: 'ts' }, l.ts),
-        React.createElement('span', { className: 'lv ' + l.lv }, l.lv === 'ok' ? 'OK' : l.lv.toUpperCase()),
-        React.createElement('span', { className: 'ch' + (l.ch ? ' ch-' + l.ch : '') }, l.ch ? CHANNEL[l.ch].short : '·'),
-        React.createElement('span', { className: 'msg', dangerouslySetInnerHTML: { __html: l.msg } })))))
+        : rows.map((l) => {
+            const key = keyOf(l);
+            const isOpen = expanded.has(key);
+            const hasDetail = !!l.detail;
+            return React.createElement('div', { key, className: 'log-entry' + (isOpen ? ' is-open' : '') },
+              React.createElement('div', {
+                className: 'log-row' + (hasDetail ? ' has-detail' : '') + (copied === key ? ' copied' : ''),
+                onClick: () => copyToClipboard(rowText(l), () => flash(key)),
+                title: '点击复制整条日志' + (hasDetail ? '（含明细）' : '') },
+                React.createElement('span', { className: 'ts' }, l.ts),
+                React.createElement('span', { className: 'lv ' + l.lv }, l.lv === 'ok' ? 'OK' : l.lv.toUpperCase()),
+                React.createElement('span', { className: 'ch' + (l.ch ? ' ch-' + l.ch : '') }, l.ch ? CHANNEL[l.ch].short : '·'),
+                React.createElement('span', { className: 'msg' },
+                  hasDetail ? React.createElement('button', {
+                    className: 'log-caret', style: { transform: isOpen ? 'rotate(90deg)' : 'none' },
+                    title: isOpen ? '收起明细' : '展开明细',
+                    onClick: (e) => { e.stopPropagation(); toggle(key); } },
+                    React.createElement(Icon, { name: 'chevr', size: 12 })) : null,
+                  React.createElement('span', { className: 'msg-tx', dangerouslySetInnerHTML: { __html: l.msg } })),
+                React.createElement('span', { className: 'log-copy' + (copied === key ? ' done' : '') },
+                  React.createElement(Icon, { name: copied === key ? 'check' : 'copy', size: 12 }),
+                  React.createElement('span', { className: 'log-copy-tx' }, copied === key ? '已复制' : '点击复制'))),
+              isOpen ? React.createElement('pre', { className: 'log-detail' }, l.detail) : null);
+          })))
       : null);
 }
 
@@ -498,6 +564,11 @@ function App() {
      via dangerouslySetInnerHTML). Our own `<b>` wrappers are added outside esc. */
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;');
 
+  /* runCmd/runStreamingCmd 共用的 detail 公共字段（task/domain/action/target/channel/note），
+     调用方只需追加各自特有的字段（elapsed/result/error/…）。 */
+  const baseDetailFields = (no, domain, action, target, chan, note) =>
+    [['task', '#' + no], ['domain', domain], ['action', action], ['target', target], ['channel', chan], ['note', note]];
+
   /* runCmd — dispatch ONE real backend command (no event stream) into the same
      task drawer + NDJSON console as runTask. meta.chan must be 'winrm'|'ssh'.
      exec is a thunk returning the typed command Promise (e.g. () => deleteShare(id)).
@@ -517,12 +588,16 @@ function App() {
     try {
       const res = await exec();
       setTasks((prev) => prev.map((t) => t.id === id ? { ...t, state: 'success', pct: 100, exit: 0, elapsed: secs() } : t));
-      pushLog({ lv: 'ok', cat: domain, ch: chan, task: no, msg: opts.okMsg ? esc(opts.okMsg(res)) : `<b>${title} #${no}</b> 完成` });
+      pushLog({ lv: 'ok', cat: domain, ch: chan, task: no, msg: opts.okMsg ? esc(opts.okMsg(res)) : `<b>${title} #${no}</b> 完成`,
+        detail: fmtDetail([...baseDetailFields(no, domain, action, target, chan, note),
+          ['elapsed', secs()], ['result', res == null ? undefined : safeJson(res)]]) });
       return res;
     } catch (e) {
       const m = e && e.message ? e.message : String(e);
       setTasks((prev) => prev.map((t) => t.id === id ? { ...t, state: 'failed', pct: 100, exit: 2, elapsed: secs() } : t));
-      pushLog({ lv: 'err', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 失败 · ${esc(m)}` });
+      pushLog({ lv: 'err', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 失败 · ${esc(m)}`,
+        detail: fmtDetail([...baseDetailFields(no, domain, action, target, chan, note),
+          ['command', e && e.command], ['elapsed', secs()], ['error', m]]) });
       /* Persist the failure to the operations table. Frontend-orchestrated ops
          (share join/leave, …) can fail BEFORE any backend command runs, so they
          leave no `logged(...)` row — without this the error has no DB trail.
@@ -566,15 +641,17 @@ function App() {
     const st = {};
     const isMine = wiring.isMine || ((p, jid) => p && p.job_id === jid);
     const setPct = (p) => { if (p != null) setTasks((prev) => prev.map((t) => t.id === id ? { ...t, pct: Math.max(4, Math.min(99, Math.round(p))) } : t)); };
-    const finalize = (ok, exit) => {
+    const finalize = (ok, exit, payload) => {
       if (finished) return;
       finished = true;
       if (timer) { clearTimeout(timer); timer = null; }
       const ex = ok ? 0 : (exit == null ? 2 : exit);
       setTasks((prev) => prev.map((t) => t.id === id ? { ...t, state: ok ? 'success' : 'failed', pct: 100, exit: ex, elapsed: secs() } : t));
+      const detail = fmtDetail([...baseDetailFields(no, domain, action, target, chan, note),
+        ['elapsed', secs()], ['exit', ex], ['event', payload === undefined ? undefined : safeJson(payload)]]);
       pushLog(ok
-        ? { lv: 'ok', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 完成` }
-        : { lv: 'err', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 失败 · exit ${ex}` });
+        ? { lv: 'ok', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 完成`, detail }
+        : { lv: 'err', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 失败 · exit ${ex}`, detail });
       uns.forEach((u) => { try { u(); } catch (e) {} });
       if (wiring.onDone) { try { wiring.onDone(ok); } catch (e) {} } /* 完成回调（如收集后重载列表）*/
     };
@@ -599,7 +676,7 @@ function App() {
       const r = wiring.reduce(ev, p, st) || {};
       if (r.log && r.log.msg) pushLog({ lv: r.log.lv || 'info', cat: domain, ch: chan, task: no, msg: esc(r.log.msg) });
       if (r.pct != null) setPct(r.pct);
-      if (r.done) finalize(!!r.ok, r.exit);
+      if (r.done) finalize(!!r.ok, r.exit, p);
       else armTimer(); /* 每个非终态事件重置空闲计时器 */
     };
     const handler = (ev) => (e) => {
@@ -616,7 +693,9 @@ function App() {
     } catch (e) {
       const m = e && e.message ? e.message : String(e);
       setTasks((prev) => prev.map((t) => t.id === id ? { ...t, state: 'failed', pct: 100, exit: 2, elapsed: secs() } : t));
-      pushLog({ lv: 'err', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 失败 · ${esc(m)}` });
+      pushLog({ lv: 'err', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 失败 · ${esc(m)}`,
+        detail: fmtDetail([...baseDetailFields(no, domain, action, target, chan, note),
+          ['command', e && e.command], ['elapsed', secs()], ['error', m]]) });
       uns.forEach((u) => { try { u(); } catch (e2) {} });
       throw e;
     }
@@ -630,7 +709,7 @@ function App() {
                           日志未命中终止串时后端永不发 completed → 任务卡 running。空闲超时到点
                           调 onTimeout(jobId) 取消后端 job + 标失败，避免僵任务（PSO 有 watchdog，此为双保险）。 */
     } else {
-      finalize(true, 0); /* 'await' 模式：kickoff 已是终态 */
+      finalize(true, 0, resp); /* 'await' 模式：kickoff 已是终态，resp 即真实返回值 */
     }
     return resp;
   };

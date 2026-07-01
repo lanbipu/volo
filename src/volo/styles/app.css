@@ -2242,3 +2242,29 @@ html, body {
 .log-tab--hist svg { opacity: .85; }
 .log-body--hist { font-family: var(--font-sans); padding: 10px 12px; }
 .log-hist { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px; align-content: start; }
+
+/* 控制台：行内展开明细 + 单击整行复制 */
+.log-entry { border-bottom: 1px solid transparent; }
+.log-entry.is-open { background: var(--wash); border-bottom-color: var(--chrome-line); }
+.log-row { position: relative; padding-right: 82px; cursor: pointer; }
+.log-row:active { background: var(--wash-2); }
+.log-row .msg { display: flex; align-items: baseline; gap: 5px; min-width: 0; }
+.log-row .msg .msg-tx { min-width: 0; overflow-wrap: anywhere; }
+.log-caret { all: unset; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box;
+  width: 16px; height: 16px; margin-left: -2px; border-radius: 4px; color: var(--chrome-faint); cursor: pointer;
+  flex: 0 0 auto; align-self: flex-start; margin-top: 1px; transition: transform .14s var(--ease-default), background .12s, color .12s; }
+.log-caret:hover { background: var(--wash-2); color: var(--chrome-text); }
+.log-entry.is-open .log-caret { color: var(--chrome-dim); }
+.log-copy { position: absolute; top: 3px; right: 8px; display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10.5px; font-weight: 700; color: var(--chrome-faint); pointer-events: none;
+  opacity: 0; transition: opacity .12s, color .12s; }
+.log-entry:hover .log-copy { opacity: .9; }
+.log-row.copied .log-copy, .log-copy.done { opacity: 1; color: var(--positive-visual); }
+.log-detail { margin: 0; padding: 8px 14px 12px 30px; font-family: var(--font-code); font-size: 11px; line-height: 1.65;
+  color: var(--chrome-dim); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text;
+  border-left: 2px solid var(--chrome-line-2); margin-left: 14px; }
+.log-copyall { all: unset; display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700;
+  color: var(--chrome-dim); background: var(--wash); border: 1px solid var(--chrome-line); padding: 3px 9px; border-radius: 7px; cursor: pointer; }
+.log-copyall:hover { background: var(--wash-2); color: var(--chrome-text); border-color: var(--chrome-line-2); }
+.log-copyall:disabled { opacity: .45; cursor: default; }
+.log-copyall.done { color: var(--positive-visual); border-color: color-mix(in srgb, var(--positive-visual) 40%, transparent); background: color-mix(in srgb, var(--positive-visual) 12%, transparent); }
