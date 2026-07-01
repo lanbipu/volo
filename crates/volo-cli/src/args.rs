@@ -1094,6 +1094,19 @@ pub enum ZenAction {
         /// `local` → `editor_owned`. Pass `--lifecycle` to override.
         #[arg(long, value_name = "MODE")]
         lifecycle: Option<String>,
+        /// `{ZenInstall}` — directory zenserver.exe + zen_config.lua live in.
+        /// When set, `zen apply-config` copies the detected zen.exe here (if
+        /// not already present) and derives the config/service paths from
+        /// this directory instead of the detected binary's own location.
+        /// Omit to keep the legacy derive-from-detected-binary behavior.
+        #[arg(long, value_name = "PATH")]
+        install_dir: Option<String>,
+        /// Manual override for where zen_config.lua lands — takes precedence
+        /// over the `--install-dir`-derived path. Rare; only needed when the
+        /// operator has a specific reason to keep the config file somewhere
+        /// other than alongside zenserver.exe's install directory.
+        #[arg(long, value_name = "PATH")]
+        config_path_override: Option<String>,
     },
     /// Delete a registered endpoint. Refuses if other endpoints reference it
     /// as their upstream — un-point them first.
@@ -1153,6 +1166,46 @@ pub enum ZenAction {
     LuaPreview {
         #[arg(long, value_name = "ID")]
         endpoint_id: i64,
+    },
+    /// Set the endpoint's GC retention settings (`gc.intervalseconds` /
+    /// `gc.lightweightintervalseconds` / `cache.maxdurationseconds`),
+    /// re-render + rewrite `zen_config.lua`, then restart the service so
+    /// the new values take effect (Zen doesn't hot-reload the file).
+    ///
+    /// Destructive: requires `--yes` or `--dry-run` — a real apply always
+    /// causes a brief service interruption for every client pointed at it.
+    GcSet {
+        #[arg(long, value_name = "ID")]
+        endpoint_id: i64,
+        /// `gc.intervalseconds` — full GC scan interval, in seconds.
+        #[arg(long, value_name = "SECS")]
+        gc_interval_seconds: i64,
+        /// `gc.lightweightintervalseconds` — lightweight GC scan interval, in seconds.
+        #[arg(long, value_name = "SECS")]
+        gc_lightweight_interval_seconds: i64,
+        /// `cache.maxdurationseconds` — max cache retention, in seconds.
+        #[arg(long, value_name = "SECS")]
+        cache_max_duration_seconds: i64,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        dry_run: bool,
+        #[command(flatten)]
+        cred: crate::credential_args::CredentialArgs,
+    },
+    /// One-click provisioning of a dedicated non-admin local Windows account
+    /// for the "专用本地账号" service-account tier (Epic's officially-
+    /// recommended least-privilege alternative to SYSTEM). Prints the
+    /// generated username + a `SecretStore` credential alias — never the
+    /// password itself. Pass the alias to `service install --service-cred-alias`.
+    ///
+    /// Not gated by `--yes`/`--dry-run`: creating the account has no effect
+    /// on any running service until `service install` is actually called
+    /// with it.
+    AccountCreate {
+        /// Machine row id to create the account on.
+        #[arg(long, value_name = "ID")]
+        machine: i64,
     },
     /// Windows-service management for the endpoint's zenserver.
     Service {
@@ -1418,16 +1471,24 @@ pub enum ZenServiceAction {
         /// `LocalSystem`, `.\\uecm-test`, `DOMAIN\\renderfarm-svc`.
         #[arg(long, value_name = "USER")]
         service_user: Option<String>,
-        /// Password for `--service-user`. Required for non-built-in
-        /// accounts (LocalSystem / LocalService / NetworkService have
-        /// no password). Visible briefly in zen.exe argv — use
-        /// `--service-pass-stdin` to read from stdin instead.
-        #[arg(long, value_name = "PASS", conflicts_with = "service_pass_stdin")]
+        /// Password for `--service-user`. Required for non-built-in,
+        /// non-gMSA accounts (LocalSystem / LocalService / NetworkService /
+        /// a gMSA name ending in `$` have no password). Visible briefly in
+        /// zen.exe argv — use `--service-pass-stdin` to read from stdin
+        /// instead.
+        #[arg(long, value_name = "PASS", conflicts_with_all = ["service_pass_stdin", "service_cred_alias"])]
         service_pass: Option<String>,
         /// Read service password from stdin (single line, trailing
-        /// CR/LF trimmed). Mutually exclusive with `--service-pass`.
-        #[arg(long)]
+        /// CR/LF trimmed). Mutually exclusive with `--service-pass` /
+        /// `--service-cred-alias`.
+        #[arg(long, conflicts_with = "service_cred_alias")]
         service_pass_stdin: bool,
+        /// `SecretStore` alias from `zen account-create` — resolves the
+        /// managed dedicated account's password server-side instead of
+        /// passing it on the command line. Mutually exclusive with
+        /// `--service-pass` / `--service-pass-stdin`.
+        #[arg(long, value_name = "ALIAS")]
+        service_cred_alias: Option<String>,
         #[arg(long)]
         yes: bool,
         #[arg(long)]

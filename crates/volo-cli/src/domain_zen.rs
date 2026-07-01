@@ -68,18 +68,21 @@ use std::time::Duration;
 // CLI binary crate). Re-export them here so the rest of this module — and its
 // tests — keep referring to them by their original unqualified names.
 pub(crate) use cache_core::core::zen::ops::{
-    default_lifecycle_for, finalize_op, invoke_write_lua, parse_envelope, render_lua_for,
-    require_endpoint, require_machine, resolve_zen_exe_and_config_path, run_node, sha256_hex_of,
-    url_prefix_for, validate_data_dir_safe, validate_dest_path, validate_service_account_pair,
-    validate_service_data_dir, verify_write_response, workstation_colocation_warning,
-    DEFAULT_SERVICE_NAME,
+    copy_binary_if_needed, default_lifecycle_for, finalize_op, parse_envelope, render_lua_for,
+    require_endpoint, require_machine, resolve_install_paths, resolve_service_paths,
+    resolve_upstream_info, restart_service, run_node, url_prefix_for, validate_data_dir_safe,
+    validate_dest_path, validate_service_account_pair, validate_service_data_dir,
+    workstation_colocation_warning, write_and_verify_lua, DEFAULT_SERVICE_NAME,
 };
-// Only the tests below reach for `collapse_path_segments` / `pick_service_zen_exe`
-// directly (the prod path uses them transitively via `resolve_zen_exe_and_config_path` /
-// the validators); keep the re-export test-gated so the GUI/CLI binary build
-// doesn't flag them as unused.
+// Only the tests below reach for these directly (the prod path uses
+// `sha256_hex_of`/`verify_write_response` transitively via
+// `write_and_verify_lua`, and `collapse_path_segments`/`pick_service_zen_exe`
+// via the validators); keep the re-export test-gated so the GUI/CLI binary
+// build doesn't flag them as unused.
 #[cfg(test)]
-pub(crate) use cache_core::core::zen::ops::{collapse_path_segments, pick_service_zen_exe};
+pub(crate) use cache_core::core::zen::ops::{
+    collapse_path_segments, pick_service_zen_exe, sha256_hex_of, verify_write_response,
+};
 
 
 const KIND_ZEN_CLI: &str = "zen_cli";
@@ -114,6 +117,8 @@ pub fn handle(ctx: &mut Ctx<'_>, action: ZenAction) -> UecmResult<()> {
             data_dir,
             httpserverclass,
             lifecycle,
+            install_dir,
+            config_path_override,
         } => register(
             ctx,
             machine,
@@ -124,6 +129,8 @@ pub fn handle(ctx: &mut Ctx<'_>, action: ZenAction) -> UecmResult<()> {
             &data_dir,
             &httpserverclass,
             lifecycle.as_deref(),
+            install_dir,
+            config_path_override,
         ),
         ZenAction::Unregister { endpoint_id, yes, dry_run } => {
             unregister(ctx, endpoint_id, yes, dry_run)
@@ -142,6 +149,25 @@ pub fn handle(ctx: &mut Ctx<'_>, action: ZenAction) -> UecmResult<()> {
             cred,
         } => apply_config(ctx, endpoint_id, yes, dry_run, &cred),
         ZenAction::LuaPreview { endpoint_id } => lua_preview(ctx, endpoint_id),
+        ZenAction::GcSet {
+            endpoint_id,
+            gc_interval_seconds,
+            gc_lightweight_interval_seconds,
+            cache_max_duration_seconds,
+            yes,
+            dry_run,
+            cred,
+        } => gc_set(
+            ctx,
+            endpoint_id,
+            gc_interval_seconds,
+            gc_lightweight_interval_seconds,
+            cache_max_duration_seconds,
+            yes,
+            dry_run,
+            &cred,
+        ),
+        ZenAction::AccountCreate { machine } => account_create(ctx, machine),
         ZenAction::SponsorDown { endpoint_id, yes, dry_run, cred } => {
             sponsor_down(ctx, endpoint_id, yes, dry_run, &cred)
         }
@@ -151,6 +177,7 @@ pub fn handle(ctx: &mut Ctx<'_>, action: ZenAction) -> UecmResult<()> {
                 service_user,
                 service_pass,
                 service_pass_stdin,
+                service_cred_alias,
                 yes,
                 dry_run,
                 cred,
@@ -162,12 +189,17 @@ pub fn handle(ctx: &mut Ctx<'_>, action: ZenAction) -> UecmResult<()> {
                 // LocalService. Mirror the PS-side IsNullOrWhiteSpace by
                 // treating whitespace-only strings as missing. Empty
                 // `--service-pass ""` is also treated as missing here so
-                // the error message stays accurate.
+                // the error message stays accurate. `--service-cred-alias`
+                // resolves to a password server-side just as much as
+                // `--service-pass`/`--service-pass-stdin` do — omitted here,
+                // an alias without `--service-user` would silently install
+                // under LocalService while discarding the resolved password.
                 let pass_provided = service_pass
                     .as_deref()
                     .map(|p| !p.is_empty())
                     .unwrap_or(false)
-                    || service_pass_stdin;
+                    || service_pass_stdin
+                    || service_cred_alias.is_some();
                 if pass_provided
                     && service_user
                         .as_deref()
@@ -175,8 +207,8 @@ pub fn handle(ctx: &mut Ctx<'_>, action: ZenAction) -> UecmResult<()> {
                         .unwrap_or(true)
                 {
                     return Err(UecmError::InvalidInput(
-                        "--service-pass / --service-pass-stdin requires --service-user; \
-                         the password is forwarded to zen only when the user is set"
+                        "--service-pass / --service-pass-stdin / --service-cred-alias requires \
+                         --service-user; the password is forwarded to zen only when the user is set"
                             .into(),
                     ));
                 }
@@ -189,6 +221,7 @@ pub fn handle(ctx: &mut Ctx<'_>, action: ZenAction) -> UecmResult<()> {
                     service_user.as_deref(),
                     service_pass.as_deref(),
                     service_pass_stdin,
+                    service_cred_alias.as_deref(),
                     yes,
                     dry_run,
                     &cred,
@@ -878,6 +911,8 @@ fn register(
     data_dir: &str,
     httpserverclass: &str,
     lifecycle: Option<&str>,
+    install_dir: Option<String>,
+    config_path_override: Option<String>,
 ) -> UecmResult<()> {
     let db = ctx.require_db()?.clone();
     // Sanity check that the machine row exists before we hit the endpoint
@@ -902,6 +937,8 @@ fn register(
         data_dir: data_dir.to_string(),
         httpserverclass: httpserverclass.to_string(),
         lifecycle_mode: lifecycle_mode.clone(),
+        install_dir,
+        config_path_override,
     };
     let outcome = zen_endpoint::register(&db, &input)?;
     // Idempotent contract (plan §7.2): when `inserted=false`, the existing
@@ -928,6 +965,8 @@ fn register(
         "lifecycle_mode": persisted.lifecycle_mode,
         "httpserverclass": persisted.httpserverclass,
         "data_dir": persisted.data_dir,
+        "install_dir": persisted.install_dir,
+        "config_path_override": persisted.config_path_override,
     });
     ctx.emitter.emit_result(&doc).ok();
     Ok(())
@@ -1084,6 +1123,10 @@ fn lua_preview(ctx: &mut Ctx<'_>, endpoint_id: i64) -> UecmResult<()> {
     Ok(())
 }
 
+/// Split off the directory component of a remote Windows path (same
+/// backslash/forward-slash rfind `zen_config_lua_path` uses internally —
+/// this describes a path on the remote host, not the local OS voloctl runs
+/// on).
 fn apply_config(
     ctx: &mut Ctx<'_>,
     endpoint_id: i64,
@@ -1102,8 +1145,11 @@ fn apply_config(
     // because `zen service install` launches the service with `--config={
     // that path}` and nothing else tells zenserver where to look. No
     // operator override — a mismatched path here would silently detach the
-    // written config from the running service.
-    let (_zen_exe, dest_path) = resolve_zen_exe_and_config_path(&db, ep.machine_id)?;
+    // written config from the running service. `resolve_install_paths` makes
+    // the endpoint's `install_dir` (when set) authoritative instead of
+    // wherever `zen detect-binary` found the source binary.
+    let resolved = resolve_install_paths(&db, &ep)?;
+    let dest_path = resolved.target_config.clone();
 
     // Codex P2 fix: mirror `zen-write-lua-config.ps1`'s destination-path
     // checks here so `--dry-run` doesn't approve a path the `--yes` apply
@@ -1148,20 +1194,24 @@ fn apply_config(
     // maps to exit 4 — same contract as M1 detect-binary.
     cred.preflight(&db)?;
 
-    // operations log row — log the *redacted* invocation so secrets never
-    // make it to disk.
-    let invocation = redact(&format!(
-        "zen-write-lua-config.ps1 -DestPath {dest_path} (lua {} bytes)",
-        lua.len()
-    ));
-    let op_id = operations::start(&db, "zen.apply_config", &[ep.machine_id])?;
+    // install_dir made target_exe authoritative and it isn't where the
+    // detected binary lives today — copy it there first so zen_config.lua
+    // doesn't end up alongside an exe that will never actually run it.
+    let mut remote = serde_json::Value::Null;
+    if let Some(copy_result) = copy_binary_if_needed(&db, ep.machine_id, &machine.ip, &resolved)? {
+        remote["binary_copy"] = copy_result;
+    }
 
-    let expected_sha = sha256_hex_of(&lua);
-    let result = invoke_write_lua(&machine.ip, &lua, &dest_path, None)
-        .and_then(|response| verify_write_response(&response, &expected_sha, lua.len()));
-    finalize_op(&db, op_id, &result, &invocation);
-
-    let response = result?;
+    let (expected_sha, config_response) = write_and_verify_lua(
+        &db,
+        ep.machine_id,
+        &machine.ip,
+        &lua,
+        &dest_path,
+        None,
+        "zen.apply_config",
+    )?;
+    remote["config_write"] = config_response;
     let summary = serde_json::json!({
         "ok": true,
         "endpoint_id": endpoint_id,
@@ -1169,9 +1219,151 @@ fn apply_config(
         "host": machine.ip,
         "dest_path": &dest_path,
         "sha256": expected_sha,
-        "remote": response,
+        "remote": remote,
     });
     ctx.emitter.emit_event(&Event::Completed { summary }).ok();
+    Ok(())
+}
+
+/// Persist GC retention settings for the endpoint, re-render + rewrite
+/// `zen_config.lua`, then restart the service so the new values take effect
+/// (Zen doesn't hot-reload the config file). Destructive: requires `--yes`
+/// or `--dry-run` — a real apply always causes a brief service interruption.
+#[allow(clippy::too_many_arguments)]
+fn gc_set(
+    ctx: &mut Ctx<'_>,
+    endpoint_id: i64,
+    gc_interval_seconds: i64,
+    gc_lightweight_interval_seconds: i64,
+    cache_max_duration_seconds: i64,
+    yes: bool,
+    dry_run: bool,
+    cred: &CredentialArgs,
+) -> UecmResult<()> {
+    cache_core::core::zen::lua_config::validate_positive_seconds(
+        "gc_interval_seconds",
+        Some(gc_interval_seconds),
+    )?;
+    cache_core::core::zen::lua_config::validate_positive_seconds(
+        "gc_lightweight_interval_seconds",
+        Some(gc_lightweight_interval_seconds),
+    )?;
+    cache_core::core::zen::lua_config::validate_positive_seconds(
+        "cache_max_duration_seconds",
+        Some(cache_max_duration_seconds),
+    )?;
+
+    let db = ctx.require_db()?.clone();
+    cred.preflight(&db)?;
+    let ep = require_endpoint(&db, endpoint_id)?;
+    let machine = require_machine(&db, ep.machine_id)?;
+
+    // Same lifecycle guard as service_simple (start/stop) and service_install:
+    // an `editor_owned` endpoint has no SCM service for zen-down.ps1/zen-up.ps1
+    // to touch, and blindly restarting DEFAULT_SERVICE_NAME could stop/start
+    // an unrelated stale service left over from a different endpoint.
+    if ep.lifecycle_mode != "installed_service" {
+        return Err(UecmError::InvalidInput(format!(
+            "zen.gc-set requires endpoint id={endpoint_id} to have lifecycle_mode=\"installed_service\" \
+             (got {:?}); `editor_owned` endpoints have no SCM service to restart",
+            ep.lifecycle_mode
+        )));
+    }
+
+    let (_target_exe, dest_path) = resolve_service_paths(&db, &ep)?;
+    validate_dest_path(&dest_path)?;
+
+    // Render from an in-memory preview copy (never touches the DB) for both
+    // the dry-run plan and the real apply below — the real apply only
+    // persists the new values after the remote write + restart succeed, so a
+    // failed apply can't leave the DB claiming a policy that was never
+    // actually live (see zen_endpoints::update_gc_settings call at the end).
+    let mut preview_ep = ep.clone();
+    preview_ep.gc_interval_seconds = Some(gc_interval_seconds);
+    preview_ep.gc_lightweight_interval_seconds = Some(gc_lightweight_interval_seconds);
+    preview_ep.cache_max_duration_seconds = Some(cache_max_duration_seconds);
+    let upstream = resolve_upstream_info(&db, &preview_ep)?;
+    let lua = cache_core::core::zen::lua_config::render(&preview_ep, upstream.as_ref())?;
+
+    if dry_run {
+        destructive::emit_plan(
+            ctx.emitter.as_mut(),
+            "zen.gc_settings.update",
+            serde_json::json!({
+                "endpoint_id": endpoint_id,
+                "machine_id": ep.machine_id,
+                "host": machine.ip,
+                "dest_path": &dest_path,
+                "lua": lua,
+                "will_restart_service": true,
+            }),
+        );
+        return Ok(());
+    }
+    if !yes {
+        return Err(UecmError::InvalidInput(
+            "zen.gc-set is destructive (rewrites config + restarts the service); \
+             pass --yes to confirm or --dry-run to preview"
+                .into(),
+        ));
+    }
+
+    cred.preflight(&db)?;
+
+    let (expected_sha, config_response) = write_and_verify_lua(
+        &db,
+        ep.machine_id,
+        &machine.ip,
+        &lua,
+        &dest_path,
+        None,
+        "zen.gc_settings_update",
+    )?;
+
+    // Restart so the new file actually takes effect (Zen doesn't hot-reload).
+    restart_service(&db, ep.machine_id, &machine.ip)?;
+
+    // Only persist once the remote write + restart both actually succeeded —
+    // otherwise `zen status`/the UI would show the new policy as current
+    // while the live server still runs on the old settings.
+    zen_endpoints::update_gc_settings(
+        &db,
+        endpoint_id,
+        gc_interval_seconds,
+        gc_lightweight_interval_seconds,
+        cache_max_duration_seconds,
+    )?;
+
+    let summary = serde_json::json!({
+        "ok": true,
+        "endpoint_id": endpoint_id,
+        "machine_id": ep.machine_id,
+        "host": machine.ip,
+        "dest_path": dest_path,
+        "sha256": expected_sha,
+        "restarted": true,
+        "remote": config_response,
+    });
+    ctx.emitter.emit_event(&Event::Completed { summary }).ok();
+    Ok(())
+}
+
+/// One-click provisioning of a dedicated non-admin local Windows account for
+/// the "专用本地账号" service-account tier (Epic's officially-recommended
+/// least-privilege alternative to SYSTEM). Not gated by `--yes`/`--dry-run`:
+/// creating the account has no effect on any running service until `zen
+/// service install --service-cred-alias` is actually called with it.
+fn account_create(ctx: &mut Ctx<'_>, machine: i64) -> UecmResult<()> {
+    let db = ctx.require_db()?.clone();
+    let m = require_machine(&db, machine)?;
+    let result = cache_core::core::zen::service_account::create_dedicated_account(machine, &m.ip)?;
+    let doc = serde_json::json!({
+        "ok": true,
+        "machine_id": machine,
+        "username": result.username,
+        "cred_alias": result.cred_alias,
+    });
+    ctx.emitter.emit_result(&doc).ok();
     Ok(())
 }
 
@@ -1187,12 +1379,14 @@ enum ServiceVerb {
 }
 
 
+#[allow(clippy::too_many_arguments)]
 fn service_install(
     ctx: &mut Ctx<'_>,
     endpoint_id: i64,
     service_user: Option<&str>,
     service_pass_inline: Option<&str>,
     service_pass_stdin: bool,
+    service_cred_alias: Option<&str>,
     yes: bool,
     dry_run: bool,
     cred: &CredentialArgs,
@@ -1202,6 +1396,12 @@ fn service_install(
     let ep = require_endpoint(&db, endpoint_id)?;
     let machine = require_machine(&db, ep.machine_id)?;
 
+    // Whether an alias was supplied is all the validation/dry-run-plan code
+    // below needs — resolving its actual password value is a SecretStore
+    // decrypt, deferred past the dry-run/--yes gates further down so a
+    // preview or rejected destructive command never touches it.
+    let alias_supplied = service_cred_alias.is_some();
+
     // Resolve the zen.exe to hand `zen service install`. We wrap
     // `zen.exe service install`, which registers the sibling zenserver.exe as
     // the SCM service binary. Bug 4 (2026-06-05 lanPC E2E): the in-tree binary
@@ -1210,7 +1410,12 @@ fn service_install(
     // — see `pick_service_zen_exe`.
     // Same fixed {ZenInstall}\zen_config.lua path `zen apply-config` writes
     // to — the service is launched with `--config=` pointing here.
-    let (zen_exe, config_path) = resolve_zen_exe_and_config_path(&db, ep.machine_id)?;
+    // install_dir (when set) makes {ZenInstall} authoritative — by the time
+    // service-install runs, `zen apply-config` has already copied
+    // zenserver.exe there, so this doesn't need detection metadata to still
+    // exist (unlike `resolve_install_paths`, which apply-config needs for its
+    // own copy-decision but service-install never touches).
+    let (zen_exe, config_path) = resolve_service_paths(&db, &ep)?;
 
     // Codex P2: lifecycle is the DB source of truth. Refuse to install zen as
     // an OS service when the endpoint row claims `editor_owned` — otherwise
@@ -1246,7 +1451,11 @@ fn service_install(
     // sidecar would reject `.\\render-svc` without a password, so dry-run
     // must reject it too instead of printing an "approved" plan that the
     // real apply path fails.
-    validate_service_account_pair(service_user, service_pass_inline, service_pass_stdin)?;
+    validate_service_account_pair(
+        service_user,
+        service_pass_inline,
+        service_pass_stdin || alias_supplied,
+    )?;
 
     // ZEN-3: workstation co-location pre-flight (advisory only — NOT a hard
     // error, since co-location can be a deliberate choice).
@@ -1280,7 +1489,8 @@ fn service_install(
                 "service_pass_supplied": service_pass_inline
                     .map(|p| !p.is_empty())
                     .unwrap_or(false)
-                    || service_pass_stdin,
+                    || service_pass_stdin
+                    || alias_supplied,
                 "warnings": workstation_warning
                     .as_ref()
                     .map(|w| vec![w.clone()])
@@ -1295,9 +1505,19 @@ fn service_install(
         ));
     }
 
-    // Codex P2: read stdin only AFTER the dry-run / --yes guards pass so a
-    // preview or rejected destructive command never consumes secret input.
-    let resolved_pass: Option<String> = if service_pass_stdin {
+    // Codex P2: read stdin / resolve the alias's password only AFTER the
+    // dry-run / --yes guards pass so a preview or rejected destructive
+    // command never touches secret input (stdin or SecretStore).
+    let resolved_pass: Option<String> = if let Some(alias) = service_cred_alias {
+        Some(
+            cache_core::core::zen::service_account::resolve_password(alias)?.ok_or_else(|| {
+                UecmError::InvalidInput(format!(
+                    "service_cred_alias {alias:?} has no stored password — the managed \
+                     account may have been deleted; run `zen account-create` again"
+                ))
+            })?,
+        )
+    } else if service_pass_stdin {
         use std::io::BufRead;
         let mut line = String::new();
         std::io::stdin().lock().read_line(&mut line).map_err(|e| {
@@ -1338,6 +1558,9 @@ fn service_install(
         "ZenExePath": zen_exe,
         "ServiceName": DEFAULT_SERVICE_NAME,
         "ConfigPath": config_path,
+        // Only used by the PS script to icacls-grant a non-builtin account;
+        // ignored for SYSTEM/LocalService/NetworkService.
+        "DataDir": ep.data_dir,
     });
     if let Some(obj) = args.as_object_mut() {
         if let Some(u) = service_user {
@@ -1351,6 +1574,17 @@ fn service_install(
         .and_then(|raw| parse_envelope(&raw, "zen-service-install"));
     finalize_op(&db, op_id, &result, &invocation);
     let response = result?;
+
+    // Remember the tool-managed account (if any) so `zen status`/the UI show
+    // "already created" instead of prompting to create a new one next time.
+    // Manual entries (no alias) and builtin accounts intentionally aren't
+    // remembered — clears any stale link from a previous managed account.
+    zen_endpoints::update_service_account(
+        &db,
+        endpoint_id,
+        service_cred_alias.and(service_user),
+        service_cred_alias,
+    )?;
 
     let summary = serde_json::json!({
         "ok": true,
@@ -3445,6 +3679,7 @@ mod tests {
                 lifecycle_mode: "managed".into(),
                 created_at: None,
                 updated_at: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -3632,6 +3867,8 @@ mod tests {
             r"D:\ZenData",
             "asio",
             None, // no lifecycle override → default to editor_owned
+            None,
+            None,
         )
         .unwrap();
         let rows = zen_endpoints::list_for_machine(&db, machine_id).unwrap();
@@ -3653,6 +3890,8 @@ mod tests {
             r"D:\ZenData",
             "asio",
             None,
+            None,
+            None,
         )
         .unwrap_err();
         assert!(matches!(err, UecmError::InvalidInput(_)));
@@ -3673,6 +3912,8 @@ mod tests {
             r"D:\ZenMaster",
             "asio",
             None, // shared_upstream → default to installed_service per T2.1
+            None,
+            None,
         )
         .unwrap();
         let rows = zen_endpoints::list_for_machine(&db, machine_id).unwrap();
@@ -3917,6 +4158,8 @@ mod tests {
                 data_dir: r"D:\ZenData".into(),
                 httpserverclass: "asio".into(),
                 lifecycle_mode: "editor_owned".into(),
+                install_dir: None,
+                config_path_override: None,
             },
         )
         .unwrap()
@@ -3946,7 +4189,7 @@ mod tests {
             pass_stdin: false,        };
         // --dry-run with editor_owned must still error out (DB state matters,
         // not the dry-run flag).
-        let err = service_install(&mut ctx, endpoint_id, None, None, false, false, true, &cred).unwrap_err();
+        let err = service_install(&mut ctx, endpoint_id, None, None, false, None, false, true, &cred).unwrap_err();
         match err {
             UecmError::InvalidInput(msg) => {
                 assert!(msg.contains("lifecycle"), "msg={msg}");
@@ -4279,6 +4522,8 @@ mod tests {
                 data_dir: r"D:\ZenMaster".into(),
                 httpserverclass: "asio".into(),
                 lifecycle_mode: "installed_service".into(),
+                install_dir: None,
+                config_path_override: None,
             },
         )
         .unwrap()
@@ -4294,6 +4539,8 @@ mod tests {
                 data_dir: r"D:\ZenLocal".into(),
                 httpserverclass: "asio".into(),
                 lifecycle_mode: "editor_owned".into(),
+                install_dir: None,
+                config_path_override: None,
             },
         )
         .unwrap();
@@ -4317,6 +4564,8 @@ mod tests {
             data_dir: r"D:\ZenData".into(),
             httpserverclass: "asio".into(),
             lifecycle_mode: "editor_owned".into(),
+            install_dir: None,
+            config_path_override: None,
         };
         let endpoint_id = cache_core::core::zen::endpoint::register(&db, &input).unwrap().id;
         lua_preview(&mut ctx, endpoint_id).unwrap();
@@ -4348,6 +4597,8 @@ mod tests {
             r"D:\ZenData",
             "asio",
             None,
+            None,
+            None,
         )
         .unwrap();
         // Re-register with different data_dir + lifecycle. core::zen::endpoint
@@ -4363,6 +4614,8 @@ mod tests {
             r"E:\OtherZen",
             "asio",
             Some("installed_service"),
+            None,
+            None,
         )
         .unwrap();
         let rows = zen_endpoints::list_for_machine(&db, machine_id).unwrap();
@@ -4453,6 +4706,8 @@ mod tests {
                 data_dir: r"D:\ZenMaster".into(),
                 httpserverclass: "asio".into(),
                 lifecycle_mode: "installed_service".into(),
+                install_dir: None,
+                config_path_override: None,
             },
         )
         .unwrap()
@@ -4482,6 +4737,8 @@ mod tests {
                 data_dir: r"D:\ZenData".into(),
                 httpserverclass: "asio".into(),
                 lifecycle_mode: "editor_owned".into(),
+                install_dir: None,
+                config_path_override: None,
             },
         )
         .unwrap()
@@ -4575,6 +4832,8 @@ mod tests {
                 data_dir: r"D:\ZenMaster".into(),
                 httpserverclass: "asio".into(),
                 lifecycle_mode: "installed_service".into(),
+                install_dir: None,
+                config_path_override: None,
             },
         )
         .unwrap()
@@ -4616,6 +4875,8 @@ mod tests {
                 data_dir: r"D:\ZenMaster".into(),
                 httpserverclass: "asio".into(),
                 lifecycle_mode: "installed_service".into(),
+                install_dir: None,
+                config_path_override: None,
             },
         )
         .unwrap()

@@ -111,6 +111,8 @@ pub fn operations() -> &'static [Operation] {
         Operation { operation_id: "zen.change_role",           summary: "Switch an endpoint's role (local <-> shared_upstream)",           cli_command: "voloctl uecm zen change-role",            side_effects: SideEffects{writes:true, external_calls:false,idempotent:true},  exit_codes: &[0,2,3] },
         Operation { operation_id: "zen.apply_config",          summary: "Render zen.lua and write it to the target host",                  cli_command: "voloctl uecm zen apply-config",           side_effects: SideEffects{writes:true, external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
         Operation { operation_id: "zen.lua_preview",           summary: "Render zen.lua to stdout (read-only)",                            cli_command: "voloctl uecm zen lua-preview",            side_effects: SideEffects{writes:false,external_calls:false,idempotent:true},  exit_codes: &[0,2,3] },
+        Operation { operation_id: "zen.gc_set",                summary: "Set GC retention settings, rewrite zen_config.lua, restart the service", cli_command: "voloctl uecm zen gc-set",       side_effects: SideEffects{writes:true, external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
+        Operation { operation_id: "zen.account_create",        summary: "Create a dedicated local Windows account for the service to run as", cli_command: "voloctl uecm zen account-create", side_effects: SideEffects{writes:true, external_calls:true, idempotent:false}, exit_codes: &[0,2,3,4] },
         Operation { operation_id: "zen.service",               summary: "Windows-service management for the endpoint's zenserver",         cli_command: "voloctl uecm zen service",                side_effects: SideEffects{writes:true, external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
         Operation { operation_id: "zen.sponsor_down",          summary: "Gracefully shut down an editor sponsor zenserver on the port",    cli_command: "voloctl uecm zen sponsor-down",           side_effects: SideEffects{writes:false,external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
         Operation { operation_id: "zen.urlacl",                summary: "URL ACL (netsh http) management for the endpoint",                cli_command: "voloctl uecm zen urlacl",                 side_effects: SideEffects{writes:true, external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
@@ -256,6 +258,8 @@ pub fn operation_id_for(cmd: &Domain) -> &'static str {
             crate::args::ZenAction::ChangeRole { .. } => "zen.change_role",
             crate::args::ZenAction::ApplyConfig { .. } => "zen.apply_config",
             crate::args::ZenAction::LuaPreview { .. } => "zen.lua_preview",
+            crate::args::ZenAction::GcSet { .. } => "zen.gc_set",
+            crate::args::ZenAction::AccountCreate { .. } => "zen.account_create",
             crate::args::ZenAction::Service { .. } => "zen.service",
             crate::args::ZenAction::SponsorDown { .. } => "zen.sponsor_down",
             crate::args::ZenAction::Urlacl { .. } => "zen.urlacl",
@@ -352,7 +356,8 @@ pub fn output_schema_for(operation_id: &str) -> serde_json::Value {
         | "ini.zen_gc_pause" | "ini.zen_gc_resume" => event_schema(),
         // zen ops that emit ONLY an Event stream (incl. dry-run plan):
         "zen.probe" | "zen.cache_stats" | "zen.detect_binary"
-        | "zen.unregister" | "zen.change_role" | "zen.apply_config" => event_schema(),
+        | "zen.unregister" | "zen.change_role" | "zen.apply_config"
+        | "zen.gc_set" => event_schema(),
 
         // Dynamic: ad-hoc serde_json::Value emit_result, or a single op (or a
         // group rolled into one id) that emits multiple unrelated shapes so no
@@ -374,7 +379,7 @@ pub fn output_schema_for(operation_id: &str) -> serde_json::Value {
         //   zen.list_endpoints  -> typed Vec but rolled in with the rest of the
         //                          ad-hoc-dominant zen domain (see note below).
         //   zen.baseline        -> list(typed Vec) / lock/unlock(event) mixed.
-        //   zen.register/lua_preview/verify_rules -> ad-hoc doc json.
+        //   zen.register/lua_preview/verify_rules/account_create -> ad-hoc doc json.
         //   zen.service/urlacl  -> each rolls 3+ sub-subcommands (event + ad-hoc
         //                          result) into one id -> mixed.
         //   zen.enable/disable  -> emit BOTH a one-shot ad-hoc result doc AND a

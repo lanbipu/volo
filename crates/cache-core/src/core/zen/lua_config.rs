@@ -6,6 +6,10 @@
 //! - `network.port`
 //! - `network.httpserverclass`
 //! - `cache.upstream.zen.url` — only emitted when the endpoint has an upstream
+//! - `gc.intervalseconds` / `gc.lightweightintervalseconds` /
+//!   `cache.maxdurationseconds` — GC retention settings (2026-07-01 addition);
+//!   each key is independently optional and omitted when the endpoint's
+//!   corresponding field is `None`.
 //!
 //! ## Format: flat dotted-key assignments (confirmed 2026-07-01)
 //!
@@ -152,6 +156,15 @@ pub fn render(endpoint: &ZenEndpoint, upstream: Option<&UpstreamInfo>) -> UecmRe
     validate_data_dir(&endpoint.data_dir)?;
     validate_httpserverclass(&endpoint.httpserverclass)?;
     validate_port(endpoint.declared_port)?;
+    validate_positive_seconds("gc_interval_seconds", endpoint.gc_interval_seconds)?;
+    validate_positive_seconds(
+        "gc_lightweight_interval_seconds",
+        endpoint.gc_lightweight_interval_seconds,
+    )?;
+    validate_positive_seconds(
+        "cache_max_duration_seconds",
+        endpoint.cache_max_duration_seconds,
+    )?;
 
     // The header comment embeds `role` and `lifecycle_mode` verbatim. A `\n`
     // in either would close the `--` comment and turn whatever followed
@@ -208,6 +221,27 @@ fn render_inner(endpoint: &ZenEndpoint, upstream: Option<&UpstreamInfo>) -> Stri
         "network.httpserverclass = \"{}\"",
         escape_lua_string(&endpoint.httpserverclass)
     );
+
+    // GC 缓存回收策略 — each key is independently optional: `None` means the
+    // operator hasn't configured that field yet (or this row predates the
+    // GC-settings migration), so we omit the key and let zenserver fall back
+    // to its own compiled-in default rather than assert a value we don't
+    // actually have.
+    if endpoint.gc_interval_seconds.is_some()
+        || endpoint.gc_lightweight_interval_seconds.is_some()
+        || endpoint.cache_max_duration_seconds.is_some()
+    {
+        out.push('\n');
+        if let Some(v) = endpoint.gc_interval_seconds {
+            let _ = writeln!(out, "gc.intervalseconds = {}", v);
+        }
+        if let Some(v) = endpoint.gc_lightweight_interval_seconds {
+            let _ = writeln!(out, "gc.lightweightintervalseconds = {}", v);
+        }
+        if let Some(v) = endpoint.cache_max_duration_seconds {
+            let _ = writeln!(out, "cache.maxdurationseconds = {}", v);
+        }
+    }
 
     if let Some(u) = upstream {
         out.push('\n');
@@ -308,6 +342,22 @@ fn validate_port(port: i64) -> UecmResult<()> {
             "lua_config: port {} out of range 1..=65535",
             port
         )));
+    }
+    Ok(())
+}
+
+/// GC retention fields are all optional (`None` = not configured, key
+/// omitted), but when present must be a positive second count — zero or
+/// negative would either disable GC entirely (zenserver's own semantics for
+/// that are undocumented) or be a nonsensical duration.
+pub fn validate_positive_seconds(field_name: &str, value: Option<i64>) -> UecmResult<()> {
+    if let Some(v) = value {
+        if v <= 0 {
+            return Err(UecmError::InvalidInput(format!(
+                "lua_config: {} must be positive, got {}",
+                field_name, v
+            )));
+        }
     }
     Ok(())
 }
@@ -420,6 +470,7 @@ mod tests {
             lifecycle_mode: "editor_owned".into(),
             created_at: None,
             updated_at: None,
+            ..Default::default()
         }
     }
 
@@ -843,5 +894,56 @@ mod tests {
         let out = render(&endpoint, Some(&sample_upstream())).unwrap();
         // Header must mention id/machine/role/lifecycle for operator trace.
         assert!(out.contains("Endpoint id=8 machine=3 role=local lifecycle=installed_service"));
+    }
+
+    #[test]
+    fn gc_settings_omitted_when_all_none() {
+        let endpoint = endpoint_local_no_upstream();
+        let out = render(&endpoint, None).unwrap();
+        assert!(!out.contains("gc."));
+        assert!(!out.contains("maxdurationseconds"));
+    }
+
+    #[test]
+    fn gc_settings_emitted_when_set() {
+        let mut endpoint = endpoint_local_no_upstream();
+        endpoint.gc_interval_seconds = Some(28800);
+        endpoint.gc_lightweight_interval_seconds = Some(3600);
+        endpoint.cache_max_duration_seconds = Some(864000);
+        let out = render(&endpoint, None).unwrap();
+        assert!(out.contains("gc.intervalseconds = 28800"));
+        assert!(out.contains("gc.lightweightintervalseconds = 3600"));
+        assert!(out.contains("cache.maxdurationseconds = 864000"));
+    }
+
+    #[test]
+    fn gc_settings_emitted_independently() {
+        // Each field is independently optional — only the ones the operator
+        // configured should appear, not all-or-nothing.
+        let mut endpoint = endpoint_local_no_upstream();
+        endpoint.gc_interval_seconds = Some(28800);
+        let out = render(&endpoint, None).unwrap();
+        assert!(out.contains("gc.intervalseconds = 28800"));
+        assert!(!out.contains("lightweightintervalseconds"));
+        assert!(!out.contains("maxdurationseconds"));
+    }
+
+    #[test]
+    fn gc_setting_zero_or_negative_is_rejected() {
+        let mut endpoint = endpoint_local_no_upstream();
+        endpoint.gc_interval_seconds = Some(0);
+        let err = render(&endpoint, None).unwrap_err();
+        match err {
+            UecmError::InvalidInput(msg) => assert!(msg.contains("gc_interval_seconds")),
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
+
+        let mut endpoint = endpoint_local_no_upstream();
+        endpoint.cache_max_duration_seconds = Some(-1);
+        let err = render(&endpoint, None).unwrap_err();
+        match err {
+            UecmError::InvalidInput(msg) => assert!(msg.contains("cache_max_duration_seconds")),
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
     }
 }

@@ -17,6 +17,7 @@ pub mod probe;
 pub mod redaction;
 pub mod rules_loader;
 pub mod retention;
+pub mod service_account;
 pub mod verify;
 
 #[cfg(test)]

@@ -31,7 +31,11 @@
 #                           zen-write-lua-config.ps1 beforehand — this script
 #                           only references it, never writes it).
 #   -ServiceUser      <string>  optional service account (default: LocalService).
-#   -ServicePassword  <string>  optional password for non-built-in accounts.
+#                               A gMSA account (trailing '$') needs no password.
+#   -ServicePassword  <string>  optional password for non-built-in, non-gMSA accounts.
+#   -DataDir          <string>  optional; when ServiceUser is non-builtin, this
+#                               directory is icacls-granted read+write for that
+#                               account (ZenInstall itself gets read+execute).
 #
 # Output (single JSON object on stdout):
 #   {
@@ -118,6 +122,11 @@ $ServiceName = if ($p.ServiceName) { $p.ServiceName } else { 'ZenServer' }
 $ConfigPath = $p.ConfigPath
 $ServiceUser = if ($p.ServiceUser) { $p.ServiceUser } else { '' }
 $ServicePassword = if ($p.ServicePassword) { $p.ServicePassword } else { '' }
+# Optional — only used to grant a non-builtin ServiceUser read+write access
+# so the running service can actually use its cache directory. Builtin
+# accounts (LocalSystem/LocalService/NetworkService) already have implicit
+# access and don't need this.
+$DataDir = if ($p.DataDir) { $p.DataDir } else { '' }
 
 # ----------------------------------------------------------------------------
 # Helpers (script scope so both the idempotency path and the post-install
@@ -204,9 +213,16 @@ try {
     if (-not [string]::IsNullOrWhiteSpace($ServiceUser)) {
         $normalizedUserUpfront = Normalize-Account $ServiceUser
         $isBuiltinUpfront = @('localsystem', 'localservice', 'networkservice') -contains $normalizedUserUpfront
-        if (-not $isBuiltinUpfront -and [string]::IsNullOrEmpty($ServicePassword)) {
-            throw ("ServiceUser '{0}' is not a built-in account; ServicePassword is required " +
-                   "(built-in accounts: LocalSystem / LocalService / NetworkService).") `
+        # gMSA accounts (trailing '$') are AD-managed and never take a
+        # password — mirrors the $isGmsa check later in this script (the
+        # actual sc-create branch that skips `password=` for them). Without
+        # this exemption here, every gMSA install fails this upfront gate
+        # before ever reaching that branch.
+        $isGmsaUpfront = $ServiceUser.TrimEnd().EndsWith('$')
+        if (-not $isBuiltinUpfront -and -not $isGmsaUpfront -and [string]::IsNullOrEmpty($ServicePassword)) {
+            throw ("ServiceUser '{0}' is not a built-in account or a gMSA (trailing '$'); " +
+                   "ServicePassword is required (built-in accounts: LocalSystem / LocalService / " +
+                   "NetworkService).") `
                   -f $ServiceUser
         }
     }
@@ -496,6 +512,47 @@ try {
             default           { $ServiceUser }
         }
     }
+    # gMSA accounts (trailing '$', e.g. "CONTOSO\zen-svc$") are AD-managed —
+    # sc.exe never takes a password for one; the domain controller grants the
+    # target computer's machine account permission to retrieve it directly.
+    # Not independently verified against a real AD domain in this repo (no
+    # domain environment available to test against); follows Microsoft's
+    # published gMSA + Windows-service documentation.
+    $isGmsa = $effectiveUser.TrimEnd().EndsWith('$')
+
+    # Non-builtin accounts (dedicated local or domain, including gMSA) need
+    # explicit grants `sc create obj=` alone doesn't provide: read access to
+    # {ZenInstall} (this exe's directory) so the account can even launch the
+    # binary, and read+write access to {ZenData} so it can use the cache.
+    # `sc create obj=`/`password=` itself grants "log on as a service"
+    # automatically as a side effect of the Win32 CreateService call, so that
+    # right doesn't need a separate grant here.
+    if (-not $isBuiltin) {
+        $zenInstallDir = [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($zenserverExe))
+        $icaclsInstallOutput = (icacls $zenInstallDir /grant "${effectiveUser}:(OI)(CI)RX" 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0) {
+            @{
+                ok = $false
+                message = "icacls grant on ZenInstall dir failed (exit $LASTEXITCODE): $icaclsInstallOutput"
+                service_name = $ServiceName
+            } | ConvertTo-Json -Compress -Depth 4
+            exit 0
+        }
+        if (-not [string]::IsNullOrWhiteSpace($DataDir)) {
+            if (-not (Test-Path -LiteralPath $DataDir -PathType Container)) {
+                New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
+            }
+            $icaclsDataOutput = (icacls $DataDir /grant "${effectiveUser}:(OI)(CI)M" 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0) {
+                @{
+                    ok = $false
+                    message = "icacls grant on DataDir failed (exit $LASTEXITCODE): $icaclsDataOutput"
+                    service_name = $ServiceName
+                } | ConvertTo-Json -Compress -Depth 4
+                exit 0
+            }
+        }
+    }
 
     # sc.exe create with account set at creation time (no separate config step).
     # PowerShell splatting (@scArgs) double-escapes $binpath's inner quotes →
@@ -503,7 +560,7 @@ try {
     # with backslash-escaped inner quotes, exactly as in the registry format.
     $scBinpath = '"' + $binpath.Replace('"', '\"') + '"'
     $scCmd = "sc create `"$ServiceName`" binpath= $scBinpath start= auto obj= `"$effectiveUser`""
-    if (-not $isBuiltin) {
+    if (-not $isBuiltin -and -not $isGmsa) {
         $scCmd += " password= `"$ServicePassword`""
     }
     $scOutput = (cmd /c $scCmd 2>&1 | Out-String)

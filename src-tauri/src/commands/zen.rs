@@ -567,6 +567,12 @@ pub struct ZenRegisterInput {
     /// (`shared_upstream` → `installed_service`, else `editor_owned`).
     #[serde(default)]
     pub lifecycle: Option<String>,
+    /// `{ZenInstall}` — see `zen_endpoint::EndpointInput::install_dir`.
+    #[serde(default)]
+    pub install_dir: Option<String>,
+    /// See `zen_endpoint::EndpointInput::config_path_override`.
+    #[serde(default)]
+    pub config_path_override: Option<String>,
 }
 
 /// Outcome of `zen_register`. Mirrors `core::zen::endpoint::RegisterOutcome`
@@ -583,6 +589,8 @@ pub struct ZenRegisterOutcome {
     pub lifecycle_mode: String,
     pub httpserverclass: String,
     pub data_dir: String,
+    pub install_dir: Option<String>,
+    pub config_path_override: Option<String>,
 }
 
 #[tauri::command]
@@ -609,6 +617,8 @@ pub fn zen_register(db: State<'_, Db>, input: ZenRegisterInput) -> UecmResult<Ze
         data_dir: input.data_dir.clone(),
         httpserverclass: input.httpserverclass.clone(),
         lifecycle_mode: lifecycle_mode.clone(),
+        install_dir: input.install_dir.clone(),
+        config_path_override: input.config_path_override.clone(),
     };
     let outcome = zen_endpoint::register(&db, &payload)?;
 
@@ -632,6 +642,8 @@ pub fn zen_register(db: State<'_, Db>, input: ZenRegisterInput) -> UecmResult<Ze
         lifecycle_mode: persisted.lifecycle_mode,
         httpserverclass: persisted.httpserverclass,
         data_dir: persisted.data_dir,
+        install_dir: persisted.install_dir,
+        config_path_override: persisted.config_path_override,
     })
 }
 
@@ -924,6 +936,9 @@ pub struct ZenApplyConfigSummary {
     pub remote: serde_json::Value,
 }
 
+/// Split off the directory component of a remote Windows path (same
+/// backslash/forward-slash rfind `zen_config_lua_path` uses — this describes
+/// a path on the remote host, not the local OS Volo runs on).
 #[tauri::command]
 pub fn zen_apply_config(
     db: State<'_, Db>,
@@ -942,8 +957,11 @@ pub fn zen_apply_config(
     // because `zen_service_install` launches the service with
     // `--config={that path}` and nothing else tells zenserver where to look.
     // An operator-chosen path here would silently detach the written config
-    // from the running service.
-    let (_zen_exe, dest_path) = zen_cli_shared::resolve_zen_exe_and_config_path(&db, ep.machine_id)?;
+    // from the running service. `resolve_install_paths` makes `install_dir`
+    // (when set) authoritative instead of wherever `zen detect-binary` found
+    // the source binary — see `ResolvedZenPaths`.
+    let resolved = zen_cli_shared::resolve_install_paths(&db, &ep)?;
+    let dest_path = resolved.target_config.clone();
 
     // Mirror the CLI's `dest_path` + `data_dir` validation so dry-run plans
     // match what `--yes` would actually accept.
@@ -962,27 +980,182 @@ pub fn zen_apply_config(
     }
 
     let creds = cred.resolve(&db)?;
-    let invocation = redact(&format!(
-        "zen-write-lua-config.ps1 -DestPath {dest_path} (lua {} bytes)",
-        lua.len()
-    ));
-    let op_id = operations::start(&db, "zen.apply_config", &[ep.machine_id])?;
 
-    let expected_sha = zen_cli_shared::sha256_hex_of(&lua);
-    let result = zen_cli_shared::invoke_write_lua(&machine.ip, &lua, &dest_path, creds.as_ref())
-        .and_then(|response| {
-            zen_cli_shared::verify_write_response(&response, &expected_sha, lua.len())
-        });
-    zen_cli_shared::finalize_op(&db, op_id, &result, &invocation);
+    // install_dir made target_exe authoritative and it isn't where the
+    // detected binary lives today — copy it there first so `zen_config.lua`
+    // doesn't end up alongside an exe that will never actually run it.
+    let mut remote = serde_json::Value::Null;
+    if let Some(copy_result) =
+        zen_cli_shared::copy_binary_if_needed(&db, ep.machine_id, &machine.ip, &resolved)?
+    {
+        remote["binary_copy"] = copy_result;
+    }
 
-    let response = result?;
+    let (expected_sha, config_response) = zen_cli_shared::write_and_verify_lua(
+        &db,
+        ep.machine_id,
+        &machine.ip,
+        &lua,
+        &dest_path,
+        creds,
+        "zen.apply_config",
+    )?;
+    remote["config_write"] = config_response;
+
     Ok(ZenApplyConfigResult::Completed(ZenApplyConfigSummary {
         endpoint_id,
         machine_id: ep.machine_id,
         host: machine.ip,
         dest_path,
         sha256: expected_sha,
-        remote: response,
+        remote,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// GC retention settings (Cache · ZenServer 「缓存回收策略」 module)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum ZenGcSettingsResult {
+    DryRun(ZenGcSettingsPlan),
+    Completed(ZenGcSettingsSummary),
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ZenGcSettingsPlan {
+    pub operation: &'static str,
+    pub endpoint_id: i64,
+    pub machine_id: i64,
+    pub host: String,
+    pub dest_path: String,
+    pub lua: String,
+    /// Zen doesn't hot-reload `zen_config.lua` — applying these settings for
+    /// real always stops+starts the service, briefly interrupting every
+    /// client currently pointed at this cache. Surfaced so the UI can warn
+    /// before the operator confirms.
+    pub will_restart_service: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ZenGcSettingsSummary {
+    pub endpoint_id: i64,
+    pub machine_id: i64,
+    pub host: String,
+    pub dest_path: String,
+    pub sha256: String,
+    pub restarted: bool,
+    pub remote: serde_json::Value,
+}
+
+/// Persist the three GC retention fields onto the endpoint, re-render +
+/// rewrite `zen_config.lua`, then restart the service so the new values
+/// take effect immediately (Zen reads this file only at startup).
+/// Destructive — same `confirmed`/`dry_run` gate as `zen_service_stop`,
+/// because a real apply always causes a brief service interruption.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn zen_update_gc_settings(
+    db: State<'_, Db>,
+    endpoint_id: i64,
+    gc_interval_seconds: i64,
+    gc_lightweight_interval_seconds: i64,
+    cache_max_duration_seconds: i64,
+    confirmed: bool,
+    dry_run: bool,
+    cred: ZenCredentialInput,
+) -> UecmResult<ZenGcSettingsResult> {
+    guard_destructive(confirmed, dry_run, "zen.gc_settings.update")?;
+    cred.preflight(&db)?;
+    cache_core::core::zen::lua_config::validate_positive_seconds(
+        "gc_interval_seconds",
+        Some(gc_interval_seconds),
+    )?;
+    cache_core::core::zen::lua_config::validate_positive_seconds(
+        "gc_lightweight_interval_seconds",
+        Some(gc_lightweight_interval_seconds),
+    )?;
+    cache_core::core::zen::lua_config::validate_positive_seconds(
+        "cache_max_duration_seconds",
+        Some(cache_max_duration_seconds),
+    )?;
+
+    let ep = zen_cli_shared::require_endpoint(&db, endpoint_id)?;
+    let machine = zen_cli_shared::require_machine(&db, ep.machine_id)?;
+
+    // Same lifecycle guard as zen_service_start/stop/install: an
+    // `editor_owned` endpoint has no SCM service for zen-down.ps1/zen-up.ps1
+    // to touch, and blindly restarting DEFAULT_SERVICE_NAME could stop/start
+    // an unrelated stale service left over from a different endpoint.
+    if ep.lifecycle_mode != "installed_service" {
+        return Err(UecmError::InvalidInput(format!(
+            "zen.gc_settings.update requires endpoint id={endpoint_id} to have lifecycle_mode=\"installed_service\" \
+             (got {:?}); `editor_owned` endpoints have no SCM service to restart",
+            ep.lifecycle_mode
+        )));
+    }
+
+    let (_target_exe, dest_path) = zen_cli_shared::resolve_service_paths(&db, &ep)?;
+    zen_cli_shared::validate_dest_path(&dest_path)?;
+
+    // Render from an in-memory preview copy (never touches the DB) for both
+    // the dry-run plan and the real apply below — the real apply only
+    // persists the new values after the remote write + restart succeed, so a
+    // failed apply can't leave the DB claiming a policy that was never
+    // actually live (see the update_gc_settings call at the end).
+    let mut preview_ep = ep.clone();
+    preview_ep.gc_interval_seconds = Some(gc_interval_seconds);
+    preview_ep.gc_lightweight_interval_seconds = Some(gc_lightweight_interval_seconds);
+    preview_ep.cache_max_duration_seconds = Some(cache_max_duration_seconds);
+    let upstream = zen_cli_shared::resolve_upstream_info(&db, &preview_ep)?;
+    let lua = cache_core::core::zen::lua_config::render(&preview_ep, upstream.as_ref())?;
+
+    if dry_run {
+        return Ok(ZenGcSettingsResult::DryRun(ZenGcSettingsPlan {
+            operation: "zen.gc_settings.update",
+            endpoint_id,
+            machine_id: ep.machine_id,
+            host: machine.ip,
+            dest_path,
+            lua,
+            will_restart_service: true,
+        }));
+    }
+
+    let creds = cred.resolve(&db)?;
+    let (expected_sha, config_response) = zen_cli_shared::write_and_verify_lua(
+        &db,
+        ep.machine_id,
+        &machine.ip,
+        &lua,
+        &dest_path,
+        creds,
+        "zen.gc_settings_update",
+    )?;
+
+    // Restart so the new file actually takes effect (Zen doesn't hot-reload).
+    zen_cli_shared::restart_service(&db, ep.machine_id, &machine.ip)?;
+
+    // Only persist once the remote write + restart both actually succeeded —
+    // otherwise `zen_status`/the UI would show the new policy as current
+    // while the live server still runs on the old settings.
+    zen_endpoints::update_gc_settings(
+        &db,
+        endpoint_id,
+        gc_interval_seconds,
+        gc_lightweight_interval_seconds,
+        cache_max_duration_seconds,
+    )?;
+
+    Ok(ZenGcSettingsResult::Completed(ZenGcSettingsSummary {
+        endpoint_id,
+        machine_id: ep.machine_id,
+        host: machine.ip,
+        dest_path,
+        sha256: expected_sha,
+        restarted: true,
+        remote: config_response,
     }))
 }
 
@@ -1031,22 +1204,72 @@ pub struct ZenServiceSummary {
     pub remote: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ZenDedicatedAccountResult {
+    pub machine_id: i64,
+    pub username: String,
+    /// Opaque handle the frontend passes back to `zen_service_install`'s
+    /// `service_cred_alias` — never the password itself.
+    pub cred_alias: String,
+}
+
+/// One-click "创建专用账号": provisions a dedicated non-admin local Windows
+/// account on `machine_id` for the "专用本地账号" service-account tier
+/// (Epic's officially-recommended least-privilege alternative to SYSTEM).
+/// Not gated by `confirmed`/`dry_run` — creating the account has no effect on
+/// any running ZenServer until `zen_service_install` is actually called with
+/// it, so there's nothing destructive to preview here.
+#[tauri::command]
+pub fn zen_create_dedicated_account(
+    db: State<'_, Db>,
+    machine_id: i64,
+) -> UecmResult<ZenDedicatedAccountResult> {
+    let machine = zen_cli_shared::require_machine(&db, machine_id)?;
+    let result =
+        cache_core::core::zen::service_account::create_dedicated_account(machine_id, &machine.ip)?;
+    Ok(ZenDedicatedAccountResult {
+        machine_id,
+        username: result.username,
+        cred_alias: result.cred_alias,
+    })
+}
+
 /// Tauri service-install command.
 ///
 /// `service_user` / `service_pass` are optional. When omitted, zen.exe
 /// defaults to NT AUTHORITY\LocalService. Non-built-in accounts
-/// (domain accounts, local users) need a password.
+/// (domain accounts, local users) need a password — either passed directly
+/// via `service_pass`, or resolved server-side from `service_cred_alias`
+/// (the tool-managed dedicated-account tier: the frontend never sees the
+/// generated password, only the alias `zen_create_dedicated_account`
+/// returned).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn zen_service_install(
     db: State<'_, Db>,
     endpoint_id: i64,
     service_user: Option<String>,
     service_pass: Option<String>,
+    service_cred_alias: Option<String>,
     confirmed: bool,
     dry_run: bool,
     cred: ZenCredentialInput,
 ) -> UecmResult<ZenServiceResult> {
     guard_destructive(confirmed, dry_run, "zen.service.install")?;
+    if service_pass.is_some() && service_cred_alias.is_some() {
+        return Err(UecmError::InvalidInput(
+            "service_pass and service_cred_alias are mutually exclusive — pass a raw \
+             password for a manually-entered account, or an alias for a tool-managed one, \
+             not both"
+                .into(),
+        ));
+    }
+    // Whether a password will end up supplied is all the validation/dry-run
+    // code below needs — resolving the alias's actual value is a SecretStore
+    // decrypt, deferred past the dry-run gate further down so a preview
+    // never touches it.
+    let pass_supplied = service_pass.as_deref().map(|p| !p.is_empty()).unwrap_or(false)
+        || service_cred_alias.is_some();
     // Codex P3: a password without a service_user gets silently dropped
     // (the PS sidecar only emits `-p` when `-u` is set). Reject up-front
     // so the UI never thinks it installed under a specific account when
@@ -1054,11 +1277,7 @@ pub fn zen_service_install(
     // IsNullOrWhiteSpace by treating whitespace-only strings as missing,
     // and treat empty `service_pass: ""` as not supplied (sidecar's
     // IsNullOrEmpty rejects it anyway).
-    let pass_provided = service_pass
-        .as_deref()
-        .map(|p| !p.is_empty())
-        .unwrap_or(false);
-    if pass_provided
+    if pass_supplied
         && service_user
             .as_deref()
             .map(|u| u.trim().is_empty())
@@ -1073,13 +1292,12 @@ pub fn zen_service_install(
     cred.preflight(&db)?;
     let ep = zen_cli_shared::require_endpoint(&db, endpoint_id)?;
     let machine = zen_cli_shared::require_machine(&db, ep.machine_id)?;
-    // Bug 4 (2026-06-05 lanPC E2E): prefer the in-tree binary over the
-    // user-private install copy so the zenserver.exe zen registers runs under an
-    // ACL the hardcoded `NT AUTHORITY\LocalService` account can start. See
-    // `zen_cli_shared::pick_service_zen_exe`.
-    // Same fixed {ZenInstall}\zen_config.lua path `zen_apply_config` writes
-    // to — the service is launched with `--config=` pointing here.
-    let (zen_exe, config_path) = zen_cli_shared::resolve_zen_exe_and_config_path(&db, ep.machine_id)?;
+    // install_dir (when set on the endpoint) makes {ZenInstall} authoritative
+    // — by the time service-install runs, `zen_apply_config` has already
+    // copied zenserver.exe there, so this doesn't need detection metadata to
+    // still exist (unlike `resolve_install_paths`, which apply-config needs
+    // for its own copy-decision but service-install never touches).
+    let (zen_exe, config_path) = zen_cli_shared::resolve_service_paths(&db, &ep)?;
 
     // Same lifecycle guard as the CLI: only `installed_service` endpoints
     // get an SCM service.
@@ -1101,10 +1319,12 @@ pub fn zen_service_install(
     zen_cli_shared::validate_service_data_dir(&ep.data_dir)?;
     // Codex P2: mirror the sidecar's built-in-account / password check so
     // the dry-run plan doesn't claim an unworkable install is approved.
+    // The alias-supplied case is represented by the trailing bool (same slot
+    // the CLI uses for `--service-pass-stdin`) rather than resolving it.
     zen_cli_shared::validate_service_account_pair(
         service_user.as_deref(),
         service_pass.as_deref(),
-        false,
+        service_cred_alias.is_some(),
     )?;
 
     if dry_run {
@@ -1117,16 +1337,24 @@ pub fn zen_service_install(
             zen_exe_path: Some(zen_exe),
             config_path: Some(config_path.clone()),
             service_user: service_user.clone(),
-            // Empty `service_pass: ""` reported as not-supplied to keep
-            // the preview honest with the sidecar's IsNullOrEmpty check.
-            service_pass_supplied: Some(
-                service_pass
-                    .as_deref()
-                    .map(|p| !p.is_empty())
-                    .unwrap_or(false),
-            ),
+            service_pass_supplied: Some(pass_supplied),
         }));
     }
+
+    // Resolve the managed-account password server-side only now, past the
+    // dry-run gate — the frontend never sees it, only the alias
+    // `zen_create_dedicated_account` returned.
+    let service_pass = match service_cred_alias.as_deref() {
+        Some(alias) => Some(
+            cache_core::core::zen::service_account::resolve_password(alias)?.ok_or_else(|| {
+                UecmError::InvalidInput(format!(
+                    "service_cred_alias {alias:?} has no stored password — the managed \
+                     account may have been deleted; create a new one"
+                ))
+            })?,
+        ),
+        None => service_pass,
+    };
 
     // SSH key auth (uecm-svc); operator creds/auth_method ignored. Keep the
     // resolve() so the credential preflight side-effect still runs.
@@ -1154,6 +1382,9 @@ pub fn zen_service_install(
         "ZenExePath": zen_exe,
         "ServiceName": zen_cli_shared::DEFAULT_SERVICE_NAME,
         "ConfigPath": config_path,
+        // Only used by the PS script to icacls-grant a non-builtin account;
+        // ignored for SYSTEM/LocalService/NetworkService.
+        "DataDir": ep.data_dir,
     });
     if let Some(obj) = args.as_object_mut() {
         if let Some(u) = service_user.as_deref() {
@@ -1167,6 +1398,18 @@ pub fn zen_service_install(
         .and_then(|raw| zen_cli_shared::parse_envelope(&raw, "zen-service-install"));
     zen_cli_shared::finalize_op(&db, op_id, &result, &invocation);
     let response = result?;
+
+    // Remember the tool-managed account (if any) so the UI shows "already
+    // created" instead of prompting to create a new one next time. Manual
+    // entries (no alias) and builtin accounts intentionally aren't
+    // remembered — clears any stale link from a previous managed account.
+    zen_endpoints::update_service_account(
+        &db,
+        endpoint_id,
+        service_cred_alias.as_deref().and(service_user.as_deref()),
+        service_cred_alias.as_deref(),
+    )?;
+
     Ok(ZenServiceResult::Completed(ZenServiceSummary {
         endpoint_id,
         machine_id: ep.machine_id,
@@ -2050,6 +2293,7 @@ mod tests {
                 lifecycle_mode: "managed".into(),
                 created_at: None,
                 updated_at: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -2346,6 +2590,7 @@ mod tests {
                 lifecycle_mode: "installed_service".into(),
                 created_at: None,
                 updated_at: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -2364,6 +2609,7 @@ mod tests {
                 lifecycle_mode: "editor_owned".into(),
                 created_at: None,
                 updated_at: None,
+                ..Default::default()
             },
         )
         .unwrap();

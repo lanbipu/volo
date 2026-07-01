@@ -308,6 +308,7 @@ mod tests {
             lifecycle_mode: "managed".into(),
             created_at: None,
             updated_at: None,
+            ..Default::default()
         }
     }
 
@@ -521,6 +522,7 @@ mod tests {
                 lifecycle_mode: "managed".into(),
                 created_at: None,
                 updated_at: None,
+                ..Default::default()
             },
         )
         .unwrap();

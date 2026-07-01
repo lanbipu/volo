@@ -134,6 +134,109 @@ pub fn invoke_write_lua(
     parse_envelope(&raw, "zen-write-lua-config")
 }
 
+/// Write `lua` to `dest_path` on `host` and verify the SHA256 read-back,
+/// recording the operation regardless of outcome. Shared by the CLI's
+/// `apply_config`/`gc_set` and the Tauri `zen_apply_config`/
+/// `zen_update_gc_settings` — all four derive `lua`/`dest_path` the same way
+/// and push them with the identical redact/operations::start/
+/// invoke_write_lua/verify/finalize_op sequence, so this lives once here
+/// instead of being hand-rolled at each of the four call sites (where it
+/// would silently drift if the write/verify contract ever changed).
+pub fn write_and_verify_lua(
+    db: &Db,
+    machine_id: i64,
+    host: &str,
+    lua: &str,
+    dest_path: &str,
+    creds: Option<(String, String)>,
+    op_kind: &'static str,
+) -> UecmResult<(String, serde_json::Value)> {
+    let invocation = redact(&format!(
+        "zen-write-lua-config.ps1 -DestPath {dest_path} (lua {} bytes)",
+        lua.len()
+    ));
+    let op_id = operations::start(db, op_kind, &[machine_id])?;
+    let expected_sha = sha256_hex_of(lua);
+    let result = invoke_write_lua(host, lua, dest_path, creds.as_ref())
+        .and_then(|response| verify_write_response(&response, &expected_sha, lua.len()));
+    finalize_op(db, op_id, &result, &invocation);
+    let response = result?;
+    Ok((expected_sha, response))
+}
+
+/// Directory component of a remote Windows path (string-level backslash/
+/// forward-slash split — describes a path on the remote host, not the local
+/// OS Volo runs on).
+fn win_dirname(path: &str) -> UecmResult<&str> {
+    path.rfind(['\\', '/']).map(|idx| &path[..idx]).ok_or_else(|| {
+        UecmError::InvalidInput(format!("{path:?} has no directory component"))
+    })
+}
+
+/// Copy the detected zen.exe's sibling zenserver.exe to `resolved.target_exe`
+/// when `resolved.needs_copy` is set (install_dir made a directory other than
+/// the detected binary's location authoritative) — no-op returning `Ok(None)`
+/// otherwise. Shared by the CLI's `apply_config` and the Tauri
+/// `zen_apply_config` — the only two callers that ever perform a copy
+/// (`service install` / `gc_set` use `resolve_service_paths`, which never
+/// copies, on the assumption `zen_apply_config` already ran first).
+pub fn copy_binary_if_needed(
+    db: &Db,
+    machine_id: i64,
+    host: &str,
+    resolved: &ResolvedZenPaths,
+) -> UecmResult<Option<serde_json::Value>> {
+    if !resolved.needs_copy {
+        return Ok(None);
+    }
+    let source_dir = win_dirname(&resolved.source_exe)?;
+    let target_dir = win_dirname(&resolved.target_exe)?;
+    let invocation = redact(&format!(
+        "zen-copy-binary.ps1 -SourceDir {source_dir} -TargetDir {target_dir}"
+    ));
+    let op_id = operations::start(db, "zen.apply_config.copy_binary", &[machine_id])?;
+    let result = run_node(
+        host,
+        "zen-copy-binary.ps1",
+        serde_json::json!({ "SourceDir": source_dir, "TargetDir": target_dir }),
+    )
+    .and_then(|raw| parse_envelope(&raw, "zen-copy-binary"));
+    finalize_op(db, op_id, &result, &invocation);
+    Ok(Some(result?))
+}
+
+/// Stop then start the ZenServer Windows service so a rewritten
+/// `zen_config.lua` actually takes effect (Zen doesn't hot-reload the config
+/// file) — shared by the CLI's `gc_set` and the Tauri
+/// `zen_update_gc_settings`, the only two callers that restart a running
+/// service after a config rewrite. Stop is best-effort (a service that's
+/// already stopped shouldn't block the start that matters); a failed start
+/// is fatal — the whole point of restarting is to come back up on the new
+/// config.
+pub fn restart_service(db: &Db, machine_id: i64, host: &str) -> UecmResult<()> {
+    let stop_invocation = redact(&format!("zen-down.ps1 -ServiceName {DEFAULT_SERVICE_NAME}"));
+    let stop_op_id = operations::start(db, "zen.gc_settings_update.stop", &[machine_id])?;
+    let stop_result = run_node(
+        host,
+        "zen-down.ps1",
+        serde_json::json!({ "ServiceName": DEFAULT_SERVICE_NAME }),
+    )
+    .and_then(|raw| parse_envelope(&raw, "zen-down.ps1"));
+    finalize_op(db, stop_op_id, &stop_result, &stop_invocation);
+
+    let start_invocation = redact(&format!("zen-up.ps1 -ServiceName {DEFAULT_SERVICE_NAME}"));
+    let start_op_id = operations::start(db, "zen.gc_settings_update.start", &[machine_id])?;
+    let start_result = run_node(
+        host,
+        "zen-up.ps1",
+        serde_json::json!({ "ServiceName": DEFAULT_SERVICE_NAME }),
+    )
+    .and_then(|raw| parse_envelope(&raw, "zen-up.ps1"));
+    finalize_op(db, start_op_id, &start_result, &start_invocation);
+    start_result?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Pick the zen.exe to hand `zen service install` for an `installed_service`
 /// endpoint, preferring the in-tree UE binary over the user-private install copy.
@@ -234,6 +337,151 @@ pub fn resolve_zen_exe_and_config_path(db: &Db, machine_id: i64) -> UecmResult<(
     Ok((zen_exe, config_path))
 }
 
+/// Where `zenserver.exe` + `zen_config.lua` for an endpoint actually live,
+/// install-dir-aware.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedZenPaths {
+    /// The zen.exe `zen detect-binary` found (in-tree or install-copy).
+    /// Always populated — it's the copy source when `needs_copy` is true, and
+    /// equal to `target_exe` when it's already in the right place.
+    pub source_exe: String,
+    /// Where `zenserver.exe` must be for the service to launch it.
+    pub target_exe: String,
+    /// Where `zen_config.lua` must be, alongside `target_exe`.
+    pub target_config: String,
+    /// `true` iff `source_exe` and `target_exe` differ and the caller must
+    /// copy the binary there before writing the config / installing the
+    /// service.
+    pub needs_copy: bool,
+}
+
+/// Install-dir-aware counterpart to [`resolve_zen_exe_and_config_path`].
+///
+/// `endpoint.install_dir == None` (rows from before this field existed, or
+/// an operator who never set it) preserves the exact legacy behavior: derive
+/// everything from wherever `zen detect-binary` found a usable zen.exe, no
+/// copy involved.
+///
+/// `endpoint.install_dir == Some(dir)` makes `dir` authoritative — `dir` is
+/// the `{ZenInstall}` Epic's guide describes, independent of wherever the
+/// source binary happens to sit today (typically the UE-intree copy). The
+/// caller (`zen_apply_config`) is responsible for actually copying
+/// `source_exe` to `target_exe` when `needs_copy` is true, *before* writing
+/// `target_config` — this function only resolves paths, it does no I/O.
+pub fn resolve_install_paths(db: &Db, endpoint: &ZenEndpoint) -> UecmResult<ResolvedZenPaths> {
+    let source_exe = resolve_service_zen_exe(db, endpoint.machine_id)?;
+    let mut resolved = match endpoint.install_dir.as_deref() {
+        None => {
+            let target_config = zen_config_lua_path(&source_exe)?;
+            ResolvedZenPaths {
+                target_exe: source_exe.clone(),
+                source_exe,
+                target_config,
+                needs_copy: false,
+            }
+        }
+        Some(dir) => {
+            let (target_exe, target_config) = install_dir_target_paths(dir)?;
+            // `source_exe` is the *detected* zen.exe (zen_cli_intree_path /
+            // zen_cli_path), never zenserver.exe itself — comparing the two
+            // full paths would compare "...\zen.exe" against
+            // "...\zenserver.exe" and never match, making needs_copy always
+            // true. What actually matters is whether the detected binary's
+            // DIRECTORY already is `dir`: zen-service-install.ps1 resolves
+            // zenserver.exe as zen.exe's sibling, so if zen.exe already lives
+            // in `dir`, so does its sibling zenserver.exe, and no copy is
+            // needed.
+            let trimmed_dir = dir.trim().trim_end_matches(['\\', '/']);
+            let source_dir = source_exe.rfind(['\\', '/']).map(|idx| &source_exe[..idx]);
+            let needs_copy = match source_dir {
+                Some(sd) => !paths_equal_ci(sd, trimmed_dir),
+                None => true,
+            };
+            ResolvedZenPaths {
+                source_exe,
+                target_exe,
+                target_config,
+                needs_copy,
+            }
+        }
+    };
+
+    // Manual override takes precedence over the install_dir-derived path.
+    // Both `zen_apply_config` (write) and `zen_service_install` (launch via
+    // `--config=`) call this same resolver, so an override here can never
+    // desync the write location from the launch location — unlike an
+    // ad-hoc per-call override would.
+    apply_config_path_override(endpoint, &mut resolved.target_config)?;
+
+    Ok(resolved)
+}
+
+/// Lightweight counterpart to [`resolve_install_paths`] for callers that
+/// only need `target_exe`/`target_config` and never copy a binary — service
+/// install and GC-settings updates, which assume `zen_apply_config` already
+/// ran and put zenserver.exe wherever it needs to be.
+///
+/// Unlike `resolve_install_paths`, this does NOT call
+/// [`resolve_service_zen_exe`] (and therefore does not require
+/// `machine_zen_install`/`machine_ue_installs` detection metadata to exist)
+/// when `endpoint.install_dir` is `Some` — `install_dir` alone is
+/// authoritative for these paths, so a routine service-install or GC update
+/// on an endpoint that's already running shouldn't fail just because the
+/// machine's zen-detection metadata later went stale (engine reinstalled,
+/// row never repopulated after a rescan, etc). Detection is only needed —
+/// and only then does this function require it — on the legacy
+/// `install_dir == None` path, exactly like `resolve_install_paths`.
+pub fn resolve_service_paths(db: &Db, endpoint: &ZenEndpoint) -> UecmResult<(String, String)> {
+    let (target_exe, mut target_config) = match endpoint.install_dir.as_deref() {
+        Some(dir) => install_dir_target_paths(dir)?,
+        None => {
+            let zen_exe = resolve_service_zen_exe(db, endpoint.machine_id)?;
+            let config = zen_config_lua_path(&zen_exe)?;
+            (zen_exe, config)
+        }
+    };
+    apply_config_path_override(endpoint, &mut target_config)?;
+    Ok((target_exe, target_config))
+}
+
+/// Shared by [`resolve_install_paths`] and [`resolve_service_paths`]: derive
+/// `{dir}\zenserver.exe` / `{dir}\zen_config.lua` from a trimmed
+/// `install_dir`, rejecting a blank value.
+fn install_dir_target_paths(dir: &str) -> UecmResult<(String, String)> {
+    let dir = dir.trim().trim_end_matches(['\\', '/']);
+    if dir.is_empty() {
+        return Err(UecmError::InvalidInput(
+            "install_dir is blank — clear it to None instead of an empty string".into(),
+        ));
+    }
+    Ok((format!("{dir}\\zenserver.exe"), format!("{dir}\\zen_config.lua")))
+}
+
+/// Shared by [`resolve_install_paths`] and [`resolve_service_paths`]: apply
+/// `endpoint.config_path_override` on top of an install_dir-derived config
+/// path, if set.
+fn apply_config_path_override(endpoint: &ZenEndpoint, target_config: &mut String) -> UecmResult<()> {
+    if let Some(override_path) = endpoint.config_path_override.as_deref() {
+        let trimmed = override_path.trim();
+        if trimmed.is_empty() {
+            return Err(UecmError::InvalidInput(
+                "config_path_override is blank — clear it to None instead of an empty string"
+                    .into(),
+            ));
+        }
+        *target_config = trimmed.to_string();
+    }
+    Ok(())
+}
+
+/// Windows paths are case-insensitive and `\`/`/` are interchangeable as
+/// separators; compare on that basis so `D:\Zen\zenserver.exe` and
+/// `d:/zen/ZenServer.exe` are recognized as the same file.
+fn paths_equal_ci(a: &str, b: &str) -> bool {
+    let norm = |s: &str| s.replace('/', "\\").to_ascii_lowercase();
+    norm(a) == norm(b)
+}
+
 /// Run a staged node-pure zen script over SSH (`-File`), args via stdin JSON.
 /// Returns stdout (the `{ok,...}` envelope; the script's `ok` flag is the source
 /// of truth, so a non-zero exit still surfaces its stdout — mirrors the old
@@ -311,6 +559,38 @@ pub fn is_builtin_service_account(user: &str) -> bool {
     )
 }
 
+/// Group Managed Service Accounts are named with a trailing `$` by Windows
+/// convention (e.g. `CONTOSO\zen-svc$`) — this is how AD and the SCM tell a
+/// gMSA apart from a regular account. A gMSA's password is managed
+/// automatically by the domain controller and rotated on its own schedule;
+/// `sc create` never takes a password for one (the account's AD object grants
+/// the target computer's machine account permission to retrieve it directly).
+///
+/// **Not independently verified against a real AD domain in this repo** (no
+/// domain environment available to test against) — this follows Microsoft's
+/// published gMSA + Windows-service documentation. Verify on real
+/// infrastructure before relying on it in production.
+///
+/// Requires a domain qualifier — `DOMAIN\name$` or the UPN form
+/// `name$@domain.suffix` — in addition to the trailing `$` on the account
+/// name portion. A bare `name$` is accepted by `sc create` syntactically but
+/// is indistinguishable from an operator typo on a local account that
+/// happens to end in `$` (e.g. a hand-typed test account). Requiring the
+/// qualifier matches how every gMSA name this app itself constructs looks
+/// (`domUser` is always `DOMAIN\user` in the UI) and closes off the
+/// accidental "local account + no password" bypass this check exists to
+/// prevent.
+pub fn is_gmsa_account(user: &str) -> bool {
+    let trimmed = user.trim();
+    if let Some(idx) = trimmed.find('\\') {
+        return idx > 0 && trimmed[idx + 1..].ends_with('$');
+    }
+    if let Some(idx) = trimmed.find('@') {
+        return idx > 0 && trimmed[..idx].ends_with('$');
+    }
+    false
+}
+
 /// Validate the service-account / password coherency the PS sidecar will
 /// enforce. Returning the error from here (instead of only the sidecar)
 /// makes `--dry-run` reflect what real `--yes` apply would do.
@@ -333,12 +613,13 @@ pub fn validate_service_account_pair(
     }
     let pass_supplied = service_pass.map(|p| !p.is_empty()).unwrap_or(false)
         || service_pass_stdin;
-    if !is_builtin_service_account(u) && !pass_supplied {
+    if !is_builtin_service_account(u) && !is_gmsa_account(u) && !pass_supplied {
         return Err(UecmError::InvalidInput(format!(
-            "service_user {u:?} is not a Windows built-in account; a password \
-             is required (built-in accounts: LocalSystem / LocalService / \
-             NetworkService). Pass --service-pass / --service-pass-stdin, or \
-             pick a built-in account."
+            "service_user {u:?} is not a Windows built-in account or a gMSA \
+             (trailing '$'); a password is required (built-in accounts: \
+             LocalSystem / LocalService / NetworkService). Pass \
+             --service-pass / --service-pass-stdin, or pick a built-in/gMSA \
+             account."
         )));
     }
     Ok(())
@@ -689,5 +970,220 @@ mod zen_config_lua_path_tests {
     #[test]
     fn rejects_path_with_no_directory_component() {
         assert!(zen_config_lua_path("zen.exe").is_err());
+    }
+}
+
+#[cfg(test)]
+mod service_account_tests {
+    use super::*;
+
+    #[test]
+    fn is_gmsa_account_requires_domain_qualifier_and_trailing_dollar() {
+        assert!(is_gmsa_account("CONTOSO\\zen-svc$"));
+        assert!(is_gmsa_account("zen-svc$@contoso.com"));
+        // Bare `name$` with no domain qualifier is NOT accepted — indistinguishable
+        // from an operator typo on a local account (the bug this check was tightened to avoid).
+        assert!(!is_gmsa_account("zen-svc$"));
+        assert!(!is_gmsa_account("CONTOSO\\zen-svc"));
+        assert!(!is_gmsa_account("LocalSystem"));
+    }
+
+    #[test]
+    fn validate_service_account_pair_allows_gmsa_without_password() {
+        validate_service_account_pair(Some("CONTOSO\\zen-svc$"), None, false).unwrap();
+    }
+
+    #[test]
+    fn validate_service_account_pair_still_rejects_plain_domain_account_without_password() {
+        let err = validate_service_account_pair(Some("CONTOSO\\zen-svc"), None, false).unwrap_err();
+        assert!(matches!(err, UecmError::InvalidInput(_)));
+    }
+}
+
+#[cfg(test)]
+mod resolve_install_paths_tests {
+    use super::*;
+    use crate::data::{machine_ue_installs::UeInstall, machines, open_in_memory, schema};
+
+    fn setup_with_intree_zen(zen_exe: &str) -> (Db, i64) {
+        let db = open_in_memory().unwrap();
+        {
+            let mut conn = db.lock().unwrap();
+            schema::migrate(&mut conn).unwrap();
+        }
+        let machine_id = machines::insert(&db, &Machine::new("ZEN-01", "10.0.0.30")).unwrap();
+        crate::data::machine_ue_installs::upsert(
+            &db,
+            &UeInstall {
+                id: None,
+                machine_id,
+                version: "5.4".into(),
+                install_path: r"D:\UE_5.4".into(),
+                is_primary: true,
+                zen_cli_intree_path: Some(zen_exe.to_string()),
+                zen_cli_intree_version: None,
+                zen_cli_intree_sha256: None,
+                zenserver_intree_path: None,
+                zenserver_intree_version: None,
+                zenserver_intree_sha256: None,
+            },
+        )
+        .unwrap();
+        (db, machine_id)
+    }
+
+    fn endpoint_for(machine_id: i64, install_dir: Option<&str>) -> ZenEndpoint {
+        ZenEndpoint {
+            machine_id,
+            install_dir: install_dir.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn none_install_dir_preserves_legacy_derived_path() {
+        let (db, machine_id) =
+            setup_with_intree_zen(r"D:\UE_5.4\Engine\Binaries\Win64\zen.exe");
+        let ep = endpoint_for(machine_id, None);
+        let resolved = resolve_install_paths(&db, &ep).unwrap();
+        assert_eq!(resolved.source_exe, r"D:\UE_5.4\Engine\Binaries\Win64\zen.exe");
+        assert_eq!(resolved.target_exe, resolved.source_exe);
+        assert_eq!(
+            resolved.target_config,
+            r"D:\UE_5.4\Engine\Binaries\Win64\zen_config.lua"
+        );
+        assert!(!resolved.needs_copy);
+    }
+
+    #[test]
+    fn some_install_dir_different_from_source_requires_copy() {
+        let (db, machine_id) =
+            setup_with_intree_zen(r"D:\UE_5.4\Engine\Binaries\Win64\zen.exe");
+        let ep = endpoint_for(machine_id, Some(r"C:\ZenServer"));
+        let resolved = resolve_install_paths(&db, &ep).unwrap();
+        assert_eq!(resolved.target_exe, r"C:\ZenServer\zenserver.exe");
+        assert_eq!(resolved.target_config, r"C:\ZenServer\zen_config.lua");
+        assert!(resolved.needs_copy);
+    }
+
+    #[test]
+    fn some_install_dir_matching_source_case_insensitively_skips_copy() {
+        // Realistic shape: the detected binary is always zen.exe (see
+        // resolve_service_zen_exe), never zenserver.exe — needs_copy must
+        // compare directories, not full paths, or this would always be true.
+        let (db, machine_id) =
+            setup_with_intree_zen(r"c:\zenserver\zen.exe");
+        let ep = endpoint_for(machine_id, Some(r"C:\ZenServer"));
+        let resolved = resolve_install_paths(&db, &ep).unwrap();
+        assert!(!resolved.needs_copy);
+    }
+
+    #[test]
+    fn some_install_dir_exactly_matching_source_dir_skips_copy() {
+        // Same scenario without the case-folding — the most common real
+        // case: an endpoint already deployed with install_dir set, whose
+        // zen.exe was already copied there by a prior apply-config.
+        let (db, machine_id) =
+            setup_with_intree_zen(r"C:\ZenServer\zen.exe");
+        let ep = endpoint_for(machine_id, Some(r"C:\ZenServer"));
+        let resolved = resolve_install_paths(&db, &ep).unwrap();
+        assert!(!resolved.needs_copy);
+    }
+
+    #[test]
+    fn blank_install_dir_is_rejected() {
+        let (db, machine_id) =
+            setup_with_intree_zen(r"D:\UE_5.4\Engine\Binaries\Win64\zen.exe");
+        let ep = endpoint_for(machine_id, Some("   "));
+        assert!(resolve_install_paths(&db, &ep).is_err());
+    }
+
+    #[test]
+    fn config_path_override_takes_precedence_over_install_dir() {
+        let (db, machine_id) =
+            setup_with_intree_zen(r"D:\UE_5.4\Engine\Binaries\Win64\zen.exe");
+        let mut ep = endpoint_for(machine_id, Some(r"C:\ZenServer"));
+        ep.config_path_override = Some(r"E:\Custom\zen_config.lua".into());
+        let resolved = resolve_install_paths(&db, &ep).unwrap();
+        assert_eq!(resolved.target_config, r"E:\Custom\zen_config.lua");
+        // Override only affects the config path, not the exe target/copy decision.
+        assert_eq!(resolved.target_exe, r"C:\ZenServer\zenserver.exe");
+        assert!(resolved.needs_copy);
+    }
+
+    #[test]
+    fn config_path_override_works_without_install_dir() {
+        let (db, machine_id) =
+            setup_with_intree_zen(r"D:\UE_5.4\Engine\Binaries\Win64\zen.exe");
+        let mut ep = endpoint_for(machine_id, None);
+        ep.config_path_override = Some(r"E:\Custom\zen_config.lua".into());
+        let resolved = resolve_install_paths(&db, &ep).unwrap();
+        assert_eq!(resolved.target_config, r"E:\Custom\zen_config.lua");
+        assert_eq!(resolved.target_exe, r"D:\UE_5.4\Engine\Binaries\Win64\zen.exe");
+        assert!(!resolved.needs_copy);
+    }
+
+    #[test]
+    fn blank_config_path_override_is_rejected() {
+        let (db, machine_id) =
+            setup_with_intree_zen(r"D:\UE_5.4\Engine\Binaries\Win64\zen.exe");
+        let mut ep = endpoint_for(machine_id, None);
+        ep.config_path_override = Some("   ".into());
+        assert!(resolve_install_paths(&db, &ep).is_err());
+    }
+
+    #[test]
+    fn resolve_service_paths_with_install_dir_needs_no_detection_metadata() {
+        // No machine_ue_installs / machine_zen_install row seeded at all —
+        // resolve_install_paths would fail here (it always calls
+        // resolve_service_zen_exe), but resolve_service_paths must succeed
+        // because install_dir alone is authoritative for this lightweight path.
+        let db = open_in_memory().unwrap();
+        {
+            let mut conn = db.lock().unwrap();
+            schema::migrate(&mut conn).unwrap();
+        }
+        let machine_id = machines::insert(&db, &Machine::new("ZEN-02", "10.0.0.31")).unwrap();
+        let ep = endpoint_for(machine_id, Some(r"C:\ZenServer"));
+        let (target_exe, target_config) = resolve_service_paths(&db, &ep).unwrap();
+        assert_eq!(target_exe, r"C:\ZenServer\zenserver.exe");
+        assert_eq!(target_config, r"C:\ZenServer\zen_config.lua");
+    }
+
+    #[test]
+    fn resolve_service_paths_without_install_dir_falls_back_to_detection() {
+        let (db, machine_id) =
+            setup_with_intree_zen(r"D:\UE_5.4\Engine\Binaries\Win64\zen.exe");
+        let ep = endpoint_for(machine_id, None);
+        let (target_exe, target_config) = resolve_service_paths(&db, &ep).unwrap();
+        assert_eq!(target_exe, r"D:\UE_5.4\Engine\Binaries\Win64\zen.exe");
+        assert_eq!(target_config, r"D:\UE_5.4\Engine\Binaries\Win64\zen_config.lua");
+    }
+
+    #[test]
+    fn resolve_service_paths_without_install_dir_and_no_detection_fails() {
+        let db = open_in_memory().unwrap();
+        {
+            let mut conn = db.lock().unwrap();
+            schema::migrate(&mut conn).unwrap();
+        }
+        let machine_id = machines::insert(&db, &Machine::new("ZEN-03", "10.0.0.32")).unwrap();
+        let ep = endpoint_for(machine_id, None);
+        assert!(resolve_service_paths(&db, &ep).is_err());
+    }
+
+    #[test]
+    fn resolve_service_paths_applies_config_path_override() {
+        let db = open_in_memory().unwrap();
+        {
+            let mut conn = db.lock().unwrap();
+            schema::migrate(&mut conn).unwrap();
+        }
+        let machine_id = machines::insert(&db, &Machine::new("ZEN-04", "10.0.0.33")).unwrap();
+        let mut ep = endpoint_for(machine_id, Some(r"C:\ZenServer"));
+        ep.config_path_override = Some(r"E:\Custom\zen_config.lua".into());
+        let (target_exe, target_config) = resolve_service_paths(&db, &ep).unwrap();
+        assert_eq!(target_exe, r"C:\ZenServer\zenserver.exe");
+        assert_eq!(target_config, r"E:\Custom\zen_config.lua");
     }
 }

@@ -780,6 +780,7 @@ mod tests {
                 lifecycle_mode: "managed".into(),
                 created_at: None,
                 updated_at: None,
+                ..Default::default()
             },
         )
         .unwrap()
@@ -1298,6 +1299,7 @@ mod tests {
                 lifecycle_mode: "installed_service".into(),
                 created_at: None,
                 updated_at: None,
+                ..Default::default()
             },
         )
         .unwrap();

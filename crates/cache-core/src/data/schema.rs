@@ -399,6 +399,18 @@ const MIGRATIONS: &[(&str, &str)] = &[
         ALTER TABLE machines ADD COLUMN ue_runtime_user TEXT;
         "#,
     ),
+    (
+        "025_zen_endpoints_gc_install_account",
+        r#"
+        ALTER TABLE zen_endpoints ADD COLUMN install_dir TEXT;
+        ALTER TABLE zen_endpoints ADD COLUMN gc_interval_seconds INTEGER;
+        ALTER TABLE zen_endpoints ADD COLUMN gc_lightweight_interval_seconds INTEGER;
+        ALTER TABLE zen_endpoints ADD COLUMN cache_max_duration_seconds INTEGER;
+        ALTER TABLE zen_endpoints ADD COLUMN service_account_username TEXT;
+        ALTER TABLE zen_endpoints ADD COLUMN service_account_cred_alias TEXT;
+        ALTER TABLE zen_endpoints ADD COLUMN config_path_override TEXT;
+        "#,
+    ),
 ];
 
 pub fn migrate(conn: &mut Connection) -> UecmResult<()> {
@@ -662,6 +674,13 @@ mod tests {
                 ("lifecycle_mode", "TEXT", true),
                 ("created_at", "TEXT", true),
                 ("updated_at", "TEXT", true),
+                ("install_dir", "TEXT", false),
+                ("gc_interval_seconds", "INTEGER", false),
+                ("gc_lightweight_interval_seconds", "INTEGER", false),
+                ("cache_max_duration_seconds", "INTEGER", false),
+                ("service_account_username", "TEXT", false),
+                ("service_account_cred_alias", "TEXT", false),
+                ("config_path_override", "TEXT", false),
             ],
         );
     }

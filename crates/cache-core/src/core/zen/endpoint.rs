@@ -61,6 +61,11 @@ pub struct EndpointInput {
     pub data_dir: String,
     pub httpserverclass: String,
     pub lifecycle_mode: String,
+    /// `{ZenInstall}` — see `zen_endpoints::ZenEndpoint::install_dir`. `None`
+    /// preserves the legacy derive-from-detected-binary behavior.
+    pub install_dir: Option<String>,
+    /// See `zen_endpoints::ZenEndpoint::config_path_override`.
+    pub config_path_override: Option<String>,
 }
 
 /// Result of [`register`]. `inserted == false` means the row already existed
@@ -124,6 +129,13 @@ pub fn register(db: &Db, input: &EndpointInput) -> UecmResult<RegisterOutcome> {
         lifecycle_mode: input.lifecycle_mode.clone(),
         created_at: None,
         updated_at: None,
+        install_dir: input.install_dir.clone(),
+        gc_interval_seconds: None,
+        gc_lightweight_interval_seconds: None,
+        cache_max_duration_seconds: None,
+        service_account_username: None,
+        service_account_cred_alias: None,
+        config_path_override: input.config_path_override.clone(),
     };
     let (id, inserted) = zen_endpoints::insert_only_tx(&tx, &record)?;
     tx.commit()?;
@@ -192,18 +204,15 @@ pub fn change_role(
 
     let current = validate_change_role_tx(&tx, endpoint_id, new_role, new_upstream)?;
 
+    // Struct-update syntax so fields this function doesn't touch (GC
+    // settings, install_dir, service account) survive a role change instead
+    // of silently resetting to None — the ever-growing manual field list
+    // above was exactly the kind of drift risk that pattern invites.
     let updated = ZenEndpoint {
-        id: current.id,
-        machine_id: current.machine_id,
-        declared_port: current.declared_port,
-        scheme: current.scheme,
         role: new_role.to_string(),
         upstream_endpoint_id: new_upstream,
-        data_dir: current.data_dir,
-        httpserverclass: current.httpserverclass,
-        lifecycle_mode: current.lifecycle_mode,
-        created_at: current.created_at,
         updated_at: None,
+        ..current
     };
     zen_endpoints::upsert_tx(&tx, &updated)?;
     tx.commit()?;
@@ -591,6 +600,8 @@ mod tests {
             data_dir: "C:\\ZenData".into(),
             httpserverclass: "asio".into(),
             lifecycle_mode: "editor_owned".into(),
+            install_dir: None,
+            config_path_override: None,
         }
     }
 
@@ -604,6 +615,8 @@ mod tests {
             data_dir: "C:\\ZenData\\master".into(),
             httpserverclass: "asio".into(),
             lifecycle_mode: "installed_service".into(),
+            install_dir: None,
+            config_path_override: None,
         }
     }
 
@@ -1069,6 +1082,8 @@ mod tests {
             data_dir: "C:\\ZenData\\master".into(),
             httpserverclass: "asio".into(),
             lifecycle_mode: "installed_service".into(),
+            install_dir: None,
+            config_path_override: None,
         };
         let outcome = register(&db, &conflicting).unwrap();
         assert_eq!(outcome.id, master);

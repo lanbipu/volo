@@ -409,6 +409,59 @@ fn zen_register_then_lua_preview_round_trip() {
 }
 
 #[test]
+fn zen_register_conflict_reveals_install_dir_was_ignored() {
+    // register()'s idempotent-conflict contract silently keeps the existing
+    // row's install_dir/config_path_override on a same-(machine,port)
+    // re-register. The doc json must still include both fields so a caller
+    // (or the UI) can compare requested vs. returned and detect that its
+    // edit was dropped, instead of it disappearing without a trace.
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let path = tmp.path().to_string_lossy().to_string();
+    let _ = uecm_cmd()
+        .env("UECM_DB_PATH", &path)
+        .args(["--json", "machine", "add", "--ip", "192.168.10.40", "--hostname", "ZEN-05"])
+        .output()
+        .expect("spawn");
+
+    let reg = uecm_cmd()
+        .env("UECM_DB_PATH", &path)
+        .args([
+            "--json", "zen", "register",
+            "--machine", "1",
+            "--role", "local",
+            "--data-dir", "D:\\ZenData",
+            "--install-dir", "C:\\ZenServer",
+        ])
+        .output()
+        .expect("spawn");
+    assert!(reg.status.success(), "stderr: {}", String::from_utf8_lossy(&reg.stderr));
+    let reg_env: serde_json::Value =
+        serde_json::from_str(String::from_utf8(reg.stdout).unwrap().trim_end()).unwrap();
+    assert_eq!(reg_env["data"]["install_dir"], "C:\\ZenServer");
+
+    // Re-register the same (machine, port) with a DIFFERENT install_dir.
+    let reg2 = uecm_cmd()
+        .env("UECM_DB_PATH", &path)
+        .args([
+            "--json", "zen", "register",
+            "--machine", "1",
+            "--role", "local",
+            "--data-dir", "D:\\ZenData",
+            "--install-dir", "D:\\NewZenInstall",
+        ])
+        .output()
+        .expect("spawn");
+    assert!(reg2.status.success(), "stderr: {}", String::from_utf8_lossy(&reg2.stderr));
+    let reg2_env: serde_json::Value =
+        serde_json::from_str(String::from_utf8(reg2.stdout).unwrap().trim_end()).unwrap();
+    let reg2_doc = &reg2_env["data"];
+    assert_eq!(reg2_doc["inserted"], serde_json::Value::Bool(false));
+    // The requested "D:\\NewZenInstall" was ignored — the doc reflects the
+    // ORIGINAL persisted value, letting a caller detect the mismatch.
+    assert_eq!(reg2_doc["install_dir"], "C:\\ZenServer");
+}
+
+#[test]
 fn zen_unregister_without_yes_returns_invalid_input() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
@@ -1265,4 +1318,208 @@ fn zen_apply_config_dry_run_emits_plan_without_invoking_powershell() {
     assert!(v["summary"]["details"]["lua"].as_str().unwrap().contains("server.datadir"));
     // Derived from the seeded zen.exe's directory, not caller-supplied.
     assert_eq!(v["summary"]["details"]["dest_path"], "C:\\Tools\\UECM\\zen_config.lua");
+}
+
+#[test]
+fn zen_service_install_cred_alias_without_user_returns_invalid_input() {
+    // --service-cred-alias resolves to a password server-side just like
+    // --service-pass/--service-pass-stdin — supplying it without
+    // --service-user must be rejected up front (mirrors the existing
+    // password-without-user guard), or the resolved password would be
+    // silently discarded and the service installed as LocalService.
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let path = tmp.path().to_string_lossy().to_string();
+    let out = uecm_cmd()
+        .env("UECM_DB_PATH", &path)
+        .args([
+            "--json", "zen", "service", "install",
+            "--endpoint-id", "1",
+            "--service-cred-alias", "zen-svc:1:zen-svc-ab12cd",
+            "--yes",
+        ])
+        .output()
+        .expect("spawn");
+    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(stderr.trim_end()).expect("stderr JSON envelope");
+    assert_eq!(v["error"]["code"], "invalid_input");
+    assert!(v["error"]["message"].as_str().unwrap().contains("service-user"));
+}
+
+#[test]
+fn zen_gc_set_rejects_non_positive_values() {
+    // Validation runs before any DB access, so no seeding is needed.
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let path = tmp.path().to_string_lossy().to_string();
+    let out = uecm_cmd()
+        .env("UECM_DB_PATH", &path)
+        .args([
+            "--json", "zen", "gc-set",
+            "--endpoint-id", "1",
+            "--gc-interval-seconds", "0",
+            "--gc-lightweight-interval-seconds", "3600",
+            "--cache-max-duration-seconds", "864000",
+            "--dry-run",
+        ])
+        .output()
+        .expect("spawn");
+    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(stderr.trim_end()).expect("stderr JSON envelope");
+    assert_eq!(v["status"], "error");
+    assert_eq!(v["error"]["code"], "invalid_input");
+}
+
+#[test]
+fn zen_gc_set_refuses_editor_owned_endpoint() {
+    // gc-set restarts the SCM service via zen-down.ps1/zen-up.ps1; an
+    // `editor_owned` endpoint has no such service, so it must be refused
+    // up front instead of touching (or silently no-op'ing against) whatever
+    // stale service happens to exist on the machine.
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let path = tmp.path().to_string_lossy().to_string();
+    let _ = uecm_cmd()
+        .env("UECM_DB_PATH", &path)
+        .args(["--json", "machine", "add", "--ip", "192.168.10.32", "--hostname", "ZEN-06"])
+        .output()
+        .expect("spawn");
+    let reg = uecm_cmd()
+        .env("UECM_DB_PATH", &path)
+        .args([
+            "--json", "zen", "register",
+            "--machine", "1",
+            "--role", "local",
+            "--data-dir", "D:\\ZenData",
+        ])
+        .output()
+        .expect("spawn");
+    let reg_env: serde_json::Value =
+        serde_json::from_str(String::from_utf8(reg.stdout).unwrap().trim_end()).unwrap();
+    assert_eq!(reg_env["data"]["lifecycle_mode"], "editor_owned");
+    let endpoint_id = reg_env["data"]["endpoint_id"].as_i64().unwrap();
+
+    let out = uecm_cmd()
+        .env("UECM_DB_PATH", &path)
+        .args([
+            "--json", "zen", "gc-set",
+            "--endpoint-id", &endpoint_id.to_string(),
+            "--gc-interval-seconds", "28800",
+            "--gc-lightweight-interval-seconds", "3600",
+            "--cache-max-duration-seconds", "864000",
+            "--dry-run",
+        ])
+        .output()
+        .expect("spawn");
+    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(stderr.trim_end()).expect("stderr JSON envelope");
+    assert_eq!(v["error"]["code"], "invalid_input");
+    assert!(v["error"]["message"].as_str().unwrap().contains("installed_service"));
+}
+
+#[test]
+fn zen_gc_set_dry_run_emits_plan_without_invoking_powershell() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let path = tmp.path().to_string_lossy().to_string();
+    let _ = uecm_cmd()
+        .env("UECM_DB_PATH", &path)
+        .args(["--json", "machine", "add", "--ip", "192.168.10.31", "--hostname", "ZEN-02"])
+        .output()
+        .expect("spawn");
+    let reg = uecm_cmd()
+        .env("UECM_DB_PATH", &path)
+        .args([
+            "--json", "zen", "register",
+            "--machine", "1",
+            "--role", "local",
+            "--data-dir", "D:\\ZenData",
+            // gc-set requires lifecycle_mode="installed_service" (it restarts
+            // the SCM service) — `local`'s default of `editor_owned` has no
+            // service to restart, so override it here.
+            "--lifecycle", "installed_service",
+        ])
+        .output()
+        .expect("spawn");
+    let reg_env: serde_json::Value =
+        serde_json::from_str(String::from_utf8(reg.stdout).unwrap().trim_end()).unwrap();
+    let endpoint_id = reg_env["data"]["endpoint_id"].as_i64().unwrap();
+
+    // gc-set derives its destination the same way apply-config does (see
+    // `zen_apply_config_dry_run_emits_plan_without_invoking_powershell`) —
+    // seed the same detection result.
+    {
+        let db = cache_core::data::open(std::path::Path::new(&path)).unwrap();
+        cache_core::data::machine_zen_install::upsert(
+            &db,
+            &cache_core::data::MachineZenInstall {
+                machine_id: 1,
+                install_dir: Some("C:\\Tools\\UECM".into()),
+                zen_cli_path: Some("C:\\Tools\\UECM\\zen.exe".into()),
+                zen_cli_build_version: None,
+                zen_cli_sha256: None,
+                zenserver_path: Some("C:\\Tools\\UECM\\zenserver.exe".into()),
+                zenserver_build_version: None,
+                zenserver_sha256: None,
+                last_detected_at: None,
+            },
+        )
+        .unwrap();
+    }
+
+    let out = uecm_cmd()
+        .env("UECM_DB_PATH", &path)
+        .args([
+            "--json", "zen", "gc-set",
+            "--endpoint-id", &endpoint_id.to_string(),
+            "--gc-interval-seconds", "28800",
+            "--gc-lightweight-interval-seconds", "3600",
+            "--cache-max-duration-seconds", "864000",
+            "--dry-run",
+        ])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let env: serde_json::Value = serde_json::from_str(stdout.trim_end()).unwrap();
+    assert_eq!(env["status"], "ok");
+    let v = &env["data"]["events"][0];
+    assert_eq!(v["type"], "completed");
+    assert_eq!(v["summary"]["dry_run"], serde_json::Value::Bool(true));
+    assert_eq!(v["summary"]["operation"], "zen.gc_settings.update");
+    let lua = v["summary"]["details"]["lua"].as_str().unwrap();
+    assert!(lua.contains("gc.intervalseconds = 28800"));
+    assert!(lua.contains("gc.lightweightintervalseconds = 3600"));
+    assert!(lua.contains("cache.maxdurationseconds = 864000"));
+    assert_eq!(
+        v["summary"]["details"]["dest_path"],
+        "C:\\Tools\\UECM\\zen_config.lua"
+    );
+    assert_eq!(
+        v["summary"]["details"]["will_restart_service"],
+        serde_json::Value::Bool(true)
+    );
+}
+
+#[test]
+fn zen_account_create_for_unknown_machine_returns_invalid_input() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let path = tmp.path().to_string_lossy().to_string();
+    let out = uecm_cmd()
+        .env("UECM_DB_PATH", &path)
+        .args(["--json", "zen", "account-create", "--machine", "9999"])
+        .output()
+        .expect("spawn");
+    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(stderr.trim_end()).expect("stderr JSON envelope");
+    assert_eq!(v["status"], "error");
+    assert_eq!(v["error"]["code"], "invalid_input");
 }

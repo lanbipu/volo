@@ -17,7 +17,7 @@ use crate::error::UecmResult;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ZenEndpoint {
     pub id: Option<i64>,
     pub machine_id: i64,
@@ -30,6 +30,33 @@ pub struct ZenEndpoint {
     pub lifecycle_mode: String,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
+    /// `{ZenInstall}` — the directory `zenserver.exe` + `zen_config.lua` must
+    /// live in. `None` means legacy behavior: derive it from wherever
+    /// `zen detect-binary` found a usable zen.exe (see
+    /// `core::zen::ops::resolve_install_paths`). `Some(dir)` makes this
+    /// directory authoritative — the resolver copies the detected zen.exe
+    /// here if it isn't already, so the field can't drift from the config
+    /// file's actual location.
+    pub install_dir: Option<String>,
+    /// `gc.intervalseconds` — full GC scan interval, in seconds.
+    pub gc_interval_seconds: Option<i64>,
+    /// `gc.lightweightintervalseconds` — lightweight GC scan interval, in seconds.
+    pub gc_lightweight_interval_seconds: Option<i64>,
+    /// `cache.maxdurationseconds` — max cache retention, in seconds.
+    pub cache_max_duration_seconds: Option<i64>,
+    /// Username of the tool-managed dedicated local service account, if one
+    /// was auto-created for this endpoint (see `core::zen::service_account`).
+    pub service_account_username: Option<String>,
+    /// `SecretStore` alias holding that account's password. Never the
+    /// password itself.
+    pub service_account_cred_alias: Option<String>,
+    /// Manual override for where `zen_config.lua` lands, taking precedence
+    /// over the `install_dir`-derived path in
+    /// `core::zen::ops::resolve_install_paths`. Both `zen_apply_config`
+    /// (write) and `zen_service_install` (launch via `--config=`) read this
+    /// same field through the same resolver, so an override here can never
+    /// drift the two apart the way an ad-hoc per-call override would.
+    pub config_path_override: Option<String>,
 }
 
 pub fn upsert_tx(conn: &Connection, endpoint: &ZenEndpoint) -> UecmResult<i64> {
@@ -46,9 +73,11 @@ pub fn upsert_tx(conn: &Connection, endpoint: &ZenEndpoint) -> UecmResult<i64> {
             data_dir,
             httpserverclass,
             lifecycle_mode,
+            install_dir,
+            config_path_override,
             updated_at
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
          ON CONFLICT(machine_id, declared_port) DO UPDATE SET
             scheme = excluded.scheme,
             role = excluded.role,
@@ -56,6 +85,8 @@ pub fn upsert_tx(conn: &Connection, endpoint: &ZenEndpoint) -> UecmResult<i64> {
             data_dir = excluded.data_dir,
             httpserverclass = excluded.httpserverclass,
             lifecycle_mode = excluded.lifecycle_mode,
+            install_dir = excluded.install_dir,
+            config_path_override = excluded.config_path_override,
             updated_at = CURRENT_TIMESTAMP",
         params![
             endpoint.machine_id,
@@ -66,6 +97,8 @@ pub fn upsert_tx(conn: &Connection, endpoint: &ZenEndpoint) -> UecmResult<i64> {
             endpoint.data_dir,
             endpoint.httpserverclass,
             endpoint.lifecycle_mode,
+            endpoint.install_dir,
+            endpoint.config_path_override,
         ],
     )?;
     let id = conn.query_row(
@@ -99,9 +132,11 @@ pub fn insert_only_tx(conn: &Connection, endpoint: &ZenEndpoint) -> UecmResult<(
             data_dir,
             httpserverclass,
             lifecycle_mode,
+            install_dir,
+            config_path_override,
             updated_at
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
          ON CONFLICT(machine_id, declared_port) DO NOTHING",
         params![
             endpoint.machine_id,
@@ -112,6 +147,8 @@ pub fn insert_only_tx(conn: &Connection, endpoint: &ZenEndpoint) -> UecmResult<(
             endpoint.data_dir,
             endpoint.httpserverclass,
             endpoint.lifecycle_mode,
+            endpoint.install_dir,
+            endpoint.config_path_override,
         ],
     )?;
     let id = conn.query_row(
@@ -130,7 +167,10 @@ pub fn insert_only(db: &Db, endpoint: &ZenEndpoint) -> UecmResult<(i64, bool)> {
 pub fn list_tx(conn: &Connection) -> UecmResult<Vec<ZenEndpoint>> {
     let mut stmt = conn.prepare(
         "SELECT id, machine_id, declared_port, scheme, role, upstream_endpoint_id,
-                data_dir, httpserverclass, lifecycle_mode, created_at, updated_at
+                data_dir, httpserverclass, lifecycle_mode, created_at, updated_at,
+                install_dir, gc_interval_seconds, gc_lightweight_interval_seconds,
+                cache_max_duration_seconds, service_account_username, service_account_cred_alias,
+                config_path_override
          FROM zen_endpoints ORDER BY id ASC",
     )?;
     let rows = stmt.query_map([], zen_endpoint_from_row)?;
@@ -149,7 +189,10 @@ pub fn list(db: &Db) -> UecmResult<Vec<ZenEndpoint>> {
 pub fn list_for_machine_tx(conn: &Connection, machine_id: i64) -> UecmResult<Vec<ZenEndpoint>> {
     let mut stmt = conn.prepare(
         "SELECT id, machine_id, declared_port, scheme, role, upstream_endpoint_id,
-                data_dir, httpserverclass, lifecycle_mode, created_at, updated_at
+                data_dir, httpserverclass, lifecycle_mode, created_at, updated_at,
+                install_dir, gc_interval_seconds, gc_lightweight_interval_seconds,
+                cache_max_duration_seconds, service_account_username, service_account_cred_alias,
+                config_path_override
          FROM zen_endpoints WHERE machine_id = ? ORDER BY declared_port ASC",
     )?;
     let rows = stmt.query_map(params![machine_id], zen_endpoint_from_row)?;
@@ -168,7 +211,10 @@ pub fn list_for_machine(db: &Db, machine_id: i64) -> UecmResult<Vec<ZenEndpoint>
 pub fn get_tx(conn: &Connection, endpoint_id: i64) -> UecmResult<Option<ZenEndpoint>> {
     let mut stmt = conn.prepare(
         "SELECT id, machine_id, declared_port, scheme, role, upstream_endpoint_id,
-                data_dir, httpserverclass, lifecycle_mode, created_at, updated_at
+                data_dir, httpserverclass, lifecycle_mode, created_at, updated_at,
+                install_dir, gc_interval_seconds, gc_lightweight_interval_seconds,
+                cache_max_duration_seconds, service_account_username, service_account_cred_alias,
+                config_path_override
          FROM zen_endpoints WHERE id = ?",
     )?;
     let mut rows = stmt.query(params![endpoint_id])?;
@@ -210,7 +256,90 @@ fn zen_endpoint_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ZenEndpoin
         lifecycle_mode: row.get(8)?,
         created_at: row.get(9)?,
         updated_at: row.get(10)?,
+        install_dir: row.get(11)?,
+        gc_interval_seconds: row.get(12)?,
+        gc_lightweight_interval_seconds: row.get(13)?,
+        cache_max_duration_seconds: row.get(14)?,
+        service_account_username: row.get(15)?,
+        service_account_cred_alias: row.get(16)?,
+        config_path_override: row.get(17)?,
     })
+}
+
+/// Persist the three GC retention settings onto an existing endpoint row.
+/// Called after re-rendering + pushing `zen_config.lua` so the DB stays the
+/// source of truth the next render reads back from.
+pub fn update_gc_settings_tx(
+    conn: &Connection,
+    endpoint_id: i64,
+    gc_interval_seconds: i64,
+    gc_lightweight_interval_seconds: i64,
+    cache_max_duration_seconds: i64,
+) -> UecmResult<()> {
+    conn.execute(
+        "UPDATE zen_endpoints SET
+            gc_interval_seconds = ?,
+            gc_lightweight_interval_seconds = ?,
+            cache_max_duration_seconds = ?,
+            updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?",
+        params![
+            gc_interval_seconds,
+            gc_lightweight_interval_seconds,
+            cache_max_duration_seconds,
+            endpoint_id,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn update_gc_settings(
+    db: &Db,
+    endpoint_id: i64,
+    gc_interval_seconds: i64,
+    gc_lightweight_interval_seconds: i64,
+    cache_max_duration_seconds: i64,
+) -> UecmResult<()> {
+    let conn = db.lock().unwrap();
+    update_gc_settings_tx(
+        &conn,
+        endpoint_id,
+        gc_interval_seconds,
+        gc_lightweight_interval_seconds,
+        cache_max_duration_seconds,
+    )
+}
+
+/// Remember which tool-managed dedicated service account (if any) this
+/// endpoint's service was last installed under, so the UI can show "already
+/// created" instead of prompting to create a new one on every page load.
+/// `cred_alias` points into `core::secrets::SecretStore`; the password
+/// itself never touches this table.
+pub fn update_service_account_tx(
+    conn: &Connection,
+    endpoint_id: i64,
+    username: Option<&str>,
+    cred_alias: Option<&str>,
+) -> UecmResult<()> {
+    conn.execute(
+        "UPDATE zen_endpoints SET
+            service_account_username = ?,
+            service_account_cred_alias = ?,
+            updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?",
+        params![username, cred_alias, endpoint_id],
+    )?;
+    Ok(())
+}
+
+pub fn update_service_account(
+    db: &Db,
+    endpoint_id: i64,
+    username: Option<&str>,
+    cred_alias: Option<&str>,
+) -> UecmResult<()> {
+    let conn = db.lock().unwrap();
+    update_service_account_tx(&conn, endpoint_id, username, cred_alias)
 }
 
 #[cfg(test)]
@@ -241,6 +370,13 @@ mod tests {
             lifecycle_mode: "managed".into(),
             created_at: None,
             updated_at: None,
+            install_dir: None,
+            gc_interval_seconds: None,
+            gc_lightweight_interval_seconds: None,
+            cache_max_duration_seconds: None,
+            service_account_username: None,
+            service_account_cred_alias: None,
+            config_path_override: None,
         }
     }
 
@@ -332,5 +468,41 @@ mod tests {
         let id = upsert(&db, &sample(machine_id, 8558)).unwrap();
         delete(&db, id).unwrap();
         assert!(get(&db, id).unwrap().is_none());
+    }
+
+    #[test]
+    fn update_gc_settings_persists_all_three_fields() {
+        let (db, machine_id) = setup();
+        let id = upsert(&db, &sample(machine_id, 8558)).unwrap();
+        update_gc_settings(&db, id, 28800, 3600, 864000).unwrap();
+        let got = get(&db, id).unwrap().unwrap();
+        assert_eq!(got.gc_interval_seconds, Some(28800));
+        assert_eq!(got.gc_lightweight_interval_seconds, Some(3600));
+        assert_eq!(got.cache_max_duration_seconds, Some(864000));
+    }
+
+    #[test]
+    fn update_service_account_persists_username_and_alias() {
+        let (db, machine_id) = setup();
+        let id = upsert(&db, &sample(machine_id, 8558)).unwrap();
+        update_service_account(&db, id, Some("zen-svc-ab12cd"), Some("zen-svc:1:zen-svc-ab12cd"))
+            .unwrap();
+        let got = get(&db, id).unwrap().unwrap();
+        assert_eq!(got.service_account_username.as_deref(), Some("zen-svc-ab12cd"));
+        assert_eq!(
+            got.service_account_cred_alias.as_deref(),
+            Some("zen-svc:1:zen-svc-ab12cd")
+        );
+    }
+
+    #[test]
+    fn update_service_account_can_clear_to_none() {
+        let (db, machine_id) = setup();
+        let id = upsert(&db, &sample(machine_id, 8558)).unwrap();
+        update_service_account(&db, id, Some("zen-svc-ab12cd"), Some("alias")).unwrap();
+        update_service_account(&db, id, None, None).unwrap();
+        let got = get(&db, id).unwrap().unwrap();
+        assert!(got.service_account_username.is_none());
+        assert!(got.service_account_cred_alias.is_none());
     }
 }

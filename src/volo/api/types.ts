@@ -552,6 +552,10 @@ export interface ZenRegisterInput {
   data_dir: string;
   httpserverclass: string;
   lifecycle?: string | null;
+  /** `{ZenInstall}` — see `ZenEndpoint.install_dir`. */
+  install_dir?: string | null;
+  /** See `ZenEndpoint.config_path_override`. */
+  config_path_override?: string | null;
 }
 
 export interface ZenRegisterOutcome {
@@ -565,6 +569,8 @@ export interface ZenRegisterOutcome {
   lifecycle_mode: string;
   httpserverclass: string;
   data_dir: string;
+  install_dir: string | null;
+  config_path_override: string | null;
 }
 
 export interface ZenUnregisterPlan {
@@ -656,6 +662,37 @@ export interface ZenServicePlan {
   service_pass_supplied?: boolean | null;
 }
 
+/** Result of `zen_create_dedicated_account` — the "创建专用账号" one-click flow. */
+export interface ZenDedicatedAccountResult {
+  machine_id: number;
+  username: string;
+  /** Opaque handle for `zenServiceInstall`'s `serviceCredAlias` — never the password. */
+  cred_alias: string;
+}
+
+export interface ZenGcSettingsPlan {
+  operation: string;
+  endpoint_id: number;
+  machine_id: number;
+  host: string;
+  dest_path: string;
+  lua: string;
+  will_restart_service: boolean;
+}
+
+export interface ZenGcSettingsSummary {
+  endpoint_id: number;
+  machine_id: number;
+  host: string;
+  dest_path: string;
+  sha256: string;
+  restarted: boolean;
+  remote: unknown;
+}
+
+/** serde(untagged): plan (has `operation`) or summary (has `remote`). */
+export type ZenGcSettingsResult = ZenGcSettingsPlan | ZenGcSettingsSummary;
+
 export interface ZenServiceSummary {
   endpoint_id: number;
   machine_id: number;
@@ -740,6 +777,21 @@ export interface ZenEndpoint {
   lifecycle_mode: string;
   created_at: string | null;
   updated_at: string | null;
+  /** `{ZenInstall}` — directory zenserver.exe + zen_config.lua live in.
+   *  `null` means legacy derive-from-detected-binary behavior. */
+  install_dir: string | null;
+  /** `gc.intervalseconds` — full GC scan interval, in seconds. */
+  gc_interval_seconds: number | null;
+  /** `gc.lightweightintervalseconds` — lightweight GC scan interval, in seconds. */
+  gc_lightweight_interval_seconds: number | null;
+  /** `cache.maxdurationseconds` — max cache retention, in seconds. */
+  cache_max_duration_seconds: number | null;
+  /** Username of the tool-managed dedicated local service account, if any. */
+  service_account_username: string | null;
+  /** `SecretStore` alias holding that account's password. */
+  service_account_cred_alias: string | null;
+  /** Manual override for where zen_config.lua lands (takes precedence over install_dir). */
+  config_path_override: string | null;
 }
 
 export interface ZenBinaryExpected {

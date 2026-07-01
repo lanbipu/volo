@@ -27,6 +27,7 @@ import type {
   ZenChangeRoleResult, ZenLuaPreviewResult, ZenCredentialInput, ZenApplyConfigResult,
   ZenServiceResult, ZenServiceSummary, ZenServiceStatusResult,
   ZenUrlaclResult, ZenUrlaclListResult, ZenVerifyRunEditorInput, ZenVerifyRulesResult,
+  ZenGcSettingsResult, ZenDedicatedAccountResult,
 } from "./types";
 
 /* ----------------------------- machines ----------------------------- */
@@ -309,12 +310,27 @@ export const zenChangeRole = (endpointId: number, newRole: string, confirmed: bo
   call<ZenChangeRoleResult>("zen_change_role", { endpointId, newRole, newUpstreamEndpointId: newUpstreamEndpointId ?? null, confirmed, dryRun });
 // 📝 no-ui: 无 zen_config.lua 预览 UI
 export const zenLuaPreview = (endpointId: number) => call<ZenLuaPreviewResult>("zen_lua_preview", { endpointId });
-// ✅ wired: cacheZen 部署链路 step3 → zenApplyConfig（落地路径固定为 {ZenInstall}\zen_config.lua，后端自动派生，不再接受调用方传路径）
+// ✅ wired: cacheZen 部署链路 step3 → zenApplyConfig（落地路径固定为 {ZenInstall}\zen_config.lua，后端自动派生，不再接受调用方传路径；install_dir 已设置时自动拷贝 zen.exe 过去）
 export const zenApplyConfig = (endpointId: number, confirmed: boolean, dryRun: boolean, cred: ZenCredentialInput) =>
   call<ZenApplyConfigResult>("zen_apply_config", { endpointId, confirmed, dryRun, cred });
-// ✅ wired: cacheZen 部署链路 step5 → zenServiceInstall（本地/域账号）
-export const zenServiceInstall = (endpointId: number, confirmed: boolean, dryRun: boolean, cred: ZenCredentialInput, serviceUser?: string | null, servicePass?: string | null) =>
-  call<ZenServiceResult>("zen_service_install", { endpointId, serviceUser: serviceUser ?? null, servicePass: servicePass ?? null, confirmed, dryRun, cred });
+// ✅ wired: cacheZen「缓存回收策略（GC）」应用更改 → zenUpdateGcSettings（重写 zen_config.lua + 重启服务生效）
+export const zenUpdateGcSettings = (
+  endpointId: number, gcIntervalSeconds: number, gcLightweightIntervalSeconds: number, cacheMaxDurationSeconds: number,
+  confirmed: boolean, dryRun: boolean, cred: ZenCredentialInput,
+) => call<ZenGcSettingsResult>("zen_update_gc_settings", {
+  endpointId, gcIntervalSeconds, gcLightweightIntervalSeconds, cacheMaxDurationSeconds, confirmed, dryRun, cred,
+});
+// ✅ wired: cacheZen 服务运行账号「专用本地账号」一键创建 → zenCreateDedicatedAccount（密码由 SecretStore 托管，不回显）
+export const zenCreateDedicatedAccount = (machineId: number) =>
+  call<ZenDedicatedAccountResult>("zen_create_dedicated_account", { machineId });
+// ✅ wired: cacheZen 部署链路 step5 → zenServiceInstall（系统账号 / 专用本地账号 / 域账号三档；serviceCredAlias 用于专用本地账号让后端从 SecretStore 解出密码，不经前端）
+export const zenServiceInstall = (
+  endpointId: number, confirmed: boolean, dryRun: boolean, cred: ZenCredentialInput,
+  serviceUser?: string | null, servicePass?: string | null, serviceCredAlias?: string | null,
+) => call<ZenServiceResult>("zen_service_install", {
+  endpointId, serviceUser: serviceUser ?? null, servicePass: servicePass ?? null,
+  serviceCredAlias: serviceCredAlias ?? null, confirmed, dryRun, cred,
+});
 // ✅ wired: cacheZen 状态卡「卸载」→ zenServiceUninstall + zenUnregister
 export const zenServiceUninstall = (endpointId: number, confirmed: boolean, dryRun: boolean, cred: ZenCredentialInput) =>
   call<ZenServiceResult>("zen_service_uninstall", { endpointId, confirmed, dryRun, cred });

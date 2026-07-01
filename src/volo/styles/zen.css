@@ -117,3 +117,119 @@
 .zcli-end { margin-left: auto; flex: 0 0 auto; }
 .zcli-right { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
 .zcli-msg { font-size: 11px; }
+
+/* ---- 指向目标卡片：平常态只在图标上给强调色，卡片本身保持中性；红/橙警告色只留给
+   真失败态（已部署但停止/不可达）。`.cli-server-chip` 的无修饰基础样式来自 app.css
+   （cacheDdc 页也在用，那份基础样式不动），这里用 `.vis-*` 组合选择器整体覆写，
+   只在 zen 页面自己的 chip（永远带 vis-* class）生效。 ---- */
+.cli-server-chip.vis-neutral,
+.cli-server-chip.vis-accent,
+.cli-server-chip.vis-notice,
+.cli-server-chip.vis-negative {
+  background: var(--chrome-panel-2);
+  border-color: var(--chrome-line-2);
+}
+.cli-server-chip.vis-accent .csc-ico { background: var(--highlight-selected); color: var(--volo-500); }
+.cli-server-chip.vis-notice { border-color: color-mix(in srgb, var(--notice-visual) 34%, transparent); }
+.cli-server-chip.vis-notice .csc-ico { background: color-mix(in srgb, var(--notice-visual) 16%, transparent); color: var(--notice-visual); }
+.cli-server-chip.vis-negative { border-color: color-mix(in srgb, var(--negative-visual) 34%, transparent); }
+.cli-server-chip.vis-negative .csc-ico { background: color-mix(in srgb, var(--negative-visual) 16%, transparent); color: var(--negative-visual); }
+
+/* ---- 缓存回收策略（GC）---- */
+.gc-panel { margin-top: 14px; background: var(--chrome-panel-2); border: 1px solid var(--chrome-line-2); border-radius: 12px; padding: 15px 16px; }
+.gc-head { display: flex; align-items: center; gap: 12px; }
+.gc-head-ico { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; flex: 0 0 auto; color: var(--volo-500); background: var(--highlight-selected); }
+.gc-head-tx { min-width: 0; margin-right: auto; }
+.gc-head-t { font-size: 13.5px; font-weight: 800; color: var(--chrome-text); }
+.gc-head-s { font-size: 11px; color: var(--chrome-faint); margin-top: 2px; }
+.gc-pending { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; color: var(--volo-400); white-space: nowrap; flex: 0 0 auto; }
+.gc-pending-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--volo-500); box-shadow: 0 0 0 3px color-mix(in srgb, var(--volo-500) 22%, transparent); }
+.gc-applied-ok { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; color: var(--positive-visual); white-space: nowrap; flex: 0 0 auto; }
+.gc-panel > .cli-note.warn { margin-top: 10px; }
+.gc-panel-body { margin-top: 4px; }
+.gc-panel.is-disabled .gc-panel-body { opacity: .5; filter: grayscale(.2); pointer-events: none; }
+.gc-fields { display: flex; flex-direction: column; }
+.gc-field { padding: 13px 2px; border-top: 1px solid var(--chrome-line); }
+.gc-field:first-child { border-top: none; padding-top: 10px; }
+.gc-field-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.gc-field-head label { font-size: 12.5px; font-weight: 700; color: var(--chrome-text); display: inline-flex; align-items: center; gap: 6px; }
+.gc-tag { margin-left: auto; font-size: 10.5px; font-weight: 700; color: var(--notice-visual); background: color-mix(in srgb, var(--notice-visual) 14%, transparent); padding: 2px 7px; border-radius: 5px; white-space: nowrap; }
+.gc-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--volo-500); flex: 0 0 auto; }
+.gc-field.dirty .gc-field-row .gc-num, .gc-field.dirty .obj-sel { border-color: color-mix(in srgb, var(--volo-700) 55%, transparent); }
+.gc-field-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* 自定义步进器：隐藏原生上下箭头，改用悬停才显现的自绘按钮，与数字保持间距 */
+.gc-stepper { position: relative; display: inline-flex; }
+.gc-num { width: 58px; min-width: 0; box-sizing: border-box; padding: 8px 10px; text-align: center; }
+.gc-num::-webkit-inner-spin-button, .gc-num::-webkit-outer-spin-button { -webkit-appearance: none; appearance: none; margin: 0; }
+.gc-num[type=number] { -moz-appearance: textfield; appearance: textfield; }
+.gc-spin { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column;
+  opacity: 0; transition: opacity .12s; pointer-events: none; }
+.gc-stepper:hover .gc-spin, .gc-stepper:focus-within .gc-spin { opacity: 1; pointer-events: auto; }
+.gc-stepper.is-disabled { pointer-events: none; }
+.gc-spin-btn { all: unset; box-sizing: border-box; cursor: pointer; display: grid; place-items: center;
+  width: 15px; height: 10px; color: var(--chrome-faint); border-radius: 3px; transition: color .1s, background .1s; }
+.gc-spin-btn:hover { color: var(--volo-400); background: var(--wash-2); }
+.gc-spin-btn:active { color: var(--volo-500); }
+.gc-eq { font-size: 11px; color: var(--chrome-faint); margin-left: 2px; white-space: nowrap; }
+.gc-presets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.gc-chip { all: unset; box-sizing: border-box; cursor: pointer; font-size: 11px; font-weight: 600; color: var(--chrome-dim);
+  background: var(--sunken); border: 1px solid var(--chrome-line-2); padding: 4px 10px; border-radius: 999px; white-space: nowrap; transition: background .12s, color .12s, border-color .12s; }
+.gc-chip:hover { background: var(--wash-2); color: var(--chrome-text); }
+.gc-chip.on { background: var(--highlight-selected); color: var(--volo-400); border-color: color-mix(in srgb, var(--volo-700) 40%, transparent); font-weight: 700; }
+.gc-desc { font-size: 11px; color: var(--chrome-faint); margin-top: 8px; line-height: 1.5; text-wrap: pretty; }
+.gc-info { position: relative; display: inline-flex; color: var(--chrome-faint); cursor: help; }
+.gc-info:hover, .gc-info:focus-visible { color: var(--volo-400); outline: none; }
+.gc-info:hover .gc-tip, .gc-info:focus-visible .gc-tip { opacity: 1; visibility: visible; transform: translate(-50%, 0); }
+.gc-tip { position: absolute; left: 50%; top: calc(100% + 8px); transform: translate(-50%, 4px); width: 250px;
+  background: var(--chrome-panel-2); border: 1px solid var(--chrome-line-2); border-radius: 9px; box-shadow: var(--shadow-dragged);
+  padding: 9px 11px; font-size: 11px; font-weight: 400; line-height: 1.55; color: var(--chrome-dim); text-wrap: pretty;
+  opacity: 0; visibility: hidden; transition: opacity .12s, transform .12s; z-index: 20; pointer-events: none; }
+.gc-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--chrome-line); }
+.gc-actions .mini-btn { margin-right: auto; display: inline-flex; align-items: center; gap: 5px; }
+.gc-actions .mini-btn:disabled { opacity: .4; cursor: default; }
+
+/* ---- 服务运行账号：三档（系统 / 专用本地账号 / 域账号）---- */
+.zacct-field > label { margin-bottom: 8px; }
+.zseg-acct { display: flex; }
+.zseg-acct button { flex: 1; position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding-left: 8px; padding-right: 8px; white-space: nowrap; }
+.seg-badge { font-size: 9px; font-weight: 800; letter-spacing: .02em; color: var(--volo-400); background: color-mix(in srgb, var(--volo-700) 18%, transparent);
+  padding: 1px 5px; border-radius: 4px; line-height: 1.5; }
+.zseg-acct button.on .seg-badge { background: color-mix(in srgb, var(--volo-700) 24%, transparent); }
+.zacct-body { margin-top: 11px; display: flex; flex-direction: column; gap: 10px; }
+.zacct-desc { font-size: 11.5px; color: var(--chrome-dim); line-height: 1.55; text-wrap: pretty; }
+.zacct-subhint { font-size: 11px; color: var(--chrome-faint); line-height: 1.5; text-wrap: pretty; }
+.zacct-row { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; }
+.zacct-row .zacct-subhint { flex: 1; min-width: 180px; }
+.mini-btn.accent { color: var(--volo-400); border-color: color-mix(in srgb, var(--volo-700) 38%, transparent); background: var(--highlight-selected); flex: 0 0 auto; }
+.mini-btn.accent:hover { background: color-mix(in srgb, var(--volo-700) 20%, transparent); color: var(--volo-500); }
+.zcred-chip { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--chrome-text);
+  background: color-mix(in srgb, var(--positive-visual) 12%, transparent); border: 1px solid color-mix(in srgb, var(--positive-visual) 30%, transparent);
+  border-radius: 8px; padding: 7px 11px; width: fit-content; }
+.zcred-chip svg { color: var(--positive-visual); flex: 0 0 auto; }
+.zcred-chip .mono { font-family: var(--font-code); font-weight: 700; }
+.zcred-sub { font-size: 11px; color: var(--chrome-faint); }
+.ztext-btn { all: unset; cursor: pointer; font-size: 11px; font-weight: 600; color: var(--volo-400); width: fit-content; }
+.ztext-btn:hover { color: var(--volo-500); text-decoration: underline; }
+.ztext-btn:disabled { opacity: .5; cursor: default; text-decoration: none; }
+.zperm { display: flex; align-items: flex-start; gap: 7px; font-size: 11px; color: var(--chrome-faint); line-height: 1.55; text-wrap: pretty;
+  background: var(--sunken); border: 1px solid var(--chrome-line); border-radius: 8px; padding: 8px 11px; }
+.zperm svg { flex: 0 0 auto; margin-top: 1px; }
+.zperm b { color: var(--chrome-dim); font-weight: 700; }
+.zperm .mono { font-family: var(--font-code); color: var(--chrome-dim); }
+/* 密码字段 + 显示/隐藏切换 */
+.zpass { display: flex; align-items: center; gap: 6px; }
+.zpass .dp-input { flex: 1; min-width: 0; }
+.zpass-eye { all: unset; cursor: pointer; display: grid; place-items: center; width: 30px; height: 32px; border-radius: 8px;
+  color: var(--chrome-faint); background: var(--sunken); border: 1px solid var(--chrome-line-2); flex: 0 0 auto; transition: color .1s; }
+.zpass-eye:hover { color: var(--chrome-text); }
+.zpass-eye.on { color: var(--volo-400); }
+/* 域账号字段网格 */
+.zseg-sm button { padding: 5px 12px; font-size: 11.5px; }
+.zdom-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 11px; }
+.zdom-grid .dp-field { gap: 6px; }
+.zdom-grid .zacct-note { padding: 8px 0; }
+
+/* ---- 安装目录 / 配置文件路径覆写提示 ---- */
+.dp-hint { font-size: 10px; color: var(--chrome-faint); font-weight: 600; }
+.dp-hint-btn { all: unset; cursor: pointer; color: var(--volo-400); }
+.dp-hint-btn:hover { color: var(--volo-500); text-decoration: underline; }
