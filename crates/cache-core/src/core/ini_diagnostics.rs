@@ -127,14 +127,7 @@ pub fn run_rules(file: &ParsedFile, env: &EnvVarState) -> Vec<Finding> {
         "着色器（PSO）预缓存被关闭或没配置。",
         "要先打开运行时 PSO 预缓存，之后收集和分发的 PSO 缓存文件才有意义。",
     ));
-    out.extend(pso_cvar_rule(
-        file,
-        "R009",
-        "r.PSOPrecache.Compile",
-        Severity::Warning,
-        "PSO 预缓存编译被关闭或没配置。",
-        "不同 UE 版本和工程配置可能默认关掉编译，除非显式打开。",
-    ));
+    out.extend(rule_r009_pso_precache_mode(file));
     out.extend(pso_cvar_rule(
         file,
         "R010",
@@ -384,6 +377,71 @@ fn pso_cvar_rule(
             rationale,
             Some(section.name.clone()),
         )],
+    }
+}
+
+/// R009: `r.PSOPrecache.Mode`(整数枚举，非 `pso_cvar_rule` 的 "==1 才健康" 通用判定能覆盖)。
+/// 依据 UE 5.8 引擎源码核实：`EPSOPrecacheMode{PSO=0, PreloadShader=1}`
+/// (`PSOPrecache.h:221-224`)，默认值 0 = Full PSO(`PSOPrecache.cpp:110-117`)。
+/// 未设置时引擎按 0 处理，不应报警；只有显式设为 1（仅预载 shader，PSO 未完整编译）才报 Warning；
+/// 其它整数值运行时同样按 0 处理（`GetPSOPrecacheMode()` 的 switch 落到 default），
+/// 归为健康但用 Info 级别记录下来，方便未来发现新的官方取值语义时能第一时间注意到。
+fn rule_r009_pso_precache_mode(file: &ParsedFile) -> Vec<Finding> {
+    if !file
+        .path
+        .to_ascii_lowercase()
+        .ends_with("consolevariables.ini")
+    {
+        return vec![];
+    }
+    let Some(section) = file
+        .sections
+        .iter()
+        .find(|section| section.name.eq_ignore_ascii_case("ConsoleVariables"))
+    else {
+        return vec![];
+    };
+    let Some(entry) = key(section, "r.PSOPrecache.Mode") else {
+        return vec![];
+    };
+    match entry.value.trim().parse::<i64>() {
+        Ok(0) => vec![],
+        Ok(1) => vec![Finding {
+            rule_id: "R009".into(),
+            severity: Severity::Warning,
+            category: file.category,
+            file_path: file.path.clone(),
+            section: Some(section.name.clone()),
+            key_name: Some(entry.name.clone()),
+            line_number: Some(entry.line_number as i64),
+            snippet_before: format!("{}={}", entry.name, entry.value),
+            snippet_after: Some("r.PSOPrecache.Mode=0".into()),
+            recommended_action: RecommendedAction::Set,
+            recommended_value: Some("0".into()),
+            symptom: "PSO 预缓存被设成仅预载 shader（Preload shaders 模式），未完整编译 PSO。".into(),
+            rationale: "r.PSOPrecache.Mode=1 时引擎只做 shader 预载，不做完整 PSO 编译；设为 0（Full PSO，默认）才会真正预编译 PSO，减少运行时首次创建卡顿。".into(),
+        }],
+        parsed => {
+            let display = match parsed {
+                Ok(n) => n.to_string(),
+                Err(_) => entry.value.trim().to_string(),
+            };
+            vec![Finding {
+                rule_id: "R009".into(),
+                severity: Severity::Info,
+                category: file.category,
+                file_path: file.path.clone(),
+                section: Some(section.name.clone()),
+                key_name: Some(entry.name.clone()),
+                line_number: Some(entry.line_number as i64),
+                snippet_before: format!("{}={}", entry.name, entry.value),
+                snippet_after: None,
+                recommended_action: RecommendedAction::Manual,
+                recommended_value: None,
+                symptom: format!("r.PSOPrecache.Mode 被设成了非标准值 {}（UE 5.8 只文档化 0/1）。", display),
+                rationale: "运行时行为等同于 0（Full PSO）——GetPSOPrecacheMode() 对非 1 的值一律落到 default 分支。仅作记录，避免以后出现新官方取值时被忽略。".into(),
+            }]
+        }
     }
 }
 
@@ -848,7 +906,7 @@ mod tests {
     #[test]
     fn r008_reports_critical_when_pso_precaching_is_missing() {
         let file = console_variables(&[
-            ("r.PSOPrecache.Compile", "1"),
+            ("r.PSOPrecache.Mode", "0"),
             ("r.PSOPrecache.GlobalShaders", "1"),
         ]);
         let findings = run_rules(&file, &EnvVarState::default());
@@ -858,23 +916,47 @@ mod tests {
     }
 
     #[test]
-    fn r009_reports_warning_when_pso_compile_is_off() {
+    fn r009_reports_warning_when_mode_is_preload_shaders_only() {
         let file = console_variables(&[
             ("r.PSOPrecaching", "1"),
-            ("r.PSOPrecache.Compile", "0"),
+            ("r.PSOPrecache.Mode", "1"),
             ("r.PSOPrecache.GlobalShaders", "1"),
         ]);
         let findings = run_rules(&file, &EnvVarState::default());
         assert!(findings
             .iter()
-            .any(|f| f.rule_id == "R009" && f.recommended_action == RecommendedAction::Set));
+            .any(|f| f.rule_id == "R009" && f.severity == Severity::Warning));
+    }
+
+    #[test]
+    fn r009_silent_when_mode_missing_or_full_pso() {
+        // 未设置 = 引擎默认 0（Full PSO），不应报警。
+        let missing = console_variables(&[("r.PSOPrecaching", "1")]);
+        assert_silent("R009", &missing);
+        // 显式设为 0 同样健康。
+        let explicit_zero = console_variables(&[("r.PSOPrecaching", "1"), ("r.PSOPrecache.Mode", "0")]);
+        assert_silent("R009", &explicit_zero);
+    }
+
+    #[test]
+    fn r009_info_when_mode_is_unrecognized_value() {
+        // 非 0/1 的值：UE 源码里 GetPSOPrecacheMode() 的 switch 对非 1 值一律落到
+        // default（等同 0/Full PSO），所以不算 Critical/Warning，但要留痕记录。
+        let file = console_variables(&[("r.PSOPrecaching", "1"), ("r.PSOPrecache.Mode", "2")]);
+        let findings = run_rules(&file, &EnvVarState::default());
+        assert!(findings
+            .iter()
+            .any(|f| f.rule_id == "R009" && f.severity == Severity::Info));
+        assert!(!findings
+            .iter()
+            .any(|f| f.rule_id == "R009" && matches!(f.severity, Severity::Critical | Severity::Warning)));
     }
 
     #[test]
     fn r010_reports_warning_when_global_shader_pso_is_missing() {
         let file = console_variables(&[
             ("r.PSOPrecaching", "1"),
-            ("r.PSOPrecache.Compile", "1"),
+            ("r.PSOPrecache.Mode", "0"),
         ]);
         let findings = run_rules(&file, &EnvVarState::default());
         assert!(findings
@@ -886,7 +968,7 @@ mod tests {
     fn pso_rules_are_clean_when_all_required_cvars_are_enabled() {
         let file = console_variables(&[
             ("r.PSOPrecaching", "1"),
-            ("r.PSOPrecache.Compile", "1"),
+            ("r.PSOPrecache.Mode", "0"),
             ("r.PSOPrecache.GlobalShaders", "1"),
         ]);
         let findings = run_rules(&file, &EnvVarState::default());

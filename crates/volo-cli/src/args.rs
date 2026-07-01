@@ -541,9 +541,12 @@ pub enum IniAction {
         domain: Option<String>,
     },
     /// Verify PSO precaching CVars (R008-R010) in a project's ConsoleVariables.ini.
+    /// Runs a real INI scan scoped to the project (same path as `ini scan --project-id`).
     VerifyPsoPrecaching {
         #[arg(long)]
         project_id: i64,
+        #[command(flatten)]
+        cred: crate::credential_args::CredentialArgs,
     },
     /// Read or write [DerivedDataBackendGraph] tuple nodes.
     BackendGraph {
@@ -907,9 +910,12 @@ pub enum DdcAction {
 #[derive(Subcommand, Debug)]
 pub enum PsoAction {
     /// Verify PSO precaching CVars (R008-R010) are set in the project's ConsoleVariables.ini.
+    /// Runs a real INI scan scoped to the project (same underlying path as `ini verify-pso-precaching`).
     Verify {
         #[arg(long)]
         project_id: i64,
+        #[command(flatten)]
+        cred: crate::credential_args::CredentialArgs,
     },
     /// Run UE `-game` to collect PSO cache files. Long-running NDJSON stream.
     Collect {

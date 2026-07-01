@@ -73,7 +73,7 @@ pub fn operations() -> &'static [Operation] {
         Operation { operation_id: "ddc.generate",              summary: "Generate a DDC pak file via UE -DDC=CreatePak",                   cli_command: "voloctl uecm ddc generate",               side_effects: SideEffects{writes:true, external_calls:true, idempotent:false}, exit_codes: &[0,1,2,3,4] },
         Operation { operation_id: "ddc.verify",                summary: "Verify a previously generated .ddp pak exists",                   cli_command: "voloctl uecm ddc verify",                 side_effects: SideEffects{writes:false,external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
         Operation { operation_id: "ddc.distribute",            summary: "Distribute the DDC pak to target machines via Robocopy",          cli_command: "voloctl uecm ddc distribute",             side_effects: SideEffects{writes:true, external_calls:true, idempotent:false}, exit_codes: &[0,1,2,3,4] },
-        Operation { operation_id: "pso.verify",                summary: "Verify PSO precaching CVars (R008-R010) for a project",           cli_command: "voloctl uecm pso verify",                 side_effects: SideEffects{writes:false,external_calls:false,idempotent:true},  exit_codes: &[0,2,3] },
+        Operation { operation_id: "pso.verify",                summary: "Verify PSO precaching CVars (R008-R010) for a project",           cli_command: "voloctl uecm pso verify",                 side_effects: SideEffects{writes:true, external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
         Operation { operation_id: "pso.collect",               summary: "Run UE -game to collect PSO cache files (streaming)",             cli_command: "voloctl uecm pso collect",                side_effects: SideEffects{writes:true, external_calls:true, idempotent:false}, exit_codes: &[0,1,2,3,4] },
         Operation { operation_id: "pso.list",                  summary: "List collected PSO cache files for a project",                    cli_command: "voloctl uecm pso list",                   side_effects: SideEffects{writes:false,external_calls:false,idempotent:true},  exit_codes: &[0,3] },
         Operation { operation_id: "pso.distribute",            summary: "Distribute PSO cache files to target machines",                   cli_command: "voloctl uecm pso distribute",             side_effects: SideEffects{writes:true, external_calls:true, idempotent:false}, exit_codes: &[0,1,2,3,4] },
@@ -94,7 +94,7 @@ pub fn operations() -> &'static [Operation] {
         Operation { operation_id: "ini.apply",                 summary: "Auto-fix a finding's recommendation on the remote machine",       cli_command: "voloctl uecm ini apply",                  side_effects: SideEffects{writes:true, external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
         Operation { operation_id: "ini.skip",                  summary: "Mark a finding as skipped",                                       cli_command: "voloctl uecm ini skip",                   side_effects: SideEffects{writes:true, external_calls:false,idempotent:true},  exit_codes: &[0,2,3] },
         Operation { operation_id: "ini.config",                summary: "List captured DDC/PSO/Zen config snapshots for a scan run",       cli_command: "voloctl uecm ini config",                 side_effects: SideEffects{writes:false,external_calls:false,idempotent:true},  exit_codes: &[0,3] },
-        Operation { operation_id: "ini.verify_pso_precaching", summary: "Verify PSO precaching CVars in ConsoleVariables.ini",             cli_command: "voloctl uecm ini verify-pso-precaching",  side_effects: SideEffects{writes:false,external_calls:false,idempotent:true},  exit_codes: &[0,2,3] },
+        Operation { operation_id: "ini.verify_pso_precaching", summary: "Verify PSO precaching CVars in ConsoleVariables.ini",             cli_command: "voloctl uecm ini verify-pso-precaching",  side_effects: SideEffects{writes:true, external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
         Operation { operation_id: "ini.backend_graph",         summary: "Read/write/scan [DerivedDataBackendGraph] tuple nodes",           cli_command: "voloctl uecm ini backend-graph",          side_effects: SideEffects{writes:true, external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
         Operation { operation_id: "ini.gc_pause",              summary: "Pause Shared DDC GC (DeleteUnused=false)",                        cli_command: "voloctl uecm ini gc-pause",               side_effects: SideEffects{writes:true, external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
         Operation { operation_id: "ini.gc_resume",             summary: "Resume Shared DDC GC (DeleteUnused=true)",                        cli_command: "voloctl uecm ini gc-resume",              side_effects: SideEffects{writes:true, external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
@@ -352,6 +352,7 @@ pub fn output_schema_for(operation_id: &str) -> serde_json::Value {
         | "pso.collect" | "pso.distribute"
         | "health.run"
         | "ini.set" | "ini.remove" | "ini.scan" | "ini.apply" | "ini.skip"
+        | "ini.verify_pso_precaching" | "pso.verify"
         | "ini.gc_pause" | "ini.gc_resume"
         | "ini.zen_gc_pause" | "ini.zen_gc_resume" => event_schema(),
         // zen ops that emit ONLY an Event stream (incl. dry-run plan):
@@ -366,10 +367,8 @@ pub fn output_schema_for(operation_id: &str) -> serde_json::Value {
         //                          needs a concrete lifetime, so dynamic is the
         //                          honest fallback for the small typed struct).
         //   ini.read            -> IniReadOut<'a> (same lifetime constraint).
-        //   ini.verify_pso_precaching -> ad-hoc {project_id, machine_ids, note}.
         //   ini.backend_graph   -> get(ad-hoc json) / set(event|plan) /
         //                          scan(typed Vec) rolled into one id -> mixed.
-        //   pso.verify          -> ad-hoc {project_id, machine_ids, note}.
         //   ddc.generate/verify/distribute -> each can stream events OR emit a
         //                          one-shot ad-hoc result (zen-skip / verify
         //                          output / dry-run) -> mixed per op.
@@ -384,8 +383,7 @@ pub fn output_schema_for(operation_id: &str) -> serde_json::Value {
         //                          result) into one id -> mixed.
         //   zen.enable/disable  -> emit BOTH a one-shot ad-hoc result doc AND a
         //                          terminal Event::Completed -> mixed.
-        "env.get" | "ini.read" | "ini.verify_pso_precaching" | "ini.backend_graph"
-        | "pso.verify"
+        "env.get" | "ini.read" | "ini.backend_graph"
         | "ddc.generate" | "ddc.verify" | "ddc.distribute"
         | "health.consistency_check" | "health.file_stats" | "health.analyze_advisories"
             => dynamic_object_schema(),

@@ -1,6 +1,9 @@
 //! `uecm-cli pso <action>` handlers.
 //!
 //! verify     — check R008-R010 PSO precaching CVars in project ConsoleVariables.ini.
+//!              Delegates to `domain_ini::scan_dispatch` (same real-scan path as
+//!              `ini verify-pso-precaching` / the UI's `verify_pso_precaching`
+//!              Tauri command) — this used to be a stub that only printed a hint.
 //! collect    — launch UE in `-game` mode on source machine, stream UeRunnerEvents as
 //!              NDJSON, then enumerate + persist collected files.
 //! list       — list collected PSO cache files for a project.
@@ -23,7 +26,9 @@ use cache_core::error::{UecmError, UecmResult};
 
 pub fn handle(ctx: &mut Ctx<'_>, action: PsoAction) -> UecmResult<()> {
     match action {
-        PsoAction::Verify { project_id } => verify(ctx, project_id),
+        PsoAction::Verify { project_id, cred } => {
+            crate::domain_ini::scan_dispatch(ctx, vec![], Some(project_id), None, &cred)
+        }
         PsoAction::Collect {
             project_id,
             source_machine,
@@ -46,34 +51,6 @@ pub fn handle(ctx: &mut Ctx<'_>, action: PsoAction) -> UecmResult<()> {
             )
         }
     }
-}
-
-// ─── verify ───────────────────────────────────────────────────────────────────
-
-fn verify(ctx: &mut Ctx<'_>, project_id: i64) -> UecmResult<()> {
-    let db = ctx.require_db()?;
-    let locations = project_locations::list_by_project(db, project_id)?;
-    if locations.is_empty() {
-        return Err(UecmError::InvalidInput(format!(
-            "project {} has no locations registered; add locations first",
-            project_id
-        )));
-    }
-    let machine_ids: Vec<i64> = locations
-        .iter()
-        .map(|l| l.machine_id)
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect();
-
-    ctx.emitter
-        .emit_result(&serde_json::json!({
-            "project_id": project_id,
-            "machine_ids": machine_ids,
-            "note": "use `ini scan --machine-ids <ids>` with project paths; PSO CVar check (R008-R010) runs as part of the full ini scan",
-        }))
-        .ok();
-    Ok(())
 }
 
 // ─── collect ──────────────────────────────────────────────────────────────────
