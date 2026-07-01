@@ -229,6 +229,16 @@
 .zdom-grid .dp-field { gap: 6px; }
 .zdom-grid .zacct-note { padding: 8px 0; }
 
+/* ---- 地址栏 + 悬停浮现的「打开文件夹」按钮 ---- */
+.dp-path { position: relative; width: 100%; }
+.dp-path .dp-input { width: 100%; padding-right: 40px; }
+.dp-path-open { all: unset; position: absolute; top: 50%; right: 5px; transform: translateY(-50%);
+  display: grid; place-items: center; width: 26px; height: 26px; border-radius: 6px; cursor: pointer;
+  color: var(--chrome-faint); background: var(--wash-2);
+  opacity: 0; pointer-events: none; transition: opacity .12s, color .12s, background .12s; }
+.dp-path:hover .dp-path-open, .dp-path .dp-input:focus + .dp-path-open { opacity: 1; pointer-events: auto; }
+.dp-path-open:hover { color: var(--volo-400); background: var(--wash-3); }
+
 /* ---- 安装目录 / 配置文件路径覆写提示 ---- */
 .dp-hint { font-size: 10px; color: var(--chrome-faint); font-weight: 600; }
 .dp-hint-btn { all: unset; cursor: pointer; color: var(--volo-400); }

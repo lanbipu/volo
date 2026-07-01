@@ -20,6 +20,7 @@ import {
   zenRegister, zenDetectBinary, zenApplyConfig, zenUpdateGcSettings, zenCreateDedicatedAccount,
   zenUrlaclAdd, zenServiceInstall, zenServiceStart, zenServiceStop, zenServiceUninstall,
   zenUnregister, zenProbe, zenStatus, zenListEndpoints, zenCacheStats, setIniKey, refreshMachine,
+  revealPath,
 } from "../api/commands";
 
 (function () {
@@ -107,8 +108,10 @@ import {
 
   function ZenServer({ s }) {
     /* —— 服务器表单状态 —— */
-    const firstServer = () => { const ns = window.RENDER_NODES || []; return (ns.find((n) => n.roleKey !== 'shared') || ns[0] || {}).id || null; };
-    const [srvId, setSrvId] = useState(firstServer);
+    /* srvId 为 null 表示用户尚未显式选择过服务器机器；默认显示哪台机器完全交给下面
+       的 srvNode 派生值决定（已部署的 ZenServer 优先），不用 effect 异步纠正它——
+       避免和用户手动切换、以及 RENDER_NODES / 真实部署状态谁先到达产生竞态。 */
+    const [srvId, setSrvId] = useState(null);
     const [port, setPort] = useState('8558');  /* UE ZenServer 真实默认端口 */
     const [protocol, setProtocol] = useState('http');  /* HTTPS 未实现（lua_config 尚无 TLS key，见后端 T2.2 doc），表单只保留 http */
     const [installDir, setInstallDir] = useState('C:\\ZenServer');
@@ -209,7 +212,16 @@ import {
        会让客户端缓存上游失效。stopped/unreachable/unknown 都不放行。 */
     const canPoint = deployed && status.svc === 'running';
     const RN = window.RENDER_NODES || [];
-    const srvNode = CX.node(srvId) || RN.find((n) => n.roleKey !== 'shared') || RN[0];
+    /* 默认显示已部署的 ZenServer：先按 endpoint 真实主机名匹配，匹配不到（比如该机
+       已从集群移除）再退到 roleKey==='shared'（集群里指定的共享缓存机位）；只在真
+       有 endpoint（status 非空）时才生效。这是每次渲染都重新算的派生值——不会有
+       「RENDER_NODES 和 status 谁先到达」的时序问题，也不会覆盖用户已经手动选过的
+       机器（CX.node(srvId) 永远最先命中），同 cacheDdc.tsx 的 sharedNode 派生模式。 */
+    const deployedNode = status
+      ? (RN.find((n) => status.host && n.host.toLowerCase() === String(status.host).toLowerCase())
+          || RN.find((n) => n.roleKey === 'shared'))
+      : null;
+    const srvNode = CX.node(srvId) || deployedNode || RN.find((n) => n.roleKey !== 'shared') || RN[0];
 
     if (!srvNode) {
       return h('div', { className: 'res ddc' }, h('div', { className: 'ddc-body' },
@@ -263,7 +275,10 @@ import {
     const derivedConfigPath = installDir.replace(/[\\/]+$/, '') + '\\zen_config.lua';
     const configPath = configOverride == null ? derivedConfigPath : configOverride;
     const formObj = { port, protocol, dataDir, configPath, acct: acctLabel };
-    const srvOpts = RN.map((n) => ({ id: n.id, label: n.host, sub: n.ip }));
+    /* 机器列表按主机名自然排序：数字小的在前、大的在后（RNODE-07 不再落到 WS-ART-01 之后）*/
+    const srvOpts = RN.slice()
+      .sort((a, b) => a.host.localeCompare(b.host, undefined, { numeric: true }))
+      .map((n) => ({ id: n.id, label: n.host, sub: n.ip }));
     const httpOpts = [{ id: 'httpsys', label: 'http.sys（默认）' }, { id: 'asio', label: 'asio' }];
     const cred = {}; /* SSH key — ZenCredentialInput 全 None */
 
@@ -658,6 +673,15 @@ import {
           'ZenServer 对外为无认证服务——域账号只决定服务以谁的身份运行、能否读写本机目录，不会给客户端访问 Zen 数据加上认证。'),
         h('div', { className: 'zacct-subhint' }, '需域管理员预先为该账号授予「登录为服务」权限；推荐优先使用 gMSA 以避免手动管理密码带来的风险。')) : null);
 
+    /* 地址栏 + 悬停浮现的「打开文件夹」按钮：真实在本机文件资源管理器中打开该路径（revealPath，
+       同 USB 导出抽屉「在文件夹中显示」）。这三个路径描述的是部署目标机器（srvNode，常是远程
+       渲染节点）上的目录——只有部署目标恰好是本机时才会打开真实目录，跨机器时是已知限制。 */
+    const openPath = (p) => { revealPath(p).catch(() => {}); };
+    const pathInput = (val, onChange) => h('div', { className: 'dp-path' },
+      h('input', { className: 'dp-input mono', value: val, spellCheck: false, onChange }),
+      h('button', { type: 'button', className: 'dp-path-open', title: '在文件资源管理器中打开该目录', tabIndex: -1, onClick: () => openPath(val) },
+        h(Icon, { name: 'folder', size: 13 })));
+
     const deployForm = h('div', { className: 'deploy-panel' },
       h('div', { className: 'dp-h' }, h(Icon, { name: 'cube', size: 15 }), deployed ? '重新部署 Zen 服务器' : '部署 Zen 服务器',
         h('span', { className: 'dp-h-note' }, '逐步真实执行 · 每步可单独重试')),
@@ -672,15 +696,15 @@ import {
             h('span', { className: 'zep-sep mono' }, ':'),
             h('input', { className: 'dp-input mono zep-port', value: port, spellCheck: false, 'aria-label': '端口', onChange: (e) => setPort(e.target.value) }))),
         h('div', { className: 'dp-field grow' }, h('label', null, '安装目录 · ZenInstall'),
-          h('input', { className: 'dp-input mono', value: installDir, spellCheck: false, onChange: (e) => setInstallDir(e.target.value) })),
+          pathInput(installDir, (e) => setInstallDir(e.target.value))),
         h('div', { className: 'dp-field grow' }, h('label', null, '数据目录 · data-dir'),
-          h('input', { className: 'dp-input mono', value: dataDir, spellCheck: false, onChange: (e) => setDataDir(e.target.value) })),
+          pathInput(dataDir, (e) => setDataDir(e.target.value))),
         h('div', { className: 'dp-field grow' },
           h('label', null, '配置文件落地路径',
             configOverride == null
               ? h('span', { className: 'dp-hint' }, '跟随安装目录')
               : h('button', { type: 'button', className: 'dp-hint dp-hint-btn', onClick: () => setConfigOverride(null) }, '恢复跟随安装目录')),
-          h('input', { className: 'dp-input mono', value: configPath, spellCheck: false, onChange: (e) => setConfigOverride(e.target.value) })),
+          pathInput(configPath, (e) => setConfigOverride(e.target.value))),
         h('div', { className: 'dp-field grow zacct-field' }, h('label', null, '服务运行账号 · 用于开放网络访问 + 安装服务'),
           segAcct, acctBody)),
       h('div', { className: 'zadv' },
