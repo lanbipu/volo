@@ -274,8 +274,8 @@ fn validate_change_role_tx(
 
     // The new role must be compatible with the current lifecycle_mode.
     // (Plan §634: promoting to `shared_upstream` while the row is still
-    // `editor_owned` would advertise the row as cluster master even though
-    // the underlying zen would get preempted by editor sponsors.)
+    // `editor_owned` would advertise a cluster master that is loopback-only
+    // and editor-tied — unreachable / unstable for remote clients.)
     validate_role_lifecycle(new_role, &current.lifecycle_mode)?;
     validate_upstream_tx(tx, new_role, new_upstream, Some(endpoint_id))?;
 
@@ -314,14 +314,15 @@ fn validate_role(role: &str) -> UecmResult<()> {
 }
 
 /// Per plan §634: a `shared_upstream` cluster master MUST be
-/// `installed_service`, otherwise a later editor sponsor on the same machine
-/// will shutdown the zen process and re-launch it as `editor_owned`, leaving
-/// every `local` peer's `ZenShared.Host` pointing at an unstable master.
-/// `local` endpoints can run either lifecycle.
+/// `installed_service`. Editor-sponsored zen is loopback-only (127.0.0.1)
+/// and tied to the sponsoring Editor's lifecycle — remote render nodes cannot
+/// reach it, and it is not a stable Shared upstream. `local` endpoints can run
+/// either lifecycle.
 fn validate_role_lifecycle(role: &str, lifecycle_mode: &str) -> UecmResult<()> {
     if role == ROLE_SHARED_UPSTREAM && lifecycle_mode != "installed_service" {
         return Err(UecmError::InvalidInput(format!(
-            "shared_upstream endpoint must have lifecycle_mode {:?} (got {:?}); cluster master would be preempted by editor sponsors otherwise",
+            "shared_upstream endpoint must have lifecycle_mode {:?} (got {:?}); \
+             editor-sponsored zen is loopback-only and editor-tied, not a stable LAN Shared upstream",
             "installed_service", lifecycle_mode
         )));
     }

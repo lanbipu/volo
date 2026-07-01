@@ -135,20 +135,21 @@ overrides: {}
   #     key: ZenShared.Host
   #     value_template: "{host}"
 
-# === Notes on multi-sponsor zen behaviour (Volo T0.5 经验观察 — 非官方 UE 文档) ===
+# === Why shared_upstream must be installed_service (not editor sponsor) ===
 #
-# A second UE editor opening a project while another UE editor already
-# owns a local zen will SHUTDOWN the running zen and re-launch under the
-# new editor's --owner-pid. This is NOT cooperative sponsoring — it's
-# preemption (observed on lanPC UE 5.7.4; treat as operational tip, not
-# documented engine contract). Implication for cluster design:
-#   * On render nodes, only one editor should own local zen at a time.
-#   * Cluster master should run zen via `zen service install` (lifecycle
-#     mode = 'installed_service' in plan §1.1), NOT via UE editor sponsor.
-#     A persistent service is immune to editor-driven preemption.
-#   * For workstation machines that *do* use editor-sponsored zen, plan
-#     §M2 dry-run should warn the operator before launching a second
-#     editor with a different project against the same data-dir.
+# UE editor-sponsored local zen (lifecycle `editor_owned`, `--owner-pid`):
+#   1. **Loopback-only** — listens on 127.0.0.1/::1; other machines cannot
+#      connect, so it cannot serve as a cluster Shared upstream.
+#   2. **Editor-tied lifecycle** — auto-starts/stops with the sponsoring Editor
+#      (UE default; can be configured persistent, but still loopback-bound).
+#
+# Volo `shared_upstream` therefore requires `installed_service` (Windows
+# service + `http://+:<port>/` URL ACL) for a stable, LAN-reachable master.
+#
+# Secondary same-host contention (optional operational note, lanPC UE 5.7.4):
+# opening a second Editor may shut down and re-launch local zen under a new
+# `--owner-pid`. This is NOT why Shared needs a service — loopback + lifecycle
+# are — but on render nodes only one Editor should own local zen at a time.
 #
 # === Notes on `-Quit` flag for headless `uecm-cli zen verify` (plan §M4 T4.4) ===
 #

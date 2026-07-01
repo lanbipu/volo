@@ -448,43 +448,36 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
   /* =================== overlay · machine detail (6.2) =================== */
   const KV = (k, v, mono) => h('div', { className: 'kv', key: k }, h('span', { className: 'k' }, k), h('span', { className: 'v' + (mono ? ' mono' : '') }, v));
 
-  /* BaseEngine.ini 路径：UE 引擎全局配置在 <EngineRoot>\Engine\Config\BaseEngine.ini。
-     ue_installs.install_path 通常是含 Engine\ 的引擎根；若它本身已指向 Engine 目录，
-     则不重复拼接（防御式，规避不同采集口径）。 */
-  const engineBaseIniPath = (p) => {
-    const root = String(p).replace(/[\\/]+$/, '');
-    return /\\engine$/i.test(root) ? (root + '\\Config\\BaseEngine.ini') : (root + '\\Engine\\Config\\BaseEngine.ini');
+  /* 推导某机的项目 DefaultEngine.ini 路径：必须取「这台机自己」的工程目录（locByMachine[mid]），
+     与 cacheZen ② 客户端指向写入路径一致；不能用 proj.root（可能是别的机器上的路径）。 */
+  const projectDefaultEngineIniPath = (mid) => {
+    const key = String(mid);
+    const proj = (window.UE_PROJECTS || []).find((p) => p.locByMachine && p.locByMachine[key]);
+    return proj ? (proj.locByMachine[key] + '\\Config\\DefaultEngine.ini') : null;
   };
-  /* ⑥ 已读到的 DDC 相关配置 — 真实读两项（离线机不读，由调用方门控）：
+  /* ⑤ 已读到的 DDC 相关配置 — 真实读三项（离线机不读，由调用方门控）：
      ① 环境变量 UE-LocalDataCachePath / UE-SharedDataCachePath（get_machine_env_var）
-     ② 引擎全局 BaseEngine.ini 的 [StorageServers]（read_ini_section）——读「当前机器所安装
-        UE 引擎的全局 INI」，路径从该机 UE 安装（get_machine_detail → ue_installs primary）推，
-        不是某个项目的 DefaultEngine.ini。这是读到的配置，不是「多层有效配置解析」。 */
+     ② 项目 DefaultEngine.ini 的 [StorageServers]（read_ini_section）——与 Zen ② 写入路径一致，
+        按 locByMachine 推导；读显式声明值，不是「多层有效配置解析」。 */
   function loadDdcConfig(mid) {
-    return getMachineDetail(mid).then(
-      (md) => (md && md.ue_installs ? (md.ue_installs.find((u) => u.is_primary) || md.ue_installs[0]) : null),
-      () => null,
-    ).then((ueInst) => {
-      const enginePath = ueInst && ueInst.install_path ? ueInst.install_path : null;
-      const iniPath = enginePath ? engineBaseIniPath(enginePath) : null;
-      return Promise.allSettled([
-        getMachineEnvVar(mid, 'UE-LocalDataCachePath'),
-        getMachineEnvVar(mid, 'UE-SharedDataCachePath'),
-        iniPath ? readIniSection(mid, iniPath, 'StorageServers') : Promise.resolve(null),
-      ]).then((rs) => {
-        const envLocal = rs[0].status === 'rejected' ? '读取失败' : (rs[0].value || '未设');
-        const envShared = rs[1].status === 'rejected' ? '读取失败' : (rs[1].value || '未设');
-        let ini;
-        if (!iniPath) ini = { ok: false, val: '该机未检出 UE 引擎安装', note: '无引擎安装路径，无法读取 BaseEngine.ini [StorageServers]', plain: '没找到这台机器的虚幻引擎安装，读不到它的全局配置，因此无法判断是否连上了团队共享缓存。', path: null };
-        else if (rs[2].status === 'rejected') ini = { ok: false, val: '读取失败', note: (rs[2].reason && rs[2].reason.message) ? rs[2].reason.message : '远程读取 INI 失败', plain: '没能读到这台机器的引擎全局配置，暂时无法判断是否连上了团队共享缓存。', path: iniPath };
-        else {
-          const sh = (rs[2].value || []).find((k) => k.name && k.name.toLowerCase() === 'shared');
-          ini = sh
-            ? { ok: true, val: '[StorageServers] Shared = ' + sh.value, note: '已配置共享上游', plain: '这台机器已连上团队共享缓存服务器（' + sh.value + '），渲染时可以直接复用团队已经算好的缓存，不用从头重算。', path: iniPath }
-            : { ok: false, val: '[StorageServers] 未配置 Shared', note: '未写入共享上游服务器', plain: '这台机器还没连上团队共享缓存服务器，渲染结果只存在本地，不能复用别人已经算好的缓存，也无法共享给其他机器。', path: iniPath };
-        }
-        return { envLocal, envShared, ini };
-      });
+    const iniPath = projectDefaultEngineIniPath(mid);
+    return Promise.allSettled([
+      getMachineEnvVar(mid, 'UE-LocalDataCachePath'),
+      getMachineEnvVar(mid, 'UE-SharedDataCachePath'),
+      iniPath ? readIniSection(mid, iniPath, 'StorageServers') : Promise.resolve(null),
+    ]).then((rs) => {
+      const envLocal = rs[0].status === 'rejected' ? '读取失败' : (rs[0].value || '未设');
+      const envShared = rs[1].status === 'rejected' ? '读取失败' : (rs[1].value || '未设');
+      let ini;
+      if (!iniPath) ini = { ok: false, val: '该机未发现 UE 工程', note: '未扫描到工程目录，无法读取 DefaultEngine.ini [StorageServers]', plain: '还没在这台机器上发现 UE 工程，读不到项目配置，因此无法判断是否连上了团队共享缓存。请先在「集群总览」扫描发现工程。', path: null };
+      else if (rs[2].status === 'rejected') ini = { ok: false, val: '读取失败', note: (rs[2].reason && rs[2].reason.message) ? rs[2].reason.message : '远程读取 INI 失败', plain: '没能读到这台机器的项目配置，暂时无法判断是否连上了团队共享缓存。', path: iniPath };
+      else {
+        const sh = (rs[2].value || []).find((k) => k.name && k.name.toLowerCase() === 'shared');
+        ini = sh
+          ? { ok: true, val: '[StorageServers] Shared = ' + sh.value, note: '已配置共享上游', plain: '这台机器已连上团队共享缓存服务器（' + sh.value + '），渲染时可以直接复用团队已经算好的缓存，不用从头重算。', path: iniPath }
+          : { ok: false, val: '[StorageServers] 未配置 Shared', note: '未写入共享上游服务器', plain: '这台机器还没连上团队共享缓存服务器，渲染结果只存在本地，不能复用别人已经算好的缓存，也无法共享给其他机器。', path: iniPath };
+      }
+      return { envLocal, envShared, ini };
     });
   }
 
@@ -622,7 +615,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
                     KV('本机缓存目录', ddc.envLocal, true),
                     KV('团队共享缓存目录', ddc.envShared === '未设' ? '未设置（不使用团队共享缓存）' : ddc.envShared, ddc.envShared !== '未设' && ddc.envShared !== '读取失败')),
                   h('div', { className: 'ddc-read-row' + (ddc.ini.ok ? '' : ' miss') },
-                    h('div', { className: 'ddc-read-h' }, h('span', { className: 'ddc-read-k' }, '② 是否连上共享缓存'), h('code', { className: 'ddc-tfile' }, 'BaseEngine.ini')),
+                    h('div', { className: 'ddc-read-h' }, h('span', { className: 'ddc-read-k' }, '② 是否连上共享缓存'), h('code', { className: 'ddc-tfile' }, 'DefaultEngine.ini')),
                     h('div', { className: 'ddc-read-plain' + (ddc.ini.ok ? '' : ' warn') }, ddc.ini.plain),
                     h('div', { className: 'ddc-read-sub' }, ddc.ini.note),
                     h('details', { className: 'ddc-read-tech' },
@@ -630,7 +623,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
                       ddc.ini.path ? h('div', { className: 'ddc-read-tline' },
                         h('span', { className: 'ddc-read-tlabel' }, '配置文件位置'),
                         h('div', { className: 'ddc-read-path mono' }, ddc.ini.path),
-                        h('div', { className: 'ddc-read-thint' }, '这是这台机器虚幻引擎的全局配置文件，所有项目共用。')) : null,
+                        h('div', { className: 'ddc-read-thint' }, '这是这台机器上已扫描 UE 工程的项目配置文件，与 Zen ②「指向此服务器」写入的是同一文件。')) : null,
                       h('div', { className: 'ddc-read-tline' },
                         h('span', { className: 'ddc-read-tlabel' }, '当前配置原文'),
                         h('div', { className: 'ddc-read-val mono' + (ddc.ini.ok ? '' : ' empty') }, ddc.ini.val),
