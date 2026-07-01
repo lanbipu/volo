@@ -1,4 +1,4 @@
-//! `uecm-cli env <action>` handlers.
+//! `voloctl cache env <action>` handlers.
 
 use crate::args::EnvAction;
 use crate::credential_args::CredentialArgs;
@@ -7,7 +7,7 @@ use crate::host_args::HostTarget;
 use crate::output::{EmitSerialize, Event};
 use crate::run::Ctx;
 use cache_core::core::env_vars;
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -31,7 +31,7 @@ struct EnvGetOut<'a> {
     value: Option<String>,
 }
 
-pub fn handle(ctx: &mut Ctx<'_>, action: EnvAction) -> UecmResult<()> {
+pub fn handle(ctx: &mut Ctx<'_>, action: EnvAction) -> VoloResult<()> {
     match action {
         EnvAction::Get { host, name, cred } => get(ctx, &host, &name, &cred),
         EnvAction::Set { target, name, value, yes, dry_run, cred } => {
@@ -67,7 +67,7 @@ pub fn handle(ctx: &mut Ctx<'_>, action: EnvAction) -> UecmResult<()> {
     }
 }
 
-fn get(ctx: &mut Ctx<'_>, host: &str, name: &str, cred: &CredentialArgs) -> UecmResult<()> {
+fn get(ctx: &mut Ctx<'_>, host: &str, name: &str, cred: &CredentialArgs) -> VoloResult<()> {
     let db = ctx.require_db()?;
     // SSH key auth: env get takes no operator credential. preflight (not resolve)
     // validates --cred-alias existence / flag combo without reading DPAPI or stdin
@@ -87,7 +87,7 @@ fn set_single(
     name: &str,
     value: &str,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?;
     cred.preflight(db)?;
     let res = env_vars::set(host, name, value);
@@ -112,7 +112,7 @@ fn set_batch(
     name: &str,
     value: &str,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?;
     cred.preflight(db)?;
     let total = hosts.len() as i64;
@@ -183,7 +183,7 @@ fn set_batch(
         .ok();
 
     if fail_count > 0 {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "{}/{} hosts failed env set",
             fail_count, total
         )));
@@ -191,10 +191,10 @@ fn set_batch(
     Ok(())
 }
 
-fn redact_error(e: UecmError, value: &str) -> UecmError {
+fn redact_error(e: VoloError, value: &str) -> VoloError {
     match e {
-        UecmError::PowerShell(msg) => UecmError::PowerShell(redact_in_string(msg, value)),
-        UecmError::OperationFailed(msg) => UecmError::OperationFailed(redact_in_string(msg, value)),
+        VoloError::PowerShell(msg) => VoloError::PowerShell(redact_in_string(msg, value)),
+        VoloError::OperationFailed(msg) => VoloError::OperationFailed(redact_in_string(msg, value)),
         other => other,
     }
 }

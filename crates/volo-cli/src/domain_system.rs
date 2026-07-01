@@ -1,10 +1,10 @@
-//! `voloctl uecm system <action>` handlers.
+//! `voloctl cache system <action>` handlers.
 
 use crate::args::SystemAction;
 use crate::output::Event;
 use crate::run::Ctx;
 use crate::EmitSerialize;   // brings emit_result(&T) into scope on dyn Emitter
-use cache_core::error::UecmResult;
+use cache_core::error::VoloResult;
 use cache_core::startup;
 use serde::Serialize;
 
@@ -19,7 +19,7 @@ pub struct PathInfo {
     pub path: String,
 }
 
-pub fn handle(ctx: &mut Ctx<'_>, action: SystemAction) -> UecmResult<()> {
+pub fn handle(ctx: &mut Ctx<'_>, action: SystemAction) -> VoloResult<()> {
     match action {
         SystemAction::Version => version(ctx),
         SystemAction::DbPath => db_path(ctx),
@@ -32,27 +32,27 @@ pub fn handle(ctx: &mut Ctx<'_>, action: SystemAction) -> UecmResult<()> {
     }
 }
 
-fn version(ctx: &mut Ctx<'_>) -> UecmResult<()> {
-    let info = VersionInfo { binary: "voloctl uecm", version: env!("CARGO_PKG_VERSION") };
+fn version(ctx: &mut Ctx<'_>) -> VoloResult<()> {
+    let info = VersionInfo { binary: "voloctl cache", version: env!("CARGO_PKG_VERSION") };
     ctx.emitter.emit_result(&info).ok();
     Ok(())
 }
 
-fn db_path(ctx: &mut Ctx<'_>) -> UecmResult<()> {
-    // Report the path the CLI actually opened, respecting `--db-path` / `UECM_DB_PATH`.
+fn db_path(ctx: &mut Ctx<'_>) -> VoloResult<()> {
+    // Report the path the CLI actually opened, respecting `--db-path` / `VOLO_DB_PATH`.
     let info = PathInfo { path: ctx.db_path.to_string_lossy().into() };
     ctx.emitter.emit_result(&info).ok();
     Ok(())
 }
 
-fn ps_dir(ctx: &mut Ctx<'_>) -> UecmResult<()> {
+fn ps_dir(ctx: &mut Ctx<'_>) -> VoloResult<()> {
     let path = startup::resolve_ps_script_dir();
     let info = PathInfo { path: path.to_string_lossy().into() };
     ctx.emitter.emit_result(&info).ok();
     Ok(())
 }
 
-fn migrate_db(ctx: &mut Ctx<'_>) -> UecmResult<()> {
+fn migrate_db(ctx: &mut Ctx<'_>) -> VoloResult<()> {
     // Re-runs migration on the SAME DB the CLI opened (no path re-resolution).
     // open_and_migrate_db is idempotent so running here is a no-op if startup already ran.
     let _ = startup::open_and_migrate_db(&ctx.db_path)?;
@@ -61,7 +61,7 @@ fn migrate_db(ctx: &mut Ctx<'_>) -> UecmResult<()> {
     Ok(())
 }
 
-fn echo(ctx: &mut Ctx<'_>, message: &str) -> UecmResult<()> {
+fn echo(ctx: &mut Ctx<'_>, message: &str) -> VoloResult<()> {
     let result: serde_json::Value = cache_core::core::powershell::run_json(
         &cache_core::core::powershell::script_path("test-echo.ps1"),
         &["-Message", message],
@@ -70,12 +70,12 @@ fn echo(ctx: &mut Ctx<'_>, message: &str) -> UecmResult<()> {
     Ok(())
 }
 
-fn schema(ctx: &mut Ctx<'_>) -> UecmResult<()> {
+fn schema(ctx: &mut Ctx<'_>) -> VoloResult<()> {
     use clap::CommandFactory;
     let cmd = crate::args::Cli::command();
     let tree = command_to_json(&cmd);
     let payload = serde_json::json!({
-        "binary": "voloctl uecm",
+        "binary": "voloctl cache",
         "version": env!("CARGO_PKG_VERSION"),
         "spec_version": 1,
         "command_tree": tree,
@@ -86,7 +86,7 @@ fn schema(ctx: &mut Ctx<'_>) -> UecmResult<()> {
     Ok(())
 }
 
-fn exit_codes(ctx: &mut Ctx<'_>) -> UecmResult<()> {
+fn exit_codes(ctx: &mut Ctx<'_>) -> VoloResult<()> {
     let payload = serde_json::json!({
         "exit_codes": exit_code_table(),
         "error_codes": error_code_table(),
@@ -119,7 +119,7 @@ fn error_code_table() -> serde_json::Value {
     ])
 }
 
-fn completion(_ctx: &mut Ctx<'_>, shell: clap_complete::Shell) -> UecmResult<()> {
+fn completion(_ctx: &mut Ctx<'_>, shell: clap_complete::Shell) -> VoloResult<()> {
     use clap::CommandFactory;
     let mut cmd = crate::args::Cli::command();
     let bin = cmd.get_name().to_string();
@@ -175,9 +175,9 @@ mod tests {
     #[test]
     fn test_version_info() {
         // Sanity check: VersionInfo should serialize with correct fields.
-        let info = VersionInfo { binary: "voloctl uecm", version: "0.1.0" };
+        let info = VersionInfo { binary: "voloctl cache", version: "0.1.0" };
         let json = serde_json::to_value(&info).unwrap();
-        assert_eq!(json["binary"], "voloctl uecm");
+        assert_eq!(json["binary"], "voloctl cache");
         assert_eq!(json["version"], "0.1.0");
     }
 
@@ -209,6 +209,6 @@ mod tests {
             no_input: false,
         };
         let result = echo(&mut ctx, "hello");
-        assert!(matches!(result, Err(cache_core::error::UecmError::PowerShell(_))));
+        assert!(matches!(result, Err(cache_core::error::VoloError::PowerShell(_))));
     }
 }

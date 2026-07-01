@@ -24,7 +24,7 @@
 use crate::data::{
     machine_ue_installs, machines, project_cache_backend, projects, zen_endpoints, Db,
 };
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
@@ -54,7 +54,7 @@ impl Backend {
 }
 
 /// Result of routing. Carries the chosen backend plus the inputs that fed the
-/// decision — operators reading `uecm cache status` (T3.6) need to see *why*
+/// decision — operators reading `voloctl cache status` (T3.6) need to see *why*
 /// a backend was picked, not just *what*.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Routing {
@@ -80,7 +80,7 @@ pub fn decide(
     machine_best_ue: Option<(i64, i64)>,
     zen_reachable: bool,
     explicit_override: Option<&str>,
-) -> UecmResult<Routing> {
+) -> VoloResult<Routing> {
     // (1) Explicit override row in project_cache_backend always wins. "auto"
     // and absent both fall through to the decision table.
     if let Some(raw) = explicit_override {
@@ -107,7 +107,7 @@ pub fn decide(
             }
             "auto" => { /* fall through */ }
             other => {
-                return Err(UecmError::InvalidInput(format!(
+                return Err(VoloError::InvalidInput(format!(
                     "project_cache_backend.backend has unsupported value {other:?} (expected 'zen' | 'legacy_pak' | 'auto')"
                 )));
             }
@@ -204,10 +204,10 @@ pub fn decide(
 /// - `InvalidInput` if the project / machine doesn't exist, or if the override
 ///   row carries an unknown backend string.
 /// - `Database` on SQL failure.
-pub fn resolve_for(db: &Db, project_id: i64, machine_id: i64) -> UecmResult<Routing> {
+pub fn resolve_for(db: &Db, project_id: i64, machine_id: i64) -> VoloResult<Routing> {
     // Project UE (Option<(major, minor)>).
     let project = projects::get(db, project_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("project_id {project_id} not found"))
+        VoloError::InvalidInput(format!("project_id {project_id} not found"))
     })?;
     let project_ue = match (project.ue_version_major, project.ue_version_minor) {
         (Some(maj), Some(min)) => Some((maj, min)),
@@ -219,7 +219,7 @@ pub fn resolve_for(db: &Db, project_id: i64, machine_id: i64) -> UecmResult<Rout
     // callers display "valid legacy fallback" for a typo. Mirror the
     // project_id check so both invalid foreign keys fail loudly.
     if machines::find_by_id(db, machine_id)?.is_none() {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "machine_id {machine_id} not found"
         )));
     }
@@ -234,7 +234,7 @@ pub fn resolve_for(db: &Db, project_id: i64, machine_id: i64) -> UecmResult<Rout
     let is_pinned = matches!(explicit, Some("zen") | Some("legacy_pak"));
 
     // For pinned overrides, machine_best_ue and zen_reachable are only
-    // populated for context (so `uecm cache status` can still show "you
+    // populated for context (so `voloctl cache status` can still show "you
     // pinned zen but the machine has no fresh probe"). For auto, they
     // *drive* the decision — so any read error must bubble.
     let machine_best_ue;
@@ -274,7 +274,7 @@ pub fn resolve_for(db: &Db, project_id: i64, machine_id: i64) -> UecmResult<Rout
 /// `reachable=1`. Helper extracted from `resolve_for` so the pinned-override
 /// branch can call it with best-effort semantics (`.unwrap_or(false)`) while
 /// the auto branch propagates errors.
-fn machine_zen_reachable(db: &Db, machine_id: i64) -> UecmResult<bool> {
+fn machine_zen_reachable(db: &Db, machine_id: i64) -> VoloResult<bool> {
     let endpoints = zen_endpoints::list_for_machine(db, machine_id)?;
     for ep in &endpoints {
         let Some(endpoint_id) = ep.id else { continue };
@@ -338,7 +338,7 @@ fn parse_ue_version(s: &str) -> Option<(i64, i64)> {
 fn endpoint_latest_probe_is_fresh_and_reachable(
     db: &Db,
     endpoint_id: i64,
-) -> UecmResult<bool> {
+) -> VoloResult<bool> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT reachable, datetime(probed_at) > datetime('now', ?2) AS fresh
@@ -442,7 +442,7 @@ mod tests {
     fn decide_invalid_override_returns_invalid_input_error() {
         let err = decide(Some((5, 7)), Some((5, 7)), true, Some("nope")).unwrap_err();
         match err {
-            UecmError::InvalidInput(msg) => assert!(msg.contains("nope")),
+            VoloError::InvalidInput(msg) => assert!(msg.contains("nope")),
             other => panic!("expected InvalidInput, got {other:?}"),
         }
     }
@@ -576,7 +576,7 @@ mod tests {
         let machine_id = seed_machine(&db, "EMPTY", "10.0.0.1");
         let err = resolve_for(&db, 999, machine_id).unwrap_err();
         match err {
-            UecmError::InvalidInput(msg) => assert!(msg.contains("999")),
+            VoloError::InvalidInput(msg) => assert!(msg.contains("999")),
             other => panic!("expected InvalidInput, got {other:?}"),
         }
     }
@@ -785,7 +785,7 @@ mod tests {
         let project_id = seed_project(&db, "demo", Some((5, 7)));
         let err = resolve_for(&db, project_id, 999).unwrap_err();
         match err {
-            UecmError::InvalidInput(msg) => assert!(msg.contains("999")),
+            VoloError::InvalidInput(msg) => assert!(msg.contains("999")),
             other => panic!("expected InvalidInput, got {other:?}"),
         }
     }

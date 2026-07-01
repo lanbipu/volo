@@ -2,21 +2,21 @@
 //! suitable for sharing across Tauri command handlers (Tauri commands are
 //! invoked on a thread pool so we need interior mutability).
 
-use crate::error::UecmResult;
+use crate::error::VoloResult;
 use rusqlite::Connection;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 pub type Db = Arc<Mutex<Connection>>;
 
-pub fn open(path: &Path) -> UecmResult<Db> {
+pub fn open(path: &Path) -> VoloResult<Db> {
     let conn = Connection::open(path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     Ok(Arc::new(Mutex::new(conn)))
 }
 
-pub fn open_in_memory() -> UecmResult<Db> {
+pub fn open_in_memory() -> VoloResult<Db> {
     let conn = Connection::open_in_memory()?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     Ok(Arc::new(Mutex::new(conn)))

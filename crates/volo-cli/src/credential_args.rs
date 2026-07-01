@@ -3,7 +3,7 @@
 
 use cache_core::data::credentials as data_creds;
 use cache_core::data::Db;
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 use clap::Args;
 use std::io::{self, BufRead};
 
@@ -43,10 +43,10 @@ impl CredentialArgs {
     ///
     /// Does NOT read stdin and does NOT call DPAPI — those run only on the
     /// real-execution path inside `resolve`.
-    pub fn preflight(&self, db: &Db) -> UecmResult<()> {
+    pub fn preflight(&self, db: &Db) -> VoloResult<()> {
         if let Some(alias) = &self.cred_alias {
             data_creds::find_by_alias(db, alias)?.ok_or_else(|| {
-                UecmError::InvalidInput(format!("credential alias '{}' not found", alias))
+                VoloError::InvalidInput(format!("credential alias '{}' not found", alias))
             })?;
             return Ok(());
         }
@@ -54,7 +54,7 @@ impl CredentialArgs {
             (Some(_), Some(_), false) => Ok(()),
             (Some(_), None, true) => Ok(()), // stdin password read later by `resolve`
             (None, None, false) => Ok(()),
-            _ => Err(UecmError::InvalidInput(
+            _ => Err(VoloError::InvalidInput(
                 "inconsistent credential flags".into(),
             )),
         }
@@ -94,17 +94,17 @@ impl CredentialArgs {
     /// refuses to read stdin (which would block on an interactive terminal)
     /// and returns `InvalidInput` instead. `--cred-alias` and inline `--user
     /// --pass` resolve without stdin, so they are unaffected.
-    pub fn resolve(&self, db: &Db, no_input: bool) -> UecmResult<Option<(String, String)>> {
+    pub fn resolve(&self, db: &Db, no_input: bool) -> VoloResult<Option<(String, String)>> {
         if let Some(alias) = &self.cred_alias {
             let user = data_creds::find_by_alias(db, alias)?
                 .ok_or_else(|| {
-                    UecmError::InvalidInput(format!("credential alias '{}' not found", alias))
+                    VoloError::InvalidInput(format!("credential alias '{}' not found", alias))
                 })?
                 .username;
             let pass = cache_core::core::secrets::SecretStore::from_config()?
                 .get(alias)?
                 .ok_or_else(|| {
-                    UecmError::InvalidInput(format!(
+                    VoloError::InvalidInput(format!(
                         "no secret stored for credential alias '{}'",
                         alias
                     ))
@@ -115,19 +115,19 @@ impl CredentialArgs {
             (Some(u), Some(p), false) => Ok(Some((u.clone(), p.clone()))),
             (Some(u), None, true) => {
                 if no_input {
-                    return Err(UecmError::InvalidInput(
+                    return Err(VoloError::InvalidInput(
                         "--no-input set but --pass-stdin requires reading the password from stdin".into(),
                     ));
                 }
                 let mut line = String::new();
                 io::stdin().lock().read_line(&mut line).map_err(|e| {
-                    UecmError::InvalidInput(format!("read password from stdin: {}", e))
+                    VoloError::InvalidInput(format!("read password from stdin: {}", e))
                 })?;
                 let pass = line.trim_end_matches(['\r', '\n']).to_string();
                 Ok(Some((u.clone(), pass)))
             }
             (None, None, false) => Ok(None),
-            _ => Err(UecmError::InvalidInput(
+            _ => Err(VoloError::InvalidInput(
                 "inconsistent credential flags".into(),
             )),
         }
@@ -193,7 +193,7 @@ mod tests {
         };
         let db = fresh_db();
         let r = args.resolve(&db, false);
-        assert!(matches!(r, Err(UecmError::InvalidInput(_))));
+        assert!(matches!(r, Err(VoloError::InvalidInput(_))));
     }
 
     #[test]
@@ -209,7 +209,7 @@ mod tests {
         let db = fresh_db();
         let r = args.resolve(&db, true);
         match r {
-            Err(UecmError::InvalidInput(msg)) => assert!(msg.contains("--no-input")),
+            Err(VoloError::InvalidInput(msg)) => assert!(msg.contains("--no-input")),
             other => panic!("expected InvalidInput, got {:?}", other),
         }
     }
@@ -218,9 +218,9 @@ mod tests {
     fn pass_flag_is_not_accepted_on_cli() {
         use crate::args::Cli;
         use clap::Parser;
-        let r = Cli::try_parse_from(["uecm-cli","machine","refresh","1","--user","u","--pass","p"]);
+        let r = Cli::try_parse_from(["cache","machine","refresh","1","--user","u","--pass","p"]);
         assert!(r.is_err(), "--pass should no longer be a CLI flag");
-        let ok = Cli::try_parse_from(["uecm-cli","machine","refresh","1","--user","u","--pass-stdin"]);
+        let ok = Cli::try_parse_from(["cache","machine","refresh","1","--user","u","--pass-stdin"]);
         assert!(ok.is_ok());
     }
 }

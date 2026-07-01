@@ -11,7 +11,7 @@ use cache_core::data::{
     machines as data_machines, scan_runs, share_configs,
     health_check_runs, Db,
 };
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -58,11 +58,11 @@ pub async fn run_health_check(
     db: State<'_, Db>,
     app: AppHandle,
     request: RunHealthCheckRequest,
-) -> UecmResult<HealthRunSummary> {
+) -> VoloResult<HealthRunSummary> {
     // 改 async + spawn_blocking：原 body 是同步阻塞 SSH/探活，跑在 Tauri 主线程会冻结 UI。
     // Db = Arc<Mutex<Connection>>，clone 出 owned 句柄遮蔽 db；body 一行不动地搬进 blocking 线程。
     let db: Db = (*db).clone();
-    tokio::task::spawn_blocking(move || -> UecmResult<HealthRunSummary> {
+    tokio::task::spawn_blocking(move || -> VoloResult<HealthRunSummary> {
     let machine_ids = request.machine_ids;
     let credential_alias = request.credential_alias;
     let expected_local_path = request.expected_local_path.unwrap_or_default();
@@ -72,7 +72,7 @@ pub async fn run_health_check(
         .map(|machine_id| (*machine_id, request.project_paths.clone()))
         .collect();
     if machine_ids.is_empty() {
-        return Err(UecmError::InvalidInput("machine_ids required".into()));
+        return Err(VoloError::InvalidInput("machine_ids required".into()));
     }
     let _ = credential_alias; // accepted-but-ignored shim (SSH key auth); Vue still sends it.
 
@@ -113,7 +113,7 @@ pub async fn run_health_check(
 
     // Single Tokio runtime for L1 TCP probes — the Tauri command is sync.
     let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| UecmError::OperationFailed(e.to_string()))?;
+        .map_err(|e| VoloError::OperationFailed(e.to_string()))?;
 
     // DESIGN-1: cluster-level Zen-shared signal, computed once. When active,
     // env_shared/env_vars probes are relaxed (UE-SharedDataCachePath is
@@ -156,7 +156,7 @@ pub async fn run_health_check(
                 // health_probes::run also surfaces NodeScript/OperationFailed when SSH
                 // succeeded but the probe script itself errored, which says nothing
                 // about connectivity and must not flip the machine to offline.
-                if matches!(e, UecmError::SshConnect(_)) {
+                if matches!(e, VoloError::SshConnect(_)) {
                     data_machines::mark_seen(&db, mid, "offline")?;
                 }
                 // Offline branch: fill registry keys with `offline`, then inject L1
@@ -317,7 +317,7 @@ pub async fn run_health_check(
     Ok(summary)
     })
     .await
-    .map_err(|e| UecmError::OperationFailed(format!("health check task join: {}", e)))?
+    .map_err(|e| VoloError::OperationFailed(format!("health check task join: {}", e)))?
 }
 
 /// Tally one machine's per-key outcomes into the run summary.
@@ -336,7 +336,7 @@ fn tally_summary(summary: &mut HealthRunSummary, row: &HashMap<String, CheckOutc
     }
 }
 
-fn derive_ini_outcome(db: &Db, machine_id: i64) -> UecmResult<CheckOutcome> {
+fn derive_ini_outcome(db: &Db, machine_id: i64) -> VoloResult<CheckOutcome> {
     let recent = scan_runs::list_recent(db, "ini", 1)?;
     let Some(latest) = recent.first() else {
         return Ok(CheckOutcome { status: "unknown".into(), message: "no INI scan run yet".into(), sample: "".into(), remediation: String::new() });
@@ -386,12 +386,12 @@ fn derive_pso_cvar_outcome(
 }
 
 #[tauri::command]
-pub fn list_recent_health_runs(db: State<'_, Db>, limit: i64) -> UecmResult<Vec<scan_runs::ScanRun>> {
+pub fn list_recent_health_runs(db: State<'_, Db>, limit: i64) -> VoloResult<Vec<scan_runs::ScanRun>> {
     scan_runs::list_recent(&db, "health", limit)
 }
 
 #[tauri::command]
-pub fn list_health_results_for_run(db: State<'_, Db>, scan_run_id: i64) -> UecmResult<Vec<health_check_runs::HealthCheckRow>> {
+pub fn list_health_results_for_run(db: State<'_, Db>, scan_run_id: i64) -> VoloResult<Vec<health_check_runs::HealthCheckRow>> {
     health_check_runs::list_for_run(&db, scan_run_id)
 }
 

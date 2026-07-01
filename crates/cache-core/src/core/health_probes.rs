@@ -1,7 +1,7 @@
 //! WinRM dispatch for `health-probes.ps1`.
 
 use crate::core::ssh::{run_json, NodeScript, SshExecutor};
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use serde::Deserialize;
 use std::collections::HashMap;
 use super::health_check::CheckOutcome;
@@ -22,7 +22,7 @@ pub fn run(
     expected_shared_path: &str,
     expected_local_path: &str,
     cred: Option<(&str, &str)>,
-) -> UecmResult<HashMap<String, CheckOutcome>> {
+) -> VoloResult<HashMap<String, CheckOutcome>> {
     // SSH key auth: per-call WinRM cred no longer used (kept until A5). The old
     // loopback `-Local` special-case existed to dodge WinRM-to-self NTLM loopback
     // blocking; SSH-to-self has no such issue and runs the probes in a fresh login
@@ -44,7 +44,7 @@ pub fn run(
         },
     )?;
     if !result.ok {
-        return Err(UecmError::OperationFailed(format!("health-probes failed: {}", result.message)));
+        return Err(VoloError::OperationFailed(format!("health-probes failed: {}", result.message)));
     }
     Ok(result.results)
 }

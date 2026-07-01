@@ -2,7 +2,7 @@
 //! -> ErrorEnvelope; ndjson events get per-event metadata (see output.rs).
 //! `ErrorBody` derives JsonSchema so it can serve as the manifest error_schema.
 
-use cache_core::error::UecmError;
+use cache_core::error::VoloError;
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -46,13 +46,13 @@ pub struct ErrorEnvelope<'a> {
 }
 
 /// 瞬态故障可重试；参数/配置类不可重试（spec §4.2 retryable）。
-pub fn retryable_for(err: &UecmError) -> bool {
+pub fn retryable_for(err: &VoloError) -> bool {
     matches!(
         err,
-        UecmError::Timeout(_)
-            | UecmError::SshConnect(_)
-            | UecmError::PowerShell(_)
-            | UecmError::NodeScript { .. }
+        VoloError::Timeout(_)
+            | VoloError::SshConnect(_)
+            | VoloError::PowerShell(_)
+            | VoloError::NodeScript { .. }
     )
 }
 
@@ -88,8 +88,8 @@ mod tests {
 
     #[test]
     fn retryable_classification() {
-        assert!(retryable_for(&UecmError::Timeout("t".into())));
-        assert!(!retryable_for(&UecmError::InvalidInput("x".into())));
+        assert!(retryable_for(&VoloError::Timeout("t".into())));
+        assert!(!retryable_for(&VoloError::InvalidInput("x".into())));
     }
 
     #[test]

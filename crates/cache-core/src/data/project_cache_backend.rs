@@ -1,7 +1,7 @@
 //! CRUD for the `project_cache_backend` table.
 
 use crate::data::Db;
-use crate::error::UecmResult;
+use crate::error::VoloResult;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +15,7 @@ pub struct ProjectCacheBackend {
     pub updated_at: Option<String>,
 }
 
-pub fn upsert(db: &Db, row: &ProjectCacheBackend) -> UecmResult<i64> {
+pub fn upsert(db: &Db, row: &ProjectCacheBackend) -> VoloResult<i64> {
     let conn = db.lock().unwrap();
     conn.execute(
         "INSERT INTO project_cache_backend (
@@ -38,7 +38,7 @@ pub fn upsert(db: &Db, row: &ProjectCacheBackend) -> UecmResult<i64> {
     Ok(conn.changes() as i64)
 }
 
-pub fn list(db: &Db) -> UecmResult<Vec<ProjectCacheBackend>> {
+pub fn list(db: &Db) -> VoloResult<Vec<ProjectCacheBackend>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT project_id, machine_id, backend, zen_endpoint_id, notes, updated_at
@@ -57,7 +57,7 @@ pub fn find(
     db: &Db,
     project_id: i64,
     machine_id: i64,
-) -> UecmResult<Option<ProjectCacheBackend>> {
+) -> VoloResult<Option<ProjectCacheBackend>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT project_id, machine_id, backend, zen_endpoint_id, notes, updated_at
@@ -71,7 +71,7 @@ pub fn find(
     }
 }
 
-pub fn delete(db: &Db, project_id: i64, machine_id: i64) -> UecmResult<()> {
+pub fn delete(db: &Db, project_id: i64, machine_id: i64) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     conn.execute(
         "DELETE FROM project_cache_backend WHERE project_id = ? AND machine_id = ?",

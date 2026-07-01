@@ -1,5 +1,5 @@
 // @ts-nocheck
-/* Volo — Cache (UECM) · 任务中心 + 资产域 + 常驻任务抽屉.
+/* Volo — Cache · 任务中心 + 资产域 + 常驻任务抽屉.
    1:1 port of the Claude Design handoff `src/page_cache.jsx`. Owns the shared
    cache helpers (window.VOLO_CX), the dual-layer left nav, the context bar,
    the landing page, the center router, the task drawer (right column) and the
@@ -156,9 +156,9 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
     let icon, title, sub;
     if (/^ddc_/.test(s.cacheNav)) {
       const d = DDC_NAV.find((x) => x.id === s.cacheNav) || DDC_NAV[0];
-      icon = d.icon; title = d.label; sub = 'UECM · DDC';
+      icon = d.icon; title = d.label; sub = 'Cache · DDC';
     } else {
-      const m = MODULE(s.cacheNav); icon = m.icon; title = m.label; sub = 'UECM · ' + m.sub;
+      const m = MODULE(s.cacheNav); icon = m.icon; title = m.label; sub = 'Cache · ' + m.sub;
     }
     return h(React.Fragment, null,
       h(CtxTitle, { icon, title, sub }),
@@ -177,7 +177,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
       h('span', { className: 'nav-lbl' }, d.label));
     return h(React.Fragment, null,
       h('div', { className: 'sect' },
-        h('div', { className: 'sect-h' }, h('span', { className: 't' }, 'UECM · 缓存')),
+        h('div', { className: 'sect-h' }, h('span', { className: 't' }, 'Cache · 缓存')),
         CACHE_MODULES.map((m) => {
           if (m.id !== 'ddc') return leaf(m);
           return h(React.Fragment, { key: 'ddc' },
@@ -1006,7 +1006,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
             step(2, '双击 UECM-Bootstrap.cmd，按提示以管理员运行'),
             step(3, '回到 Volo 点该机器「刷新」，确认已入网'))));
     } else if (phase === 'fail') {
-      const fr = USB_FAILS[failReason] || { title: '生成失败', msg: failMsg || '未知错误', fix: '检查上面的输出位置与权限后重试；若反复失败，用 voloctl uecm ssh package-bootstrap 在命令行排查。' };
+      const fr = USB_FAILS[failReason] || { title: '生成失败', msg: failMsg || '未知错误', fix: '检查上面的输出位置与权限后重试；若反复失败，用 voloctl cache ssh package-bootstrap 在命令行排查。' };
       body = h(React.Fragment, null,
         h('div', { className: 'usb-fail' },
           h('div', { className: 'usb-fail-ico' }, h(Icon, { name: 'alert', size: 24 })),
@@ -1021,7 +1021,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
           h('div', { className: 'usb-dirpick' },
             h('span', { className: 'usb-dir-ico' }, h(Icon, { name: 'folder', size: 15 })),
             h('input', { className: 'usb-input mono', value: path, autoFocus: true, spellCheck: false,
-              placeholder: '选择 U 盘所在文件夹，例如 E:\\UECM-SSH-Bootstrap',
+              placeholder: '选择 U 盘所在文件夹，例如 E:\\Volo-SSH-Bootstrap',
               onChange: (e) => setPath(e.target.value) }),
             h('button', { className: 'mini-btn usb-browse', onClick: browse }, h(Icon, { name: 'folder', size: 12 }), '浏览…')),
           h('div', { className: 'usb-hint' }, '可直接选 U 盘盘符，生成的文件会落在这里。')),

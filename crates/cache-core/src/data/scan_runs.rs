@@ -1,7 +1,7 @@
 //! CRUD for the `scan_runs` table. Each row is one INI-scan-or-health-check session.
 
 use crate::data::Db;
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -16,10 +16,10 @@ pub struct ScanRun {
     pub summary: Option<JsonValue>,
 }
 
-pub fn insert(db: &Db, scan_type: &str, machine_ids: &[i64]) -> UecmResult<i64> {
+pub fn insert(db: &Db, scan_type: &str, machine_ids: &[i64]) -> VoloResult<i64> {
     let conn = db.lock().unwrap();
     let machine_ids_json = serde_json::to_string(machine_ids)
-        .map_err(|e| UecmError::OperationFailed(e.to_string()))?;
+        .map_err(|e| VoloError::OperationFailed(e.to_string()))?;
     conn.execute(
         "INSERT INTO scan_runs (scan_type, machine_ids_json) VALUES (?, ?)",
         params![scan_type, machine_ids_json],
@@ -27,10 +27,10 @@ pub fn insert(db: &Db, scan_type: &str, machine_ids: &[i64]) -> UecmResult<i64> 
     Ok(conn.last_insert_rowid())
 }
 
-pub fn finish(db: &Db, id: i64, summary: &JsonValue) -> UecmResult<()> {
+pub fn finish(db: &Db, id: i64, summary: &JsonValue) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     let summary_json = serde_json::to_string(summary)
-        .map_err(|e| UecmError::OperationFailed(e.to_string()))?;
+        .map_err(|e| VoloError::OperationFailed(e.to_string()))?;
     conn.execute(
         "UPDATE scan_runs SET finished_at = CURRENT_TIMESTAMP, summary_json = ? WHERE id = ?",
         params![summary_json, id],
@@ -38,7 +38,7 @@ pub fn finish(db: &Db, id: i64, summary: &JsonValue) -> UecmResult<()> {
     Ok(())
 }
 
-pub fn find_by_id(db: &Db, id: i64) -> UecmResult<Option<ScanRun>> {
+pub fn find_by_id(db: &Db, id: i64) -> VoloResult<Option<ScanRun>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, scan_type, started_at, finished_at, machine_ids_json, summary_json
@@ -52,7 +52,7 @@ pub fn find_by_id(db: &Db, id: i64) -> UecmResult<Option<ScanRun>> {
     }
 }
 
-pub fn list_recent_types(db: &Db, scan_types: &[&str], limit: i64) -> UecmResult<Vec<ScanRun>> {
+pub fn list_recent_types(db: &Db, scan_types: &[&str], limit: i64) -> VoloResult<Vec<ScanRun>> {
     if scan_types.is_empty() {
         return Ok(Vec::new());
     }
@@ -77,7 +77,7 @@ pub fn list_recent_types(db: &Db, scan_types: &[&str], limit: i64) -> UecmResult
     Ok(out)
 }
 
-pub fn list_recent(db: &Db, scan_type: &str, limit: i64) -> UecmResult<Vec<ScanRun>> {
+pub fn list_recent(db: &Db, scan_type: &str, limit: i64) -> VoloResult<Vec<ScanRun>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, scan_type, started_at, finished_at, machine_ids_json, summary_json

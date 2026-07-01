@@ -175,7 +175,7 @@ import "./cache";
           h('div', { className: 'skl-intent' }, t.intent),
           h('div', { style: { marginTop: 18, maxWidth: 420 } },
             h(InlineAlert, { variant: 'informative', title: '诊断工具' },
-              t.label + ' 工作区尚未建设。渲染缓存集群管理（UECM）已并入本页「缓存」类别。')))));
+              t.label + ' 工作区尚未建设。渲染缓存集群管理已并入本页「缓存」类别。')))));
   }
 
   function toolsCenter(s) {

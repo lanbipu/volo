@@ -346,7 +346,7 @@ function App() {
   const [logFilter, setLogFilter] = useState('all');
   const [logs, setLogs] = useState([]); /* NDJSON 流 —— 真实命令派发的事件后续批次接入 */
   const [selNode, setSelNode] = useState(persisted.selNode || null);
-  /* Cache/UECM read-path resources, loaded from the backend (machines / creds /
+  /* Cache read-path resources, loaded from the backend (machines / creds /
      shares). Replaces the former hardcoded RENDER_NODES / CREDS / SHARES mocks. */
   const [machines, setMachines] = useState([]);
   const [shares, setShares] = useState([]);

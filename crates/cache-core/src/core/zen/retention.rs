@@ -18,7 +18,7 @@
 //! that.
 
 use crate::data::Db;
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use rusqlite::params;
 
 /// Maximum age (in days) a row can have before it falls out of the time window.
@@ -36,7 +36,7 @@ pub struct RetentionReport {
 }
 
 /// Apply the default retention policy (plan §1.4: 7 days + 100 rows per endpoint).
-pub fn run(db: &Db) -> UecmResult<RetentionReport> {
+pub fn run(db: &Db) -> VoloResult<RetentionReport> {
     run_with(db, DEFAULT_AGE_RETENTION_DAYS, DEFAULT_COUNT_RETENTION)
 }
 
@@ -49,14 +49,14 @@ pub fn run_with(
     db: &Db,
     age_retention_days: i64,
     count_retention: i64,
-) -> UecmResult<RetentionReport> {
+) -> VoloResult<RetentionReport> {
     if age_retention_days < 0 {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "age_retention_days must be >= 0, got {age_retention_days}"
         )));
     }
     if count_retention < 0 {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "count_retention must be >= 0, got {count_retention}"
         )));
     }
@@ -368,7 +368,7 @@ mod tests {
         let (db, _ep) = setup();
         let err = run_with(&db, -1, 100).unwrap_err();
         assert!(
-            matches!(err, UecmError::InvalidInput(_)),
+            matches!(err, VoloError::InvalidInput(_)),
             "expected InvalidInput, got {err:?}"
         );
     }
@@ -378,7 +378,7 @@ mod tests {
         let (db, _ep) = setup();
         let err = run_with(&db, 7, -1).unwrap_err();
         assert!(
-            matches!(err, UecmError::InvalidInput(_)),
+            matches!(err, VoloError::InvalidInput(_)),
             "expected InvalidInput, got {err:?}"
         );
     }

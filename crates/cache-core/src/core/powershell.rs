@@ -2,7 +2,7 @@
 //! provided script + args, captures stdout, returns parsed JSON result.
 //! On non-Windows, returns an error (sidecar is Windows-only).
 
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use serde::de::DeserializeOwned;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -110,7 +110,7 @@ pub fn script_dirs() -> Vec<PathBuf> {
 
 /// Load a sidecar script's text. Used when the script body is forwarded to a
 /// node and run there (over SSH) rather than executed locally.
-pub fn read_script(name: &str) -> UecmResult<String> {
+pub fn read_script(name: &str) -> VoloResult<String> {
     Ok(fs::read_to_string(script_path(name))?)
 }
 
@@ -159,7 +159,7 @@ pub struct ScriptResult {
 }
 
 /// Run a .ps1 script with the given arguments. Returns raw output.
-pub fn run_script(script_path: &Path, args: &[&str]) -> UecmResult<ScriptResult> {
+pub fn run_script(script_path: &Path, args: &[&str]) -> VoloResult<ScriptResult> {
     #[cfg(windows)]
     {
         let mut cmd = Command::new("powershell.exe");
@@ -172,7 +172,7 @@ pub fn run_script(script_path: &Path, args: &[&str]) -> UecmResult<ScriptResult>
             cmd.arg(arg);
         }
         let output = cmd.output().map_err(|e| {
-            UecmError::PowerShell(format!("failed to spawn powershell.exe: {}", e))
+            VoloError::PowerShell(format!("failed to spawn powershell.exe: {}", e))
         })?;
         Ok(ScriptResult {
             stdout: decode_subprocess_output(&output.stdout),
@@ -183,7 +183,7 @@ pub fn run_script(script_path: &Path, args: &[&str]) -> UecmResult<ScriptResult>
     #[cfg(not(windows))]
     {
         let _ = (script_path, args);
-        Err(UecmError::PowerShell(
+        Err(VoloError::PowerShell(
             "PowerShell sidecar is Windows-only".to_string(),
         ))
     }
@@ -192,7 +192,7 @@ pub fn run_script(script_path: &Path, args: &[&str]) -> UecmResult<ScriptResult>
 /// Run a .ps1 script feeding `stdin` to its standard input. The node-pure
 /// scripts read their JSON args via `[Console]::In.ReadToEnd()`, so this lets the
 /// loopback distribute path run the SAME script locally as the remote SSH path.
-pub fn run_script_stdin(script_path: &Path, stdin: &str) -> UecmResult<ScriptResult> {
+pub fn run_script_stdin(script_path: &Path, stdin: &str) -> VoloResult<ScriptResult> {
     #[cfg(windows)]
     {
         use std::io::Write;
@@ -209,18 +209,18 @@ pub fn run_script_stdin(script_path: &Path, stdin: &str) -> UecmResult<ScriptRes
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| {
-                UecmError::PowerShell(format!("failed to spawn powershell.exe: {}", e))
+                VoloError::PowerShell(format!("failed to spawn powershell.exe: {}", e))
             })?;
         child
             .stdin
             .take()
-            .ok_or_else(|| UecmError::PowerShell("failed to open powershell stdin".into()))?
+            .ok_or_else(|| VoloError::PowerShell("failed to open powershell stdin".into()))?
             .write_all(stdin.as_bytes())
             .map_err(|e| {
-                UecmError::PowerShell(format!("failed to write powershell stdin: {}", e))
+                VoloError::PowerShell(format!("failed to write powershell stdin: {}", e))
             })?;
         let output = child.wait_with_output().map_err(|e| {
-            UecmError::PowerShell(format!("failed to wait for powershell.exe: {}", e))
+            VoloError::PowerShell(format!("failed to wait for powershell.exe: {}", e))
         })?;
         Ok(ScriptResult {
             stdout: decode_subprocess_output(&output.stdout),
@@ -231,7 +231,7 @@ pub fn run_script_stdin(script_path: &Path, stdin: &str) -> UecmResult<ScriptRes
     #[cfg(not(windows))]
     {
         let _ = (script_path, stdin);
-        Err(UecmError::PowerShell(
+        Err(VoloError::PowerShell(
             "PowerShell sidecar is Windows-only".to_string(),
         ))
     }
@@ -244,14 +244,14 @@ pub fn run_script_stdin(script_path: &Path, stdin: &str) -> UecmResult<ScriptRes
 /// Try to parse stdout first regardless of exit code — if it deserializes
 /// to T, return it (caller inspects the `ok` field). Only fall back to the
 /// raw exit-code error message when stdout doesn't parse cleanly.
-fn parse_script_json<T: DeserializeOwned>(result: ScriptResult) -> UecmResult<T> {
+fn parse_script_json<T: DeserializeOwned>(result: ScriptResult) -> VoloResult<T> {
     if !result.stdout.trim().is_empty() {
         if let Ok(parsed) = serde_json::from_str::<T>(&result.stdout) {
             return Ok(parsed);
         }
     }
     if result.exit_code != 0 {
-        return Err(UecmError::PowerShell(format!(
+        return Err(VoloError::PowerShell(format!(
             "script exited with code {}: {}",
             result.exit_code,
             if result.stderr.trim().is_empty() {
@@ -262,7 +262,7 @@ fn parse_script_json<T: DeserializeOwned>(result: ScriptResult) -> UecmResult<T>
         )));
     }
     serde_json::from_str(&result.stdout).map_err(|e| {
-        UecmError::PowerShell(format!(
+        VoloError::PowerShell(format!(
             "failed to parse JSON output: {} (stdout: {})",
             e, result.stdout
         ))
@@ -270,13 +270,13 @@ fn parse_script_json<T: DeserializeOwned>(result: ScriptResult) -> UecmResult<T>
 }
 
 /// Run a script with args and parse stdout as JSON of type T.
-pub fn run_json<T: DeserializeOwned>(script_path: &Path, args: &[&str]) -> UecmResult<T> {
+pub fn run_json<T: DeserializeOwned>(script_path: &Path, args: &[&str]) -> VoloResult<T> {
     parse_script_json(run_script(script_path, args)?)
 }
 
 /// Like `run_json`, but feeds `stdin` to the script (for node-pure scripts that
 /// read their JSON args from standard input rather than `-File` arguments).
-pub fn run_json_stdin<T: DeserializeOwned>(script_path: &Path, stdin: &str) -> UecmResult<T> {
+pub fn run_json_stdin<T: DeserializeOwned>(script_path: &Path, stdin: &str) -> VoloResult<T> {
     parse_script_json(run_script_stdin(script_path, stdin)?)
 }
 
@@ -309,7 +309,7 @@ mod tests {
         let script = Path::new("../ps-scripts/test-echo.ps1");
         let result = run_script(script, &[]);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), UecmError::PowerShell(_)));
+        assert!(matches!(result.unwrap_err(), VoloError::PowerShell(_)));
     }
 
     #[test]

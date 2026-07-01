@@ -1,7 +1,7 @@
 //! SSH 传输：shell out 系统 `ssh`，在节点上 `-File` 跑预置的纯脚本，stdin 喂 JSON 参数。
-//! 这是 UECM 唯一做远程的地方。argv 构造与退出码映射是纯函数，可在任意平台单测。
+//! 这是 Volo 唯一做远程的地方。argv 构造与退出码映射是纯函数，可在任意平台单测。
 
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
@@ -35,8 +35,8 @@ pub struct ScriptOutput {
 /// `run` 只在「ssh 进程都起不来 / stdin 写失败」时返 Err；进程跑完（任何退出码）
 /// 都返回 `ScriptOutput`，由 `run_json` 决定成败语义。
 pub trait RemoteExecutor {
-    fn run(&self, host: &str, script: &NodeScript) -> UecmResult<ScriptOutput>;
-    fn probe(&self, host: &str, ssh_user: Option<&str>) -> UecmResult<ProbeResult>;
+    fn run(&self, host: &str, script: &NodeScript) -> VoloResult<ScriptOutput>;
+    fn probe(&self, host: &str, ssh_user: Option<&str>) -> VoloResult<ProbeResult>;
 }
 
 /// 跑脚本并解析 stdout 为 JSON。语义对齐 `powershell::run_json`：
@@ -46,7 +46,7 @@ pub fn run_json<T: DeserializeOwned>(
     exec: &dyn RemoteExecutor,
     host: &str,
     script: &NodeScript,
-) -> UecmResult<T> {
+) -> VoloResult<T> {
     let out = exec.run(host, script)?;
     if !out.stdout.trim().is_empty() {
         if let Ok(parsed) = serde_json::from_str::<T>(&out.stdout) {
@@ -60,7 +60,7 @@ pub fn run_json<T: DeserializeOwned>(
             &failure_detail(&out.stdout, &out.stderr),
         ));
     }
-    serde_json::from_str(&out.stdout).map_err(|e| UecmError::NodeScript {
+    serde_json::from_str(&out.stdout).map_err(|e| VoloError::NodeScript {
         exit: 0,
         stderr: format!("bad JSON from node: {e} (stdout: {})", out.stdout),
     })
@@ -106,11 +106,11 @@ pub fn build_ssh_args(
 }
 
 /// ssh 进程退出码 → 错误分类。255 = ssh 自身（连接/认证/host-key）；其余 = 节点脚本失败。
-pub fn map_exit(code: i32, stderr: &str) -> UecmError {
+pub fn map_exit(code: i32, stderr: &str) -> VoloError {
     if code == 255 {
-        UecmError::SshConnect(stderr.trim().to_string())
+        VoloError::SshConnect(stderr.trim().to_string())
     } else {
-        UecmError::NodeScript {
+        VoloError::NodeScript {
             exit: code,
             stderr: stderr.trim().to_string(),
         }
@@ -134,7 +134,7 @@ use std::path::Path;
 
 /// 算目录下所有 `.ps1` 文件的 SHA256（文件名 → 十六进制 hash），供节点脚本暂存
 /// 漂移检测用。
-pub fn compute_manifest(dir: &Path) -> UecmResult<BTreeMap<String, String>> {
+pub fn compute_manifest(dir: &Path) -> VoloResult<BTreeMap<String, String>> {
     use sha2::{Digest, Sha256};
     let mut map = BTreeMap::new();
     for entry in std::fs::read_dir(dir)? {
@@ -166,8 +166,8 @@ pub fn drifted_files(
 }
 
 /// 解析节点回传的 manifest JSON（`{ "<name>": "<sha256>", ... }`）。
-pub fn remote_manifest_from_json(s: &str) -> UecmResult<BTreeMap<String, String>> {
-    serde_json::from_str(s).map_err(|e| UecmError::NodeScript {
+pub fn remote_manifest_from_json(s: &str) -> VoloResult<BTreeMap<String, String>> {
+    serde_json::from_str(s).map_err(|e| VoloError::NodeScript {
         exit: 0,
         stderr: format!("bad remote manifest JSON: {e}"),
     })
@@ -182,7 +182,7 @@ pub fn scp_push(
     host: &str,
     local_files: &[PathBuf],
     remote_dir: &str,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     if local_files.is_empty() {
         return Ok(());
     }
@@ -207,7 +207,7 @@ pub fn scp_push(
     cmd.arg(format!("{ssh_user}@{host}:{remote_dir}/"));
     let out = cmd
         .output()
-        .map_err(|e| UecmError::ScriptStaging(format!("spawn scp failed: {e}")))?;
+        .map_err(|e| VoloError::ScriptStaging(format!("spawn scp failed: {e}")))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
         // scp delegates to ssh; a 255 exit is an ssh-level connect/auth/host-key
@@ -215,9 +215,9 @@ pub fn scp_push(
         // discovery::with_onboarding_hint can suggest running UECM-Bootstrap.cmd,
         // exactly as they would for a failed `run`.
         if out.status.code() == Some(255) {
-            return Err(UecmError::SshConnect(stderr));
+            return Err(VoloError::SshConnect(stderr));
         }
-        return Err(UecmError::ScriptStaging(format!("scp failed: {stderr}")));
+        return Err(VoloError::ScriptStaging(format!("scp failed: {stderr}")));
     }
     Ok(())
 }
@@ -282,9 +282,9 @@ pub struct SshExecutor {
 }
 
 impl SshExecutor {
-    /// 从 app config 构造默认 executor：UECM keystore（缺则自动生成 keypair）+
+    /// 从 app config 构造默认 executor：Volo keystore（缺则自动生成 keypair）+
     /// `uecm-svc` 登录 + 标准暂存根。所有 domain 迁移到 SSH 的统一入口。
-    pub fn from_config() -> UecmResult<Self> {
+    pub fn from_config() -> VoloResult<Self> {
         let dir = crate::startup::resolve_config_dir()?;
         let ks = crate::core::keystore::KeyStore::at(&dir);
         ks.ensure_keypair()?;
@@ -309,7 +309,7 @@ impl SshExecutor {
     /// so a node that only authorized a per-script account still gets its
     /// scripts. scp wants a forward-slash remote path even on Windows targets;
     /// the backslash `staging_root` is kept for the `-File` exec path.
-    fn ensure_scripts_staged(&self, host: &str, user: &str) -> UecmResult<()> {
+    fn ensure_scripts_staged(&self, host: &str, user: &str) -> VoloResult<()> {
         let cache_key = format!("{user}@{host}");
         if synced_hosts().lock().unwrap().contains(&cache_key) {
             return Ok(());
@@ -319,7 +319,7 @@ impl SshExecutor {
             // Finding zero local scripts means a broken install / bad UECM_PS_DIR,
             // not "nothing to do". Fail (and don't cache) so the node never runs
             // a stale staged copy on the false premise that we synced it.
-            return Err(UecmError::ScriptStaging(
+            return Err(VoloError::ScriptStaging(
                 "no local node scripts found to stage (check ps-scripts dir / UECM_PS_DIR)".into(),
             ));
         }
@@ -338,11 +338,11 @@ impl SshExecutor {
 }
 
 impl RemoteExecutor for SshExecutor {
-    fn run(&self, host: &str, script: &NodeScript) -> UecmResult<ScriptOutput> {
+    fn run(&self, host: &str, script: &NodeScript) -> VoloResult<ScriptOutput> {
         // No loopback bypass: a loopback target runs over a real SSH-to-self as
         // uecm-svc (a local admin), so admin-requiring node scripts
         // (zen-service-install, setx-machine, setup-share-mode-b, urlacl-add …)
-        // execute elevated even when the UECM process itself isn't. The
+        // execute elevated even when the Volo process itself isn't. The
         // distribute fan-out uses its own local-robocopy fast path for loopback
         // (no admin needed); everything else goes through SSH here.
         let user = script.ssh_user.as_deref().unwrap_or(&self.default_user);
@@ -361,15 +361,15 @@ impl RemoteExecutor for SshExecutor {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| UecmError::SshConnect(format!("spawn ssh failed: {e}")))?;
+            .map_err(|e| VoloError::SshConnect(format!("spawn ssh failed: {e}")))?;
         // 参数 JSON 经 stdin 喂入（不上命令行，secret 不暴露在节点进程列表里）。
         {
             let stdin = child
                 .stdin
                 .as_mut()
-                .ok_or_else(|| UecmError::SshConnect("open ssh stdin failed".into()))?;
+                .ok_or_else(|| VoloError::SshConnect("open ssh stdin failed".into()))?;
             let payload = serde_json::to_vec(&script.args)
-                .map_err(|e| UecmError::InvalidInput(format!("encode args: {e}")))?;
+                .map_err(|e| VoloError::InvalidInput(format!("encode args: {e}")))?;
             stdin.write_all(&payload)?;
         }
         // 进程跑完（任何退出码）都返回完整输出，成败判断交给 run_json。
@@ -381,12 +381,12 @@ impl RemoteExecutor for SshExecutor {
         })
     }
 
-    fn probe(&self, host: &str, ssh_user: Option<&str>) -> UecmResult<ProbeResult> {
+    fn probe(&self, host: &str, ssh_user: Option<&str>) -> VoloResult<ProbeResult> {
         // No loopback bypass: a loopback target is probed by a real SSH-to-self as
         // uecm-svc (the same path `run` uses), so probe never reports ok for a host
         // the migrated SSH operations can't actually reach. Running node scripts on
         // the operator's own box therefore goes through uecm-svc (a local admin),
-        // not the possibly-unelevated UECM process — admin-requiring scripts work.
+        // not the possibly-unelevated Volo process — admin-requiring scripts work.
         let started = std::time::Instant::now();
         let user = ssh_user.unwrap_or(&self.default_user);
         let mut args = build_ssh_args(
@@ -404,7 +404,7 @@ impl RemoteExecutor for SshExecutor {
         let out = Command::new("ssh")
             .args(&args)
             .output()
-            .map_err(|e| UecmError::SshConnect(format!("spawn ssh failed: {e}")))?;
+            .map_err(|e| VoloError::SshConnect(format!("spawn ssh failed: {e}")))?;
         let latency_ms = started.elapsed().as_millis() as i64;
         if out.status.success() {
             Ok(ProbeResult {
@@ -471,11 +471,11 @@ mod tests {
     #[test]
     fn map_exit_distinguishes_connect_from_script_failure() {
         match map_exit(255, "ssh: connect to host RENDER-01 port 22: Connection refused") {
-            UecmError::SshConnect(m) => assert!(m.contains("Connection refused")),
+            VoloError::SshConnect(m) => assert!(m.contains("Connection refused")),
             other => panic!("expected SshConnect, got {other:?}"),
         }
         match map_exit(3, "node side blew up") {
-            UecmError::NodeScript { exit, stderr } => {
+            VoloError::NodeScript { exit, stderr } => {
                 assert_eq!(exit, 3);
                 assert!(stderr.contains("blew up"));
             }
@@ -502,9 +502,9 @@ mod tests {
     fn from_config_builds_executor_and_generates_keypair() {
         let _lock = crate::ENV_TEST_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("UECM_DB_PATH", dir.path().join("uecm.sqlite"));
+        std::env::set_var("VOLO_DB_PATH", dir.path().join("uecm.sqlite"));
         let exec = SshExecutor::from_config().unwrap();
-        std::env::remove_var("UECM_DB_PATH");
+        std::env::remove_var("VOLO_DB_PATH");
         assert_eq!(exec.default_user, "uecm-svc");
         assert_eq!(exec.staging_root, STAGING_ROOT);
         assert!(exec.key_path.exists(), "ensure_keypair should have generated the key");
@@ -538,10 +538,10 @@ mod tests {
 
     struct FakeExec(ScriptOutput);
     impl RemoteExecutor for FakeExec {
-        fn run(&self, _h: &str, _s: &NodeScript) -> UecmResult<ScriptOutput> {
+        fn run(&self, _h: &str, _s: &NodeScript) -> VoloResult<ScriptOutput> {
             Ok(self.0.clone())
         }
-        fn probe(&self, _h: &str, _u: Option<&str>) -> UecmResult<ProbeResult> {
+        fn probe(&self, _h: &str, _u: Option<&str>) -> VoloResult<ProbeResult> {
             Ok(ProbeResult {
                 ok: true,
                 message: "fake".into(),
@@ -602,21 +602,21 @@ mod tests {
     #[test]
     fn run_json_surfaces_bad_json_as_node_script_error() {
         let err = run_json::<Demo>(&fake("not json", "", 0), "RENDER-01", &demo_script()).unwrap_err();
-        assert!(matches!(err, UecmError::NodeScript { .. }));
+        assert!(matches!(err, VoloError::NodeScript { .. }));
     }
 
     #[test]
     fn run_json_nonzero_empty_stdout_is_script_error() {
         let err =
             run_json::<Demo>(&fake("", "remote crash", 1), "RENDER-01", &demo_script()).unwrap_err();
-        assert!(matches!(err, UecmError::NodeScript { .. }));
+        assert!(matches!(err, VoloError::NodeScript { .. }));
     }
 
     #[test]
     fn run_json_exit_255_is_ssh_connect_error() {
         let err = run_json::<Demo>(&fake("", "Connection refused", 255), "RENDER-01", &demo_script())
             .unwrap_err();
-        assert!(matches!(err, UecmError::SshConnect(_)));
+        assert!(matches!(err, VoloError::SshConnect(_)));
     }
 
     /// 真节点集成验证（默认 ignore）。需要：lanPC 已开 OpenSSH、UECM 公钥已授权、

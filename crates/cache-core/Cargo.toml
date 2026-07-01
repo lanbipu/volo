@@ -3,7 +3,7 @@ name = "cache-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "UECM core business logic (core/data/startup/error), zero-tauri. Consumed by volo-cli and src-tauri commands."
+description = "Volo cache core business logic (core/data/startup/error), zero-tauri. Consumed by volo-cli and src-tauri commands."
 
 [dependencies]
 serde.workspace = true

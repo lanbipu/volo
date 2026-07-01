@@ -6,7 +6,7 @@ use cache_core::data::{
     machines as data_machines, project_cache_backend, project_locations, projects, Db,
     DiscoveryStatus, Project, ProjectLocation, ProjectCacheBackend,
 };
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 use serde::Serialize;
 use tauri::State;
 
@@ -20,7 +20,7 @@ pub struct ProjectSummary {
 }
 
 #[tauri::command]
-pub fn list_projects(db: State<'_, Db>) -> UecmResult<Vec<ProjectSummary>> {
+pub fn list_projects(db: State<'_, Db>) -> VoloResult<Vec<ProjectSummary>> {
     let mut out = Vec::new();
     for project in projects::list(&db)? {
         let id = project.id.unwrap_or_default();
@@ -40,7 +40,7 @@ pub fn list_projects(db: State<'_, Db>) -> UecmResult<Vec<ProjectSummary>> {
 pub fn list_project_locations(
     db: State<'_, Db>,
     project_id: i64,
-) -> UecmResult<Vec<ProjectLocation>> {
+) -> VoloResult<Vec<ProjectLocation>> {
     project_locations::list_by_project(&db, project_id)
 }
 
@@ -50,9 +50,9 @@ pub fn discover_projects(
     machine_id: i64,
     search_roots: Vec<String>,
     operator_credential_alias: Option<String>,
-) -> UecmResult<Vec<DiscoveryResult>> {
+) -> VoloResult<Vec<DiscoveryResult>> {
     let machine = data_machines::find_by_id(&db, machine_id)?
-        .ok_or_else(|| UecmError::InvalidInput(format!("machine {} not found", machine_id)))?;
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?;
     // SSH key auth: operator cred no longer used; param kept as accepted-ignored
     // shim (Vue compat). run_discovery ignores the user/pass under SSH.
     let _ = operator_credential_alias;
@@ -67,7 +67,7 @@ pub fn set_project_location(
     abs_path: String,
     uproject_path: String,
     manual: bool,
-) -> UecmResult<i64> {
+) -> VoloResult<i64> {
     let discovery_status = if manual {
         DiscoveryStatus::ManualPath
     } else {
@@ -88,12 +88,12 @@ pub fn set_project_location(
 }
 
 #[tauri::command]
-pub fn delete_project(db: State<'_, Db>, project_id: i64) -> UecmResult<()> {
+pub fn delete_project(db: State<'_, Db>, project_id: i64) -> VoloResult<()> {
     projects::delete(&db, project_id)
 }
 
 #[tauri::command]
-pub fn delete_project_location(db: State<'_, Db>, location_id: i64) -> UecmResult<()> {
+pub fn delete_project_location(db: State<'_, Db>, location_id: i64) -> VoloResult<()> {
     project_locations::delete(&db, location_id)
 }
 
@@ -102,7 +102,7 @@ pub fn create_project_manual(
     db: State<'_, Db>,
     uproject_name: String,
     display_name: Option<String>,
-) -> UecmResult<i64> {
+) -> VoloResult<i64> {
     projects::upsert(
         &db,
         &Project {
@@ -127,11 +127,11 @@ pub fn set_project_cache_backend(
     project_id: i64,
     machine_id: i64,
     backend: String,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     match backend.as_str() {
         "zen" | "legacy_pak" | "auto" => {}
         other => {
-            return Err(UecmError::InvalidInput(format!(
+            return Err(VoloError::InvalidInput(format!(
                 "backend must be 'zen', 'legacy_pak', or 'auto', got {other:?}"
             )))
         }

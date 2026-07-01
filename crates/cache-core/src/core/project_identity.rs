@@ -141,7 +141,7 @@ fn is_guid_form(value: &str) -> bool {
 }
 
 /// Parses `^\d+\.\d+(\.\d+)?$` and returns `(major, minor)`. The optional
-/// patch component is accepted but discarded — UECM only routes on major/minor.
+/// patch component is accepted but discarded — Volo only routes on major/minor.
 fn parse_version_form(value: &str) -> Option<(i64, i64)> {
     let mut parts = value.split('.');
     let major_str = parts.next()?;

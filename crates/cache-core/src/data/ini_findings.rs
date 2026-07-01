@@ -3,7 +3,7 @@
 //! mutations are `mark_fixed` / `mark_skipped` which stamp a timestamp.
 
 use crate::data::Db;
-use crate::error::UecmResult;
+use crate::error::VoloResult;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
@@ -36,7 +36,7 @@ pub struct SeverityCounts {
     pub healthy: i64,
 }
 
-pub fn insert(db: &Db, f: &IniFinding) -> UecmResult<i64> {
+pub fn insert(db: &Db, f: &IniFinding) -> VoloResult<i64> {
     let conn = db.lock().unwrap();
     conn.execute(
         "INSERT INTO ini_findings (
@@ -88,7 +88,7 @@ fn row_to_ini_finding(row: &rusqlite::Row) -> rusqlite::Result<IniFinding> {
     })
 }
 
-pub fn find_by_id(db: &Db, id: i64) -> UecmResult<Option<IniFinding>> {
+pub fn find_by_id(db: &Db, id: i64) -> VoloResult<Option<IniFinding>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, scan_run_id, machine_id, rule_id, severity, category, file_path,
@@ -105,7 +105,7 @@ pub fn find_by_id(db: &Db, id: i64) -> UecmResult<Option<IniFinding>> {
     }
 }
 
-pub fn list_for_run(db: &Db, scan_run_id: i64) -> UecmResult<Vec<IniFinding>> {
+pub fn list_for_run(db: &Db, scan_run_id: i64) -> VoloResult<Vec<IniFinding>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, scan_run_id, machine_id, rule_id, severity, category, file_path,
@@ -124,7 +124,7 @@ pub fn list_for_run(db: &Db, scan_run_id: i64) -> UecmResult<Vec<IniFinding>> {
     Ok(out)
 }
 
-pub fn mark_fixed(db: &Db, id: i64) -> UecmResult<()> {
+pub fn mark_fixed(db: &Db, id: i64) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     conn.execute(
         "UPDATE ini_findings SET fixed_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -133,7 +133,7 @@ pub fn mark_fixed(db: &Db, id: i64) -> UecmResult<()> {
     Ok(())
 }
 
-pub fn mark_skipped(db: &Db, id: i64) -> UecmResult<()> {
+pub fn mark_skipped(db: &Db, id: i64) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     conn.execute(
         "UPDATE ini_findings SET skipped_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -146,7 +146,7 @@ pub fn count_by_severity_for_machine(
     db: &Db,
     scan_run_id: i64,
     machine_id: i64,
-) -> UecmResult<SeverityCounts> {
+) -> VoloResult<SeverityCounts> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT severity, COUNT(*)

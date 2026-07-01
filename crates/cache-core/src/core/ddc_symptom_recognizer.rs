@@ -50,7 +50,7 @@ pub fn analyze(verify: &VerifyReport, stats: Option<&Stats>) -> Vec<Advisory> {
                 explanation: im.message,
                 remediation: vec![
                     "Re-open the project on the host that first compiled, with Shared already configured.".into(),
-                    "Or run `uecm-cli ddc generate` + `ddc distribute` to seed Shared from Local.".into(),
+                    "Or run `voloctl cache ddc generate` + `ddc distribute` to seed Shared from Local.".into(),
                 ],
             });
         }

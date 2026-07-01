@@ -1,13 +1,13 @@
-//! `uecm-cli local-cache <action>` handlers.
+//! `voloctl cache local-cache <action>` handlers.
 use crate::args::LocalCacheAction;
 use crate::destructive::{self, Outcome};
 use crate::host_args::HostTarget;
 use crate::output::Event;
 use crate::run::Ctx;
 use cache_core::core::local_cache;
-use cache_core::error::UecmResult;
+use cache_core::error::VoloResult;
 
-pub fn handle(ctx: &mut Ctx<'_>, action: LocalCacheAction) -> UecmResult<()> {
+pub fn handle(ctx: &mut Ctx<'_>, action: LocalCacheAction) -> VoloResult<()> {
     match action {
         LocalCacheAction::Create { target, path, service_account, yes, dry_run, cred } => {
             let hosts: Vec<String> = match target.require_one()? {

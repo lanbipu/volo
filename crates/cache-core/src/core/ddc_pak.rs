@@ -2,7 +2,7 @@
 
 use crate::core::ssh::{run_json, NodeScript, SshExecutor};
 use crate::core::ue_runner::{self, UeRunSpec, UeRunnerBackend};
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -52,7 +52,7 @@ pub fn preflight(
     project_path: &str,
     user: Option<&str>,
     pass: Option<&str>,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let _ = (user, pass); // SSH key auth; per-call WinRM cred ignored (kept until A5).
     let exec = SshExecutor::from_config()?;
     let result: PreflightRaw = run_json(
@@ -65,17 +65,17 @@ pub fn preflight(
         },
     )?;
     if !result.ok {
-        return Err(UecmError::OperationFailed(
+        return Err(VoloError::OperationFailed(
             result.message.unwrap_or_else(|| "preflight failed".into()),
         ));
     }
     if !result.exe_exists {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "UnrealEditor.exe not found at engine_path".into(),
         ));
     }
     if !result.proj_exists {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             ".uproject not found at project_path".into(),
         ));
     }
@@ -87,7 +87,7 @@ pub fn verify_output(
     project_dir: &str,
     user: Option<&str>,
     pass: Option<&str>,
-) -> UecmResult<PakOutput> {
+) -> VoloResult<PakOutput> {
     let _ = (user, pass); // SSH key auth; per-call WinRM cred ignored (kept until A5).
     let exec = SshExecutor::from_config()?;
     let result: VerifyRaw = run_json(
@@ -100,12 +100,12 @@ pub fn verify_output(
         },
     )?;
     if !result.ok {
-        return Err(UecmError::OperationFailed(
+        return Err(VoloError::OperationFailed(
             result.message.unwrap_or_else(|| "pak verify failed".into()),
         ));
     }
     if !result.found {
-        return Err(UecmError::OperationFailed(
+        return Err(VoloError::OperationFailed(
             ".ddp not found after generation".into(),
         ));
     }
@@ -118,12 +118,12 @@ pub fn verify_output(
 
 /// Local-backend counterpart of `verify_output`: checks the pak on the
 /// operator's own filesystem instead of over SSH.
-pub fn verify_output_local(project_dir: &str) -> UecmResult<PakOutput> {
+pub fn verify_output_local(project_dir: &str) -> VoloResult<PakOutput> {
     let path = std::path::Path::new(project_dir)
         .join("DerivedDataCache")
         .join("DDC.ddp");
     if path.exists() {
-        let size = std::fs::metadata(&path).map_err(UecmError::Io)?.len() as i64;
+        let size = std::fs::metadata(&path).map_err(VoloError::Io)?.len() as i64;
         if size > 0 {
             return Ok(PakOutput {
                 path: path.to_string_lossy().to_string(),
@@ -131,7 +131,7 @@ pub fn verify_output_local(project_dir: &str) -> UecmResult<PakOutput> {
             });
         }
     }
-    Err(UecmError::OperationFailed("DDC.ddp not found locally".into()))
+    Err(VoloError::OperationFailed("DDC.ddp not found locally".into()))
 }
 
 pub fn launch_generation(

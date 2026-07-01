@@ -3,7 +3,7 @@
 //! Event taxonomy matches §8.2 of the design spec.
 
 use crate::envelope::{ErrorBody, ErrorEnvelope, Meta, SuccessEnvelope, SCHEMA_VERSION};
-use cache_core::error::UecmError;
+use cache_core::error::VoloError;
 use serde::Serialize;
 use std::io::{self, Write};
 
@@ -79,23 +79,23 @@ pub enum Event {
     },
 }
 
-/// Map `UecmError` to a stable string code for the `error` event.
+/// Map `VoloError` to a stable string code for the `error` event.
 ///
 /// Database / IO failures map to `environment_error` (same family as
 /// Configuration) so automation can tell environment problems apart from
 /// regular operation failures.
-pub fn error_code(err: &UecmError) -> &'static str {
+pub fn error_code(err: &VoloError) -> &'static str {
     match err {
-        UecmError::InvalidInput(_) => "invalid_input",
-        UecmError::OperationFailed(_) => "operation_failed",
-        UecmError::PowerShell(_) => "powershell_failed",
-        UecmError::Configuration(_) | UecmError::Database(_) | UecmError::Io(_) => {
+        VoloError::InvalidInput(_) => "invalid_input",
+        VoloError::OperationFailed(_) => "operation_failed",
+        VoloError::PowerShell(_) => "powershell_failed",
+        VoloError::Configuration(_) | VoloError::Database(_) | VoloError::Io(_) => {
             "environment_error"
         }
-        UecmError::SshConnect(_) => "ssh_connect",
-        UecmError::NodeScript { .. } => "node_script_failed",
-        UecmError::Timeout(_) => "timeout",
-        UecmError::ScriptStaging(_) => "script_staging_failed",
+        VoloError::SshConnect(_) => "ssh_connect",
+        VoloError::NodeScript { .. } => "node_script_failed",
+        VoloError::Timeout(_) => "timeout",
+        VoloError::ScriptStaging(_) => "script_staging_failed",
     }
 }
 
@@ -104,14 +104,14 @@ pub fn error_code(err: &UecmError) -> &'static str {
 /// `Database` and `Io` errors share the exit code (3 = environment failure)
 /// with `Configuration` — DB unwritable, ps-scripts missing, and similar I/O
 /// issues are all "user needs to fix their environment" cases.
-pub fn exit_code_for(err: &UecmError) -> i32 {
+pub fn exit_code_for(err: &VoloError) -> i32 {
     match err {
-        UecmError::InvalidInput(_) => 2,
-        UecmError::Configuration(_) | UecmError::Database(_) | UecmError::Io(_) => 3,
-        UecmError::PowerShell(_) => 4,
-        UecmError::OperationFailed(_) => 1,
-        UecmError::NodeScript { .. } => 4,
-        UecmError::SshConnect(_) | UecmError::Timeout(_) | UecmError::ScriptStaging(_) => 3,
+        VoloError::InvalidInput(_) => 2,
+        VoloError::Configuration(_) | VoloError::Database(_) | VoloError::Io(_) => 3,
+        VoloError::PowerShell(_) => 4,
+        VoloError::OperationFailed(_) => 1,
+        VoloError::NodeScript { .. } => 4,
+        VoloError::SshConnect(_) | VoloError::Timeout(_) | VoloError::ScriptStaging(_) => 3,
     }
 }
 
@@ -130,7 +130,7 @@ impl EnvelopeCtx {
     fn success(&self, data: serde_json::Value) -> serde_json::Value {
         serde_json::to_value(SuccessEnvelope { schema_version: SCHEMA_VERSION, status: "ok", operation_id: &self.operation_id, data, meta: self.meta() }).expect("EnvelopeCtx serialization is infallible")
     }
-    fn error(&self, err: &UecmError) -> serde_json::Value {
+    fn error(&self, err: &VoloError) -> serde_json::Value {
         let body = ErrorBody { code: error_code(err).into(), exit_code: exit_code_for(err), message: err.to_string(), retryable: crate::envelope::retryable_for(err), details: serde_json::Value::Null };
         serde_json::to_value(ErrorEnvelope { schema_version: SCHEMA_VERSION, status: "error", operation_id: &self.operation_id, error: body, meta: self.meta() }).expect("EnvelopeCtx serialization is infallible")
     }
@@ -148,7 +148,7 @@ fn is_terminal(event: &Event) -> bool {
 pub trait Emitter {
     fn emit_event(&mut self, event: &Event) -> io::Result<()>;
     fn emit_value(&mut self, value: &serde_json::Value) -> io::Result<()>;
-    fn emit_error(&mut self, err: &UecmError);
+    fn emit_error(&mut self, err: &VoloError);
     /// Raw human-facing text line to stdout. JSON emitters ignore it
     /// (handlers must branch on `ctx.json_mode` and only call this in
     /// human mode). Default = no-op so NDJSON stays clean.
@@ -266,7 +266,7 @@ impl<W: Write, E: Write> Emitter for NdjsonEmitter<W, E> {
         self.writer.flush()
     }
 
-    fn emit_error(&mut self, err: &UecmError) {
+    fn emit_error(&mut self, err: &VoloError) {
         // Stream terminator only when a stream has already started AND has
         // not already terminated. One-shot JSON commands keep stdout empty;
         // batch commands that already emitted a `completed` summary before
@@ -373,7 +373,7 @@ impl<W: Write, E: Write> Emitter for HumanEmitter<W, E> {
         writeln!(self.stdout, "{}", s)
     }
 
-    fn emit_error(&mut self, err: &UecmError) {
+    fn emit_error(&mut self, err: &VoloError) {
         let _ = writeln!(self.stderr, "✗ error: {}", err);
     }
 
@@ -414,7 +414,7 @@ impl<W: Write, E: Write> Emitter for JsonEmitter<W, E> {
         self.values.push(value.clone());
         Ok(())
     }
-    fn emit_error(&mut self, err: &UecmError) {
+    fn emit_error(&mut self, err: &VoloError) {
         self.errored = true;
         let env = self.envelope.error(err);
         if serde_json::to_writer(&mut self.error_writer, &env).is_ok() {
@@ -485,7 +485,7 @@ mod tests {
         {
             let mut e = NdjsonEmitter::with_error_writer(&mut out, &mut err).with_envelope(env_ctx());
             e.emit_event(&Event::Started { task_type: "scan".into(), task_id: None, metadata: serde_json::Value::Null }).unwrap();
-            e.emit_error(&UecmError::Timeout("boom".into()));
+            e.emit_error(&VoloError::Timeout("boom".into()));
         }
         let s = String::from_utf8(out).unwrap();
         let lines: Vec<&str> = s.trim_end().split('\n').collect();
@@ -624,7 +624,7 @@ mod tests {
 
     #[test]
     fn error_event_uses_stable_code() {
-        let err = UecmError::InvalidInput("bad".into());
+        let err = VoloError::InvalidInput("bad".into());
         assert_eq!(error_code(&err), "invalid_input");
         assert_eq!(exit_code_for(&err), 2);
     }

@@ -1,16 +1,17 @@
 //! `voloctl` entry point — unified VP CLI.
 //!
-//! step 2b 把 UECM 的 CLI 层平移进来，挂成顶层子命令组 `voloctl uecm <原命令...>`，
-//! 为 step 3 的 `voloctl lmt ...` 预留同级命名空间。UECM 原本的命令树
-//! (machine/ini/zen/...) 整体作为 `uecm` 子命令的 body，`args::Cli` 不动。
+//! step 2b 把 Volo 的 Cache/DDC/Zen CLI 层平移进来，挂成顶层子命令组
+//! `voloctl cache <原命令...>`，为 step 3 的 `voloctl lmt ...` 预留同级命名空间。
+//! 原本的命令树 (machine/ini/zen/...) 整体作为 `cache` 子命令的 body，
+//! `args::Cli` 不动。
 //!
-//! Two-stage parse (UECM 契约，逐字保留语义，仅适配多出的 `uecm` 前缀):
+//! Two-stage parse (逐字保留语义，仅适配多出的 `cache` 前缀):
 //! 1. 从裸 argv 嗅探 structured-output 意图（`--json` 别名 + `--output`/`-o
 //!    json|ndjson|stream-json`，外加 `AI_AGENT=1` env），决定 clap parse 失败时
 //!    如何格式化（此时结构化的 `Cli` 还没解析出来）。`--json`/`--output` 是
-//!    `global = true`，可出现在 `uecm` 前缀前后任意位置，故 token 扫描天然
+//!    `global = true`，可出现在 `cache` 前缀前后任意位置，故 token 扫描天然
 //!    与前缀无关，无需特殊处理。
-//! 2. 正式 parse 顶层 `voloctl` command（含 `uecm` 子命令）；失败时按 json_mode
+//! 2. 正式 parse 顶层 `voloctl` command（含 `cache` 子命令）；失败时按 json_mode
 //!    输出 JSON 错误信封到 stderr 并 exit 64 (sysexits.h EX_USAGE)，否则让 clap
 //!    渲染原生 usage 并 exit 64。
 
@@ -42,7 +43,7 @@ pub mod domain_zen;
 pub mod envelope;
 pub mod manifest;
 // step 3c: LMT's CLI layer, platformed as the `lmt` subcommand group (parallel
-// to `uecm`). Its clap tree + envelope/dispatch are kept intact under `lmt::`.
+// to `cache`). Its clap tree + envelope/dispatch are kept intact under `lmt::`.
 pub mod lmt;
 
 // Re-export the emitter trait + the generic extension trait so domain handlers
@@ -63,21 +64,28 @@ use std::io::{self, Write};
 
 use args::Cli;
 
-/// 顶层 `voloctl` command:含 `uecm` 子命令组,body 是 UECM 的 `Cli` 命令树。
-/// `Cli::command()` 仍返回原 UECM 树(name = "uecm-cli"),只是在这里被 reparent
-/// 成名为 `uecm` 的子命令挂上去。manifest/schema/completion 仍直接调
-/// `Cli::command()`,完全不受这层包装影响。
+/// Subcommand names used to mount + dispatch the two clap trees in
+/// `voloctl_command()`. Single source of truth so the mount, the
+/// `matches.subcommand()` arm, and `argv_targets_lmt`'s token scan can't
+/// drift out of sync with each other.
+const CACHE_SUBCOMMAND: &str = "cache";
+const LMT_SUBCOMMAND: &str = "lmt";
+
+/// 顶层 `voloctl` command:含 `cache` 子命令组,body 是 Volo Cache 的 `Cli` 命令树。
+/// `Cli::command()` 直接以 name = "cache" 定义,这里只是把它挂到顶层 `voloctl`
+/// 下面。manifest/schema/completion 仍直接调 `Cli::command()`,完全不受这层
+/// 包装影响。
 fn voloctl_command() -> clap::Command {
-    let uecm = Cli::command().name("uecm");
+    let cache = Cli::command().name(CACHE_SUBCOMMAND);
     // step 3c: mount LMT's clap tree as a sibling subcommand `lmt`. Like the
-    // `uecm` reparent above, `lmt::cli::Cli::command()` returns the original
+    // `cache` reparent above, `lmt::cli::Cli::command()` returns the original
     // LMT tree (name = "lmt"); renaming is a no-op but kept explicit for parity.
-    let lmt = lmt::cli::Cli::command().name("lmt");
+    let lmt = lmt::cli::Cli::command().name(LMT_SUBCOMMAND);
     clap::Command::new("voloctl")
         .about("VP unified command-line interface")
         .subcommand_required(true)
         .arg_required_else_help(true)
-        .subcommand(uecm)
+        .subcommand(cache)
         .subcommand(lmt)
 }
 
@@ -87,7 +95,7 @@ fn main() {
     let argv: Vec<OsString> = std::env::args_os().collect();
     // Sniff structured-output intent from raw argv so clap parse errors are
     // formatted as a JSON envelope when the caller asked for json/ndjson.
-    // 全 token 扫描,与新增的 `uecm` 前缀无关(`--json`/`--output` 是 global)。
+    // 全 token 扫描,与新增的 `cache` 前缀无关(`--json`/`--output` 是 global)。
     let json_mode = argv.iter().enumerate().any(|(i, a)| {
         let s = a.as_os_str();
         s == "--json"
@@ -107,10 +115,10 @@ fn main() {
     match top.try_get_matches_from(&argv) {
         Ok(matches) => {
             // `subcommand_required(true)` guarantees a subcommand matched. Today
-            // only `uecm` exists; step 3 adds `lmt`. Reconstruct the UECM `Cli`
-            // from the `uecm` submatches and hand off to the unchanged dispatch.
+            // only `cache` exists; step 3 adds `lmt`. Reconstruct the `Cli`
+            // from the `cache` submatches and hand off to the unchanged dispatch.
             match matches.subcommand() {
-                Some(("uecm", sub)) => {
+                Some((CACHE_SUBCOMMAND, sub)) => {
                     let cli = match Cli::from_arg_matches(sub) {
                         Ok(c) => c,
                         Err(e) => emit_parse_error(e, json_mode),
@@ -122,8 +130,8 @@ fn main() {
                 // `lmt` submatches and hand to LMT's own dispatch, preserving
                 // its envelope / exit-code contract verbatim. A from_arg_matches
                 // failure here is formatted with LMT's invalid_input envelope
-                // (its native parse-error contract) rather than the uecm one.
-                Some(("lmt", sub)) => {
+                // (its native parse-error contract) rather than the cache one.
+                Some((LMT_SUBCOMMAND, sub)) => {
                     let cli = match lmt::cli::Cli::from_arg_matches(sub) {
                         Ok(c) => c,
                         Err(e) => emit_lmt_parse_error(e, json_mode),
@@ -142,10 +150,10 @@ fn main() {
         // value) errors *before* `matches.subcommand()` can route it. Detect
         // whether the failing argv targeted the `lmt` subtree and, if so, format
         // the error with LMT's native `invalid_input`/exit-2 envelope instead of
-        // UECM's `usage_error`/exit-64. Otherwise fall back to the uecm path.
+        // cache's `usage_error`/exit-64. Otherwise fall back to the cache path.
         //
         // FIX (review #2): without this, `voloctl lmt reconstruct --bogus --json`
-        // leaked the uecm `usage_error` envelope (exit 64). The post-match
+        // leaked the cache `usage_error` envelope (exit 64). The post-match
         // `from_arg_matches` arm already used `emit_lmt_parse_error`, but a clap
         // tokenization error never reaches it.
         Err(e) => {
@@ -177,12 +185,12 @@ fn argv_targets_lmt(argv: &[OsString]) -> bool {
             continue;
         }
         // first non-flag token is the subcommand name.
-        return s == "lmt";
+        return s == LMT_SUBCOMMAND;
     }
     false
 }
 
-/// Render a clap parse error consistently with the UECM contract:
+/// Render a clap parse error consistently with the cache-tree contract:
 /// `--help`/`--version` pass through (stdout, exit 0); everything else is a
 /// usage error → exit 64, formatted as a JSON envelope when structured output
 /// was requested. Never returns.
@@ -230,7 +238,7 @@ fn emit_parse_error(e: clap::Error, json_mode: bool) -> ! {
 /// `--version` pass through; a real argv error under `--json` becomes an
 /// `invalid_input` ErrorEnvelope via LMT's own `output::err`; otherwise clap's
 /// native rendering. Kept separate from `emit_parse_error` so the `lmt` group
-/// preserves LMT's envelope shape (distinct from UECM's usage_error envelope).
+/// preserves LMT's envelope shape (distinct from cache's usage_error envelope).
 /// Never returns.
 fn emit_lmt_parse_error(e: clap::Error, json_mode: bool) -> ! {
     if matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) {

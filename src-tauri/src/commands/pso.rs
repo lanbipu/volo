@@ -12,7 +12,7 @@ use cache_core::data::{
     project_locations, pso_cache_files, pso_distributions, Db, DistributionStatus, PsoCacheFile,
     PsoDistribution,
 };
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -43,10 +43,10 @@ fn resolve_engine_path(
     db: &Db,
     machine_id: i64,
     preferred_version: Option<&str>,
-) -> UecmResult<String> {
+) -> VoloResult<String> {
     let installs = machine_ue_installs::list_for_machine(db, machine_id)?;
     if installs.is_empty() {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "machine {} has no detected UE installs",
             machine_id
         )));
@@ -56,7 +56,7 @@ fn resolve_engine_path(
             .into_iter()
             .find(|install| install.version == version)
             .ok_or_else(|| {
-                UecmError::InvalidInput(format!("UE {} not on machine {}", version, machine_id))
+                VoloError::InvalidInput(format!("UE {} not on machine {}", version, machine_id))
             })?;
         return Ok(install.install_path);
     }
@@ -81,13 +81,13 @@ pub async fn start_pso_collection(
     windowed: bool,
     max_minutes: u32,
     operator_credential_alias: Option<String>,
-) -> UecmResult<PsoCollectJobResponse> {
+) -> VoloResult<PsoCollectJobResponse> {
     let machine = data_machines::find_by_id(&db, source_machine_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("machine {} not found", source_machine_id))
+        VoloError::InvalidInput(format!("machine {} not found", source_machine_id))
     })?;
     let location = project_locations::get_for_project_machine(&db, project_id, source_machine_id)?
         .ok_or_else(|| {
-            UecmError::InvalidInput(format!(
+            VoloError::InvalidInput(format!(
                 "project {} not located on machine {}",
                 project_id, source_machine_id
             ))
@@ -243,7 +243,7 @@ pub fn list_pso_cache_files(
     project_id: i64,
     source_machine_id: Option<i64>,
     gpu_signature: Option<String>,
-) -> UecmResult<Vec<PsoCacheFile>> {
+) -> VoloResult<Vec<PsoCacheFile>> {
     let normalized_filter = gpu_signature
         .as_deref()
         .map(cache_core::core::gpu_consistency::normalize_signature_string);
@@ -281,12 +281,12 @@ pub async fn distribute_pso_cache(
     app: AppHandle,
     db: State<'_, Db>,
     request: DistributePsoCacheRequest,
-) -> UecmResult<PsoDistributeJobResponse> {
+) -> VoloResult<PsoDistributeJobResponse> {
     let file = pso_cache_files::get(&db, request.file_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("pso cache file {} not found", request.file_id))
+        VoloError::InvalidInput(format!("pso cache file {} not found", request.file_id))
     })?;
     let source_machine = data_machines::find_by_id(&db, file.source_machine_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("source machine {} not found", file.source_machine_id))
+        VoloError::InvalidInput(format!("source machine {} not found", file.source_machine_id))
     })?;
     // SSH key auth: operator cred no longer used (param kept as shim, Vue compat).
     let _ = &request.operator_credential_alias;
@@ -308,7 +308,7 @@ pub async fn distribute_pso_cache(
         for target_id in &request.target_machine_ids {
             let cell = matrix.cells.iter().find(|cell| cell.machine_id == *target_id);
             let Some(signature) = cell.and_then(|cell| cell.signature.as_ref()) else {
-                return Err(UecmError::InvalidInput(format!(
+                return Err(VoloError::InvalidInput(format!(
                     "target machine {} has unknown GPU signature; refresh inventory or force",
                     target_id
                 )));
@@ -316,7 +316,7 @@ pub async fn distribute_pso_cache(
             if cache_core::core::gpu_consistency::normalize_signature_string(&signature.as_string())
                 != cache_core::core::gpu_consistency::normalize_signature_string(&file.gpu_signature)
             {
-                return Err(UecmError::InvalidInput(format!(
+                return Err(VoloError::InvalidInput(format!(
                     "target machine {} GPU signature {} does not match file signature {}",
                     target_id,
                     signature.as_string(),
@@ -342,13 +342,13 @@ pub async fn distribute_pso_cache(
         source_smb_pass,
     )?;
     if plan.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "distribution plan has no non-source targets".into(),
         ));
     }
     for item in &plan {
         pso_distribute::preflight_one(item).await.map_err(|err| {
-            UecmError::OperationFailed(format!(
+            VoloError::OperationFailed(format!(
                 "target {} cannot reach source UNC: {}",
                 item.target_machine_id, err
             ))
@@ -390,7 +390,7 @@ pub async fn distribute_pso_cache(
                         .iter()
                         .find(|item| item.target_machine_id == machine_id)
                         .ok_or_else(|| {
-                            UecmError::InvalidInput(format!(
+                            VoloError::InvalidInput(format!(
                                 "distribution plan missing machine {}",
                                 machine_id
                             ))
@@ -410,7 +410,7 @@ pub async fn distribute_pso_cache(
                             outcome.bytes_copied,
                             Some(message.clone()),
                         );
-                        return Err(UecmError::OperationFailed(format!(
+                        return Err(VoloError::OperationFailed(format!(
                             "robocopy exit {}: {}",
                             outcome.exit_code, message
                         )));
@@ -423,7 +423,7 @@ pub async fn distribute_pso_cache(
                         outcome.bytes_copied,
                         None,
                     );
-                    Ok::<_, UecmError>(outcome)
+                    Ok::<_, VoloError>(outcome)
                 }
             },
         )

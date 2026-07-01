@@ -2,21 +2,21 @@
 
 use crate::core::ini_editor;
 use crate::data::ini_findings::IniFinding;
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 
 pub struct ApplyContext<'a> {
     pub host: &'a str,
 }
 
-pub fn apply(ctx: &ApplyContext, finding: &IniFinding) -> UecmResult<String> {
+pub fn apply(ctx: &ApplyContext, finding: &IniFinding) -> VoloResult<String> {
     let section = finding.section.as_deref()
-        .ok_or_else(|| UecmError::InvalidInput("finding has no section".into()))?;
+        .ok_or_else(|| VoloError::InvalidInput("finding has no section".into()))?;
     match finding.recommended_action.as_str() {
         "set" => {
             let key = finding.key_name.as_deref()
-                .ok_or_else(|| UecmError::InvalidInput("finding has no key_name".into()))?;
+                .ok_or_else(|| VoloError::InvalidInput("finding has no key_name".into()))?;
             let value = finding.recommended_value.as_deref()
-                .ok_or_else(|| UecmError::InvalidInput("finding has no recommended_value".into()))?;
+                .ok_or_else(|| VoloError::InvalidInput("finding has no recommended_value".into()))?;
             if finding.rule_id == "R001" {
                 ini_editor::remove_key(ctx.host, &finding.file_path, section, key)?;
                 return ini_editor::set_key(
@@ -59,13 +59,13 @@ pub fn apply(ctx: &ApplyContext, finding: &IniFinding) -> UecmResult<String> {
                 return Ok("multiple-key removal".into());
             }
             let key = finding.key_name.as_deref()
-                .ok_or_else(|| UecmError::InvalidInput("remove needs key_name".into()))?;
+                .ok_or_else(|| VoloError::InvalidInput("remove needs key_name".into()))?;
             ini_editor::remove_key(ctx.host, &finding.file_path, section, key)
         }
-        "manual" => Err(UecmError::InvalidInput(
+        "manual" => Err(VoloError::InvalidInput(
             "manual findings cannot be auto-applied; open the file directly".into(),
         )),
-        other => Err(UecmError::InvalidInput(format!("unknown action: {}", other))),
+        other => Err(VoloError::InvalidInput(format!("unknown action: {}", other))),
     }
 }
 
@@ -93,14 +93,14 @@ mod tests {
     fn manual_action_returns_invalid_input() {
         let ctx = ApplyContext { host: "X" };
         let result = apply(&ctx, &finding("manual", "R004"));
-        assert!(matches!(result, Err(UecmError::InvalidInput(_))));
+        assert!(matches!(result, Err(VoloError::InvalidInput(_))));
     }
 
     #[test]
     fn unknown_action_returns_invalid_input() {
         let ctx = ApplyContext { host: "X" };
         let result = apply(&ctx, &finding("zzz", "R999"));
-        assert!(matches!(result, Err(UecmError::InvalidInput(_))));
+        assert!(matches!(result, Err(VoloError::InvalidInput(_))));
     }
 
     #[test]

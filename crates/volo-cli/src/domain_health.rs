@@ -1,4 +1,4 @@
-//! `uecm-cli health <action>` handlers.
+//! `voloctl cache health <action>` handlers.
 
 use crate::args::HealthAction;
 use crate::credential_args::CredentialArgs;
@@ -9,7 +9,7 @@ use cache_core::data::{
     credentials as data_credentials, health_check_runs, machine_gpus, machines as data_machines,
     scan_runs, share_configs,
 };
-use cache_core::error::UecmResult;
+use cache_core::error::VoloResult;
 use std::collections::HashMap;
 
 /// Tally health probe outcomes by status. `na` is segregated into `skipped` so
@@ -38,7 +38,7 @@ impl Counters {
     }
 }
 
-pub fn handle(ctx: &mut Ctx<'_>, action: HealthAction) -> UecmResult<()> {
+pub fn handle(ctx: &mut Ctx<'_>, action: HealthAction) -> VoloResult<()> {
     match action {
         HealthAction::Run {
             machine_ids,
@@ -118,20 +118,20 @@ fn run_dispatch(
     expected_local_path: &str,
     expected_shared_path: &str,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     // clap conflicts_with_all enforces "no two at once" but not "exactly one of three".
     // Reject the all-empty case explicitly so the user gets a helpful error instead of
     // a silent zero-machine run.
     if machine_ids.is_empty() && cidr.is_none() && !all {
-        return Err(cache_core::error::UecmError::InvalidInput(
+        return Err(cache_core::error::VoloError::InvalidInput(
             "health run requires exactly one of: --machine-ids, --cidr, or --all".into(),
         ));
     }
 
-    // Build the Tokio runtime once. uecm-cli's main() is sync (uecm-cli.rs:17),
+    // Build the Tokio runtime once. voloctl's main() is sync (main.rs:84),
     // so creating a new runtime here is safe (no outer runtime to conflict with).
     let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| cache_core::error::UecmError::OperationFailed(e.to_string()))?;
+        .map_err(|e| cache_core::error::VoloError::OperationFailed(e.to_string()))?;
 
     if let Some(cidr_str) = cidr {
         return run_cidr(ctx, &rt, &cidr_str);
@@ -140,8 +140,8 @@ fn run_dispatch(
         let db = ctx.require_db()?.clone();
         let ids = resolve_all_machine_ids(&db)?;
         if ids.is_empty() {
-            return Err(cache_core::error::UecmError::InvalidInput(
-                "--all requested but inventory is empty (run `uecm-cli machine scan` first)".into(),
+            return Err(cache_core::error::VoloError::InvalidInput(
+                "--all requested but inventory is empty (run `voloctl cache machine scan` first)".into(),
             ));
         }
         return run_with_rt(ctx, &rt, &ids, expected_local_path, expected_shared_path, cred);
@@ -149,7 +149,7 @@ fn run_dispatch(
     run_with_rt(ctx, &rt, &machine_ids, expected_local_path, expected_shared_path, cred)
 }
 
-fn resolve_all_machine_ids(db: &cache_core::data::Db) -> UecmResult<Vec<i64>> {
+fn resolve_all_machine_ids(db: &cache_core::data::Db) -> VoloResult<Vec<i64>> {
     Ok(cache_core::data::machines::list_all(db)?
         .into_iter()
         .filter_map(|m| m.id)
@@ -163,7 +163,7 @@ fn run_with_rt(
     expected_local_path: &str,
     expected_shared_path: &str,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?.clone();
 
     // SSH key auth: no operator credential needed. preflight validates flags
@@ -255,7 +255,7 @@ fn run_with_rt(
                         index: idx as i64,
                         ok: false,
                         message: Some(format!(
-                            "machine id {} not found in inventory (run `uecm-cli machine list` to see valid ids)",
+                            "machine id {} not found in inventory (run `voloctl cache machine list` to see valid ids)",
                             mid
                         )),
                     })
@@ -505,7 +505,7 @@ fn run_with_rt(
     Ok(())
 }
 
-fn run_cidr(ctx: &mut Ctx<'_>, rt: &tokio::runtime::Runtime, cidr: &str) -> UecmResult<()> {
+fn run_cidr(ctx: &mut Ctx<'_>, rt: &tokio::runtime::Runtime, cidr: &str) -> VoloResult<()> {
     let outcomes = rt.block_on(scan_and_probe_l1(cidr, 1000))?;
 
     ctx.emitter
@@ -541,7 +541,7 @@ fn run_cidr(ctx: &mut Ctx<'_>, rt: &tokio::runtime::Runtime, cidr: &str) -> Uecm
         "hosts_total": total,
         "hosts_with_any_open_port": hosts_with_any_open,
         "persisted": false,
-        "next_step": "For deeper L2+L3 diagnosis, run `uecm-cli machine add --ip <X>` to inventory the host, then `uecm-cli health run --machine-ids <id> --cred-alias <alias>`."
+        "next_step": "For deeper L2+L3 diagnosis, run `voloctl cache machine add --ip <X>` to inventory the host, then `voloctl cache health run --machine-ids <id> --cred-alias <alias>`."
     });
     ctx.emitter.emit_event(&Event::Completed { summary }).ok();
     Ok(())
@@ -556,18 +556,18 @@ fn run_cidr(ctx: &mut Ctx<'_>, rt: &tokio::runtime::Runtime, cidr: &str) -> Uecm
 async fn scan_and_probe_l1(
     cidr: &str,
     timeout_ms: u64,
-) -> UecmResult<Vec<(String, std::collections::HashMap<String, cache_core::core::health_check::CheckOutcome>)>> {
+) -> VoloResult<Vec<(String, std::collections::HashMap<String, cache_core::core::health_check::CheckOutcome>)>> {
     use ipnet::Ipv4Net;
     use std::str::FromStr;
     use std::sync::Arc;
     use tokio::sync::Semaphore;
 
     let net = Ipv4Net::from_str(cidr).map_err(|e| {
-        cache_core::error::UecmError::InvalidInput(format!("invalid CIDR '{}': {}", cidr, e))
+        cache_core::error::VoloError::InvalidInput(format!("invalid CIDR '{}': {}", cidr, e))
     })?;
     let hosts: Vec<String> = net.hosts().map(|ip| ip.to_string()).collect();
     if hosts.len() > cache_core::core::network::MAX_HOSTS {
-        return Err(cache_core::error::UecmError::InvalidInput(format!(
+        return Err(cache_core::error::VoloError::InvalidInput(format!(
             "CIDR expands to {} hosts (max {})",
             hosts.len(),
             cache_core::core::network::MAX_HOSTS
@@ -596,7 +596,7 @@ async fn scan_and_probe_l1(
 fn derive_ini_outcome(
     db: &cache_core::data::Db,
     machine_id: i64,
-) -> UecmResult<cache_core::core::health_check::CheckOutcome> {
+) -> VoloResult<cache_core::core::health_check::CheckOutcome> {
     use cache_core::data::ini_findings;
     let recent = scan_runs::list_recent(db, "ini", 1)?;
     let Some(latest) = recent.first() else {
@@ -652,14 +652,14 @@ pub(crate) async fn inject_l1_ports(
     }
 }
 
-fn list_runs(ctx: &mut Ctx<'_>, limit: i64) -> UecmResult<()> {
+fn list_runs(ctx: &mut Ctx<'_>, limit: i64) -> VoloResult<()> {
     let db = ctx.require_db()?;
     let rows = scan_runs::list_recent(db, "health", limit)?;
     ctx.emitter.emit_result(&rows).ok();
     Ok(())
 }
 
-fn list_results(ctx: &mut Ctx<'_>, scan_run_id: i64) -> UecmResult<()> {
+fn list_results(ctx: &mut Ctx<'_>, scan_run_id: i64) -> VoloResult<()> {
     let db = ctx.require_db()?;
     let rows = health_check_runs::list_for_run(db, scan_run_id)?;
     ctx.emitter.emit_result(&rows).ok();
@@ -760,7 +760,7 @@ mod tests {
         // /16 = 65534 hosts, blocked by MAX_HOSTS guard.
         let rt = tokio::runtime::Runtime::new().unwrap();
         let r = rt.block_on(super::scan_and_probe_l1("10.0.0.0/16", 50));
-        assert!(matches!(r, Err(cache_core::error::UecmError::InvalidInput(_))));
+        assert!(matches!(r, Err(cache_core::error::VoloError::InvalidInput(_))));
     }
 
     #[tokio::test]

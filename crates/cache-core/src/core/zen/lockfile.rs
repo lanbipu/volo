@@ -5,7 +5,7 @@
 //! launch metadata. The CLI `zen status --data-dir <dir>` claims to read this
 //! but in practice returns "No Zen state found" even when the file is present
 //! (Plan v4 T0.4b fact-find, `docs/research/zen-launch-mechanism.md` §5.2), so
-//! UECM reads the file directly using [`cb_parser`].
+//! Volo reads the file directly using [`cb_parser`].
 //!
 //! ## Scope
 //!

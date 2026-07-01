@@ -1,4 +1,4 @@
-//! `uecm-cli ddc <action>` handlers.
+//! `voloctl cache ddc <action>` handlers.
 //!
 //! generate — runs UE with -DDC=CreatePak on the source machine, streams
 //!            UeRunnerEvents as NDJSON until the process terminates.
@@ -15,9 +15,9 @@ use cache_core::core::ddc_pak;
 use cache_core::core::pak_distribute;
 use cache_core::core::ue_runner::{UeRunnerBackend, UeRunnerEvent};
 use cache_core::data::{machines as data_machines, project_locations, Db};
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 
-pub fn handle(ctx: &mut Ctx<'_>, action: DdcAction) -> UecmResult<()> {
+pub fn handle(ctx: &mut Ctx<'_>, action: DdcAction) -> VoloResult<()> {
     match action {
         DdcAction::Generate { project_id, source_machine, backend, cred } => {
             generate(ctx, project_id, source_machine, backend, &cred)
@@ -57,7 +57,7 @@ fn resolve_backend(
     project_id: i64,
     source_machine_id: i64,
     choice: CacheBackendChoice,
-) -> UecmResult<Option<Routing>> {
+) -> VoloResult<Option<Routing>> {
     if is_forced_choice(choice) {
         return Ok(None);
     }
@@ -109,7 +109,7 @@ fn generate(
     source_machine_id: i64,
     backend_choice: CacheBackendChoice,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?.clone();
 
     let routing = resolve_backend(&db, project_id, source_machine_id, backend_choice)?;
@@ -123,12 +123,12 @@ fn generate(
     }
 
     let machine = data_machines::find_by_id(&db, source_machine_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("machine {} not found", source_machine_id))
+        VoloError::InvalidInput(format!("machine {} not found", source_machine_id))
     })?;
     let location =
         project_locations::get_for_project_machine(&db, project_id, source_machine_id)?
             .ok_or_else(|| {
-                UecmError::InvalidInput(format!(
+                VoloError::InvalidInput(format!(
                     "project {} not located on machine {}",
                     project_id, source_machine_id
                 ))
@@ -163,7 +163,7 @@ fn generate(
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|e| UecmError::OperationFailed(format!("tokio runtime: {}", e)))?;
+        .map_err(|e| VoloError::OperationFailed(format!("tokio runtime: {}", e)))?;
 
     rt.block_on(async {
         let mut handle = ddc_pak::launch_generation(
@@ -237,14 +237,14 @@ fn generate(
                     break;
                 }
                 UeRunnerEvent::Error { message } => {
-                    return Err(UecmError::OperationFailed(format!(
+                    return Err(VoloError::OperationFailed(format!(
                         "ue runner: {}",
                         message
                     )));
                 }
             }
         }
-        Ok::<_, UecmError>(())
+        Ok::<_, VoloError>(())
     })?;
 
     Ok(())
@@ -258,18 +258,18 @@ fn verify(
     source_machine_id: i64,
     backend_choice: CacheBackendChoice,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?.clone();
 
     let routing = resolve_backend(&db, project_id, source_machine_id, backend_choice)?;
 
     let machine = data_machines::find_by_id(&db, source_machine_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("machine {} not found", source_machine_id))
+        VoloError::InvalidInput(format!("machine {} not found", source_machine_id))
     })?;
     let location =
         project_locations::get_for_project_machine(&db, project_id, source_machine_id)?
             .ok_or_else(|| {
-                UecmError::InvalidInput(format!(
+                VoloError::InvalidInput(format!(
                     "project {} not located on machine {}",
                     project_id, source_machine_id
                 ))
@@ -334,18 +334,18 @@ fn distribute(
     backend_choice: CacheBackendChoice,
     source_smb_cred_alias: Option<&str>,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?.clone();
 
     let routing = resolve_backend(&db, project_id, source_machine_id, backend_choice)?;
 
     let source_machine = data_machines::find_by_id(&db, source_machine_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("machine {} not found", source_machine_id))
+        VoloError::InvalidInput(format!("machine {} not found", source_machine_id))
     })?;
     let source_location =
         project_locations::get_for_project_machine(&db, project_id, source_machine_id)?
             .ok_or_else(|| {
-                UecmError::InvalidInput(format!(
+                VoloError::InvalidInput(format!(
                     "project {} not located on machine {}",
                     project_id, source_machine_id
                 ))
@@ -380,7 +380,7 @@ fn distribute(
     )?;
 
     if plan.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "distribution plan has no non-source targets".into(),
         ));
     }
@@ -421,7 +421,7 @@ fn distribute(
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|e| UecmError::OperationFailed(format!("tokio runtime: {}", e)))?;
+        .map_err(|e| VoloError::OperationFailed(format!("tokio runtime: {}", e)))?;
 
     rt.block_on(async {
         for (idx, item) in plan.into_iter().enumerate() {
@@ -456,7 +456,7 @@ fn distribute(
                         })
                         .ok();
                     if !out.ok {
-                        return Err(UecmError::OperationFailed(format!(
+                        return Err(VoloError::OperationFailed(format!(
                             "robocopy exit {} on machine {}",
                             out.exit_code, out.target_machine_id
                         )));
@@ -475,7 +475,7 @@ fn distribute(
                 }
             }
         }
-        Ok::<_, UecmError>(())
+        Ok::<_, VoloError>(())
     })?;
 
     ctx.emitter
@@ -492,7 +492,7 @@ fn distribute(
 fn resolve_creds(
     db: &cache_core::data::Db,
     cred: &CredentialArgs,
-) -> UecmResult<(Option<String>, Option<String>)> {
+) -> VoloResult<(Option<String>, Option<String>)> {
     // SSH key auth: ddc operations take no operator credential. preflight
     // validates --cred-alias / flag combo without reading DPAPI or stdin for a
     // credential that would only be discarded.
@@ -500,10 +500,10 @@ fn resolve_creds(
     Ok((None, None))
 }
 
-fn resolve_engine_path(db: &cache_core::data::Db, machine_id: i64) -> UecmResult<String> {
+fn resolve_engine_path(db: &cache_core::data::Db, machine_id: i64) -> VoloResult<String> {
     let installs = cache_core::data::machine_ue_installs::list_for_machine(db, machine_id)?;
     if installs.is_empty() {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "machine {} has no detected UE installs",
             machine_id
         )));

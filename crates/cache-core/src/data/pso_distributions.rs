@@ -1,7 +1,7 @@
 //! CRUD for the `pso_distributions` table.
 
 use crate::data::Db;
-use crate::error::UecmResult;
+use crate::error::VoloResult;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -48,7 +48,7 @@ pub struct PsoDistribution {
     pub created_at: Option<String>,
 }
 
-pub fn upsert(db: &Db, distribution: &PsoDistribution) -> UecmResult<i64> {
+pub fn upsert(db: &Db, distribution: &PsoDistribution) -> VoloResult<i64> {
     let conn = db.lock().unwrap();
     conn.execute(
         "INSERT INTO pso_distributions
@@ -76,7 +76,7 @@ pub fn upsert(db: &Db, distribution: &PsoDistribution) -> UecmResult<i64> {
     Ok(id)
 }
 
-pub fn list_for_file(db: &Db, file_id: i64) -> UecmResult<Vec<PsoDistribution>> {
+pub fn list_for_file(db: &Db, file_id: i64) -> VoloResult<Vec<PsoDistribution>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, pso_cache_file_id, target_machine_id, status, bytes_copied, distributed_at, error_message, created_at

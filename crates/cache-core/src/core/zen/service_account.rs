@@ -15,7 +15,7 @@
 
 use crate::core::secrets::SecretStore;
 use crate::core::shares::generate_svc_password;
-use crate::error::UecmResult;
+use crate::error::VoloResult;
 use rand::distributions::Alphanumeric;
 use rand::Rng;
 
@@ -57,7 +57,7 @@ pub struct DedicatedAccountResult {
 /// never collides with a later retry). Doing it the other way around would
 /// risk the opposite failure mode — a remote account created with a
 /// password nobody can retrieve if the `SecretStore` write then failed.
-pub fn create_dedicated_account(machine_id: i64, host: &str) -> UecmResult<DedicatedAccountResult> {
+pub fn create_dedicated_account(machine_id: i64, host: &str) -> VoloResult<DedicatedAccountResult> {
     let username = generate_dedicated_service_account_username();
     let password = generate_svc_password();
     let cred_alias = cred_alias_for(machine_id, &username);
@@ -74,7 +74,7 @@ pub fn create_dedicated_account(machine_id: i64, host: &str) -> UecmResult<Dedic
 /// its `SecretStore` alias. Returns `Ok(None)` if the alias was never set
 /// (e.g. an operator-supplied manual account that was never routed through
 /// `create_dedicated_account`).
-pub fn resolve_password(cred_alias: &str) -> UecmResult<Option<String>> {
+pub fn resolve_password(cred_alias: &str) -> VoloResult<Option<String>> {
     SecretStore::from_config()?.get(cred_alias)
 }
 

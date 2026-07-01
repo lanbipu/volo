@@ -1,19 +1,19 @@
-//! `uecm-cli deploy <action>` handlers.
+//! `voloctl cache deploy <action>` handlers.
 use crate::args::DeployAction;
 use crate::destructive::{self, Outcome};
 use crate::EmitSerialize;
 use crate::run::Ctx;
 use cache_core::core::deploy_workflow::{self, DeployEvent, DeployPlan, RunOptions};
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 
-pub fn handle(ctx: &mut Ctx<'_>, action: DeployAction) -> UecmResult<()> {
+pub fn handle(ctx: &mut Ctx<'_>, action: DeployAction) -> VoloResult<()> {
     match action {
         DeployAction::Ddc { plan, stop_on_failure, yes, dry_run, cred } => {
             let body = std::fs::read_to_string(&plan).map_err(|e| {
-                UecmError::OperationFailed(format!("read plan {}: {}", plan.display(), e))
+                VoloError::OperationFailed(format!("read plan {}: {}", plan.display(), e))
             })?;
             let mut p: DeployPlan = serde_json::from_str(&body)
-                .map_err(|e| UecmError::InvalidInput(format!("bad plan: {}", e)))?;
+                .map_err(|e| VoloError::InvalidInput(format!("bad plan: {}", e)))?;
             // DESIGN-2: enforce feature-gated required fields (resolution /
             // editor_exe) only when the corresponding feature is enabled.
             p.validate()?;

@@ -1,7 +1,7 @@
 //! Async TCP port probe for LAN discovery. Cross-platform — works on macOS
 //! during development. No raw sockets, no ICMP, no privileges required.
 
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use ipnet::Ipv4Net;
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, SocketAddr};
@@ -16,7 +16,7 @@ use tokio::time::timeout;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProbedHost {
     pub ip: String,
-    pub winrm_open: bool,   // port 5985 — UECM remote management
+    pub winrm_open: bool,   // port 5985 — Volo remote management
     pub smb_open: bool,     // port 445  — SMB ADMIN$ + share access
     pub rpc_open: bool,     // port 135  — DCE/RPC Endpoint Mapper, required by PsExec-based Path B
 }
@@ -39,14 +39,14 @@ const PORT_WINRM: u16 = 5985;
 const PORT_SMB: u16 = 445;
 const PORT_RPC: u16 = 135;
 
-pub async fn scan_cidr(cidr: &str, timeout_ms: u64) -> UecmResult<Vec<ProbedHost>> {
+pub async fn scan_cidr(cidr: &str, timeout_ms: u64) -> VoloResult<Vec<ProbedHost>> {
     let net = Ipv4Net::from_str(cidr)
-        .map_err(|e| UecmError::InvalidInput(format!("invalid CIDR '{}': {}", cidr, e)))?;
+        .map_err(|e| VoloError::InvalidInput(format!("invalid CIDR '{}': {}", cidr, e)))?;
 
     let hosts: Vec<IpAddr> = net.hosts().map(IpAddr::V4).collect();
 
     if hosts.len() > MAX_HOSTS {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "CIDR expands to {} hosts (max {})",
             hosts.len(),
             MAX_HOSTS
@@ -70,7 +70,7 @@ pub async fn scan_cidr(cidr: &str, timeout_ms: u64) -> UecmResult<Vec<ProbedHost
         }
     }
 
-    // Only return hosts where UECM has at least one usable management path:
+    // Only return hosts where Volo has at least one usable management path:
     // WinRM (5985) for direct management, or SMB (445) for Path B remote
     // bootstrap. TCP 135 alone is NOT enough — PsExec needs SMB ADMIN$ to push
     // its service binary, and Refresh needs WinRM. RPC-only hosts have no
@@ -128,14 +128,14 @@ mod tests {
     #[tokio::test]
     async fn invalid_cidr_returns_error() {
         let result = scan_cidr("not-a-cidr", 100).await;
-        assert!(matches!(result, Err(UecmError::InvalidInput(_))));
+        assert!(matches!(result, Err(VoloError::InvalidInput(_))));
     }
 
     #[tokio::test]
     async fn cidr_too_large_returns_error() {
         // /16 = 65534 hosts, well over MAX_HOSTS
         let result = scan_cidr("10.0.0.0/16", 100).await;
-        assert!(matches!(result, Err(UecmError::InvalidInput(_))));
+        assert!(matches!(result, Err(VoloError::InvalidInput(_))));
     }
 
     #[tokio::test]

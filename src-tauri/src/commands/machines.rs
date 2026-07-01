@@ -3,7 +3,7 @@
 use cache_core::data::{
     machine_gpus, machine_ue_installs, machines as data_machines, Db, GpuInfo, Machine, UeInstall,
 };
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 use serde::Serialize;
 use tauri::State;
 
@@ -15,7 +15,7 @@ pub struct MachineDetail {
 }
 
 #[tauri::command]
-pub fn list_machines(db: State<'_, Db>) -> UecmResult<Vec<Machine>> {
+pub fn list_machines(db: State<'_, Db>) -> VoloResult<Vec<Machine>> {
     data_machines::list_all(&db)
 }
 
@@ -24,25 +24,25 @@ pub fn add_machine(
     db: State<'_, Db>,
     hostname: String,
     ip: String,
-) -> UecmResult<i64> {
+) -> VoloResult<i64> {
     let machine = Machine::new(&hostname, &ip);
     data_machines::insert(&db, &machine)
 }
 
 #[tauri::command]
-pub fn delete_machine(db: State<'_, Db>, id: i64) -> UecmResult<()> {
+pub fn delete_machine(db: State<'_, Db>, id: i64) -> VoloResult<()> {
     data_machines::delete(&db, id)
 }
 
 #[tauri::command]
-pub fn rename_machine(db: State<'_, Db>, id: i64, hostname: String) -> UecmResult<()> {
+pub fn rename_machine(db: State<'_, Db>, id: i64, hostname: String) -> VoloResult<()> {
     data_machines::rename(&db, id, &hostname)
 }
 
 #[tauri::command]
-pub fn get_machine_detail(db: State<'_, Db>, id: i64) -> UecmResult<MachineDetail> {
+pub fn get_machine_detail(db: State<'_, Db>, id: i64) -> VoloResult<MachineDetail> {
     let machine = data_machines::find_by_id(&db, id)?
-        .ok_or_else(|| UecmError::InvalidInput(format!("machine {} not found", id)))?;
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", id)))?;
     let ue_installs = machine_ue_installs::list_for_machine(&db, id)?;
     let gpus = machine_gpus::list_for_machine(&db, id)?;
     Ok(MachineDetail {

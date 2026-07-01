@@ -1,4 +1,4 @@
-//! cache-core — UECM 纯业务逻辑层（零 tauri）。
+//! cache-core — Volo cache 纯业务逻辑层（零 tauri）。
 //!
 //! 从 `ue-cache-manager/src-tauri/src/` 平移 core/data/startup/error 四层，
 //! 不含 cli/commands/tauri::Builder。供 volo 的 CLI (step 2b) 与

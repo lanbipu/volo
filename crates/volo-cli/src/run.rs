@@ -5,7 +5,7 @@ use crate::args::{Cli, Domain, OutputFormat};
 use crate::output::{Emitter, HumanEmitter, NdjsonEmitter, exit_code_for};
 use crate::{domain_cred, domain_ddc, domain_deploy, domain_env, domain_gpu, domain_health, domain_ini, domain_local_cache, domain_machine, domain_project, domain_pso, domain_secret, domain_share, domain_ssh, domain_system, domain_zen};
 use cache_core::data::Db;
-use cache_core::error::UecmError;
+use cache_core::error::VoloError;
 use cache_core::startup;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -33,10 +33,10 @@ pub struct Ctx<'a> {
 
 impl<'a> Ctx<'a> {
     /// Convenience for DB-requiring handlers. Panics with a structured
-    /// `UecmError` if `needs_db` was wrong — never panics in correct code.
-    pub fn require_db(&self) -> Result<&Db, UecmError> {
+    /// `VoloError` if `needs_db` was wrong — never panics in correct code.
+    pub fn require_db(&self) -> Result<&Db, VoloError> {
         self.db.as_ref().ok_or_else(|| {
-            UecmError::OperationFailed(
+            VoloError::OperationFailed(
                 "internal: this command requires a DB but Ctx was built DB-less".into(),
             )
         })
@@ -233,13 +233,13 @@ fn startup_error_is_json(cli: &Cli) -> bool {
     !matches!(cli.resolved_output(), crate::args::OutputFormat::Text)
 }
 
-fn finish_error(err: &UecmError, json: bool) -> i32 {
+fn finish_error(err: &VoloError, json: bool) -> i32 {
     if json {
         // Startup-phase failures (db-path resolve / db open / `--config` load)
         // happen BEFORE the envelope-aware emitter is built, so we can't reuse
         // it. Emit the full ErrorEnvelope inline to stderr (spec §4), mirroring
-        // the usage-error path in `bin/uecm-cli.rs`. `operation_id` is unknown
-        // this early, so it is empty.
+        // the usage-error path in `main.rs`'s `emit_parse_error`. `operation_id`
+        // is unknown this early, so it is empty.
         let payload = serde_json::json!({
             "schema_version": crate::envelope::SCHEMA_VERSION,
             "status": "error",

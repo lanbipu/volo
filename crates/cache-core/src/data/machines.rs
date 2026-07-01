@@ -1,7 +1,7 @@
 //! CRUD operations for the `machines` table.
 
 use crate::data::Db;
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
@@ -28,7 +28,7 @@ impl Machine {
     }
 }
 
-pub fn insert(db: &Db, machine: &Machine) -> UecmResult<i64> {
+pub fn insert(db: &Db, machine: &Machine) -> VoloResult<i64> {
     let conn = db.lock().unwrap();
     conn.execute(
         "INSERT INTO machines (hostname, ip, role, status, last_seen_at) VALUES (?, ?, ?, ?, ?)",
@@ -43,7 +43,7 @@ pub fn insert(db: &Db, machine: &Machine) -> UecmResult<i64> {
     Ok(conn.last_insert_rowid())
 }
 
-pub fn find_by_id(db: &Db, id: i64) -> UecmResult<Option<Machine>> {
+pub fn find_by_id(db: &Db, id: i64) -> VoloResult<Option<Machine>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, hostname, ip, role, status, last_seen_at FROM machines WHERE id = ?",
@@ -63,7 +63,7 @@ pub fn find_by_id(db: &Db, id: i64) -> UecmResult<Option<Machine>> {
     }
 }
 
-pub fn find_by_ip(db: &Db, ip: &str) -> UecmResult<Option<Machine>> {
+pub fn find_by_ip(db: &Db, ip: &str) -> VoloResult<Option<Machine>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, hostname, ip, role, status, last_seen_at FROM machines WHERE ip = ?",
@@ -83,7 +83,7 @@ pub fn find_by_ip(db: &Db, ip: &str) -> UecmResult<Option<Machine>> {
     }
 }
 
-pub fn find_by_hostname(db: &Db, hostname: &str) -> UecmResult<Option<Machine>> {
+pub fn find_by_hostname(db: &Db, hostname: &str) -> VoloResult<Option<Machine>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, hostname, ip, role, status, last_seen_at FROM machines WHERE hostname = ?",
@@ -103,7 +103,7 @@ pub fn find_by_hostname(db: &Db, hostname: &str) -> UecmResult<Option<Machine>> 
     }
 }
 
-pub fn list_all(db: &Db) -> UecmResult<Vec<Machine>> {
+pub fn list_all(db: &Db) -> VoloResult<Vec<Machine>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, hostname, ip, role, status, last_seen_at FROM machines ORDER BY hostname",
@@ -125,7 +125,7 @@ pub fn list_all(db: &Db) -> UecmResult<Vec<Machine>> {
     Ok(result)
 }
 
-pub fn delete(db: &Db, id: i64) -> UecmResult<()> {
+pub fn delete(db: &Db, id: i64) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     conn.execute("DELETE FROM machines WHERE id = ?", params![id])?;
     Ok(())
@@ -133,21 +133,21 @@ pub fn delete(db: &Db, id: i64) -> UecmResult<()> {
 
 /// Updates the hostname for a machine row. Returns `InvalidInput` when no row matched.
 /// Plan 3 T6: lets users rename a machine after first discovery via the detail panel.
-pub fn rename(db: &Db, id: i64, new_hostname: &str) -> UecmResult<()> {
+pub fn rename(db: &Db, id: i64, new_hostname: &str) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     let updated = conn.execute(
         "UPDATE machines SET hostname = ? WHERE id = ?",
         params![new_hostname, id],
     )?;
     if updated == 0 {
-        return Err(UecmError::InvalidInput(format!("machine {} not found", id)));
+        return Err(VoloError::InvalidInput(format!("machine {} not found", id)));
     }
     Ok(())
 }
 
 /// Returns the per-machine SSH login user, or None when unset (caller uses
 /// the default `uecm-svc`). Added in migration 022 for the SSH transport.
-pub fn get_ssh_user(db: &Db, id: i64) -> UecmResult<Option<String>> {
+pub fn get_ssh_user(db: &Db, id: i64) -> VoloResult<Option<String>> {
     let conn = db.lock().unwrap();
     let user: Option<String> = conn.query_row(
         "SELECT ssh_user FROM machines WHERE id = ?",
@@ -159,14 +159,14 @@ pub fn get_ssh_user(db: &Db, id: i64) -> UecmResult<Option<String>> {
 
 /// Sets (or clears, with `None`) the per-machine SSH login user.
 /// Returns `InvalidInput` when no row matched.
-pub fn set_ssh_user(db: &Db, id: i64, user: Option<&str>) -> UecmResult<()> {
+pub fn set_ssh_user(db: &Db, id: i64, user: Option<&str>) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     let updated = conn.execute(
         "UPDATE machines SET ssh_user = ? WHERE id = ?",
         params![user, id],
     )?;
     if updated == 0 {
-        return Err(UecmError::InvalidInput(format!("machine {} not found", id)));
+        return Err(VoloError::InvalidInput(format!("machine {} not found", id)));
     }
     Ok(())
 }
@@ -175,7 +175,7 @@ pub fn set_ssh_user(db: &Db, id: i64, user: Option<&str>) -> UecmResult<()> {
 /// or None when unset. Used by `zen enable --global` to construct the
 /// UserEngine.ini absolute path without relying on %APPDATA% expansion in the
 /// uecm-svc SSH session.
-pub fn get_ue_runtime_user(db: &Db, id: i64) -> UecmResult<Option<String>> {
+pub fn get_ue_runtime_user(db: &Db, id: i64) -> VoloResult<Option<String>> {
     let conn = db.lock().unwrap();
     let user: Option<String> = conn.query_row(
         "SELECT ue_runtime_user FROM machines WHERE id = ?",
@@ -187,21 +187,21 @@ pub fn get_ue_runtime_user(db: &Db, id: i64) -> UecmResult<Option<String>> {
 
 /// Sets (or clears, with `None`) the per-machine UE runtime Windows username.
 /// Returns `InvalidInput` when no row matched.
-pub fn set_ue_runtime_user(db: &Db, id: i64, user: Option<&str>) -> UecmResult<()> {
+pub fn set_ue_runtime_user(db: &Db, id: i64, user: Option<&str>) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     let updated = conn.execute(
         "UPDATE machines SET ue_runtime_user = ? WHERE id = ?",
         params![user, id],
     )?;
     if updated == 0 {
-        return Err(UecmError::InvalidInput(format!("machine {} not found", id)));
+        return Err(VoloError::InvalidInput(format!("machine {} not found", id)));
     }
     Ok(())
 }
 
 /// Stamps the machine row with `CURRENT_TIMESTAMP` and a fresh status.
 /// Called by `refresh_machine` so the UI online/offline badge reflects truth.
-pub fn mark_seen(db: &Db, id: i64, status: &str) -> UecmResult<()> {
+pub fn mark_seen(db: &Db, id: i64, status: &str) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     conn.execute(
         "UPDATE machines SET last_seen_at = CURRENT_TIMESTAMP, status = ? WHERE id = ?",
@@ -323,7 +323,7 @@ mod tests {
         let result = rename(&db, 9999, "X");
         assert!(result.is_err());
         match result.unwrap_err() {
-            UecmError::InvalidInput(msg) => assert!(msg.contains("9999")),
+            VoloError::InvalidInput(msg) => assert!(msg.contains("9999")),
             other => panic!("expected InvalidInput, got {:?}", other),
         }
     }
@@ -368,7 +368,7 @@ mod tests {
         let result = set_ue_runtime_user(&db, 9999, Some("x"));
         assert!(result.is_err());
         match result.unwrap_err() {
-            UecmError::InvalidInput(msg) => assert!(msg.contains("9999")),
+            VoloError::InvalidInput(msg) => assert!(msg.contains("9999")),
             other => panic!("expected InvalidInput, got {:?}", other),
         }
     }

@@ -10,7 +10,7 @@
 //! - performs the action on [`Outcome::Proceed`].
 
 use crate::output::{Emitter, Event};
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -24,12 +24,12 @@ pub enum Outcome {
 ///
 /// If both are set, `dry_run` wins (safer default). If neither is set,
 /// returns `InvalidInput` so the caller exits with code 2 + a stderr envelope.
-pub fn check(yes: bool, dry_run: bool, op_name: &str) -> UecmResult<Outcome> {
+pub fn check(yes: bool, dry_run: bool, op_name: &str) -> VoloResult<Outcome> {
     if dry_run {
         return Ok(Outcome::DryRun);
     }
     if !yes {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "{op_name} is destructive; pass --yes to confirm or --dry-run to preview"
         )));
     }
@@ -69,7 +69,7 @@ mod tests {
     #[test]
     fn neither_returns_invalid_input() {
         let err = check(false, false, "machine.delete").unwrap_err();
-        assert!(matches!(err, UecmError::InvalidInput(_)));
+        assert!(matches!(err, VoloError::InvalidInput(_)));
         let msg = err.to_string();
         assert!(msg.contains("machine.delete"));
         assert!(msg.contains("--yes"));

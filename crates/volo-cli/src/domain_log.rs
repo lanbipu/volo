@@ -1,11 +1,11 @@
-//! `uecm-cli log <action>` handlers.
+//! `voloctl cache log <action>` handlers.
 use crate::args::LogAction;
 use crate::output::EmitSerialize;
 use crate::run::Ctx;
 use cache_core::core::ue_log_verify;
-use cache_core::error::UecmResult;
+use cache_core::error::VoloResult;
 
-pub fn handle(ctx: &mut Ctx<'_>, action: LogAction) -> UecmResult<()> {
+pub fn handle(ctx: &mut Ctx<'_>, action: LogAction) -> VoloResult<()> {
     match action {
         LogAction::VerifyStartup { host, editor_exe, project, timeout, cred } => {
             let db = ctx.require_db()?;

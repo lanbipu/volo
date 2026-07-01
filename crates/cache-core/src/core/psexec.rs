@@ -7,7 +7,7 @@
 //! `C:\ProgramData\UECM\PsExec64.exe`; the node script resolves it there.
 
 use crate::core::ssh::{run_json, NodeScript, SshExecutor};
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -28,7 +28,7 @@ pub fn inject_system_credential(
     svc_pass: &str,
     operator_user: Option<&str>,
     operator_pass: Option<&str>,
-) -> UecmResult<String> {
+) -> VoloResult<String> {
     let _ = (operator_user, operator_pass);
     let exec = SshExecutor::from_config()?;
     let mut args = serde_json::json!({
@@ -49,7 +49,7 @@ pub fn inject_system_credential(
         },
     )?;
     if !result.ok {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "SYSTEM credential injection failed: {}",
             result.message
         )));

@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
-# 合并 LMT + UECM 的依赖版本表；各 crate 填实时改用 `<dep>.workspace = true` 引用。
+# 合并 LMT + Cache 的依赖版本表；各 crate 填实时改用 `<dep>.workspace = true` 引用。
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

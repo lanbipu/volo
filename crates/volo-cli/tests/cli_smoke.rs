@@ -1,4 +1,4 @@
-//! End-to-end smoke tests for `voloctl uecm` (migrated from ue-cache-manager's
+//! End-to-end smoke tests for `voloctl cache` (migrated from ue-cache-manager's
 //! `cli_smoke.rs`). Spawns the compiled binary.
 //! Cross-platform — no PowerShell required for the assertions here.
 
@@ -12,23 +12,23 @@ fn bin() -> std::path::PathBuf {
     assert_cmd::cargo::cargo_bin("voloctl")
 }
 
-/// `Command::new(voloctl)` with the `uecm` subcommand pre-injected, so every
-/// migrated call site (`uecm_cmd().args(["--json", "system", "version"])`)
-/// becomes `voloctl uecm --json system version`. The UECM tree's global flags
-/// (`--json`, `--output`, `--config`, `UECM_DB_PATH`, …) live on the reparented
-/// `uecm` subcommand, so they must follow the `uecm` token — which this does.
-fn uecm_cmd() -> Command {
+/// `Command::new(voloctl)` with the `cache` subcommand pre-injected, so every
+/// migrated call site (`cache_cmd().args(["--json", "system", "version"])`)
+/// becomes `voloctl cache --json system version`. The cache tree's global flags
+/// (`--json`, `--output`, `--config`, `VOLO_DB_PATH`, …) live on the reparented
+/// `cache` subcommand, so they must follow the `cache` token — which this does.
+fn cache_cmd() -> Command {
     let mut c = Command::new(bin());
-    c.arg("uecm");
+    c.arg("cache");
     c
 }
 
 #[test]
 fn version_subcommand_works() {
-    let out = uecm_cmd()
+    let out = cache_cmd()
         .args(["--json", "system", "version"])
         .output()
-        .expect("spawn uecm-cli");
+        .expect("spawn voloctl");
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8(out.stdout).unwrap();
     let v: serde_json::Value = serde_json::from_str(stdout.trim_end()).unwrap();
@@ -36,7 +36,7 @@ fn version_subcommand_works() {
     // SuccessEnvelope; the handler payload lives under `data`.
     assert_eq!(v["status"], "ok");
     // review #9: the version `binary` field is now the voloctl namespace.
-    assert_eq!(v["data"]["binary"], "voloctl uecm");
+    assert_eq!(v["data"]["binary"], "voloctl cache");
     assert!(v["data"]["version"].is_string());
 }
 
@@ -44,8 +44,8 @@ fn version_subcommand_works() {
 fn machine_list_on_fresh_db_returns_empty_array() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args(["--json", "machine", "list"])
         .output()
         .expect("spawn");
@@ -57,7 +57,7 @@ fn machine_list_on_fresh_db_returns_empty_array() {
 
 #[test]
 fn invalid_cidr_returns_invalid_input_exit_code() {
-    let out = uecm_cmd()
+    let out = cache_cmd()
         .args(["--json", "machine", "scan", "not-a-cidr"])
         .output()
         .expect("spawn");
@@ -69,8 +69,8 @@ fn invalid_cidr_returns_invalid_input_exit_code() {
 fn cred_list_on_fresh_db_returns_empty_array() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args(["--json", "cred", "list"])
         .output()
         .expect("spawn");
@@ -86,7 +86,7 @@ fn cred_list_on_fresh_db_returns_empty_array() {
 
 #[test]
 fn env_set_without_target_returns_invalid_input() {
-    let out = uecm_cmd()
+    let out = cache_cmd()
         .args(["--json", "env", "set", "--name", "X", "--value", "Y"])
         .output()
         .expect("spawn");
@@ -105,7 +105,7 @@ fn env_set_without_target_returns_invalid_input() {
 fn env_set_does_not_leak_value_to_stderr() {
     // macOS will fail at PowerShell layer, but redaction must hold.
     let secret = "MY-VERY-SECRET-VALUE-DEF-456-NEVER-LEAK";
-    let out = uecm_cmd()
+    let out = cache_cmd()
         .args([
             "--json",
             "env",
@@ -131,8 +131,8 @@ fn env_set_does_not_leak_value_to_stderr() {
 fn project_list_on_fresh_db_returns_empty_array() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args(["--json", "project", "list"])
         .output()
         .expect("spawn");
@@ -146,8 +146,8 @@ fn project_list_on_fresh_db_returns_empty_array() {
 fn health_runs_on_fresh_db_returns_empty_array() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args(["--json", "health", "runs"])
         .output()
         .expect("spawn");
@@ -161,8 +161,8 @@ fn health_runs_on_fresh_db_returns_empty_array() {
 fn gpu_matrix_on_empty_db_returns_empty_matrix() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args(["--json", "gpu", "matrix"])
         .output()
         .expect("spawn");
@@ -177,8 +177,8 @@ fn gpu_matrix_on_empty_db_returns_empty_matrix() {
 fn ini_runs_on_fresh_db_returns_empty_array() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args(["--json", "ini", "runs"])
         .output()
         .expect("spawn");
@@ -195,8 +195,8 @@ fn machine_refresh_accepts_cred_alias_flag_without_clap_error() {
     // machine doesn't exist, but clap must NOT reject the flag.
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "machine", "refresh", "999",
             "--cred-alias", "winrm-admin",
@@ -228,8 +228,8 @@ fn machine_refresh_accepts_cred_alias_flag_without_clap_error() {
 fn zen_status_on_empty_db_returns_empty_endpoints_doc() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args(["--json", "zen", "status"])
         .output()
         .expect("spawn");
@@ -243,8 +243,8 @@ fn zen_status_on_empty_db_returns_empty_endpoints_doc() {
 fn zen_list_endpoints_on_empty_db_returns_empty_array() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args(["--json", "zen", "list-endpoints"])
         .output()
         .expect("spawn");
@@ -258,8 +258,8 @@ fn zen_list_endpoints_on_empty_db_returns_empty_array() {
 fn zen_baseline_list_on_empty_db_returns_empty_array() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args(["--json", "zen", "baseline", "list"])
         .output()
         .expect("spawn");
@@ -273,8 +273,8 @@ fn zen_baseline_list_on_empty_db_returns_empty_array() {
 fn zen_baseline_lock_without_yes_returns_invalid_input() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "zen", "baseline", "lock",
             "--zen-build-version", "5.8.10-aaa",
@@ -296,8 +296,8 @@ fn zen_baseline_lock_without_yes_returns_invalid_input() {
 fn zen_baseline_lock_rejects_bad_kind() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "zen", "baseline", "lock",
             "--zen-build-version", "5.8.10-aaa",
@@ -319,8 +319,8 @@ fn zen_baseline_lock_rejects_bad_kind() {
 fn zen_register_for_unknown_machine_returns_invalid_input() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "zen", "register",
             "--machine", "9999",
@@ -343,16 +343,16 @@ fn zen_register_then_lua_preview_round_trip() {
     let path = tmp.path().to_string_lossy().to_string();
     // Seed a machine via `machine add` so the FK is satisfied. The CLI emits
     // a Completed event with the created id we can parse out.
-    let added = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let added = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args(["--json", "machine", "add", "--ip", "192.168.10.30", "--hostname", "ZEN-01"])
         .output()
         .expect("spawn");
     assert!(added.status.success(), "stderr: {}", String::from_utf8_lossy(&added.stderr));
 
     // Register an endpoint with all defaults except role.
-    let reg = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let reg = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "zen", "register",
             "--machine", "1",
@@ -373,8 +373,8 @@ fn zen_register_then_lua_preview_round_trip() {
     let endpoint_id = reg_doc["endpoint_id"].as_i64().expect("endpoint_id");
 
     // Re-register the same (machine, port) returns inserted=false.
-    let reg2 = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let reg2 = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "zen", "register",
             "--machine", "1",
@@ -391,8 +391,8 @@ fn zen_register_then_lua_preview_round_trip() {
     assert_eq!(reg2_doc["endpoint_id"], serde_json::Value::from(endpoint_id));
 
     // lua-preview renders the deterministic Lua text for the row.
-    let preview = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let preview = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "zen", "lua-preview",
             "--endpoint-id", &endpoint_id.to_string(),
@@ -417,14 +417,14 @@ fn zen_register_conflict_reveals_install_dir_was_ignored() {
     // edit was dropped, instead of it disappearing without a trace.
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let _ = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let _ = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args(["--json", "machine", "add", "--ip", "192.168.10.40", "--hostname", "ZEN-05"])
         .output()
         .expect("spawn");
 
-    let reg = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let reg = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "zen", "register",
             "--machine", "1",
@@ -440,8 +440,8 @@ fn zen_register_conflict_reveals_install_dir_was_ignored() {
     assert_eq!(reg_env["data"]["install_dir"], "C:\\ZenServer");
 
     // Re-register the same (machine, port) with a DIFFERENT install_dir.
-    let reg2 = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let reg2 = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "zen", "register",
             "--machine", "1",
@@ -465,8 +465,8 @@ fn zen_register_conflict_reveals_install_dir_was_ignored() {
 fn zen_unregister_without_yes_returns_invalid_input() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args(["--json", "zen", "unregister", "--endpoint-id", "1"])
         .output()
         .expect("spawn");
@@ -522,8 +522,8 @@ fn zen_verify_rules_verified_version_emits_ok_true_plan() {
     std::fs::write(&yaml, T45_FIXTURE_YAML).unwrap();
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
 
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", tmp_db.path().to_string_lossy().to_string())
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", tmp_db.path().to_string_lossy().to_string())
         .env("UECM_ZEN_RULES_PATH", &yaml)
         .args([
             "--json", "zen", "verify-rules",
@@ -553,8 +553,8 @@ fn zen_verify_rules_unverified_refuse_emits_ok_false_exit_zero() {
     std::fs::write(&yaml, T45_FIXTURE_YAML).unwrap();
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
 
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", tmp_db.path().to_string_lossy().to_string())
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", tmp_db.path().to_string_lossy().to_string())
         .env("UECM_ZEN_RULES_PATH", &yaml)
         .args([
             "--json", "zen", "verify-rules",
@@ -585,8 +585,8 @@ fn zen_verify_rules_write_verified_appends_new_version_to_yaml() {
     std::fs::write(&yaml, &warn_yaml).unwrap();
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
 
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", tmp_db.path().to_string_lossy().to_string())
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", tmp_db.path().to_string_lossy().to_string())
         .env("UECM_ZEN_RULES_PATH", &yaml)
         .args([
             "--json", "zen", "verify-rules",
@@ -618,8 +618,8 @@ fn zen_verify_rules_write_verified_on_already_verified_returns_wrote_false() {
     let before = std::fs::read_to_string(&yaml).unwrap();
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
 
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", tmp_db.path().to_string_lossy().to_string())
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", tmp_db.path().to_string_lossy().to_string())
         .env("UECM_ZEN_RULES_PATH", &yaml)
         .args([
             "--json", "zen", "verify-rules",
@@ -644,7 +644,7 @@ fn zen_verify_rules_write_verified_on_already_verified_returns_wrote_false() {
 fn zen_verify_rules_runs_without_writable_db() {
     // Codex P2 (T4.5): verify-rules is DB-free — it only resolves the
     // yaml. Forcing DB-open made the command unusable when the data dir
-    // was read-only / SQLite was broken. Point UECM_DB_PATH at a path
+    // was read-only / SQLite was broken. Point VOLO_DB_PATH at a path
     // inside a non-existent parent dir: open_and_migrate_db would fail
     // here, but the verify-rules dispatch should skip DB altogether and
     // still produce a clean ok:true plan.
@@ -653,8 +653,8 @@ fn zen_verify_rules_runs_without_writable_db() {
     std::fs::write(&yaml, T45_FIXTURE_YAML).unwrap();
     let unwritable_db = dir.path().join("no-such-dir/uecm.sqlite3");
 
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", unwritable_db.to_string_lossy().to_string())
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", unwritable_db.to_string_lossy().to_string())
         .env("UECM_ZEN_RULES_PATH", &yaml)
         .args([
             "--json", "zen", "verify-rules",
@@ -687,8 +687,8 @@ fn zen_verify_rules_run_editor_requires_machine_flag() {
     std::fs::write(&yaml, T45_FIXTURE_YAML).unwrap();
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
 
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", tmp_db.path().to_string_lossy().to_string())
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", tmp_db.path().to_string_lossy().to_string())
         .env("UECM_ZEN_RULES_PATH", &yaml)
         .args([
             "--json", "zen", "verify-rules",
@@ -716,8 +716,8 @@ fn zen_verify_rules_run_editor_requires_uproject_path() {
     std::fs::write(&yaml, T45_FIXTURE_YAML).unwrap();
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
 
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", tmp_db.path().to_string_lossy().to_string())
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", tmp_db.path().to_string_lossy().to_string())
         .env("UECM_ZEN_RULES_PATH", &yaml)
         .args([
             "--json", "zen", "verify-rules",
@@ -742,8 +742,8 @@ fn zen_verify_rules_run_editor_errors_on_unknown_machine() {
     std::fs::write(&yaml, T45_FIXTURE_YAML).unwrap();
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
 
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", tmp_db.path().to_string_lossy().to_string())
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", tmp_db.path().to_string_lossy().to_string())
         .env("UECM_ZEN_RULES_PATH", &yaml)
         .args([
             "--json", "zen", "verify-rules",
@@ -778,8 +778,8 @@ fn zen_verify_rules_resolve_only_unaffected_by_run_editor_addition() {
     std::fs::write(&yaml, T45_FIXTURE_YAML).unwrap();
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
 
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", tmp_db.path().to_string_lossy().to_string())
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", tmp_db.path().to_string_lossy().to_string())
         .env("UECM_ZEN_RULES_PATH", &yaml)
         .args([
             "--json", "zen", "verify-rules",
@@ -817,24 +817,24 @@ fn seed_machine_project_location(db_path: &str) -> (i64, i64) {
 /// unreachable-subnet connect timeout.
 fn seed_machine_project_location_with_ip(db_path: &str, ip: &str) -> (i64, i64) {
     // Add machine 1.
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", db_path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", db_path)
         .args(["--json", "machine", "add", "--ip", ip, "--hostname", "RENDER-01"])
         .output()
         .expect("spawn machine add");
     assert!(out.status.success(), "machine add stderr: {}", String::from_utf8_lossy(&out.stderr));
 
     // Create project 1.
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", db_path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", db_path)
         .args(["--json", "project", "create-manual", "--uproject-name", "DemoProj"])
         .output()
         .expect("spawn project create-manual");
     assert!(out.status.success(), "project create stderr: {}", String::from_utf8_lossy(&out.stderr));
 
     // Bind project 1 to machine 1.
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", db_path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", db_path)
         .args([
             "--json", "project", "set-location",
             "--project-id", "1",
@@ -861,8 +861,8 @@ fn ddc_generate_with_backend_zen_no_longer_short_circuits() {
     let path = tmp.path().to_string_lossy().to_string();
     let (project_id, machine_id) = seed_machine_project_location(&path);
 
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "ddc", "generate",
             "--project-id", &project_id.to_string(),
@@ -897,8 +897,8 @@ fn ddc_verify_with_backend_zen_no_longer_short_circuits() {
     let path = tmp.path().to_string_lossy().to_string();
     let (project_id, machine_id) = seed_machine_project_location_with_ip(&path, "127.0.0.1");
 
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "ddc", "verify",
             "--project-id", &project_id.to_string(),
@@ -930,8 +930,8 @@ fn ddc_distribute_with_backend_zen_no_longer_short_circuits() {
 
     // distribute is a destructive op — must pass --yes (or --dry-run)
     // regardless of --backend; the destructive gate runs first.
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "ddc", "distribute",
             "--project-id", &project_id.to_string(),
@@ -963,8 +963,8 @@ fn ddc_generate_rejects_invalid_backend_value() {
     // clap's value_enum must refuse unknown strings before any handler runs.
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "ddc", "generate",
             "--project-id", "1",
@@ -996,8 +996,8 @@ fn ddc_verify_with_backend_auto_keeps_stdout_single_json_doc() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
     // Don't seed anything — router will fail with "project_id not found".
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "ddc", "verify",
             "--project-id", "999",
@@ -1022,8 +1022,8 @@ fn ddc_distribute_dry_run_with_backend_auto_keeps_stdout_single_json_doc() {
     // invoke pak-distribute PS on Windows).
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "ddc", "distribute",
             "--project-id", "999",
@@ -1054,8 +1054,8 @@ fn ddc_generate_with_backend_auto_default_falls_through_to_legacy_path() {
     let path = tmp.path().to_string_lossy().to_string();
     let (project_id, machine_id) = seed_machine_project_location(&path);
 
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "ddc", "generate",
             "--project-id", &project_id.to_string(),
@@ -1095,8 +1095,8 @@ fn ddc_generate_with_backend_auto_default_falls_through_to_legacy_path() {
 fn zen_enable_without_yes_or_dry_run_returns_invalid_input() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "zen", "enable",
             "--project-id", "1",
@@ -1118,8 +1118,8 @@ fn zen_enable_without_yes_or_dry_run_returns_invalid_input() {
 fn zen_disable_without_yes_or_dry_run_returns_invalid_input() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "zen", "disable",
             "--project-id", "1",
@@ -1138,8 +1138,8 @@ fn zen_enable_rejects_missing_required_flags() {
     // diagnostic output mentioning the missing flag.
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "zen", "enable",
             "--project-id", "1",
@@ -1161,20 +1161,20 @@ fn zen_enable_dry_run_emits_plan_for_seeded_project() {
     let path = tmp.path().to_string_lossy().to_string();
 
     // Machines (m1 = target, m2 = master).
-    let _ = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let _ = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args(["--json", "machine", "add", "--ip", "10.0.0.10", "--hostname", "RENDER-01"])
         .output()
         .expect("spawn");
-    let _ = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let _ = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args(["--json", "machine", "add", "--ip", "10.0.0.50", "--hostname", "ZEN-MASTER"])
         .output()
         .expect("spawn");
 
     // Register shared_upstream endpoint on master machine (id=2).
-    let reg = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let reg = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "zen", "register",
             "--machine", "2",
@@ -1203,8 +1203,8 @@ fn zen_enable_dry_run_emits_plan_for_seeded_project() {
     // wiring + clap parsing already.
 
     // Just verify the unknown-project case routes to a clean InvalidInput.
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "zen", "enable",
             "--project-id", "9999",
@@ -1223,13 +1223,13 @@ fn zen_apply_config_dry_run_emits_plan_without_invoking_powershell() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
     // Seed machine + endpoint.
-    let _ = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let _ = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args(["--json", "machine", "add", "--ip", "192.168.10.30", "--hostname", "ZEN-01"])
         .output()
         .expect("spawn");
-    let reg = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let reg = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "zen", "register",
             "--machine", "1",
@@ -1267,8 +1267,8 @@ fn zen_apply_config_dry_run_emits_plan_without_invoking_powershell() {
         .unwrap();
     }
 
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "zen", "apply-config",
             "--endpoint-id", &endpoint_id.to_string(),
@@ -1300,8 +1300,8 @@ fn zen_service_install_cred_alias_without_user_returns_invalid_input() {
     // silently discarded and the service installed as LocalService.
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "zen", "service", "install",
             "--endpoint-id", "1",
@@ -1324,8 +1324,8 @@ fn zen_gc_set_rejects_non_positive_values() {
     // Validation runs before any DB access, so no seeding is needed.
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "zen", "gc-set",
             "--endpoint-id", "1",
@@ -1353,13 +1353,13 @@ fn zen_gc_set_refuses_editor_owned_endpoint() {
     // stale service happens to exist on the machine.
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let _ = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let _ = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args(["--json", "machine", "add", "--ip", "192.168.10.32", "--hostname", "ZEN-06"])
         .output()
         .expect("spawn");
-    let reg = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let reg = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "zen", "register",
             "--machine", "1",
@@ -1373,8 +1373,8 @@ fn zen_gc_set_refuses_editor_owned_endpoint() {
     assert_eq!(reg_env["data"]["lifecycle_mode"], "editor_owned");
     let endpoint_id = reg_env["data"]["endpoint_id"].as_i64().unwrap();
 
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "zen", "gc-set",
             "--endpoint-id", &endpoint_id.to_string(),
@@ -1398,13 +1398,13 @@ fn zen_gc_set_refuses_editor_owned_endpoint() {
 fn zen_gc_set_dry_run_emits_plan_without_invoking_powershell() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let _ = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let _ = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args(["--json", "machine", "add", "--ip", "192.168.10.31", "--hostname", "ZEN-02"])
         .output()
         .expect("spawn");
-    let reg = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let reg = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "zen", "register",
             "--machine", "1",
@@ -1443,8 +1443,8 @@ fn zen_gc_set_dry_run_emits_plan_without_invoking_powershell() {
         .unwrap();
     }
 
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args([
             "--json", "zen", "gc-set",
             "--endpoint-id", &endpoint_id.to_string(),
@@ -1481,8 +1481,8 @@ fn zen_gc_set_dry_run_emits_plan_without_invoking_powershell() {
 fn zen_account_create_for_unknown_machine_returns_invalid_input() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    let out = uecm_cmd()
-        .env("UECM_DB_PATH", &path)
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
         .args(["--json", "zen", "account-create", "--machine", "9999"])
         .output()
         .expect("spawn");

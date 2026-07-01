@@ -7,7 +7,7 @@ use crate::data::{
     project_locations::{self, ProjectLocation},
     Db,
 };
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -108,9 +108,9 @@ pub fn plan(
     named_share_unc: Option<&str>,
     source_smb_user: Option<String>,
     source_smb_pass: Option<String>,
-) -> UecmResult<Vec<DistributePlanItem>> {
+) -> VoloResult<Vec<DistributePlanItem>> {
     if target_machine_ids.is_empty() {
-        return Err(UecmError::InvalidInput("no target machines".into()));
+        return Err(VoloError::InvalidInput("no target machines".into()));
     }
 
     let source_unc = if let Some(unc) = named_share_unc {
@@ -126,13 +126,13 @@ pub fn plan(
         }
         let location = project_locations::get_for_project_machine(db, project_id, *target_id)?
             .ok_or_else(|| {
-                UecmError::InvalidInput(format!(
+                VoloError::InvalidInput(format!(
                     "project {} has no location on machine {}",
                     project_id, target_id
                 ))
             })?;
         let target = data_machines::find_by_id(db, *target_id)?.ok_or_else(|| {
-            UecmError::InvalidInput(format!("target machine {} not found", target_id))
+            VoloError::InvalidInput(format!("target machine {} not found", target_id))
         })?;
         out.push(DistributePlanItem {
             target_machine_id: *target_id,
@@ -147,14 +147,14 @@ pub fn plan(
     Ok(out)
 }
 
-fn admin_share_unc(source_host: &str, abs_path: &str, source_subdir: &str) -> UecmResult<String> {
+fn admin_share_unc(source_host: &str, abs_path: &str, source_subdir: &str) -> VoloResult<String> {
     let normalized = abs_path.replace('/', "\\");
     let mut chars = normalized.chars();
     let drive = chars.next().ok_or_else(|| {
-        UecmError::InvalidInput(format!("abs_path not drive-rooted: {}", abs_path))
+        VoloError::InvalidInput(format!("abs_path not drive-rooted: {}", abs_path))
     })?;
     if chars.next() != Some(':') {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "abs_path not a drive-rooted Windows path: {}",
             abs_path
         )));
@@ -237,7 +237,7 @@ fn resolve_source_share(
     db: &Db,
     source_machine_id: i64,
     explicit_alias: Option<&str>,
-) -> UecmResult<(Option<String>, Option<String>)> {
+) -> VoloResult<(Option<String>, Option<String>)> {
     use crate::data::share_configs::{self, ShareMode};
     let shares = share_configs::find_by_host(db, source_machine_id)?;
 
@@ -248,7 +248,7 @@ fn resolve_source_share(
             .iter()
             .find(|s| s.credential_alias.as_deref() == Some(alias))
             .ok_or_else(|| {
-                UecmError::InvalidInput(format!(
+                VoloError::InvalidInput(format!(
                     "source SMB alias '{alias}' matches no share on the source host; \
                      register it with `share create --mode b` first"
                 ))
@@ -263,7 +263,7 @@ fn resolve_source_share(
         .filter(|s| s.mode == ShareMode::Managed && s.credential_alias.is_some())
         .collect();
     if managed.len() > 1 {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "source host has {} Mode B shares; pass --source-smb-cred-alias to choose one",
             managed.len()
         )));
@@ -275,7 +275,7 @@ fn resolve_source_share(
     let open: Vec<&share_configs::ShareConfig> =
         shares.iter().filter(|s| s.mode == ShareMode::Open).collect();
     if open.len() > 1 {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "source host has {} Mode A shares; keep one open share, or use a Mode B \
              share with --source-smb-cred-alias",
             open.len()
@@ -285,7 +285,7 @@ fn resolve_source_share(
         return Ok((Some(share.unc_path.clone()), None));
     }
 
-    Err(UecmError::InvalidInput(
+    Err(VoloError::InvalidInput(
         "source host has no registered share; create one with `share create` \
          (Mode A open or Mode B managed) before distributing"
             .to_string(),
@@ -302,14 +302,14 @@ pub fn resolve_source_smb(
     source_machine_id: i64,
     explicit_alias: Option<&str>,
     read_secret: bool,
-) -> UecmResult<SourceSmb> {
+) -> VoloResult<SourceSmb> {
     let (named_share_unc, secret_alias) =
         resolve_source_share(db, source_machine_id, explicit_alias)?;
     let (user, pass) = match (secret_alias, read_secret) {
         (Some(alias), true) => {
             let pass = crate::core::secrets::get_share_secret_migrating(&alias)?
                 .ok_or_else(|| {
-                    UecmError::InvalidInput(format!(
+                    VoloError::InvalidInput(format!(
                         "Mode B share secret '{alias}' missing from SecretStore; \
                          re-run `share create --mode b`"
                     ))
@@ -357,7 +357,7 @@ fn build_distribute_payload(item: &DistributePlanItem, preflight: bool) -> serde
     obj
 }
 
-pub async fn preflight_one(item: &DistributePlanItem) -> UecmResult<()> {
+pub async fn preflight_one(item: &DistributePlanItem) -> VoloResult<()> {
     let profile = DistributeProfile::ddc_pak();
     preflight_one_with_profile(&profile, item).await
 }
@@ -365,11 +365,11 @@ pub async fn preflight_one(item: &DistributePlanItem) -> UecmResult<()> {
 pub async fn preflight_one_with_profile(
     profile: &DistributeProfile,
     item: &DistributePlanItem,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     if crate::core::loopback::is_loopback_target(&item.target_host) {
         let result = run_local_robocopy(profile, item, true)?;
         if !result.ok {
-            return Err(UecmError::OperationFailed(
+            return Err(VoloError::OperationFailed(
                 result
                     .message
                     .unwrap_or_else(|| format!("local preflight failed: {}", result.stdout_tail)),
@@ -389,7 +389,7 @@ pub async fn preflight_one_with_profile(
         },
     )?;
     if !result.ok {
-        return Err(UecmError::OperationFailed(
+        return Err(VoloError::OperationFailed(
             result
                 .message
                 .unwrap_or_else(|| format!("preflight failed: {}", result.stdout_tail)),
@@ -398,7 +398,7 @@ pub async fn preflight_one_with_profile(
     Ok(())
 }
 
-pub async fn run_one(item: DistributePlanItem) -> UecmResult<DistributeOutcome> {
+pub async fn run_one(item: DistributePlanItem) -> VoloResult<DistributeOutcome> {
     let profile = DistributeProfile::ddc_pak();
     run_one_with_profile(&profile, item).await
 }
@@ -406,7 +406,7 @@ pub async fn run_one(item: DistributePlanItem) -> UecmResult<DistributeOutcome> 
 pub async fn run_one_with_profile(
     profile: &DistributeProfile,
     item: DistributePlanItem,
-) -> UecmResult<DistributeOutcome> {
+) -> VoloResult<DistributeOutcome> {
     if crate::core::loopback::is_loopback_target(&item.target_host) {
         return run_local_robocopy(profile, &item, false);
     }
@@ -441,7 +441,7 @@ fn run_local_robocopy(
     profile: &DistributeProfile,
     item: &DistributePlanItem,
     preflight: bool,
-) -> UecmResult<DistributeOutcome> {
+) -> VoloResult<DistributeOutcome> {
     let payload = build_distribute_payload(item, preflight).to_string();
     let raw: DistributeRaw = powershell::run_json_stdin(
         &powershell::script_path(profile.ps_script),
@@ -570,7 +570,7 @@ mod tests {
             None,
             None,
         );
-        assert!(matches!(result, Err(UecmError::InvalidInput(_))));
+        assert!(matches!(result, Err(VoloError::InvalidInput(_))));
     }
 
     #[test]

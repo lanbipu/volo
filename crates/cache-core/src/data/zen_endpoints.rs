@@ -13,7 +13,7 @@
 //!   lock acquisition.
 
 use crate::data::Db;
-use crate::error::UecmResult;
+use crate::error::VoloResult;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
@@ -59,7 +59,7 @@ pub struct ZenEndpoint {
     pub config_path_override: Option<String>,
 }
 
-pub fn upsert_tx(conn: &Connection, endpoint: &ZenEndpoint) -> UecmResult<i64> {
+pub fn upsert_tx(conn: &Connection, endpoint: &ZenEndpoint) -> VoloResult<i64> {
     // upstream_endpoint_id is operator-driven topology (cluster master / local
     // peer); explicit None must clear it so role transitions (local ↔
     // shared_upstream / standalone) don't leave a stale upstream reference.
@@ -109,7 +109,7 @@ pub fn upsert_tx(conn: &Connection, endpoint: &ZenEndpoint) -> UecmResult<i64> {
     Ok(id)
 }
 
-pub fn upsert(db: &Db, endpoint: &ZenEndpoint) -> UecmResult<i64> {
+pub fn upsert(db: &Db, endpoint: &ZenEndpoint) -> VoloResult<i64> {
     let conn = db.lock().unwrap();
     upsert_tx(&conn, endpoint)
 }
@@ -121,7 +121,7 @@ pub fn upsert(db: &Db, endpoint: &ZenEndpoint) -> UecmResult<i64> {
 /// Returns `(id, inserted)` where `inserted` is `true` iff a new row was
 /// created. On conflict the caller's `endpoint` is discarded and the existing
 /// row's id is returned.
-pub fn insert_only_tx(conn: &Connection, endpoint: &ZenEndpoint) -> UecmResult<(i64, bool)> {
+pub fn insert_only_tx(conn: &Connection, endpoint: &ZenEndpoint) -> VoloResult<(i64, bool)> {
     let changed = conn.execute(
         "INSERT INTO zen_endpoints (
             machine_id,
@@ -159,12 +159,12 @@ pub fn insert_only_tx(conn: &Connection, endpoint: &ZenEndpoint) -> UecmResult<(
     Ok((id, changed == 1))
 }
 
-pub fn insert_only(db: &Db, endpoint: &ZenEndpoint) -> UecmResult<(i64, bool)> {
+pub fn insert_only(db: &Db, endpoint: &ZenEndpoint) -> VoloResult<(i64, bool)> {
     let conn = db.lock().unwrap();
     insert_only_tx(&conn, endpoint)
 }
 
-pub fn list_tx(conn: &Connection) -> UecmResult<Vec<ZenEndpoint>> {
+pub fn list_tx(conn: &Connection) -> VoloResult<Vec<ZenEndpoint>> {
     let mut stmt = conn.prepare(
         "SELECT id, machine_id, declared_port, scheme, role, upstream_endpoint_id,
                 data_dir, httpserverclass, lifecycle_mode, created_at, updated_at,
@@ -181,12 +181,12 @@ pub fn list_tx(conn: &Connection) -> UecmResult<Vec<ZenEndpoint>> {
     Ok(out)
 }
 
-pub fn list(db: &Db) -> UecmResult<Vec<ZenEndpoint>> {
+pub fn list(db: &Db) -> VoloResult<Vec<ZenEndpoint>> {
     let conn = db.lock().unwrap();
     list_tx(&conn)
 }
 
-pub fn list_for_machine_tx(conn: &Connection, machine_id: i64) -> UecmResult<Vec<ZenEndpoint>> {
+pub fn list_for_machine_tx(conn: &Connection, machine_id: i64) -> VoloResult<Vec<ZenEndpoint>> {
     let mut stmt = conn.prepare(
         "SELECT id, machine_id, declared_port, scheme, role, upstream_endpoint_id,
                 data_dir, httpserverclass, lifecycle_mode, created_at, updated_at,
@@ -203,12 +203,12 @@ pub fn list_for_machine_tx(conn: &Connection, machine_id: i64) -> UecmResult<Vec
     Ok(out)
 }
 
-pub fn list_for_machine(db: &Db, machine_id: i64) -> UecmResult<Vec<ZenEndpoint>> {
+pub fn list_for_machine(db: &Db, machine_id: i64) -> VoloResult<Vec<ZenEndpoint>> {
     let conn = db.lock().unwrap();
     list_for_machine_tx(&conn, machine_id)
 }
 
-pub fn get_tx(conn: &Connection, endpoint_id: i64) -> UecmResult<Option<ZenEndpoint>> {
+pub fn get_tx(conn: &Connection, endpoint_id: i64) -> VoloResult<Option<ZenEndpoint>> {
     let mut stmt = conn.prepare(
         "SELECT id, machine_id, declared_port, scheme, role, upstream_endpoint_id,
                 data_dir, httpserverclass, lifecycle_mode, created_at, updated_at,
@@ -225,12 +225,12 @@ pub fn get_tx(conn: &Connection, endpoint_id: i64) -> UecmResult<Option<ZenEndpo
     }
 }
 
-pub fn get(db: &Db, endpoint_id: i64) -> UecmResult<Option<ZenEndpoint>> {
+pub fn get(db: &Db, endpoint_id: i64) -> VoloResult<Option<ZenEndpoint>> {
     let conn = db.lock().unwrap();
     get_tx(&conn, endpoint_id)
 }
 
-pub fn delete_tx(conn: &Connection, endpoint_id: i64) -> UecmResult<()> {
+pub fn delete_tx(conn: &Connection, endpoint_id: i64) -> VoloResult<()> {
     conn.execute(
         "DELETE FROM zen_endpoints WHERE id = ?",
         params![endpoint_id],
@@ -238,7 +238,7 @@ pub fn delete_tx(conn: &Connection, endpoint_id: i64) -> UecmResult<()> {
     Ok(())
 }
 
-pub fn delete(db: &Db, endpoint_id: i64) -> UecmResult<()> {
+pub fn delete(db: &Db, endpoint_id: i64) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     delete_tx(&conn, endpoint_id)
 }
@@ -275,7 +275,7 @@ pub fn update_gc_settings_tx(
     gc_interval_seconds: i64,
     gc_lightweight_interval_seconds: i64,
     cache_max_duration_seconds: i64,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     conn.execute(
         "UPDATE zen_endpoints SET
             gc_interval_seconds = ?,
@@ -299,7 +299,7 @@ pub fn update_gc_settings(
     gc_interval_seconds: i64,
     gc_lightweight_interval_seconds: i64,
     cache_max_duration_seconds: i64,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     update_gc_settings_tx(
         &conn,
@@ -320,7 +320,7 @@ pub fn update_service_account_tx(
     endpoint_id: i64,
     username: Option<&str>,
     cred_alias: Option<&str>,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     conn.execute(
         "UPDATE zen_endpoints SET
             service_account_username = ?,
@@ -337,7 +337,7 @@ pub fn update_service_account(
     endpoint_id: i64,
     username: Option<&str>,
     cred_alias: Option<&str>,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     update_service_account_tx(&conn, endpoint_id, username, cred_alias)
 }

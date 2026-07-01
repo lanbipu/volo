@@ -1,4 +1,4 @@
-//! `uecm-cli ini <action>` handlers.
+//! `voloctl cache ini <action>` handlers.
 
 use std::collections::HashMap;
 
@@ -17,7 +17,7 @@ use cache_core::data::{
     ini_config_snapshots, ini_findings, machine_ue_installs, machines as data_machines,
     project_locations, scan_runs, IniFinding,
 };
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -41,10 +41,10 @@ fn redact_in_string(msg: String, value: &str) -> String {
     }
 }
 
-fn redact_error(e: UecmError, value: &str) -> UecmError {
+fn redact_error(e: VoloError, value: &str) -> VoloError {
     match e {
-        UecmError::PowerShell(msg) => UecmError::PowerShell(redact_in_string(msg, value)),
-        UecmError::OperationFailed(msg) => UecmError::OperationFailed(redact_in_string(msg, value)),
+        VoloError::PowerShell(msg) => VoloError::PowerShell(redact_in_string(msg, value)),
+        VoloError::OperationFailed(msg) => VoloError::OperationFailed(redact_in_string(msg, value)),
         other => other,
     }
 }
@@ -57,7 +57,7 @@ struct IniReadOut<'a> {
     keys: Vec<ini_editor::IniKey>,
 }
 
-pub fn handle(ctx: &mut Ctx<'_>, action: IniAction) -> UecmResult<()> {
+pub fn handle(ctx: &mut Ctx<'_>, action: IniAction) -> VoloResult<()> {
     match action {
         IniAction::Read { host, file, section, cred } => {
             read(ctx, &host, &file, &section, &cred)
@@ -138,7 +138,7 @@ pub fn handle(ctx: &mut Ctx<'_>, action: IniAction) -> UecmResult<()> {
             let db = ctx.require_db()?;
             cred.preflight(db)?;
             let finding = ini_findings::find_by_id(db, finding_id)?.ok_or_else(|| {
-                UecmError::InvalidInput(format!("finding id={} not found", finding_id))
+                VoloError::InvalidInput(format!("finding id={} not found", finding_id))
             })?;
             if outcome == Outcome::DryRun {
                 // Mirror `core::ini_apply::apply` validation so dry-run can
@@ -146,19 +146,19 @@ pub fn handle(ctx: &mut Ctx<'_>, action: IniAction) -> UecmResult<()> {
                 // execute. Manual / incomplete findings must reject in both
                 // paths to keep automation honest.
                 if finding.section.as_deref().is_none() {
-                    return Err(UecmError::InvalidInput(
+                    return Err(VoloError::InvalidInput(
                         "finding has no section".into(),
                     ));
                 }
                 match finding.recommended_action.as_str() {
                     "set" => {
                         if finding.key_name.is_none() {
-                            return Err(UecmError::InvalidInput(
+                            return Err(VoloError::InvalidInput(
                                 "finding has no key_name".into(),
                             ));
                         }
                         if finding.recommended_value.is_none() {
-                            return Err(UecmError::InvalidInput(
+                            return Err(VoloError::InvalidInput(
                                 "finding has no recommended_value".into(),
                             ));
                         }
@@ -166,19 +166,19 @@ pub fn handle(ctx: &mut Ctx<'_>, action: IniAction) -> UecmResult<()> {
                     "remove" => {
                         // R002 reads keys from snippet_before; others require key_name.
                         if finding.rule_id != "R002" && finding.key_name.is_none() {
-                            return Err(UecmError::InvalidInput(
+                            return Err(VoloError::InvalidInput(
                                 "remove needs key_name".into(),
                             ));
                         }
                     }
                     "manual" => {
-                        return Err(UecmError::InvalidInput(
+                        return Err(VoloError::InvalidInput(
                             "manual findings cannot be auto-applied; open the file directly"
                                 .into(),
                         ));
                     }
                     other => {
-                        return Err(UecmError::InvalidInput(format!(
+                        return Err(VoloError::InvalidInput(format!(
                             "unknown action: {}",
                             other
                         )));
@@ -349,7 +349,7 @@ fn read(
     file: &str,
     section: &str,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?;
     cred.preflight(db)?;
     let keys = ini_editor::read_section(host, file, section)?;
@@ -367,7 +367,7 @@ fn set_single(
     key: &str,
     value: &str,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?;
     cred.preflight(db)?;
     let res = ini_editor::set_key(host, file, section, key, value);
@@ -395,7 +395,7 @@ fn set_batch(
     key: &str,
     value: &str,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?;
     cred.preflight(db)?;
     let total = hosts.len() as i64;
@@ -462,7 +462,7 @@ fn set_batch(
         })
         .ok();
     if fail_count > 0 {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "{}/{} hosts failed ini set",
             fail_count, total
         )));
@@ -477,7 +477,7 @@ fn remove_single(
     section: &str,
     key: &str,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?;
     cred.preflight(db)?;
     ini_editor::remove_key(host, file, section, key)?;
@@ -502,7 +502,7 @@ fn remove_batch(
     section: &str,
     key: &str,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?;
     cred.preflight(db)?;
     let total = hosts.len() as i64;
@@ -565,7 +565,7 @@ fn remove_batch(
         })
         .ok();
     if fail_count > 0 {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "{}/{} hosts failed ini remove",
             fail_count, total
         )));
@@ -590,7 +590,7 @@ pub(crate) fn scan_dispatch(
     project_id: Option<i64>,
     machine_id: Option<i64>,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     match project_id {
         None => scan_cluster(ctx, &machine_ids, HashMap::new(), "ini", None, cred),
         Some(pid) => {
@@ -601,7 +601,7 @@ pub(crate) fn scan_dispatch(
                     locs.retain(|l| l.machine_id == only);
                 }
                 if locs.is_empty() {
-                    return Err(UecmError::InvalidInput(format!(
+                    return Err(VoloError::InvalidInput(format!(
                         "project {} has no locations (run `project discover` first)",
                         pid
                     )));
@@ -710,9 +710,9 @@ fn scan_cluster(
     scan_type: &str,
     project_id: Option<i64>,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     if machine_ids.is_empty() {
-        return Err(UecmError::InvalidInput("--machine-ids must not be empty".into()));
+        return Err(VoloError::InvalidInput("--machine-ids must not be empty".into()));
     }
     // Clone the Arc<Mutex<>> so we can hold a Db handle independently of the
     // ctx borrow, allowing interleaved db ops and ctx.emitter calls.
@@ -753,9 +753,9 @@ fn scan_cluster(
 
         // All DB operations in a scoped block so the borrow ends before
         // ctx.emitter is borrowed mutably below.
-        let machine_result: UecmResult<(i64, i64, i64, i64, usize, Vec<String>, Vec<String>)> = {
+        let machine_result: VoloResult<(i64, i64, i64, i64, usize, Vec<String>, Vec<String>)> = {
             let machine = data_machines::find_by_id(&db, mid)?
-                .ok_or_else(|| UecmError::InvalidInput(format!("machine {} not found", mid)))?;
+                .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", mid)))?;
             let installs_rows = machine_ue_installs::list_for_machine(&db, mid)?;
             let installs: Vec<(String, String)> = installs_rows
                 .into_iter()
@@ -943,14 +943,14 @@ fn scan_cluster(
     Ok(())
 }
 
-fn list_runs(ctx: &mut Ctx<'_>, limit: i64) -> UecmResult<()> {
+fn list_runs(ctx: &mut Ctx<'_>, limit: i64) -> VoloResult<()> {
     let db = ctx.require_db()?;
     let runs = scan_runs::list_recent_types(db, &["ini", "ini_project"], limit)?;
     ctx.emitter.emit_result(&runs).ok();
     Ok(())
 }
 
-fn config(ctx: &mut Ctx<'_>, scan_run_id: i64, domain: Option<&str>) -> UecmResult<()> {
+fn config(ctx: &mut Ctx<'_>, scan_run_id: i64, domain: Option<&str>) -> VoloResult<()> {
     let db = ctx.require_db()?;
     let rows = match domain {
         Some(d) => ini_config_snapshots::list_for_run_domain(db, scan_run_id, d)?,
@@ -981,7 +981,7 @@ fn list_findings(
     ctx: &mut Ctx<'_>,
     scan_run_id: i64,
     severity: Option<&str>,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?;
     let mut findings = ini_findings::list_for_run(db, scan_run_id)?;
     if let Some(sev) = severity {
@@ -995,7 +995,7 @@ fn list_findings(
     Ok(())
 }
 
-fn get_finding(ctx: &mut Ctx<'_>, finding_id: i64) -> UecmResult<()> {
+fn get_finding(ctx: &mut Ctx<'_>, finding_id: i64) -> VoloResult<()> {
     let db = ctx.require_db()?;
     let finding = ini_findings::find_by_id(db, finding_id)?;
     ctx.emitter.emit_result(&finding).ok();
@@ -1006,14 +1006,14 @@ fn apply_finding(
     ctx: &mut Ctx<'_>,
     finding_id: i64,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?;
     cred.preflight(db)?;
     let f = ini_findings::find_by_id(db, finding_id)?
-        .ok_or_else(|| UecmError::InvalidInput(format!("finding {} not found", finding_id)))?;
+        .ok_or_else(|| VoloError::InvalidInput(format!("finding {} not found", finding_id)))?;
     let machine = data_machines::find_by_id(db, f.machine_id)?
         .ok_or_else(|| {
-            UecmError::InvalidInput(format!("machine {} not found", f.machine_id))
+            VoloError::InvalidInput(format!("machine {} not found", f.machine_id))
         })?;
     let apply_ctx = ApplyContext { host: &machine.ip };
     let backup = ini_apply::apply(&apply_ctx, &f)?;
@@ -1030,7 +1030,7 @@ fn apply_finding(
     Ok(())
 }
 
-fn skip_finding(ctx: &mut Ctx<'_>, finding_id: i64) -> UecmResult<()> {
+fn skip_finding(ctx: &mut Ctx<'_>, finding_id: i64) -> VoloResult<()> {
     let db = ctx.require_db()?;
     ini_findings::mark_skipped(db, finding_id)?;
     ctx.emitter
@@ -1223,7 +1223,7 @@ mod tests {
         let mut ctx = make_ctx(&mut buf, &db);
         let cred = CredentialArgs { cred_alias: None, user: None, pass: None, pass_stdin: false };
         let err = scan_dispatch(&mut ctx, vec![], Some(pid), None, &cred).unwrap_err();
-        assert!(matches!(err, UecmError::InvalidInput(_)));
+        assert!(matches!(err, VoloError::InvalidInput(_)));
     }
 
     #[cfg(not(windows))]

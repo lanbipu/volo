@@ -1,4 +1,4 @@
-//! `uecm-cli ssh <action>` handlers — SSH transport onboarding + probe.
+//! `voloctl cache ssh <action>` handlers — SSH transport onboarding + probe.
 //! Replaces the retired `winrm` command domain (`probe` from P1, `package-bootstrap`
 //! from P5a). `ssh authorize` is deferred (see args.rs SshAction TODO).
 
@@ -8,7 +8,7 @@ use crate::EmitSerialize;
 use cache_core::core::keystore::KeyStore;
 use cache_core::core::powershell;
 use cache_core::core::ssh::{RemoteExecutor, SshExecutor};
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 
 /// Top-level result object — mirrors `winrm probe`'s `ProbeOut` shape so CLI /
 /// JSON automation that parsed `{host, ok, message, latency_ms}` from
@@ -29,7 +29,7 @@ struct PackageOut {
     files: Vec<String>,
 }
 
-pub fn handle(ctx: &mut Ctx<'_>, action: SshAction) -> UecmResult<()> {
+pub fn handle(ctx: &mut Ctx<'_>, action: SshAction) -> VoloResult<()> {
     match action {
         SshAction::Probe { host } => probe(ctx, &host),
         SshAction::PackageBootstrap { out, local_admin_password } => {
@@ -46,7 +46,7 @@ fn package_bootstrap(
     ctx: &mut Ctx<'_>,
     out: &str,
     local_admin_password: Option<&str>,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let cfg = cache_core::startup::resolve_config_dir()?;
     let ks = KeyStore::at(&cfg);
     ks.ensure_keypair()?;
@@ -60,7 +60,7 @@ fn package_bootstrap(
     let res: PackageOut =
         powershell::run_json(&powershell::script_path("package-bootstrap.ps1"), &args)?;
     if !res.ok {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "package-bootstrap failed for {}",
             res.output_directory
         )));
@@ -74,13 +74,13 @@ fn package_bootstrap(
     Ok(())
 }
 
-fn probe(ctx: &mut Ctx<'_>, host: &str) -> UecmResult<()> {
+fn probe(ctx: &mut Ctx<'_>, host: &str) -> VoloResult<()> {
     let exec = SshExecutor::from_config()?;
     let result = exec.probe(host, None)?;
     if !result.ok {
         // Failure: let run()'s dispatcher emit a single `error` event (one value
         // per invocation), same as winrm probe.
-        return Err(UecmError::SshConnect(format!(
+        return Err(VoloError::SshConnect(format!(
             "ssh probe of {} reported failure: {}",
             host, result.message
         )));

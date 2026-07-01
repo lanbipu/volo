@@ -1,4 +1,4 @@
-//! `uecm-cli pso <action>` handlers.
+//! `voloctl cache pso <action>` handlers.
 //!
 //! verify     — check R008-R010 PSO precaching CVars in project ConsoleVariables.ini.
 //!              Delegates to `domain_ini::scan_dispatch` (same real-scan path as
@@ -22,9 +22,9 @@ use cache_core::core::{
     ue_runner::{UeRunnerBackend, UeRunnerEvent},
 };
 use cache_core::data::{machines as data_machines, project_locations, pso_cache_files};
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 
-pub fn handle(ctx: &mut Ctx<'_>, action: PsoAction) -> UecmResult<()> {
+pub fn handle(ctx: &mut Ctx<'_>, action: PsoAction) -> VoloResult<()> {
     match action {
         PsoAction::Verify { project_id, cred } => {
             crate::domain_ini::scan_dispatch(ctx, vec![], Some(project_id), None, &cred)
@@ -55,22 +55,22 @@ pub fn handle(ctx: &mut Ctx<'_>, action: PsoAction) -> UecmResult<()> {
 
 // ─── collect ──────────────────────────────────────────────────────────────────
 
-fn parse_resolution(resolution: &str) -> UecmResult<(u32, u32)> {
+fn parse_resolution(resolution: &str) -> VoloResult<(u32, u32)> {
     let parts: Vec<&str> = resolution.splitn(2, 'x').collect();
     if parts.len() != 2 {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "resolution must be WxH (e.g. 1920x1080), got: {}",
             resolution
         )));
     }
     let w = parts[0].parse::<u32>().map_err(|_| {
-        UecmError::InvalidInput(format!("invalid width in resolution: {}", parts[0]))
+        VoloError::InvalidInput(format!("invalid width in resolution: {}", parts[0]))
     })?;
     let h = parts[1].parse::<u32>().map_err(|_| {
-        UecmError::InvalidInput(format!("invalid height in resolution: {}", parts[1]))
+        VoloError::InvalidInput(format!("invalid height in resolution: {}", parts[1]))
     })?;
     if w == 0 || h == 0 {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "resolution width and height must be > 0".into(),
         ));
     }
@@ -85,16 +85,16 @@ fn collect(
     windowed: bool,
     max_minutes: u32,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?;
 
     let machine = data_machines::find_by_id(db, source_machine_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("machine {} not found", source_machine_id))
+        VoloError::InvalidInput(format!("machine {} not found", source_machine_id))
     })?;
     let location =
         project_locations::get_for_project_machine(db, project_id, source_machine_id)?
             .ok_or_else(|| {
-                UecmError::InvalidInput(format!(
+                VoloError::InvalidInput(format!(
                     "project {} not located on machine {}",
                     project_id, source_machine_id
                 ))
@@ -126,7 +126,7 @@ fn collect(
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|e| UecmError::OperationFailed(format!("tokio runtime: {}", e)))?;
+        .map_err(|e| VoloError::OperationFailed(format!("tokio runtime: {}", e)))?;
 
     // Capture data needed for post-completion finalization before moving into async block.
     let source_machine_ip = machine.ip.clone();
@@ -212,10 +212,10 @@ fn collect(
                             reason: "external".into(),
                         })
                         .ok();
-                    return Ok::<_, UecmError>(());
+                    return Ok::<_, VoloError>(());
                 }
                 UeRunnerEvent::Error { message } => {
-                    return Err(UecmError::OperationFailed(format!(
+                    return Err(VoloError::OperationFailed(format!(
                         "ue runner: {}",
                         message
                     )));
@@ -233,7 +233,7 @@ fn collect(
                 op_user.as_deref(),
                 op_pass.as_deref(),
             )
-            .map_err(|e| UecmError::OperationFailed(format!("enumerate_remote: {}", e)))?;
+            .map_err(|e| VoloError::OperationFailed(format!("enumerate_remote: {}", e)))?;
 
             let ids = pso_collect::finalize_persist(
                 &db_clone,
@@ -242,7 +242,7 @@ fn collect(
                 spec.ue_version.as_deref(),
                 &files,
             )
-            .map_err(|e| UecmError::OperationFailed(format!("finalize_persist: {}", e)))?;
+            .map_err(|e| VoloError::OperationFailed(format!("finalize_persist: {}", e)))?;
 
             ctx.emitter
                 .emit_event(&Event::Completed {
@@ -256,7 +256,7 @@ fn collect(
                 .ok();
         }
 
-        Ok::<_, UecmError>(())
+        Ok::<_, VoloError>(())
     })?;
 
     Ok(())
@@ -264,7 +264,7 @@ fn collect(
 
 // ─── list ─────────────────────────────────────────────────────────────────────
 
-fn list(ctx: &mut Ctx<'_>, project_id: i64) -> UecmResult<()> {
+fn list(ctx: &mut Ctx<'_>, project_id: i64) -> VoloResult<()> {
     let db = ctx.require_db()?;
     let files = pso_cache_files::list_by_project(db, project_id)?;
     ctx.emitter.emit_result(&files).ok();
@@ -281,11 +281,11 @@ fn distribute(
     dry_run: bool,
     source_smb_cred_alias: Option<&str>,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?;
 
     let source_machine = data_machines::find_by_id(db, source_machine_id)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("machine {} not found", source_machine_id))
+        VoloError::InvalidInput(format!("machine {} not found", source_machine_id))
     })?;
 
     // Dry-run resolves the same share/UNC + validation but skips the secret
@@ -305,7 +305,7 @@ fn distribute(
         .filter(|f| f.source_machine_id == source_machine_id)
         .next()
         .ok_or_else(|| {
-            UecmError::InvalidInput(format!(
+            VoloError::InvalidInput(format!(
                 "no PSO cache file found for project {} on machine {}; run `pso collect` first",
                 project_id, source_machine_id
             ))
@@ -322,7 +322,7 @@ fn distribute(
     )?;
 
     if plan.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "distribution plan has no non-source targets".into(),
         ));
     }
@@ -355,7 +355,7 @@ fn distribute(
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|e| UecmError::OperationFailed(format!("tokio runtime: {}", e)))?;
+        .map_err(|e| VoloError::OperationFailed(format!("tokio runtime: {}", e)))?;
 
     rt.block_on(async {
         for (idx, item) in plan.into_iter().enumerate() {
@@ -379,7 +379,7 @@ fn distribute(
                         message: Some(format!("gpu mismatch preflight: {}", e)),
                     })
                     .ok();
-                return Err(UecmError::OperationFailed(format!(
+                return Err(VoloError::OperationFailed(format!(
                     "preflight failed for machine {}: {}",
                     item.target_machine_id, e
                 )));
@@ -403,7 +403,7 @@ fn distribute(
                         })
                         .ok();
                     if !out.ok {
-                        return Err(UecmError::OperationFailed(format!(
+                        return Err(VoloError::OperationFailed(format!(
                             "robocopy exit {} on machine {}",
                             out.exit_code, out.target_machine_id
                         )));
@@ -422,7 +422,7 @@ fn distribute(
                 }
             }
         }
-        Ok::<_, UecmError>(())
+        Ok::<_, VoloError>(())
     })?;
 
     ctx.emitter
@@ -439,7 +439,7 @@ fn distribute(
 fn resolve_creds(
     db: &cache_core::data::Db,
     cred: &CredentialArgs,
-) -> UecmResult<(Option<String>, Option<String>)> {
+) -> VoloResult<(Option<String>, Option<String>)> {
     // SSH key auth: pso operations take no operator credential. preflight
     // validates --cred-alias / flag combo without reading DPAPI or stdin for a
     // credential that would only be discarded.
@@ -447,10 +447,10 @@ fn resolve_creds(
     Ok((None, None))
 }
 
-fn resolve_engine_path(db: &cache_core::data::Db, machine_id: i64) -> UecmResult<String> {
+fn resolve_engine_path(db: &cache_core::data::Db, machine_id: i64) -> VoloResult<String> {
     let installs = cache_core::data::machine_ue_installs::list_for_machine(db, machine_id)?;
     if installs.is_empty() {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "machine {} has no detected UE installs",
             machine_id
         )));

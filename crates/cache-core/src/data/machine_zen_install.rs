@@ -1,7 +1,7 @@
 //! CRUD for the `machine_zen_install` table (one row per machine).
 
 use crate::data::Db;
-use crate::error::UecmResult;
+use crate::error::VoloResult;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
@@ -18,7 +18,7 @@ pub struct MachineZenInstall {
     pub last_detected_at: Option<String>,
 }
 
-pub fn upsert(db: &Db, row: &MachineZenInstall) -> UecmResult<()> {
+pub fn upsert(db: &Db, row: &MachineZenInstall) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     conn.execute(
         "INSERT INTO machine_zen_install (
@@ -51,7 +51,7 @@ pub fn upsert(db: &Db, row: &MachineZenInstall) -> UecmResult<()> {
     Ok(())
 }
 
-pub fn list(db: &Db) -> UecmResult<Vec<MachineZenInstall>> {
+pub fn list(db: &Db) -> VoloResult<Vec<MachineZenInstall>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT machine_id, install_dir,
@@ -69,7 +69,7 @@ pub fn list(db: &Db) -> UecmResult<Vec<MachineZenInstall>> {
     Ok(out)
 }
 
-pub fn find(db: &Db, machine_id: i64) -> UecmResult<Option<MachineZenInstall>> {
+pub fn find(db: &Db, machine_id: i64) -> VoloResult<Option<MachineZenInstall>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT machine_id, install_dir,
@@ -89,7 +89,7 @@ pub fn find(db: &Db, machine_id: i64) -> UecmResult<Option<MachineZenInstall>> {
 /// Returns true when a row was deleted, false when none existed for this
 /// machine. Callers use the bool to decide whether to log "cleared stale
 /// state" vs no-op (T1.6 install-uninstalled handling).
-pub fn delete(db: &Db, machine_id: i64) -> UecmResult<bool> {
+pub fn delete(db: &Db, machine_id: i64) -> VoloResult<bool> {
     let conn = db.lock().unwrap();
     let rows = conn.execute(
         "DELETE FROM machine_zen_install WHERE machine_id = ?",

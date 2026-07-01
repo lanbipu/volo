@@ -5,11 +5,11 @@
 use cache_core::core::credentials as core_creds;
 use cache_core::core::secrets::SecretStore;
 use cache_core::data::{credentials as data_creds, CredentialKind, CredentialRecord, Db};
-use cache_core::error::UecmResult;
+use cache_core::error::VoloResult;
 use tauri::State;
 
 #[tauri::command]
-pub fn list_credentials(db: State<'_, Db>) -> UecmResult<Vec<CredentialRecord>> {
+pub fn list_credentials(db: State<'_, Db>) -> VoloResult<Vec<CredentialRecord>> {
     data_creds::list_all(&db)
 }
 
@@ -20,7 +20,7 @@ pub fn save_credential(
     kind: CredentialKind,
     username: String,
     password: String,
-) -> UecmResult<i64> {
+) -> VoloResult<i64> {
     let username = core_creds::normalize_username_for_storage(&username);
 
     // Store the secret in the cross-platform SecretStore (AES-GCM), replacing the
@@ -42,7 +42,7 @@ pub fn save_credential(
 }
 
 #[tauri::command]
-pub fn delete_credential(db: State<'_, Db>, alias: String) -> UecmResult<()> {
+pub fn delete_credential(db: State<'_, Db>, alias: String) -> VoloResult<()> {
     // SQLite metadata is the UI source of truth — always clear it.
     data_creds::delete_by_alias(&db, &alias)?;
 

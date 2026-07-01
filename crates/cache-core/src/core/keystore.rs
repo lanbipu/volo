@@ -1,8 +1,8 @@
-//! UECM 专用 SSH 传输密钥。靠 shell out `ssh-keygen` 生成 ed25519 keypair
+//! Volo 专用 SSH 传输密钥。靠 shell out `ssh-keygen` 生成 ed25519 keypair
 //! （ssh-keygen 与系统 ssh 一起安装，Mac/Windows 都有），不引入 crypto crate。
 //! 私钥 / 公钥 / known_hosts 都落在应用配置目录（见 `startup::resolve_config_dir`）。
 
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -34,7 +34,7 @@ impl KeyStore {
     /// （上次 ssh-keygen 写完私钥后中断、或 .pub 被删）时，从私钥重导出公钥，
     /// 而不是误判“已存在”导致后续 `public_key()` 失败；都缺则全新生成。
     /// 可在每次启动时无脑调用。
-    pub fn ensure_keypair(&self) -> UecmResult<()> {
+    pub fn ensure_keypair(&self) -> VoloResult<()> {
         let key = self.private_key_path();
         let pubkey = self.public_key_path();
         if key.exists() && pubkey.exists() {
@@ -50,10 +50,10 @@ impl KeyStore {
                 .arg(&key)
                 .output()
                 .map_err(|e| {
-                    UecmError::Configuration(format!("spawn ssh-keygen -y failed: {e}"))
+                    VoloError::Configuration(format!("spawn ssh-keygen -y failed: {e}"))
                 })?;
             if !out.status.success() {
-                return Err(UecmError::Configuration(format!(
+                return Err(VoloError::Configuration(format!(
                     "ssh-keygen -y failed: {}",
                     String::from_utf8_lossy(&out.stderr)
                 )));
@@ -72,12 +72,12 @@ impl KeyStore {
             .arg("-N")
             .arg("") // 空 passphrase
             .arg("-C")
-            .arg("uecm")
+            .arg("volo")
             .arg("-q")
             .output()
-            .map_err(|e| UecmError::Configuration(format!("spawn ssh-keygen failed: {e}")))?;
+            .map_err(|e| VoloError::Configuration(format!("spawn ssh-keygen failed: {e}")))?;
         if !out.status.success() {
-            return Err(UecmError::Configuration(format!(
+            return Err(VoloError::Configuration(format!(
                 "ssh-keygen failed: {}",
                 String::from_utf8_lossy(&out.stderr)
             )));
@@ -85,9 +85,9 @@ impl KeyStore {
         Ok(())
     }
 
-    /// 读取并返回公钥串（含算法前缀，如 `ssh-ed25519 AAAA... uecm`），
+    /// 读取并返回公钥串（含算法前缀，如 `ssh-ed25519 AAAA... volo`），
     /// 供 bootstrap 包 / UI 复制到节点 `administrators_authorized_keys`。
-    pub fn public_key(&self) -> UecmResult<String> {
+    pub fn public_key(&self) -> VoloResult<String> {
         let s = std::fs::read_to_string(self.public_key_path())?;
         Ok(s.trim().to_string())
     }

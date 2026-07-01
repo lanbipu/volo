@@ -1,12 +1,12 @@
 //! Minimal job history helpers backed by the `operations` table.
 
 use crate::data::Db;
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use rusqlite::params;
 
-pub fn start(db: &Db, action_type: &str, target_machines: &[i64]) -> UecmResult<i64> {
+pub fn start(db: &Db, action_type: &str, target_machines: &[i64]) -> VoloResult<i64> {
     let target_json = serde_json::to_string(target_machines).map_err(|e| {
-        UecmError::OperationFailed(format!("serialize target_machines: {}", e))
+        VoloError::OperationFailed(format!("serialize target_machines: {}", e))
     })?;
     let conn = db.lock().unwrap();
     conn.execute(
@@ -17,7 +17,7 @@ pub fn start(db: &Db, action_type: &str, target_machines: &[i64]) -> UecmResult<
     Ok(conn.last_insert_rowid())
 }
 
-pub fn finish(db: &Db, id: i64, status: &str, log_text: Option<&str>) -> UecmResult<()> {
+pub fn finish(db: &Db, id: i64, status: &str, log_text: Option<&str>) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     conn.execute(
         "UPDATE operations
@@ -35,10 +35,10 @@ pub fn finish(db: &Db, id: i64, status: &str, log_text: Option<&str>) -> UecmRes
 /// makes the operator's "what's in flight" view useless.
 ///
 /// Plan 7 §8 M5 T5.3: the threshold is **1 hour** (3600s). Operations that
-/// genuinely run longer than an hour are rare in UECM (DDC pak distribute
+/// genuinely run longer than an hour are rare in Volo (DDC pak distribute
 /// caps under 30 minutes in practice); anything older is almost certainly
 /// stale. Returns the number of rows updated.
-pub fn sweep_running(db: &Db, older_than_seconds: i64) -> UecmResult<i64> {
+pub fn sweep_running(db: &Db, older_than_seconds: i64) -> VoloResult<i64> {
     let conn = db.lock().unwrap();
     let changed = conn.execute(
         "UPDATE operations

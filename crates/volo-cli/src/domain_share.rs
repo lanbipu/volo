@@ -1,4 +1,4 @@
-//! `uecm-cli share <action>` handlers.
+//! `voloctl cache share <action>` handlers.
 
 use crate::args::ShareAction;
 use crate::credential_args::CredentialArgs;
@@ -6,9 +6,9 @@ use crate::destructive::{self, Outcome};
 use crate::output::{EmitSerialize, Event};
 use crate::run::Ctx;
 use cache_core::data::share_configs::{self as data_shares, ShareMode};
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 
-pub fn handle(ctx: &mut Ctx<'_>, action: ShareAction) -> UecmResult<()> {
+pub fn handle(ctx: &mut Ctx<'_>, action: ShareAction) -> VoloResult<()> {
     match action {
         ShareAction::List => list(ctx),
         ShareAction::Forget { id, yes, dry_run } => forget(ctx, id, yes, dry_run),
@@ -22,7 +22,7 @@ pub fn handle(ctx: &mut Ctx<'_>, action: ShareAction) -> UecmResult<()> {
                 "a" | "A" => "open (Mode A, Guest+Everyone)",
                 "b" | "B" => "managed (Mode B, dedicated ddc-svc)",
                 other => {
-                    return Err(UecmError::InvalidInput(format!(
+                    return Err(VoloError::InvalidInput(format!(
                         "unknown share mode '{}'; expected 'a' or 'b'",
                         other
                     )));
@@ -37,7 +37,7 @@ pub fn handle(ctx: &mut Ctx<'_>, action: ShareAction) -> UecmResult<()> {
                     .ok()
                     .is_some_and(|rows| rows.iter().any(|m| m.hostname == host));
             if !host_found {
-                return Err(UecmError::InvalidInput(format!(
+                return Err(VoloError::InvalidInput(format!(
                     "host '{}' is not in the machine inventory; run `machine add` first",
                     host
                 )));
@@ -69,7 +69,7 @@ pub fn handle(ctx: &mut Ctx<'_>, action: ShareAction) -> UecmResult<()> {
                 // that here would read secret material unnecessarily.
                 let alias_present = find_managed_share_for_target(db, &target_host).is_ok();
                 if !alias_present {
-                    return Err(UecmError::InvalidInput(format!(
+                    return Err(VoloError::InvalidInput(format!(
                         "no Mode B share found for host '{}'; create one via `share create --mode b` first",
                         target_host
                     )));
@@ -90,14 +90,14 @@ pub fn handle(ctx: &mut Ctx<'_>, action: ShareAction) -> UecmResult<()> {
     }
 }
 
-fn list(ctx: &mut Ctx<'_>) -> UecmResult<()> {
+fn list(ctx: &mut Ctx<'_>) -> VoloResult<()> {
     let db = ctx.require_db()?;
     let rows = data_shares::list_all(db)?;
     ctx.emitter.emit_result(&rows).ok();
     Ok(())
 }
 
-fn forget(ctx: &mut Ctx<'_>, id: i64, yes: bool, dry_run: bool) -> UecmResult<()> {
+fn forget(ctx: &mut Ctx<'_>, id: i64, yes: bool, dry_run: bool) -> VoloResult<()> {
     let outcome = destructive::check(yes, dry_run, "share.forget")?;
     let db = ctx.require_db()?;
     // Mirror `machine delete` / `project delete`: refuse to pretend success
@@ -106,7 +106,7 @@ fn forget(ctx: &mut Ctx<'_>, id: i64, yes: bool, dry_run: bool) -> UecmResult<()
         .into_iter()
         .find(|s| s.id == Some(id))
         .ok_or_else(|| {
-            UecmError::InvalidInput(format!("share id={} not found in local inventory", id))
+            VoloError::InvalidInput(format!("share id={} not found in local inventory", id))
         })?;
     if outcome == Outcome::DryRun {
         destructive::emit_plan(
@@ -141,7 +141,7 @@ fn create(
     share: &str,
     local_path: &str,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     use cache_core::core::shares;
 
     let db = ctx.require_db()?;
@@ -176,7 +176,7 @@ fn create(
             (r, ShareMode::Managed, Some(svc_alias))
         }
         other => {
-            return Err(UecmError::InvalidInput(format!(
+            return Err(VoloError::InvalidInput(format!(
                 "unknown share mode '{}'; expected 'a' or 'b'",
                 other
             )))
@@ -191,7 +191,7 @@ fn create(
             })
         })
         .ok_or_else(|| {
-            UecmError::InvalidInput(format!(
+            VoloError::InvalidInput(format!(
                 "host '{}' is not in the machine inventory; run `machine add` first",
                 host
             ))
@@ -229,7 +229,7 @@ fn inject_system_cred(
     target_host: &str,
     svc_user: &str,
     cred: &CredentialArgs,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     let db = ctx.require_db()?;
     // SSH key auth: share ops take no operator credential (the Mode B svc password
     // is read from the SecretStore separately). preflight validates flags without
@@ -273,7 +273,7 @@ fn inject_system_cred(
 fn find_managed_share_for_target(
     db: &cache_core::data::Db,
     target_host: &str,
-) -> UecmResult<data_shares::ShareConfig> {
+) -> VoloResult<data_shares::ShareConfig> {
     use cache_core::core::shares;
     for share in data_shares::list_all(db)? {
         if share.mode != ShareMode::Managed {
@@ -288,7 +288,7 @@ fn find_managed_share_for_target(
             }
         }
     }
-    Err(UecmError::InvalidInput(format!(
+    Err(VoloError::InvalidInput(format!(
         "no Mode B share found for host '{target_host}'; create one via `share create --mode b` first"
     )))
 }
@@ -298,15 +298,15 @@ fn find_share_svc_password(
     db: &cache_core::data::Db,
     target_host: &str,
     _svc_user: &str,
-) -> UecmResult<String> {
+) -> VoloResult<String> {
     let share = find_managed_share_for_target(db, target_host)?;
     let alias = share.credential_alias.ok_or_else(|| {
-        UecmError::InvalidInput(format!(
+        VoloError::InvalidInput(format!(
             "managed share for host '{target_host}' has no credential_alias"
         ))
     })?;
     cache_core::core::secrets::get_share_secret_migrating(&alias)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!(
+        VoloError::InvalidInput(format!(
             "no stored svc password for alias '{}'. The share may have been created \
              outside this CLI; re-create it via `share create --mode b`.",
             alias
@@ -347,7 +347,7 @@ mod tests {
         let db = fresh_db();
         let mut buf: Vec<u8> = Vec::new();
         let mut ctx = make_ctx(&mut buf, &db);
-        assert!(matches!(forget(&mut ctx, 1, false, false), Err(UecmError::InvalidInput(_))));
+        assert!(matches!(forget(&mut ctx, 1, false, false), Err(VoloError::InvalidInput(_))));
     }
 
     #[cfg(not(windows))]
@@ -358,7 +358,7 @@ mod tests {
         let mut ctx = make_ctx(&mut buf, &db);
         let cred = CredentialArgs { cred_alias: None, user: None, pass: None, pass_stdin: false };
         let r = create(&mut ctx, "z", "host", "share", "C:\\path", &cred);
-        assert!(matches!(r, Err(UecmError::InvalidInput(_))));
+        assert!(matches!(r, Err(VoloError::InvalidInput(_))));
     }
 
     #[test]
@@ -381,6 +381,6 @@ mod tests {
         let mut ctx = make_ctx(&mut buf, &db);
         let cred = CredentialArgs { cred_alias: None, user: None, pass: None, pass_stdin: false };
         let r = inject_system_cred(&mut ctx, "client", "192.0.2.2", "ddc-svc", &cred);
-        assert!(matches!(r, Err(UecmError::InvalidInput(_))));
+        assert!(matches!(r, Err(VoloError::InvalidInput(_))));
     }
 }

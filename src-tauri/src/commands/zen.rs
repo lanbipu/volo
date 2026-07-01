@@ -1,6 +1,6 @@
 //! Tauri command wrappers for Plan 7 zen integration (T1.10).
 //!
-//! These commands mirror the 9 `uecm-cli zen ...` subcommands landed in T1.9
+//! These commands mirror the 9 `voloctl cache zen ...` subcommands landed in T1.9
 //! (see `cli::domain_zen`). The hard rule per plan §3 is "business logic lives
 //! in core/zen/" — every command here is a thin parameter-translation +
 //! result-passthrough wrapper around the existing `core::zen::*` modules and
@@ -21,7 +21,7 @@
 //! - `confirmed: bool` — UI must prompt and pass `true` to actually run the
 //!   destructive side-effect. Maps to CLI `--yes`. If both `confirmed` and
 //!   `dry_run` are false on a destructive command, the wrapper returns
-//!   `UecmError::InvalidInput("... requires confirmed=true or dry_run=true ...")`
+//!   `VoloError::InvalidInput("... requires confirmed=true or dry_run=true ...")`
 //!   so accidental clicks can't fire write-side effects.
 //! - `dry_run: bool` — when true, the wrapper assembles the same plan payload
 //!   the CLI would emit under `--dry-run` (no PowerShell invocation, no
@@ -42,7 +42,7 @@ use cache_core::data::{
     credentials as data_creds, machines, operations, zen_binary_expected, zen_endpoints,
     zen_probes, Db, ZenBinaryExpected, ZenEndpoint,
 };
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tauri::State;
@@ -80,7 +80,7 @@ pub struct ZenStatusRow {
 }
 
 #[tauri::command]
-pub fn zen_status(db: State<'_, Db>, machine_id: Option<i64>) -> UecmResult<Vec<ZenStatusRow>> {
+pub fn zen_status(db: State<'_, Db>, machine_id: Option<i64>) -> VoloResult<Vec<ZenStatusRow>> {
     let endpoints = resolve_endpoints(&db, machine_id, None)?;
     let mut rows = Vec::with_capacity(endpoints.len());
     for ep in endpoints {
@@ -160,14 +160,14 @@ pub fn zen_probe(
     machine_id: Option<i64>,
     cred_alias: Option<String>,
     timeout_seconds: Option<u64>,
-) -> UecmResult<ZenProbeReport> {
+) -> VoloResult<ZenProbeReport> {
     if let Some(alias) = &cred_alias {
         // Match the CLI's preflight: a typo'd alias should fail fast rather
         // than silently fall through to anonymous probe. The probe itself
         // doesn't tunnel through WinRM yet (plan §3 reserves --cred for that),
         // so we validate but don't load the password.
         data_creds::find_by_alias(&db, alias)?.ok_or_else(|| {
-            UecmError::InvalidInput(format!("credential alias '{}' not found", alias))
+            VoloError::InvalidInput(format!("credential alias '{}' not found", alias))
         })?;
     }
 
@@ -258,7 +258,7 @@ pub fn zen_cache_stats(
     db: State<'_, Db>,
     endpoint_id: Option<i64>,
     timeout_seconds: Option<u64>,
-) -> UecmResult<ZenCacheStatsReport> {
+) -> VoloResult<ZenCacheStatsReport> {
     let timeout = Duration::from_secs(timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECONDS));
     let endpoints = resolve_endpoints(&db, None, endpoint_id)?;
     let mut samples = Vec::with_capacity(endpoints.len());
@@ -341,7 +341,7 @@ pub fn zen_detect_binary(
     db: State<'_, Db>,
     machine_id: Option<i64>,
     cred_alias: Option<String>,
-) -> UecmResult<ZenDetectBinaryReport> {
+) -> VoloResult<ZenDetectBinaryReport> {
     // The transport is now SSH key auth (uecm-svc), so the operator password
     // is no longer loaded or forwarded — `cred_alias` is therefore optional,
     // matching the CLI's `CredentialArgs` (which accepts no credential). When
@@ -350,14 +350,14 @@ pub fn zen_detect_binary(
     // credential row pass straight through.
     if let Some(alias) = &cred_alias {
         data_creds::find_by_alias(&db, alias)?.ok_or_else(|| {
-            UecmError::InvalidInput(format!("credential alias '{}' not found", alias))
+            VoloError::InvalidInput(format!("credential alias '{}' not found", alias))
         })?;
     }
 
     let target_machines: Vec<cache_core::data::Machine> = match machine_id {
         Some(id) => {
             let m = machines::find_by_id(&db, id)?.ok_or_else(|| {
-                UecmError::InvalidInput(format!("machine id={} not found", id))
+                VoloError::InvalidInput(format!("machine id={} not found", id))
             })?;
             vec![m]
         }
@@ -444,10 +444,10 @@ pub fn zen_detect_binary(
 /// have to check `ok` BEFORE handing the payload to `parse_detection_json`,
 /// otherwise a missing install would look identical to "no install detected"
 /// and `zen_binary::persist` would drop the existing row (T1.6 P2-1 fix).
-fn invoke_detect_binary(host: &str) -> UecmResult<zen_binary::BinaryDetection> {
+fn invoke_detect_binary(host: &str) -> VoloResult<zen_binary::BinaryDetection> {
     let raw = zen_cli_shared::run_node(host, "zen-detect-binary.ps1", serde_json::json!({}))?;
     let envelope: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
-        UecmError::OperationFailed(format!(
+        VoloError::OperationFailed(format!(
             "zen-detect-binary returned non-JSON output: {e}; raw: {}",
             raw.chars().take(200).collect::<String>()
         ))
@@ -457,7 +457,7 @@ fn invoke_detect_binary(host: &str) -> UecmResult<zen_binary::BinaryDetection> {
             .get("message")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown sidecar error");
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "zen-detect-binary on {host} reported failure: {msg}"
         )));
     }
@@ -472,7 +472,7 @@ fn invoke_detect_binary(host: &str) -> UecmResult<zen_binary::BinaryDetection> {
 pub fn zen_list_endpoints(
     db: State<'_, Db>,
     machine_id: Option<i64>,
-) -> UecmResult<Vec<ZenEndpoint>> {
+) -> VoloResult<Vec<ZenEndpoint>> {
     match machine_id {
         Some(id) => zen_endpoints::list_for_machine(&db, id),
         None => zen_endpoints::list(&db),
@@ -488,7 +488,7 @@ pub fn zen_baseline_list(
     db: State<'_, Db>,
     zen_build_version: Option<String>,
     binary_kind: Option<String>,
-) -> UecmResult<Vec<ZenBinaryExpected>> {
+) -> VoloResult<Vec<ZenBinaryExpected>> {
     if let Some(k) = &binary_kind {
         validate_kind(k)?;
     }
@@ -508,10 +508,10 @@ pub fn zen_baseline_lock(
     zen_build_version: String,
     binary_kind: String,
     locked_by: String,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     validate_kind(&binary_kind)?;
     if zen_binary_expected::find(&db, &zen_build_version, &binary_kind)?.is_none() {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "no baseline row for zen_build_version={} kind={}; run detect-binary first",
             zen_build_version, binary_kind
         )));
@@ -524,10 +524,10 @@ pub fn zen_baseline_unlock(
     db: State<'_, Db>,
     zen_build_version: String,
     binary_kind: String,
-) -> UecmResult<()> {
+) -> VoloResult<()> {
     validate_kind(&binary_kind)?;
     if zen_binary_expected::find(&db, &zen_build_version, &binary_kind)?.is_none() {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "no baseline row for zen_build_version={} kind={}",
             zen_build_version, binary_kind
         )));
@@ -594,11 +594,11 @@ pub struct ZenRegisterOutcome {
 }
 
 #[tauri::command]
-pub fn zen_register(db: State<'_, Db>, input: ZenRegisterInput) -> UecmResult<ZenRegisterOutcome> {
+pub fn zen_register(db: State<'_, Db>, input: ZenRegisterInput) -> VoloResult<ZenRegisterOutcome> {
     // Match the CLI's machine-existence pre-check so callers get
     // `InvalidInput` instead of an opaque FK violation.
     if machines::find_by_id(&db, input.machine_id)?.is_none() {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "machine id={} not found",
             input.machine_id
         )));
@@ -626,7 +626,7 @@ pub fn zen_register(db: State<'_, Db>, input: ZenRegisterInput) -> UecmResult<Ze
     // (its fields are authoritative), not the request payload — same behavior
     // as `cli::domain_zen::register`.
     let persisted = zen_endpoint::get(&db, outcome.id)?.ok_or_else(|| {
-        UecmError::OperationFailed(format!(
+        VoloError::OperationFailed(format!(
             "register: row id={} disappeared between insert and readback",
             outcome.id
         ))
@@ -682,7 +682,7 @@ pub fn zen_unregister(
     endpoint_id: i64,
     confirmed: bool,
     dry_run: bool,
-) -> UecmResult<ZenUnregisterResult> {
+) -> VoloResult<ZenUnregisterResult> {
     guard_destructive(confirmed, dry_run, "zen.unregister")?;
     let ep = zen_cli_shared::require_endpoint(&db, endpoint_id)?;
 
@@ -699,7 +699,7 @@ pub fn zen_unregister(
             .map(|i| i.to_string())
             .collect::<Vec<_>>()
             .join(", ");
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "cannot unregister endpoint {endpoint_id}: still referenced as upstream by [{list}]; un-point them first"
         )));
     }
@@ -765,7 +765,7 @@ pub fn zen_change_role(
     new_upstream_endpoint_id: Option<i64>,
     confirmed: bool,
     dry_run: bool,
-) -> UecmResult<ZenChangeRoleResult> {
+) -> VoloResult<ZenChangeRoleResult> {
     guard_destructive(confirmed, dry_run, "zen.change-role")?;
     // Codex P2: run preflight validation (role / lifecycle / upstream /
     // dependents-on-demote) BEFORE emitting the dry-run plan, so a UI
@@ -794,7 +794,7 @@ pub fn zen_change_role(
     zen_endpoint::change_role(&db, endpoint_id, &new_role, new_upstream_endpoint_id)?;
 
     let after = zen_endpoint::get(&db, endpoint_id)?.ok_or_else(|| {
-        UecmError::OperationFailed(format!(
+        VoloError::OperationFailed(format!(
             "endpoint id={endpoint_id} disappeared between change_role and re-fetch"
         ))
     })?;
@@ -822,7 +822,7 @@ pub struct ZenLuaPreviewResult {
 }
 
 #[tauri::command]
-pub fn zen_lua_preview(db: State<'_, Db>, endpoint_id: i64) -> UecmResult<ZenLuaPreviewResult> {
+pub fn zen_lua_preview(db: State<'_, Db>, endpoint_id: i64) -> VoloResult<ZenLuaPreviewResult> {
     let (ep, lua) = zen_cli_shared::render_lua_for(&db, endpoint_id)?;
     // Same data_dir guard the CLI runs — `lua-preview` and `apply-config`
     // share the same engine, so they share the same refusal set.
@@ -862,13 +862,13 @@ pub struct ZenCredentialInput {
 impl ZenCredentialInput {
     /// Preflight: validate the flag combination + alias existence without
     /// touching DPAPI. Mirrors `CredentialArgs::preflight`.
-    fn preflight(&self, db: &Db) -> UecmResult<()> {
+    fn preflight(&self, db: &Db) -> VoloResult<()> {
         if let Some(alias) = &self.cred_alias {
             data_creds::find_by_alias(db, alias)?.ok_or_else(|| {
-                UecmError::InvalidInput(format!("credential alias '{}' not found", alias))
+                VoloError::InvalidInput(format!("credential alias '{}' not found", alias))
             })?;
             if self.user.is_some() || self.pass.is_some() {
-                return Err(UecmError::InvalidInput(
+                return Err(VoloError::InvalidInput(
                     "inconsistent credential flags: cred_alias conflicts with user/pass".into(),
                 ));
             }
@@ -877,7 +877,7 @@ impl ZenCredentialInput {
         match (&self.user, &self.pass) {
             (Some(_), Some(_)) => Ok(()),
             (None, None) => Ok(()),
-            _ => Err(UecmError::InvalidInput(
+            _ => Err(VoloError::InvalidInput(
                 "inconsistent credential flags: user and pass must both be set or both omitted"
                     .into(),
             )),
@@ -887,21 +887,21 @@ impl ZenCredentialInput {
     /// Resolve to `(username, password)` if any credential was supplied;
     /// `None` means inherit caller's Kerberos/NTLM context. Mirrors
     /// `CredentialArgs::resolve` but without stdin support.
-    fn resolve(&self, db: &Db) -> UecmResult<Option<(String, String)>> {
+    fn resolve(&self, db: &Db) -> VoloResult<Option<(String, String)>> {
         if let Some(alias) = &self.cred_alias {
             // SSH key auth: zen commands discard the operator credential, so don't
             // read DPAPI (which fails on a non-Windows operator or a SQLite-only
             // alias before the SSH call ever runs). Keep the existence check so a
             // typo'd alias still errors early.
             data_creds::find_by_alias(db, alias)?.ok_or_else(|| {
-                UecmError::InvalidInput(format!("credential alias '{}' not found", alias))
+                VoloError::InvalidInput(format!("credential alias '{}' not found", alias))
             })?;
             return Ok(None);
         }
         match (&self.user, &self.pass) {
             (Some(u), Some(p)) => Ok(Some((u.clone(), p.clone()))),
             (None, None) => Ok(None),
-            _ => Err(UecmError::InvalidInput(
+            _ => Err(VoloError::InvalidInput(
                 "inconsistent credential flags: user and pass must both be set or both omitted"
                     .into(),
             )),
@@ -946,7 +946,7 @@ pub fn zen_apply_config(
     confirmed: bool,
     dry_run: bool,
     cred: ZenCredentialInput,
-) -> UecmResult<ZenApplyConfigResult> {
+) -> VoloResult<ZenApplyConfigResult> {
     guard_destructive(confirmed, dry_run, "zen.apply-config")?;
     cred.preflight(&db)?;
     let (ep, lua) = zen_cli_shared::render_lua_for(&db, endpoint_id)?;
@@ -1065,7 +1065,7 @@ pub fn zen_update_gc_settings(
     confirmed: bool,
     dry_run: bool,
     cred: ZenCredentialInput,
-) -> UecmResult<ZenGcSettingsResult> {
+) -> VoloResult<ZenGcSettingsResult> {
     guard_destructive(confirmed, dry_run, "zen.gc_settings.update")?;
     cred.preflight(&db)?;
     cache_core::core::zen::lua_config::validate_positive_seconds(
@@ -1089,7 +1089,7 @@ pub fn zen_update_gc_settings(
     // to touch, and blindly restarting DEFAULT_SERVICE_NAME could stop/start
     // an unrelated stale service left over from a different endpoint.
     if ep.lifecycle_mode != "installed_service" {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "zen.gc_settings.update requires endpoint id={endpoint_id} to have lifecycle_mode=\"installed_service\" \
              (got {:?}); `editor_owned` endpoints have no SCM service to restart",
             ep.lifecycle_mode
@@ -1223,7 +1223,7 @@ pub struct ZenDedicatedAccountResult {
 pub fn zen_create_dedicated_account(
     db: State<'_, Db>,
     machine_id: i64,
-) -> UecmResult<ZenDedicatedAccountResult> {
+) -> VoloResult<ZenDedicatedAccountResult> {
     let machine = zen_cli_shared::require_machine(&db, machine_id)?;
     let result =
         cache_core::core::zen::service_account::create_dedicated_account(machine_id, &machine.ip)?;
@@ -1254,10 +1254,10 @@ pub fn zen_service_install(
     confirmed: bool,
     dry_run: bool,
     cred: ZenCredentialInput,
-) -> UecmResult<ZenServiceResult> {
+) -> VoloResult<ZenServiceResult> {
     guard_destructive(confirmed, dry_run, "zen.service.install")?;
     if service_pass.is_some() && service_cred_alias.is_some() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "service_pass and service_cred_alias are mutually exclusive — pass a raw \
              password for a manually-entered account, or an alias for a tool-managed one, \
              not both"
@@ -1283,7 +1283,7 @@ pub fn zen_service_install(
             .map(|u| u.trim().is_empty())
             .unwrap_or(true)
     {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "service_pass requires service_user; the password is forwarded \
              to zen only when the user is set"
                 .into(),
@@ -1302,7 +1302,7 @@ pub fn zen_service_install(
     // Same lifecycle guard as the CLI: only `installed_service` endpoints
     // get an SCM service.
     if ep.lifecycle_mode != "installed_service" {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "endpoint id={endpoint_id} has lifecycle_mode={:?}; service install \
              requires lifecycle_mode=\"installed_service\". \
              `register` is idempotent on (machine_id, declared_port) — call \
@@ -1347,7 +1347,7 @@ pub fn zen_service_install(
     let service_pass = match service_cred_alias.as_deref() {
         Some(alias) => Some(
             cache_core::core::zen::service_account::resolve_password(alias)?.ok_or_else(|| {
-                UecmError::InvalidInput(format!(
+                VoloError::InvalidInput(format!(
                     "service_cred_alias {alias:?} has no stored password — the managed \
                      account may have been deleted; create a new one"
                 ))
@@ -1426,7 +1426,7 @@ pub fn zen_service_uninstall(
     confirmed: bool,
     dry_run: bool,
     cred: ZenCredentialInput,
-) -> UecmResult<ZenServiceResult> {
+) -> VoloResult<ZenServiceResult> {
     guard_destructive(confirmed, dry_run, "zen.service.uninstall")?;
     cred.preflight(&db)?;
     let ep = zen_cli_shared::require_endpoint(&db, endpoint_id)?;
@@ -1443,7 +1443,7 @@ pub fn zen_service_uninstall(
                 .and_then(|installs| installs.into_iter().find_map(|i| i.zen_cli_intree_path))
         })
         .ok_or_else(|| {
-            UecmError::InvalidInput(format!(
+            VoloError::InvalidInput(format!(
                 "machine id={} has no zen.exe (zen_cli) recorded — run `zen detect-binary --machine {}` first",
                 ep.machine_id, ep.machine_id,
             ))
@@ -1496,12 +1496,12 @@ pub fn zen_service_start(
     db: State<'_, Db>,
     endpoint_id: i64,
     cred: ZenCredentialInput,
-) -> UecmResult<ZenServiceSummary> {
+) -> VoloResult<ZenServiceSummary> {
     cred.preflight(&db)?;
     let ep = zen_cli_shared::require_endpoint(&db, endpoint_id)?;
     let machine = zen_cli_shared::require_machine(&db, ep.machine_id)?;
     if ep.lifecycle_mode != "installed_service" {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "service zen.service.start requires endpoint id={endpoint_id} to have lifecycle_mode=\"installed_service\" \
              (got {:?}); `editor_owned` endpoints have no SCM service",
             ep.lifecycle_mode
@@ -1541,13 +1541,13 @@ pub fn zen_service_stop(
     confirmed: bool,
     dry_run: bool,
     cred: ZenCredentialInput,
-) -> UecmResult<ZenServiceResult> {
+) -> VoloResult<ZenServiceResult> {
     guard_destructive(confirmed, dry_run, "zen.service.stop")?;
     cred.preflight(&db)?;
     let ep = zen_cli_shared::require_endpoint(&db, endpoint_id)?;
     let machine = zen_cli_shared::require_machine(&db, ep.machine_id)?;
     if ep.lifecycle_mode != "installed_service" {
-        return Err(UecmError::InvalidInput(format!(
+        return Err(VoloError::InvalidInput(format!(
             "service zen.service.stop requires endpoint id={endpoint_id} to have lifecycle_mode=\"installed_service\" \
              (got {:?}); `editor_owned` endpoints have no SCM service",
             ep.lifecycle_mode
@@ -1608,7 +1608,7 @@ pub fn zen_service_status(
     db: State<'_, Db>,
     endpoint_id: i64,
     cred: ZenCredentialInput,
-) -> UecmResult<ZenServiceStatusResult> {
+) -> VoloResult<ZenServiceStatusResult> {
     cred.preflight(&db)?;
     let ep = zen_cli_shared::require_endpoint(&db, endpoint_id)?;
     let machine = zen_cli_shared::require_machine(&db, ep.machine_id)?;
@@ -1673,10 +1673,10 @@ pub fn zen_urlacl_add(
     confirmed: bool,
     dry_run: bool,
     cred: ZenCredentialInput,
-) -> UecmResult<ZenUrlaclResult> {
+) -> VoloResult<ZenUrlaclResult> {
     guard_destructive(confirmed, dry_run, "zen.urlacl.add")?;
     if principal.trim().is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "principal must not be empty or whitespace (URL ACL needs a real account)".into(),
         ));
     }
@@ -1736,7 +1736,7 @@ pub fn zen_urlacl_list(
     machine_id: i64,
     port_filter: Option<String>,
     cred: ZenCredentialInput,
-) -> UecmResult<ZenUrlaclListResult> {
+) -> VoloResult<ZenUrlaclListResult> {
     cred.preflight(&db)?;
     let m = zen_cli_shared::require_machine(&db, machine_id)?;
     // SSH key auth (uecm-svc); operator creds/auth_method ignored. Keep the
@@ -1767,7 +1767,7 @@ pub fn zen_urlacl_remove(
     confirmed: bool,
     dry_run: bool,
     cred: ZenCredentialInput,
-) -> UecmResult<ZenUrlaclResult> {
+) -> VoloResult<ZenUrlaclResult> {
     guard_destructive(confirmed, dry_run, "zen.urlacl.remove")?;
     cred.preflight(&db)?;
     let ep = zen_cli_shared::require_endpoint(&db, endpoint_id)?;
@@ -1871,7 +1871,7 @@ pub struct ZenVerifyRulesResult {
     pub verify_outcome: Option<serde_json::Value>,
 }
 
-/// Tauri analogue of `uecm-cli zen verify-rules [--run-editor ...]`. Without
+/// Tauri analogue of `voloctl cache zen verify-rules [--run-editor ...]`. Without
 /// `run_editor` this is the offline resolve-only path (T4.5); with
 /// `run_editor` we additionally invoke `zen-verify-rules.ps1` against the
 /// target machine and merge its outcome under `verify_outcome`.
@@ -1886,7 +1886,7 @@ pub fn zen_verify_rules(
     ue_install: String,
     #[allow(non_snake_case)] write_verified: bool,
     run_editor: Option<ZenVerifyRunEditorInput>,
-) -> UecmResult<ZenVerifyRulesResult> {
+) -> VoloResult<ZenVerifyRulesResult> {
     use cache_core::core::zen::rules_loader as zen_rules;
 
     let rules = zen_rules::load_default()?;
@@ -1897,7 +1897,7 @@ pub fn zen_verify_rules(
 
     let resolved = match zen_rules::resolve(&rules, &ue_version) {
         Ok(r) => r,
-        Err(UecmError::InvalidInput(msg)) => {
+        Err(VoloError::InvalidInput(msg)) => {
             // Unverified + refuse, or below applies_to floor. Mirror the
             // CLI: ok=false but Result is Ok so the front-end gets a
             // structured doc rather than a thrown error.
@@ -1996,7 +1996,7 @@ fn zen_verify_rules_write_leg(
     rules: &cache_core::core::zen::rules_loader::ZenRules,
     matched_version: &str,
     write_verified: bool,
-) -> UecmResult<(bool, Option<String>, Vec<String>)> {
+) -> VoloResult<(bool, Option<String>, Vec<String>)> {
     let mut verified_after: Vec<String> = rules.verified_versions.clone();
     if !write_verified {
         return Ok((false, None, verified_after));
@@ -2008,7 +2008,7 @@ fn zen_verify_rules_write_leg(
         return Ok((false, p, verified_after));
     }
     let path = writable_rules_path()?.ok_or_else(|| {
-        UecmError::Configuration(
+        VoloError::Configuration(
             "verify-rules write-verified: no on-disk yaml to write (only the embedded \
              snapshot is available; set UECM_ZEN_RULES_PATH or place \
              zen-ini-rules.yaml next to the binary)"
@@ -2022,9 +2022,9 @@ fn zen_verify_rules_write_leg(
 }
 
 /// Lightweight clone of `cli::domain_zen::writable_rules_path` — env override
-/// wins, otherwise the on-disk candidate. Returns `UecmResult<Option<...>>`
+/// wins, otherwise the on-disk candidate. Returns `VoloResult<Option<...>>`
 /// so callers can decide whether refusing to write is fatal.
-fn writable_rules_path() -> UecmResult<Option<std::path::PathBuf>> {
+fn writable_rules_path() -> VoloResult<Option<std::path::PathBuf>> {
     use cache_core::core::zen::rules_loader as zen_rules;
     if let Ok(over) = std::env::var("UECM_ZEN_RULES_PATH") {
         return Ok(Some(std::path::PathBuf::from(over)));
@@ -2042,23 +2042,23 @@ fn writable_rules_path() -> UecmResult<Option<std::path::PathBuf>> {
 fn append_verified_version_yaml(
     path: &std::path::Path,
     version: &str,
-) -> UecmResult<bool> {
+) -> VoloResult<bool> {
     let text = std::fs::read_to_string(path).map_err(|e| {
-        UecmError::Configuration(format!(
+        VoloError::Configuration(format!(
             "verify-rules: failed to read yaml at {} for write: {}",
             path.display(),
             e
         ))
     })?;
     let mut doc: serde_yaml::Value = serde_yaml::from_str(&text).map_err(|e| {
-        UecmError::Configuration(format!(
+        VoloError::Configuration(format!(
             "verify-rules: yaml at {} did not parse: {}",
             path.display(),
             e
         ))
     })?;
     let Some(map) = doc.as_mapping_mut() else {
-        return Err(UecmError::Configuration(format!(
+        return Err(VoloError::Configuration(format!(
             "verify-rules: yaml at {} not a top-level mapping",
             path.display()
         )));
@@ -2068,7 +2068,7 @@ fn append_verified_version_yaml(
         .entry(key)
         .or_insert(serde_yaml::Value::Sequence(Vec::new()));
     let Some(seq) = entry.as_sequence_mut() else {
-        return Err(UecmError::Configuration(format!(
+        return Err(VoloError::Configuration(format!(
             "verify-rules: yaml at {} has verified_versions but it isn't a sequence",
             path.display()
         )));
@@ -2081,13 +2081,13 @@ fn append_verified_version_yaml(
     }
     seq.push(serde_yaml::Value::String(version.to_string()));
     let new_text = serde_yaml::to_string(&doc).map_err(|e| {
-        UecmError::Configuration(format!(
+        VoloError::Configuration(format!(
             "verify-rules: failed to re-serialize yaml: {}",
             e
         ))
     })?;
     std::fs::write(path, new_text).map_err(|e| {
-        UecmError::Configuration(format!(
+        VoloError::Configuration(format!(
             "verify-rules: failed to write yaml at {}: {}",
             path.display(),
             e
@@ -2102,14 +2102,14 @@ fn zen_verify_rules_run_editor_leg(
     db: &Db,
     ue_install: &str,
     rei: &ZenVerifyRunEditorInput,
-) -> UecmResult<serde_json::Value> {
+) -> VoloResult<serde_json::Value> {
     if rei.timeout_seconds == 0 {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "zen_verify_rules: timeout_seconds must be > 0".into(),
         ));
     }
     if rei.uproject_path.trim().is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "zen_verify_rules: uproject_path must be non-empty".into(),
         ));
     }
@@ -2150,9 +2150,9 @@ fn zen_verify_rules_run_editor_leg(
                 "machine_id": rei.machine_id,
                 "host": m.ip.clone(),
             });
-            (Some(v), Ok::<serde_json::Value, UecmError>(serde_json::Value::Null))
+            (Some(v), Ok::<serde_json::Value, VoloError>(serde_json::Value::Null))
         }
-        Err(UecmError::PowerShell(msg)) => {
+        Err(VoloError::PowerShell(msg)) => {
             // Codex P2 (parity with CLI): only swallow PowerShell errors
             // that include a sidecar outcome envelope. Pure transport /
             // protocol failures (WinRM auth, sidecar missing, non-JSON)
@@ -2182,10 +2182,10 @@ fn zen_verify_rules_run_editor_leg(
                     }
                     (
                         Some(doc),
-                        Err::<serde_json::Value, UecmError>(UecmError::PowerShell(msg)),
+                        Err::<serde_json::Value, VoloError>(VoloError::PowerShell(msg)),
                     )
                 }
-                None => (None, Err(UecmError::PowerShell(msg))),
+                None => (None, Err(VoloError::PowerShell(msg))),
             }
         }
         Err(other) => (None, Err(other)),
@@ -2196,7 +2196,7 @@ fn zen_verify_rules_run_editor_leg(
     }
     match op_result_for_log {
         Err(e) => Err(e),
-        Ok(_) => Err(UecmError::OperationFailed(
+        Ok(_) => Err(VoloError::OperationFailed(
             "verify_endpoint produced no envelope and no error".into(),
         )),
     }
@@ -2210,11 +2210,11 @@ fn zen_verify_rules_run_editor_leg(
 /// `dry_run=true` (preview) or `confirmed=true` (actually apply); otherwise
 /// the wrapper refuses with `InvalidInput` so accidental invocations from the
 /// front-end can't fire side effects.
-fn guard_destructive(confirmed: bool, dry_run: bool, op: &str) -> UecmResult<()> {
+fn guard_destructive(confirmed: bool, dry_run: bool, op: &str) -> VoloResult<()> {
     if dry_run || confirmed {
         return Ok(());
     }
-    Err(UecmError::InvalidInput(format!(
+    Err(VoloError::InvalidInput(format!(
         "{op} is destructive; pass confirmed=true to apply or dry_run=true to preview"
     )))
 }
@@ -2223,15 +2223,15 @@ fn resolve_endpoints(
     db: &Db,
     machine_id: Option<i64>,
     endpoint_id: Option<i64>,
-) -> UecmResult<Vec<ZenEndpoint>> {
+) -> VoloResult<Vec<ZenEndpoint>> {
     if let Some(id) = endpoint_id {
         let ep = zen_endpoints::get(db, id)?
-            .ok_or_else(|| UecmError::InvalidInput(format!("endpoint id={} not found", id)))?;
+            .ok_or_else(|| VoloError::InvalidInput(format!("endpoint id={} not found", id)))?;
         return Ok(vec![ep]);
     }
     if let Some(mid) = machine_id {
         if machines::find_by_id(db, mid)?.is_none() {
-            return Err(UecmError::InvalidInput(format!(
+            return Err(VoloError::InvalidInput(format!(
                 "machine id={} not found",
                 mid
             )));
@@ -2241,15 +2241,15 @@ fn resolve_endpoints(
     zen_endpoints::list(db)
 }
 
-fn resolve_host(db: &Db, machine_id: i64) -> UecmResult<Option<String>> {
+fn resolve_host(db: &Db, machine_id: i64) -> VoloResult<Option<String>> {
     Ok(machines::find_by_id(db, machine_id)?.map(|m| m.ip))
 }
 
-fn validate_kind(kind: &str) -> UecmResult<()> {
+fn validate_kind(kind: &str) -> VoloResult<()> {
     if kind == KIND_ZEN_CLI || kind == KIND_ZENSERVER {
         Ok(())
     } else {
-        Err(UecmError::InvalidInput(format!(
+        Err(VoloError::InvalidInput(format!(
             "invalid binary kind '{}'; expected '{}' or '{}'",
             kind, KIND_ZEN_CLI, KIND_ZENSERVER
         )))
@@ -2428,7 +2428,7 @@ mod tests {
     fn baseline_rejects_bad_kind() {
         let err = validate_kind("bogus").unwrap_err();
         match err {
-            UecmError::InvalidInput(msg) => assert!(msg.contains("invalid binary kind")),
+            VoloError::InvalidInput(msg) => assert!(msg.contains("invalid binary kind")),
             other => panic!("expected InvalidInput, got {:?}", other),
         }
     }
@@ -2437,14 +2437,14 @@ mod tests {
     fn resolve_endpoints_unknown_machine_errors() {
         let db = fresh_db();
         let err = resolve_endpoints(&db, Some(9999), None).unwrap_err();
-        assert!(matches!(err, UecmError::InvalidInput(_)));
+        assert!(matches!(err, VoloError::InvalidInput(_)));
     }
 
     #[test]
     fn resolve_endpoints_unknown_endpoint_errors() {
         let db = fresh_db();
         let err = resolve_endpoints(&db, None, Some(9999)).unwrap_err();
-        assert!(matches!(err, UecmError::InvalidInput(_)));
+        assert!(matches!(err, VoloError::InvalidInput(_)));
     }
 
     #[test]
@@ -2461,7 +2461,7 @@ mod tests {
     fn guard_destructive_refuses_with_neither_flag() {
         let err = guard_destructive(false, false, "zen.unregister").unwrap_err();
         match err {
-            UecmError::InvalidInput(msg) => {
+            VoloError::InvalidInput(msg) => {
                 assert!(msg.contains("confirmed=true"));
                 assert!(msg.contains("dry_run=true"));
             }
@@ -2496,7 +2496,7 @@ mod tests {
         };
         assert!(matches!(
             bad.preflight(&db),
-            Err(UecmError::InvalidInput(_))
+            Err(VoloError::InvalidInput(_))
         ));
     }
 
@@ -2510,7 +2510,7 @@ mod tests {
         };
         assert!(matches!(
             bad.preflight(&db),
-            Err(UecmError::InvalidInput(_))
+            Err(VoloError::InvalidInput(_))
         ));
     }
 
@@ -2524,7 +2524,7 @@ mod tests {
         };
         assert!(matches!(
             bad.preflight(&db),
-            Err(UecmError::InvalidInput(_))
+            Err(VoloError::InvalidInput(_))
         ));
     }
 
@@ -2627,13 +2627,13 @@ mod tests {
     fn lua_preview_data_dir_safe_check_rejects_system_root() {
         // Verify the same guard the command runs internally.
         let r = zen_cli_shared::validate_data_dir_safe(r"C:\Windows\Zen");
-        assert!(matches!(r, Err(UecmError::InvalidInput(_))));
+        assert!(matches!(r, Err(VoloError::InvalidInput(_))));
     }
 
     #[test]
     fn apply_config_dest_path_check_rejects_relative() {
         let r = zen_cli_shared::validate_dest_path(r"relative\zen.lua");
-        assert!(matches!(r, Err(UecmError::InvalidInput(_))));
+        assert!(matches!(r, Err(VoloError::InvalidInput(_))));
     }
 
     #[test]

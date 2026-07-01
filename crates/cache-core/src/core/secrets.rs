@@ -1,7 +1,7 @@
 //! Cross-platform secret store: AES-GCM-256 encrypted file, key in a 0600 file
 //! next to the config dir. Replaces DPAPI (Windows-only). Holds managed-share /
 //! SMB / service secrets that the operator must keep (not just re-provision).
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Key, Nonce,
@@ -15,7 +15,7 @@ pub struct SecretStore {
 }
 
 impl SecretStore {
-    pub fn from_config() -> UecmResult<Self> {
+    pub fn from_config() -> VoloResult<Self> {
         Ok(Self {
             dir: crate::startup::resolve_config_dir()?,
         })
@@ -28,12 +28,12 @@ impl SecretStore {
         self.dir.join("uecm_secrets.bin")
     }
 
-    fn load_or_create_key(&self) -> UecmResult<[u8; 32]> {
+    fn load_or_create_key(&self) -> VoloResult<[u8; 32]> {
         let kp = self.key_path();
         if kp.exists() {
             let b = std::fs::read(&kp)?;
             if b.len() != 32 {
-                return Err(UecmError::Configuration("bad secrets key length".into()));
+                return Err(VoloError::Configuration("bad secrets key length".into()));
             }
             let mut k = [0u8; 32];
             k.copy_from_slice(&b);
@@ -67,7 +67,7 @@ impl SecretStore {
         }
     }
 
-    fn read_all(&self) -> UecmResult<BTreeMap<String, String>> {
+    fn read_all(&self) -> VoloResult<BTreeMap<String, String>> {
         let sp = self.store_path();
         if !sp.exists() {
             return Ok(BTreeMap::new());
@@ -75,49 +75,49 @@ impl SecretStore {
         let key = self.load_or_create_key()?;
         let blob = std::fs::read(&sp)?;
         if blob.len() < 12 {
-            return Err(UecmError::Configuration("secrets store too short".into()));
+            return Err(VoloError::Configuration("secrets store too short".into()));
         }
         let (nonce, ct) = blob.split_at(12);
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
         let pt = cipher
             .decrypt(Nonce::from_slice(nonce), ct)
-            .map_err(|_| UecmError::Configuration("secrets decrypt failed".into()))?;
+            .map_err(|_| VoloError::Configuration("secrets decrypt failed".into()))?;
         serde_json::from_slice(&pt)
-            .map_err(|e| UecmError::Configuration(format!("secrets parse: {e}")))
+            .map_err(|e| VoloError::Configuration(format!("secrets parse: {e}")))
     }
 
-    fn write_all(&self, map: &BTreeMap<String, String>) -> UecmResult<()> {
+    fn write_all(&self, map: &BTreeMap<String, String>) -> VoloResult<()> {
         let key = self.load_or_create_key()?;
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
         let mut nonce = [0u8; 12];
         rand::rngs::OsRng.fill_bytes(&mut nonce);
         let pt = serde_json::to_vec(map)
-            .map_err(|e| UecmError::Configuration(format!("secrets serialize: {e}")))?;
+            .map_err(|e| VoloError::Configuration(format!("secrets serialize: {e}")))?;
         let ct = cipher
             .encrypt(Nonce::from_slice(&nonce), pt.as_ref())
-            .map_err(|_| UecmError::Configuration("secrets encrypt failed".into()))?;
+            .map_err(|_| VoloError::Configuration("secrets encrypt failed".into()))?;
         let mut out = nonce.to_vec();
         out.extend_from_slice(&ct);
         std::fs::write(self.store_path(), out)?;
         Ok(())
     }
 
-    pub fn put(&self, alias: &str, secret: &str) -> UecmResult<()> {
+    pub fn put(&self, alias: &str, secret: &str) -> VoloResult<()> {
         let mut m = self.read_all()?;
         m.insert(alias.to_string(), secret.to_string());
         self.write_all(&m)
     }
-    pub fn get(&self, alias: &str) -> UecmResult<Option<String>> {
+    pub fn get(&self, alias: &str) -> VoloResult<Option<String>> {
         Ok(self.read_all()?.get(alias).cloned())
     }
-    pub fn delete(&self, alias: &str) -> UecmResult<()> {
+    pub fn delete(&self, alias: &str) -> VoloResult<()> {
         let mut m = self.read_all()?;
         m.remove(alias);
         self.write_all(&m)
     }
     /// List all stored aliases (keys only — never the secrets), sorted. Backs the
     /// `secret list` CLI command without exposing any plaintext.
-    pub fn list(&self) -> UecmResult<Vec<String>> {
+    pub fn list(&self) -> VoloResult<Vec<String>> {
         let mut keys: Vec<String> = self.read_all()?.into_keys().collect();
         keys.sort();
         Ok(keys)
@@ -130,7 +130,7 @@ impl SecretStore {
 /// (Kept its name across the SSH migration for its four call sites. The legacy
 /// DPAPI fallback + self-healing migration were removed in P5b — the
 /// cross-platform SecretStore is the only home now.)
-pub fn get_share_secret_migrating(alias: &str) -> UecmResult<Option<String>> {
+pub fn get_share_secret_migrating(alias: &str) -> VoloResult<Option<String>> {
     SecretStore::from_config()?.get(alias)
 }
 

@@ -1,7 +1,7 @@
 //! Single-machine environment variable read/write via PowerShell sidecar.
 
 use crate::core::ssh::{run_json, NodeScript, SshExecutor};
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -17,7 +17,7 @@ pub struct GetResult {
     pub message: String,
 }
 
-pub fn set(host: &str, name: &str, value: &str) -> UecmResult<()> {
+pub fn set(host: &str, name: &str, value: &str) -> VoloResult<()> {
     let exec = SshExecutor::from_config()?;
     let result: SetResult = run_json(
         &exec,
@@ -29,7 +29,7 @@ pub fn set(host: &str, name: &str, value: &str) -> UecmResult<()> {
         },
     )?;
     if !result.ok {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "set env var failed: {}",
             result.message
         )));
@@ -37,7 +37,7 @@ pub fn set(host: &str, name: &str, value: &str) -> UecmResult<()> {
     Ok(())
 }
 
-pub fn get(host: &str, name: &str) -> UecmResult<Option<String>> {
+pub fn get(host: &str, name: &str) -> VoloResult<Option<String>> {
     let exec = SshExecutor::from_config()?;
     let result: GetResult = run_json(
         &exec,
@@ -49,7 +49,7 @@ pub fn get(host: &str, name: &str) -> UecmResult<Option<String>> {
         },
     )?;
     if !result.ok {
-        return Err(UecmError::OperationFailed(format!(
+        return Err(VoloError::OperationFailed(format!(
             "get env var failed: {}",
             result.message
         )));

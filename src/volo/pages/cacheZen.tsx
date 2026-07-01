@@ -43,9 +43,9 @@ import {
     { id: 'urlacl',   label: '开放网络访问权限',       cli: 'zen_urlacl_add',
       desc: (f) => `netsh http add urlacl url=${f.protocol}://+:${f.port}/ · 账号 ${f.acct}` },
     { id: 'service',  label: '安装为 Windows 服务',     cli: 'zen_service_install',
-      desc: (f) => `sc create ZenServer · 启动 auto · 服务账号 ${f.acct}` },
+      desc: (f) => `sc create VoloZenServer · 启动 auto · 服务账号 ${f.acct}` },
     { id: 'start',    label: '启动服务',               cli: 'zen_service_start',
-      desc: () => `sc start ZenServer` },
+      desc: () => `sc start VoloZenServer` },
     { id: 'probe',    label: '探活确认',               cli: 'zen_probe',
       desc: (f, host) => `GET ${f.protocol}://${host}:${f.port}/health → 期望 HTTP 200，读取版本号` },
   ];
@@ -385,14 +385,14 @@ import {
     const stopServer = () => status && CX.openPreview(s, {
       title: '停止 ZenServer 服务', icon: 'pause', cli: 'zen_service_stop', destructive: true, channel: 'ssh', confirmLabel: '停止服务',
       steps: ['停止 ' + status.host + ' 上的 ZenServer 服务', '停止后所有客户端将无法命中此共享缓存，回退到各自本地缓存'],
-      simpleScope: [{ host: status.host, ip: status.ip, msg: 'sc stop ZenServer' }],
+      simpleScope: [{ host: status.host, ip: status.ip, msg: 'sc stop VoloZenServer' }],
       onConfirm: () => s.runCmd({ domain: 'zen', action: 'stop', target: status.host, chan: 'ssh', note: '停止服务' },
         () => zenServiceStop(status.endpointId, true, false, cred), { okMsg: () => status.host + ' 服务已停止' })
         .then(() => loadStatus(), () => {}),
     });
     const uninstallServer = () => status && CX.openPreview(s, {
       title: '卸载 ZenServer', icon: 'trash', cli: 'zen_service_uninstall + zen_unregister', destructive: true, channel: 'ssh', confirmLabel: '卸载服务器',
-      steps: ['停止并卸载 ' + status.host + ' 上的 Windows 服务 ZenServer', '从 Volo 注销该 endpoint（不删除 data-dir 数据目录）', '客户端的指向配置需在下方②另行撤除'],
+      steps: ['停止并卸载 ' + status.host + ' 上的 Windows 服务 VoloZenServer', '从 Volo 注销该 endpoint（不删除 data-dir 数据目录）', '客户端的指向配置需在下方②另行撤除'],
       simpleScope: [{ host: status.host, ip: status.ip, msg: 'uninstall + unregister' }],
       onConfirm: () => s.runCmd({ domain: 'zen', action: 'uninstall', target: status.host, chan: 'ssh', note: '卸载并注销' },
         () => zenServiceUninstall(status.endpointId, true, false, cred).then(() => zenUnregister(status.endpointId, true, false)),

@@ -5,7 +5,7 @@ use cache_core::core::{discovery, network};
 use cache_core::data::{
     machine_gpus, machine_ue_installs, machines as data_machines, Db, GpuInfo, Machine, UeInstall,
 };
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 use serde::Serialize;
 use tauri::State;
 
@@ -15,7 +15,7 @@ pub struct ScanResult {
 }
 
 #[tauri::command]
-pub async fn scan_network(cidr: String) -> UecmResult<ScanResult> {
+pub async fn scan_network(cidr: String) -> VoloResult<ScanResult> {
     let probed = network::scan_cidr(&cidr, network::DEFAULT_TIMEOUT_MS).await?;
     Ok(ScanResult { probed })
 }
@@ -27,7 +27,7 @@ pub fn add_discovered_machine(
     db: State<'_, Db>,
     ip: String,
     hostname: Option<String>,
-) -> UecmResult<i64> {
+) -> VoloResult<i64> {
     if let Some(existing) = data_machines::find_by_ip(&db, &ip)? {
         // SQLite-loaded rows always have id; the Option exists only for the
         // pre-insert sentinel state of `Machine::new`.
@@ -66,9 +66,9 @@ fn refresh_err(machine_id: i64, winrm_ok: bool, msg: impl Into<String>) -> Refre
 /// 2. UE detect + persist BEFORE GPU detect — if GPU detection blows up, the
 ///    UE list we already saved survives instead of being discarded.
 #[tauri::command]
-pub fn refresh_machine(db: State<'_, Db>, machine_id: i64) -> UecmResult<RefreshResult> {
+pub fn refresh_machine(db: State<'_, Db>, machine_id: i64) -> VoloResult<RefreshResult> {
     let machine = data_machines::find_by_id(&db, machine_id)?
-        .ok_or_else(|| UecmError::InvalidInput(format!("machine {} not found", machine_id)))?;
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?;
 
     // Probe + mark online/offline immediately so the UI badge is correct even
     // when subsequent detection steps fail. SSH key auth (uecm-svc); the exec is

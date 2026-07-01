@@ -8,7 +8,7 @@ use crate::data::{
     projects::{self, Project},
     Db,
 };
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -42,11 +42,11 @@ pub fn run_discovery(
     search_roots: &[String],
     operator_user: Option<&str>,
     operator_pass: Option<&str>,
-) -> UecmResult<Vec<DiscoveryResult>> {
+) -> VoloResult<Vec<DiscoveryResult>> {
     // SSH key auth: per-call WinRM creds no longer used (params kept until A5 cleanup).
     let _ = (operator_user, operator_pass);
     if search_roots.is_empty() {
-        return Err(UecmError::InvalidInput("search_roots is empty".into()));
+        return Err(VoloError::InvalidInput("search_roots is empty".into()));
     }
 
     let exec = SshExecutor::from_config()?;
@@ -61,7 +61,7 @@ pub fn run_discovery(
     )?;
 
     if !result.ok {
-        return Err(UecmError::OperationFailed(
+        return Err(VoloError::OperationFailed(
             result.message.unwrap_or_else(|| "project discovery failed".into()),
         ));
     }
@@ -139,7 +139,7 @@ fn persist_discovered(
     db: &Db,
     machine_id: i64,
     items: Vec<DiscoveryItemRaw>,
-) -> UecmResult<Vec<DiscoveryResult>> {
+) -> VoloResult<Vec<DiscoveryResult>> {
     let mut out = Vec::with_capacity(items.len());
     for item in items {
         let stem = stem_lower(&item.uproject_filename);
@@ -220,7 +220,7 @@ mod tests {
     fn empty_search_roots_returns_invalid_input() {
         let (db, machine_id) = setup();
         let result = run_discovery(&db, machine_id, "RENDER-01", &[], None, None);
-        assert!(matches!(result, Err(UecmError::InvalidInput(_))));
+        assert!(matches!(result, Err(VoloError::InvalidInput(_))));
     }
 
     #[test]

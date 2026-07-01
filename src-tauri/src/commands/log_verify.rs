@@ -2,7 +2,7 @@
 
 use cache_core::core::ue_log_verify::{self, VerifyReport};
 use cache_core::data::Db;
-use cache_core::error::UecmError;
+use cache_core::error::VoloError;
 use tauri::State;
 
 #[tauri::command]
@@ -18,7 +18,7 @@ pub async fn run_log_verify(
 
     tokio::task::spawn_blocking(move || {
         ue_log_verify::run_for_host(&host, &editor_exe, &project, timeout, None)
-            .map_err(|e: UecmError| e.to_string())
+            .map_err(|e: VoloError| e.to_string())
     })
     .await
     .map_err(|e| format!("task join: {}", e))?

@@ -9,14 +9,14 @@
 
 use crate::core::ssh::{run_json, NodeScript, RemoteExecutor};
 use crate::data::GpuVendor;
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use serde::Deserialize;
 
 /// SSH 连不上时给可操作提示：节点很可能没经 `UECM-Bootstrap.cmd` 做 SSH 纳管。
 /// SSH 纳管唯一路径是节点本地双击 bootstrap（operator 远程纳管已按 spec 退役）。
-fn with_onboarding_hint(host: &str, e: UecmError) -> UecmError {
+fn with_onboarding_hint(host: &str, e: VoloError) -> VoloError {
     match e {
-        UecmError::SshConnect(m) => UecmError::SshConnect(format!(
+        VoloError::SshConnect(m) => VoloError::SshConnect(format!(
             "{m} -- host {host} may not be SSH-onboarded; run UECM-Bootstrap.cmd on it"
         )),
         other => other,
@@ -37,7 +37,7 @@ pub struct DetectedGpu {
     pub vram_mb: Option<i64>,
 }
 
-pub fn detect_ue_versions(exec: &dyn RemoteExecutor, host: &str) -> UecmResult<Vec<DetectedUe>> {
+pub fn detect_ue_versions(exec: &dyn RemoteExecutor, host: &str) -> VoloResult<Vec<DetectedUe>> {
     run_json(
         exec,
         host,
@@ -93,7 +93,7 @@ fn is_physical_gpu(g: &DetectedGpu) -> bool {
     g.vendor != GpuVendor::Unknown || g.vram_mb.is_some()
 }
 
-pub fn detect_gpus(exec: &dyn RemoteExecutor, host: &str) -> UecmResult<Vec<DetectedGpu>> {
+pub fn detect_gpus(exec: &dyn RemoteExecutor, host: &str) -> VoloResult<Vec<DetectedGpu>> {
     let raw: Vec<DetectedGpu> = run_json(
         exec,
         host,
@@ -130,14 +130,14 @@ mod tests {
 
     struct FakeExec(String);
     impl RemoteExecutor for FakeExec {
-        fn run(&self, _h: &str, _s: &NodeScript) -> UecmResult<ScriptOutput> {
+        fn run(&self, _h: &str, _s: &NodeScript) -> VoloResult<ScriptOutput> {
             Ok(ScriptOutput {
                 stdout: self.0.clone(),
                 stderr: String::new(),
                 exit_code: 0,
             })
         }
-        fn probe(&self, _h: &str, _u: Option<&str>) -> UecmResult<ProbeResult> {
+        fn probe(&self, _h: &str, _u: Option<&str>) -> VoloResult<ProbeResult> {
             Ok(ProbeResult {
                 ok: true,
                 message: "fake".into(),
@@ -209,7 +209,7 @@ mod tests {
 
     struct FailExec;
     impl RemoteExecutor for FailExec {
-        fn run(&self, _h: &str, _s: &NodeScript) -> UecmResult<ScriptOutput> {
+        fn run(&self, _h: &str, _s: &NodeScript) -> VoloResult<ScriptOutput> {
             // exit 255 -> run_json maps to SshConnect
             Ok(ScriptOutput {
                 stdout: String::new(),
@@ -217,7 +217,7 @@ mod tests {
                 exit_code: 255,
             })
         }
-        fn probe(&self, _h: &str, _u: Option<&str>) -> UecmResult<ProbeResult> {
+        fn probe(&self, _h: &str, _u: Option<&str>) -> VoloResult<ProbeResult> {
             unreachable!()
         }
     }

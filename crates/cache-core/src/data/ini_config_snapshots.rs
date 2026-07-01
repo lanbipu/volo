@@ -3,7 +3,7 @@
 //! scan_run / machine deletion.
 
 use crate::data::Db;
-use crate::error::UecmResult;
+use crate::error::VoloResult;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
@@ -21,7 +21,7 @@ pub struct ConfigSnapshot {
     pub line_number: Option<i64>,
 }
 
-pub fn insert(db: &Db, s: &ConfigSnapshot) -> UecmResult<i64> {
+pub fn insert(db: &Db, s: &ConfigSnapshot) -> VoloResult<i64> {
     let conn = db.lock().unwrap();
     conn.execute(
         "INSERT INTO ini_config_snapshots (
@@ -51,7 +51,7 @@ fn row_to_snapshot(row: &rusqlite::Row) -> rusqlite::Result<ConfigSnapshot> {
     })
 }
 
-pub fn list_for_run(db: &Db, scan_run_id: i64) -> UecmResult<Vec<ConfigSnapshot>> {
+pub fn list_for_run(db: &Db, scan_run_id: i64) -> VoloResult<Vec<ConfigSnapshot>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, scan_run_id, machine_id, file_path, ue_version, domain,
@@ -66,7 +66,7 @@ pub fn list_for_run(db: &Db, scan_run_id: i64) -> UecmResult<Vec<ConfigSnapshot>
     Ok(out)
 }
 
-pub fn list_for_run_domain(db: &Db, scan_run_id: i64, domain: &str) -> UecmResult<Vec<ConfigSnapshot>> {
+pub fn list_for_run_domain(db: &Db, scan_run_id: i64, domain: &str) -> VoloResult<Vec<ConfigSnapshot>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, scan_run_id, machine_id, file_path, ue_version, domain,

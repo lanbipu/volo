@@ -38,7 +38,7 @@
 
 use crate::core::ini_editor::{read_section, remove_key, set_key, IniKey};
 use crate::core::zen::rules_loader::ResolvedRules;
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 
 /// Cluster master endpoint info used to materialize the ZenShared value.
 #[derive(Debug, Clone)]
@@ -140,7 +140,7 @@ pub fn enable_project(
     ini_path: &str,
     rules: &ResolvedRules,
     master: &ClusterMaster,
-) -> UecmResult<EnableOutcome> {
+) -> VoloResult<EnableOutcome> {
     let enable_rule = &rules.rules.enable_zen_shared;
     let smb_rule = &rules.rules.disable_legacy_smb_shared;
     let pak_rule = &rules.rules.disable_legacy_pak;
@@ -232,7 +232,7 @@ pub fn enable_project(
             &desired_value,
         )
         .map_err(|e| {
-            UecmError::OperationFailed(format!(
+            VoloError::OperationFailed(format!(
                 "enable_project: set {}={} in [{}] failed: {}",
                 enable_rule.key, desired_value, section, e
             ))
@@ -251,7 +251,7 @@ pub fn enable_project(
             &rec.key,
         )
         .map_err(|e| {
-            UecmError::OperationFailed(format!(
+            VoloError::OperationFailed(format!(
                 "enable_project: remove {} from [{}] failed: {}",
                 rec.key, rec.section, e
             ))
@@ -295,7 +295,7 @@ pub fn disable_project(
     host: &str,
     ini_path: &str,
     rules: &ResolvedRules,
-) -> UecmResult<DisableOutcome> {
+) -> VoloResult<DisableOutcome> {
     let enable_rule = &rules.rules.enable_zen_shared;
     let section = &enable_rule.section;
     let key = &enable_rule.key;
@@ -333,7 +333,7 @@ pub fn disable_project(
 
     let backup = remove_key(host, ini_path, section, key)
         .map_err(|e| {
-            UecmError::OperationFailed(format!(
+            VoloError::OperationFailed(format!(
                 "disable_project: remove {} from [{}] failed: {}",
                 key, section, e
             ))
@@ -364,9 +364,9 @@ pub fn disable_project(
 /// Host charset: DNS / IP literal characters (letters, digits, `.`, `-`,
 /// `_`, `:` for IPv6, `[` `]` for bracketed IPv6).
 /// Namespace charset: project-id-style (letters, digits, `.`, `-`, `_`).
-fn validate_zen_field(name: &str, value: &str, allow_ip_literals: bool) -> UecmResult<()> {
+fn validate_zen_field(name: &str, value: &str, allow_ip_literals: bool) -> VoloResult<()> {
     if value.is_empty() {
-        return Err(UecmError::Configuration(format!(
+        return Err(VoloError::Configuration(format!(
             "ZenShared `{name}` must be non-empty"
         )));
     }
@@ -377,7 +377,7 @@ fn validate_zen_field(name: &str, value: &str, allow_ip_literals: bool) -> UecmR
             || ch == '_'
             || (allow_ip_literals && (ch == ':' || ch == '[' || ch == ']'));
         if !ok {
-            return Err(UecmError::Configuration(format!(
+            return Err(VoloError::Configuration(format!(
                 "ZenShared `{name}` contains disallowed character {ch:?}; \
                  only {}letters / digits / '.' / '-' / '_'{} are accepted to \
                  keep the rendered INI line well-formed",
@@ -399,7 +399,7 @@ fn validate_zen_field(name: &str, value: &str, allow_ip_literals: bool) -> UecmR
 /// literal `{name_space}` in the INI value.
 ///
 /// Substitution is case-sensitive — `{Host}` is treated as unknown.
-fn apply_value_template(template: &str, master: &ClusterMaster) -> UecmResult<String> {
+fn apply_value_template(template: &str, master: &ClusterMaster) -> VoloResult<String> {
     validate_zen_field("host", &master.host, true)?;
     validate_zen_field("namespace", &master.namespace, false)?;
 
@@ -418,7 +418,7 @@ fn apply_value_template(template: &str, master: &ClusterMaster) -> UecmResult<St
                     "port" => out.push_str(&master.port.to_string()),
                     "namespace" => out.push_str(&master.namespace),
                     other => {
-                        return Err(UecmError::Configuration(format!(
+                        return Err(VoloError::Configuration(format!(
                             "value_template references unknown placeholder '{{{}}}'; \
                              supported placeholders are {{host}}, {{port}}, {{namespace}}",
                             other
@@ -538,7 +538,7 @@ pub fn enable_global(
     ini_path: &str,
     rules: &ResolvedRules,
     master: &ClusterMaster,
-) -> UecmResult<EnableOutcome> {
+) -> VoloResult<EnableOutcome> {
     let enable_rule = &rules.rules.enable_zen_shared;
     let smb_rule = &rules.rules.disable_legacy_smb_shared;
     let pak_rule = &rules.rules.disable_legacy_pak;
@@ -612,7 +612,7 @@ pub fn enable_global(
             &desired_value,
         )
         .map_err(|e| {
-            UecmError::OperationFailed(format!(
+            VoloError::OperationFailed(format!(
                 "enable_global: set {}={} in [{}] failed: {}",
                 enable_rule.key, desired_value, section, e
             ))
@@ -624,7 +624,7 @@ pub fn enable_global(
     for rec in diff.remove_legacy.iter().cloned() {
         let backup = remove_key(host, ini_path, &rec.section, &rec.key)
             .map_err(|e| {
-                UecmError::OperationFailed(format!(
+                VoloError::OperationFailed(format!(
                     "enable_global: remove {} from [{}] failed: {}",
                     rec.key, rec.section, e
                 ))
@@ -663,10 +663,10 @@ pub fn disable_global(
     host: &str,
     ini_path: &str,
     rules: &ResolvedRules,
-) -> UecmResult<DisableOutcome> {
+) -> VoloResult<DisableOutcome> {
     match disable_project(host, ini_path, rules) {
         Ok(out) => Ok(out),
-        Err(UecmError::Io(ref io_err))
+        Err(VoloError::Io(ref io_err))
             if io_err.kind() == std::io::ErrorKind::NotFound =>
         {
             Ok(DisableOutcome {
@@ -758,7 +758,7 @@ mod tests {
         let m = sample_master();
         let err = apply_value_template("Host={server}", &m).unwrap_err();
         match err {
-            UecmError::Configuration(msg) => {
+            VoloError::Configuration(msg) => {
                 assert!(
                     msg.contains("{server}"),
                     "error should name the bad placeholder: {}",
@@ -776,7 +776,7 @@ mod tests {
         // because that would let typos silently match.
         let m = sample_master();
         let err = apply_value_template("Host={Host}", &m).unwrap_err();
-        assert!(matches!(err, UecmError::Configuration(_)));
+        assert!(matches!(err, VoloError::Configuration(_)));
     }
 
     #[test]
@@ -800,7 +800,7 @@ mod tests {
             &m,
         )
         .unwrap_err();
-        assert!(matches!(err, UecmError::Configuration(_)));
+        assert!(matches!(err, VoloError::Configuration(_)));
     }
 
     #[test]
@@ -812,7 +812,7 @@ mod tests {
             &m,
         )
         .unwrap_err();
-        assert!(matches!(err, UecmError::Configuration(_)));
+        assert!(matches!(err, VoloError::Configuration(_)));
     }
 
     #[test]
@@ -824,7 +824,7 @@ mod tests {
             &m,
         )
         .unwrap_err();
-        assert!(matches!(err, UecmError::Configuration(_)));
+        assert!(matches!(err, VoloError::Configuration(_)));
     }
 
     #[test]
@@ -851,7 +851,7 @@ mod tests {
             &m,
         )
         .unwrap_err();
-        assert!(matches!(err, UecmError::Configuration(_)));
+        assert!(matches!(err, VoloError::Configuration(_)));
     }
 
     #[test]
@@ -863,7 +863,7 @@ mod tests {
             &m,
         )
         .unwrap_err();
-        assert!(matches!(err, UecmError::Configuration(_)));
+        assert!(matches!(err, VoloError::Configuration(_)));
     }
 
     // --- compute_enable_diff ---------------------------------------------

@@ -3,7 +3,7 @@ name = "volo-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "voloctl — unified VP CLI. step 2b platformed UECM's CLI layer in under the `uecm` subcommand group; step 3 adds `lmt`."
+description = "voloctl — unified VP CLI. step 2b platformed Volo cache/fleet CLI layer under the `cache` subcommand group; step 3 adds `lmt`."
 
 [[bin]]
 # app(GUI)的 bin 已叫 volo（src-tauri，与 tauri.conf 关联）；CLI 用 voloctl 避让，避免输出文件名冲突。
@@ -33,14 +33,14 @@ rusqlite.workspace = true
 sha2.workspace = true
 rand.workspace = true
 ipnet.workspace = true
-# UECM CLI 用 atty 决定 stdout 是否 TTY（run.rs 选色）；根 workspace 无此依赖，crate 内直接钉版本（沿用 UECM 的 0.2）。
+# cache CLI 用 atty 决定 stdout 是否 TTY（run.rs 选色）；根 workspace 无此依赖，crate 内直接钉版本（沿用原来的 0.2）。
 atty = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true
 # E2E integration tests migrated from lmt-cli (cli_e2e) and ue-cache-manager
 # (cli_smoke / usage_envelope). assert_cmd+predicates drive the `voloctl` binary
-# for the lmt suite; regex backs the uecm smoke assertions.
+# for the lmt suite; regex backs the cache smoke assertions.
 assert_cmd = "2"
 predicates = "3"
 regex = "1"

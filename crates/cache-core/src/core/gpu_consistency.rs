@@ -1,7 +1,7 @@
 //! GPU/driver consistency matrix for PSO cache safety checks.
 
 use crate::data::{machine_gpus, machines, Db, GpuInfo, GpuVendor};
-use crate::error::UecmResult;
+use crate::error::VoloResult;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -68,7 +68,7 @@ pub struct GpuMatrix {
     pub cells: Vec<MachineGpuCell>,
 }
 
-pub fn build_matrix(db: &Db) -> UecmResult<GpuMatrix> {
+pub fn build_matrix(db: &Db) -> VoloResult<GpuMatrix> {
     let machines = machines::list_all(db)?;
     let mut by_machine = HashMap::<i64, GpuSignature>::new();
     let mut counts = HashMap::<GpuSignature, i64>::new();

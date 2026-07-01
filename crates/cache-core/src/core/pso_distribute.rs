@@ -4,7 +4,7 @@ use crate::core::pak_distribute::{
     self, DistributeOutcome, DistributePlanItem, DistributeProfile,
 };
 use crate::data::{project_locations, Db, PsoCacheFile};
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 
 pub type PsoDistributePlanItem = DistributePlanItem;
 pub type PsoDistributeOutcome = DistributeOutcome;
@@ -18,10 +18,10 @@ pub fn plan(
     named_share_unc: Option<&str>,
     source_smb_user: Option<String>,
     source_smb_pass: Option<String>,
-) -> UecmResult<Vec<PsoDistributePlanItem>> {
+) -> VoloResult<Vec<PsoDistributePlanItem>> {
     let source_location =
         project_locations::get_for_project_machine(db, file.project_id, file.source_machine_id)?
-            .ok_or_else(|| UecmError::InvalidInput("source project location missing".into()))?;
+            .ok_or_else(|| VoloError::InvalidInput("source project location missing".into()))?;
     let mut items = pak_distribute::plan(
         &DistributeProfile::pso_cache(),
         db,
@@ -40,12 +40,12 @@ pub fn plan(
     Ok(items)
 }
 
-pub async fn preflight_one(item: &PsoDistributePlanItem) -> UecmResult<()> {
+pub async fn preflight_one(item: &PsoDistributePlanItem) -> VoloResult<()> {
     let profile = DistributeProfile::pso_cache();
     pak_distribute::preflight_one_with_profile(&profile, item).await
 }
 
-pub async fn run_one(item: PsoDistributePlanItem) -> UecmResult<PsoDistributeOutcome> {
+pub async fn run_one(item: PsoDistributePlanItem) -> VoloResult<PsoDistributeOutcome> {
     let profile = DistributeProfile::pso_cache();
     pak_distribute::run_one_with_profile(&profile, item).await
 }

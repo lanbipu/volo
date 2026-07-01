@@ -1,4 +1,4 @@
-//! `uecm-cli secret <action>` — manage the cross-platform SecretStore (AES-GCM)
+//! `voloctl cache secret <action>` — manage the cross-platform SecretStore (AES-GCM)
 //! directly. Lets operators / agents store and inspect transport secrets (Mode B
 //! share svc passwords, saved WinRM aliases) from the command line. Replaces the
 //! retiring `cred` domain's DPAPI write path with the SSH-era SecretStore.
@@ -10,9 +10,9 @@ use crate::destructive::{self, Outcome};
 use crate::output::EmitSerialize;
 use crate::run::Ctx;
 use cache_core::core::secrets::SecretStore;
-use cache_core::error::{UecmError, UecmResult};
+use cache_core::error::{VoloError, VoloResult};
 
-pub fn handle(ctx: &mut Ctx<'_>, action: SecretAction) -> UecmResult<()> {
+pub fn handle(ctx: &mut Ctx<'_>, action: SecretAction) -> VoloResult<()> {
     match action {
         SecretAction::Set { alias, value } => set(ctx, &alias, value),
         SecretAction::Get { alias } => get(ctx, &alias),
@@ -21,7 +21,7 @@ pub fn handle(ctx: &mut Ctx<'_>, action: SecretAction) -> UecmResult<()> {
     }
 }
 
-fn set(ctx: &mut Ctx<'_>, alias: &str, value: Option<String>) -> UecmResult<()> {
+fn set(ctx: &mut Ctx<'_>, alias: &str, value: Option<String>) -> VoloResult<()> {
     let secret = match value {
         Some(v) => v,
         None => {
@@ -29,7 +29,7 @@ fn set(ctx: &mut Ctx<'_>, alias: &str, value: Option<String>) -> UecmResult<()> 
             // secret never lands in shell history. `--no-input` forbids the
             // implicit stdin read — fail fast instead of blocking.
             if ctx.no_input {
-                return Err(UecmError::InvalidInput(
+                return Err(VoloError::InvalidInput(
                     "--no-input set but `secret set` requires the value via --value (stdin read disabled)".into(),
                 ));
             }
@@ -37,12 +37,12 @@ fn set(ctx: &mut Ctx<'_>, alias: &str, value: Option<String>) -> UecmResult<()> 
             io::stdin()
                 .lock()
                 .read_line(&mut line)
-                .map_err(|e| UecmError::InvalidInput(format!("read secret from stdin: {}", e)))?;
+                .map_err(|e| VoloError::InvalidInput(format!("read secret from stdin: {}", e)))?;
             line.trim_end_matches(['\r', '\n']).to_string()
         }
     };
     if secret.is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "secret value is empty (pass --value or pipe it on stdin)".into(),
         ));
     }
@@ -58,9 +58,9 @@ fn set(ctx: &mut Ctx<'_>, alias: &str, value: Option<String>) -> UecmResult<()> 
     Ok(())
 }
 
-fn get(ctx: &mut Ctx<'_>, alias: &str) -> UecmResult<()> {
+fn get(ctx: &mut Ctx<'_>, alias: &str) -> VoloResult<()> {
     let value = SecretStore::from_config()?.get(alias)?.ok_or_else(|| {
-        UecmError::InvalidInput(format!("no secret stored for alias '{}'", alias))
+        VoloError::InvalidInput(format!("no secret stored for alias '{}'", alias))
     })?;
     // `secret get` is the one place the plaintext intentionally surfaces.
     ctx.emitter
@@ -69,7 +69,7 @@ fn get(ctx: &mut Ctx<'_>, alias: &str) -> UecmResult<()> {
     Ok(())
 }
 
-fn list(ctx: &mut Ctx<'_>) -> UecmResult<()> {
+fn list(ctx: &mut Ctx<'_>) -> VoloResult<()> {
     let aliases = SecretStore::from_config()?.list()?;
     ctx.emitter
         .emit_result(&serde_json::json!({ "aliases": aliases }))
@@ -77,7 +77,7 @@ fn list(ctx: &mut Ctx<'_>) -> UecmResult<()> {
     Ok(())
 }
 
-fn delete(ctx: &mut Ctx<'_>, alias: &str, yes: bool, dry_run: bool) -> UecmResult<()> {
+fn delete(ctx: &mut Ctx<'_>, alias: &str, yes: bool, dry_run: bool) -> VoloResult<()> {
     let outcome = destructive::check(yes, dry_run, "secret.delete")?;
     if outcome == Outcome::DryRun {
         let exists = SecretStore::from_config()?.get(alias)?.is_some();
@@ -123,7 +123,7 @@ mod tests {
         let mut ctx = ctx_no_input(&mut buf);
         let r = set(&mut ctx, "some-alias", None);
         match r {
-            Err(UecmError::InvalidInput(msg)) => assert!(msg.contains("--no-input")),
+            Err(VoloError::InvalidInput(msg)) => assert!(msg.contains("--no-input")),
             other => panic!("expected InvalidInput, got {:?}", other),
         }
     }

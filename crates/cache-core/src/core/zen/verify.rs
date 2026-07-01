@@ -9,11 +9,11 @@
 //! credentials), and parses the `{ ok, matched, ... }` envelope back into a
 //! strongly-typed `VerifyOutcome`.
 //!
-//! Both the CLI (`uecm-cli zen verify-rules --run-editor`) and the Tauri
+//! Both the CLI (`voloctl cache zen verify-rules --run-editor`) and the Tauri
 //! command go through `verify_endpoint` so the two surfaces emit the same
 //! shape, per plan §3 CLI/Tauri 1:1 contract.
 
-use crate::error::{UecmError, UecmResult};
+use crate::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
 
 // -----------------------------------------------------------------------------
@@ -75,7 +75,7 @@ pub struct VerifyOutcome {
 /// regardless of `cred`. Same envelope pattern as the M2 zen handlers in
 /// `cli::domain_zen` — `run_remote` / `parse_envelope`.
 ///
-/// Returns `Err(UecmError::PowerShell)` when the sidecar's envelope has
+/// Returns `Err(VoloError::PowerShell)` when the sidecar's envelope has
 /// `ok=false` (timeout / editor crash / host mismatch); the message includes
 /// the sidecar's `message` field so the caller can render it directly. On
 /// `ok=true` the function returns the full `VerifyOutcome`.
@@ -83,19 +83,19 @@ pub fn verify_endpoint(
     host: &str,
     cred: Option<(&str, &str)>,
     input: &VerifyInput,
-) -> UecmResult<VerifyOutcome> {
+) -> VoloResult<VerifyOutcome> {
     // Same validation the sidecar will do, but failing here gives a clearer
     // error than waiting for the SSH round-trip to return `ok:false`.
     if input.ue_root.trim().is_empty() {
-        return Err(UecmError::InvalidInput("ue_root must be non-empty".into()));
+        return Err(VoloError::InvalidInput("ue_root must be non-empty".into()));
     }
     if input.uproject_path.trim().is_empty() {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "uproject_path must be non-empty".into(),
         ));
     }
     if input.timeout_seconds == 0 {
-        return Err(UecmError::InvalidInput(
+        return Err(VoloError::InvalidInput(
             "timeout_seconds must be > 0".into(),
         ));
     }
@@ -106,7 +106,7 @@ pub fn verify_endpoint(
     // bad value never reaches the sidecar.
     if let Some(p) = input.expected_port {
         if !(1..=65535).contains(&p) {
-            return Err(UecmError::InvalidInput(format!(
+            return Err(VoloError::InvalidInput(format!(
                 "expected_port must be in 1..=65535; got {p}"
             )));
         }
@@ -124,7 +124,7 @@ pub fn verify_endpoint(
 /// Run the node-pure `zen-verify-rules.ps1` over SSH, passing `input` as the
 /// stdin JSON parameter object. Returns the raw stdout envelope so
 /// `parse_outcome_json` can apply the same `ok`-flag hardening as before.
-fn run_verify_node(host: &str, input: &VerifyInput) -> UecmResult<String> {
+fn run_verify_node(host: &str, input: &VerifyInput) -> VoloResult<String> {
     use crate::core::ssh::{NodeScript, RemoteExecutor, SshExecutor};
     let mut args = serde_json::json!({
         "UeRoot": input.ue_root,
@@ -161,13 +161,13 @@ fn run_verify_node(host: &str, input: &VerifyInput) -> UecmResult<String> {
 // -----------------------------------------------------------------------------
 
 /// Parse the `{ ok, matched, ... }` envelope into a `VerifyOutcome`. Returns
-/// `Err(UecmError::PowerShell)` on `ok=false` so the caller layer doesn't need
+/// `Err(VoloError::PowerShell)` on `ok=false` so the caller layer doesn't need
 /// to remember to re-check the flag. Same hardening as
 /// `cli::domain_zen::parse_envelope`: only the literal boolean `true` is
 /// success — missing / non-bool `ok` is treated as a protocol violation.
-pub fn parse_outcome_json(raw: &str) -> UecmResult<VerifyOutcome> {
+pub fn parse_outcome_json(raw: &str) -> VoloResult<VerifyOutcome> {
     let envelope: serde_json::Value = serde_json::from_str(raw).map_err(|e| {
-        UecmError::PowerShell(format!(
+        VoloError::PowerShell(format!(
             "zen-verify-rules returned non-JSON output: {e}; raw: {}",
             raw.chars().take(200).collect::<String>()
         ))
@@ -175,7 +175,7 @@ pub fn parse_outcome_json(raw: &str) -> UecmResult<VerifyOutcome> {
     let ok = match envelope.get("ok").and_then(|v| v.as_bool()) {
         Some(b) => b,
         None => {
-            return Err(UecmError::PowerShell(format!(
+            return Err(VoloError::PowerShell(format!(
                 "zen-verify-rules returned envelope without a boolean `ok` field; raw: {}",
                 raw.chars().take(200).collect::<String>()
             )));
@@ -197,7 +197,7 @@ pub fn parse_outcome_json(raw: &str) -> UecmResult<VerifyOutcome> {
             .message
             .clone()
             .unwrap_or_else(|| "zen-verify-rules reported ok=false".to_string());
-        Err(UecmError::PowerShell(format!(
+        Err(VoloError::PowerShell(format!(
             "zen-verify-rules: {msg}; outcome: {}",
             serde_json::to_string(&outcome).unwrap_or_else(|_| "<unserializable>".into())
         )))
@@ -291,7 +291,7 @@ mod tests {
         let mut i = full_input();
         i.ue_root = "  ".into();
         let e = verify_endpoint("10.0.0.1", None, &i).unwrap_err();
-        assert!(matches!(e, UecmError::InvalidInput(_)));
+        assert!(matches!(e, VoloError::InvalidInput(_)));
     }
 
     #[test]
@@ -299,7 +299,7 @@ mod tests {
         let mut i = full_input();
         i.uproject_path = "".into();
         let e = verify_endpoint("10.0.0.1", None, &i).unwrap_err();
-        assert!(matches!(e, UecmError::InvalidInput(_)));
+        assert!(matches!(e, VoloError::InvalidInput(_)));
     }
 
     #[test]
@@ -307,7 +307,7 @@ mod tests {
         let mut i = full_input();
         i.timeout_seconds = 0;
         let e = verify_endpoint("10.0.0.1", None, &i).unwrap_err();
-        assert!(matches!(e, UecmError::InvalidInput(_)));
+        assert!(matches!(e, VoloError::InvalidInput(_)));
     }
 
     // ---- parse_outcome_json --------------------------------------------
@@ -344,7 +344,7 @@ mod tests {
         }"#;
         let e = parse_outcome_json(raw).unwrap_err();
         match e {
-            UecmError::PowerShell(msg) => {
+            VoloError::PowerShell(msg) => {
                 assert!(msg.contains("timeout waiting for ZenShared"));
                 assert!(msg.contains("outcome"));
             }
@@ -363,7 +363,7 @@ mod tests {
         let e = parse_outcome_json(raw).unwrap_err();
         // The outcome JSON should round-trip carrying exit_code.
         match e {
-            UecmError::PowerShell(msg) => {
+            VoloError::PowerShell(msg) => {
                 assert!(msg.contains("\"exit_code\":3"));
                 assert!(msg.contains("editor process exited"));
             }
@@ -375,13 +375,13 @@ mod tests {
     fn parse_outcome_json_missing_ok_is_protocol_error() {
         let raw = r#"{ "matched": true }"#;
         let e = parse_outcome_json(raw).unwrap_err();
-        assert!(matches!(e, UecmError::PowerShell(_)));
+        assert!(matches!(e, VoloError::PowerShell(_)));
     }
 
     #[test]
     fn parse_outcome_json_non_json_is_powershell_error() {
         let e = parse_outcome_json("not json at all").unwrap_err();
-        assert!(matches!(e, UecmError::PowerShell(_)));
+        assert!(matches!(e, VoloError::PowerShell(_)));
     }
 
     #[test]
@@ -400,7 +400,7 @@ mod tests {
         }"#;
         let e = parse_outcome_json(raw).unwrap_err();
         match e {
-            UecmError::PowerShell(msg) => {
+            VoloError::PowerShell(msg) => {
                 assert!(msg.contains("host mismatch"));
                 assert!(msg.contains("192.168.10.20"));
                 assert!(msg.contains("\"matched\":true"));
