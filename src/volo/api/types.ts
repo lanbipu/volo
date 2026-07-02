@@ -563,6 +563,16 @@ export interface ZenCacheStatsRecord {
   error_message: string | null;
 }
 
+export interface ZenDiskSpaceResult {
+  endpoint_id: number;
+  machine_id: number;
+  host: string;
+  drive: string;
+  total_bytes: number | null;
+  free_bytes: number | null;
+  error_message: string | null;
+}
+
 export interface ZenCacheStatsReport {
   endpoints: number;
   rows_inserted: number;

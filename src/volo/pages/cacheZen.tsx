@@ -36,7 +36,7 @@ import "./cache";
 import {
   zenRegister, zenDetectBinary, zenApplyConfig, zenUpdateGcSettings, zenCreateDedicatedAccount,
   zenUrlaclAdd, zenServiceInstall, zenServiceStart, zenServiceStop, zenServiceUninstall,
-  zenUnregister, zenProbe, zenStatus, zenListEndpoints, zenCacheStats, setIniKey, readIniSection,
+  zenUnregister, zenProbe, zenStatus, zenListEndpoints, zenCacheStats, zenDiskSpace, setIniKey, readIniSection,
   refreshMachine, revealPath, zenEnableGlobal, zenReadLocalRuncontext, zenSetLocalDatapath, getMachineEnvVar,
 } from "../api/commands";
 
@@ -1049,7 +1049,7 @@ import {
           endpointId: ep.id, machineId: ep.machine_id,
           host: row ? row.hostname : '', ip: row ? row.ip : '',
           port: ep.declared_port, scheme: ep.scheme, dataDir: ep.data_dir,
-          version: row && row.build_version ? row.build_version : '—', svc, providers: null, cacheDiskBytes: null,
+          version: row && row.build_version ? row.build_version : '—', svc, providers: null, cacheDiskBytes: null, diskTotalBytes: null,
           gcIntervalSeconds: ep.gc_interval_seconds, gcLightweightIntervalSeconds: ep.gc_lightweight_interval_seconds,
           cacheMaxDurationSeconds: ep.cache_max_duration_seconds,
           serviceAccountUsername: ep.service_account_username, serviceAccountCredAlias: ep.service_account_cred_alias,
@@ -1060,6 +1060,13 @@ import {
           const provs = sample && Array.isArray(sample.providers) ? sample.providers : null;
           const diskBytes = sample && typeof sample.cache_disk_size_bytes === 'number' ? sample.cache_disk_size_bytes : null;
           setStatus((s2) => (s2 ? Object.assign({}, s2, { providers: provs, cacheDiskBytes: diskBytes }) : s2));
+        }, () => {});
+        /* 数据盘总容量走单独一条 SSH 通道（zen 自己的 /stats 里没有这个字段，见 zenDiskSpace 注释），
+           跟上面的 HTTP 缓存用量并行取，谁先回来谁先展示，互不阻塞。 */
+        zenDiskSpace(ep.id).then((rows) => {
+          const rec = Array.isArray(rows) && rows[0] ? rows[0] : null;
+          const totalBytes = rec && typeof rec.total_bytes === 'number' ? rec.total_bytes : null;
+          setStatus((s2) => (s2 ? Object.assign({}, s2, { diskTotalBytes: totalBytes }) : s2));
         }, () => {});
       });
     };
@@ -1216,14 +1223,24 @@ import {
     /* zen 自身 /stats/z$ 上报的 cache.size.disk，来自 zenCacheStats 拉取的 status.cacheDiskBytes；
        未探测到（z$ 未注册 / 探测失败）时为 null，如实显示「—」而非编造。 */
     const heroBytes = (b) => b == null ? ['—', null]
+      : b >= 1099511627776 ? [(b / 1099511627776).toFixed(1), 'TB']
       : b >= 1073741824 ? [(b / 1073741824).toFixed(1), 'GB']
       : b >= 1048576 ? [(b / 1048576).toFixed(0), 'MB']
       : [(b / 1024).toFixed(0), 'KB'];
+    const fmtBytesStr = (b) => { const [v, u] = heroBytes(b); return u ? (v + ' ' + u) : v; };
 
     /* ① 服务器状态卡：仪表化展示（hero 磁贴 + chip 组）。
        URL ACL 取部署时实际下发的 urlacl 前缀（zen_urlacl_add 写入的 netsh 规则），非猜测值。 */
     const urlAclPrefix = deployed ? (status.scheme + '://*:' + status.port + '/') : null;
     const [cacheSizeVal, cacheSizeUnit] = heroBytes(status && status.cacheDiskBytes);
+    /* 数据盘占用条：分子=zen 缓存自身占用（cacheDiskBytes），分母=数据盘所在卷总容量
+       （diskTotalBytes，SSH 读，见 zenDiskSpace）；任一缺失都不编造百分比，条子留白。
+       floor 3% 是抄设计稿的做法——用量再小也留一道可见的色块，不会看着像空条。 */
+    const cacheBytesRaw = status && status.cacheDiskBytes;
+    const diskTotalBytes = status && status.diskTotalBytes;
+    const diskUsePct = (diskTotalBytes != null && diskTotalBytes > 0 && cacheBytesRaw != null)
+      ? Math.max(3, Math.min(100, Math.round(cacheBytesRaw / diskTotalBytes * 100)))
+      : null;
     const statusCard = statusLoading
       ? h('div', { className: 'zen-empty' },
           h('span', { className: 'ze-ico' }, h('span', { className: 'zstep-spin' })),
@@ -1245,6 +1262,14 @@ import {
               hero(pointedCount, '台', '客户端数量', 'accent'),
               hero(cacheSizeVal, cacheSizeUnit, '缓存容量', null,
                 cacheSizeVal === '—' ? 'z$ 缓存 provider 未上报磁盘用量，或本次探测失败' : null)),
+            h('div', { className: 'zsv-bar', title: diskUsePct == null ? '数据盘总容量读取中或读取失败（SSH · get-disk-space）' : null },
+              h('div', { className: 'zsv-bar-top' },
+                h('span', { className: 'zsv-bar-k' }, '数据盘占用'),
+                h('span', { className: 'zsv-bar-v mono' },
+                  diskUsePct == null ? '—' : fmtBytesStr(cacheBytesRaw) + ' / ' + fmtBytesStr(diskTotalBytes))),
+              h('div', { className: 'zsv-bar-track' },
+                h('div', { className: 'zsv-bar-fill', style: { width: (diskUsePct == null ? 0 : diskUsePct) + '%' } })),
+              h('div', { className: 'zsv-bar-pct mono' }, diskUsePct == null ? '暂无数据' : diskUsePct + '%')),
             h('div', { className: 'zsv-chips' },
               chip('端口', String(status.port), true),
               chip('协议', status.scheme),

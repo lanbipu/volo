@@ -272,6 +272,7 @@ pub fn run() {
             commands::zen::zen_status,
             commands::zen::zen_probe,
             commands::zen::zen_cache_stats,
+            commands::zen::zen_disk_space,
             commands::zen::zen_detect_binary,
             commands::zen::zen_list_endpoints,
             commands::zen::zen_baseline_list,

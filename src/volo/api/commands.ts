@@ -23,7 +23,7 @@ import type {
   PsoCollectJobResponse, PsoCacheFile, DistributePsoCacheRequest, PsoDistributeJobResponse,
   StartPsoWarmupRequest, PsoWarmupJobResponse, PsoWarmupRun,
   RunHealthCheckRequest, HealthRunSummary, HealthCheckRow,
-  ZenStatusRow, ZenProbeReport, ZenCacheStatsReport, ZenDetectBinaryReport, ZenEndpoint,
+  ZenStatusRow, ZenProbeReport, ZenCacheStatsReport, ZenDiskSpaceResult, ZenDetectBinaryReport, ZenEndpoint,
   ZenBinaryExpected, ZenRegisterInput, ZenRegisterOutcome, ZenUnregisterResult,
   ZenChangeRoleResult, ZenLuaPreviewResult, ZenCredentialInput, ZenApplyConfigResult,
   ZenServiceResult, ZenServiceSummary, ZenServiceStatusResult,
@@ -305,6 +305,9 @@ export const zenProbe = (machineId?: number | null, credAlias?: string | null, t
 // ✅ wired: cacheZen 状态卡「缓存记录」→ zenCacheStats
 export const zenCacheStats = (endpointId?: number | null, timeoutSeconds?: number | null) =>
   call<ZenCacheStatsReport>("zen_cache_stats", { endpointId: endpointId ?? null, timeoutSeconds: timeoutSeconds ?? null });
+// ✅ wired: cacheZen 状态卡「数据盘占用」进度条 → zenDiskSpace（SSH 读 data_dir 所在卷总容量）
+export const zenDiskSpace = (endpointId?: number | null) =>
+  call<ZenDiskSpaceResult[]>("zen_disk_space", { endpointId: endpointId ?? null });
 // ✅ wired: cacheZen 部署链路 step2（前置检查）→ zenDetectBinary
 export const zenDetectBinary = (machineId?: number | null, credAlias?: string | null) =>
   call<ZenDetectBinaryReport>("zen_detect_binary", { machineId: machineId ?? null, credAlias: credAlias ?? null });
