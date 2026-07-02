@@ -19,8 +19,8 @@ import "./cache";
 import {
   zenRegister, zenDetectBinary, zenApplyConfig, zenUpdateGcSettings, zenCreateDedicatedAccount,
   zenUrlaclAdd, zenServiceInstall, zenServiceStart, zenServiceStop, zenServiceUninstall,
-  zenUnregister, zenProbe, zenStatus, zenListEndpoints, zenCacheStats, setIniKey, refreshMachine,
-  revealPath, zenEnableGlobal,
+  zenUnregister, zenProbe, zenStatus, zenListEndpoints, zenCacheStats, setIniKey, readIniSection,
+  refreshMachine, revealPath, zenEnableGlobal,
 } from "../api/commands";
 
 (function () {
@@ -273,7 +273,8 @@ import {
        否则首屏 RENDER_NODES 还空、走下面 if(!srvNode) 早返回时这些 hook 不执行；机器异步到达后
        re-render 又执行，hook 数变化会让 React 抛「Rendered more hooks than during the previous
        render」并卸载整棵树（纯黑屏）。 */
-    const [pointed, setPointed] = useState(() => new Set());  /* 本地跟踪「已成功指向」的机器（后端无逐机查询）*/
+    const [pointed, setPointed] = useState(() => new Set());  /* 「已指向」机器（下方 effect 真实回读 + 应用成功的乐观更新）*/
+    const [pointedLoading, setPointedLoading] = useState(false); /* 指向状态回读进行中 */
     const [sel, setSel] = useState([]);
     const [res, setRes] = useState({});   /* clientId -> { st, msg } */
     /* —— 配置范围（写哪个 ini）——
@@ -292,6 +293,60 @@ import {
     const runtimeUser = (n) => (n && n.user && n.user !== '—') ? n.user : null;
     /* 该机在当前范围下是否可写（工程级需有已发现工程；用户全局需有运行用户）*/
     const scopeReadyFor = (n) => cfgScope === 'project' ? clientProjects(n.id).length > 0 : !!runtimeUser(n);
+
+    /* —— 指向状态真实回读 ——
+       pointed 只活在本组件挂载周期里：切去集群总览（比如跑巡检）再切回来会整组件重挂，
+       全部退回「未指向」，而机器上的 ini 其实原封没动。这里对在线客户端逐台真实回读
+       [StorageServers] Shared（用户全局读 UserEngine.ini，工程级读各工程 DefaultEngine.ini，
+       与 applyTo 的两条写入路径一一对应），Host 主机名/IP + 端口命中当前端点即「已指向」。
+       代次令牌 + 并集合并同 cacheDdc readStatus：作废过期回读、不覆盖回读期间「应用成功」
+       的乐观更新（本页没有「取消指向」操作，并集不会复活已解除项）。 */
+    const pointedGenRef = useRef(0);
+    const statusSig = status ? [status.endpointId, status.machineId, status.host, status.ip, status.port].join('|') : '';
+    const nodesSig = (window.RENDER_NODES || []).map((n) => n.id + ':' + n.status + ':' + n.user).join(',');
+    const projSig = (window.UE_PROJECTS || []).map((p) => p.id).join(',');
+    useEffect(() => {
+      const gen = ++pointedGenRef.current;
+      if (!status) { setPointedLoading(false); return; }
+      const nodes = (window.RENDER_NODES || []).filter((n) =>
+        n.status !== 'offline' && n.machineId && n.machineId !== status.machineId);
+      if (!nodes.length) { setPointedLoading(false); return; }
+      /* 与 applyTo 的 hostUri 同源比对：Host 主机部分接受端点 hostname 或 IP，端口必须一致 */
+      const serverNode = (window.RENDER_NODES || []).find((n) => n.machineId === status.machineId);
+      const hostCands = [status.host, status.ip, serverNode && serverNode.host, serverNode && serverNode.ip]
+        .filter(Boolean).map((x) => String(x).toLowerCase());
+      const hitsServer = (keys) => (Array.isArray(keys) ? keys : []).some((k) => {
+        if (!k || String(k.name || '').toLowerCase() !== 'shared') return false;
+        const m = /Host\s*=\s*"([^"]+)"/i.exec(String(k.value || ''));
+        if (!m) return false;
+        try {
+          const u = new URL(m[1]);
+          return String(u.port) === String(status.port) && hostCands.includes(u.hostname.toLowerCase());
+        } catch { return false; }
+      });
+      setPointedLoading(true);
+      Promise.allSettled(nodes.map((n) => {
+        const reads = [];
+        const user = runtimeUser(n);
+        if (user) reads.push(readIniSection(n.machineId, 'C:\\Users\\' + user + '\\AppData\\Local\\Unreal Engine\\Engine\\Config\\UserEngine.ini', 'StorageServers'));
+        clientProjects(n.id).forEach((p) => {
+          const loc = p.locByMachine && p.locByMachine[String(n.machineId)];
+          if (loc) reads.push(readIniSection(n.machineId, loc + '\\Config\\DefaultEngine.ini', 'StorageServers'));
+        });
+        if (!reads.length) return Promise.resolve({ id: n.id, hit: false });
+        /* 文件不存在 / 机器读不到 → rejected → 不算命中；任一份 ini 命中即已指向 */
+        return Promise.allSettled(reads).then((rs) => ({
+          id: n.id,
+          hit: rs.some((r) => r.status === 'fulfilled' && hitsServer(r.value)),
+        }));
+      })).then((rs) => {
+        if (gen !== pointedGenRef.current) return; /* 被更新的回读取代 / 已卸载 → 丢弃 */
+        const hits = rs.filter((r) => r.status === 'fulfilled' && r.value.hit).map((r) => r.value.id);
+        if (hits.length) setPointed((prev) => { const np = new Set(prev); hits.forEach((id) => np.add(id)); return np; });
+        setPointedLoading(false);
+      });
+      return () => { pointedGenRef.current++; };
+    }, [statusSig, nodesSig, projSig]);
 
     const deployed = !!status;
     /* 仅当服务真正 running 才允许把客户端指向它——指向一台已停止/不可达/状态未知的服务器
@@ -920,6 +975,7 @@ import {
       }
       if (n.status === 'offline') return h(ZBadge, { vis: 'neutral', icon: 'power', label: '离线 · 跳过' });
       if (pointed.has(n.id)) return h(ZBadge, { vis: 'positive', icon: 'check', label: '已指向此服务器', soft: true });
+      if (pointedLoading) return h(ZBadge, { vis: 'neutral', icon: 'sync', label: '读取指向状态…', soft: true });
       return h(ZBadge, { vis: 'notice', icon: 'minus', label: '未指向', soft: true });
     };
     const clientRow = (n) => {
