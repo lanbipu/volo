@@ -408,13 +408,22 @@ function App() {
   const [leftW, setLeftW] = useState(typeof persisted.leftW === 'number' ? persisted.leftW : 214);
   const [rightW, setRightW] = useState(typeof persisted.rightW === 'number' ? persisted.rightW : 372);
   const [leftCollapsed, setLeftCollapsed] = useState(!!persisted.leftCollapsed);
-  /* 若上次停在 DDC PAK/PSO（操作面只在检查器里），即便持久化了折叠态也强制展开——否则
-     重载后右栏 0 宽，生成/校验/收集/分发全不可见、不可达（goCacheNav 的展开只在交互时生效，重载走原始 useState）。 */
-  const [rightCollapsed, setRightCollapsed] = useState(!!persisted.rightCollapsed && !/^ddc_p(ak|so)$/.test(persisted.cacheNav || ''));
+  /* 检查器（右栏）每次打开页面都从收起状态开始 —— 不做"记住上次开合"的持久化，只有
+     本次会话里的相关操作（选中机器/工程、打开详情等，见下方 effect）才会自动展开它。
+     两个例外都要在挂载时就展开，而不是等 effect 的上升沿去追：
+     ① 若上次停在 DDC PAK/PSO（操作面只在检查器里），否则重载后右栏 0 宽，
+        生成/校验/收集/分发全不可见、不可达；
+     ② 若上次持久化的 calSel 非空（校正对象选中态是持久化的，drawer/pakSel/psoSel 不是），
+        下方 effect 的 inspectorHasTargetRef 初值会按 calSel 算出 hasTarget=true——
+        若这里仍按"默认收起"处理，挂载时 rightCollapsed(true) 与 ref(true) 表面一致，
+        不会触发边沿判定去展开，选中的校正对象详情会卡在 0 宽列里不可见、不可点。 */
+  const [rightCollapsed, setRightCollapsed] = useState(!/^ddc_p(ak|so)$/.test(persisted.cacheNav || '') && !persisted.calSel);
   const [logH, setLogH] = useState(typeof persisted.logH === 'number' ? persisted.logH : 150);
   const [page, setPage] = useState(() => PAGES.some((p) => p.id === persisted.page) ? persisted.page : 'tools');
   /* 舞台切换器 / 面包屑已移除，stage state 无消费者，随之删除 */
-  const [logOpen, setLogOpen] = useState(persisted.logOpen !== undefined ? persisted.logOpen : true);
+  /* 控制台（底部日志面板）每次打开页面都从收起状态开始 —— 不持久化开合；只有相关操作
+     （运行任务、点击日志标签/历史任务、输入搜索）才会自动展开它。 */
+  const [logOpen, setLogOpen] = useState(false);
   const [logFilter, setLogFilter] = useState('all');
   const [logs, setLogs] = useState([]); /* NDJSON 流 —— 真实命令派发的事件后续批次接入 */
   const [selNode, setSelNode] = useState(persisted.selNode || null);
@@ -502,10 +511,10 @@ function App() {
   useEffect(() => {
     clearTimeout(persistTimer.current);
     persistTimer.current = setTimeout(() => {
-      try { localStorage.setItem('volo2', JSON.stringify({ page, logOpen, selNode, cacheNav, ddcOpen, calStep, calScreen, calMethod, calSel, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed, rightCollapsed })); } catch (e) {}
+      try { localStorage.setItem('volo2', JSON.stringify({ page, selNode, cacheNav, ddcOpen, calStep, calScreen, calMethod, calSel, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed })); } catch (e) {}
     }, 150);
     return () => clearTimeout(persistTimer.current);
-  }, [page, logOpen, selNode, cacheNav, ddcOpen, calStep, calScreen, calMethod, calSel, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed, rightCollapsed]);
+  }, [page, selNode, cacheNav, ddcOpen, calStep, calScreen, calMethod, calSel, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed]);
 
   /* 禁掉桌面 WebView 的右键菜单（reload / 检查）；calibrate 画布另有本地 preventDefault */
   useEffect(() => {
@@ -754,15 +763,22 @@ function App() {
 
   const cluster = deriveCluster(machines, healthChecks, healthRunAt);
 
-  /* 检查器（右栏）就地显示：scrim 弹层已移除，细节渲染进 inspector 列。若右栏已折叠(rightCollapsed)
-     而此刻要展示内容，必须自动展开——否则细节渲染进 0 宽 + overflow:hidden 的列里完全不可见、不可点。 */
-  const openDrawer = (d) => { if (d) setRightCollapsed(false); setDrawer(d); }; /* 关闭(null)不触发展开 */
   /* 切缓存子页：清掉残留的就地细节(drawer)，并在进入 DDC PAK / PSO（检查器=操作面）时自动展开右栏。 */
   const goCacheNav = (v) => { setDrawer(null); if (/^ddc_p(ak|so)$/.test(v)) setRightCollapsed(false); setCacheNav(v); };
 
+  /* 检查器（右栏）自动展开 / 收起：只有"选中了对象"的操作才触发——打开机器/工程详情(drawer)、
+     勾选 DDC 工程(pakSel/psoSel)、选中校正对象(calSel)。只在 hasTarget 的上升/下降沿切换，
+     不会在用户手动收起后又强行弹回来，取消选择时也会自动收起（细节渲染进 0 宽列不可见/不可点）。 */
+  const inspectorHasTargetRef = useRef(!!drawer || (Array.isArray(pakSel) && pakSel.length > 0) || !!psoSel || !!calSel);
+  useEffect(() => {
+    const hasTarget = !!drawer || (Array.isArray(pakSel) && pakSel.length > 0) || !!psoSel || !!calSel;
+    if (hasTarget !== inspectorHasTargetRef.current) setRightCollapsed(!hasTarget);
+    inspectorHasTargetRef.current = hasTarget;
+  }, [drawer, pakSel, psoSel, calSel]);
+
   const s = { theme, toggleTheme, platform, setPlatform, toolsNav, setToolsNav, page, setPage, logOpen, setLogOpen, logFilter, setLogFilter,
     logs, pushLog, pushLogs, logH, setLogH,
-    selNode, setSelNode, cacheNav, setCacheNav: goCacheNav, ddcOpen, setDdcOpen, drawer, setDrawer: openDrawer,
+    selNode, setSelNode, cacheNav, setCacheNav: goCacheNav, ddcOpen, setDdcOpen, drawer, setDrawer,
     modal, setModal,
     pakSel, setPakSel, psoSel, setPsoSel, pakVerify, setPakVerify, psoRuns, setPsoRuns,
     freshSetup, setFreshSetup, machinesAdded, setMachinesAdded,

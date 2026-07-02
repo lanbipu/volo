@@ -831,7 +831,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
     const close = () => s.setModal(null);
     const tryClose = () => { if (!busyRef.current) close(); };
     return h('div', { className: 'modal-scrim', onClick: d.render ? close : tryClose },
-      h('div', { className: 'modal-host' + (d.destructive ? ' danger' : '') + (d.wide ? ' wide' : ''), onClick: (e) => e.stopPropagation() },
+      h('div', { className: 'modal-host' + (d.destructive ? ' danger' : '') + (d.wide ? ' wide' : '') + (d.xwide ? ' xwide' : ''), onClick: (e) => e.stopPropagation() },
         d.render ? d.render({ s, close }) : h(ModalPreview, { s, d, close, busyRef })));
   }
 

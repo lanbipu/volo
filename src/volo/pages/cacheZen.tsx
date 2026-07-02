@@ -19,7 +19,17 @@
       环境变量：SSH（session 0）写入后 WM_SETTINGCHANGE 广播跨不了会话，桌面会话里的
       Explorer / Epic Launcher 环境块不刷新，重启编辑器也读不到，注销/重启系统才生效
       ——这正是换注册表通道的原因。
-   远程操作走 SSH key（cred = {} 全 None），不逐操作选凭据；真实回读来自 zen_probe。 */
+   远程操作走 SSH key（cred = {} 全 None），不逐操作选凭据；真实回读来自 zen_probe。
+
+   一级 Dashboard 的三张卡（服务器状态 / 回收策略 / 客户端指向）各自的具体配置收进二级
+   xwide 弹层（DeployModal / GcModal / ClientModal）。这三个弹层都是独立的、拥有自己
+   useState 的组件（与 ZenDirModal / ProjPointModal 同一模式）——而不是把已求值好的 JSX
+   树塞进 `s.setModal({ render: () => <冻结的 VDOM> })`：那样 render 回调虽然会被
+   ModalLayer 反复调用，但闭包捕获的表单字段/勾选状态是 ZenServer 某一次 render 的快照，
+   之后 ZenServer 本地 state 再怎么变都不会回填到已经存进 s.modal 的这份闭包里——弹层内
+   任何输入框/勾选框会看起来完全没反应（受控 input 每次按键后被 React 纠正回旧值）。
+   拆成独立组件后，表单交互复用组件自己的 state，在 ModalLayer 反复调用同一个（其余不变）
+   render 闭包时通过 React 的按类型/位置调和被保留、更新，而不是每次都是一棵新鲜出炉的死树。 */
 import * as React from "react";
 import "../ds";
 import "./cache";
@@ -106,12 +116,20 @@ import {
     const u0 = units[0].id;
     return { value: Math.round(totalSec / GC_UNIT_SEC[u0]), unit: u0 };
   };
+  /* 一级 Dashboard · 缓存回收策略卡的 kv 列表用：{value,unit} → "8 小时" */
+  const UNIT_LABEL = { minutes: '分钟', hours: '小时', days: '天' };
+  const fmtGc = (f) => f.value + ' ' + UNIT_LABEL[f.unit];
 
   /* 三通道徽标：颜色 + 图标 + 文字 */
   function ZBadge({ vis, icon, label, soft }) {
     return h('span', { className: 'zbadge zb-' + vis + (soft ? ' soft' : '') },
       icon ? h(Icon, { name: icon, size: 12 }) : h('span', { className: 'zb-dash' }, '—'), label);
   }
+
+  /* clientProjects/runtimeUser 是纯函数（只读 window.UE_PROJECTS / 机器对象），ZenServer
+     的指向回读 effect 与 ClientModal 的配置范围逻辑都要用，提到模块级避免两份实现分叉。 */
+  const clientProjects = (id) => (window.UE_PROJECTS || []).filter((p) => p.machines.includes(id));
+  const runtimeUser = (n) => (n && n.user && n.user !== '—') ? n.user : null;
 
   /* 工程级指向的二级菜单：列出选中机器上已发现的 UE 工程，选择后再指向。
      每台机器只写入其本机存在的所选工程的 DefaultEngine.ini。UE 版本/体积/版本不一致
@@ -182,289 +200,100 @@ import {
           '指向此服务器（' + selP.length + ' 个工程）')));
   }
 
-  /* 批量设置客户端本地 Zen 缓存目录：一个路径应用到多台（渲染农场同盘符布局是常态）*/
-  function ZenDirModal({ machines, recOf, onConfirm, close }) {
+  /* 三级页面：客户端本地 Zen 缓存目录的集中管理 —— 机器多选（全选/取消全选）→ 统一目录应用到
+     选中 / 一键清除选中配置。二级列表不再逐台展开配置，全部目录操作集中收进这里。 */
+  function ZenDirModal({ machines, recOf, onApply, onClear, close }) {
     const [path, setPath] = useState('D:\\UE_DDC\\Zen');
+    const [selIds, setSelIds] = useState(machines.map((m) => m.id));
     const valid = /^[A-Za-z]:\\/.test(path.trim());
-    const confirm = () => { if (!valid) return; close(); onConfirm(path.trim()); };
+    const selN = selIds.length;
+    const allSel = selN === machines.length && selN > 0;
+    const toggle = (id) => setSelIds((v) => v.includes(id) ? v.filter((x) => x !== id) : v.concat(id));
+    const toggleAll = () => setSelIds(allSel ? [] : machines.map((m) => m.id));
+    const clearableSel = machines.filter((m) => selIds.includes(m.id) && recOf(m.id).cfg).map((m) => m.id);
+    const applyNow = () => { if (!valid || !selN) return; close(); onApply(selIds.slice(), path.trim()); };
+    const clearNow = () => { if (!clearableSel.length) return; close(); onClear(clearableSel.slice()); };
     return h('div', { className: 'drawer drawer--preview' },
       h('div', { className: 'drawer-h' },
         h('span', { className: 'di info' }, h(Icon, { name: 'folder', size: 17 })),
         h('div', { style: { minWidth: 0 } },
-          h('h2', null, '批量设置本地 Zen 缓存目录'),
+          h('h2', null, '客户端本地 Zen 缓存目录'),
           h('div', { className: 'sub' },
             h('span', { className: 'cli-pill' }, 'zen_set_local_datapath'),
-            h('span', null, ' · 注册表 + 创建目录 · ' + machines.length + ' 台客户端'))),
+            h('span', null, ' · 注册表 + 创建目录 · ' + machines.length + ' 台在线客户端'))),
         h('button', { className: 'iconbtn x', onClick: close }, h(Icon, { name: 'x', size: 16 }))),
       h('div', { className: 'drawer-b' },
         h('div', { className: 'dblock' },
-          h('div', { className: 'dblock-h' }, h('span', { className: 'no' }, '1'), '统一目录（Windows 绝对路径）'),
+          h('div', { className: 'dblock-h' }, h('span', { className: 'no' }, '1'), '目标机器',
+            h('button', { type: 'button', className: 'zdm-selall', onClick: toggleAll }, allSel ? '取消全选' : '全选', h('span', { className: 'zdm-selct' }, selN + ' / ' + machines.length))),
+          h('div', { className: 'zdm-list' }, machines.map((n) => {
+            const rec = recOf(n.id);
+            const on = selIds.includes(n.id);
+            const stMeta = NODE_STATUS[n.status] || NODE_STATUS.na;
+            return h('div', { key: n.id, className: 'zdm-row pick' + (on ? ' on' : ''), onClick: () => toggle(n.id) },
+              h('span', { className: 'zck' + (on ? ' on' : '') }, on ? h(Icon, { name: 'check', size: 12 }) : null),
+              h('span', { className: 'zdm-host' }, CX.dot(stMeta.visual), n.host),
+              h('span', { className: 'zdm-cur' + (rec.cfg ? '' : ' none') }, rec.cfg ? ('当前 ' + rec.cfg) : (rec.loading ? '当前配置读取中…' : '当前未配置 · 走默认 C 盘')));
+          }))),
+        h('div', { className: 'dblock' },
+          h('div', { className: 'dblock-h' }, h('span', { className: 'no' }, '2'), '统一目录（Windows 绝对路径）'),
           h('div', { className: 'zdir-form' },
-            h('input', { className: 'dp-input mono', value: path, autoFocus: true, spellCheck: false, placeholder: '如 D:\\UE_DDC\\Zen', onChange: (e) => setPath(e.target.value) })),
+            h('input', { className: 'dp-input mono', value: path, autoFocus: true, spellCheck: false, placeholder: '如 D:\\UE_DDC\\Zen', onChange: (e) => setPath(e.target.value) }),
+            h('button', { className: 'mini-btn accent', disabled: !valid || !selN, onClick: applyNow }, h(Icon, { name: 'check', size: 12 }), '应用到选中（' + selN + '）')),
           !valid ? h('div', { className: 'zdir-err', style: { marginTop: 6 } }, h(Icon, { name: 'alert', size: 12 }), '请输入 Windows 绝对路径（如 D:\\UE_DDC\\Zen）') : null,
           h('div', { className: 'zdir-intro', style: { marginTop: 6 } }, '渲染农场通常同盘符布局，一个路径可直接应用到所有选中机器。')),
         h('div', { className: 'dblock' },
-          h('div', { className: 'dblock-h' }, h('span', { className: 'no' }, '2'), '目标机器', h('span', { className: 'aff-sum' }, machines.length + ' 台')),
-          h('div', { className: 'zdm-list' }, machines.map((n) => {
-            const rec = recOf(n.id);
-            const stMeta = NODE_STATUS[n.status] || NODE_STATUS.na;
-            return h('div', { key: n.id, className: 'zdm-row' },
-              h('span', { className: 'zdm-host' }, CX.dot(stMeta.visual), n.host),
-              h('span', { className: 'zdm-cur' + (rec.cfg ? '' : ' none') }, rec.cfg ? ('当前 ' + rec.cfg) : (rec.loading ? '当前配置读取中…' : '当前未配置 · 走默认 C 盘')),
-              h('span', { className: 'zdm-arrow' }, h(Icon, { name: 'arrowr', size: 11 }), path.trim() || '—'));
-          }))),
+          h('div', { className: 'dblock-h' }, h('span', { className: 'no' }, '3'), '清除配置（还原默认 C 盘）'),
+          h('div', { className: 'zdm-clear-row' },
+            h('div', { className: 'zdm-clear-tx' }, clearableSel.length ? ('选中机器中有 ' + clearableSel.length + ' 台已配置自定义目录，可一键清除还原默认。') : '选中机器均未配置自定义目录，无需清除。'),
+            h('button', { className: 'mini-btn danger', disabled: !clearableSel.length, onClick: clearNow }, h(Icon, { name: 'trash', size: 12 }), '清除选中配置（' + clearableSel.length + '）'))),
         h('div', { className: 'cli-note' }, h(Icon, { name: 'shield', size: 13 }),
           '逐台写各机 UE 运行用户的注册表 Zen\\DataPath 并创建目录（同步机器级 UE-ZenDataPath 环境变量兜底），逐台看成败；应用后重启各机 UE 编辑器即生效，旧缓存不会自动迁移。此目录是「客户端本地 Zen 缓存」，区别于①区「服务器数据目录」（共享缓存本体）与 DDC 页「本地 DDC（文件版）」。')),
       h('div', { className: 'drawer-f' },
-        h(Button, { variant: 'secondary', size: 'M', onPress: close }, '取消'),
-        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'check', size: 15 }), isDisabled: !valid, onPress: confirm },
-          '应用到 ' + machines.length + ' 台')));
+        h(Button, { variant: 'secondary', size: 'M', onPress: close }, '完成')));
   }
 
-  function ZenServer({ s }) {
-    /* —— 服务器表单状态 —— */
-    /* srvId 为 null 表示用户尚未显式选择过服务器机器；默认显示哪台机器完全交给下面
-       的 srvNode 派生值决定（已部署的 ZenServer 优先），不用 effect 异步纠正它——
-       避免和用户手动切换、以及 RENDER_NODES / 真实部署状态谁先到达产生竞态。 */
+  /* 通用弹层壳：图标 + 标题 + 副标题 + 关闭按钮 / 内容体 / 底部按钮区 */
+  function ModalChrome({ icon, title, sub, close, children, footer }) {
+    return h('div', { className: 'drawer drawer--zconfig' },
+      h('div', { className: 'drawer-h' },
+        h('span', { className: 'di info' }, h(Icon, { name: icon, size: 17 })),
+        h('div', { style: { minWidth: 0 } }, h('h2', null, title), sub ? h('div', { className: 'sub' }, sub) : null),
+        h('button', { className: 'iconbtn x', onClick: close }, h(Icon, { name: 'x', size: 16 }))),
+      h('div', { className: 'drawer-b' }, children),
+      h('div', { className: 'drawer-f' }, footer || h(Button, { variant: 'secondary', size: 'M', onPress: close }, '关闭')));
+  }
+
+  /* ============ 二级弹层① 部署 / 重新部署 Zen 服务器 ============
+     独立有状态组件（同 ZenDirModal 模式）：表单字段、部署步骤器全部是这个组件自己的
+     useState，不依赖 ZenServer 某一次 render 的闭包快照，弹层内输入框/选择器才能正常
+     响应用户操作。 */
+  function DeployModal({ s, RN, deployed, deployedNode, status, close, onDeployed }) {
     const [srvId, setSrvId] = useState(null);
-    const [port, setPort] = useState('8558');  /* UE ZenServer 真实默认端口 */
-    const [protocol, setProtocol] = useState('http');  /* HTTPS 未实现（lua_config 尚无 TLS key，见后端 T2.2 doc），表单只保留 http */
+    const [port, setPort] = useState('8558');
+    const [protocol, setProtocol] = useState('http');
     const [installDir, setInstallDir] = useState('C:\\ZenServer');
     const [dataDir, setDataDir] = useState('D:\\ZenData');
-    const [configOverride, setConfigOverride] = useState(null);  /* null = 跟随安装目录自动生成 */
-    const [httpType, setHttpType] = useState('httpsys');   /* asio | httpsys（后端合法值）*/
-    /* 服务运行账号：system（SYSTEM，无密码）| dedicated（专用本地账号，最小权限，生产默认）| domain（域账号，含 gMSA）*/
-    const [acctKind, setAcctKind] = useState('dedicated');
-    const [dedManual, setDedManual] = useState(false);   /* false=一键创建托管账号；true=手动指定已有本地账号 */
-    const [dedUser, setDedUser] = useState('');
+    const [configOverride, setConfigOverride] = useState(null);
+    const [httpType, setHttpType] = useState('httpsys');
+    const [acctKind, setAcctKind] = useState(() => (status && status.serviceAccountUsername ? 'dedicated' : 'dedicated'));
+    const [dedManual, setDedManual] = useState(false);
+    const [dedUser, setDedUser] = useState(() => (status && status.serviceAccountUsername) || '');
     const [dedPass, setDedPass] = useState('');
-    const [dedCredAlias, setDedCredAlias] = useState(null);  /* 托管账号的 SecretStore 别名，前端不持有密码 */
+    const [dedCredAlias, setDedCredAlias] = useState(() => (status && status.serviceAccountCredAlias) || null);
     const [dedCreating, setDedCreating] = useState(false);
-    const [domType, setDomType] = useState('std');   /* std=普通域账号 | gmsa=组托管服务账号 */
+    const [domType, setDomType] = useState('std');
     const [domName, setDomName] = useState('VOLO');
     const [domUser, setDomUser] = useState('VOLO\\zen-svc');
     const [domPass, setDomPass] = useState('');
     const [showPass, setShowPass] = useState(false);
     const [advOpen, setAdvOpen] = useState(false);
-
-    /* —— 真实状态（zen_list_endpoints + zen_status + zen_cache_stats）—— */
-    const [status, setStatus] = useState(null);   /* {endpointId,machineId,host,ip,port,scheme,version,dataDir,svc,records,gc*,serviceAccount*} | null */
-    const [statusLoading, setStatusLoading] = useState(true);
-    const loadStatus = () => {
-      setStatusLoading(true);
-      Promise.allSettled([zenListEndpoints(null), zenStatus(null)]).then(([epR, stR]) => {
-        const eps = epR.status === 'fulfilled' && Array.isArray(epR.value) ? epR.value : [];
-        const rows = stR.status === 'fulfilled' && Array.isArray(stR.value) ? stR.value : [];
-        const ep = eps.find((e) => e.role === 'shared_upstream') || eps[0] || null;
-        if (!ep) { setStatus(null); setStatusLoading(false); return; }
-        const row = rows.find((r) => r.endpoint_id === ep.id) || null;
-        /* reachable 三态：true→运行中 / false→不可达 / null（从未探活）→状态未知（不冒充已停止）*/
-        const svc = row ? (row.reachable === true ? 'running' : row.reachable === false ? 'unreachable' : 'unknown') : 'unknown';
-        setStatus({
-          endpointId: ep.id, machineId: ep.machine_id,
-          host: row ? row.hostname : '', ip: row ? row.ip : '',
-          port: ep.declared_port, scheme: ep.scheme, dataDir: ep.data_dir,
-          version: row && row.build_version ? row.build_version : '—', svc, providers: null,
-          gcIntervalSeconds: ep.gc_interval_seconds, gcLightweightIntervalSeconds: ep.gc_lightweight_interval_seconds,
-          cacheMaxDurationSeconds: ep.cache_max_duration_seconds,
-          serviceAccountUsername: ep.service_account_username, serviceAccountCredAlias: ep.service_account_cred_alias,
-        });
-        setStatusLoading(false);
-        zenCacheStats(ep.id, null).then((cs) => {
-          const sample = cs && Array.isArray(cs.samples) && cs.samples[0] ? cs.samples[0] : null;
-          const provs = sample && Array.isArray(sample.providers) ? sample.providers : null;
-          setStatus((s2) => (s2 ? Object.assign({}, s2, { providers: provs }) : s2));
-        }, () => {});
-      });
-    };
-    useEffect(() => { loadStatus(); }, []);
-
-    /* —— GC 缓存回收策略：草稿值独立于已应用值，统一「应用更改」提交；首次拿到真实
-       endpoint 数据时按其 gc_* 字段种一次（缺省=尚未配置过，视作官方默认），之后不再
-       被 loadStatus() 的刷新覆盖，避免打断用户正在编辑的草稿。 —— */
-    const [gcApplied, setGcApplied] = useState(() => cloneGc(GC_DEFAULTS));
-    const [gcDraft, setGcDraft] = useState(() => cloneGc(GC_DEFAULTS));
-    const [gcBusy, setGcBusy] = useState(false);
-    const [gcJustApplied, setGcJustApplied] = useState(false);
-    const gcSeededForRef = useRef(null);
-    useEffect(() => {
-      if (!status || gcSeededForRef.current === status.endpointId) return;
-      gcSeededForRef.current = status.endpointId;
-      const seeded = {
-        interval: status.gcIntervalSeconds != null ? bestVU(status.gcIntervalSeconds, GC_FIELDS[0].units) : Object.assign({}, GC_DEFAULTS.interval),
-        lw: status.gcLightweightIntervalSeconds != null ? bestVU(status.gcLightweightIntervalSeconds, GC_FIELDS[1].units) : Object.assign({}, GC_DEFAULTS.lw),
-        maxDur: status.cacheMaxDurationSeconds != null ? bestVU(status.cacheMaxDurationSeconds, GC_FIELDS[2].units) : Object.assign({}, GC_DEFAULTS.maxDur),
-      };
-      setGcApplied(seeded);
-      setGcDraft(cloneGc(seeded));
-      /* 同时恢复已创建的托管专用账号（若有），让用户刷新页面后还能看到「已创建」而不是被要求重新建一个 */
-      if (status.serviceAccountUsername && status.serviceAccountCredAlias) {
-        setAcctKind('dedicated'); setDedManual(false);
-        setDedUser(status.serviceAccountUsername); setDedCredAlias(status.serviceAccountCredAlias);
-      }
-    }, [status]);
-    const gcFieldDirty = (id) => gcSeconds(gcDraft[id]) !== gcSeconds(gcApplied[id]);
-    const gcDirty = GC_FIELDS.some((f) => gcFieldDirty(f.id));
-    const gcNonDefault = (id) => gcSeconds(gcApplied[id]) !== gcSeconds(GC_DEFAULTS[id]);
-    const gcAtDefault = GC_FIELDS.every((f) => gcSeconds(gcDraft[f.id]) === gcSeconds(GC_DEFAULTS[f.id]));
-    const setGcField = (id, patch) => setGcDraft((d) => Object.assign({}, d, { [id]: Object.assign({}, d[id], patch) }));
-    const resetGcDefaults = () => setGcDraft(cloneGc(GC_DEFAULTS));
-
-    /* —— 部署执行状态 —— */
-    const epRef = useRef(null);                  /* zen_register 返回的 endpoint_id，串到后续步骤 */
     const [started, setStarted] = useState(false);
-    const [run, setRun] = useState({});           /* stepId -> { st, err } */
+    const [run, setRun] = useState({});
     const [deploying, setDeploying] = useState(false);
-    /* pointed/sel/res/cfgScope/lastProjSelRef 必须在任何条件 return 之前声明（Rules of Hooks）。
-       否则首屏 RENDER_NODES 还空、走下面 if(!srvNode) 早返回时这些 hook 不执行；机器异步到达后
-       re-render 又执行，hook 数变化会让 React 抛「Rendered more hooks than during the previous
-       render」并卸载整棵树（纯黑屏）。 */
-    const [pointed, setPointed] = useState(() => new Set());  /* 「已指向」机器（下方 effect 真实回读 + 应用成功的乐观更新）*/
-    const [pointedLoading, setPointedLoading] = useState(false); /* 指向状态回读进行中 */
-    const [sel, setSel] = useState([]);
-    const [res, setRes] = useState({});   /* clientId -> { st, msg } */
-    /* —— 配置范围（写哪个 ini）——
-       project = 工程级：写该机已发现 UE 工程的 DefaultEngine.ini [StorageServers] Shared；需先扫描到工程。
-       user    = 用户全局：写 %LOCALAPPDATA%\Unreal Engine\Engine\Config\UserEngine.ini；不依赖工程扫描，
-                 但需知道该机 UE 运行 Windows 用户 ue_runtime_user（取自机器 user 字段，来自 machine
-                 set-ue-user；未设置时引导先配置）。 */
-    const hasAnyProjects = (window.UE_PROJECTS || []).length > 0;
-    const [cfgScope, setCfgScope] = useState(hasAnyProjects ? 'project' : 'user');
-    const lastProjSelRef = useRef(null);   /* 上次工程级选中的工程 id（供单机重试复用）*/
-    /* 切换配置范围时清掉逐机运行状态：不清的话，上一档留下的「已应用/失败」徽标和「重试」
-       按钮会带着旧档的语境继续显示在新档下——重试按钮又是直接调 applyTo 读当前 cfgScope，
-       不清空的话点它会用新档静默重写成另一份 ini，而界面上显示的还是旧档的失败原因。 */
-    useEffect(() => { setRes({}); }, [cfgScope]);
-    const clientProjects = (id) => (window.UE_PROJECTS || []).filter((p) => p.machines.includes(id));
-    const runtimeUser = (n) => (n && n.user && n.user !== '—') ? n.user : null;
-    /* 该机在当前范围下是否可写（工程级需有已发现工程；用户全局需有运行用户）*/
-    const scopeReadyFor = (n) => cfgScope === 'project' ? clientProjects(n.id).length > 0 : !!runtimeUser(n);
+    const epRef = useRef(null);
 
-    /* —— 指向状态真实回读 ——
-       pointed 只活在本组件挂载周期里：切去集群总览（比如跑巡检）再切回来会整组件重挂，
-       全部退回「未指向」，而机器上的 ini 其实原封没动。这里对在线客户端逐台真实回读
-       [StorageServers] Shared（用户全局读 UserEngine.ini，工程级读各工程 DefaultEngine.ini，
-       与 applyTo 的两条写入路径一一对应），Host 主机名/IP + 端口命中当前端点即「已指向」。
-       代次令牌 + 并集合并同 cacheDdc readStatus：作废过期回读、不覆盖回读期间「应用成功」
-       的乐观更新（本页没有「取消指向」操作，并集不会复活已解除项）。 */
-    const pointedGenRef = useRef(0);
-    const statusSig = status ? [status.endpointId, status.machineId, status.host, status.ip, status.port].join('|') : '';
-    const nodesSig = (window.RENDER_NODES || []).map((n) => n.id + ':' + n.status + ':' + n.user).join(',');
-    const projSig = (window.UE_PROJECTS || []).map((p) => p.id).join(',');
-    useEffect(() => {
-      const gen = ++pointedGenRef.current;
-      if (!status) { setPointedLoading(false); return; }
-      const nodes = (window.RENDER_NODES || []).filter((n) =>
-        n.status !== 'offline' && n.machineId && n.machineId !== status.machineId);
-      if (!nodes.length) { setPointedLoading(false); return; }
-      /* 与 applyTo 的 hostUri 同源比对：Host 主机部分接受端点 hostname 或 IP，端口必须一致 */
-      const serverNode = (window.RENDER_NODES || []).find((n) => n.machineId === status.machineId);
-      const hostCands = [status.host, status.ip, serverNode && serverNode.host, serverNode && serverNode.ip]
-        .filter(Boolean).map((x) => String(x).toLowerCase());
-      const hitsServer = (keys) => (Array.isArray(keys) ? keys : []).some((k) => {
-        if (!k || String(k.name || '').toLowerCase() !== 'shared') return false;
-        const m = /Host\s*=\s*"([^"]+)"/i.exec(String(k.value || ''));
-        if (!m) return false;
-        try {
-          const u = new URL(m[1]);
-          return String(u.port) === String(status.port) && hostCands.includes(u.hostname.toLowerCase());
-        } catch { return false; }
-      });
-      setPointedLoading(true);
-      Promise.allSettled(nodes.map((n) => {
-        const reads = [];
-        const user = runtimeUser(n);
-        if (user) reads.push(readIniSection(n.machineId, 'C:\\Users\\' + user + '\\AppData\\Local\\Unreal Engine\\Engine\\Config\\UserEngine.ini', 'StorageServers'));
-        clientProjects(n.id).forEach((p) => {
-          const loc = p.locByMachine && p.locByMachine[String(n.machineId)];
-          if (loc) reads.push(readIniSection(n.machineId, loc + '\\Config\\DefaultEngine.ini', 'StorageServers'));
-        });
-        if (!reads.length) return Promise.resolve({ id: n.id, hit: false });
-        /* 文件不存在 / 机器读不到 → rejected → 不算命中；任一份 ini 命中即已指向 */
-        return Promise.allSettled(reads).then((rs) => ({
-          id: n.id,
-          hit: rs.some((r) => r.status === 'fulfilled' && hitsServer(r.value)),
-        }));
-      })).then((rs) => {
-        if (gen !== pointedGenRef.current) return; /* 被更新的回读取代 / 已卸载 → 丢弃 */
-        const hits = rs.filter((r) => r.status === 'fulfilled' && r.value.hit).map((r) => r.value.id);
-        if (hits.length) setPointed((prev) => { const np = new Set(prev); hits.forEach((id) => np.add(id)); return np; });
-        setPointedLoading(false);
-      });
-      return () => { pointedGenRef.current++; };
-    }, [statusSig, nodesSig, projSig]);
-
-    /* ============ ②+ 客户端本地 Zen 缓存目录（HKCU Zen\DataPath 注册表为主通道）============
-       每台客户端上，UE 编辑器会自动拉起本地 Zen 进程做本地缓存，默认目录在 C 盘 %LOCALAPPDATA%。
-       Volo 写 UE 运行用户的 HKCU Epic Games\Zen\DataPath 注册表（zen_set_local_datapath，
-       编辑器每次启动直接读注册表 → 重启编辑器即生效）＋创建目录＋同步机器级 UE-ZenDataPath
-       环境变量兜底。配置值优先取注册表回读（zen_read_local_runcontext 的 registry_data_path），
-       没有再落到遗留的环境变量；「实际生效值」是 zenserver.runcontext 里上次实际使用路径，
-       两者可能不一致（编辑器未重启）。三个目录互不相同：①区「服务器数据目录」= 共享缓存
-       本体；本功能 = 客户端本地 Zen 缓存；DDC 页「本地 DDC（文件版）」= 又一个独立目录。 */
-    const [zdirs, setZdirs] = useState({});         /* nodeId -> { cfg, eff, found, regPath, loading, readFail, readErr } */
-    const [zres, setZres] = useState({});           /* nodeId -> { st, msg, path } —— 逐台成败 */
-    const [zdraft, setZdraft] = useState({});       /* nodeId -> 面板输入草稿 */
-    const [zdirOpen, setZdirOpen] = useState(null); /* 展开配置面板的机器 id */
-    const zdirGenRef = useRef(0);
-    /* 单机读取：配置值 + 生效值并行拉。配置值优先取注册表回读（runcontext 调用捎带的
-       registry_data_path —— Volo 的主写入通道），没有再落到遗留的机器级环境变量；
-       runcontext 单独失败时不能把 found=false 冒充成「编辑器从未启动过本地 Zen」，
-       env var 单独失败且注册表也没值时也不能把 cfg=null 冒充成「未设置」；面板对
-       失败的那半各自如实标注（cfgFail 单独记录，配置值格显示读取失败）。 */
-    const readZdirFor = (n, gen) => Promise.allSettled([
-      getMachineEnvVar(n.machineId, 'UE-ZenDataPath'),
-      zenReadLocalRuncontext(n.machineId),
-    ]).then(([cfgR, rcR]) => {
-      if (gen !== zdirGenRef.current) return;
-      const rc = rcR.status === 'fulfilled' ? rcR.value : null;
-      const envFail = cfgR.status === 'rejected';
-      const rcFail = rcR.status === 'rejected';
-      const envCfg = !envFail && cfgR.value ? cfgR.value : null;
-      const regCfg = rc && rc.registry_data_path ? rc.registry_data_path : null;
-      const cfgFail = envFail && !regCfg; /* 注册表有值时 env 读失败不影响配置值 */
-      const errOf = (x) => (x.reason && x.reason.message ? x.reason.message : String(x.reason));
-      setZdirs((d) => Object.assign({}, d, { [n.id]: {
-        cfg: regCfg || envCfg,
-        cfgSrc: regCfg ? 'registry' : envCfg ? 'env' : null,
-        eff: rc && rc.found ? rc.data_path : null,
-        found: !!(rc && rc.found),
-        regPath: rc ? rc.registry_data_path : null,
-        loading: false,
-        cfgFail,
-        readFail: cfgFail || rcFail,
-        readErr: rcFail ? errOf(rcR) : cfgFail ? errOf(cfgR) : null,
-      } }));
-    });
-    useEffect(() => {
-      const gen = ++zdirGenRef.current;
-      (window.RENDER_NODES || [])
-        .filter((n) => n.status !== 'offline' && n.machineId && runtimeUser(n))
-        .forEach((n) => { readZdirFor(n, gen); });
-      return () => { zdirGenRef.current++; };
-    }, [nodesSig]);
-
-    const deployed = !!status;
-    /* 仅当服务真正 running 才允许把客户端指向它——指向一台已停止/不可达/状态未知的服务器
-       会让客户端缓存上游失效。stopped/unreachable/unknown 都不放行。 */
-    const canPoint = deployed && status.svc === 'running';
-    const RN = window.RENDER_NODES || [];
-    /* 默认显示已部署的 ZenServer：先按 endpoint 真实主机名匹配，匹配不到（比如该机
-       已从集群移除）再退到 roleKey==='shared'（集群里指定的共享缓存机位）；只在真
-       有 endpoint（status 非空）时才生效。这是每次渲染都重新算的派生值——不会有
-       「RENDER_NODES 和 status 谁先到达」的时序问题，也不会覆盖用户已经手动选过的
-       机器（CX.node(srvId) 永远最先命中），同 cacheDdc.tsx 的 sharedNode 派生模式。 */
-    const deployedNode = status
-      ? (RN.find((n) => status.host && n.host.toLowerCase() === String(status.host).toLowerCase())
-          || RN.find((n) => n.roleKey === 'shared'))
-      : null;
     const srvNode = CX.node(srvId) || deployedNode || RN.find((n) => n.roleKey !== 'shared') || RN[0];
-
-    if (!srvNode) {
-      return h('div', { className: 'res ddc' }, h('div', { className: 'ddc-body' },
-        h('div', { className: 'gen-empty' }, h(Icon, { name: 'node', size: 22 }),
-          h('span', null, '集群里还没有机器 — 先在「集群总览」扫描添加机器，再部署 Zen 服务器'))));
-    }
 
     const createDedicated = () => {
       setDedCreating(true);
@@ -481,8 +310,6 @@ import {
     };
     const dedCreated = !dedManual && !!dedCredAlias;
 
-    /* 服务运行账号：按当前档位算出真正传给后端的 serviceUser / servicePass / serviceCredAlias。
-       专用本地账号的托管密码从不进前端——只带 alias，由后端从 SecretStore 解出来。 */
     const effectiveServiceUser = () => {
       if (acctKind === 'system') return 'LocalSystem';
       if (acctKind === 'dedicated') return dedUser.trim() || null;
@@ -493,13 +320,9 @@ import {
     const effectiveServicePass = () => {
       if (acctKind === 'dedicated' && dedManual) return dedPass || null;
       if (acctKind === 'domain' && domType === 'std') return domPass || null;
-      return null;  /* system / gMSA / 托管专用账号（走 cred alias）*/
+      return null;
     };
     const effectiveCredAlias = () => (acctKind === 'dedicated' && !dedManual ? (dedCredAlias || null) : null);
-    /* system 档不需要账号名（zen.exe 落到内置 LocalService 默认）；dedicated / domain
-       两档若 effectiveServiceUser() 算不出账号名（未创建托管账号 / 未填手动账号名），
-       部署会静默落到 LocalService 而不是操作员选中的账号——部署前必须拦住这种情况，
-       而不是等它在后台悄悄发生。 */
     const acctReady = () => acctKind === 'system' || !!effectiveServiceUser();
     const acctLabel = acctKind === 'system'
       ? 'LocalSystem（系统账号）'
@@ -508,20 +331,17 @@ import {
         : (domType === 'gmsa' ? (domUser.trim() || '（未填写 gMSA 账号）') + '（gMSA）' : (domUser.trim() || '（未填写域账号）'));
     const principal = effectiveServiceUser() || 'NT AUTHORITY\\LocalService';
 
-    /* 配置文件落地路径：默认跟随安装目录自动生成 {安装目录}\zen_config.lua，可手动覆写 */
     const derivedConfigPath = installDir.replace(/[\\/]+$/, '') + '\\zen_config.lua';
     const configPath = configOverride == null ? derivedConfigPath : configOverride;
     const formObj = { port, protocol, dataDir, configPath, acct: acctLabel, acctKind };
-    /* 机器列表按主机名自然排序：数字小的在前、大的在后（RNODE-07 不再落到 WS-ART-01 之后）*/
     const srvOpts = RN.slice()
       .sort((a, b) => a.host.localeCompare(b.host, undefined, { numeric: true }))
       .map((n) => ({ id: n.id, label: n.host, sub: n.ip }));
     const httpOpts = [{ id: 'httpsys', label: 'http.sys（默认）' }, { id: 'asio', label: 'asio' }];
-    const cred = {}; /* SSH key — ZenCredentialInput 全 None */
+    const cred = {};
 
     const setStep = (id, st, err) => setRun((r) => Object.assign({}, r, { [id]: { st, err: err || null } }));
 
-    /* 单步真实执行：成功 resolve，失败 throw（message 即步骤错误）*/
     const runStep = async (id) => {
       const mid = srvNode.machineId;
       if (id === 'register') {
@@ -532,9 +352,6 @@ import {
         });
         epRef.current = o && o.endpoint_id != null ? o.endpoint_id : epRef.current;
         if (epRef.current == null) throw new Error('登记未返回 endpoint_id');
-        /* 幂等冲突路径（同 machine + port 已登记过）：register() 静默保留原有 install_dir /
-           config_path_override，本次表单里改过的值不会生效。o 里的值是「实际生效」的值——
-           跟本次请求的值一对比，不一致就当场报错，而不是让后续步骤悄悄用旧目录继续跑。 */
         if (o && o.inserted === false) {
           const wantInstallDir = installDir.trim();
           const wantConfigOverride = configOverride == null ? null : configOverride.trim();
@@ -574,7 +391,6 @@ import {
       }
     };
 
-    /* runner：从 startIdx 起逐步真实执行；遇 fail 停下，留给「重试这一步」 */
     const runFrom = async (startIdx) => {
       setStarted(true); setDeploying(true);
       setRun((r) => { const n = Object.assign({}, r); for (let k = startIdx; k < STEP_IDS.length; k++) n[STEP_IDS[k]] = { st: 'idle' }; return n; });
@@ -596,10 +412,9 @@ import {
       }
       setDeploying(false);
       log(s, 'ok', `<b>zen probe</b> · ${esc(srvNode.host)} → 上线`);
-      loadStatus();
+      onDeployed();
     };
 
-    /* 刷新这台机器（detect 失败时）→ 刷新后自动从 detect 重试 */
     const doRefresh = () => {
       s.runCmd({ domain: 'machine', action: 'refresh', target: srvNode.host, chan: 'winrm', note: '重探 UE / GPU / Zen 程序' },
         () => refreshMachine(srvNode.machineId).then((r) => { if (r && r.error) throw new Error(r.error); return r; }),
@@ -609,8 +424,10 @@ import {
 
     const pickServer = (id) => { setSrvId(id); setStarted(false); setRun({}); setDeploying(false); epRef.current = null; };
 
-    /* 部署 → 居中二级对话框（modal）确认后执行；真实 7 步进度在页面下方步骤器中逐步呈现
-       （liveProgress:false：对话框只做计划确认，进度不在对话框内重复）。 */
+    /* 部署 → 居中二级对话框（modal）确认后执行；真实 7 步进度在这个弹层内的步骤器中逐步呈现
+       （liveProgress:false：确认对话框只做计划确认，确认后立即关闭，进度不在对话框内重复，
+       而是回落到本弹层的步骤器 —— 与确认对话框走同一个 s.modal 单槽，会替换掉本弹层，
+       确认后关闭对话框即回到空白，真实进度靠下方控制台 NDJSON 日志流可见）。 */
     const modalDeploy = () => CX.openModalPreview(s, {
       title: (deployed ? '重新部署' : '部署') + ' Zen 缓存服务器', icon: 'cube',
       cli: 'zen_register → … → zen_probe', destructive: false, channel: 'ssh', confirmLabel: deployed ? '重新部署' : '开始部署',
@@ -620,39 +437,152 @@ import {
       run: () => { epRef.current = null; runFrom(0); },
     });
 
-    /* —— 管理动作（已部署）—— */
-    const probeServer = () => {
-      if (!status) return;
-      s.runCmd({ domain: 'zen', action: 'probe', target: status.host || ('endpoint ' + status.endpointId), chan: 'ssh', note: '探活 · zen_probe' },
-        () => zenProbe(status.machineId, null, null).then((r) => { const rec = r && r.probes && r.probes[0]; if (rec && rec.reachable === false) throw new Error(rec.error_message || '不可达'); return r; }),
-        { okMsg: (r) => { const rec = r && r.probes && r.probes[0]; return 'HTTP 200 · 版本 ' + ((rec && rec.build_version) || '—'); } })
-        .then(() => loadStatus(), () => loadStatus());
-    };
-    const startServer = () => {
-      if (!status) return;
-      s.runCmd({ domain: 'zen', action: 'start', target: status.host, chan: 'ssh', note: 'zen_service_start' },
-        () => zenServiceStart(status.endpointId, cred), { okMsg: () => status.host + ' 服务已启动' })
-        .then(() => loadStatus(), () => {});
-    };
-    const stopServer = () => status && CX.openPreview(s, {
-      title: '停止 ZenServer 服务', icon: 'pause', cli: 'zen_service_stop', destructive: true, channel: 'ssh', confirmLabel: '停止服务',
-      steps: ['停止 ' + status.host + ' 上的 ZenServer 服务', '停止后所有客户端将无法命中此共享缓存，回退到各自本地缓存'],
-      simpleScope: [{ host: status.host, ip: status.ip, msg: 'sc stop VoloZenServer' }],
-      onConfirm: () => s.runCmd({ domain: 'zen', action: 'stop', target: status.host, chan: 'ssh', note: '停止服务' },
-        () => zenServiceStop(status.endpointId, true, false, cred), { okMsg: () => status.host + ' 服务已停止' })
-        .then(() => loadStatus(), () => {}),
-    });
-    const uninstallServer = () => status && CX.openPreview(s, {
-      title: '卸载 ZenServer', icon: 'trash', cli: 'zen_service_uninstall + zen_unregister', destructive: true, channel: 'ssh', confirmLabel: '卸载服务器',
-      steps: ['停止并卸载 ' + status.host + ' 上的 Windows 服务 VoloZenServer', '从 Volo 注销该 endpoint（不删除 data-dir 数据目录）', '客户端的指向配置需在下方②另行撤除'],
-      simpleScope: [{ host: status.host, ip: status.ip, msg: 'uninstall + unregister' }],
-      onConfirm: () => s.runCmd({ domain: 'zen', action: 'uninstall', target: status.host, chan: 'ssh', note: '卸载并注销' },
-        () => zenServiceUninstall(status.endpointId, true, false, cred).then(() => zenUnregister(status.endpointId, true, false)),
-        { okMsg: () => status.host + ' 已卸载 · data-dir 保留' })
-        .then(() => { setStarted(false); setRun({}); epRef.current = null; loadStatus(); }, () => {}),
-    });
+    const segProto = h('div', { className: 'zseg' },
+      ['http'].map((p) => h('button', { key: p, className: protocol === p ? 'on' : '', onClick: () => setProtocol(p) }, p)));
+    const ACCT_TIERS = [['system', '系统账号'], ['dedicated', '专用本地账号'], ['domain', '域账号']];
+    const segAcct = h('div', { className: 'zseg wide zseg-acct' },
+      ACCT_TIERS.map(([k, lbl]) =>
+        h('button', { key: k, className: acctKind === k ? 'on' : '', onClick: () => setAcctKind(k) },
+          lbl, k === 'dedicated' ? h('span', { className: 'seg-badge' }, '推荐') : null)));
 
-    /* 应用 GC 更改 → 破坏性二次确认（重写配置后会重启服务，短暂中断所有渲染节点的命中）*/
+    const passField = (val, setVal, ph) => h('div', { className: 'zpass' },
+      h('input', { className: 'dp-input', type: showPass ? 'text' : 'password', placeholder: ph, value: val, onChange: (e) => setVal(e.target.value) }),
+      h('button', { type: 'button', className: 'zpass-eye' + (showPass ? ' on' : ''), 'aria-label': showPass ? '隐藏密码' : '显示密码', onClick: () => setShowPass((v) => !v) },
+        h(Icon, { name: 'eye', size: 14 })));
+
+    const acctBody = h('div', { className: 'zacct-body' },
+      acctKind === 'system' ? h(React.Fragment, null,
+        h('div', { className: 'zacct-note' }, h(Icon, { name: 'shield', size: 12 }),
+          '使用 Windows 内置 LocalSystem 账号运行，权限最高、无需密码，适合快速搭建测试环境。'),
+        h('div', { className: 'zacct-subhint' }, '生产环境建议改用「专用本地账号」，遵循最小权限原则。')) : null,
+      acctKind === 'dedicated' ? h(React.Fragment, null,
+        h('div', { className: 'zacct-desc' }, '官方建议的安全实践：为 ZenServer 单独创建一个非管理员本地账号，仅授予运行所需的最小权限——推荐作为生产环境默认。'),
+        !dedManual ? h(React.Fragment, null,
+          !dedCreated
+            ? h('div', { className: 'zacct-row' },
+                h('button', { className: 'mini-btn accent', disabled: dedCreating, onClick: createDedicated },
+                  h(Icon, { name: 'plus', size: 12 }), dedCreating ? '创建中…' : '创建专用账号'),
+                h('span', { className: 'zacct-subhint' }, '工具自动生成账号名与高强度随机密码，密码由凭据管理器托管、不显示、不落地。'))
+            : h('div', { className: 'zcred-chip' },
+                h(Icon, { name: 'check', size: 13 }),
+                h('span', { className: 'mono' }, dedUser),
+                h('span', { className: 'zcred-sub' }, '密码由凭据管理器托管（不显示）'),
+                h('button', { type: 'button', className: 'ztext-btn', disabled: dedCreating, onClick: createDedicated }, '重新生成')),
+          h('button', { type: 'button', className: 'ztext-btn', onClick: () => { setDedManual(true); setDedUser(''); setDedCredAlias(null); } }, '手动指定已有本地账号')) : h(React.Fragment, null,
+          h('div', { className: 'zacct' },
+            h('input', { className: 'dp-input mono', placeholder: '本地账号（如 zen-svc）', value: dedUser, spellCheck: false, onChange: (e) => setDedUser(e.target.value) }),
+            passField(dedPass, setDedPass, '密码')),
+          h('div', { className: 'zperm' }, h(Icon, { name: 'info', size: 12 }),
+            h('span', null, '该账号需预先具备：', h('b', null, '登录为服务'), ' 权限 · ',
+              h('span', { className: 'mono' }, '{ZenInstall}'), ' 读权限 · ',
+              h('span', { className: 'mono' }, '{ZenData}'), ' 读写权限 · 端口 8558 的 http.sys urlacl 授权。部署前置检查会校验这些权限。')),
+          h('button', { type: 'button', className: 'ztext-btn', onClick: () => { setDedManual(false); setDedUser(''); setDedCredAlias(null); } }, '改用自动创建'))) : null,
+      acctKind === 'domain' ? h(React.Fragment, null,
+        h('div', { className: 'zseg zseg-sm' },
+          [['std', '普通域账号'], ['gmsa', '组托管服务账号（gMSA）']].map(([k, lbl]) =>
+            h('button', { key: k, className: domType === k ? 'on' : '', onClick: () => setDomType(k) }, lbl))),
+        h('div', { className: 'zdom-grid' },
+          h('div', { className: 'dp-field' }, h('label', null, '域名'),
+            h('input', { className: 'dp-input mono', placeholder: '如 VOLO 或 corp.company.com', value: domName, spellCheck: false, onChange: (e) => setDomName(e.target.value) })),
+          h('div', { className: 'dp-field' }, h('label', null, '用户名'),
+            h('input', { className: 'dp-input mono', placeholder: '如 VOLO\\zen-svc', value: domUser, spellCheck: false, onChange: (e) => setDomUser(e.target.value) })),
+          domType === 'std'
+            ? h('div', { className: 'dp-field' }, h('label', null, '密码'), passField(domPass, setDomPass, '域账号密码'))
+            : h('div', { className: 'dp-field' }, h('label', null, '密码'),
+                h('div', { className: 'zacct-note' }, h(Icon, { name: 'shield', size: 12 }), 'gMSA 密码由域控自动管理，无需手动输入'))),
+        h('div', { className: 'zform-tip' }, h(Icon, { name: 'alert', size: 12 }),
+          'ZenServer 对外为无认证服务——域账号只决定服务以谁的身份运行、能否读写本机目录，不会给客户端访问 Zen 数据加上认证。'),
+        h('div', { className: 'zacct-subhint' }, '需域管理员预先为该账号授予「登录为服务」权限；推荐优先使用 gMSA 以避免手动管理密码带来的风险。')) : null);
+
+    const openPath = (p) => { revealPath(p).catch(() => {}); };
+    const pathInput = (val, onChange) => h('div', { className: 'dp-path' },
+      h('input', { className: 'dp-input mono', value: val, spellCheck: false, onChange }),
+      h('button', { type: 'button', className: 'dp-path-open', title: '在文件资源管理器中打开该目录', tabIndex: -1, onClick: () => openPath(val) },
+        h(Icon, { name: 'folder', size: 13 })));
+
+    const deployForm = h('div', { className: 'deploy-panel' },
+      h('div', { className: 'dp-h' }, h(Icon, { name: 'bolt', size: 15 }), '部署链路参数',
+        h('span', { className: 'dp-h-note' }, '逐步真实执行 · 每步可单独重试')),
+      h('div', { className: 'zform-grid' },
+        h('div', { className: 'dp-field grow' }, h('label', null, '服务器机器'),
+          h(Selector, { kpre: '机器', value: srvNode.id, options: srvOpts, width: 280, onChange: pickServer })),
+        h('div', { className: 'dp-field grow' }, h('label', null, '服务端点 · 协议 / 主机 / 端口'),
+          h('div', { className: 'zendpoint' },
+            segProto,
+            h('span', { className: 'zep-sep mono' }, '://'),
+            h('span', { className: 'zep-host mono' }, srvNode.host),
+            h('span', { className: 'zep-sep mono' }, ':'),
+            h('input', { className: 'dp-input mono zep-port', value: port, spellCheck: false, 'aria-label': '端口', onChange: (e) => setPort(e.target.value) }))),
+        h('div', { className: 'dp-field grow' }, h('label', null, '安装目录 · ZenInstall'),
+          pathInput(installDir, (e) => setInstallDir(e.target.value))),
+        h('div', { className: 'dp-field grow' }, h('label', null, '数据目录 · data-dir'),
+          pathInput(dataDir, (e) => setDataDir(e.target.value))),
+        h('div', { className: 'dp-field grow' },
+          h('label', null, '配置文件落地路径',
+            configOverride == null
+              ? h('span', { className: 'dp-hint' }, '跟随安装目录')
+              : h('button', { type: 'button', className: 'dp-hint dp-hint-btn', onClick: () => setConfigOverride(null) }, '恢复跟随安装目录')),
+          pathInput(configPath, (e) => setConfigOverride(e.target.value))),
+        h('div', { className: 'dp-field grow zacct-field' }, h('label', null, '服务运行账号 · 用于开放网络访问 + 安装服务'),
+          segAcct, acctBody)),
+      h('div', { className: 'zadv' },
+        h('button', { className: 'zadv-tgl', onClick: () => setAdvOpen((v) => !v) },
+          h(Icon, { name: 'chevr', size: 13, style: { transform: advOpen ? 'rotate(90deg)' : 'none' } }), '高级'),
+        advOpen ? h('div', { className: 'zadv-body' },
+          h('div', { className: 'dp-field' }, h('label', null, 'HTTP 服务类型'),
+            h(Selector, { kpre: '类型', value: httpType, options: httpOpts, width: 200, onChange: setHttpType }))) : null),
+      h('div', { className: 'zform-actions' },
+        !acctReady() ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }),
+          '请先完成服务运行账号设置（创建专用账号，或填写账号用户名）再部署，否则服务将回退到默认账号运行。') : null,
+        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'bolt', size: 14 }), isDisabled: deploying || !acctReady(), onPress: modalDeploy }, deploying ? '部署中…' : (deployed ? '重新部署' : '部署'))));
+
+    const stepIco = (st, i) => {
+      if (st === 'running') return h('span', { className: 'zstep-spin' });
+      if (st === 'ok') return h(Icon, { name: 'check', size: 14 });
+      if (st === 'fail') return h(Icon, { name: 'alert', size: 14 });
+      return h('span', { className: 'zstep-n' }, i + 1);
+    };
+    const stepper = started ? h('div', { className: 'zsteps' },
+      DEPLOY_STEPS.map((st, i) => {
+        const r = run[st.id] || { st: 'idle' };
+        const rm = RUN_STATE[r.st];
+        return h('div', { key: st.id, className: 'zstep is-' + r.st },
+          h('span', { className: 'zstep-ico' }, stepIco(r.st, i)),
+          h('div', { className: 'zstep-main' },
+            h('div', { className: 'zstep-top' },
+              h('span', { className: 'zstep-label' }, st.label),
+              h('span', { className: 'zstep-cli mono' }, st.cli)),
+            h('div', { className: 'zstep-desc' }, st.desc(formObj, srvNode.host)),
+            r.st === 'fail' && r.err ? h('div', { className: 'zstep-err' }, h(Icon, { name: 'alert', size: 13 }), r.err) : null,
+            r.st === 'fail' ? h('div', { className: 'zstep-acts' },
+              st.gate ? h('button', { className: 'mini-btn', onClick: doRefresh }, h(Icon, { name: 'sync', size: 12 }), '刷新这台机器') : null,
+              h('button', { className: 'mini-btn', onClick: () => runFrom(i) }, h(Icon, { name: 'restart', size: 12 }), '重试这一步')) : null),
+          h(ZBadge, { vis: rm.vis, icon: rm.icon, label: rm.label, soft: true }));
+      })) : null;
+
+    return h(ModalChrome, {
+      icon: 'cube', close,
+      title: deployed ? '重新部署 Zen 服务器' : '部署 Zen 服务器',
+      sub: '在集群某一台机器上立起一台共享缓存服务器 · 逐步真实执行，每步可单独重试',
+    }, h(React.Fragment, null, deployForm, stepper));
+  }
+
+  /* ============ 二级弹层② 缓存回收策略 ============ */
+  function GcModal({ s, deployed, status, gcApplied, setGcApplied, close, onApplied }) {
+    const [gcDraft, setGcDraft] = useState(() => cloneGc(gcApplied));
+    const [gcBusy, setGcBusy] = useState(false);
+    const [gcJustApplied, setGcJustApplied] = useState(false);
+    const gcFieldDirty = (id) => gcSeconds(gcDraft[id]) !== gcSeconds(gcApplied[id]);
+    const gcDirty = GC_FIELDS.some((f) => gcFieldDirty(f.id));
+    const gcNonDefault = (id) => gcSeconds(gcApplied[id]) !== gcSeconds(GC_DEFAULTS[id]);
+    const gcAtDefault = GC_FIELDS.every((f) => gcSeconds(gcDraft[f.id]) === gcSeconds(GC_DEFAULTS[f.id]));
+    const setGcField = (id, patch) => setGcDraft((d) => Object.assign({}, d, { [id]: Object.assign({}, d[id], patch) }));
+    const resetGcDefaults = () => setGcDraft(cloneGc(GC_DEFAULTS));
+    const cred = {};
+
+    /* 应用 GC 更改 → 破坏性二次确认（重写配置后会重启服务，短暂中断所有渲染节点的命中）。
+       走 CX.openPreview（写 s.drawer 检查器列），不占用 s.modal，本弹层始终保持挂载，
+       确认回调里的 setGcApplied/setGcBusy 才能正确落到这个仍存活的组件实例上。 */
     const applyGc = () => {
       const changed = GC_FIELDS.filter((f) => gcFieldDirty(f.id));
       if (!changed.length || !status) return;
@@ -676,22 +606,88 @@ import {
               setGcBusy(false);
               setGcJustApplied(true);
               setTimeout(() => setGcJustApplied(false), 2600);
-              loadStatus();
+              onApplied();
             }, () => setGcBusy(false));
         },
       });
     };
 
-    /* ============ ② 客户端：把选中机器指向此缓存服务器 ============ */
-    /* 同时排除「表单选中的服务器机器」和「已部署 endpoint 的实际机器」——两者可能不同台
-       （部署后切了表单 srvId 也不能把真正的服务器自己当客户端指向自己）。 */
-    const clients = RN.filter((n) => n.id !== srvNode.id && !(status && n.machineId === status.machineId));
-    const pointedCount = clients.filter((n) => pointed.has(n.id)).length;
+    const gcFieldRow = (f) => {
+      const draft = gcDraft[f.id];
+      const dirty = gcFieldDirty(f.id);
+      const nonDefault = gcNonDefault(f.id);
+      return h('div', { className: 'gc-field' + (dirty ? ' dirty' : ''), key: f.id },
+        h('div', { className: 'gc-field-head' },
+          h('label', null, f.label,
+            h('span', { className: 'gc-info', tabIndex: 0 },
+              h(Icon, { name: 'info', size: 13 }),
+              h('span', { className: 'gc-tip' }, f.tip))),
+          nonDefault ? h('span', { className: 'gc-tag', title: '当前值与官方默认不同' }, '≠ 默认') : null,
+          dirty ? h('span', { className: 'gc-dot', title: '尚未应用' }) : null),
+        h('div', { className: 'gc-field-row' },
+          h('div', { className: 'gc-stepper' + (!deployed ? ' is-disabled' : '') },
+            h('input', {
+              type: 'number', min: 0, inputMode: 'numeric', className: 'dp-input mono gc-num', value: draft.value,
+              disabled: !deployed,
+              onChange: (e) => setGcField(f.id, { value: e.target.value === '' ? '' : Math.max(0, Number(e.target.value)) }),
+            }),
+            h('div', { className: 'gc-spin' },
+              h('button', {
+                type: 'button', className: 'gc-spin-btn', tabIndex: -1, disabled: !deployed, 'aria-label': '增加',
+                onClick: () => setGcField(f.id, { value: Math.max(0, (Number(draft.value) || 0) + 1) }),
+              }, h(Icon, { name: 'chevu', size: 12 })),
+              h('button', {
+                type: 'button', className: 'gc-spin-btn', tabIndex: -1, disabled: !deployed, 'aria-label': '减少',
+                onClick: () => setGcField(f.id, { value: Math.max(0, (Number(draft.value) || 0) - 1) }),
+              }, h(Icon, { name: 'chevd', size: 12 })))),
+          h(Selector, { kpre: '单位', value: draft.unit, options: f.units, width: 74, align: 'left', onChange: (u) => setGcField(f.id, { unit: u }) }),
+          h('span', { className: 'gc-eq mono' }, '= ' + gcSeconds(draft).toLocaleString('zh-CN') + ' 秒')),
+        h('div', { className: 'gc-presets' },
+          f.presets.map((p) => h('button', {
+            key: p.label, className: 'gc-chip' + (Number(draft.value) === p.value && draft.unit === p.unit ? ' on' : ''),
+            disabled: !deployed, onClick: () => setGcField(f.id, { value: p.value, unit: p.unit }),
+          }, p.label))),
+        h('div', { className: 'gc-desc' }, f.desc));
+    };
+    const gcPanel = h('div', { className: 'gc-panel' + (!deployed ? ' is-disabled' : '') },
+      deployed && (gcDirty || gcJustApplied) ? h('div', { className: 'gc-head' },
+        h('span', { className: 'gc-head-tx' }),
+        gcDirty ? h('span', { className: 'gc-pending' }, h('span', { className: 'gc-pending-dot' }), '有未应用的更改') : null,
+        !gcDirty && gcJustApplied ? h('span', { className: 'gc-applied-ok' }, h(Icon, { name: 'check', size: 12 }), 'GC 策略已更新') : null) : null,
+      !deployed ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }), '请先部署 Zen 服务器后再配置回收策略。') : null,
+      h('div', { className: 'gc-panel-body' },
+        h('div', { className: 'gc-fields' }, GC_FIELDS.map(gcFieldRow)),
+        h('div', { className: 'gc-actions' },
+          h('button', { className: 'mini-btn', disabled: !deployed || gcBusy || gcAtDefault, onClick: resetGcDefaults },
+            h(Icon, { name: 'restart', size: 12 }), '重置为默认值'),
+          h(Button, {
+            variant: 'accent', size: 'M', icon: h(Icon, { name: 'check', size: 14 }),
+            isDisabled: !deployed || !gcDirty || gcBusy, onPress: applyGc,
+          }, gcBusy ? '应用中…' : '应用更改'))));
 
-    /* —— 本地 Zen 缓存目录：状态派生 + 动作 —— */
+    return h(ModalChrome, {
+      icon: 'flush', close,
+      title: '缓存回收策略',
+      sub: '控制服务器清理过期缓存的频率与保留时长',
+    }, gcPanel);
+  }
+
+  /* ============ 二级弹层③ 客户端指向管理 ============ */
+  function ClientModal({ s, clients, status, deployed, canPoint, targetVis, pointed, setPointed, pointedLoading, close }) {
+    const hasAnyProjects = (window.UE_PROJECTS || []).length > 0;
+    const [sel, setSel] = useState([]);
+    const [res, setRes] = useState({});
+    const [cfgScope, setCfgScope] = useState(hasAnyProjects ? 'project' : 'user');
+    const lastProjSelRef = useRef(null);
+    useEffect(() => { setRes({}); }, [cfgScope]);
+    const scopeReadyFor = (n) => cfgScope === 'project' ? clientProjects(n.id).length > 0 : !!runtimeUser(n);
+
+    /* —— 本地 Zen 缓存目录：状态派生 + 动作（仅弹层内使用，见 zdirStatusChip / rereadBtn / clientRow）—— */
     const ZEN_DEF_HINT = '%LOCALAPPDATA%\\UnrealEngine\\Common\\Zen\\Data';
-    /* runcontext 的 DataPath 是正斜杠（D:/…），env var 是反斜杠——比较前归一化 */
     const normWinPath = (p) => String(p || '').trim().replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+    const [zdirs, setZdirs] = useState({});
+    const [zres, setZres] = useState({});
+    const zdirGenRef = useRef(0);
     const zenRecOf = (d, id) => d[id] || { cfg: null, eff: null, loading: true };
     const zenRec = (id) => zenRecOf(zdirs, id);
     const zenSt = (n) => {
@@ -700,7 +696,7 @@ import {
       if (r.loading) return 'loading';
       if (r.readFail) return 'readfail';
       if (!r.cfg) return 'unset';
-      if (!r.found) return 'mismatch';   /* 已配置但该机编辑器从未启动过本地 Zen —— 尚未生效 */
+      if (!r.found) return 'mismatch';
       return normWinPath(r.eff) === normWinPath(r.cfg) ? 'match' : 'mismatch';
     };
     const ZDIR_META = {
@@ -711,18 +707,37 @@ import {
       blocked:  { vis: 'neutral',     icon: 'minus',  label: '不可读' },
       readfail: { vis: 'negative',    icon: 'alert',  label: '读取失败' },
     };
-    const zenMismatchWhy = (rec) => {
-      if (rec.cfgSrc === 'env')
-        return '配置写在旧通道（机器级环境变量）上 —— 桌面会话读不到 SSH 写入的环境变量' +
-          '（注销 / 重启系统前不刷新），重启编辑器也不会生效。点「应用」重写为注册表配置，重启该机 UE 编辑器即生效';
-      if (!rec.found)
-        return '已写入注册表，但该机编辑器还没启动过本地 Zen —— 下次启动 UE 编辑器时生效';
-      return '已写入注册表，但尚未重启该机 UE 编辑器 —— 生效值仍是旧目录';
-    };
-    /* 应用：逐台执行、逐台成败（与「指向此服务器」的行内模式一致）。zen_set_local_datapath
-       写 UE 运行用户的 HKCU Zen\DataPath 注册表（重启编辑器即生效）＋创建目录＋同步机器级
-       env var 兜底 —— 前置要求 ue_runtime_user（注册表按用户写，也是回读生效值的同一前置）；
-       被拦的逐台引导而非静默跳过。 */
+    const readZdirFor = (n, gen) => Promise.allSettled([
+      getMachineEnvVar(n.machineId, 'UE-ZenDataPath'),
+      zenReadLocalRuncontext(n.machineId),
+    ]).then(([cfgR, rcR]) => {
+      if (gen !== zdirGenRef.current) return;
+      const rc = rcR.status === 'fulfilled' ? rcR.value : null;
+      const envFail = cfgR.status === 'rejected';
+      const rcFail = rcR.status === 'rejected';
+      const envCfg = !envFail && cfgR.value ? cfgR.value : null;
+      const regCfg = rc && rc.registry_data_path ? rc.registry_data_path : null;
+      const cfgFail = envFail && !regCfg;
+      const errOf = (x) => (x.reason && x.reason.message ? x.reason.message : String(x.reason));
+      setZdirs((d) => Object.assign({}, d, { [n.id]: {
+        cfg: regCfg || envCfg,
+        cfgSrc: regCfg ? 'registry' : envCfg ? 'env' : null,
+        eff: rc && rc.found ? rc.data_path : null,
+        found: !!(rc && rc.found),
+        regPath: rc ? rc.registry_data_path : null,
+        loading: false,
+        cfgFail,
+        readFail: cfgFail || rcFail,
+        readErr: rcFail ? errOf(rcR) : cfgFail ? errOf(cfgR) : null,
+      } }));
+    });
+    useEffect(() => {
+      const gen = ++zdirGenRef.current;
+      clients.filter((n) => n.status !== 'offline' && n.machineId && runtimeUser(n)).forEach((n) => { readZdirFor(n, gen); });
+      return () => { zdirGenRef.current++; };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     const applyZenDir = (ids, path) => {
       ids.forEach((id) => {
         const n = CX.node(id);
@@ -734,11 +749,8 @@ import {
         }
         setZres((r) => Object.assign({}, r, { [id]: { st: 'running' } }));
         zenSetLocalDatapath(n.machineId, path).then(
-          (res) => {
-            /* 脚本写后逐通道回读校验过，cfg=path 是已验证事实；eff 要等编辑器重启。
-               registry_written=false = 该用户未登录（hive 未加载），只落了 env var 兜底
-               ——生效时点是「该用户下次登录」而非「重启编辑器」，如实区分。 */
-            const regOk = !!(res && res.registry_written);
+          (result) => {
+            const regOk = !!(result && result.registry_written);
             setZdirs((d) => Object.assign({}, d, { [id]: Object.assign({}, zenRecOf(d, id), {
               cfg: path, cfgSrc: regOk ? 'registry' : 'env', regPath: regOk ? path : zenRecOf(d, id).regPath,
               loading: false, readFail: false, cfgFail: false, readErr: null,
@@ -755,7 +767,6 @@ import {
           });
       });
     };
-    /* 清除配置：空路径 = 同时删注册表 Zen\DataPath 覆盖与机器级 env var（不留幽灵配置源）*/
     const clearZenDir = (id) => {
       const n = CX.node(id);
       if (!n) return;
@@ -780,21 +791,25 @@ import {
       log(s, 'info', `<b>zen_read_local_runcontext</b> · ${esc(n.host)} 回读 zenserver.runcontext`);
       readZdirFor(n, zdirGenRef.current);
     };
-    const openZenDirModal = (ids) => {
-      const machinesArg = ids.map((id) => CX.node(id)).filter((n) => n && n.status !== 'offline');
-      if (!machinesArg.length) return;
+    const onlineClients = clients.filter((n) => n.status !== 'offline');
+    /* 三级弹层「设置缓存目录」：面向全部在线客户端，机器多选（全选/取消全选）与二级列表的
+       「指向此服务器」勾选（sel）互不影响——目录配置与指向是两件独立的事，不该共用一份选中态。 */
+    const openZenDirModal = () => {
+      if (!onlineClients.length) return;
       s.setModal({
         wide: true,
-        render: ({ close }) => h(ZenDirModal, {
-          machines: machinesArg, recOf: (id) => zenRec(id),
-          onConfirm: (path) => applyZenDir(machinesArg.map((m) => m.id), path),
-          close,
+        render: ({ close: closeInner }) => h(ZenDirModal, {
+          machines: onlineClients, recOf: (id) => zenRec(id),
+          onApply: (ids, path) => applyZenDir(ids, path),
+          onClear: (ids) => ids.forEach((id) => clearZenDir(id)),
+          close: closeInner,
         }),
       });
     };
 
     const toggleSel = (n) => { if (n.status === 'offline') return; setSel((v) => v.includes(n.id) ? v.filter((x) => x !== n.id) : v.concat(n.id)); };
     const onlineSel = sel.filter((id) => { const n = CX.node(id); return n && n.status !== 'offline'; });
+    const onlineClientCount = onlineClients.length;
     const selectableUnpointed = clients.filter((n) => n.status !== 'offline' && !pointed.has(n.id));
     const allUnpointedSelected = selectableUnpointed.length > 0 && selectableUnpointed.every((n) => sel.includes(n.id));
     const toggleSelectUnpointed = () => {
@@ -802,18 +817,13 @@ import {
       else setSel((v) => Array.from(new Set(v.concat(selectableUnpointed.map((n) => n.id)))));
     };
 
-    /* 当前范围下，选中的在线机器中需先引导的有多少台（信息性提示，不拦按钮）*/
     const selBlocked = onlineSel.filter((id) => !scopeReadyFor(CX.node(id)));
 
-    /* 逐机真实写配置：部分失败是常态。projIds 仅工程级使用——限定只写入这些选中的 UE
-       工程（二级菜单选择的结果），缺省 = 该机所有已发现工程。 */
     const applyTo = (ids, projIds) => {
       if (!status) return;
-      const host = status.host || (srvNode && srvNode.host) || '';
-      const scheme = status.scheme || protocol || 'http';
+      const host = status.host || '';
+      const scheme = status.scheme || 'http';
       const hostUri = scheme + '://' + host + ':' + status.port;
-      /* UE [StorageServers] Shared 的值必须是结构化条目：Host 为完整 URI（含端口），
-         附 Namespace / 环境与命令行覆盖键 / DeactivateAt——单写 Host=..;Port=.. UE 不识别。 */
       const value = '(Host="' + hostUri + '", Namespace="ue.ddc", EnvHostOverride=UE-ZenSharedDataCacheHost, CommandLineHostOverride=ZenSharedDataCacheHost, DeactivateAt=60)';
       ids.filter((id) => { const n = CX.node(id); return n && n.status !== 'offline'; }).forEach((id) => {
         const n = CX.node(id);
@@ -827,9 +837,6 @@ import {
             log(s, 'warn', `<b>set_ini_key</b> · ${esc(n.host)} 无所选工程，工程级写入跳过`);
             return;
           }
-          /* allSettled，不用 all——每个 setIniKey 是独立的远程写、互不回滚；all 遇到某个
-             工程失败会整体 reject，把已成功落盘的其它工程也一并汇报成「失败」，UI 与磁盘
-             实际状态就对不上了。这里逐个工程收集结果，部分失败时列出到底哪几个成功/失败。 */
           Promise.allSettled(ps.map((p) => setIniKey(n.machineId, p.locByMachine[String(n.machineId)] + '\\Config\\DefaultEngine.ini', 'StorageServers', 'Shared', value))).then(
             (results) => {
               const failed = ps.map((p, i) => ({ p, err: results[i] })).filter((x) => x.err.status === 'rejected');
@@ -871,262 +878,27 @@ import {
       });
     };
 
-    /* 直接执行（用户全局）：不弹二级菜单，按下即跑命令，进展看各机行内状态 + 控制台 */
     const runApply = (ids) => {
       const online = ids.filter((id) => { const n = CX.node(id); return n && n.status !== 'offline'; });
       if (online.length) applyTo(online);
     };
 
-    /* 工程级：弹出居中二级菜单，列出 UE 工程供选择，确认后再指向。默认全选（preselect
-       不传 lastProjSelRef——那是单机重试专用的「复用上次选择」，选中机器集合变化时
-       用它预选会与新集合取交集，可能把新出现的相关工程漏选而不自知）。 */
     const openProjectPicker = (ids) => {
       const online = ids.filter((id) => { const n = CX.node(id); return n && n.status !== 'offline'; });
       if (!online.length || !status) return;
       const machinesArg = online.map((id) => CX.node(id));
-      const host = status.host || srvNode.host;
+      const host = status.host;
       s.setModal({
         wide: true,
-        render: ({ close }) => h(ProjPointModal, {
+        render: ({ close: closeInner }) => h(ProjPointModal, {
           machines: machinesArg, host, port: status.port,
           preselect: null,
           onConfirm: (pIds) => { lastProjSelRef.current = pIds; applyTo(online, pIds); },
-          close,
+          close: closeInner,
         }),
       });
     };
 
-    /* ============ 渲染 ============ */
-    const kv = (k, v, mono) => h('div', { className: 'zs-kv' }, h('span', { className: 'zs-k' }, k), h('span', { className: 'zs-v' + (mono ? ' mono' : '') }, v));
-    const sMeta = SVC_STATE[(status && status.svc) || 'unknown'] || SVC_STATE.unknown;
-    /* 指向目标卡片的色调：未部署 = 中性引导态；已部署但停止/不可达/状态未知 = 真失败态；其余 = 平常强调色 */
-    const targetVis = !deployed ? 'neutral' : (status.svc === 'running' ? 'accent' : status.svc === 'unreachable' ? 'negative' : 'notice');
-
-    /* ① 状态卡 / 未部署空态 */
-    const statusCard = statusLoading
-      ? h('div', { className: 'zen-empty' },
-          h('span', { className: 'ze-ico' }, h('span', { className: 'zstep-spin' })),
-          h('div', { className: 'ze-tx' }, h('div', { className: 'ze-t' }, '正在读取 Zen 服务器状态…')))
-      : deployed
-        ? h('div', { className: 'zen-status' },
-            h('div', { className: 'zs-head' },
-              h('span', { className: 'zs-ico' }, h(Icon, { name: 'cube', size: 20 })),
-              h('div', { className: 'zs-id' },
-                h('div', { className: 'zs-title' }, status.host || ('endpoint ' + status.endpointId),
-                  h('span', { className: 'zs-host' }, status.ip ? (status.ip + ' : ' + status.port) : (':' + status.port))),
-                h('div', { className: 'zs-sub' }, status.scheme + ' · ' + (status.version === '—' ? '版本未知' : status.version))),
-              h(ZBadge, { vis: sMeta.vis, icon: sMeta.icon, label: sMeta.label }),
-              h('div', { className: 'zs-actions' },
-                h('button', { className: 'mini-btn', onClick: probeServer }, h(Icon, { name: 'pulse', size: 12 }), '探活'),
-                status.svc === 'running'
-                  ? h('button', { className: 'mini-btn', onClick: stopServer }, h(Icon, { name: 'pause', size: 12 }), '停止')
-                  : h('button', { className: 'mini-btn', onClick: startServer }, h(Icon, { name: 'play', size: 12 }), '启动'),
-                h('button', { className: 'mini-btn danger', onClick: uninstallServer }, h(Icon, { name: 'trash', size: 12 }), '卸载'))),
-            h('div', { className: 'zs-grid' },
-              kv('版本', status.version),
-              kv('端口', String(status.port), true),
-              kv('协议', status.scheme),
-              kv('数据目录', status.dataDir, true),
-              kv('缓存 provider', status.providers && status.providers.length ? status.providers.join(' · ') : '—', true),
-              kv('已指向客户端', pointedCount + ' 台')))
-        : h('div', { className: 'zen-empty' },
-            h('span', { className: 'ze-ico' }, h(Icon, { name: 'cube', size: 26 })),
-            h('div', { className: 'ze-tx' },
-              h('div', { className: 'ze-t' }, '未部署 Zen 缓存服务器'),
-              h('div', { className: 'ze-s' }, '集群里还没有共享缓存服务器。填写下方参数并部署一台，让渲染机都用上它。')),
-            h(ZBadge, { vis: 'neutral', label: '未部署' }));
-
-    /* GC 缓存回收策略 —— 独立模块：三个时长参数各自可编辑，统一「应用更改」提交 */
-    const gcFieldRow = (f) => {
-      const draft = gcDraft[f.id];
-      const dirty = gcFieldDirty(f.id);
-      const nonDefault = gcNonDefault(f.id);
-      return h('div', { className: 'gc-field' + (dirty ? ' dirty' : ''), key: f.id },
-        h('div', { className: 'gc-field-head' },
-          h('label', null, f.label,
-            h('span', { className: 'gc-info', tabIndex: 0 },
-              h(Icon, { name: 'info', size: 13 }),
-              h('span', { className: 'gc-tip' }, f.tip))),
-          nonDefault ? h('span', { className: 'gc-tag', title: '当前值与官方默认不同' }, '≠ 默认') : null,
-          dirty ? h('span', { className: 'gc-dot', title: '尚未应用' }) : null),
-        h('div', { className: 'gc-field-row' },
-          h('div', { className: 'gc-stepper' + (!deployed ? ' is-disabled' : '') },
-            h('input', {
-              type: 'number', min: 0, inputMode: 'numeric', className: 'dp-input mono gc-num', value: draft.value,
-              disabled: !deployed,
-              onChange: (e) => setGcField(f.id, { value: e.target.value === '' ? '' : Math.max(0, Number(e.target.value)) }),
-            }),
-            h('div', { className: 'gc-spin' },
-              h('button', {
-                type: 'button', className: 'gc-spin-btn', tabIndex: -1, disabled: !deployed, 'aria-label': '增加',
-                onClick: () => setGcField(f.id, { value: Math.max(0, (Number(draft.value) || 0) + 1) }),
-              }, h(Icon, { name: 'chevu', size: 12 })),
-              h('button', {
-                type: 'button', className: 'gc-spin-btn', tabIndex: -1, disabled: !deployed, 'aria-label': '减少',
-                onClick: () => setGcField(f.id, { value: Math.max(0, (Number(draft.value) || 0) - 1) }),
-              }, h(Icon, { name: 'chevd', size: 12 })))),
-          h(Selector, { kpre: '单位', value: draft.unit, options: f.units, width: 74, align: 'left', onChange: (u) => setGcField(f.id, { unit: u }) }),
-          h('span', { className: 'gc-eq mono' }, '= ' + gcSeconds(draft).toLocaleString('zh-CN') + ' 秒')),
-        h('div', { className: 'gc-presets' },
-          f.presets.map((p) => h('button', {
-            key: p.label, className: 'gc-chip' + (Number(draft.value) === p.value && draft.unit === p.unit ? ' on' : ''),
-            disabled: !deployed, onClick: () => setGcField(f.id, { value: p.value, unit: p.unit }),
-          }, p.label))),
-        h('div', { className: 'gc-desc' }, f.desc));
-    };
-    const gcPanel = h('div', { className: 'gc-panel' + (!deployed ? ' is-disabled' : '') },
-      h('div', { className: 'gc-head' },
-        h('span', { className: 'gc-head-ico' }, h(Icon, { name: 'flush', size: 17 })),
-        h('div', { className: 'gc-head-tx' },
-          h('div', { className: 'gc-head-t' }, '缓存回收策略（GC）'),
-          h('div', { className: 'gc-head-s' }, '控制服务器清理过期缓存的频率与保留时长')),
-        deployed && gcDirty ? h('span', { className: 'gc-pending' }, h('span', { className: 'gc-pending-dot' }), '有未应用的更改') : null,
-        deployed && !gcDirty && gcJustApplied ? h('span', { className: 'gc-applied-ok' }, h(Icon, { name: 'check', size: 12 }), 'GC 策略已更新') : null),
-      !deployed ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }), '请先部署 Zen 服务器后再配置回收策略。') : null,
-      h('div', { className: 'gc-panel-body' },
-        h('div', { className: 'gc-fields' }, GC_FIELDS.map(gcFieldRow)),
-        h('div', { className: 'gc-actions' },
-          h('button', { className: 'mini-btn', disabled: !deployed || gcBusy || gcAtDefault, onClick: resetGcDefaults },
-            h(Icon, { name: 'restart', size: 12 }), '重置为默认值'),
-          h(Button, {
-            variant: 'accent', size: 'M', icon: h(Icon, { name: 'check', size: 14 }),
-            isDisabled: !deployed || !gcDirty || gcBusy, onPress: applyGc,
-          }, gcBusy ? '应用中…' : '应用更改'))));
-
-    /* 部署表单 */
-    const segProto = h('div', { className: 'zseg' },
-      ['http'].map((p) => h('button', { key: p, className: protocol === p ? 'on' : '', onClick: () => setProtocol(p) }, p)));
-    const ACCT_TIERS = [['system', '系统账号'], ['dedicated', '专用本地账号'], ['domain', '域账号']];
-    const segAcct = h('div', { className: 'zseg wide zseg-acct' },
-      ACCT_TIERS.map(([k, lbl]) =>
-        h('button', { key: k, className: acctKind === k ? 'on' : '', onClick: () => setAcctKind(k) },
-          lbl, k === 'dedicated' ? h('span', { className: 'seg-badge' }, '推荐') : null)));
-
-    /* 密码输入 + 显示/隐藏切换 */
-    const passField = (val, setVal, ph) => h('div', { className: 'zpass' },
-      h('input', { className: 'dp-input', type: showPass ? 'text' : 'password', placeholder: ph, value: val, onChange: (e) => setVal(e.target.value) }),
-      h('button', { type: 'button', className: 'zpass-eye' + (showPass ? ' on' : ''), 'aria-label': showPass ? '隐藏密码' : '显示密码', onClick: () => setShowPass((v) => !v) },
-        h(Icon, { name: 'eye', size: 14 })));
-
-    const acctBody = h('div', { className: 'zacct-body' },
-      /* 档位一：系统账号 */
-      acctKind === 'system' ? h(React.Fragment, null,
-        h('div', { className: 'zacct-note' }, h(Icon, { name: 'shield', size: 12 }),
-          '使用 Windows 内置 LocalSystem 账号运行，权限最高、无需密码，适合快速搭建测试环境。'),
-        h('div', { className: 'zacct-subhint' }, '生产环境建议改用「专用本地账号」，遵循最小权限原则。')) : null,
-      /* 档位二：专用本地账号 */
-      acctKind === 'dedicated' ? h(React.Fragment, null,
-        h('div', { className: 'zacct-desc' }, '官方建议的安全实践：为 ZenServer 单独创建一个非管理员本地账号，仅授予运行所需的最小权限——推荐作为生产环境默认。'),
-        !dedManual ? h(React.Fragment, null,
-          !dedCreated
-            ? h('div', { className: 'zacct-row' },
-                h('button', { className: 'mini-btn accent', disabled: dedCreating, onClick: createDedicated },
-                  h(Icon, { name: 'plus', size: 12 }), dedCreating ? '创建中…' : '创建专用账号'),
-                h('span', { className: 'zacct-subhint' }, '工具自动生成账号名与高强度随机密码，密码由凭据管理器托管、不显示、不落地。'))
-            : h('div', { className: 'zcred-chip' },
-                h(Icon, { name: 'check', size: 13 }),
-                h('span', { className: 'mono' }, dedUser),
-                h('span', { className: 'zcred-sub' }, '密码由凭据管理器托管（不显示）'),
-                h('button', { type: 'button', className: 'ztext-btn', disabled: dedCreating, onClick: createDedicated }, '重新生成')),
-          h('button', { type: 'button', className: 'ztext-btn', onClick: () => { setDedManual(true); setDedUser(''); setDedCredAlias(null); } }, '手动指定已有本地账号')) : h(React.Fragment, null,
-          h('div', { className: 'zacct' },
-            h('input', { className: 'dp-input mono', placeholder: '本地账号（如 zen-svc）', value: dedUser, spellCheck: false, onChange: (e) => setDedUser(e.target.value) }),
-            passField(dedPass, setDedPass, '密码')),
-          h('div', { className: 'zperm' }, h(Icon, { name: 'info', size: 12 }),
-            h('span', null, '该账号需预先具备：', h('b', null, '登录为服务'), ' 权限 · ',
-              h('span', { className: 'mono' }, '{ZenInstall}'), ' 读权限 · ',
-              h('span', { className: 'mono' }, '{ZenData}'), ' 读写权限 · 端口 8558 的 http.sys urlacl 授权。部署前置检查会校验这些权限。')),
-          h('button', { type: 'button', className: 'ztext-btn', onClick: () => { setDedManual(false); setDedUser(''); setDedCredAlias(null); } }, '改用自动创建'))) : null,
-      /* 档位三：域账号 */
-      acctKind === 'domain' ? h(React.Fragment, null,
-        h('div', { className: 'zseg zseg-sm' },
-          [['std', '普通域账号'], ['gmsa', '组托管服务账号（gMSA）']].map(([k, lbl]) =>
-            h('button', { key: k, className: domType === k ? 'on' : '', onClick: () => setDomType(k) }, lbl))),
-        h('div', { className: 'zdom-grid' },
-          h('div', { className: 'dp-field' }, h('label', null, '域名'),
-            h('input', { className: 'dp-input mono', placeholder: '如 VOLO 或 corp.company.com', value: domName, spellCheck: false, onChange: (e) => setDomName(e.target.value) })),
-          h('div', { className: 'dp-field' }, h('label', null, '用户名'),
-            h('input', { className: 'dp-input mono', placeholder: '如 VOLO\\zen-svc', value: domUser, spellCheck: false, onChange: (e) => setDomUser(e.target.value) })),
-          domType === 'std'
-            ? h('div', { className: 'dp-field' }, h('label', null, '密码'), passField(domPass, setDomPass, '域账号密码'))
-            : h('div', { className: 'dp-field' }, h('label', null, '密码'),
-                h('div', { className: 'zacct-note' }, h(Icon, { name: 'shield', size: 12 }), 'gMSA 密码由域控自动管理，无需手动输入'))),
-        h('div', { className: 'zform-tip' }, h(Icon, { name: 'alert', size: 12 }),
-          'ZenServer 对外为无认证服务——域账号只决定服务以谁的身份运行、能否读写本机目录，不会给客户端访问 Zen 数据加上认证。'),
-        h('div', { className: 'zacct-subhint' }, '需域管理员预先为该账号授予「登录为服务」权限；推荐优先使用 gMSA 以避免手动管理密码带来的风险。')) : null);
-
-    /* 地址栏 + 悬停浮现的「打开文件夹」按钮：真实在本机文件资源管理器中打开该路径（revealPath，
-       同 USB 导出抽屉「在文件夹中显示」）。这三个路径描述的是部署目标机器（srvNode，常是远程
-       渲染节点）上的目录——只有部署目标恰好是本机时才会打开真实目录，跨机器时是已知限制。 */
-    const openPath = (p) => { revealPath(p).catch(() => {}); };
-    const pathInput = (val, onChange) => h('div', { className: 'dp-path' },
-      h('input', { className: 'dp-input mono', value: val, spellCheck: false, onChange }),
-      h('button', { type: 'button', className: 'dp-path-open', title: '在文件资源管理器中打开该目录', tabIndex: -1, onClick: () => openPath(val) },
-        h(Icon, { name: 'folder', size: 13 })));
-
-    const deployForm = h('div', { className: 'deploy-panel' },
-      h('div', { className: 'dp-h' }, h(Icon, { name: 'cube', size: 15 }), deployed ? '重新部署 Zen 服务器' : '部署 Zen 服务器',
-        h('span', { className: 'dp-h-note' }, '逐步真实执行 · 每步可单独重试')),
-      h('div', { className: 'zform-grid' },
-        h('div', { className: 'dp-field grow' }, h('label', null, '服务器机器'),
-          h(Selector, { kpre: '机器', value: srvNode.id, options: srvOpts, width: 280, onChange: pickServer })),
-        h('div', { className: 'dp-field grow' }, h('label', null, '服务端点 · 协议 / 主机 / 端口'),
-          h('div', { className: 'zendpoint' },
-            segProto,
-            h('span', { className: 'zep-sep mono' }, '://'),
-            h('span', { className: 'zep-host mono' }, srvNode.host),
-            h('span', { className: 'zep-sep mono' }, ':'),
-            h('input', { className: 'dp-input mono zep-port', value: port, spellCheck: false, 'aria-label': '端口', onChange: (e) => setPort(e.target.value) }))),
-        h('div', { className: 'dp-field grow' }, h('label', null, '安装目录 · ZenInstall'),
-          pathInput(installDir, (e) => setInstallDir(e.target.value))),
-        h('div', { className: 'dp-field grow' }, h('label', null, '数据目录 · data-dir'),
-          pathInput(dataDir, (e) => setDataDir(e.target.value))),
-        h('div', { className: 'dp-field grow' },
-          h('label', null, '配置文件落地路径',
-            configOverride == null
-              ? h('span', { className: 'dp-hint' }, '跟随安装目录')
-              : h('button', { type: 'button', className: 'dp-hint dp-hint-btn', onClick: () => setConfigOverride(null) }, '恢复跟随安装目录')),
-          pathInput(configPath, (e) => setConfigOverride(e.target.value))),
-        h('div', { className: 'dp-field grow zacct-field' }, h('label', null, '服务运行账号 · 用于开放网络访问 + 安装服务'),
-          segAcct, acctBody)),
-      h('div', { className: 'zadv' },
-        h('button', { className: 'zadv-tgl', onClick: () => setAdvOpen((v) => !v) },
-          h(Icon, { name: 'chevr', size: 13, style: { transform: advOpen ? 'rotate(90deg)' : 'none' } }), '高级'),
-        advOpen ? h('div', { className: 'zadv-body' },
-          h('div', { className: 'dp-field' }, h('label', null, 'HTTP 服务类型'),
-            h(Selector, { kpre: '类型', value: httpType, options: httpOpts, width: 200, onChange: setHttpType }))) : null),
-      h('div', { className: 'zform-actions' },
-        !acctReady() ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }),
-          '请先完成服务运行账号设置（创建专用账号，或填写账号用户名）再部署，否则服务将回退到默认账号运行。') : null,
-        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'bolt', size: 14 }), isDisabled: deploying || !acctReady(), onPress: modalDeploy }, deploying ? '部署中…' : (deployed ? '重新部署' : '部署'))));
-
-    /* 步骤列表 */
-    const stepIco = (st, i) => {
-      if (st === 'running') return h('span', { className: 'zstep-spin' });
-      if (st === 'ok') return h(Icon, { name: 'check', size: 14 });
-      if (st === 'fail') return h(Icon, { name: 'alert', size: 14 });
-      return h('span', { className: 'zstep-n' }, i + 1);
-    };
-    const stepper = started ? h('div', { className: 'zsteps' },
-      DEPLOY_STEPS.map((st, i) => {
-        const r = run[st.id] || { st: 'idle' };
-        const rm = RUN_STATE[r.st];
-        return h('div', { key: st.id, className: 'zstep is-' + r.st },
-          h('span', { className: 'zstep-ico' }, stepIco(r.st, i)),
-          h('div', { className: 'zstep-main' },
-            h('div', { className: 'zstep-top' },
-              h('span', { className: 'zstep-label' }, st.label),
-              h('span', { className: 'zstep-cli mono' }, st.cli)),
-            h('div', { className: 'zstep-desc' }, st.desc(formObj, srvNode.host)),
-            r.st === 'fail' && r.err ? h('div', { className: 'zstep-err' }, h(Icon, { name: 'alert', size: 13 }), r.err) : null,
-            r.st === 'fail' ? h('div', { className: 'zstep-acts' },
-              st.gate ? h('button', { className: 'mini-btn', onClick: doRefresh }, h(Icon, { name: 'sync', size: 12 }), '刷新这台机器') : null,
-              h('button', { className: 'mini-btn', onClick: () => runFrom(i) }, h(Icon, { name: 'restart', size: 12 }), '重试这一步')) : null),
-          h(ZBadge, { vis: rm.vis, icon: rm.icon, label: rm.label, soft: true }));
-      })) : null;
-
-    /* ② 客户端列表 */
-    /* 配置范围选择器：工程级 / 用户全局；目标路径 / 前置说明 / 底部安全说明随选项切换 */
     const SCOPE_OPTS = [
       { id: 'project', label: '工程级', sub: '写工程 DefaultEngine.ini', disabled: !hasAnyProjects },
       { id: 'user', label: '用户全局', sub: '写 UserEngine.ini' },
@@ -1151,8 +923,6 @@ import {
         : h('div', { className: 'zscope-detail' },
             h('div', { className: 'zscope-path mono' }, h(Icon, { name: 'doc', size: 12 }), '%LOCALAPPDATA%\\Unreal Engine\\Engine\\Config\\UserEngine.ini  →  [StorageServers] Shared'),
             h('div', { className: 'zscope-tx' }, '写入该机 UE 运行用户（ue_runtime_user）的全局配置，对该用户下所有工程生效，不依赖工程扫描。')),
-      /* 不按 cfgScope 门控——全集群零工程时「工程级」选项本身被禁用，用户切不到那一档，
-         这条提示得在「用户全局」档下也看得见，否则「工程级」永远打不开、这条 hint 是死代码。 */
       !hasAnyProjects
         ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }),
             h('span', null, '未扫描到 UE 工程 · '),
@@ -1179,80 +949,39 @@ import {
       if (pointedLoading) return h(ZBadge, { vis: 'neutral', icon: 'sync', label: '读取指向状态…', soft: true });
       return h(ZBadge, { vis: 'notice', icon: 'minus', label: '未指向', soft: true });
     };
-    /* 行内次级徽标：本地 Zen 缓存目录状态（指向是主状态，此为次级信息）· 点击展开配置 */
-    const zdirChip = (n) => {
+    /* 只读次级徽标：本地 Zen 缓存目录状态（指向是主状态，此为次级信息）· 不可点开，
+       目录配置全部收进三级「设置缓存目录」弹层（见 openZenDirModal / ZenDirModal）。失败时的
+       具体原因（zres[n.id].msg）与重试入口不在这个只读徽标里展开——如需重试请在下方
+       「重新读取」或重新打开「设置缓存目录」用同一路径重新应用；控制台 NDJSON 日志流里有
+       每一步的完整错误信息。 */
+    const zdirStatusChip = (n) => {
       const st = zenSt(n);
       const r = zres[n.id];
-      const open = zdirOpen === n.id;
       let vis, icon, label, spinning = false;
       if (r && r.st === 'running') { vis = 'informative'; icon = 'sync'; label = 'Zen 目录 · 应用中'; spinning = true; }
       else if (r && r.st === 'fail') { vis = 'negative'; icon = 'alert'; label = 'Zen 目录 · 写入失败'; }
       else if (r && r.st === 'ok' && st === 'mismatch') { vis = 'notice'; icon = 'alert'; label = 'Zen 目录 · 待重启生效'; }
       else { const m = ZDIR_META[st]; vis = m.vis; icon = m.icon; label = 'Zen 目录 · ' + m.label; spinning = st === 'loading'; }
-      return h('button', { className: 'zdir-chip zd-' + vis + (open ? ' on' : '') + (st === 'blocked' ? ' soft' : ''),
-        title: '客户端本地 Zen 缓存目录（注册表 Zen\\DataPath）· 点击展开配置', onClick: () => setZdirOpen(open ? null : n.id) },
+      const title = (r && r.st === 'fail' && r.msg)
+        ? ('写入失败 · ' + r.msg)
+        : '客户端本地 Zen 缓存目录（注册表 Zen\\DataPath）· 目录配置在「设置缓存目录」中集中管理';
+      return h('span', { className: 'zdir-chip ro zd-' + vis + (st === 'blocked' ? ' soft' : ''), title },
         spinning ? h('span', { className: 'spin', style: { display: 'inline-flex' } }, h(Icon, { name: 'sync', size: 11 })) : h(Icon, { name: icon, size: 11 }),
-        label,
-        h(Icon, { name: 'chevd', size: 10, style: { transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .13s' } }));
+        label);
     };
-    /* 行内展开：配置值 vs 实际生效值 + 单机应用 / 清除 / 重新读取 */
-    const zdirPanel = (n) => {
-      const rec = zenRec(n.id);
+    const rereadBtn = (n) => {
       const st = zenSt(n);
-      const m = ZDIR_META[st];
       const blocked = st === 'blocked';
-      const draft = zdraft[n.id] != null ? zdraft[n.id] : (rec.cfg || 'D:\\UE_DDC\\Zen');
-      const valid = /^[A-Za-z]:\\/.test(draft.trim());
-      const r = zres[n.id];
-      const rm = r ? RUN_STATE[r.st] : null;
-      const effCell = blocked
-        ? h('span', { className: 'v none' }, '无法读取')
-        : st === 'loading'
-          ? h('span', { className: 'v loading' }, h('span', { className: 'spin', style: { display: 'inline-flex' } }, h(Icon, { name: 'sync', size: 11 })), '正在从该机回读…')
-          : st === 'readfail'
-            ? h('span', { className: 'v none' }, '回读失败' + (rec.readErr ? ' · ' + rec.readErr : ''))
-            : rec.found
-              ? h('span', { className: 'v mono' }, rec.eff || '—')
-              : h('span', { className: 'v none' }, '尚无记录 · 该机编辑器从未启动过本地 Zen');
-      return h('div', { className: 'zdir-panel' },
-        h('div', { className: 'zdir-h' },
-          h(Icon, { name: 'folder', size: 13 }),
-          h('span', { className: 't' }, '客户端本地 Zen 缓存目录'),
-          h('code', { className: 'zdir-env' }, 'HKCU\\…\\Epic Games\\Zen · DataPath'),
-          h(ZBadge, { vis: m.vis, icon: st === 'loading' ? 'sync' : m.icon, soft: true,
-            label: st === 'unset' ? '未配置 · 走默认 C 盘' : st === 'match' ? '已配置 · 生效一致' : st === 'mismatch' ? '已配置 · 未生效' : st === 'loading' ? '生效值读取中' : st === 'readfail' ? '回读失败' : '离线 / 未设运行用户' })),
-        h('div', { className: 'zdir-intro' },
-          '该机 UE 编辑器会自动拉起一个本地 Zen 进程做本地缓存，默认目录在系统盘用户目录，项目大了会塞满 C 盘。注意区分：①区「服务器数据目录」是共享缓存本体，DDC 页「本地 DDC（文件版）」是又一个目录 —— 三者互不相同。'),
-        blocked ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }),
-          n.status === 'offline'
-            ? '机器离线，读不了生效值，也无法远程写入 · 恢复在线后再配置'
-            : '该机未设置 UE 运行用户，读不了生效值 · 与「用户全局指向」同一前置条件：先配置 ue_runtime_user（machine set-ue-user）') : null,
-        h('div', { className: 'zdir-kv' },
-          h('span', { className: 'k' }, '配置值 · ' + (rec.cfgSrc === 'env' ? '环境变量（旧通道）' : '注册表')),
-          h('span', { className: 'v' + (rec.cfg ? ' mono' : ' none') },
-            rec.cfg || (rec.cfgFail ? '读取失败' : '未设置 · 默认 ' + ZEN_DEF_HINT)),
-          h('span', null)),
-        h('div', { className: 'zdir-kv' },
-          h('span', { className: 'k' }, '实际生效值 · runcontext'),
-          effCell,
-          !blocked ? h('button', { className: 'mini-btn', disabled: st === 'loading', onClick: () => rereadZenDir(n.id) }, h(Icon, { name: 'sync', size: 12 }), '重新读取') : null),
-        st === 'mismatch' ? h('div', { className: 'zdir-why' }, h(Icon, { name: 'alert', size: 12 }), zenMismatchWhy(rec)) : null,
-        !blocked ? h('div', { className: 'zdir-form' },
-          h('input', { className: 'dp-input mono', value: draft, spellCheck: false, placeholder: '如 D:\\UE_DDC\\Zen',
-            onChange: (e) => setZdraft((v) => Object.assign({}, v, { [n.id]: e.target.value })) }),
-          h('button', { className: 'mini-btn accent', disabled: !valid || (r && r.st === 'running'), onClick: () => applyZenDir([n.id], draft.trim()) }, h(Icon, { name: 'check', size: 12 }), '应用'),
-          h('button', { className: 'mini-btn danger', disabled: !rec.cfg || (r && r.st === 'running'), onClick: () => clearZenDir(n.id) }, h(Icon, { name: 'trash', size: 12 }), '清除配置（还原默认）')) : null,
-        !blocked && !valid ? h('div', { className: 'zdir-err' }, h(Icon, { name: 'alert', size: 12 }), '请输入 Windows 绝对路径（如 D:\\UE_DDC\\Zen）') : null,
-        r ? h('div', { className: 'zdir-res' },
-          h(ZBadge, { vis: rm.vis, icon: rm.icon, label: r.st === 'running' ? '应用中' : r.st === 'ok' ? '成功' : '失败', soft: true }),
-          r.msg ? h('span', { className: 'zdir-res-msg s-' + rm.vis }, r.msg) : null,
-          r.st === 'fail' ? h('button', { className: 'mini-btn', onClick: () => applyZenDir([n.id], (r.path || draft).trim()) }, h(Icon, { name: 'restart', size: 12 }), '重试') : null) : null);
+      return h('button', { className: 'mini-btn', disabled: blocked || st === 'loading',
+        title: blocked ? '离线 / 未设运行用户，无法回读生效值' : '重新读取该机 Zen 缓存目录生效值',
+        onClick: () => rereadZenDir(n.id) },
+        h(Icon, { name: 'sync', size: 12 }), '重新读取');
     };
     const clientRow = (n) => {
       const off = n.status === 'offline';
       const checked = sel.includes(n.id);
       const stMeta = NODE_STATUS[n.status] || NODE_STATUS.na;
-      return h('div', { key: n.id, className: 'zcli-wrap' + (zdirOpen === n.id ? ' open' : '') },
+      return h('div', { key: n.id, className: 'zcli-wrap' },
         h('div', { className: 'cli-row zcli' + (off ? ' off' : '') + (checked ? ' on' : '') },
           h('button', { className: 'zck' + (checked ? ' on' : '') + (off ? ' dis' : ''), onClick: () => toggleSel(n), disabled: off, title: off ? '离线机器不可选' : '选择' },
             checked ? h(Icon, { name: 'check', size: 12 }) : null),
@@ -1261,10 +990,280 @@ import {
           h('div', { className: 'cli-meta' },
             h('div', { className: 'cli-host mono' }, n.host),
             h('div', { className: 'cli-sub' }, n.ip + ' · ' + n.role)),
-          h('div', { className: 'zcli-end' }, zdirChip(n), clientBadge(n))),
-        zdirOpen === n.id ? zdirPanel(n) : null);
+          h('div', { className: 'zcli-end' }, zdirStatusChip(n), off ? null : rereadBtn(n), clientBadge(n))));
     };
 
+    const srvHost = status ? status.host : null;
+
+    return h(ModalChrome, {
+      icon: 'link', close,
+      title: '客户端指向管理',
+      sub: clients.filter((n) => pointed.has(n.id)).length + ' / ' + clients.length + ' 已指向 · 逐台改缓存配置指向此服务器',
+    },
+      h('div', { className: 'cli-panel' },
+        h('div', { className: 'zcli-bar' },
+          h('div', { className: 'cli-server-chip vis-' + targetVis },
+            h('span', { className: 'csc-ico' }, h(Icon, { name: 'cube', size: 15 })),
+            h('div', { style: { minWidth: 0 } },
+              h('div', { className: 'csc-t' }, deployed ? ('指向目标 · ' + srvHost) : '指向目标 · 尚未部署'),
+              h('div', { className: 'csc-s mono' }, deployed ? (status.ip + ' : ' + status.port) : '—'))),
+          h('button', { className: 'zlink-all', onClick: toggleSelectUnpointed, disabled: selectableUnpointed.length === 0 },
+            allUnpointedSelected ? '取消选择' : '选中全部未指向（' + selectableUnpointed.length + '）'),
+          h('div', { className: 'zcli-go' },
+            h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'folder', size: 14 }), isDisabled: onlineClientCount === 0,
+              onPress: openZenDirModal },
+              '设置缓存目录'),
+            h(Button, {
+              variant: 'accent', size: 'M', icon: h(Icon, { name: 'link', size: 14 }), isDisabled: onlineSel.length === 0 || !canPoint,
+              onPress: () => { if (cfgScope === 'project') openProjectPicker(onlineSel); else runApply(onlineSel); },
+            },
+              onlineSel.length ? '指向此服务器（' + onlineSel.length + '）' : '指向此服务器'))),
+        deployed ? scopeBlock : null,
+        !deployed
+          ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }), '尚未部署服务器，先部署一台，再把客户端指向它。')
+          : !canPoint
+            ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }), '服务器已部署但当前未在运行 —— 先启动 / 探活确认运行中，再指向客户端。')
+            : null,
+        h('div', { className: 'cli-note' }, h(Icon, { name: 'shield', size: 13 }),
+          cfgScope === 'project'
+            ? '应用 = 逐台改这些机器已发现工程的 DefaultEngine.ini（写 [StorageServers] Shared，非旧版 [InstalledDerivedDataBackendGraph]）指向上方服务器；远程操作走 SSH key，逐台执行、逐台看成败。'
+            : '应用 = 逐台改这些机器 UE 运行用户的 UserEngine.ini（写 [StorageServers] Shared）指向上方服务器；远程操作走 SSH key，逐台执行、逐台看成败。'),
+        h('div', { className: 'cli-list' }, clients.map(clientRow))));
+  }
+
+  function ZenServer({ s }) {
+    /* —— 真实状态（zen_list_endpoints + zen_status + zen_cache_stats）—— */
+    const [status, setStatus] = useState(null);   /* {endpointId,machineId,host,ip,port,scheme,version,dataDir,svc,records,gc*,serviceAccount*} | null */
+    const [statusLoading, setStatusLoading] = useState(true);
+    const loadStatus = () => {
+      setStatusLoading(true);
+      Promise.allSettled([zenListEndpoints(null), zenStatus(null)]).then(([epR, stR]) => {
+        const eps = epR.status === 'fulfilled' && Array.isArray(epR.value) ? epR.value : [];
+        const rows = stR.status === 'fulfilled' && Array.isArray(stR.value) ? stR.value : [];
+        const ep = eps.find((e) => e.role === 'shared_upstream') || eps[0] || null;
+        if (!ep) { setStatus(null); setStatusLoading(false); return; }
+        const row = rows.find((r) => r.endpoint_id === ep.id) || null;
+        /* reachable 三态：true→运行中 / false→不可达 / null（从未探活）→状态未知（不冒充已停止）*/
+        const svc = row ? (row.reachable === true ? 'running' : row.reachable === false ? 'unreachable' : 'unknown') : 'unknown';
+        setStatus({
+          endpointId: ep.id, machineId: ep.machine_id,
+          host: row ? row.hostname : '', ip: row ? row.ip : '',
+          port: ep.declared_port, scheme: ep.scheme, dataDir: ep.data_dir,
+          version: row && row.build_version ? row.build_version : '—', svc, providers: null,
+          gcIntervalSeconds: ep.gc_interval_seconds, gcLightweightIntervalSeconds: ep.gc_lightweight_interval_seconds,
+          cacheMaxDurationSeconds: ep.cache_max_duration_seconds,
+          serviceAccountUsername: ep.service_account_username, serviceAccountCredAlias: ep.service_account_cred_alias,
+        });
+        setStatusLoading(false);
+        zenCacheStats(ep.id, null).then((cs) => {
+          const sample = cs && Array.isArray(cs.samples) && cs.samples[0] ? cs.samples[0] : null;
+          const provs = sample && Array.isArray(sample.providers) ? sample.providers : null;
+          setStatus((s2) => (s2 ? Object.assign({}, s2, { providers: provs }) : s2));
+        }, () => {});
+      });
+    };
+    useEffect(() => { loadStatus(); }, []);
+
+    /* —— GC 已应用值：仅保留供 Dashboard 卡二展示；草稿/应用中/破坏性确认全在 GcModal 内部。
+       首次拿到真实 endpoint 数据时按其 gc_* 字段种一次（缺省=尚未配置过，视作官方默认）。 —— */
+    const [gcApplied, setGcApplied] = useState(() => cloneGc(GC_DEFAULTS));
+    const gcSeededForRef = useRef(null);
+    useEffect(() => {
+      if (!status || gcSeededForRef.current === status.endpointId) return;
+      gcSeededForRef.current = status.endpointId;
+      setGcApplied({
+        interval: status.gcIntervalSeconds != null ? bestVU(status.gcIntervalSeconds, GC_FIELDS[0].units) : Object.assign({}, GC_DEFAULTS.interval),
+        lw: status.gcLightweightIntervalSeconds != null ? bestVU(status.gcLightweightIntervalSeconds, GC_FIELDS[1].units) : Object.assign({}, GC_DEFAULTS.lw),
+        maxDur: status.cacheMaxDurationSeconds != null ? bestVU(status.cacheMaxDurationSeconds, GC_FIELDS[2].units) : Object.assign({}, GC_DEFAULTS.maxDur),
+      });
+    }, [status]);
+
+    /* pointed 必须在任何条件 return 之前声明（Rules of Hooks）。否则首屏 RENDER_NODES 还空、
+       走下面 if(!RN.length) 早返回时这些 hook 不执行；机器异步到达后 re-render 又执行，
+       hook 数变化会让 React 抛「Rendered more hooks than during the previous render」并
+       卸载整棵树（纯黑屏）。 */
+    const [pointed, setPointed] = useState(() => new Set());  /* 「已指向」机器（下方 effect 真实回读 + 应用成功的乐观更新）*/
+    const [pointedLoading, setPointedLoading] = useState(false); /* 指向状态回读进行中 */
+
+    /* —— 指向状态真实回读 ——
+       pointed 只活在本组件挂载周期里：切去集群总览（比如跑巡检）再切回来会整组件重挂，
+       全部退回「未指向」，而机器上的 ini 其实原封没动。这里对在线客户端逐台真实回读
+       [StorageServers] Shared（用户全局读 UserEngine.ini，工程级读各工程 DefaultEngine.ini，
+       与 ClientModal.applyTo 的两条写入路径一一对应），Host 主机名/IP + 端口命中当前端点即
+       「已指向」。代次令牌 + 并集合并同 cacheDdc readStatus：作废过期回读、不覆盖回读期间
+       「应用成功」的乐观更新（本页没有「取消指向」操作，并集不会复活已解除项）。 */
+    const pointedGenRef = useRef(0);
+    const statusSig = status ? [status.endpointId, status.machineId, status.host, status.ip, status.port].join('|') : '';
+    const nodesSig = (window.RENDER_NODES || []).map((n) => n.id + ':' + n.status + ':' + n.user).join(',');
+    const projSig = (window.UE_PROJECTS || []).map((p) => p.id).join(',');
+    useEffect(() => {
+      const gen = ++pointedGenRef.current;
+      if (!status) { setPointedLoading(false); return; }
+      const nodes = (window.RENDER_NODES || []).filter((n) =>
+        n.status !== 'offline' && n.machineId && n.machineId !== status.machineId);
+      if (!nodes.length) { setPointedLoading(false); return; }
+      /* 与 ClientModal.applyTo 的 hostUri 同源比对：Host 主机部分接受端点 hostname 或 IP，端口必须一致 */
+      const serverNode = (window.RENDER_NODES || []).find((n) => n.machineId === status.machineId);
+      const hostCands = [status.host, status.ip, serverNode && serverNode.host, serverNode && serverNode.ip]
+        .filter(Boolean).map((x) => String(x).toLowerCase());
+      const hitsServer = (keys) => (Array.isArray(keys) ? keys : []).some((k) => {
+        if (!k || String(k.name || '').toLowerCase() !== 'shared') return false;
+        const m = /Host\s*=\s*"([^"]+)"/i.exec(String(k.value || ''));
+        if (!m) return false;
+        try {
+          const u = new URL(m[1]);
+          return String(u.port) === String(status.port) && hostCands.includes(u.hostname.toLowerCase());
+        } catch { return false; }
+      });
+      setPointedLoading(true);
+      Promise.allSettled(nodes.map((n) => {
+        const reads = [];
+        const user = runtimeUser(n);
+        if (user) reads.push(readIniSection(n.machineId, 'C:\\Users\\' + user + '\\AppData\\Local\\Unreal Engine\\Engine\\Config\\UserEngine.ini', 'StorageServers'));
+        clientProjects(n.id).forEach((p) => {
+          const loc = p.locByMachine && p.locByMachine[String(n.machineId)];
+          if (loc) reads.push(readIniSection(n.machineId, loc + '\\Config\\DefaultEngine.ini', 'StorageServers'));
+        });
+        if (!reads.length) return Promise.resolve({ id: n.id, hit: false });
+        /* 文件不存在 / 机器读不到 → rejected → 不算命中；任一份 ini 命中即已指向 */
+        return Promise.allSettled(reads).then((rs) => ({
+          id: n.id,
+          hit: rs.some((r) => r.status === 'fulfilled' && hitsServer(r.value)),
+        }));
+      })).then((rs) => {
+        if (gen !== pointedGenRef.current) return; /* 被更新的回读取代 / 已卸载 → 丢弃 */
+        const hits = rs.filter((r) => r.status === 'fulfilled' && r.value.hit).map((r) => r.value.id);
+        if (hits.length) setPointed((prev) => { const np = new Set(prev); hits.forEach((id) => np.add(id)); return np; });
+        setPointedLoading(false);
+      });
+      return () => { pointedGenRef.current++; };
+    }, [statusSig, nodesSig, projSig]);
+
+    const deployed = !!status;
+    /* 仅当服务真正 running 才允许把客户端指向它——指向一台已停止/不可达/状态未知的服务器
+       会让客户端缓存上游失效。stopped/unreachable/unknown 都不放行。 */
+    const canPoint = deployed && status.svc === 'running';
+    const RN = window.RENDER_NODES || [];
+    /* 默认显示已部署的 ZenServer：先按 endpoint 真实主机名匹配，匹配不到（比如该机
+       已从集群移除）再退到 roleKey==='shared'（集群里指定的共享缓存机位）；只在真
+       有 endpoint（status 非空）时才生效。 */
+    const deployedNode = status
+      ? (RN.find((n) => status.host && n.host.toLowerCase() === String(status.host).toLowerCase())
+          || RN.find((n) => n.roleKey === 'shared'))
+      : null;
+
+    if (!RN.length) {
+      return h('div', { className: 'res ddc' }, h('div', { className: 'ddc-body' },
+        h('div', { className: 'gen-empty' }, h(Icon, { name: 'node', size: 22 }),
+          h('span', null, '集群里还没有机器 — 先在「集群总览」扫描添加机器，再部署 Zen 服务器'))));
+    }
+
+    const cred = {}; /* SSH key — ZenCredentialInput 全 None */
+
+    /* —— 管理动作（已部署）—— */
+    const probeServer = () => {
+      if (!status) return;
+      s.runCmd({ domain: 'zen', action: 'probe', target: status.host || ('endpoint ' + status.endpointId), chan: 'ssh', note: '探活 · zen_probe' },
+        () => zenProbe(status.machineId, null, null).then((r) => { const rec = r && r.probes && r.probes[0]; if (rec && rec.reachable === false) throw new Error(rec.error_message || '不可达'); return r; }),
+        { okMsg: (r) => { const rec = r && r.probes && r.probes[0]; return 'HTTP 200 · 版本 ' + ((rec && rec.build_version) || '—'); } })
+        .then(() => loadStatus(), () => loadStatus());
+    };
+    const startServer = () => {
+      if (!status) return;
+      s.runCmd({ domain: 'zen', action: 'start', target: status.host, chan: 'ssh', note: 'zen_service_start' },
+        () => zenServiceStart(status.endpointId, cred), { okMsg: () => status.host + ' 服务已启动' })
+        .then(() => loadStatus(), () => {});
+    };
+    const stopServer = () => status && CX.openPreview(s, {
+      title: '停止 ZenServer 服务', icon: 'pause', cli: 'zen_service_stop', destructive: true, channel: 'ssh', confirmLabel: '停止服务',
+      steps: ['停止 ' + status.host + ' 上的 ZenServer 服务', '停止后所有客户端将无法命中此共享缓存，回退到各自本地缓存'],
+      simpleScope: [{ host: status.host, ip: status.ip, msg: 'sc stop VoloZenServer' }],
+      onConfirm: () => s.runCmd({ domain: 'zen', action: 'stop', target: status.host, chan: 'ssh', note: '停止服务' },
+        () => zenServiceStop(status.endpointId, true, false, cred), { okMsg: () => status.host + ' 服务已停止' })
+        .then(() => loadStatus(), () => {}),
+    });
+    const uninstallServer = () => status && CX.openPreview(s, {
+      title: '卸载 ZenServer', icon: 'trash', cli: 'zen_service_uninstall + zen_unregister', destructive: true, channel: 'ssh', confirmLabel: '卸载服务器',
+      steps: ['停止并卸载 ' + status.host + ' 上的 Windows 服务 VoloZenServer', '从 Volo 注销该 endpoint（不删除 data-dir 数据目录）', '客户端的指向配置需在下方②另行撤除'],
+      simpleScope: [{ host: status.host, ip: status.ip, msg: 'uninstall + unregister' }],
+      onConfirm: () => s.runCmd({ domain: 'zen', action: 'uninstall', target: status.host, chan: 'ssh', note: '卸载并注销' },
+        () => zenServiceUninstall(status.endpointId, true, false, cred).then(() => zenUnregister(status.endpointId, true, false)),
+        { okMsg: () => status.host + ' 已卸载 · data-dir 保留' })
+        .then(() => loadStatus(), () => {}),
+    });
+
+    /* ============ ② 客户端：把选中机器指向此缓存服务器 ============ */
+    const clients = RN.filter((n) => !(status && n.machineId === status.machineId));
+
+    /* 一级页面直显：已指向此服务器的客户端逐台明细 —— 名称 / 部署类型（工程级 or 用户全局）/
+       工程级时具体指向了哪些工程。没有单独持久化「每台机器用的范围」，用该机是否有已发现
+       工程作为判定依据。pointedCount 由此派生，避免同一个 filter 对 clients 重复跑两遍。 */
+    const pointedClientRows = clients.filter((n) => pointed.has(n.id)).map((n) => {
+      const projs = clientProjects(n.id);
+      return { n, isProject: projs.length > 0, projs };
+    });
+    const pointedCount = pointedClientRows.length;
+
+    /* ============ 渲染 ============ */
+    const sMeta = SVC_STATE[(status && status.svc) || 'unknown'] || SVC_STATE.unknown;
+    /* 指向目标卡片的色调：未部署 = 中性引导态；已部署但停止/不可达/状态未知 = 真失败态；其余 = 平常强调色 */
+    const targetVis = !deployed ? 'neutral' : (status.svc === 'running' ? 'accent' : status.svc === 'unreachable' ? 'negative' : 'notice');
+    const hero = (val, unit, label, tone) => h('div', { className: 'zsv-hero' + (tone ? ' t-' + tone : '') },
+      h('div', { className: 'zsv-hero-v' }, val, unit ? h('span', { className: 'zsv-hero-u' }, unit) : null),
+      h('div', { className: 'zsv-hero-l' }, label));
+    const chip = (k, v, mono, title) => h('div', { className: 'zsv-chip', title }, h('span', { className: 'zsv-chip-k' }, k), h('span', { className: 'zsv-chip-v' + (mono ? ' mono' : '') }, v));
+
+    /* ① 服务器状态卡：仪表化展示（hero 磁贴 + chip 组）；缓存容量后端暂无字节级用量数据源
+       （zen_cache_stats 只回读 provider 名称列表，无 size_bytes），如实显示「—」而非编造进度条。
+       URL ACL 取部署时实际下发的 urlacl 前缀（zen_urlacl_add 写入的 netsh 规则），非猜测值。 */
+    const urlAclPrefix = deployed ? (status.scheme + '://*:' + status.port + '/') : null;
+    const statusCard = statusLoading
+      ? h('div', { className: 'zen-empty' },
+          h('span', { className: 'ze-ico' }, h('span', { className: 'zstep-spin' })),
+          h('div', { className: 'ze-tx' }, h('div', { className: 'ze-t' }, '正在读取 Zen 服务器状态…')))
+      : deployed
+        ? h(React.Fragment, null,
+            h('div', { className: 'zdc-stat' },
+              h('div', { className: 'zdc-stat-top' },
+                h('span', { className: 'zdc-stat-host' }, status.host || ('endpoint ' + status.endpointId)),
+                h(ZBadge, { vis: sMeta.vis, icon: sMeta.icon, label: sMeta.label })),
+              h('div', { className: 'zdc-stat-sub mono' }, (status.ip ? status.ip : '') + ' : ' + status.port + ' · ' + status.scheme + ' · ' + (status.version === '—' ? '版本未知' : status.version)),
+              h('div', { className: 'zdc-stat-acts' },
+                h('button', { className: 'mini-btn', onClick: probeServer }, h(Icon, { name: 'pulse', size: 12 }), '探活'),
+                status.svc === 'running'
+                  ? h('button', { className: 'mini-btn', onClick: stopServer }, h(Icon, { name: 'pause', size: 12 }), '停止')
+                  : h('button', { className: 'mini-btn', onClick: startServer }, h(Icon, { name: 'play', size: 12 }), '启动'),
+                h('button', { className: 'mini-btn danger', onClick: uninstallServer }, h(Icon, { name: 'trash', size: 12 }), '卸载'))),
+            h('div', { className: 'zsv-heros' },
+              hero(pointedCount, '台', '客户端数量', 'accent'),
+              hero('—', null, '缓存容量', null)),
+            h('div', { className: 'zsv-chips' },
+              chip('端口', String(status.port), true),
+              chip('协议', status.scheme),
+              chip('URL ACL', urlAclPrefix, true, '部署时下发的 netsh http urlacl 前缀')))
+        : h('div', { className: 'zen-empty' },
+            h('span', { className: 'ze-ico' }, h(Icon, { name: 'cube', size: 26 })),
+            h('div', { className: 'ze-tx' },
+              h('div', { className: 'ze-t' }, '未部署 Zen 缓存服务器'),
+              h('div', { className: 'ze-s' }, '集群里还没有共享缓存服务器。填写下方参数并部署一台，让渲染机都用上它。')),
+            h(ZBadge, { vis: 'neutral', label: '未部署' }));
+
+    const openDeployModal = () => s.setModal({
+      xwide: true,
+      render: ({ close }) => h(DeployModal, { s, RN, deployed, deployedNode, status, close, onDeployed: loadStatus }),
+    });
+
+    const openGcModal = () => s.setModal({
+      xwide: true,
+      render: ({ close }) => h(GcModal, { s, deployed, status, gcApplied, setGcApplied, close, onApplied: loadStatus }),
+    });
+
+    const openClientModal = () => s.setModal({
+      xwide: true,
+      render: ({ close }) => h(ClientModal, { s, clients, status, deployed, canPoint, targetVis, pointed, setPointed, pointedLoading, close }),
+    });
+
+    /* ============ 一级 Dashboard：三张概览卡，仅展示状态，具体配置点「更改/部署/管理」进二级弹层 ============ */
     return h('div', { className: 'res ddc' },
       h('div', { className: 'canvas-head' },
         h('span', { className: 't' }, 'DDC · ZenServer'),
@@ -1273,52 +1272,69 @@ import {
             ? h('span', { className: 'toolchip' }, h(Icon, { name: 'cube', size: 14 }), '当前后端：ZenServer · ' + (status.host || ('endpoint ' + status.endpointId)))
             : h('span', { className: 'toolchip dim' }, h(Icon, { name: 'minus', size: 14 }), '未部署共享缓存服务器'))),
       h('div', { className: 'ddc-body' },
-        /* 左右两列：左 ① 架设 / 管理，右 ② 客户端指向。两列顶部对齐（.zen-col 内
-           .ddc-sec-h:first-child / .cli-panel 的 margin-top 已在 CSS 清零）；窄屏 <1180px 回退单列。 */
-        h('div', { className: 'zen-2col' },
-        /* 左列 · ① 架设 / 管理 Zen 缓存服务器 */
-        h('div', { className: 'zen-col' },
-        h('div', { className: 'ddc-sec-h' },
-          h('span', null, '① 架设 / 管理 Zen 缓存服务器'),
-          h('span', { className: 'dim' }, '在集群某一台机器上立起一台共享缓存服务器')),
-        statusCard,
-        deployForm,
-        stepper,
-        gcPanel),
-        /* 右列 · ② 让客户端机器用上这台缓存 */
-        h('div', { className: 'zen-col' },
-        h('div', { className: 'ddc-sec-h' },
-          h('span', null, '② 让客户端机器用上这台缓存'),
-          h('span', { className: 'dim' }, pointedCount + ' / ' + clients.length + ' 已指向 · 逐台改缓存配置指向此服务器')),
-        h('div', { className: 'cli-panel' },
-          h('div', { className: 'zcli-bar' },
-            h('div', { className: 'cli-server-chip vis-' + targetVis },
-              h('span', { className: 'csc-ico' }, h(Icon, { name: 'cube', size: 15 })),
-              h('div', { style: { minWidth: 0 } },
-                h('div', { className: 'csc-t' }, '指向目标 · ' + (status ? (status.host || srvNode.host) : srvNode.host)),
-                h('div', { className: 'csc-s mono' }, (status ? (status.ip || srvNode.ip) : srvNode.ip) + ' : ' + (status ? status.port : port)))),
-            h('button', { className: 'zlink-all', onClick: toggleSelectUnpointed, disabled: selectableUnpointed.length === 0 },
-              allUnpointedSelected ? '取消选择' : '选中全部未指向（' + selectableUnpointed.length + '）'),
-            h('div', { className: 'zcli-go' },
-              h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'folder', size: 14 }), isDisabled: onlineSel.length === 0,
-                onPress: () => openZenDirModal(onlineSel) },
-                onlineSel.length ? '设置缓存目录（' + onlineSel.length + '）' : '设置缓存目录'),
-              h(Button, {
-                variant: 'accent', size: 'M', icon: h(Icon, { name: 'link', size: 14 }), isDisabled: onlineSel.length === 0 || !canPoint,
-                onPress: () => { if (cfgScope === 'project') openProjectPicker(onlineSel); else runApply(onlineSel); },
-              },
-                onlineSel.length ? '指向此服务器（' + onlineSel.length + '）' : '指向此服务器'))),
-          deployed ? scopeBlock : null,
-          !deployed
-            ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }), '尚未部署服务器，先在上方①部署一台，再把客户端指向它。')
-            : !canPoint
-              ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }), '服务器已部署但当前未在运行（' + sMeta.label + '）—— 先在上方①启动 / 探活确认运行中，再指向客户端。')
-              : null,
-          h('div', { className: 'cli-note' }, h(Icon, { name: 'shield', size: 13 }),
-            cfgScope === 'project'
-              ? '应用 = 逐台改这些机器已发现工程的 DefaultEngine.ini（写 [StorageServers] Shared，非旧版 [InstalledDerivedDataBackendGraph]）指向上方服务器；远程操作走 SSH key，逐台执行、逐台看成败。'
-              : '应用 = 逐台改这些机器 UE 运行用户的 UserEngine.ini（写 [StorageServers] Shared）指向上方服务器；远程操作走 SSH key，逐台执行、逐台看成败。'),
-          h('div', { className: 'cli-list' }, clients.map(clientRow)))))));
+        h('div', { className: 'zen-dash' },
+          /* 卡片一 · 服务器状态（大，左上） */
+          h('div', { className: 'zdc zdc--server' },
+            h('div', { className: 'zdc-head' },
+              h('span', { className: 'zdc-ico' }, h(Icon, { name: 'cube', size: 17 })),
+              h('div', null,
+                h('div', { className: 'zdc-t' }, 'Zen 缓存服务器'),
+                h('div', { className: 'zdc-s' }, '在集群某一台机器上立起的共享缓存服务器'))),
+            statusCard,
+            h('div', { className: 'zdc-foot' },
+              h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'settings', size: 14 }), onPress: openDeployModal },
+                deployed ? '更改部署配置' : '部署服务器'))),
+          /* 卡片二 · 缓存回收策略（小，左下） */
+          h('div', { className: 'zdc zdc--gc' },
+            h('div', { className: 'zdc-head' },
+              h('span', { className: 'zdc-ico' }, h(Icon, { name: 'flush', size: 17 })),
+              h('div', null,
+                h('div', { className: 'zdc-t' }, '缓存回收策略'),
+                h('div', { className: 'zdc-s' }, '控制服务器清理过期缓存的频率与保留时长'))),
+            h('div', { className: 'zdc-kv-list' },
+              GC_FIELDS.map((f) => h('div', { className: 'zdc-kv', key: f.id },
+                h('span', { className: 'k' }, f.label), h('span', { className: 'v' }, fmtGc(gcApplied[f.id]))))),
+            h('div', { className: 'zdc-foot' },
+              h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'settings', size: 14 }), isDisabled: !deployed, onPress: openGcModal }, '更改回收策略'),
+              !deployed ? h('span', { className: 'zdc-hint' }, '先部署服务器') : null)),
+          /* 卡片三 · 客户端指向管理（最大，右侧整列） */
+          h('div', { className: 'zdc zdc--client' },
+            h('div', { className: 'zdc-head' },
+              h('span', { className: 'zdc-ico' }, h(Icon, { name: 'link', size: 17 })),
+              h('div', null,
+                h('div', { className: 'zdc-t' }, '客户端指向管理'),
+                h('div', { className: 'zdc-s' }, '把渲染机的缓存配置指向这台共享服务器'))),
+            (function () {
+              const projScope = pointedClientRows.filter((r) => r.isProject);
+              const userScope = pointedClientRows.filter((r) => !r.isProject);
+              const distinctProjs = new Set();
+              projScope.forEach((r) => r.projs.forEach((p) => distinctProjs.add(p.id)));
+              return h(React.Fragment, null,
+                h('div', { className: 'zsv-heros' },
+                  hero(pointedCount, '台', '已指向客户端', 'accent'),
+                  hero(distinctProjs.size, '个', '覆盖工程')),
+                h('div', { className: 'zsv-chips' },
+                  chip('指向覆盖', pointedCount + ' / ' + clients.length + ' 台'),
+                  chip('工程级', projScope.length + ' 台'),
+                  chip('用户全局', userScope.length + ' 台')),
+                h('div', { className: 'zcl-list-h' },
+                  h('span', null, '已指向机器'),
+                  h('span', { className: 'zcl-list-ct mono' }, pointedClientRows.length)),
+                h('div', { className: 'zcl-list' },
+                  pointedClientRows.length === 0
+                    ? h('div', { className: 'zcl-empty' }, h(Icon, { name: 'link', size: 18 }), '暂无客户端指向此服务器')
+                    : pointedClientRows.map(({ n, isProject, projs }) => h('div', { className: 'zcl-row', key: n.id },
+                        CX.dot(NODE_STATUS[n.status].visual),
+                        h('div', { className: 'zcl-row-main' },
+                          h('div', { className: 'zcl-row-host mono' }, n.host),
+                          isProject && projs.length
+                            ? h('div', { className: 'zcl-row-projs' }, projs.map((p) => h('span', { className: 'zcl-proj', key: p.id }, p.name)))
+                            : h('div', { className: 'zcl-row-sub' }, '用户全局 · UserEngine.ini')),
+                        h('span', { className: 'zcl-row-badge' + (isProject ? ' proj' : ' user') }, isProject ? '工程级' : '用户全局')))));
+            })(),
+            h('div', { className: 'zdc-foot' },
+              h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'settings', size: 14 }), isDisabled: !deployed, onPress: openClientModal }, '管理客户端指向'),
+              !deployed ? h('span', { className: 'zdc-hint' }, '先部署服务器') : null)))));
   }
 
   window.VOLO_CACHE_ZEN = { view: (s) => h(ZenServer, { s }) };

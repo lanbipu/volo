@@ -19,24 +19,8 @@
 .zb-neutral { color: var(--chrome-faint);       background: var(--sunken); }
 .zb-dash { font-weight: 800; }
 
-.zen-status { background: var(--chrome-panel-2); border: 1px solid var(--chrome-line-2); border-radius: 12px; padding: 15px 16px; }
-.zs-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.zs-ico { width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center; flex: 0 0 auto;
-  color: var(--volo-500); background: var(--highlight-selected); }
-.zs-id { min-width: 0; margin-right: auto; }
-.zs-title { display: flex; align-items: baseline; gap: 9px; font-size: 15px; font-weight: 800; color: var(--chrome-text); flex-wrap: wrap; }
-.zs-host { font-family: var(--font-code); font-size: 12px; font-weight: 600; color: var(--chrome-faint); }
-.zs-sub { font-size: 11.5px; color: var(--chrome-dim); margin-top: 3px; }
-.zs-sub .mono { font-family: var(--font-code); }
-.zs-actions .mini-btn, .zstep-acts .mini-btn, .cli-row .mini-btn, .zcli-right .mini-btn {
+.zstep-acts .mini-btn, .cli-row .mini-btn, .zcli-right .mini-btn, .zdc-stat-acts .mini-btn {
   display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
-.zs-actions { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; flex-wrap: wrap; }
-.zs-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin-top: 14px;
-  background: var(--chrome-line); border: 1px solid var(--chrome-line); border-radius: 10px; overflow: hidden; }
-.zs-kv { display: flex; flex-direction: column; gap: 4px; padding: 10px 13px; background: var(--chrome-card); }
-.zs-k { font-size: 11px; color: var(--chrome-faint); }
-.zs-v { font-size: 13.5px; font-weight: 700; color: var(--chrome-text); font-variant-numeric: tabular-nums; }
-.zs-v.mono { font-family: var(--font-code); font-size: 12px; font-weight: 600; word-break: break-all; }
 
 .zen-empty { display: flex; align-items: center; gap: 14px; padding: 18px 18px; border-radius: 12px;
   background: var(--wash-3); border: 1px dashed var(--chrome-line-2); }
@@ -331,3 +315,87 @@
 .zdm-cur { color: var(--chrome-faint); font-family: var(--font-code); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zdm-cur.none { font-family: inherit; }
 .zdm-arrow { display: inline-flex; align-items: center; gap: 5px; color: var(--volo-400); font-family: var(--font-code); font-size: 10.5px; white-space: nowrap; }
+
+/* 三级弹层（设置缓存目录）：可选机器行 + 全选 + 清除区块 */
+.zdm-selall { all: unset; cursor: pointer; margin-left: auto; display: inline-flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 700; color: var(--volo-500); padding: 3px 9px; border-radius: 7px; border: 1px solid var(--chrome-line-2); }
+.zdm-selall:hover { background: var(--wash); }
+.zdm-selct { font-family: var(--font-code); font-weight: 700; color: var(--chrome-faint); }
+.zdm-row.pick { grid-template-columns: auto minmax(110px, auto) minmax(0, 1fr); cursor: pointer; }
+.zdm-row.pick:hover { border-color: var(--chrome-line-2); }
+.zdm-row.pick.on { border-color: var(--volo-500); background: var(--highlight-selected); }
+.zdm-row .zck { flex: 0 0 auto; }
+.zdm-clear-row { display: flex; align-items: center; gap: 12px; justify-content: space-between; }
+.zdm-clear-tx { font-size: 11px; color: var(--chrome-faint); line-height: 1.5; text-wrap: pretty; min-width: 0; }
+.zdm-clear-row .mini-btn { flex: 0 0 auto; }
+
+/* ============================================================
+   ZenServer · 一级 Dashboard（服务器状态 / 回收策略 / 客户端指向 三卡）
+   + 二级配置弹层（.modal-host.xwide）
+   ============================================================ */
+.modal-host.xwide { width: 760px; }
+.drawer--zconfig .drawer-b { display: flex; flex-direction: column; gap: 14px; }
+.drawer--zconfig .deploy-panel, .drawer--zconfig .gc-panel, .drawer--zconfig .cli-panel { margin-top: 0; }
+
+.zen-dash { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.18fr);
+  grid-template-areas: "server client" "gc client"; gap: 16px; align-items: start; }
+.zdc--server { grid-area: server; }
+.zdc--gc { grid-area: gc; }
+.zdc--client { grid-area: client; align-self: stretch; }
+@media (max-width: 1180px) {
+  .zen-dash { grid-template-columns: minmax(0, 1fr); grid-template-areas: "server" "client" "gc"; }
+  .zdc--client { align-self: auto; }
+}
+.zdc { min-width: 0; display: flex; flex-direction: column; background: var(--chrome-panel-2); border: 1px solid var(--chrome-line-2); border-radius: 12px; padding: 15px 16px; }
+.zdc-head { display: flex; align-items: center; gap: 11px; margin-bottom: 13px; }
+.zdc-ico { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; flex: 0 0 auto; color: var(--volo-500); background: var(--highlight-selected); }
+.zdc-t { font-size: 13.5px; font-weight: 800; color: var(--chrome-text); }
+.zdc-s { font-size: 11px; color: var(--chrome-faint); margin-top: 2px; }
+.zdc > .zen-empty { margin-top: 0; }
+.zdc-stat { margin-bottom: 14px; }
+.zdc-stat-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.zdc-stat-host { font-size: 14px; font-weight: 800; color: var(--chrome-text); }
+.zdc-stat-sub { font-size: 11px; color: var(--chrome-faint); margin-top: 3px; }
+.zdc-stat-acts { display: flex; align-items: center; gap: 7px; margin-top: 10px; flex-wrap: wrap; }
+.zdc-kv-list { display: flex; flex-direction: column; gap: 1px; background: var(--chrome-line); border: 1px solid var(--chrome-line); border-radius: 10px; overflow: hidden; }
+.zdc-kv { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 9px 12px; background: var(--chrome-card); font-size: 12px; }
+.zdc-kv .k { color: var(--chrome-faint); flex: 0 0 auto; white-space: nowrap; }
+.zdc-kv .v { color: var(--chrome-text); font-weight: 700; flex: 1 1 auto; min-width: 0; text-align: right; white-space: normal; text-wrap: pretty; }
+.zdc-foot { display: flex; align-items: center; gap: 10px; margin-top: auto; padding-top: 14px; }
+.zdc-hint { font-size: 11px; color: var(--chrome-faint); }
+
+/* 服务器卡 · 仪表化信息展示（大数字 hero + chip 组）*/
+.zsv-heros { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.zsv-hero { background: var(--chrome-card); border: 1px solid var(--chrome-line); border-radius: 11px; padding: 12px 14px; }
+.zsv-hero-v { font-size: 30px; font-weight: 800; line-height: 1; color: var(--chrome-text); display: flex; align-items: baseline; gap: 4px; }
+.zsv-hero.t-accent .zsv-hero-v { color: var(--volo-500); }
+.zsv-hero-u { font-size: 13px; font-weight: 700; color: var(--chrome-faint); letter-spacing: 0; }
+.zsv-hero-l { font-size: 11px; color: var(--chrome-faint); margin-top: 7px; }
+.zsv-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.zsv-chip { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 3px; background: var(--chrome-card); border: 1px solid var(--chrome-line); border-radius: 9px; padding: 8px 11px; }
+.zsv-chip-k { font-size: 10px; color: var(--chrome-faint); }
+.zsv-chip-v { font-size: 12.5px; font-weight: 700; color: var(--chrome-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 客户端卡 · 已指向机器列表（统一配色的浮动磁贴）*/
+.zcl-list-h { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-top: 16px; margin-bottom: 9px; }
+.zcl-list-h > span:first-child { font-size: 11.5px; font-weight: 700; color: var(--chrome-dim); }
+.zcl-list-ct { font-size: 11.5px; font-weight: 700; color: var(--chrome-faint); }
+.zcl-list { display: flex; flex-direction: column; gap: 8px; }
+.zcl-row { display: flex; align-items: center; gap: 11px; background: var(--chrome-card); border: 1px solid var(--chrome-line); border-radius: 10px; padding: 11px 13px; }
+.zcl-row > .sdot { flex: 0 0 auto; }
+.zcl-row-main { flex: 1 1 auto; min-width: 0; }
+.zcl-row-host { font-size: 12.5px; font-weight: 700; color: var(--chrome-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.zcl-row-sub { font-size: 10.5px; color: var(--chrome-faint); margin-top: 4px; }
+.zcl-row-projs { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.zcl-proj { font-size: 10.5px; color: var(--chrome-dim); background: var(--wash); border: 1px solid var(--chrome-line); padding: 2px 7px; border-radius: 5px; white-space: nowrap; }
+.zcl-row-badge { font-size: 10px; font-weight: 700; padding: 3px 9px; border-radius: 99px; white-space: nowrap; flex: 0 0 auto; }
+.zcl-row-badge.proj { color: var(--volo-500); background: var(--highlight-selected); }
+.zcl-row-badge.user { color: var(--chrome-dim); background: var(--wash-2); }
+.zcl-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 28px 12px; text-align: center; font-size: 11.5px; color: var(--chrome-faint); background: var(--chrome-card); border: 1px dashed var(--chrome-line); border-radius: 10px; }
+.zcl-empty svg { color: var(--chrome-faint); opacity: 0.7; }
+
+/* 客户端指向管理卡占右侧整列，明细列表随卡片高度伸展 */
+.zdc--client .zcl-list { flex: 1 1 auto; }
+
+/* 二级列表行：只读 Zen 目录状态徽标（不可点开）+「重新读取」直点按钮 */
+.zdir-chip.ro { cursor: default; }
+.zdir-chip.ro:hover { border-color: transparent; }
