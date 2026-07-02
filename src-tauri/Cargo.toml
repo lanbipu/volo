@@ -27,6 +27,8 @@ tauri-plugin-dialog = "2"
 tauri-plugin-snap-layout = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# commands/player.rs ships pattern PNGs to the player window as base64 events.
+base64 = { workspace = true }
 # step 2c: Volo transport layer (commands/) + its core/data/startup/error backend.
 cache-core = { path = "../crates/cache-core" }
 # step 3c: mesh (LMT) transport layer. mesh-app = service helpers; volo-shared =

@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -178,6 +179,122 @@ def common_options(fn: Callable) -> Callable:
     for dec in reversed(decorators):
         fn = dec(fn)
     return fn
+
+
+# ── Streaming operations (NDJSON event flow) ────────────────────────
+
+
+class StreamEmitter:
+    """Incremental NDJSON event writer for long-running operations.
+
+    Events share the envelope discipline: every line carries ``type``,
+    monotonically increasing ``sequence``, ``timestamp`` and ``request_id``.
+    In ``text`` mode events render as one human line each (stderr-free,
+    stdout stays the single data channel).  Lines are flushed immediately so
+    a host (Volo streaming bridge) sees them in real time.
+    """
+
+    def __init__(self, request_id: str, fmt: str) -> None:
+        self.request_id = request_id
+        self.fmt = fmt
+        self._sequence = 0
+        self._lock = threading.Lock()
+
+    def emit(self, event_type: str, payload: dict[str, Any] | None = None, *, text: str | None = None) -> None:
+        with self._lock:
+            self._sequence += 1
+            seq = self._sequence
+        if self.fmt == "ndjson":
+            line = {
+                "type": event_type,
+                "sequence": seq,
+                "timestamp": _utc_now_iso(),
+                "request_id": self.request_id,
+                **(payload or {}),
+            }
+            sys.stdout.write(json.dumps(line, ensure_ascii=False) + "\n")
+        else:
+            sys.stdout.write((text or f"[{event_type}] {json.dumps(payload or {}, ensure_ascii=False)}") + "\n")
+        sys.stdout.flush()
+
+    @property
+    def next_sequence(self) -> int:
+        return self._sequence + 1
+
+
+def run_streaming_operation(
+    operation_id: str,
+    body: Callable[[StreamEmitter], OperationOutput],
+    **flags: Any,
+) -> None:
+    """Like :func:`run_operation` but for event-streaming commands.
+
+    Emits a ``start`` event immediately, hands ``body`` a
+    :class:`StreamEmitter` for incremental events, then closes the stream
+    with a final ``result`` (or error) event embedding the standard envelope.
+    Defaults to ``ndjson`` output (a streaming command in plain-json mode
+    would buffer everything, defeating the point).
+    """
+    ctx = click.get_current_context()
+    fmt = resolve_output_format(ctx, flags.get("output"))
+    if fmt in ("stream-json", "json"):
+        fmt = "ndjson"
+    configure_logging(ctx, flags.get("log_level"), flags.get("verbose", False), flags.get("quiet", False))
+
+    request_id = str(uuid.uuid4())
+    start = time.monotonic()
+    emitter = StreamEmitter(request_id, fmt)
+    if fmt == "ndjson":
+        sys.stdout.write(json.dumps({
+            "type": "start",
+            "sequence": 0,
+            "timestamp": _utc_now_iso(),
+            "request_id": request_id,
+            "schema_version": SCHEMA_VERSION,
+            "operation_id": operation_id,
+        }, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+
+    def _final(envelope: dict[str, Any], text: str) -> None:
+        if fmt == "ndjson":
+            line = {
+                "type": "result" if envelope.get("status") == "ok" else "error",
+                "sequence": emitter.next_sequence,
+                "timestamp": _utc_now_iso(),
+                "request_id": request_id,
+                "final": True,
+                **envelope,
+            }
+            sys.stdout.write(json.dumps(line, ensure_ascii=False) + "\n")
+        else:
+            sys.stdout.write(text + "\n")
+        sys.stdout.flush()
+
+    try:
+        result = body(emitter)
+    except VpcalError as err:
+        duration_ms = int((time.monotonic() - start) * 1000)
+        _final(_error_envelope(operation_id, err, request_id, duration_ms),
+               text=f"error: {err.message} (exit {err.exit_code})")
+        ctx.exit(err.exit_code)
+    except click.exceptions.Exit:
+        raise
+    except KeyboardInterrupt:
+        duration_ms = int((time.monotonic() - start) * 1000)
+        err = RuntimeFailure("interrupted")
+        _final(_error_envelope(operation_id, err, request_id, duration_ms), text="error: interrupted")
+        ctx.exit(130)
+    except Exception as exc:  # noqa: BLE001 — last-resort: classify as runtime error
+        duration_ms = int((time.monotonic() - start) * 1000)
+        err = RuntimeFailure(str(exc) or exc.__class__.__name__)
+        _final(_error_envelope(operation_id, err, request_id, duration_ms),
+               text=f"error: {err.message} (exit 1)")
+        logging.getLogger("vpcal").debug("unhandled exception", exc_info=True)
+        ctx.exit(1)
+    else:
+        duration_ms = int((time.monotonic() - start) * 1000)
+        _final(_success_envelope(operation_id, result.data, request_id, duration_ms), text=result.text)
+        ctx.exit(result.exit_code)
 
 
 # ── Operation wrapper ────────────────────────────────────────────────

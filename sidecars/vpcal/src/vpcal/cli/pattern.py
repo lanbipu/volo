@@ -19,9 +19,11 @@ def pattern(ctx: click.Context) -> None:
 @click.option("--max-dim", type=int, default=8192, show_default=True, help="Max image dimension (px).")
 @click.option("--screen-id", type=int, default=0, show_default=True, help="VP-QSP screen_id (0-15).")
 @click.option("--cab-col-offset", type=int, default=0, show_default=True, help="Cabinet column offset for multi-screen setups.")
+@click.option("--graycode-tags", is_flag=True,
+              help="Embed corner Gray-code sequence tags for playback sync (C1.3).")
 @common_options
 @click.pass_context
-def generate(ctx, screen_path, output_dir, max_dim, screen_id, cab_col_offset, **flags) -> None:
+def generate(ctx, screen_path, output_dir, max_dim, screen_id, cab_col_offset, graycode_tags, **flags) -> None:
     """Generate VP-QSP patterns (normal + inverted) for a screen.
 
     For multi-screen setups, use --cab-col-offset to assign unique marker IDs
@@ -41,6 +43,7 @@ def generate(ctx, screen_path, output_dir, max_dim, screen_id, cab_col_offset, *
         summary = generate_pattern_images(
             screen, output_dir, markers_per_cabinet=screen.markers_per_cabinet,
             max_dim=max_dim, screen_id=screen_id, cab_col_offset=cab_col_offset,
+            graycode_tags=graycode_tags,
         )
         text = f"Generated {len(summary['files'])} pattern image(s) ({summary['num_markers']} markers)."
         if cab_col_offset:

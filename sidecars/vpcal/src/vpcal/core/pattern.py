@@ -206,11 +206,18 @@ def generate_pattern_images(
     max_dim: int = 8192,
     screen_id: int = 0,
     cab_col_offset: int = 0,
+    graycode_tags: bool = False,
+    tag_cell_px: int = 24,
 ) -> dict:
     """Render LED-facing ``normal``/``inverted`` patterns per section.
 
     Each section is rendered at its native LED resolution (``extent_mm /
     pixel_pitch_mm``), capped at ``max_dim``.
+
+    ``graycode_tags`` embeds a corner Gray-code sequence tag (C1.3 playback
+    sync, ``core/graycode.py``): the tag encodes the section's sequence index
+    on the normal frame; the inverted frame's tag flips with the image, which
+    is exactly how the decoder detects polarity.
     """
     import cv2
 
@@ -261,13 +268,22 @@ def generate_pattern_images(
             img[y0:y1, x0:x1] = np.maximum(img[y0:y1, x0:x1], tmpl[sy0:sy0 + (y1 - y0), sx0:sx0 + (x1 - x0)])
             panel_px = marker_px - 2 * int(round(marker_px * _MARGIN_FRAC))
             splat_gaussian_dot(img, fx, fy, sigma=panel_px * 0.045, peak=255)
+        if graycode_tags:
+            from vpcal.core.graycode import render_tags
+
+            seq_index = list(screen.sections).index(section)
+            try:
+                render_tags(img, seq_index, cell_px=tag_cell_px)
+            except ValueError as exc:
+                warnings.append(f"section '{section.name}': graycode tag skipped ({exc})")
         suffix = "" if single else f"_{section.name}"
         normal_path = out / f"normal{suffix}.png"
         inverted_path = out / f"inverted{suffix}.png"
         cv2.imwrite(str(normal_path), img)
         cv2.imwrite(str(inverted_path), 255 - img)
         written.extend([str(normal_path), str(inverted_path)])
-    return {"files": written, "warnings": warnings, "num_markers": len(markers)}
+    return {"files": written, "warnings": warnings, "num_markers": len(markers),
+            "graycode_tags": graycode_tags}
 
 
 def splat_gaussian_dot(

@@ -127,6 +127,7 @@ pub fn run() {
                 .expect("failed to open / migrate DB");
             app.manage(db);
             app.manage(commands::ddc_pak::UeJobRegistry::default());
+            app.manage(commands::sidecar_stream::SidecarStreamRegistry::default());
             tracing::info!("volo started, cache database at {}", db_path.display());
 
             // step 3c mesh setup: open + migrate the separate LMT SQLite DB and
@@ -307,6 +308,16 @@ pub fn run() {
             commands::mesh_total_station::save_instruction_pdf,
             // review #15: argv-based vpcal / tracksim sidecar spawn bridge.
             commands::sidecars::spawn_sidecar,
+            // live-capture plan Phase 3a: pattern player window (C1.3).
+            commands::player::list_monitors,
+            commands::player::open_pattern_player,
+            commands::player::close_pattern_player,
+            commands::player::player_show_pattern,
+            commands::player::player_clear,
+            // W3.1: streaming sidecar bridge (long-running, stdout NDJSON events).
+            commands::sidecar_stream::spawn_sidecar_streaming,
+            commands::sidecar_stream::sidecar_stdin_write,
+            commands::sidecar_stream::cancel_sidecar_task,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
