@@ -468,7 +468,33 @@ pub fn migrate(conn: &mut Connection) -> VoloResult<()> {
         tracing::info!("applied migration: {}", name);
     }
 
+    // Drift repair: migration 025 was edited in place during development —
+    // DBs that applied the interim version (recorded as applied, so the batch
+    // is skipped forever) lack `config_path_override`, and every SELECT in
+    // zen_endpoints.rs then fails with "no such column" (the UI shows a
+    // deployed server as 未部署). ALTER ... ADD COLUMN has no IF NOT EXISTS
+    // in SQLite, so backfill conditionally here.
+    if !has_column(conn, "zen_endpoints", "config_path_override")? {
+        conn.execute(
+            "ALTER TABLE zen_endpoints ADD COLUMN config_path_override TEXT",
+            [],
+        )?;
+        tracing::info!("backfilled zen_endpoints.config_path_override (migration 025 drift repair)");
+    }
+
     Ok(())
+}
+
+fn has_column(conn: &Connection, table: &str, column: &str) -> VoloResult<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -515,6 +541,24 @@ mod tests {
             )
             .unwrap();
         assert!(count >= 1);
+    }
+
+    #[test]
+    fn migrate_backfills_config_path_override_on_drifted_db() {
+        // Simulate a DB that applied the interim (in-place edited) migration
+        // 025: all migrations recorded as applied, but the column is missing.
+        let db = open_in_memory().unwrap();
+        let mut conn = db.lock().unwrap();
+        migrate(&mut conn).unwrap();
+        conn.execute(
+            "ALTER TABLE zen_endpoints DROP COLUMN config_path_override",
+            [],
+        )
+        .unwrap();
+        assert!(!has_column(&conn, "zen_endpoints", "config_path_override").unwrap());
+
+        migrate(&mut conn).unwrap(); // batches all skipped; repair must kick in
+        assert!(has_column(&conn, "zen_endpoints", "config_path_override").unwrap());
     }
 
     #[test]
