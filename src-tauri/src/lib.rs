@@ -128,6 +128,7 @@ pub fn run() {
             app.manage(db);
             app.manage(commands::ddc_pak::UeJobRegistry::default());
             app.manage(commands::sidecar_stream::SidecarStreamRegistry::default());
+            app.manage(commands::mesh_visual::MeshVisualJobRegistry::default());
             tracing::info!("volo started, cache database at {}", db_path.display());
 
             // step 3c mesh setup: open + migrate the separate LMT SQLite DB and
@@ -197,6 +198,7 @@ pub fn run() {
             commands::bootstrap::get_winrm_bootstrap_script,
             commands::bootstrap::package_ssh_bootstrap,
             commands::bootstrap::pick_directory,
+            commands::bootstrap::pick_file,
             commands::bootstrap::reveal_path,
             commands::discovery::scan_network,
             commands::discovery::add_discovered_machine,
@@ -308,16 +310,33 @@ pub fn run() {
             commands::mesh_total_station::save_instruction_pdf,
             // review #15: argv-based vpcal / tracksim sidecar spawn bridge.
             commands::sidecars::spawn_sidecar,
-            // live-capture plan Phase 3a: pattern player window (C1.3).
+            // W3.1: streaming sidecar bridge (long-running, stdout NDJSON events).
             commands::player::list_monitors,
             commands::player::open_pattern_player,
             commands::player::close_pattern_player,
             commands::player::player_show_pattern,
             commands::player::player_clear,
-            // W3.1: streaming sidecar bridge (long-running, stdout NDJSON events).
             commands::sidecar_stream::spawn_sidecar_streaming,
             commands::sidecar_stream::sidecar_stdin_write,
             commands::sidecar_stream::cancel_sidecar_task,
+            // W4: M2 visual-BA group (backend-only; UI pending Claude Design handoff).
+            commands::mesh_visual::mesh_visual_generate_pattern,
+            commands::mesh_visual::mesh_visual_generate_structured_light,
+            commands::mesh_visual::mesh_visual_decode_structured_light,
+            commands::mesh_visual::mesh_visual_calibrate,
+            commands::mesh_visual::mesh_visual_calibrate_structured_light,
+            commands::mesh_visual::mesh_visual_reconstruct,
+            commands::mesh_visual::mesh_visual_reconstruct_structured_light,
+            commands::mesh_visual::mesh_visual_cancel,
+            commands::mesh_visual::mesh_visual_simulate,
+            commands::mesh_visual::mesh_visual_eval,
+            commands::mesh_visual::mesh_visual_compare_known,
+            commands::mesh_visual::mesh_visual_plan_capture,
+            commands::mesh_visual::mesh_visual_capture_card,
+            commands::mesh_visual::mesh_visual_load_pose_report,
+            commands::mesh_visual::mesh_visual_export_pose_obj,
+            // W6 R1: M1+M2 fuse (backend-only; no UI wiring this pass).
+            commands::mesh_fuse::mesh_fuse_run,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

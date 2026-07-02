@@ -9,6 +9,8 @@
 
 use std::path::Path;
 
+use tokio::sync::{mpsc, oneshot};
+
 use mesh_adapter_visual_ba::api::{
     calibrate, calibrate_structured_light, compare_known, decode_structured_light, eval,
     generate_pattern, generate_structured_light, plan_capture, reconstruct,
@@ -20,9 +22,9 @@ use mesh_adapter_visual_ba::api::{
 use mesh_adapter_visual_ba::ipc;
 
 use volo_shared::dto::{
-    CabinetPoseSummary, CabinetSizeCheck, CalibrateResult, CompareKnownResult,
-    DecodeStructuredLightResult, EvalResult, GeneratePatternResult, GenerateStructuredLightResult,
-    PairCheck, SimulateResult, VisualReconstructResult, WarningDto,
+    CabinetPoseReportFile, CabinetPoseSummary, CabinetSizeCheck, CalibrateResult,
+    CompareKnownResult, DecodeStructuredLightResult, EvalResult, GeneratePatternResult,
+    GenerateStructuredLightResult, PairCheck, SimulateResult, VisualReconstructResult, WarningDto,
 };
 use volo_shared::error::{VoloError, VoloResult};
 
@@ -164,13 +166,16 @@ fn load_screen<'a>(
 ///
 /// The capture manifest references its own `screen_mapping` file, so we pass
 /// `screen_mapping_path = None` and let the sidecar resolve it.
-pub fn run_reconstruct(
+/// Build the adapter args shared by [`run_reconstruct`] and
+/// [`run_reconstruct_streaming`] (progress_tx/cancel default to `None`; the
+/// streaming variant overrides them after the fact).
+fn build_reconstruct_args(
     project_path: &Path,
     screen_id: &str,
     capture_manifest: &Path,
     intrinsics: Option<&str>,
     intrinsics_crosscheck: Option<&str>,
-) -> VoloResult<VisualReconstructResult> {
+) -> VoloResult<ReconstructArgs> {
     let cfg = load_project_yaml_from_path(project_path)?;
     let screen_cfg = load_screen(&cfg, screen_id)?;
 
@@ -186,7 +191,7 @@ pub fn run_reconstruct(
     std::fs::create_dir_all(&measurements_dir)?;
     let pose_report_path = measurements_dir.join(format!("{screen_id}_cabinet_pose_report.json"));
 
-    let args = ReconstructArgs {
+    Ok(ReconstructArgs {
         project,
         capture_manifest_path: capture_manifest.display().to_string(),
         screen_mapping_path: None,
@@ -196,9 +201,53 @@ pub fn run_reconstruct(
         pose_report_path: pose_report_path.display().to_string(),
         progress_tx: None,
         cancel: None,
-    };
+    })
+}
 
+pub fn run_reconstruct(
+    project_path: &Path,
+    screen_id: &str,
+    capture_manifest: &Path,
+    intrinsics: Option<&str>,
+    intrinsics_crosscheck: Option<&str>,
+) -> VoloResult<VisualReconstructResult> {
+    let args = build_reconstruct_args(
+        project_path,
+        screen_id,
+        capture_manifest,
+        intrinsics,
+        intrinsics_crosscheck,
+    )?;
     let out = block_on_future(reconstruct(args))?.map_err(map_vba_err)?;
+    Ok(build_reconstruct_result(screen_id, out))
+}
+
+/// Streaming variant for async (Tauri) callers: the caller is already inside a
+/// tokio runtime, so this awaits the adapter future directly (no
+/// `block_on_future` nesting-avoidance needed) and threads through a live
+/// progress channel + cancel token. `map_vba_err`'s `V::Cancelled` arm exists
+/// specifically for this path — the sync `run_reconstruct` never passes a
+/// cancel token.
+pub async fn run_reconstruct_streaming(
+    project_path: &Path,
+    screen_id: &str,
+    capture_manifest: &Path,
+    intrinsics: Option<&str>,
+    intrinsics_crosscheck: Option<&str>,
+    progress_tx: Option<mpsc::Sender<ipc::Event>>,
+    cancel: Option<oneshot::Receiver<()>>,
+) -> VoloResult<VisualReconstructResult> {
+    let mut args = build_reconstruct_args(
+        project_path,
+        screen_id,
+        capture_manifest,
+        intrinsics,
+        intrinsics_crosscheck,
+    )?;
+    args.progress_tx = progress_tx;
+    args.cancel = cancel;
+
+    let out = reconstruct(args).await.map_err(map_vba_err)?;
     Ok(build_reconstruct_result(screen_id, out))
 }
 
@@ -784,6 +833,22 @@ pub fn run_compare_known(
             .collect(),
         passed: out.passed,
         thresholds: out.thresholds,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// load_pose_report
+// ---------------------------------------------------------------------------
+
+/// Read a `cabinet_pose_report.json` (visual reconstruct output) into the
+/// public `CabinetPoseReportFile` view (frame + per-cabinet corners/covariance).
+pub fn load_pose_report(pose_report_path: &Path) -> VoloResult<CabinetPoseReportFile> {
+    let raw = std::fs::read(pose_report_path)?;
+    serde_json::from_slice(&raw).map_err(|e| {
+        VoloError::InvalidInput(format!(
+            "pose report '{}' invalid: {e}",
+            pose_report_path.display()
+        ))
     })
 }
 

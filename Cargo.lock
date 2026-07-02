@@ -5300,6 +5300,7 @@ dependencies = [
  "block2",
  "cache-core",
  "chrono",
+ "mesh-adapter-visual-ba",
  "mesh-app",
  "mesh-core",
  "objc2",

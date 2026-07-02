@@ -22,10 +22,12 @@ pub mod oplog;
 // the `mesh_*` modules are the migrated LMT `#[tauri::command]` shims.
 pub mod mesh;
 pub mod mesh_export;
+pub mod mesh_fuse;
 pub mod mesh_measurements;
 pub mod mesh_projects;
 pub mod mesh_reconstruct;
 pub mod mesh_total_station;
+pub mod mesh_visual;
 // live-capture plan Phase 3a: pattern player window (C1.3 playback host).
 pub mod player;
 pub mod projects;

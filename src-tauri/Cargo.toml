@@ -36,6 +36,9 @@ cache-core = { path = "../crates/cache-core" }
 mesh-app = { path = "../crates/mesh-app" }
 mesh-core = { path = "../crates/mesh-core" }
 volo-shared = { path = "../crates/volo-shared" }
+# commands/mesh_visual.rs streams the adapter's raw progress `Event` as the
+# Tauri event payload (mesh_visual_reconstruct's job progress channel).
+mesh-adapter-visual-ba = { path = "../crates/mesh-adapter-visual-ba" }
 # commands use tokio::sync::Mutex (UeJobRegistry) and tracing; run() inits tracing-subscriber.
 # mesh save_instruction_pdf also routes through tokio::task::spawn_blocking.
 tokio = { workspace = true }
