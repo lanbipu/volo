@@ -7,6 +7,7 @@
 pub mod coordinate;
 pub mod error;
 pub mod export;
+pub mod fuse;
 pub mod measured_points;
 pub mod point;
 pub mod reconstruct;

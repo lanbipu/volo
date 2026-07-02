@@ -58,3 +58,47 @@ def test_batched_matches_single():
     batched = project_points(pts, intr)
     for i, p in enumerate(pts):
         assert np.allclose(batched[i], project_point(p, intr))
+
+
+# ── entrance pupil offset (architecture §4.3, W8) ────────────────────
+
+
+def test_zero_entrance_pupil_offset_is_default_behaviour():
+    intr = CameraIntrinsics(fx=1000, fy=1000, cx=960, cy=540, k1=0.05)
+    assert intr.entrance_pupil_offset_mm == 0.0
+    pt = [50.0, -20.0, 300.0]
+    assert np.allclose(project_point(pt, intr), project_point(pt, CameraIntrinsics(fx=1000, fy=1000, cx=960, cy=540, k1=0.05, entrance_pupil_offset_mm=0.0)))
+
+
+def test_entrance_pupil_offset_shifts_z_before_divide():
+    # OpenLensIO eq (1): z_p = z - z_epd; X/Y unaffected, only the divisor moves.
+    fx, fy, cx, cy = 1000.0, 1000.0, 960.0, 540.0
+    x, y, z, offset = 30.0, -10.0, 500.0, 30.0
+    intr = CameraIntrinsics(fx=fx, fy=fy, cx=cx, cy=cy, entrance_pupil_offset_mm=offset)
+    uv = project_point([x, y, z], intr)
+    z_eff = z - offset
+    assert np.isclose(uv[0], fx * x / z_eff + cx)
+    assert np.isclose(uv[1], fy * y / z_eff + cy)
+
+
+def test_entrance_pupil_offset_from_lens_profile():
+    from vpcal.models.lens import LensProfile
+
+    lens = LensProfile(
+        focal_length_mm=50, sensor_width_mm=36, sensor_height_mm=24,
+        image_width_px=1920, image_height_px=1280, entrance_pupil_offset_mm=30.0,
+    )
+    intr = CameraIntrinsics.from_lens(lens)
+    assert intr.entrance_pupil_offset_mm == 30.0
+
+
+def test_entrance_pupil_offset_none_defaults_to_zero():
+    from vpcal.models.lens import LensProfile
+
+    lens = LensProfile(
+        focal_length_mm=50, sensor_width_mm=36, sensor_height_mm=24,
+        image_width_px=1920, image_height_px=1280,
+    )
+    assert lens.entrance_pupil_offset_mm is None
+    intr = CameraIntrinsics.from_lens(lens)
+    assert intr.entrance_pupil_offset_mm == 0.0

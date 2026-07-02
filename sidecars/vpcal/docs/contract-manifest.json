@@ -246,6 +246,18 @@
               },
               "distortion": {
                 "$ref": "#/$defs/BrownConradyDistortion"
+              },
+              "entrance_pupil_offset_mm": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Entrance Pupil Offset Mm"
               }
             },
             "required": [
@@ -256,6 +268,80 @@
               "image_height_px"
             ],
             "title": "LensProfile",
+            "type": "object"
+          },
+          "MarkerMapConfig": {
+            "description": "Path to a surveyed marker map (AR mode ground-truth source, plan Phase A).\n\nPresent ⇒ the detect stage routes to the physical ArUco/AprilTag detector\nand marker 3D coordinates come from the map instead of a screen definition.\nMutually exclusive with ``screen``.",
+            "properties": {
+              "path": {
+                "title": "Path",
+                "type": "string"
+              },
+              "ground_tolerance_mm": {
+                "default": 5.0,
+                "exclusiveMinimum": 0,
+                "title": "Ground Tolerance Mm",
+                "type": "number"
+              },
+              "ground_tolerance_deg": {
+                "default": 0.2,
+                "exclusiveMinimum": 0,
+                "title": "Ground Tolerance Deg",
+                "type": "number"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "title": "MarkerMapConfig",
+            "type": "object"
+          },
+          "ProcessorCheckConfig": {
+            "description": "LED-processor 1:1 canvas mapping verification (architecture §3.3a, W9.1).\n\nOnly enforced when the referenced screen declares a ``processor``\n(:class:`vpcal.models.screen.ProcessorCanvas`) — a screen with no processor\nis assumed direct-drive 1:1 (Phase-1 default), so sessions without one see\nno behaviour change.  When a processor IS declared, ``validate_session``\nrequires either ``processor_verified=true`` (self-attested, e.g. verified\nonce out-of-band for a fixed installation) or a ``mapping_image`` that\npasses :func:`vpcal.core.mapping_verify.verify_mapping_image`.",
+            "properties": {
+              "mapping_image": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Mapping Image"
+              },
+              "expected_width_px": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Expected Width Px"
+              },
+              "expected_height_px": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Expected Height Px"
+              },
+              "processor_verified": {
+                "default": false,
+                "title": "Processor Verified",
+                "type": "boolean"
+              }
+            },
+            "title": "ProcessorCheckConfig",
             "type": "object"
           },
           "RigidPrior": {
@@ -481,7 +567,26 @@
             "$ref": "#/$defs/TrackingConfig"
           },
           "screen": {
-            "$ref": "#/$defs/ScreenConfig"
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ScreenConfig"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "marker_map": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/MarkerMapConfig"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "lens": {
             "$ref": "#/$defs/LensProfile"
@@ -508,12 +613,22 @@
             ],
             "title": "Capture Mode",
             "type": "string"
+          },
+          "processor_check": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ProcessorCheckConfig"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
           "images",
           "tracking",
-          "screen",
           "lens"
         ],
         "title": "SessionConfig",
@@ -1532,7 +1647,8 @@
       "exit_codes": [
         0,
         2,
-        5
+        5,
+        6
       ],
       "cli": {
         "command": "vpcal export opentrackio",
@@ -1607,6 +1723,459 @@
       }
     },
     {
+      "operation_id": "marker_map.create",
+      "summary": "Import a survey CSV into a marker map JSON (AR ground-truth source).",
+      "input_schema": {},
+      "output_schema": {},
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        2,
+        5
+      ],
+      "cli": {
+        "command": "vpcal marker-map create",
+        "supports_stdin": false,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "marker_map_create",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    },
+    {
+      "operation_id": "marker_map.validate",
+      "summary": "Geometric / degeneracy validation of a marker map.",
+      "input_schema": {},
+      "output_schema": {},
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        2,
+        5,
+        6
+      ],
+      "cli": {
+        "command": "vpcal marker-map validate",
+        "supports_stdin": false,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "marker_map_validate",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    },
+    {
+      "operation_id": "marker_map.board",
+      "summary": "Generate printable ArUco/AprilTag marker boards + survey CSV template.",
+      "input_schema": {},
+      "output_schema": {},
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        2,
+        3
+      ],
+      "cli": {
+        "command": "vpcal marker-map board",
+        "supports_stdin": false,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "marker_map_board",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    },
+    {
+      "operation_id": "marker_map.cube",
+      "summary": "Generate DIY calibration-cube face sheets + CAD-truth marker map.",
+      "input_schema": {},
+      "output_schema": {},
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        2,
+        3
+      ],
+      "cli": {
+        "command": "vpcal marker-map cube",
+        "supports_stdin": false,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "marker_map_cube",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    },
+    {
+      "operation_id": "marker_map.rebase",
+      "summary": "Explicitly re-base a marker map's stage frame (e.g. --to-ground).",
+      "input_schema": {},
+      "output_schema": {},
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        2,
+        5,
+        6
+      ],
+      "cli": {
+        "command": "vpcal marker-map rebase",
+        "supports_stdin": false,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "marker_map_rebase",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    },
+    {
+      "operation_id": "verify.mapping",
+      "summary": "Generate / check the 1:1 LED-processor canvas mapping test pattern.",
+      "input_schema": {},
+      "output_schema": {},
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        1,
+        2,
+        6
+      ],
+      "cli": {
+        "command": "vpcal verify mapping",
+        "supports_stdin": false,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "verify_mapping",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    },
+    {
+      "operation_id": "verify.overlay",
+      "summary": "Overlay the reprojected marker truth on capture frames (AR acceptance).",
+      "input_schema": {},
+      "output_schema": {},
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        2,
+        5,
+        6
+      ],
+      "cli": {
+        "command": "vpcal verify overlay",
+        "supports_stdin": false,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "verify_overlay",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    },
+    {
+      "operation_id": "capture.delay_cal",
+      "summary": "Calibrate the video↔tracking delay from a swing-test capture.",
+      "input_schema": {},
+      "output_schema": {},
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        2,
+        5,
+        6
+      ],
+      "cli": {
+        "command": "vpcal capture delay-cal",
+        "supports_stdin": false,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "capture_delay_cal",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    },
+    {
       "operation_id": "capture.track",
       "summary": "Record a timestamped tracking stream from a live FreeD / OpenTrackIO source.",
       "input_schema": {},
@@ -1666,7 +2235,7 @@
     },
     {
       "operation_id": "capture.video",
-      "summary": "Capture an SDI/NDI/UVC video stream (scaffold — requires hardware).",
+      "summary": "Capture a video stream via a backend (synthetic / uvc / ndi / decklink).",
       "input_schema": {},
       "output_schema": {},
       "error_schema": {
@@ -1702,6 +2271,7 @@
       },
       "exit_codes": [
         0,
+        1,
         2,
         6
       ],
@@ -1721,8 +2291,66 @@
       }
     },
     {
+      "operation_id": "capture.session",
+      "summary": "Closed-loop capture session: settle/burst state machine, live detect feedback, auto-assembled quick-run-ready session directory.",
+      "input_schema": {},
+      "output_schema": {},
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        1,
+        2,
+        5,
+        6
+      ],
+      "cli": {
+        "command": "vpcal capture session",
+        "supports_stdin": false,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "capture_session",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    },
+    {
       "operation_id": "capture.playback",
-      "summary": "Drive synchronized pattern playback (scaffold — requires hardware).",
+      "summary": "Pattern playback host lives in the Volo player window (guiding stub).",
       "input_schema": {},
       "output_schema": {},
       "error_schema": {

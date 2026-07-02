@@ -6,6 +6,16 @@ Outputs the same three artifacts as the ChArUco path so the rest of the pipeline
   - cabinets/V<col>_R<row>.png    per-cabinet VP-QSP tile (debug / regenerate)
   - full_screen.png               assembled screen-resolution image (Disguise drop-in)
   - pattern_meta.json             VpqspPatternMeta (schema_version "vpqsp.v1")
+
+Additionally emits an inverted companion of each image (cabinets/*_inverted.png,
+full_screen_inverted.png) — a bitwise `255 - tile` of the normal frame, matching
+vpcal's normal/inverted pair (sidecars/vpcal/src/vpcal/core/pattern.py
+generate_pattern_images, as of 2026-07-02). Displaying normal then inverted and
+differencing the two captures cancels ambient-light gradients in the detector's
+sub-pixel centroid (see vpqsp_detect.detect_markers_image's `inverted` param).
+These are purely additive outputs — pattern_meta.json and the existing normal
+filenames are unchanged, so no downstream consumer (manifest, reconstruct,
+IPC schema) is affected by their presence.
 """
 from __future__ import annotations
 
@@ -28,6 +38,7 @@ from lmt_vba_sidecar.ipc import (
     WarningEvent,
 )
 from lmt_vba_sidecar.pattern import (
+    ABSENT_CELL_FILL,
     ATOMIC_BACKUP_SUFFIX,
     _assemble_screen,
     _resolve_cabinet_specs,
@@ -167,6 +178,7 @@ def run_generate_pattern_vpqsp(cmd: GeneratePatternInput) -> int:
                 markers_x=s["markers_x"], markers_y=s["markers_y"],
                 marker_px=s["marker_px"], resolution_px=s["resolution_px"])
             cv2.imwrite(str(cabinets_dir / f"V{col:03d}_R{row:03d}.png"), tile)
+            cv2.imwrite(str(cabinets_dir / f"V{col:03d}_R{row:03d}_inverted.png"), 255 - tile)
             cabinets_meta.append(VpqspMarkerGrid(
                 col=col, row=row,
                 resolution_px=[s["resolution_px"][0], s["resolution_px"][1]],
@@ -178,6 +190,10 @@ def run_generate_pattern_vpqsp(cmd: GeneratePatternInput) -> int:
         _assemble_screen(
             out_path=staging / "full_screen.png",
             cabinets_dir=cabinets_dir, specs=specs, screen_resolution=(sw, sh))
+        _assemble_screen(
+            out_path=staging / "full_screen_inverted.png",
+            cabinets_dir=cabinets_dir, specs=specs, screen_resolution=(sw, sh),
+            tile_suffix="_inverted", background=255 - ABSENT_CELL_FILL)
 
         meta = VpqspPatternMeta(
             schema_version="vpqsp.v1", screen_id_code=cmd.screen_id_code,

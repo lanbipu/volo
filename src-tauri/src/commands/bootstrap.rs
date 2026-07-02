@@ -145,6 +145,39 @@ pub async fn pick_directory(app: tauri::AppHandle) -> Option<String> {
     .flatten()
 }
 
+/// Native file picker backing the Calibrate Lens panel's "选择 session 配置"
+/// button (and, with an explicit filter, the Calibrate mesh 段 project/CSV
+/// pickers). Returns the chosen file path, or `None` if the user cancelled.
+/// Same worker-thread rationale as `pick_directory` (blocking picker would
+/// deadlock the main thread on macOS).
+///
+/// `filter_name`/`filter_extensions` default to the original "Session Config"
+/// / `json` filter when omitted, so existing zero-arg callers are unaffected.
+#[tauri::command]
+pub async fn pick_file(
+    app: tauri::AppHandle,
+    filter_name: Option<String>,
+    filter_extensions: Option<Vec<String>>,
+) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (name, exts) = match (filter_name, filter_extensions) {
+        (Some(n), Some(e)) if !e.is_empty() => (n, e),
+        _ => ("Session Config".to_string(), vec!["json".to_string()]),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let ext_refs: Vec<&str> = exts.iter().map(String::as_str).collect();
+        app.dialog()
+            .file()
+            .add_filter(&name, &ext_refs)
+            .blocking_pick_file()
+            .and_then(|fp| fp.into_path().ok())
+            .map(|p| p.to_string_lossy().into_owned())
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 /// Reveal a path in the OS file manager (the USB-export drawer's "在文件夹中显示").
 #[tauri::command]
 pub fn reveal_path(app: tauri::AppHandle, path: String) -> Result<(), String> {

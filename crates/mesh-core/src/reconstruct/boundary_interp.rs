@@ -2,8 +2,9 @@ use nalgebra::Vector3;
 
 use crate::error::CoreError;
 use crate::measured_points::MeasuredPoints;
+use crate::reconstruct::provenance::{classify_grid, EXTRAPOLATION_THRESHOLD_MULTIPLIER};
 use crate::reconstruct::Reconstructor;
-use crate::surface::{GridTopology, QualityMetrics, ReconstructedSurface};
+use crate::surface::{GridTopology, QualityMetrics, ReconstructedSurface, VertexProvenance};
 use crate::uv::compute_grid_uv;
 
 /// Boundary-interp reconstructor: requires full top + bottom rows
@@ -94,7 +95,7 @@ impl Reconstructor for BoundaryInterpReconstructor {
         } else {
             devs.iter().sum::<f64>() / devs.len() as f64
         };
-        let stats = crate::reconstruct::grid_check::residual_stats_mm(&devs);
+        let stats = crate::reconstruct::grid_check::cv_residual_stats_mm(&devs, points.len());
 
         // FIX-12 ④: anchor sanity — top/bottom row spacing must match the
         // cabinet width (every edge spans exactly one cabinet face). The
@@ -109,6 +110,27 @@ impl Reconstructor for BoundaryInterpReconstructor {
             );
         warnings.append(&mut spacing_warnings);
 
+        // M1 uncertainty-ledger fix: anchors are exactly the column
+        // top+bottom pairs `applicable()` already requires — classify the
+        // interior against them in (col,row) parameter space. Without dense
+        // interior sampling, rows far from both the top and bottom edge
+        // legitimately come back Extrapolated.
+        let anchors: Vec<(u32, u32)> = (0..=cols)
+            .flat_map(|c| [(c, 0), (c, rows)])
+            .collect();
+        let vertex_provenance =
+            classify_grid(topo, &anchors, EXTRAPOLATION_THRESHOLD_MULTIPLIER);
+        let extrapolated_count = vertex_provenance
+            .iter()
+            .filter(|p| **p == VertexProvenance::Extrapolated)
+            .count();
+        if extrapolated_count > 0 {
+            warnings.push(format!(
+                "{extrapolated_count} vertex(es) are extrapolated beyond the measured top/bottom \
+                 rows — treat like a fabricated point (see vertex_provenance)"
+            ));
+        }
+
         let uvs = compute_grid_uv(topo);
         let metrics = QualityMetrics {
             method: "boundary_interp".into(),
@@ -119,6 +141,7 @@ impl Reconstructor for BoundaryInterpReconstructor {
             middle_max_dev_mm: max_dev_mm,
             middle_mean_dev_mm: mean_dev_mm,
             outliers: spacing_outliers,
+            extrapolated_count,
             warnings,
             ..Default::default()
         };
@@ -130,6 +153,7 @@ impl Reconstructor for BoundaryInterpReconstructor {
             uv_coords: uvs,
             quality_metrics: metrics,
             scatter_fit: None,
+            vertex_provenance,
         })
     }
 }

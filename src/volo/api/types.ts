@@ -874,3 +874,417 @@ export interface ZenBinaryExpected {
   locked_by: string | null;
   first_seen_at: string | null;
 }
+
+/* ====================== mesh visual (M2 visual-BA) ======================
+   Source of truth: src-tauri/src/commands/mesh_visual.rs + crates/mesh-app
+   (visual.rs / export.rs) + crates/volo-shared/src/dto.rs. No UI consumes
+   these yet (M2 UI pending Claude Design handoff) — see meshVisualCommands.ts. */
+
+export interface WarningDto {
+  code: string;
+  message: string;
+  cabinet?: string | null;
+}
+
+export interface CabinetPoseSummary {
+  cabinet_id: string;
+  position_mm: [number, number, number];
+  normal: [number, number, number];
+  reprojection_rms_px: number;
+  observed_views: number;
+  quality: string;
+}
+
+export interface VisualReconstructResult {
+  screen_id: string;
+  pose_report_path: string;
+  cabinet_count: number;
+  ba_rms_px: number;
+  ba_observations_total: number;
+  ba_observations_used: number;
+  ba_rejected: number;
+  procrustes_align_rms_m: number;
+  /** "file" | "auto_self_calibrated" */
+  intrinsics_source: string;
+  warnings: WarningDto[];
+  cabinets: CabinetPoseSummary[];
+}
+
+export interface CalibrateResult {
+  intrinsics_path: string;
+  reproj_error_px: number;
+  frames_used: number;
+  /** "radial2" | "full" */
+  distortion_model: string;
+  focal_stddev_px?: [number, number] | null;
+  pp_stddev_px?: [number, number] | null;
+  warnings: WarningDto[];
+}
+
+export interface GeneratePatternResult {
+  output_dir: string;
+  cabinet_count: number;
+  total_markers: number;
+  warnings: WarningDto[];
+}
+
+export interface GenerateStructuredLightResult {
+  output_dir: string;
+  n_dots: number;
+  n_frames: number;
+}
+
+export interface DecodeStructuredLightResult {
+  output_path: string;
+  n_dots_decoded: number;
+}
+
+export interface SimulateResult {
+  dataset_dir: string;
+  n_views: number;
+  n_observations: number;
+  seed: number;
+}
+
+export interface EvalResult {
+  method: string;
+  max_size_error_mm: number;
+  rms_size_error_mm: number;
+  max_distance_error_mm: number;
+  max_angle_error_deg: number;
+  holdout_rms_mm: number | null;
+  holdout_p95_mm: number | null;
+  holdout_max_mm: number | null;
+  seeds: number[];
+}
+
+export interface CabinetSizeCheck {
+  cabinet_id: string;
+  size_error_mm: number;
+  pass: boolean;
+}
+
+export interface PairCheck {
+  a: string;
+  b: string;
+  distance_error_mm: number;
+  angle_error_deg: number;
+  distance_pass: boolean;
+  angle_pass: boolean;
+}
+
+export interface CompareKnownResult {
+  cabinets: CabinetSizeCheck[];
+  pairs: PairCheck[];
+  passed: boolean;
+  thresholds: Record<string, number>;
+}
+
+export interface CaptureStation {
+  id: string;
+  position_mm: [number, number, number];
+  look_at_mm: [number, number, number];
+  standoff_mm: number;
+  height_mm: number;
+  role: string;
+  covers_cabinets: [number, number][];
+}
+
+export interface CabinetCoverage {
+  col: number;
+  row: number;
+  p95_residual_mm: number | null;
+  n_views: number;
+  total_observations: number;
+  reconstructable: boolean;
+  low_observation: boolean;
+  bridged: boolean;
+  pass: boolean;
+  /** "low_coverage" | "low_parallax", null when the cabinet passes. */
+  fail_reason?: string | null;
+}
+
+export interface UnreachableRegion {
+  cabinets: [number, number][];
+  reason: string;
+}
+
+export interface CapturePlan {
+  stations: CaptureStation[];
+  coverage: CabinetCoverage[];
+  unreachable_regions: UnreachableRegion[];
+  all_pass: boolean;
+  target_p95_residual_mm: number;
+}
+
+export interface CaptureCardResult {
+  html_content: string;
+}
+
+/** `frame.gauge_strategy` — "fix_root_cabinet" (legacy) | "align_to_nominal". */
+export type PoseReportGauge = "fix_root_cabinet" | "align_to_nominal";
+
+export interface PoseReportFrame {
+  gauge_strategy: PoseReportGauge;
+}
+
+export interface CabinetPoseEntry {
+  cabinet_id: string;
+  /** World-frame corners in mm, order BL,BR,TR,TL. */
+  corners_mm: [[number, number, number], [number, number, number], [number, number, number], [number, number, number]];
+  covariance_mm2?: [[number, number, number], [number, number, number], [number, number, number]] | null;
+}
+
+export interface CabinetPoseReportFile {
+  schema_version: string;
+  frame: PoseReportFrame;
+  cabinet_poses: CabinetPoseEntry[];
+}
+
+export interface ExportPoseObjResult {
+  target: string;
+  cabinet_count: number;
+  /** Merged mode: single OBJ path. `--split` mode: output directory. */
+  file: string;
+  /** `--split` mode: per-cabinet OBJ paths. Empty in merged mode. */
+  files: string[];
+}
+
+/** Tauri event `mesh-visual-progress` payload. `event` is the adapter's raw
+ *  tagged union (`{event: "progress"|"warning"|"result"|"error"|"unknown", ...}`),
+ *  forwarded verbatim — see mesh-adapter-visual-ba::ipc::Event. */
+export interface MeshVisualProgressPayload {
+  job_id: string;
+  event: unknown;
+}
+
+/** Tauri event `mesh-visual-reconstruct-done` payload — exactly one of
+ *  `result` / `error` is set. */
+export interface MeshVisualReconstructDonePayload {
+  job_id: string;
+  result: VisualReconstructResult | null;
+  error: string | null;
+}
+
+export interface MeshVisualJobResponse {
+  job_id: string;
+}
+
+/* ----------------------------- W6 R1: M1+M2 fuse ----------------------------- */
+
+/** Per-anchor alignment residual (mm) — one row per matched grid-vertex point. */
+export interface FuseAnchorResidual {
+  /** Grid-vertex point name shared by both sides, e.g. "MAIN_V001_R001". */
+  point_name: string;
+  residual_mm: number;
+  delta_mm: [number, number, number];
+}
+
+/** `mesh_fuse_run` 结果:视觉重建(M2 cabinet_pose_report)对齐到全站仪
+ *  测点(M1 measured.yaml)的刚体/相似变换 + 逐锚点残差。 */
+export interface FuseResult {
+  screen_id: string;
+  /** 参与配准的锚点数(两侧按 grid-vertex 命名匹配上的点)。 */
+  anchor_count: number;
+  /** 3×3 旋转矩阵(行主序)。 */
+  rotation: [[number, number, number], [number, number, number], [number, number, number]];
+  translation_mm: [number, number, number];
+  /** 相似变换缩放因子。`scale_locked=true` 时恒为 1.0。 */
+  scale: number;
+  /** `allowScale` 未传时为 true(scale 锁 1.0,不吸收系统性误差)。 */
+  scale_locked: boolean;
+  anchor_residuals: FuseAnchorResidual[];
+  anchor_rms_mm: number;
+  /** 对齐后的 cabinet_pose_report 副本路径(全部角点 + 协方差已变换)。 */
+  fused_pose_report_path: string;
+}
+
+/* ====================== mesh core (W2: Calibrate M1 接线) ======================
+   Source of truth: src-tauri/src/commands/mesh_{projects,reconstruct,total_station,
+   measurements,export}.rs + crates/volo-shared/src/dto.rs + crates/mesh-core.
+   See ./meshCommands for the command wrappers. */
+
+export interface RecentProject {
+  id: number;
+  abs_path: string;
+  display_name: string;
+  last_opened_at: string;
+}
+
+/** `project.yaml` 顶层结构。`method`/`pixels_per_cabinet`/`bottom_completion` 省略时为 null。 */
+export interface ProjectConfig {
+  project: ProjectMeta;
+  /** Keyed by screen_id, e.g. "MAIN". */
+  screens: Record<string, ScreenConfig>;
+  coordinate_system: CoordinateSystemConfig;
+  output: OutputConfig;
+}
+
+export interface ProjectMeta {
+  name: string;
+  unit: string;
+  /** "m1" | "m2", null when not yet chosen. */
+  method?: SurveyMethod | null;
+}
+
+export type SurveyMethod = "m1" | "m2";
+
+export interface ScreenConfig {
+  /** [cols, rows] — cabinet grid dimensions (vertex grid is (cols+1)×(rows+1)). */
+  cabinet_count: [number, number];
+  cabinet_size_mm: [number, number];
+  pixels_per_cabinet?: [number, number] | null;
+  shape_prior: ShapePriorConfig;
+  shape_mode: ShapeMode;
+  /** Cabinet-indexed [col, row] pairs explicitly absent from the array. */
+  irregular_mask: [number, number][];
+  bottom_completion?: BottomCompletionConfig | null;
+}
+
+export type ShapePriorConfig =
+  | { type: "flat" }
+  | { type: "curved"; radius_mm: number; fold_seams_at_columns: number[] }
+  | { type: "folded"; fold_seams_at_columns: number[] };
+
+export type ShapeMode = "rectangle" | "irregular";
+
+export interface BottomCompletionConfig {
+  lowest_measurable_row: number;
+  fallback_method: string;
+  assumed_height_mm: number;
+}
+
+/** Point NAMES (e.g. "MAIN_V001_R001"), not cabinet grid cells — see
+ *  crates/mesh-core/src/reconstruct/nominal.rs point-naming convention
+ *  ({screen}_V{col+1:03}_R{row+1:03}, col/row are VERTEX indices). */
+export interface CoordinateSystemConfig {
+  origin_point: string;
+  x_axis_point: string;
+  xy_plane_point: string;
+}
+
+export interface OutputConfig {
+  target: string;
+  obj_filename: string;
+  weld_vertices_tolerance_mm: number;
+  triangulate: boolean;
+}
+
+export interface ReconstructionResult {
+  run_id: number;
+  surface: ReconstructedSurface;
+  report_json_path: string;
+}
+
+export interface ReconstructionRun {
+  id: number;
+  screen_id: string;
+  method: string;
+  estimated_rms_mm: number | null;
+  vertex_count: number;
+  target: string | null;
+  output_obj_path: string | null;
+  created_at: string;
+}
+
+export interface ReconstructionReport {
+  surface: ReconstructedSurface;
+  quality_metrics: QualityMetrics;
+  project_path: string;
+  screen_id: string;
+  measurements_path: string;
+  created_at: string;
+  cabinet_array: CabinetArray;
+  weld_tolerance_mm: number;
+  /** Scatter 路径的拟合元数据；grid 路径为 null。未在 UI 消费，类型从简。 */
+  scatter_fit?: unknown;
+}
+
+export interface GridTopology {
+  cols: number;
+  rows: number;
+}
+
+/** Per-vertex measurement provenance. Empty array = "unknown" (legacy surface), NOT "all measured". */
+export type VertexProvenance = "measured" | "interpolated" | "extrapolated";
+
+export interface QualityMetrics {
+  method: string;
+  middle_max_dev_mm: number;
+  middle_mean_dev_mm: number;
+  measured_count: number;
+  expected_count: number;
+  missing: string[];
+  outliers: string[];
+  /** null when no holdout residual exists (exact interpolators, or below MIN_MEASURED_FOR_CV_STATS). */
+  estimated_rms_mm: number | null;
+  estimated_p95_mm: number | null;
+  extrapolated_count: number;
+  warnings: string[];
+}
+
+export interface ReconstructedSurface {
+  screen_id: string;
+  topology: GridTopology;
+  /** (cols+1)×(rows+1) vertices, row-major, meters. */
+  vertices: [number, number, number][];
+  uv_coords: [number, number][];
+  quality_metrics: QualityMetrics;
+  scatter_fit?: unknown;
+  /** Parallel to `vertices`; empty = provenance unknown (pre-M1 surface). */
+  vertex_provenance: VertexProvenance[];
+}
+
+export interface CabinetArray {
+  cols: number;
+  rows: number;
+  cabinet_size_mm: [number, number];
+  absent_cells: [number, number][];
+}
+
+/** `{ isotropic: sigma_mm }` (total-station) | `{ covariance: 3×3 row-major matrix }` (visual BA). */
+export type Uncertainty = { isotropic: number } | { covariance: [[number, number, number], [number, number, number], [number, number, number]] };
+
+/** `"total_station"` (unit variant) | `{ visual_ba: { camera_count } }` (struct variant). */
+export type PointSource = "total_station" | { visual_ba: { camera_count: number } };
+
+export interface MeasuredPoint {
+  /** Grid vertex name, e.g. "MAIN_V001_R005". */
+  name: string;
+  /** Model-frame position, meters. */
+  position: [number, number, number];
+  uncertainty: Uncertainty;
+  source: PointSource;
+}
+
+export interface CoordinateFrame {
+  origin_world: [number, number, number];
+  /** Columns: X, Y, Z (world frame). */
+  basis: [[number, number, number], [number, number, number], [number, number, number]];
+}
+
+export interface MeasuredPoints {
+  screen_id: string;
+  coordinate_frame: CoordinateFrame;
+  cabinet_array: CabinetArray;
+  shape_prior: ShapePriorConfig | "flat";
+  points: MeasuredPoint[];
+  sampling_mode: "grid" | "scatter";
+}
+
+export interface TotalStationImportResult {
+  /** Relative to project_abs_path, e.g. "measurements/measured.yaml". */
+  measurementsYamlPath: string;
+  /** Relative to project_abs_path, e.g. "measurements/import_report.json". */
+  reportJsonPath: string;
+  measuredCount: number;
+  fabricatedCount: number;
+  outlierCount: number;
+  missingCount: number;
+  warnings: string[];
+}
+
+export interface InstructionCardResult {
+  /** HTML string for iframe srcdoc rendering. */
+  htmlContent: string;
+}

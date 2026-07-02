@@ -74,9 +74,12 @@ impl GridTopology {
 /// fit residuals — distances from measured input points to the reconstructed
 /// surface — over points that are NOT exactly reproduced by construction.
 /// They are `None` when no such holdout exists (exact interpolators:
-/// direct_link always, radial_basis always, boundary_interp/nominal without
-/// extra interior points). They are never input-σ summaries and never clamped
-/// to arbitrary floors (the old `max(5mm)`/`max(8mm)` constants are gone).
+/// direct_link always, boundary_interp/nominal without extra interior
+/// points), when the reconstructor's cross-validation is not feasible, or
+/// when total measured input is below
+/// [`crate::reconstruct::grid_check::MIN_MEASURED_FOR_CV_STATS`]. They are
+/// never input-σ summaries and never clamped to arbitrary floors (the old
+/// `max(5mm)`/`max(8mm)` constants are gone).
 /// `shape_fit_rms_mm` was removed: it was never assigned anywhere; for the
 /// scatter path the shape-fit residual now IS `estimated_rms_mm`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -92,7 +95,39 @@ pub struct QualityMetrics {
     pub estimated_rms_mm: Option<f64>,
     #[serde(default)]
     pub estimated_p95_mm: Option<f64>,
+    /// Count of vertices whose [`VertexProvenance`] is `Extrapolated`
+    /// (see `ReconstructedSurface.vertex_provenance`). Mirrors the
+    /// `fabricated_count` concept in the M1 CSV-import report
+    /// (`mesh_adapter_total_station::ScreenReport`) one layer downstream:
+    /// there it is a measured point that was never surveyed, here it is a
+    /// mesh vertex whose position is not backed by nearby measurement
+    /// support. `0` for methods that don't compute provenance (legacy /
+    /// pre-M1 surfaces).
+    #[serde(default)]
+    pub extrapolated_count: usize,
     pub warnings: Vec<String>,
+}
+
+/// Per-vertex measurement provenance (M1 uncertainty-ledger fix).
+///
+/// `Measured`: the vertex position IS a measured input point, reproduced
+/// exactly by the reconstructor (e.g. every direct_link vertex, an
+/// anchor consumed by radial_basis/boundary_interp/nominal).
+/// `Interpolated`: derived from measured anchors, within their coverage
+/// (inside the 2D parameter-space convex hull of the anchors AND within
+/// [`crate::reconstruct::provenance::EXTRAPOLATION_THRESHOLD_MULTIPLIER`] ×
+/// median anchor spacing of the nearest anchor).
+/// `Extrapolated`: derived from measured anchors but outside their
+/// coverage — conceptually the mesh-vertex analogue of a `fabricated`
+/// point in the M1 CSV-import report (`ScreenReport.fabricated_count`):
+/// not backed by nearby measurement, so treat its position with the same
+/// distrust.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VertexProvenance {
+    Measured,
+    Interpolated,
+    Extrapolated,
 }
 
 /// Reconstructed surface: grid of vertices in model frame, with UVs.
@@ -109,6 +144,12 @@ pub struct ReconstructedSurface {
     /// scatter 路径的拟合元数据；grid 路径为 None。
     #[serde(default)]
     pub scatter_fit: Option<ScatterFit>,
+    /// Per-vertex provenance, parallel to `vertices` (same length, same
+    /// row-major order) when populated. Empty for surfaces produced before
+    /// this field existed (legacy JSON on disk) — callers must treat an
+    /// empty vec as "provenance unknown", not as "all measured".
+    #[serde(default)]
+    pub vertex_provenance: Vec<VertexProvenance>,
 }
 
 #[derive(Deserialize)]
@@ -123,6 +164,8 @@ struct ReconstructedSurfaceRaw {
     /// scatter 路径的拟合元数据；grid 路径为 None。
     #[serde(default)]
     scatter_fit: Option<ScatterFit>,
+    #[serde(default)]
+    vertex_provenance: Vec<VertexProvenance>,
 }
 
 impl<'de> Deserialize<'de> for ReconstructedSurface {
@@ -135,6 +178,7 @@ impl<'de> Deserialize<'de> for ReconstructedSurface {
             uv_coords: raw.uv_coords,
             quality_metrics: raw.quality_metrics,
             scatter_fit: raw.scatter_fit,
+            vertex_provenance: raw.vertex_provenance,
         };
         surface
             .validate()
@@ -243,6 +287,14 @@ impl ReconstructedSurface {
             return Err(CoreError::InvalidInput(format!(
                 "ReconstructedSurface.uv_coords.len() {} != vertices.len() {}",
                 self.uv_coords.len(),
+                self.vertices.len()
+            )));
+        }
+        if !self.vertex_provenance.is_empty() && self.vertex_provenance.len() != self.vertices.len()
+        {
+            return Err(CoreError::InvalidInput(format!(
+                "ReconstructedSurface.vertex_provenance.len() {} != vertices.len() {} (must be empty or match)",
+                self.vertex_provenance.len(),
                 self.vertices.len()
             )));
         }

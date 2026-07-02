@@ -74,7 +74,10 @@ def test_manifest_operation_ids():
         "quick.run", "pattern.generate", "screen.create", "screen.import",
         "simulate", "simulate.sweep", "report.generate", "report.diff",
         "export.opentrackio", "export.ndisplay",
-        "capture.track", "capture.video", "capture.playback",
+        "marker_map.create", "marker_map.validate", "marker_map.board",
+        "marker_map.cube", "marker_map.rebase", "verify.mapping", "verify.overlay",
+        "capture.delay_cal",
+        "capture.track", "capture.video", "capture.session", "capture.playback",
     }
 
 

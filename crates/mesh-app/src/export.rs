@@ -726,6 +726,7 @@ fn panel_surface(
             ..Default::default()
         },
         scatter_fit: None,
+        vertex_provenance: vec![],
     }
 }
 
@@ -1623,6 +1624,7 @@ mod tests {
             uv_coords: compute_grid_uv(topo),
             quality_metrics: QualityMetrics::default(),
             scatter_fit: None,
+            vertex_provenance: vec![],
         };
         let array = CabinetArray::rectangle(1, 1, [1.0, 1.0]);
         let mesh = surface_to_mesh_output(&surface, &array, TargetSoftware::Disguise, 0.0).unwrap();

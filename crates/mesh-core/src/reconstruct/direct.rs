@@ -1,7 +1,7 @@
 use crate::error::CoreError;
 use crate::measured_points::MeasuredPoints;
 use crate::reconstruct::Reconstructor;
-use crate::surface::{GridTopology, QualityMetrics, ReconstructedSurface};
+use crate::surface::{GridTopology, QualityMetrics, ReconstructedSurface, VertexProvenance};
 use crate::uv::compute_grid_uv;
 
 /// Direct-link reconstructor: every grid vertex is a measured point.
@@ -72,6 +72,9 @@ impl Reconstructor for DirectLinkReconstructor {
             ..Default::default()
         };
 
+        // direct_link's `applicable()` guarantees every vertex was measured.
+        let vertex_provenance = vec![VertexProvenance::Measured; topo.vertex_count()];
+
         Ok(ReconstructedSurface {
             screen_id: points.screen_id.clone(),
             topology: topo,
@@ -79,6 +82,7 @@ impl Reconstructor for DirectLinkReconstructor {
             uv_coords: uvs,
             quality_metrics: metrics,
             scatter_fit: None,
+            vertex_provenance,
         })
     }
 }

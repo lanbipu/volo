@@ -117,6 +117,28 @@ def _render_text(result: dict) -> str:
     if missing:
         lines.append(f"  suggestion       : sensor regions uncovered: {', '.join(missing)} — add poses there.")
     lines += _render_lens_estimate(q.get("lens_estimate"))
+    qa = result.get("qa", {})
+    ground = qa.get("ground_plane")
+    if ground and ground.get("available"):
+        lines.append(
+            f"  ground plane     : residual RMS {ground['residual_rms_mm']:.2f} mm, "
+            f"tilt {ground['tilt_from_z_deg']:.3f}°, offset {ground['offset_from_z0_mm']:.2f} mm"
+        )
+        for w in ground.get("warnings", []):
+            lines.append(f"  ⚠ {w}")
+    alignment = qa.get("world_alignment")
+    if alignment:
+        grade = alignment.get("grade", "n/a")
+        max_u = alignment.get("max_uncertainty_mm")
+        lines.append(
+            "  world alignment  : " + grade
+            + (f" (max declared uncertainty {max_u:.1f} mm)" if max_u is not None else " (no uncertainty declared)")
+        )
+    offsets = qa.get("tracker_offsets")
+    if offsets:
+        from vpcal.core.tracker_offsets import render_offsets_text
+
+        lines += render_offsets_text(offsets)
     return "\n".join(lines)
 
 

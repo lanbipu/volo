@@ -59,3 +59,10 @@ find_package(pybind11 CONFIG REQUIRED)
 # Solver module
 # ---------------------------------------------------------------------------
 add_subdirectory(src/vpcal_solver)
+
+# ---------------------------------------------------------------------------
+# DeckLink capture shim (Phase 2a) — builds ONLY when DECKLINK_SDK_DIR points
+# at a local Blackmagic SDK (headers are not redistributable); otherwise the
+# subdirectory logs a status note and skips itself.
+# ---------------------------------------------------------------------------
+add_subdirectory(src/vpcal_capture)

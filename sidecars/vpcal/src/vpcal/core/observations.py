@@ -51,6 +51,38 @@ class MarkerId:
         return cls(0, int(d["col"]), int(d["row"]), int(d["sub_index"]))
 
 
+@dataclass(frozen=True)
+class PhysicalMarkerId:
+    """Identity of one 2D-3D correspondence on a *physical* marker (AR mode).
+
+    ``marker`` is the marker map's string id (e.g. ``"AT_36h11_17"``);
+    ``corner`` indexes the tag corner 0..3 (TL, TR, BR, BL in the tag's
+    canonical orientation), or -1 for point-like markers (charuco corner /
+    survey point) that contribute a single centre correspondence.
+    """
+
+    marker: str
+    corner: int = -1
+
+    def to_dict(self) -> dict:
+        return {"marker": self.marker, "corner": self.corner}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PhysicalMarkerId":
+        return cls(str(d["marker"]), int(d.get("corner", -1)))
+
+
+def marker_id_from_dict(d: dict) -> "MarkerId | PhysicalMarkerId":
+    """Parse a serialised marker id, dispatching on the schema.
+
+    ``{"marker": ...}`` → :class:`PhysicalMarkerId` (marker-map path);
+    anything else → :class:`MarkerId` (VP-QSP screen path, incl. legacy form).
+    """
+    if "marker" in d:
+        return PhysicalMarkerId.from_dict(d)
+    return MarkerId.from_dict(d)
+
+
 @dataclass
 class Detection:
     """A single detected marker in one image.
@@ -61,7 +93,7 @@ class Detection:
     """
 
     frame_id: int
-    marker_id: MarkerId
+    marker_id: "MarkerId | PhysicalMarkerId"
     pixel_u: float
     pixel_v: float
     confidence: float = 1.0
@@ -84,4 +116,4 @@ class Observation:
     track_q: tuple[float, float, float, float]
     track_t: tuple[float, float, float]
     frame_id: int = -1
-    marker_id: MarkerId | None = None
+    marker_id: "MarkerId | PhysicalMarkerId | None" = None

@@ -20,8 +20,12 @@ namespace vpcal {
 // Brown-Conrady projection (spec §5.5), templated for AutoDiff.
 template <typename T>
 inline void project(const LensParams& lens, const T cam[3], T* u, T* v) {
-    const T xn = cam[0] / cam[2];
-    const T yn = cam[1] / cam[2];
+    // Entrance pupil offset (architecture §4.3): shift along the optical axis
+    // before the perspective divide, matching OpenLensIO eq. (1).  Fixed lens
+    // constant, not a solved parameter — must match vpcal.core.projection.
+    const T z = cam[2] - T(lens.entrance_pupil_offset_mm);
+    const T xn = cam[0] / z;
+    const T yn = cam[1] / z;
     const T r2 = xn * xn + yn * yn;
     const T radial =
         T(1.0) + r2 * (T(lens.k1) + r2 * (T(lens.k2) + r2 * T(lens.k3)));

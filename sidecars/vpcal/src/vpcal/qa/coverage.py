@@ -74,18 +74,51 @@ def _pose_distribution(tracker_poses: list[tuple[Array, Array]]) -> dict:
     }
 
 
+def _marker_map_coverage(observations: list[Observation], marker_map) -> dict:
+    """Per-marker coverage against a surveyed marker map (AR path).
+
+    Counts detectable map markers that produced at least one observation;
+    ``missing`` lists the never-observed ones (plan A2 coverage requirement).
+    """
+    from vpcal.core.observations import PhysicalMarkerId
+
+    detectable = {m.marker_id for m in marker_map.detectable_markers()}
+    observed = {
+        o.marker_id.marker
+        for o in observations
+        if isinstance(o.marker_id, PhysicalMarkerId)
+    }
+    missing = sorted(detectable - observed)
+    return {
+        "percentage": float(len(detectable & observed) / max(len(detectable), 1)),
+        "total_markers": len(detectable),
+        "observed_markers": len(detectable & observed),
+        "missing": missing,
+    }
+
+
 def coverage_report(
     observations: list[Observation],
     intr: CameraIntrinsics,
-    screen: ScreenDefinition,
+    screen: ScreenDefinition | None,
     tracker_poses: list[tuple[Array, Array]],
     *,
     markers_per_cabinet: int | None = None,
+    marker_map=None,
 ) -> dict:
-    """Build the coverage QA report (spec §9.2)."""
-    mpc = markers_per_cabinet if markers_per_cabinet is not None else screen.markers_per_cabinet
-    return {
+    """Build the coverage QA report (spec §9.2).
+
+    Exactly one of ``screen`` / ``marker_map`` is expected: the screen path
+    reports per-section screen coverage, the marker-map path (AR) reports
+    per-marker coverage.
+    """
+    report = {
         "sensor_coverage": _sensor_coverage(observations, intr),
-        "screen_coverage": _screen_coverage(observations, screen, mpc),
         "pose_distribution": _pose_distribution(tracker_poses),
     }
+    if screen is not None:
+        mpc = markers_per_cabinet if markers_per_cabinet is not None else screen.markers_per_cabinet
+        report["screen_coverage"] = _screen_coverage(observations, screen, mpc)
+    if marker_map is not None:
+        report["marker_coverage"] = _marker_map_coverage(observations, marker_map)
+    return report

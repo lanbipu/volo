@@ -25,7 +25,7 @@ from vpcal.core.coordinates import (
     to_opentrackio_transform,
     to_ue_transform,
 )
-from vpcal.core.errors import ArgumentError
+from vpcal.core.errors import ArgumentError, PreconditionError
 from vpcal.core.transforms import camera_in_stage_transform, make_transform
 from vpcal.models.lens import LensProfile
 
@@ -43,6 +43,14 @@ _SESSION_ESTIMATE_NOTE = (
     "session-coupled quick lens estimate (non-master); "
     "calibrationHistory: vpcal Quick Lens Estimate v1.0"
 )
+
+
+def _delay_note(delay_ms: float) -> str:
+    """Anti-double-compensation flag (plan C3): the timestamps are already shifted."""
+    return (
+        f"delayCompensated: vpcal shifted sample timestamps by {delay_ms:+.1f} ms "
+        "(tracking-leads-video); do NOT apply a tracking delay again downstream"
+    )
 
 
 def _sample_id(frame_id: int) -> str:
@@ -66,7 +74,7 @@ def _lens_block(lens: LensProfile) -> dict:
     d = lens.distortion
     w, h = lens.sensor_width_mm, lens.sensor_height_mm
     ws, hs = lens.image_width_px, lens.image_height_px
-    return {
+    block: dict = {
         "pinholeFocalLength": F,
         "distortion": [
             {
@@ -80,6 +88,10 @@ def _lens_block(lens: LensProfile) -> dict:
             "y": h * (lens.cy / hs - 0.5),
         },
     }
+    if lens.entrance_pupil_offset_mm is not None:
+        # OpenTrackIO/camdkit lens.entrancePupilOffset is metres (architecture §4.3).
+        block["entrancePupilOffset"] = lens.entrance_pupil_offset_mm * _MM_TO_M
+    return block
 
 
 def _camera_to_world_sample(
@@ -90,6 +102,19 @@ def _camera_to_world_sample(
     session_estimate: bool,
     frame_note: str | None,
 ) -> dict:
+    # OpenTrackIO sampleTimestamp seconds/nanoseconds are both unsigned; a
+    # delay shift on a take whose tracking clock starts near 0 can push the
+    # first samples negative — refuse rather than emit a non-conformant file.
+    total_ns = round(timestamp_s * 1e9)
+    if total_ns < 0:
+        raise PreconditionError(
+            f"sample timestamp {timestamp_s:.6f} s (frame {frame_id}) is negative "
+            "after the delay shift — OpenTrackIO sampleTimestamp is unsigned; "
+            "rebase the tracking timestamps (start >= |delay|) or export "
+            "without --apply-delay",
+            details={"frame_id": frame_id, "timestamp_s": timestamp_s},
+        )
+    seconds, nanoseconds = divmod(total_ns, 1_000_000_000)
     t = T_S_from_C_out[:3, 3]
     pan, tilt, roll = matrix_to_opentrackio_euler(T_S_from_C_out[:3, :3])
     tracker: dict = {"status": "calibrated", "recording": False}
@@ -106,8 +131,8 @@ def _camera_to_world_sample(
         "timing": {
             "sequenceNumber": frame_id,
             "sampleTimestamp": {
-                "seconds": int(timestamp_s),
-                "nanoseconds": int(round((timestamp_s - int(timestamp_s)) * 1e9)),
+                "seconds": seconds,
+                "nanoseconds": nanoseconds,
             },
         },
         "tracker": tracker,
@@ -131,6 +156,7 @@ def export_opentrackio(
     *,
     session_estimate: bool = False,
     frame: str = "spec",
+    applied_delay_ms: float | None = None,
 ) -> int:
     """Export calibrated camera poses to OpenTrackIO JSONL.
 
@@ -139,12 +165,21 @@ def export_opentrackio(
     True the sample is tagged (in ``tracker.notes``) as a non-master
     session-coupled estimate (QLE spec §7.2).  ``frame`` selects the output
     pose frame: ``"spec"`` (default, OpenTrackIO RH Z-up Y-forward) or ``"ue"``
-    (Unreal left-hand, non-spec, flagged in notes).  Returns the sample count.
+    (Unreal left-hand, non-spec, flagged in notes).
+
+    ``applied_delay_ms`` (plan C3): re-timestamp each sample by the measured
+    video↔tracking delay — a pose recorded at t describes the camera at video
+    time ``t + delay`` (tracking-leads-video convention), so the delay is
+    ADDED to every timestamp and each sample is flagged as already
+    compensated (anti-double-compensation).  Returns the sample count.
     """
     if frame not in ("spec", "ue"):
         raise ArgumentError(f"unsupported export frame: {frame!r} (expected 'spec' or 'ue')")
     to_out = to_opentrackio_transform if frame == "spec" else to_ue_transform
-    frame_note = _UE_FRAME_NOTE if frame == "ue" else None
+    notes = [n for n in (_UE_FRAME_NOTE if frame == "ue" else None,
+                         _delay_note(applied_delay_ms) if applied_delay_ms is not None else None) if n]
+    frame_note = "; ".join(notes) if notes else None
+    shift_s = (applied_delay_ms or 0.0) * 1e-3
     T_S_from_O = make_transform(np.asarray(tracker_to_stage[0]), np.asarray(tracker_to_stage[1]))
     T_C_from_B = make_transform(np.asarray(camera_from_tracker[0]), np.asarray(camera_from_tracker[1]))
     out = Path(out_path)
@@ -155,7 +190,7 @@ def export_opentrackio(
             T_sdk = make_transform(np.asarray(q), np.asarray(t))
             T_S_from_C = camera_in_stage_transform(T_S_from_O, T_sdk, T_C_from_B)
             sample = _camera_to_world_sample(
-                frame_id, ts, to_out(T_S_from_C), lens, session_estimate, frame_note
+                frame_id, ts + shift_s, to_out(T_S_from_C), lens, session_estimate, frame_note
             )
             fh.write(json.dumps(sample, ensure_ascii=False) + "\n")
             n += 1

@@ -86,6 +86,10 @@ impl Reconstructor for SurfaceFitReconstructor {
 
         let mut warnings: Vec<String> = vec![];
         // resid_m[i] = 第 i 个输入点到拟合形状的法向距离（米）— FIX-12 ①
+        // anchor_params[k] = proj.params[k]（跟 inliers 顺序对齐的参数坐标，
+        // 圆柱系是 [t(rad), h(m)]、平面系是 [u(m), v(m)]）；
+        // arc_radius_m = Some(圆柱半径) 时 provenance 判定要把 t 换算成弧长
+        // （米），跟 h 统一单位后才能用欧氏距离——M1 不确定度账本修复 item 1/4。
         let (
             verts_world,
             cframe,
@@ -96,6 +100,8 @@ impl Reconstructor for SurfaceFitReconstructor {
             proj_size_m,
             param_range,
             resid_m,
+            anchor_params,
+            arc_radius_m,
         ) = match &points.shape_prior {
             ShapePrior::Curved { .. } => {
                 let cyl = fit::fit_cylinder(&raw).ok_or_else(|| {
@@ -139,6 +145,7 @@ impl Reconstructor for SurfaceFitReconstructor {
                 }
                 proj.range = [t0, t1, h0, h1];
                 let (f, d) = frame::derive_cylinder_frame(&cyl, &proj);
+                let anchor_params = proj.params.clone();
                 let verts = resample::resample_cylinder(&cyl, &proj, cols, rows);
                 (
                     verts,
@@ -153,6 +160,8 @@ impl Reconstructor for SurfaceFitReconstructor {
                     [raw_width_m, raw_height_m],
                     proj.range,
                     resid,
+                    anchor_params,
+                    Some(cyl.radius_m),
                 )
             }
             ShapePrior::Flat => {
@@ -189,6 +198,7 @@ impl Reconstructor for SurfaceFitReconstructor {
                 }
                 proj.range = [u0, u1, v0, v1];
                 let (f, d) = frame::derive_plane_frame(pl.normal, &proj);
+                let anchor_params = proj.params.clone();
                 let verts = resample::resample_plane(&proj, cols, rows);
                 (
                     verts,
@@ -202,6 +212,8 @@ impl Reconstructor for SurfaceFitReconstructor {
                     [raw_width_m, raw_height_m],
                     proj.range,
                     resid,
+                    anchor_params,
+                    None,
                 )
             }
             ShapePrior::Folded { .. } => {
@@ -242,7 +254,55 @@ impl Reconstructor for SurfaceFitReconstructor {
         let outlier_ids: Vec<String> = outliers.iter().map(|o| o.point_id.clone()).collect();
         let inlier_resid_mm: Vec<f64> =
             inliers.iter().map(|&i| resid_m[i] * 1000.0).collect();
-        let stats = crate::reconstruct::grid_check::residual_stats_mm(&inlier_resid_mm);
+        let stats = crate::reconstruct::grid_check::cv_residual_stats_mm(
+            &inlier_resid_mm,
+            inliers.len(),
+        );
+
+        // M1 uncertainty-ledger fix (items 1/4): classify every resampled
+        // grid vertex against the inlier anchors in the SAME physical
+        // parameter space used to place them (arc-length·h for cylinder,
+        // u·v for plane — both meters, so hull/nearest-neighbor distance
+        // are genuine Euclidean checks). None of these vertices are exact
+        // reproductions of a raw measurement (resample always re-derives
+        // from the fitted shape), so unlike the grid path there is no
+        // `Measured` vertex here — only Interpolated/Extrapolated.
+        let to_phys = |raw: [f64; 2]| -> (f64, f64) {
+            match arc_radius_m {
+                Some(radius_m) => (radius_m * raw[0], raw[1]),
+                None => (raw[0], raw[1]),
+            }
+        };
+        let anchor_phys: Vec<(f64, f64)> = anchor_params.iter().map(|&p| to_phys(p)).collect();
+        let hull = crate::reconstruct::provenance::convex_hull(&anchor_phys);
+        let threshold = crate::reconstruct::provenance::median_nn_spacing(&anchor_phys)
+            .map(|s| s * crate::reconstruct::provenance::EXTRAPOLATION_THRESHOLD_MULTIPLIER)
+            .unwrap_or(f64::INFINITY);
+        let [pr0, pr1, pr2, pr3] = param_range;
+        let mut vertex_provenance = Vec::with_capacity(((cols + 1) * (rows + 1)) as usize);
+        for r in 0..=rows {
+            let b = pr2 + (pr3 - pr2) * (r as f64 / rows as f64);
+            for c in 0..=cols {
+                let a_raw = pr0 + (pr1 - pr0) * (c as f64 / cols as f64);
+                let query = to_phys([a_raw, b]);
+                vertex_provenance.push(crate::reconstruct::provenance::classify(
+                    &anchor_phys,
+                    &hull,
+                    threshold,
+                    query,
+                ));
+            }
+        }
+        let extrapolated_count = vertex_provenance
+            .iter()
+            .filter(|p| **p == crate::surface::VertexProvenance::Extrapolated)
+            .count();
+        if extrapolated_count > 0 {
+            warnings.push(format!(
+                "{extrapolated_count} vertex(es) are extrapolated beyond inlier coverage \
+                 — treat like a fabricated point (see vertex_provenance)"
+            ));
+        }
 
         let method = match shape {
             ScatterShape::Cylinder { .. } => "surface_fit_cylinder",
@@ -275,6 +335,7 @@ impl Reconstructor for SurfaceFitReconstructor {
             outliers: outlier_ids,
             estimated_rms_mm: stats.map(|(rms, _)| rms),
             estimated_p95_mm: stats.map(|(_, p95)| p95),
+            extrapolated_count,
             warnings,
             ..Default::default()
         };
@@ -286,6 +347,7 @@ impl Reconstructor for SurfaceFitReconstructor {
             uv_coords,
             quality_metrics,
             scatter_fit: Some(scatter_fit),
+            vertex_provenance,
         })
     }
 }

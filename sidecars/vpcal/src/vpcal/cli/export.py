@@ -18,30 +18,6 @@ def export(ctx: click.Context) -> None:
     """Export calibration results."""
 
 
-def _effective_lens(nominal, lens_estimate: dict):
-    """Rebuild the effective LensProfile from a result.json ``lens_estimate`` block.
-
-    Each param's stored ``value`` is the estimate when kept, else the nominal
-    fallback, so the values can be used directly (QLE review P2).
-    """
-    from vpcal.models.lens import BrownConradyDistortion, LensProfile
-
-    d = nominal.distortion
-    focal = nominal.focal_length_mm
-    if lens_estimate.get("focal_length_mm"):
-        focal = lens_estimate["focal_length_mm"]["value"]
-    ppo = list(nominal.principal_point_offset_mm)
-    pp = lens_estimate.get("principal_point_offset_mm")
-    if pp:
-        ppo = [pp[0]["value"], pp[1]["value"]]
-    k1 = lens_estimate["distortion_k1"]["value"] if lens_estimate.get("distortion_k1") else d.k1
-    k2 = lens_estimate["distortion_k2"]["value"] if lens_estimate.get("distortion_k2") else d.k2
-    return LensProfile(
-        focal_length_mm=focal, sensor_width_mm=nominal.sensor_width_mm,
-        sensor_height_mm=nominal.sensor_height_mm, principal_point_offset_mm=(ppo[0], ppo[1]),
-        image_width_px=nominal.image_width_px, image_height_px=nominal.image_height_px,
-        distortion=BrownConradyDistortion(k1=k1, k2=k2, k3=d.k3, p1=d.p1, p2=d.p2),
-    )
 
 
 @export.command()
@@ -50,12 +26,18 @@ def _effective_lens(nominal, lens_estimate: dict):
 @click.option("--out", "out_path", required=True, type=click.Path(), help="Output OpenTrackIO JSONL path.")
 @click.option("--frame", "frame", type=click.Choice(["spec", "ue"]), default="spec", show_default=True,
               help="Pose frame: 'spec' = OpenTrackIO RH Z-up Y-forward; 'ue' = Unreal LH (non-spec).")
+@click.option("--apply-delay", "apply_delay_ms", type=float, default=None,
+              help="Re-timestamp samples by this video↔tracking delay (ms, tracking-leads-video).")
+@click.option("--delay-profile", "delay_profile_path", type=click.Path(), default=None,
+              help="Read the delay from a timing/delay_profile.json (capture delay-cal output).")
 @common_options
 @click.pass_context
-def opentrackio(ctx, result_path, session_path, out_path, frame, **flags) -> None:
+def opentrackio(ctx, result_path, session_path, out_path, frame, apply_delay_ms,
+                delay_profile_path, **flags) -> None:
     """Export calibrated camera poses as OpenTrackIO JSONL."""
 
     def body() -> OperationOutput:
+        from vpcal.core.errors import ArgumentError
         from vpcal.io.export.opentrackio import export_opentrackio
         from vpcal.io.tracking_io import load_tracking, to_internal_poses
         from vpcal.models.session import SessionConfig
@@ -66,6 +48,19 @@ def opentrackio(ctx, result_path, session_path, out_path, frame, **flags) -> Non
                 raise ResourceNotFoundError(f"{label} not found: {p}", details={"path": str(p)})
         result = json.loads(rp.read_text())
         session = SessionConfig.model_validate(json.loads(sp.read_text()))
+
+        delay_ms = apply_delay_ms
+        if delay_profile_path is not None:
+            if apply_delay_ms is not None:
+                raise ArgumentError("--apply-delay and --delay-profile are mutually exclusive")
+            dp = Path(delay_profile_path)
+            if not dp.exists():
+                raise ResourceNotFoundError(f"delay profile not found: {dp}", details={"path": str(dp)})
+            profile = json.loads(dp.read_text())
+            cameras = profile.get("cameras") or []
+            if not cameras or "delay_ms" not in cameras[0]:
+                raise ArgumentError(f"delay profile has no cameras[0].delay_ms: {dp}")
+            delay_ms = float(cameras[0]["delay_ms"])
 
         tracking_path = sp.parent / session.tracking.path
         frames = load_tracking(tracking_path)
@@ -81,18 +76,25 @@ def opentrackio(ctx, result_path, session_path, out_path, frame, **flags) -> Non
         # non-master) lens rather than the nominal session lens (QLE review P2).
         lens_estimate = (result.get("quality") or {}).get("lens_estimate")
         session_estimate = lens_estimate is not None
-        lens = _effective_lens(session.lens, lens_estimate) if session_estimate else session.lens
+        from vpcal.models.lens import effective_lens
+
+        lens = effective_lens(session.lens, lens_estimate) if session_estimate else session.lens
 
         if flags.get("dry_run"):
             return OperationOutput(
                 data={"exit_code": 0, "dry_run_plan": {"output": out_path, "samples": len(tracker_poses),
-                                                        "session_estimate": session_estimate}},
+                                                        "session_estimate": session_estimate,
+                                                        "applied_delay_ms": delay_ms}},
                 text="Dry run OK.",
             )
         n = export_opentrackio(tracker_poses, t2s, c2t, lens, out_path, session_estimate=session_estimate,
-                               frame=frame)
-        return OperationOutput(data={"output": out_path, "samples": n, "session_estimate": session_estimate},
-                               text=f"Exported {n} OpenTrackIO samples → {out_path}")
+                               frame=frame, applied_delay_ms=delay_ms)
+        text = f"Exported {n} OpenTrackIO samples → {out_path}"
+        if delay_ms is not None:
+            text += f" (delay-compensated {delay_ms:+.1f} ms; flagged in tracker.notes)"
+        return OperationOutput(data={"output": out_path, "samples": n, "session_estimate": session_estimate,
+                                     "applied_delay_ms": delay_ms},
+                               text=text)
 
     run_operation("export.opentrackio", body, **flags)
 

@@ -166,6 +166,13 @@ fn locate(sidecar: Sidecar) -> VoloResult<PathBuf> {
     )))
 }
 
+/// Resolve a sidecar binary path by its CLI name (`"vpcal"` / `"tracksim"`).
+/// Shared with `sidecar_stream` so the long-running streaming bridge uses the
+/// exact same binary-resolution precedence as the one-shot `spawn_sidecar`.
+pub(crate) fn locate_by_name(name: &str) -> VoloResult<PathBuf> {
+    locate(Sidecar::parse(name)?)
+}
+
 /// Result of running a sidecar once: its exit code plus captured streams.
 #[derive(Serialize)]
 pub struct SidecarOutput {

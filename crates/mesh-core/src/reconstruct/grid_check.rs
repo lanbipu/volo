@@ -144,6 +144,22 @@ pub fn residual_stats_mm(residuals_mm: &[f64]) -> Option<(f64, f64)> {
     Some((rms, sorted[idx]))
 }
 
+/// Minimum total measured-point count below which `estimated_rms_mm` /
+/// `estimated_p95_mm` are not reported, even when a holdout residual
+/// happens to be available — a CV estimate from a handful of points isn't
+/// a meaningful accuracy claim (M1 uncertainty-ledger fix, item 2).
+pub const MIN_MEASURED_FOR_CV_STATS: usize = 8;
+
+/// [`residual_stats_mm`] gated on total measured-point count: `None` when
+/// `total_measured < MIN_MEASURED_FOR_CV_STATS`, independent of whether
+/// `residuals_mm` itself is non-empty.
+pub fn cv_residual_stats_mm(residuals_mm: &[f64], total_measured: usize) -> Option<(f64, f64)> {
+    if total_measured < MIN_MEASURED_FOR_CV_STATS {
+        return None;
+    }
+    residual_stats_mm(residuals_mm)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,5 +205,12 @@ mod tests {
         assert!((p95 - 19.0).abs() < 1e-9, "p95={p95}");
         assert!(rms > 11.0 && rms < 13.0, "rms={rms}");
         assert!(residual_stats_mm(&[]).is_none());
+    }
+
+    #[test]
+    fn cv_residual_stats_gated_on_measured_count() {
+        let r = vec![1.0, 2.0, 3.0];
+        assert!(cv_residual_stats_mm(&r, 7).is_none(), "7 measured points is below the 8 floor");
+        assert!(cv_residual_stats_mm(&r, 8).is_some());
     }
 }

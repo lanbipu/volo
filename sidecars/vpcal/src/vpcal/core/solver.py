@@ -252,7 +252,23 @@ def _solve_cpp(
         )
         for o in observations
     ]
-    lens = cpp.LensParams(intr.fx, intr.fy, intr.cx, intr.cy, intr.k1, intr.k2, intr.k3, intr.p1, intr.p2)
+    try:
+        lens = cpp.LensParams(
+            intr.fx, intr.fy, intr.cx, intr.cy, intr.k1, intr.k2, intr.k3, intr.p1, intr.p2,
+            intr.entrance_pupil_offset_mm,
+        )
+    except TypeError:
+        # Old prebuilt module without entrance_pupil_offset_mm (W8): a zero
+        # offset is bit-identical to omitting it, so fall back silently; a
+        # non-zero offset would be silently dropped, so refuse instead.
+        if intr.entrance_pupil_offset_mm != 0.0:
+            raise RuntimeError(
+                "compiled C++ solver predates entrance_pupil_offset_mm (W8); "
+                "rebuild the module or use the scipy backend"
+            ) from None
+        lens = cpp.LensParams(
+            intr.fx, intr.fy, intr.cx, intr.cy, intr.k1, intr.k2, intr.k3, intr.p1, intr.p2,
+        )
     timeout = float(timeout_seconds) if timeout_seconds else 300.0
     try:
         cfg = cpp.SolverConfig(

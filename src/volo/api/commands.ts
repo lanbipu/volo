@@ -10,7 +10,7 @@
      🔌 ui-sim —— 前端有对应 UI 入口（按钮/面板/流程），当前 runTask 模拟或读 mock，
                   待接真实 invoke（wire-target）
      📝 no-ui  —— 当前设计无对应 UI 承载点（后端-only 能力）；附原因，不强造 UI
-   现状汇总：✅ 48 · 🔌 0 · 📝 39 = 87。 */
+   现状汇总：✅ 49 · 🔌 0 · 📝 39 = 88。 */
 import { call } from "./invoke";
 import type {
   Machine, MachineDetail, UeRuntimeUserRow, WinrmBootstrapResult, PackageBootstrapResult, EchoResult,
@@ -56,6 +56,10 @@ export const packageSshBootstrap = (out: string, localAdminPassword?: string | n
   call<PackageBootstrapResult>("package_ssh_bootstrap", { out, localAdminPassword: localAdminPassword ?? null });
 // ✅ wired: UsbPackPanel「浏览…」→ pickDirectory（原生目录选择器，取消返回 null）
 export const pickDirectory = () => call<string | null>("pick_directory");
+// ✅ wired: Calibrate Lens 段「选择 session 配置」（零参 = Session Config/json 过滤）+ Calibrate mesh 段
+// 「打开项目」(yaml)/「导入 CSV」(csv) → pickFile（原生文件选择器，取消返回 null）
+export const pickFile = (filterName?: string, filterExtensions?: string[]) =>
+  call<string | null>("pick_file", { filterName: filterName ?? null, filterExtensions: filterExtensions ?? null });
 // ✅ wired: UsbPackPanel 成功态「在文件夹中显示」→ revealPath（系统文件管理器定位）
 export const revealPath = (path: string) => call<void>("reveal_path", { path });
 // 📝 no-ui: PowerShell 桥诊断用，无 UI 承载点

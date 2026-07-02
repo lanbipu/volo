@@ -632,6 +632,375 @@ def simulate_dataset(
     }
 
 
+# ── Marker-map (AR path) synthesis — plan Phase A4 ───────────────────
+#
+# The marker map's coordinates ARE the right-hand stage frame (no UE
+# conversion); tracking is emitted in the internal frame and the session
+# declares coordinate_system = "vicon" (passthrough), mirroring the screen
+# path's convention above.
+
+
+def _quad_normal(corners: Array) -> Array:
+    """Outward normal of a marker quad (TL, TR, BR, BL) — points at the viewer.
+
+    With (right, up, normal) right-handed: (TR−TL) ∝ right, (TL−BL) ∝ up,
+    so normal = (TR−TL) × (TL−BL).
+    """
+    n = np.cross(corners[1] - corners[0], corners[0] - corners[3])
+    norm = np.linalg.norm(n)
+    return n / norm if norm > 0 else np.array([0.0, 0.0, 1.0])
+
+
+def _marker_map_items(marker_map) -> list[tuple[object, Array, Array | None]]:
+    """(PhysicalMarkerId, world_rh, outward normal|None) per correspondence point."""
+    from vpcal.core.observations import PhysicalMarkerId
+
+    items: list[tuple[object, Array, Array | None]] = []
+    for m in marker_map.markers:
+        corners = m.resolved_corners()
+        if corners is not None:
+            n = _quad_normal(corners)
+            for k in range(4):
+                items.append((PhysicalMarkerId(m.marker_id, k), corners[k], n))
+        else:
+            items.append((PhysicalMarkerId(m.marker_id, -1), m.resolved_center(), None))
+    return items
+
+
+def generate_poses_for_points(
+    points: Array, num_poses: int, rng: np.random.Generator,
+    *, trajectory: bool = False, preferred_normal: Array | None = None,
+) -> list[Array]:
+    """Camera-in-stage poses looking at an arbitrary marker point cloud.
+
+    Mirrors :func:`generate_camera_poses` / :func:`generate_trajectory_poses`
+    but takes raw points (the marker map has no screen sections).
+    ``preferred_normal`` picks the standoff side (e.g. the mean marker facing
+    direction); otherwise the side facing more points is chosen.
+    """
+    center = points.mean(axis=0)
+    _u, s, vt = np.linalg.svd(points - center, full_matrices=True)
+    tangent_u, tangent_v, normal = vt[0], vt[1], vt[2]
+    in_plane_extent = float(2.0 * s[0] / np.sqrt(max(len(points) - 1, 1)))
+    radius = max(in_plane_extent * 0.9, 1500.0)
+    if preferred_normal is not None and float(preferred_normal @ normal) < 0:
+        normal = -normal
+    elif preferred_normal is None and _front_count(points, center + radius * normal, center) < _front_count(
+        points, center - radius * normal, center
+    ):
+        normal = -normal
+
+    poses = []
+    if trajectory:
+        phase0 = float(rng.uniform(0.0, 2.0 * np.pi))
+        for k in range(num_poses):
+            u = (k / max(num_poses - 1, 1)) - 0.5
+            lateral = 0.6 * u * in_plane_extent
+            vertical = 0.12 * np.sin(phase0 + 2.0 * np.pi * u) * in_plane_extent
+            depth = radius * (1.0 + 0.05 * np.cos(phase0 + np.pi * u))
+            eye = center + depth * normal + lateral * tangent_u + vertical * tangent_v
+            target = center + 0.05 * u * in_plane_extent * tangent_u
+            poses.append(_look_at(eye, target))
+        return poses
+    for _ in range(num_poses):
+        depth = radius * (1.0 + rng.uniform(-0.1, 0.1))
+        lateral = rng.uniform(-0.35, 0.35) * in_plane_extent
+        vertical = rng.uniform(-0.25, 0.25) * in_plane_extent
+        eye = center + depth * normal + lateral * tangent_u + vertical * tangent_v
+        target = center + rng.uniform(-0.1, 0.1, size=3) * in_plane_extent
+        poses.append(_look_at(eye, target))
+    return poses
+
+
+def forward_observations_marker_map(
+    marker_map,
+    intr: CameraIntrinsics,
+    gt: GroundTruth,
+    camera_poses: list[Array],
+    *,
+    noise_px: float = 0.0,
+    outlier_ratio: float = 0.0,
+    rng: np.random.Generator | None = None,
+    tracker_noise_mm: float = 0.0,
+    tracker_noise_deg: float = 0.0,
+    temporal_offset_frames: float = 0.0,
+) -> tuple[list[Observation], list[tuple[Array, Array]]]:
+    """Project the marker map's correspondence points for each camera pose.
+
+    Same error-budget contract as :func:`forward_observations`: the corruption
+    knobs touch only the *reported* tracker pose, never the pixels.  Quad
+    markers facing away from the camera are culled (no occlusion model beyond
+    back-face culling — sufficient for boards and calibration cubes).
+    """
+    rng = rng or np.random.default_rng(0)
+    T_S_from_O = make_transform(gt.tracker_to_stage_q, gt.tracker_to_stage_t)
+    T_C_from_B = make_transform(gt.camera_from_tracker_q, gt.camera_from_tracker_t)
+    inv_T_S_from_O = invert_transform(T_S_from_O)
+
+    items = _marker_map_items(marker_map)
+    w, h = _intr_image_size(intr)
+    observations: list[Observation] = []
+    tracker_poses: list[tuple[Array, Array]] = []
+    for frame_id, T_S_from_C in enumerate(camera_poses):
+        T_sdk = compose(inv_T_S_from_O, T_S_from_C, T_C_from_B)
+        if temporal_offset_frames != 0.0:
+            sampled = _interp_camera_pose(camera_poses, frame_id + temporal_offset_frames)
+            T_sdk_report = compose(inv_T_S_from_O, sampled, T_C_from_B)
+        else:
+            T_sdk_report = T_sdk
+        q_rep = matrix_to_quat(T_sdk_report[:3, :3])
+        t_rep = T_sdk_report[:3, 3].copy()
+        if tracker_noise_mm > 0.0 or tracker_noise_deg > 0.0:
+            q_rep, t_rep = _perturb_tracker_pose(q_rep, t_rep, tracker_noise_mm, tracker_noise_deg, rng)
+        tracker_poses.append((q_rep, t_rep))
+
+        T_C_from_S = stage_to_camera_transform(T_S_from_O, T_sdk, T_C_from_B)
+        eye = T_S_from_C[:3, 3]
+        for mid, world, normal in items:
+            if normal is not None and float(normal @ (eye - world)) <= 0.0:
+                continue  # back-facing quad
+            pc = apply_transform(T_C_from_S, world)
+            if pc[2] <= 1.0:
+                continue
+            uv = _project_one(pc, intr)
+            if not (0 <= uv[0] < w and 0 <= uv[1] < h):
+                continue
+            noisy = uv.copy()
+            if noise_px > 0:
+                noisy = uv + rng.normal(0.0, noise_px, size=2)
+            if outlier_ratio > 0 and rng.random() < outlier_ratio:
+                noisy = np.array([rng.uniform(0, w), rng.uniform(0, h)])
+            observations.append(
+                Observation(
+                    pixel_u=float(noisy[0]), pixel_v=float(noisy[1]),
+                    world_rh=tuple(world), track_q=tuple(q_rep), track_t=tuple(t_rep),
+                    frame_id=frame_id, marker_id=mid,
+                )
+            )
+    return observations, tracker_poses
+
+
+_TAG_RENDER_PX = 120
+_QUIET_ZONE_SCALE = 1.4  # white quiet-zone quad, scaled about the tag centre
+
+
+def render_marker_map_frame(
+    marker_map,
+    intr: CameraIntrinsics,
+    gt: GroundTruth,
+    tracker_pose: tuple[Array, Array],
+    *,
+    background: int = 64,
+) -> NDArray[np.uint8]:
+    """Render one synthetic camera image of the physical marker field.
+
+    Each detectable tag is drawn as its cv2.aruco bit pattern warped onto the
+    projected quad, inside a white quiet-zone quad (printed-tag look).
+    """
+    import cv2
+
+    from vpcal.core.detector_physical import resolve_dictionary
+
+    iw, ih = intr.image_size
+    w, h = int(round(iw)), int(round(ih))
+    image = np.full((h, w), background, dtype=np.uint8)
+    T_S_from_O = make_transform(gt.tracker_to_stage_q, gt.tracker_to_stage_t)
+    T_C_from_B = make_transform(gt.camera_from_tracker_q, gt.camera_from_tracker_t)
+    T_sdk = make_transform(tracker_pose[0], tracker_pose[1])
+    T_C_from_S = stage_to_camera_transform(T_S_from_O, T_sdk, T_C_from_B)
+    eye = camera_in_stage_pose_eye(T_S_from_O, T_sdk, T_C_from_B)
+
+    n_px = _TAG_RENDER_PX
+    src = np.array([[0, 0], [n_px - 1, 0], [n_px - 1, n_px - 1], [0, n_px - 1]], np.float32)
+    for m in marker_map.detectable_markers():
+        tag = m.resolved_tag_id()
+        if m.dictionary is None or tag is None:
+            continue
+        corners = m.resolved_corners()
+        if float(_quad_normal(corners) @ (eye - corners.mean(axis=0))) <= 0.0:
+            continue
+        cam = apply_transform(T_C_from_S, corners)
+        if np.any(cam[:, 2] <= 1.0):
+            continue
+        px = np.array([_project_one(c, intr) for c in cam], dtype=np.float32)
+        if px[:, 0].min() < -50 or px[:, 0].max() > w + 50 or px[:, 1].min() < -50 or px[:, 1].max() > h + 50:
+            continue
+        side = np.linalg.norm(px[0] - px[1]) + np.linalg.norm(px[1] - px[2])
+        if side < 40:
+            continue
+        centre = corners.mean(axis=0)
+        quiet = centre + (corners - centre) * _QUIET_ZONE_SCALE
+        quiet_px = np.array(
+            [_project_one(apply_transform(T_C_from_S, qc), intr) for qc in quiet], dtype=np.int32
+        )
+        cv2.fillConvexPoly(image, quiet_px, 255)
+        tmpl = cv2.aruco.generateImageMarker(resolve_dictionary(m.dictionary), tag, n_px)
+        H = cv2.getPerspectiveTransform(src, px)
+        warped = cv2.warpPerspective(
+            tmpl, H, (w, h), flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_TRANSPARENT, dst=image,
+        )
+        image = warped
+    return image
+
+
+def camera_in_stage_pose_eye(T_S_from_O: Array, T_sdk: Array, T_C_from_B: Array) -> Array:
+    """Camera position in the stage frame (for back-face culling)."""
+    from vpcal.core.transforms import camera_in_stage_transform
+
+    return camera_in_stage_transform(T_S_from_O, T_sdk, T_C_from_B)[:3, 3]
+
+
+def simulate_marker_map_dataset(
+    marker_map,
+    out_dir: str | Path,
+    *,
+    num_poses: int = 10,
+    noise_px: float = 0.0,
+    outlier_ratio: float = 0.0,
+    lens: LensProfile | None = None,
+    seed: int = 0,
+    render_images: bool = True,
+    trajectory: bool = False,
+    temporal_offset_frames: float = 0.0,
+    tracker_noise_mm: float = 0.0,
+    tracker_noise_deg: float = 0.0,
+    handeye_perturbation: tuple[float, float] | None = None,
+    holdout_ratio: float | None = None,
+    fps: float = 30.0,
+) -> dict:
+    """Generate a full synthetic AR session on disk (marker-map path).
+
+    Writes session.json (with ``marker_map`` instead of ``screen``),
+    marker_map.json, tracking/poses.jsonl, captures/ PNGs (rendered tags),
+    exact observations.jsonl and ground_truth.json — the marker-map analogue
+    of :func:`simulate_dataset`.
+    """
+    import cv2
+
+    from vpcal.io.marker_map_io import save_marker_map
+    from vpcal.io.tracking_io import write_tracking
+    from vpcal.models.tracking import RotationData, RotationOrder, TrackingFrame
+
+    out = Path(out_dir)
+    (out / "captures" / "normal").mkdir(parents=True, exist_ok=True)
+    (out / "tracking").mkdir(parents=True, exist_ok=True)
+
+    lens = lens or default_lens()
+    intr = CameraIntrinsics.from_lens(lens)
+    rng = np.random.default_rng(seed)
+    gt = random_ground_truth(rng)
+    if handeye_perturbation is not None:
+        rot_deg, trans_mm = handeye_perturbation
+        axis = rng.normal(size=3)
+        axis /= np.linalg.norm(axis)
+        half = np.radians(rot_deg) / 2.0
+        gt.camera_from_tracker_q = [float(np.cos(half)), *(float(x) for x in np.sin(half) * axis)]
+        t_dir = rng.normal(size=3)
+        t_dir /= np.linalg.norm(t_dir)
+        gt.camera_from_tracker_t = [float(x) for x in trans_mm * t_dir]
+
+    items = _marker_map_items(marker_map)
+    points = np.array([w for _mid, w, _n in items])
+    normals = [n for _mid, _w, n in items if n is not None]
+    preferred = None
+    if normals:
+        mean_n = np.mean(normals, axis=0)
+        if np.linalg.norm(mean_n) > 1e-6:
+            preferred = mean_n / np.linalg.norm(mean_n)
+    poses = generate_poses_for_points(
+        points, num_poses, rng, trajectory=trajectory, preferred_normal=preferred
+    )
+
+    eff_offset = temporal_offset_frames if trajectory else 0.0
+    if temporal_offset_frames != 0.0 and not trajectory:
+        import warnings
+        warnings.warn(
+            "temporal_offset_frames ignored without trajectory=True (static holds "
+            "are timing-immune by construction)", stacklevel=2,
+        )
+    observations, tracker_poses = forward_observations_marker_map(
+        marker_map, intr, gt, poses,
+        noise_px=noise_px, outlier_ratio=outlier_ratio, rng=rng,
+        tracker_noise_mm=tracker_noise_mm, tracker_noise_deg=tracker_noise_deg,
+        temporal_offset_frames=eff_offset,
+    )
+
+    frames = []
+    for fid, (q, t) in enumerate(tracker_poses):
+        frames.append(
+            TrackingFrame(
+                frame_id=fid, timestamp_s=fid / fps, position=[float(x) for x in t],
+                rotation=RotationData(order=RotationOrder.QUATERNION, values=[float(x) for x in q]),
+                confidence=1.0,
+            )
+        )
+    write_tracking(frames, out / "tracking" / "poses.jsonl")
+    save_marker_map(marker_map, out / "marker_map.json")
+
+    with (out / "observations.jsonl").open("w") as fh:
+        for o in observations:
+            fh.write(json.dumps({
+                "frame_id": o.frame_id,
+                "marker_id": o.marker_id.to_dict(),
+                "pixel_u": o.pixel_u,
+                "pixel_v": o.pixel_v,
+                "confidence": 1.0,
+            }) + "\n")
+
+    if render_images:
+        # Render from the TRUE per-frame pose (same rationale as the screen path:
+        # pixels must reflect true geometry, not the corrupted reported pose).
+        T_S_from_O = make_transform(gt.tracker_to_stage_q, gt.tracker_to_stage_t)
+        T_C_from_B = make_transform(gt.camera_from_tracker_q, gt.camera_from_tracker_t)
+        inv_T_S_from_O = invert_transform(T_S_from_O)
+        for fid, T_S_from_C in enumerate(poses):
+            T_sdk_true = compose(inv_T_S_from_O, T_S_from_C, T_C_from_B)
+            tp_true = (matrix_to_quat(T_sdk_true[:3, :3]), T_sdk_true[:3, 3].copy())
+            img = render_marker_map_frame(marker_map, intr, gt, tp_true)
+            cv2.imwrite(str(out / "captures" / "normal" / f"{fid:04d}.png"), img)
+
+    session = {
+        "images": {"path": "./captures/", "format": "png"},
+        "tracking": {"path": "./tracking/poses.jsonl", "coordinate_system": "vicon", "frame_matching": "frame_id"},
+        "marker_map": {"path": "./marker_map.json"},
+        "lens": lens.model_dump(mode="json", exclude={"fx", "fy", "cx", "cy"}),
+        "solver": {"refine_tracker_to_camera": False, "robust_loss": "huber", "robust_loss_scale": 1.0,
+                   "max_iterations": 200, "timeout_seconds": 300},
+        "capture_mode": "legacy",
+        "_simulator": {
+            "render_images": render_images, "noise_px": noise_px,
+            "tracker_noise_mm": tracker_noise_mm, "tracker_noise_deg": tracker_noise_deg,
+            "temporal_offset_frames": temporal_offset_frames, "trajectory": trajectory,
+            "fps": fps, "marker_map": True,
+        },
+    }
+    if holdout_ratio is not None:
+        if not (0.0 < holdout_ratio < 1.0):
+            raise ValueError(f"holdout_ratio must be in (0, 1), got {holdout_ratio}")
+        session["validation"] = {"holdout_ratio": holdout_ratio}
+    (out / "session.json").write_text(json.dumps(session, indent=2))
+
+    gt_doc = {
+        "tracker_to_stage": {"rotation": gt.tracker_to_stage_q, "translation": gt.tracker_to_stage_t},
+        "camera_from_tracker": {"rotation": gt.camera_from_tracker_q, "translation": gt.camera_from_tracker_t},
+        "num_poses": num_poses,
+        "num_observations": len(observations),
+        "noise_px": noise_px,
+        "outlier_ratio": outlier_ratio,
+        "temporal_offset_frames": temporal_offset_frames,
+        "fps": fps,
+    }
+    (out / "ground_truth.json").write_text(json.dumps(gt_doc, indent=2))
+
+    return {
+        "output_dir": str(out),
+        "num_poses": num_poses,
+        "num_observations": len(observations),
+        "ground_truth": gt_doc["tracker_to_stage"],
+    }
+
+
 def simulate_from_config(
     screen: ScreenDefinition,
     out_dir: str | Path,

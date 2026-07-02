@@ -9,8 +9,8 @@
 | 步骤 | 内容 | 状态 |
 |---|---|---|
 | **C1.1** | 追踪实时接入（FreeD UDP / OpenTrackIO 监听，录带 timestamp 的 tracking 流） | ✅ **已实现** |
-| **C1.2** | 视频流取流（SDI/NDI/UVC 采集帧，按接收时戳与追踪流配对） | ⛔ 需采集卡硬件，已搭骨架 |
-| **C1.3** | 图案播放同步（驱动输出窗口/LED processor 播放 pattern，内嵌 Gray code 序号） | ⛔ 需显示输出硬件，已搭骨架 |
+| **C1.2** | 视频流取流（SDI/NDI/UVC 采集帧，按接收时戳与追踪流配对） | ✅ **软件路径已实现**（`capture video` / `capture session`，backend 抽象 uvc/synthetic 可用；ndi 待 spike、decklink 需本地 SDK——真机项见 `decklink-bench-checklist.md`） |
+| **C1.3** | 图案播放同步（驱动输出窗口/LED processor 播放 pattern，内嵌 Gray code 序号） | ✅ **软件路径已实现**（Volo 播放器窗口 + `pattern generate --graycode-tags` + `capture session` 的 `request_pattern`/`pattern_ready` 闭环与 Gray code 校验） |
 
 ## C1.1 追踪实时接入（已实现）
 
@@ -28,18 +28,28 @@ vpcal capture track --protocol opentrackio --port 6301 --duration 30 --out poses
 - 时戳基准为首包（相对秒）；非法包跳过；`--max-packets` 可定量截断。
 - 这让 `timestamp` 帧匹配策略**真正可达**，替代文件名尾号约定（`frame_matching.py` 降级为离线兜底）。
 
-## C1.2 视频流取流（硬件阻塞，已搭骨架）
+## C1.2 视频流取流（已实现，软件路径）
 
-`vpcal capture video` 当前抛 `PreconditionError`（"requires capture/display hardware"）。
-落地需要：SDI/NDI/UVC 采集设备 + 取流后端（如 PyAV/NDI SDK）。设计要点：
-- 与 C1.1 追踪流**按接收时戳配对**（让 timestamp 匹配替代文件名约定）；
-- 每帧落盘 + 记录采集时戳。
+```bash
+# 取流（synthetic/uvc 零硬件即可跑；--preview-port 起 localhost MJPEG/WS 预览）
+vpcal capture video --backend uvc --device 0 --duration 10 --out frames/ --preview-port 0
 
-## C1.3 图案播放同步（硬件阻塞，已搭骨架）
+# 闭环采集会话（settle→burst→detect→advance 状态机，自动组装 quick-run 兼容 session）
+vpcal capture session --screen screen.json --out session/ --backend uvc \
+    --track-protocol freed --track-port 6301 --poses 8 --lens lens.json --preview-port 0
+```
 
-`vpcal capture playback` 当前抛 `PreconditionError`。落地需要：输出窗口 / LED processor 链路。设计要点：
-- 按序播放 pattern（normal/inverted 对、多 pose 引导 UI）；
-- 帧内嵌 **Gray code 序号**供视频流侧识别当前 pattern → 全程零手工拷贝。
+- 后端抽象 `core/capture_backend.py`：`synthetic`（开发/CI）、`uvc`（cv2，含 SDI/HDMI→USB3 转换器）、`ndi`（cyndilib spike 待做，缺依赖给引导性 PreconditionError）、`decklink`（`src/vpcal_capture/` C++ shim，需本地 SDK，真机验收见 `decklink-bench-checklist.md`）；
+- 与 C1.1 追踪流**按接收时戳配对**（同一 `time.monotonic()` 时钟域，`core/tracking_listener.py`），持久化产物用 `frame_id` 1:1 对应（live 配对已在会话内完成，`frame_matching` 文件名路径就此降级为离线兜底）；
+- 每 pose 连拍平均、全质量 PNG 落盘（10-bit 源保 16-bit，`core/v210.py`）；预览流独立降采样 JPEG（`core/preview_server.py`），校正链零有损再压缩；
+- 每 pose 即时 detect + coverage 增量反馈（NDJSON 事件 `detect_feedback` / `coverage_update`），事件流契约见 `vpcal capture session --help`。
+
+## C1.3 图案播放同步（已实现，软件路径）
+
+播放器本体在 Volo（Tauri 第二窗口，`src-tauri/src/commands/player.rs` + `#/pattern-player` 页）；vpcal 侧：
+- `vpcal pattern generate --graycode-tags`：pattern 四角嵌 **Gray code 序号块**（`core/graycode.py`，SYNC 双格同时携带 normal/inverted 极性）；
+- `capture session` 通过事件 `request_pattern` 请求切图、stdin `{"cmd":"pattern_ready",…}` 回执确认；`--graycode-sync` 时另以帧内 Gray code 解码佐证 → normal/inverted 双帧全自动、零手工拷贝。
+- `vpcal capture playback` 保留为指路桩（播放职责已移交 Volo 播放器窗口）。
 
 ## 验收（M3）
 
@@ -47,4 +57,7 @@ vpcal capture track --protocol opentrackio --port 6301 --duration 30 --out poses
 - `frame_matching` 文件名路径降级为离线兜底模式。
 
 C1.1 的合成包回归测试见 `tests/integration/test_capture.py`（FreeD 编解码、单元换算、UDP loopback）。
-C1.2/C1.3 的验收需在接入真实采集卡 / 显示输出后补充。
+C1.2/C1.3 的软件路径回归测试见 `tests/integration/test_capture_session.py`（合成源 + FreeD UDP
+回环端到端：状态机 → session 组装 → `quick run` validate/detect 消费）、
+`tests/integration/test_preview_server.py`、`tests/unit/test_{capture_backend,graycode,v210}.py`。
+真实采集卡 / LED 链路的验收项见 `decklink-bench-checklist.md`，由现场执行。

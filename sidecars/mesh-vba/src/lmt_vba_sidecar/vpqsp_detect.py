@@ -22,6 +22,20 @@ assembly is near-identical:
              "corner_px": [x, y]}]}
 
 The Gaussian centroid is the load-bearing sub-pixel measurement fed to BA.
+
+W5 (2026-07-02): re-ported vpcal's A2.2 normal/inverted signed-difference
+centroid (sidecars/vpcal/src/vpcal/core/detector.py, same date) — FIX-8 had
+removed the `inverted` parameter as dead code (no producer ever generated an
+inverted frame), which also meant no signed-difference cancellation of
+ambient-light gradients existed here. vpqsp_pattern now emits an inverted
+companion of every pattern image; ``detect_markers_image``/``detect_vpqsp_markers``
+below take it as an optional input and, when supplied, sample cell values and
+the centroid from ``int16(normal) − int16(inverted)`` instead of the raw
+normal frame — ambient gradients cancel exactly (a saturating ``cv2.subtract``
+would clip the negative half, so the diff is done in signed int16/float32).
+Segmentation (contour finding) only needs the positive half, so it keeps using
+the clipped uint8 image. With no inverted frame supplied, behaviour is
+unchanged from before this port (single-frame, undifferenced).
 """
 
 from __future__ import annotations
@@ -81,8 +95,12 @@ def _threshold(gray: NDArray[np.uint8]) -> NDArray[np.uint8]:
     return cv2.morphologyEx(th, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
 
 
-def _sample_cellgrid(rect: NDArray[np.uint8]) -> NDArray[np.int_]:
-    """Sample the GRID×GRID cell value grid from a rectified marker panel image."""
+def _sample_cellgrid(rect: NDArray[np.floating] | NDArray[np.uint8]) -> NDArray[np.int_]:
+    """Sample the GRID×GRID cell value grid from a rectified marker panel image.
+
+    ``rect`` may be the signed (possibly negative) normal-inverted difference
+    when differencing is active — cell means and the max/min threshold split
+    are sign-agnostic, so this works unchanged on a float32 signed input."""
     n = GRID * _CANON_CELL_PX
     margin = int(round(n * _MARGIN_FRAC))
     panel = rect[margin : n - margin, margin : n - margin]
@@ -100,12 +118,18 @@ def _sample_cellgrid(rect: NDArray[np.uint8]) -> NDArray[np.int_]:
     return (vals > thresh).astype(int)
 
 
-def _decode_quad(gray: NDArray[np.uint8], corners: NDArray[np.float64]) -> VpqspMarkerId | None:
-    """Rectify a quad and decode its marker id over the 4 orientations."""
+def _decode_quad(
+    sample_src: NDArray[np.float32] | NDArray[np.uint8], corners: NDArray[np.float64]
+) -> VpqspMarkerId | None:
+    """Rectify a quad and decode its marker id over the 4 orientations.
+
+    ``sample_src`` is the signed normal-inverted difference image (float32, may
+    contain negatives) when differencing is active, else the plain grayscale
+    frame — ``cv2.warpPerspective`` accepts either dtype unchanged."""
     n = GRID * _CANON_CELL_PX
     dst = np.array([[0, 0], [n - 1, 0], [n - 1, n - 1], [0, n - 1]], dtype=np.float32)
     H = cv2.getPerspectiveTransform(corners.astype(np.float32), dst)
-    rect = cv2.warpPerspective(gray, H, (n, n))
+    rect = cv2.warpPerspective(sample_src, H, (n, n))
     grid = _sample_cellgrid(rect)
     for k in range(4):
         g = np.rot90(grid, k)
@@ -129,9 +153,14 @@ def _diagonal_intersection(corners: NDArray[np.float64]) -> NDArray[np.float64]:
 
 
 def _subpixel_center(
-    gray: NDArray[np.uint8], corners: NDArray[np.float64]
+    gray: NDArray[np.float32] | NDArray[np.uint8], corners: NDArray[np.float64]
 ) -> tuple[float, float, float]:
     """Intensity-weighted centroid of the central locator dot.
+
+    ``gray`` is the signed normal-inverted difference image when differencing
+    is active — ambient gradients cancel there, keeping the centroid unbiased
+    (A2.2, ported from sidecars/vpcal/src/vpcal/core/detector.py::
+    _subpixel_center as of 2026-07-02).
 
     Returns (u, v, sigma_px) where sigma_px is an observation uncertainty
     estimate derived from the blob's SNR and pixel count (FIX-25).
@@ -184,21 +213,42 @@ def _subpixel_center(
 def detect_markers_image(
     image: NDArray[np.uint8],
     *,
+    inverted: NDArray[np.uint8] | None = None,
     config: VpqspDetectorConfig | None = None,
-) -> list[tuple[VpqspMarkerId, float, float]]:
+) -> list[tuple[VpqspMarkerId, float, float, float]]:
     """Detect + decode VP-QSP markers in one image.
 
-    Returns one (marker_id, u, v) per CRC-valid decoded marker; the (u, v) is
-    the sub-pixel Gaussian centroid. (FIX-8: the former `inverted` differencing
-    parameter was dead code — no producer ever generated inverted frames — and
-    was removed rather than left half-alive; see the design doc's deferred
-    list.)
+    Returns one (marker_id, u, v, sigma_px) per CRC-valid decoded marker; the
+    (u, v) is the sub-pixel Gaussian centroid.
+
+    ``inverted`` (optional) is the same scene with the pattern's normal/inverted
+    frames swapped (see vpqsp_pattern's ``*_inverted.png`` outputs). When given,
+    cell sampling, decode and the centroid all run on the signed difference
+    ``int16(image) − int16(inverted)`` instead of the raw frame — ambient-light
+    gradients cancel there instead of biasing the intensity-weighted centroid
+    (A2.2, re-ported from sidecars/vpcal/src/vpcal/core/detector.py as of
+    2026-07-02; FIX-8 had removed this as dead code because no producer emitted
+    an inverted frame — that gap is what vpqsp_pattern's new inverted output
+    closes). A saturating ``cv2.subtract`` would clip the negative half, so the
+    diff is computed in signed int16/float32. Segmentation (contour finding)
+    only needs the positive half, so it keeps using the clipped uint8 image.
+    With ``inverted=None`` behaviour is unchanged from the single-frame path.
     """
     cfg = config or VpqspDetectorConfig()
     gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     gray = gray.astype(np.uint8)
 
-    binary = _threshold(gray)
+    if inverted is not None:
+        inv = inverted if inverted.ndim == 2 else cv2.cvtColor(inverted, cv2.COLOR_BGR2GRAY)
+        inv = inv.astype(np.uint8)
+        signed = gray.astype(np.int16) - inv.astype(np.int16)
+        seg_src = np.clip(signed, 0, 255).astype(np.uint8)
+        sample_src = signed.astype(np.float32)
+    else:
+        seg_src = gray
+        sample_src = gray.astype(np.float32)
+
+    binary = _threshold(seg_src)
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     img_area = gray.shape[0] * gray.shape[1]
     out: list[tuple[VpqspMarkerId, float, float, float]] = []
@@ -216,10 +266,10 @@ def detect_markers_image(
         if approx is None:
             continue
         corners = _order_corners(approx.reshape(4, 2).astype(np.float64))
-        marker = _decode_quad(gray, corners)
+        marker = _decode_quad(sample_src, corners)
         if marker is None:
             continue
-        u, v, sigma = _subpixel_center(gray, corners)
+        u, v, sigma = _subpixel_center(sample_src, corners)
         out.append((marker, u, v, sigma))
     return out
 
@@ -227,6 +277,7 @@ def detect_markers_image(
 def detect_vpqsp_markers(
     image_paths: list[str],
     *,
+    inverted_image_paths: list[str | None] | None = None,
     screen_id_code: int | None = None,
     config: VpqspDetectorConfig | None = None,
 ) -> dict[str, list[dict]]:
@@ -237,15 +288,33 @@ def detect_vpqsp_markers(
     different screen are dropped (multi-screen Volume disambiguation); None keeps
     all. Unreadable images yield an empty list (not an exception), matching
     detect_charuco_corners' tolerance.
+
+    ``inverted_image_paths`` (optional) is a list parallel to ``image_paths``
+    (same length); entry ``i`` is the inverted companion capture for
+    ``image_paths[i]``, or ``None`` if that view has no inverted sibling —
+    detection for that image then falls back to the undifferenced path (A2.2,
+    see ``detect_markers_image``). There is currently no capture-manifest
+    convention for pairing normal/inverted paths per view, so callers must
+    supply this list explicitly; it is not derived automatically from a
+    CaptureView's ``images`` list.
     """
+    if inverted_image_paths is not None and len(inverted_image_paths) != len(image_paths):
+        raise ValueError(
+            f"inverted_image_paths length {len(inverted_image_paths)} != "
+            f"image_paths length {len(image_paths)}"
+        )
     out: dict[str, list[dict]] = {}
-    for path in image_paths:
+    for i, path in enumerate(image_paths):
         img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
         if img is None:
             out[path] = []
             continue
+        inv_img = None
+        inv_path = inverted_image_paths[i] if inverted_image_paths is not None else None
+        if inv_path is not None:
+            inv_img = cv2.imread(inv_path, cv2.IMREAD_GRAYSCALE)
         observations: list[dict] = []
-        for marker, u, v, sigma in detect_markers_image(img, config=config):
+        for marker, u, v, sigma in detect_markers_image(img, inverted=inv_img, config=config):
             if screen_id_code is not None and marker.screen_id != screen_id_code:
                 continue
             observations.append({

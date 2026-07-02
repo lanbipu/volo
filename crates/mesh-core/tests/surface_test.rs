@@ -21,6 +21,7 @@ fn surface_construction_holds_consistent_sizes() {
         uv_coords: uvs,
         quality_metrics: QualityMetrics::default(),
         scatter_fit: None,
+        vertex_provenance: vec![],
     };
 
     assert_eq!(surf.vertices.len(), n_verts);
@@ -87,6 +88,7 @@ fn reconstructed_surface_yaml_round_trips_vectors() {
         ],
         quality_metrics: QualityMetrics::default(),
         scatter_fit: None,
+        vertex_provenance: vec![],
     };
 
     let yaml = serde_yaml::to_string(&surf).unwrap();
@@ -141,6 +143,7 @@ fn surface_validate_passes_on_consistent_data() {
         uv_coords: vec![Vector2::zeros(); 4],
         quality_metrics: QualityMetrics::default(),
         scatter_fit: None,
+        vertex_provenance: vec![],
     };
     assert!(surf.validate().is_ok());
 }
@@ -155,6 +158,7 @@ fn surface_validate_rejects_vertex_count_mismatch() {
         uv_coords: vec![Vector2::zeros(); 4],
         quality_metrics: QualityMetrics::default(),
         scatter_fit: None,
+        vertex_provenance: vec![],
     };
     assert!(surf.validate().is_err());
 }
@@ -196,6 +200,7 @@ fn surface_validate_rejects_non_finite_uv() {
         ],
         quality_metrics: QualityMetrics::default(),
         scatter_fit: None,
+        vertex_provenance: vec![],
     };
     assert!(surf.validate().is_err());
 }
@@ -288,6 +293,7 @@ fn deserialize_accepts_consistent_surface_round_trip() {
         ],
         quality_metrics: QualityMetrics::default(),
         scatter_fit: None,
+        vertex_provenance: vec![],
     };
     let yaml = serde_yaml::to_string(&surf).unwrap();
     let back: ReconstructedSurface = serde_yaml::from_str(&yaml).unwrap();

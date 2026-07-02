@@ -21,6 +21,7 @@ fn sample_surface() -> ReconstructedSurface {
         uv_coords: uvs,
         quality_metrics: QualityMetrics::default(),
         scatter_fit: None,
+        vertex_provenance: vec![],
     }
 }
 

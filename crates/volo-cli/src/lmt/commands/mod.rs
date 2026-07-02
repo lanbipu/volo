@@ -3,6 +3,7 @@
 
 mod completion;
 mod export;
+mod fuse;
 mod manifest;
 mod measurements;
 mod project;
@@ -47,5 +48,21 @@ pub fn dispatch(cli: Cli) -> i32 {
         Command::Completion { shell } => completion::run(shell),
         Command::SeedExample { name, dst } => seed::run(mode, &name, &dst, yes, dry_run),
         Command::Visual(cmd) => visual::run(cmd, mode, yes, dry_run),
+        Command::Fuse {
+            project_path,
+            screen_id,
+            pose_report,
+            measurements,
+            allow_scale,
+        } => fuse::run(
+            mode,
+            &project_path,
+            &screen_id,
+            &pose_report,
+            &measurements,
+            allow_scale,
+            yes,
+            dry_run,
+        ),
     }
 }

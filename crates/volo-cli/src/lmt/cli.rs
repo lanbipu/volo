@@ -129,6 +129,27 @@ pub enum Command {
     /// 相机视觉测量(零全站仪):标定 / 生成 pattern / 重建 / 合成台。
     #[command(subcommand)]
     Visual(VisualCmd),
+
+    /// W6 R1:M1(全站仪)+ M2(视觉 BA)融合 —— 按 grid-vertex 名匹配对应点,
+    /// Umeyama 对齐视觉重建到全站仪测点,写出对齐后的 pose report 副本。
+    /// side_effect: destructive(写文件,需要 --yes 或 --dry-run)
+    Fuse {
+        /// 项目根目录。
+        project_path: String,
+        /// screen id。
+        screen_id: String,
+        /// cabinet_pose_report.json 路径(视觉重建输出)。
+        #[arg(long)]
+        pose_report: String,
+        /// measured.yaml 路径(全站仪测量,提供绝对尺度与低频锚定)。
+        #[arg(long)]
+        measurements: String,
+        /// 放开相似变换(估计 scale),而非默认锁 scale=1.0。视觉重建已用像素
+        /// 间距定标,默认不应该再引入一个自由缩放去悄悄吸收系统性误差;
+        /// 放开时 `scale` 字段回显估计出的尺度偏差。
+        #[arg(long)]
+        allow_scale: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

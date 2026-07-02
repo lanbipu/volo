@@ -12,6 +12,9 @@ dependencies = [
     "numpy",
     "scipy",
     "opencv-python-headless>=4.8,<5.0",
+    # verify overlay CJK annotation (cv2's Hershey fonts have no CJK glyphs);
+    # the overlay degrades to ASCII labels if Pillow finds no CJK font.
+    "pillow>=10.0",
 ]
 
 [project.optional-dependencies]

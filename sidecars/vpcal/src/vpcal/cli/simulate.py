@@ -16,6 +16,8 @@ from vpcal.core.errors import ArgumentError
 
 @click.group(invoke_without_command=True)
 @click.option("--screen", "screen_path", type=click.Path(exists=True), help="Screen definition JSON.")
+@click.option("--marker-map", "marker_map_path", type=click.Path(exists=True),
+              help="Surveyed marker map JSON (AR path; mutually exclusive with --screen).")
 @click.option("--num-poses", type=int, default=10, show_default=True, help="Number of camera poses.")
 @click.option("--noise-px", type=float, default=0.0, show_default=True, help="Gaussian pixel noise sigma.")
 @click.option("--outlier-ratio", type=float, default=0.0, show_default=True, help="Fraction of outlier observations.")
@@ -24,33 +26,47 @@ from vpcal.core.errors import ArgumentError
 @click.option("--no-images", is_flag=True, help="Skip rendering camera images (faster).")
 @click.option("--image-width", type=int, default=1920, show_default=True, help="Rendered image width (px).")
 @click.option("--image-height", type=int, default=1080, show_default=True, help="Rendered image height (px).")
+@click.option("--trajectory", is_flag=True, help="Smooth camera sweep (moving capture; enables temporal offsets).")
+@click.option("--temporal-offset-frames", type=float, default=0.0, show_default=True,
+              help="Tracking↔image timing offset in frames (needs --trajectory).")
 @common_options
 @click.pass_context
-def simulate(ctx, screen_path, num_poses, noise_px, outlier_ratio, output_dir, seed, no_images,
-             image_width, image_height, **flags) -> None:
+def simulate(ctx, screen_path, marker_map_path, num_poses, noise_px, outlier_ratio, output_dir, seed,
+             no_images, image_width, image_height, trajectory, temporal_offset_frames, **flags) -> None:
     """Generate a synthetic calibration dataset with known ground truth."""
     if ctx.invoked_subcommand is not None:
         return  # a subcommand (e.g. `sweep`) takes over
 
     def body() -> OperationOutput:
-        from vpcal.core.simulator import default_lens, simulate_dataset
+        from vpcal.core.simulator import default_lens, simulate_dataset, simulate_marker_map_dataset
         from vpcal.io.screen_io import load_screen
 
-        if not screen_path:
-            raise ArgumentError("--screen is required")
+        if bool(screen_path) == bool(marker_map_path):
+            raise ArgumentError("exactly one of --screen / --marker-map is required")
         if not output_dir:
             raise ArgumentError("--output-dir is required")
 
-        screen = load_screen(screen_path)
         if flags.get("dry_run"):
             plan = {"dry_run_plan": {"output_dir": output_dir, "num_poses": num_poses,
                                      "noise_px": noise_px, "render_images": not no_images}}
             return OperationOutput(data={"exit_code": 0, **plan}, text="Dry run OK.")
         lens = default_lens(image_width, image_height)
-        summary = simulate_dataset(
-            screen, output_dir, num_poses=num_poses, noise_px=noise_px,
-            outlier_ratio=outlier_ratio, lens=lens, seed=seed, render_images=not no_images,
-        )
+        if marker_map_path:
+            from vpcal.io.marker_map_io import load_marker_map
+
+            summary = simulate_marker_map_dataset(
+                load_marker_map(marker_map_path), output_dir, num_poses=num_poses,
+                noise_px=noise_px, outlier_ratio=outlier_ratio, lens=lens, seed=seed,
+                render_images=not no_images, trajectory=trajectory,
+                temporal_offset_frames=temporal_offset_frames,
+            )
+        else:
+            screen = load_screen(screen_path)
+            summary = simulate_dataset(
+                screen, output_dir, num_poses=num_poses, noise_px=noise_px,
+                outlier_ratio=outlier_ratio, lens=lens, seed=seed, render_images=not no_images,
+                trajectory=trajectory, temporal_offset_frames=temporal_offset_frames,
+            )
         text = (
             f"Simulated {summary['num_poses']} poses, {summary['num_observations']} observations → "
             f"{summary['output_dir']}"
