@@ -243,6 +243,10 @@ pub struct ZenCacheStatsRecord {
     pub host: String,
     pub providers: Vec<String>,
     pub records: usize,
+    /// `cache.size.disk` from zen's own `/stats/z$` response (see
+    /// `zen_cache::fetch_cache_stats`). `None` when the provider wasn't
+    /// reachable or zen didn't report the field.
+    pub cache_disk_size_bytes: Option<i64>,
     pub error_message: Option<String>,
 }
 
@@ -278,6 +282,7 @@ pub fn zen_cache_stats(
                     host: String::new(),
                     providers: Vec::new(),
                     records: 0,
+                    cache_disk_size_bytes: None,
                     error_message: Some(format!("machine id={} not found", ep.machine_id)),
                 });
                 continue;
@@ -289,12 +294,14 @@ pub fn zen_cache_stats(
         if outcome.error_message.is_some() {
             partial_errors += 1;
         }
+        let cache_disk_size_bytes = outcome.records.iter().find_map(|r| r.cache_disk_size_bytes);
         samples.push(ZenCacheStatsRecord {
             endpoint_id: eid,
             machine_id: ep.machine_id,
             host,
             providers: outcome.providers,
             records: ids.len(),
+            cache_disk_size_bytes,
             error_message: outcome.error_message,
         });
     }

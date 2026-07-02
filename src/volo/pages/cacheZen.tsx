@@ -1049,7 +1049,7 @@ import {
           endpointId: ep.id, machineId: ep.machine_id,
           host: row ? row.hostname : '', ip: row ? row.ip : '',
           port: ep.declared_port, scheme: ep.scheme, dataDir: ep.data_dir,
-          version: row && row.build_version ? row.build_version : '—', svc, providers: null,
+          version: row && row.build_version ? row.build_version : '—', svc, providers: null, cacheDiskBytes: null,
           gcIntervalSeconds: ep.gc_interval_seconds, gcLightweightIntervalSeconds: ep.gc_lightweight_interval_seconds,
           cacheMaxDurationSeconds: ep.cache_max_duration_seconds,
           serviceAccountUsername: ep.service_account_username, serviceAccountCredAlias: ep.service_account_cred_alias,
@@ -1058,7 +1058,8 @@ import {
         zenCacheStats(ep.id, null).then((cs) => {
           const sample = cs && Array.isArray(cs.samples) && cs.samples[0] ? cs.samples[0] : null;
           const provs = sample && Array.isArray(sample.providers) ? sample.providers : null;
-          setStatus((s2) => (s2 ? Object.assign({}, s2, { providers: provs }) : s2));
+          const diskBytes = sample && typeof sample.cache_disk_size_bytes === 'number' ? sample.cache_disk_size_bytes : null;
+          setStatus((s2) => (s2 ? Object.assign({}, s2, { providers: provs, cacheDiskBytes: diskBytes }) : s2));
         }, () => {});
       });
     };
@@ -1208,15 +1209,21 @@ import {
     const sMeta = SVC_STATE[(status && status.svc) || 'unknown'] || SVC_STATE.unknown;
     /* 指向目标卡片的色调：未部署 = 中性引导态；已部署但停止/不可达/状态未知 = 真失败态；其余 = 平常强调色 */
     const targetVis = !deployed ? 'neutral' : (status.svc === 'running' ? 'accent' : status.svc === 'unreachable' ? 'negative' : 'notice');
-    const hero = (val, unit, label, tone) => h('div', { className: 'zsv-hero' + (tone ? ' t-' + tone : '') },
+    const hero = (val, unit, label, tone, title) => h('div', { className: 'zsv-hero' + (tone ? ' t-' + tone : ''), title },
       h('div', { className: 'zsv-hero-v' }, val, unit ? h('span', { className: 'zsv-hero-u' }, unit) : null),
       h('div', { className: 'zsv-hero-l' }, label));
     const chip = (k, v, mono, title) => h('div', { className: 'zsv-chip', title }, h('span', { className: 'zsv-chip-k' }, k), h('span', { className: 'zsv-chip-v' + (mono ? ' mono' : '') }, v));
+    /* zen 自身 /stats/z$ 上报的 cache.size.disk，来自 zenCacheStats 拉取的 status.cacheDiskBytes；
+       未探测到（z$ 未注册 / 探测失败）时为 null，如实显示「—」而非编造。 */
+    const heroBytes = (b) => b == null ? ['—', null]
+      : b >= 1073741824 ? [(b / 1073741824).toFixed(1), 'GB']
+      : b >= 1048576 ? [(b / 1048576).toFixed(0), 'MB']
+      : [(b / 1024).toFixed(0), 'KB'];
 
-    /* ① 服务器状态卡：仪表化展示（hero 磁贴 + chip 组）；缓存容量后端暂无字节级用量数据源
-       （zen_cache_stats 只回读 provider 名称列表，无 size_bytes），如实显示「—」而非编造进度条。
+    /* ① 服务器状态卡：仪表化展示（hero 磁贴 + chip 组）。
        URL ACL 取部署时实际下发的 urlacl 前缀（zen_urlacl_add 写入的 netsh 规则），非猜测值。 */
     const urlAclPrefix = deployed ? (status.scheme + '://*:' + status.port + '/') : null;
+    const [cacheSizeVal, cacheSizeUnit] = heroBytes(status && status.cacheDiskBytes);
     const statusCard = statusLoading
       ? h('div', { className: 'zen-empty' },
           h('span', { className: 'ze-ico' }, h('span', { className: 'zstep-spin' })),
@@ -1236,7 +1243,8 @@ import {
                 h('button', { className: 'mini-btn danger', onClick: uninstallServer }, h(Icon, { name: 'trash', size: 12 }), '卸载'))),
             h('div', { className: 'zsv-heros' },
               hero(pointedCount, '台', '客户端数量', 'accent'),
-              hero('—', null, '缓存容量', null)),
+              hero(cacheSizeVal, cacheSizeUnit, '缓存容量', null,
+                cacheSizeVal === '—' ? 'z$ 缓存 provider 未上报磁盘用量，或本次探测失败' : null)),
             h('div', { className: 'zsv-chips' },
               chip('端口', String(status.port), true),
               chip('协议', status.scheme),

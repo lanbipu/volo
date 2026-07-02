@@ -559,6 +559,7 @@ export interface ZenCacheStatsRecord {
   host: string;
   providers: string[];
   records: number;
+  cache_disk_size_bytes: number | null;
   error_message: string | null;
 }
 
