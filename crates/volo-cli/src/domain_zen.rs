@@ -99,6 +99,9 @@ pub fn handle(ctx: &mut Ctx<'_>, action: ZenAction) -> VoloResult<()> {
         ZenAction::DetectBinary { machine, all, cred } => detect_binary(ctx, machine, all, &cred),
         ZenAction::ListEndpoints { machine } => list_endpoints(ctx, machine),
         ZenAction::ReadRuncontext { machine } => read_runcontext(ctx, machine),
+        ZenAction::SetLocalDatapath { machine, data_path, clear } => {
+            set_local_datapath(ctx, machine, data_path.as_deref(), clear)
+        }
         ZenAction::Baseline { action } => match action {
             ZenBaselineAction::List { zen_build_version, kind } => {
                 baseline_list(ctx, zen_build_version.as_deref(), kind.as_deref())
@@ -766,6 +769,42 @@ fn read_runcontext(ctx: &mut Ctx<'_>, machine: i64) -> VoloResult<()> {
         "commandline_arguments": env.get("commandline_arguments").and_then(|v| v.as_str()),
         "running": env.get("running").and_then(|v| v.as_bool()).unwrap_or(false),
         "registry_data_path": env.get("registry_data_path").and_then(|v| v.as_str()),
+    });
+    ctx.emitter.emit_result(&doc).ok();
+    Ok(())
+}
+
+/// `zen set-local-datapath` — CLI twin of the Tauri `zen_set_local_datapath`
+/// command (same sidecar, same result fields). `--clear` sends an empty
+/// DataPath, which removes both the registry override and the env var.
+fn set_local_datapath(
+    ctx: &mut Ctx<'_>,
+    machine: i64,
+    data_path: Option<&str>,
+    clear: bool,
+) -> VoloResult<()> {
+    let db = ctx.require_db()?.clone();
+    let m = require_machine(&db, machine)?;
+    let ue_user = machines::get_ue_runtime_user(&db, machine)?.ok_or_else(|| {
+        VoloError::InvalidInput(format!(
+            "machine id={machine} has no ue_runtime_user set — run \
+             `machine set-ue-user --machine {machine} --ue-user <USERNAME>` first"
+        ))
+    })?;
+    let data_path = if clear { "" } else { data_path.unwrap_or("").trim() };
+    let env = run_node(
+        &m.ip,
+        "zen-set-local-datapath.ps1",
+        serde_json::json!({ "RuntimeUser": ue_user, "DataPath": data_path }),
+    )
+    .and_then(|raw| parse_envelope(&raw, "zen-set-local-datapath"))?;
+    let doc = serde_json::json!({
+        "machine_id": machine,
+        "host": m.ip,
+        "ue_runtime_user": ue_user,
+        "data_path": if data_path.is_empty() { None } else { Some(data_path) },
+        "registry_written": env.get("registry_written").and_then(|v| v.as_bool()).unwrap_or(false),
+        "message": env.get("message").and_then(|v| v.as_str()),
     });
     ctx.emitter.emit_result(&doc).ok();
     Ok(())

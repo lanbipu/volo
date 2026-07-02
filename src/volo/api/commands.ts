@@ -28,7 +28,7 @@ import type {
   ZenChangeRoleResult, ZenLuaPreviewResult, ZenCredentialInput, ZenApplyConfigResult,
   ZenServiceResult, ZenServiceSummary, ZenServiceStatusResult,
   ZenUrlaclResult, ZenUrlaclListResult, ZenVerifyRunEditorInput, ZenVerifyRulesResult,
-  ZenGcSettingsResult, ZenDedicatedAccountResult, ZenEnableGlobalResult, ZenLocalRunContext,
+  ZenGcSettingsResult, ZenDedicatedAccountResult, ZenEnableGlobalResult, ZenLocalRunContext, ZenSetLocalDataPathResult,
 } from "./types";
 
 /* ----------------------------- machines ----------------------------- */
@@ -338,6 +338,10 @@ export const zenEnableGlobal = (machineId: number, upstreamEndpointId: number) =
 // ✅ wired: cacheZen ②「本地 Zen 缓存目录」生效值真实回读 → zenReadLocalRuncontext（需先设 ue_runtime_user）
 export const zenReadLocalRuncontext = (machineId: number) =>
   call<ZenLocalRunContext>("zen_read_local_runcontext", { machineId });
+// ✅ wired: cacheZen ②「本地 Zen 缓存目录」应用 / 清除 → zenSetLocalDatapath（写 HKCU Zen\DataPath 注册表 +
+//    创建目录 + 同步机器级 UE-ZenDataPath 兜底；dataPath 空串 = 清除两处；需先设 ue_runtime_user）
+export const zenSetLocalDatapath = (machineId: number, dataPath: string) =>
+  call<ZenSetLocalDataPathResult>("zen_set_local_datapath", { machineId, dataPath });
 // ✅ wired: cacheZen「缓存回收策略（GC）」应用更改 → zenUpdateGcSettings（重写 zen_config.lua + 重启服务生效）
 export const zenUpdateGcSettings = (
   endpointId: number, gcIntervalSeconds: number, gcLightweightIntervalSeconds: number, cacheMaxDurationSeconds: number,

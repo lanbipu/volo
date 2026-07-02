@@ -283,6 +283,7 @@ pub fn run() {
             commands::zen::zen_apply_config,
             commands::zen::zen_enable_global,
             commands::zen::zen_read_local_runcontext,
+            commands::zen::zen_set_local_datapath,
             commands::zen::zen_update_gc_settings,
             commands::zen::zen_lua_preview,
             commands::zen::zen_create_dedicated_account,

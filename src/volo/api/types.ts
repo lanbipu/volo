@@ -718,9 +718,23 @@ export interface ZenLocalRunContext {
   commandline_arguments: string | null;
   /** runcontext 指向的那个 zen 二进制现在是否在运行。 */
   running: boolean;
-  /** HKCU Zen\DataPath 注册表覆盖（编辑器内迁移写下，压过 UE-ZenDataPath 环境变量）；
-   *  best-effort：null = 不存在或读不到（该用户 hive 未加载）。 */
+  /** HKCU Zen\DataPath 注册表覆盖（Volo「本地 Zen 缓存目录」的主写入通道，编辑器内迁移
+   *  也写这里；压过 UE-ZenDataPath 环境变量）；best-effort：null = 不存在或读不到
+   *  （该用户 hive 未加载）。 */
   registry_data_path: string | null;
+}
+
+/** `zen_set_local_datapath` — 设置 / 清除客户端本地 Zen 缓存目录。 */
+export interface ZenSetLocalDataPathResult {
+  machine_id: number;
+  host: string;
+  ue_runtime_user: string;
+  /** null = 已清除（注册表覆盖 + 环境变量都清掉）。 */
+  data_path: string | null;
+  /** HKU\<SID> Zen\DataPath 注册表是否写入成功；false = 该用户未登录（hive 未加载），
+   *  只落了机器级环境变量兜底 —— 该用户下次登录后才生效，而不是重启编辑器即生效。 */
+  registry_written: boolean;
+  message: string;
 }
 
 export interface ZenServicePlan {

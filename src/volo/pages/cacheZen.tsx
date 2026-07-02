@@ -12,9 +12,13 @@
         zen_config.lua + 重启服务生效（Zen 不热重载），走破坏性二次确认（会短暂中断）。
    ② 让客户端机器用上这台缓存：多选客户端 → 逐台 set_ini_key 写 [StorageServers] Shared
       指向此服务器 → 逐机成败、可重试。
-   ②+ 客户端本地 Zen 缓存目录：机器级环境变量 UE-ZenDataPath（set_machine_env_var）＋
-      生效值真实回读（zen_read_local_runcontext 读该机 zenserver.runcontext）——注册表等
-      更高优先级配置源可能压过环境变量，配置值与生效值分开展示、不冒充。
+   ②+ 客户端本地 Zen 缓存目录：zen_set_local_datapath 写 UE 运行用户的 HKCU
+      Epic Games\Zen\DataPath 注册表（编辑器每次启动直接读，重启编辑器即生效）＋创建目录
+      ＋同步机器级 UE-ZenDataPath 环境变量兜底；生效值真实回读（zen_read_local_runcontext
+      读该机 zenserver.runcontext）——配置值与生效值分开展示、不冒充。旧版只写机器级
+      环境变量：SSH（session 0）写入后 WM_SETTINGCHANGE 广播跨不了会话，桌面会话里的
+      Explorer / Epic Launcher 环境块不刷新，重启编辑器也读不到，注销/重启系统才生效
+      ——这正是换注册表通道的原因。
    远程操作走 SSH key（cred = {} 全 None），不逐操作选凭据；真实回读来自 zen_probe。 */
 import * as React from "react";
 import "../ds";
@@ -23,7 +27,7 @@ import {
   zenRegister, zenDetectBinary, zenApplyConfig, zenUpdateGcSettings, zenCreateDedicatedAccount,
   zenUrlaclAdd, zenServiceInstall, zenServiceStart, zenServiceStop, zenServiceUninstall,
   zenUnregister, zenProbe, zenStatus, zenListEndpoints, zenCacheStats, setIniKey, readIniSection,
-  refreshMachine, revealPath, zenEnableGlobal, zenReadLocalRuncontext, setMachineEnvVar, getMachineEnvVar,
+  refreshMachine, revealPath, zenEnableGlobal, zenReadLocalRuncontext, zenSetLocalDatapath, getMachineEnvVar,
 } from "../api/commands";
 
 (function () {
@@ -189,8 +193,8 @@ import {
         h('div', { style: { minWidth: 0 } },
           h('h2', null, '批量设置本地 Zen 缓存目录'),
           h('div', { className: 'sub' },
-            h('span', { className: 'cli-pill' }, 'set_machine_env_var UE-ZenDataPath'),
-            h('span', null, ' · 机器级环境变量 · ' + machines.length + ' 台客户端'))),
+            h('span', { className: 'cli-pill' }, 'zen_set_local_datapath'),
+            h('span', null, ' · 注册表 + 创建目录 · ' + machines.length + ' 台客户端'))),
         h('button', { className: 'iconbtn x', onClick: close }, h(Icon, { name: 'x', size: 16 }))),
       h('div', { className: 'drawer-b' },
         h('div', { className: 'dblock' },
@@ -210,7 +214,7 @@ import {
               h('span', { className: 'zdm-arrow' }, h(Icon, { name: 'arrowr', size: 11 }), path.trim() || '—'));
           }))),
         h('div', { className: 'cli-note' }, h(Icon, { name: 'shield', size: 13 }),
-          '写机器级环境变量 UE-ZenDataPath，逐台执行、逐台看成败；应用后需重启各机 UE 编辑器才生效，旧缓存不会自动迁移。此目录是「客户端本地 Zen 缓存」，区别于①区「服务器数据目录」（共享缓存本体）与 DDC 页「本地 DDC（文件版）」。')),
+          '逐台写各机 UE 运行用户的注册表 Zen\\DataPath 并创建目录（同步机器级 UE-ZenDataPath 环境变量兜底），逐台看成败；应用后重启各机 UE 编辑器即生效，旧缓存不会自动迁移。此目录是「客户端本地 Zen 缓存」，区别于①区「服务器数据目录」（共享缓存本体）与 DDC 页「本地 DDC（文件版）」。')),
       h('div', { className: 'drawer-f' },
         h(Button, { variant: 'secondary', size: 'M', onPress: close }, '取消'),
         h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'check', size: 15 }), isDisabled: !valid, onPress: confirm },
@@ -390,21 +394,23 @@ import {
       return () => { pointedGenRef.current++; };
     }, [statusSig, nodesSig, projSig]);
 
-    /* ============ ②+ 客户端本地 Zen 缓存目录（机器级环境变量 UE-ZenDataPath）============
+    /* ============ ②+ 客户端本地 Zen 缓存目录（HKCU Zen\DataPath 注册表为主通道）============
        每台客户端上，UE 编辑器会自动拉起本地 Zen 进程做本地缓存，默认目录在 C 盘 %LOCALAPPDATA%。
-       Volo 写机器级环境变量集中配置；但 UE 端存在优先级更高的配置源（编辑器内手动迁移写下的
-       HKCU Zen\DataPath 注册表键）可能压过它 —— 所以同时展示「配置值」（getMachineEnvVar 读回的
-       环境变量）与「实际生效值」（zen_read_local_runcontext 从该机 zenserver.runcontext 回读的
-       上次实际使用路径），两者可能不一致。三个目录互不相同：①区「服务器数据目录」= 共享缓存
+       Volo 写 UE 运行用户的 HKCU Epic Games\Zen\DataPath 注册表（zen_set_local_datapath，
+       编辑器每次启动直接读注册表 → 重启编辑器即生效）＋创建目录＋同步机器级 UE-ZenDataPath
+       环境变量兜底。配置值优先取注册表回读（zen_read_local_runcontext 的 registry_data_path），
+       没有再落到遗留的环境变量；「实际生效值」是 zenserver.runcontext 里上次实际使用路径，
+       两者可能不一致（编辑器未重启）。三个目录互不相同：①区「服务器数据目录」= 共享缓存
        本体；本功能 = 客户端本地 Zen 缓存；DDC 页「本地 DDC（文件版）」= 又一个独立目录。 */
     const [zdirs, setZdirs] = useState({});         /* nodeId -> { cfg, eff, found, regPath, loading, readFail, readErr } */
     const [zres, setZres] = useState({});           /* nodeId -> { st, msg, path } —— 逐台成败 */
     const [zdraft, setZdraft] = useState({});       /* nodeId -> 面板输入草稿 */
     const [zdirOpen, setZdirOpen] = useState(null); /* 展开配置面板的机器 id */
     const zdirGenRef = useRef(0);
-    /* 单机读取：配置值（env var）+ 生效值（runcontext）并行拉。任一失败都算
-       readFail——runcontext 单独失败时不能把 found=false 冒充成「编辑器从未启动过
-       本地 Zen」，env var 单独失败时也不能把 cfg=null 冒充成「未设置」；面板对
+    /* 单机读取：配置值 + 生效值并行拉。配置值优先取注册表回读（runcontext 调用捎带的
+       registry_data_path —— Volo 的主写入通道），没有再落到遗留的机器级环境变量；
+       runcontext 单独失败时不能把 found=false 冒充成「编辑器从未启动过本地 Zen」，
+       env var 单独失败且注册表也没值时也不能把 cfg=null 冒充成「未设置」；面板对
        失败的那半各自如实标注（cfgFail 单独记录，配置值格显示读取失败）。 */
     const readZdirFor = (n, gen) => Promise.allSettled([
       getMachineEnvVar(n.machineId, 'UE-ZenDataPath'),
@@ -412,11 +418,15 @@ import {
     ]).then(([cfgR, rcR]) => {
       if (gen !== zdirGenRef.current) return;
       const rc = rcR.status === 'fulfilled' ? rcR.value : null;
-      const cfgFail = cfgR.status === 'rejected';
+      const envFail = cfgR.status === 'rejected';
       const rcFail = rcR.status === 'rejected';
+      const envCfg = !envFail && cfgR.value ? cfgR.value : null;
+      const regCfg = rc && rc.registry_data_path ? rc.registry_data_path : null;
+      const cfgFail = envFail && !regCfg; /* 注册表有值时 env 读失败不影响配置值 */
       const errOf = (x) => (x.reason && x.reason.message ? x.reason.message : String(x.reason));
       setZdirs((d) => Object.assign({}, d, { [n.id]: {
-        cfg: !cfgFail && cfgR.value ? cfgR.value : null,
+        cfg: regCfg || envCfg,
+        cfgSrc: regCfg ? 'registry' : envCfg ? 'env' : null,
         eff: rc && rc.found ? rc.data_path : null,
         found: !!(rc && rc.found),
         regPath: rc ? rc.registry_data_path : null,
@@ -702,54 +712,64 @@ import {
       readfail: { vis: 'negative',    icon: 'alert',  label: '读取失败' },
     };
     const zenMismatchWhy = (rec) => {
-      if (rec.regPath && normWinPath(rec.regPath) !== normWinPath(rec.cfg))
-        return '该机在编辑器内手动迁移过缓存，注册表配置（' + rec.regPath + '）优先级更高，压过了环境变量 —— 生效目录以注册表为准';
+      if (rec.cfgSrc === 'env')
+        return '配置写在旧通道（机器级环境变量）上 —— 桌面会话读不到 SSH 写入的环境变量' +
+          '（注销 / 重启系统前不刷新），重启编辑器也不会生效。点「应用」重写为注册表配置，重启该机 UE 编辑器即生效';
       if (!rec.found)
-        return '已写入环境变量，但该机编辑器还没启动过本地 Zen —— 下次启动 UE 编辑器时生效';
-      return '已写入环境变量，但尚未重启该机 UE 编辑器 —— 生效值仍是旧目录';
+        return '已写入注册表，但该机编辑器还没启动过本地 Zen —— 下次启动 UE 编辑器时生效';
+      return '已写入注册表，但尚未重启该机 UE 编辑器 —— 生效值仍是旧目录';
     };
-    /* 应用：逐台执行、逐台成败（与「指向此服务器」的行内模式一致）。写的是机器级
-       环境变量（HKLM），但前置仍要求 ue_runtime_user——没有它读不了生效值，写下去
-       也验证不了，与面板 blocked 拦截保持同一条件；被拦的逐台引导而非静默跳过。 */
+    /* 应用：逐台执行、逐台成败（与「指向此服务器」的行内模式一致）。zen_set_local_datapath
+       写 UE 运行用户的 HKCU Zen\DataPath 注册表（重启编辑器即生效）＋创建目录＋同步机器级
+       env var 兜底 —— 前置要求 ue_runtime_user（注册表按用户写，也是回读生效值的同一前置）；
+       被拦的逐台引导而非静默跳过。 */
     const applyZenDir = (ids, path) => {
       ids.forEach((id) => {
         const n = CX.node(id);
         if (!n || n.status === 'offline') return;
         if (!runtimeUser(n)) {
-          setZres((r) => Object.assign({}, r, { [id]: { st: 'fail', msg: '该机未设置 UE 运行用户，无法回读生效值 · 先配置 ue_runtime_user（machine set-ue-user）', path } }));
-          log(s, 'warn', `<b>set_machine_env_var</b> · ${esc(n.host)} 未设 ue_runtime_user，本地 Zen 目录写入跳过`);
+          setZres((r) => Object.assign({}, r, { [id]: { st: 'fail', msg: '该机未设置 UE 运行用户，无法定位注册表 hive，也无法回读生效值 · 先配置 ue_runtime_user（machine set-ue-user）', path } }));
+          log(s, 'warn', `<b>zen_set_local_datapath</b> · ${esc(n.host)} 未设 ue_runtime_user，本地 Zen 目录写入跳过`);
           return;
         }
         setZres((r) => Object.assign({}, r, { [id]: { st: 'running' } }));
-        setMachineEnvVar(n.machineId, 'UE-ZenDataPath', path).then(
-          () => {
-            /* setx-machine.ps1 写后回读校验过，cfg=path 是已验证事实；eff 要等编辑器重启 */
-            setZdirs((d) => Object.assign({}, d, { [id]: Object.assign({}, zenRecOf(d, id), { cfg: path, loading: false, readFail: false, readErr: null }) }));
-            setZres((r) => Object.assign({}, r, { [id]: { st: 'ok', msg: '已写入 · 重启该机 UE 编辑器后生效；旧缓存不会自动迁移', path } }));
-            log(s, 'ok', `<b>set_machine_env_var</b> · ${esc(n.host)} UE-ZenDataPath = ${esc(path)}`);
+        zenSetLocalDatapath(n.machineId, path).then(
+          (res) => {
+            /* 脚本写后逐通道回读校验过，cfg=path 是已验证事实；eff 要等编辑器重启。
+               registry_written=false = 该用户未登录（hive 未加载），只落了 env var 兜底
+               ——生效时点是「该用户下次登录」而非「重启编辑器」，如实区分。 */
+            const regOk = !!(res && res.registry_written);
+            setZdirs((d) => Object.assign({}, d, { [id]: Object.assign({}, zenRecOf(d, id), {
+              cfg: path, cfgSrc: regOk ? 'registry' : 'env', regPath: regOk ? path : zenRecOf(d, id).regPath,
+              loading: false, readFail: false, cfgFail: false, readErr: null,
+            }) }));
+            setZres((r) => Object.assign({}, r, { [id]: { st: 'ok', msg: regOk
+              ? '已写入注册表并创建目录 · 重启该机 UE 编辑器后生效；旧缓存不会自动迁移'
+              : '目录与环境变量已写入，但该机 UE 运行用户未登录，注册表没写成 —— 该用户下次登录后生效', path } }));
+            log(s, 'ok', `<b>zen_set_local_datapath</b> · ${esc(n.host)} Zen\\DataPath = ${esc(path)}${regOk ? '' : '（仅 env var，用户未登录）'}`);
           },
           (e) => {
             const em = e && e.message ? e.message : String(e);
             setZres((r) => Object.assign({}, r, { [id]: { st: 'fail', msg: em, path } }));
-            log(s, 'err', `<b>set_machine_env_var</b> · ${esc(n.host)} UE-ZenDataPath 写入失败 · ${esc(em)}`);
+            log(s, 'err', `<b>zen_set_local_datapath</b> · ${esc(n.host)} 写入失败 · ${esc(em)}`);
           });
       });
     };
-    /* 清除配置：写空值 = 删除该机器级变量（setx-machine.ps1 对 Value="" 的删除语义已验证）*/
+    /* 清除配置：空路径 = 同时删注册表 Zen\DataPath 覆盖与机器级 env var（不留幽灵配置源）*/
     const clearZenDir = (id) => {
       const n = CX.node(id);
       if (!n) return;
       setZres((r) => Object.assign({}, r, { [id]: { st: 'running' } }));
-      setMachineEnvVar(n.machineId, 'UE-ZenDataPath', '').then(
+      zenSetLocalDatapath(n.machineId, '').then(
         () => {
-          setZdirs((d) => Object.assign({}, d, { [id]: Object.assign({}, zenRecOf(d, id), { cfg: null, loading: false }) }));
-          setZres((r) => Object.assign({}, r, { [id]: { st: 'ok', msg: '已清除配置 · 重启该机 UE 编辑器后回到默认目录（' + ZEN_DEF_HINT + '）；旧缓存不会自动迁移' } }));
-          log(s, 'warn', `<b>set_machine_env_var</b> · ${esc(n.host)} 清除 UE-ZenDataPath（还原默认）`);
+          setZdirs((d) => Object.assign({}, d, { [id]: Object.assign({}, zenRecOf(d, id), { cfg: null, cfgSrc: null, regPath: null, loading: false }) }));
+          setZres((r) => Object.assign({}, r, { [id]: { st: 'ok', msg: '已清除配置（注册表 + 环境变量）· 重启该机 UE 编辑器后回到默认目录（' + ZEN_DEF_HINT + '）；旧缓存不会自动迁移' } }));
+          log(s, 'warn', `<b>zen_set_local_datapath</b> · ${esc(n.host)} 清除本地 Zen 目录配置（还原默认）`);
         },
         (e) => {
           const em = e && e.message ? e.message : String(e);
           setZres((r) => Object.assign({}, r, { [id]: { st: 'fail', msg: em } }));
-          log(s, 'err', `<b>set_machine_env_var</b> · ${esc(n.host)} 清除 UE-ZenDataPath 失败 · ${esc(em)}`);
+          log(s, 'err', `<b>zen_set_local_datapath</b> · ${esc(n.host)} 清除失败 · ${esc(em)}`);
         });
     };
     const rereadZenDir = (id) => {
@@ -1170,7 +1190,7 @@ import {
       else if (r && r.st === 'ok' && st === 'mismatch') { vis = 'notice'; icon = 'alert'; label = 'Zen 目录 · 待重启生效'; }
       else { const m = ZDIR_META[st]; vis = m.vis; icon = m.icon; label = 'Zen 目录 · ' + m.label; spinning = st === 'loading'; }
       return h('button', { className: 'zdir-chip zd-' + vis + (open ? ' on' : '') + (st === 'blocked' ? ' soft' : ''),
-        title: '客户端本地 Zen 缓存目录（UE-ZenDataPath）· 点击展开配置', onClick: () => setZdirOpen(open ? null : n.id) },
+        title: '客户端本地 Zen 缓存目录（注册表 Zen\\DataPath）· 点击展开配置', onClick: () => setZdirOpen(open ? null : n.id) },
         spinning ? h('span', { className: 'spin', style: { display: 'inline-flex' } }, h(Icon, { name: 'sync', size: 11 })) : h(Icon, { name: icon, size: 11 }),
         label,
         h(Icon, { name: 'chevd', size: 10, style: { transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .13s' } }));
@@ -1198,7 +1218,7 @@ import {
         h('div', { className: 'zdir-h' },
           h(Icon, { name: 'folder', size: 13 }),
           h('span', { className: 't' }, '客户端本地 Zen 缓存目录'),
-          h('code', { className: 'zdir-env' }, 'UE-ZenDataPath'),
+          h('code', { className: 'zdir-env' }, 'HKCU\\…\\Epic Games\\Zen · DataPath'),
           h(ZBadge, { vis: m.vis, icon: st === 'loading' ? 'sync' : m.icon, soft: true,
             label: st === 'unset' ? '未配置 · 走默认 C 盘' : st === 'match' ? '已配置 · 生效一致' : st === 'mismatch' ? '已配置 · 未生效' : st === 'loading' ? '生效值读取中' : st === 'readfail' ? '回读失败' : '离线 / 未设运行用户' })),
         h('div', { className: 'zdir-intro' },
@@ -1208,7 +1228,7 @@ import {
             ? '机器离线，读不了生效值，也无法远程写入 · 恢复在线后再配置'
             : '该机未设置 UE 运行用户，读不了生效值 · 与「用户全局指向」同一前置条件：先配置 ue_runtime_user（machine set-ue-user）') : null,
         h('div', { className: 'zdir-kv' },
-          h('span', { className: 'k' }, '配置值 · 环境变量'),
+          h('span', { className: 'k' }, '配置值 · ' + (rec.cfgSrc === 'env' ? '环境变量（旧通道）' : '注册表')),
           h('span', { className: 'v' + (rec.cfg ? ' mono' : ' none') },
             rec.cfg || (rec.cfgFail ? '读取失败' : '未设置 · 默认 ' + ZEN_DEF_HINT)),
           h('span', null)),

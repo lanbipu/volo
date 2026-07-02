@@ -1109,6 +1109,24 @@ pub enum ZenAction {
         #[arg(long, value_name = "ID")]
         machine: i64,
     },
+    /// Set (or clear) a machine's LOCAL zen cache directory. Writes the
+    /// runtime user's `HKCU Epic Games\Zen DataPath` registry override (read
+    /// directly at every editor launch — unlike a Machine env var written
+    /// over SSH, which the interactive session only picks up after a full
+    /// logoff), provisions the directory, and keeps the legacy
+    /// `UE-ZenDataPath` Machine env var in sync as a fallback. Requires the
+    /// machine's `ue_runtime_user` (same precondition as `read-runcontext`).
+    SetLocalDatapath {
+        /// Machine row id to configure.
+        #[arg(long, value_name = "ID")]
+        machine: i64,
+        /// Absolute Windows path (e.g. D:\UE_DDC\Zen).
+        #[arg(long, value_name = "PATH", conflicts_with = "clear", required_unless_present = "clear")]
+        data_path: Option<String>,
+        /// Clear the override (registry value + env var) — back to UE defaults.
+        #[arg(long)]
+        clear: bool,
+    },
     /// Baseline (zen_binary_expected) inspection and lock/unlock.
     Baseline {
         #[command(subcommand)]

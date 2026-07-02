@@ -1137,6 +1137,80 @@ pub fn zen_read_local_runcontext(
     })
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ZenSetLocalDataPathResult {
+    pub machine_id: i64,
+    pub host: String,
+    pub ue_runtime_user: String,
+    /// `None` = cleared (both the registry override and the env var).
+    pub data_path: Option<String>,
+    /// Whether the `HKU\<SID>\Software\Epic Games\Zen` `DataPath` value was
+    /// written/cleared. `false` = the runtime user's hive isn't loaded (user
+    /// not logged on) — only the Machine env var fallback landed, which takes
+    /// effect at that user's next logon instead of the next editor restart.
+    pub registry_written: bool,
+    pub message: String,
+}
+
+/// Set (or clear, with `data_path = ""`) `machine_id`'s LOCAL zen cache
+/// directory. Writes the `HKU\<SID>` `Epic Games\Zen` `DataPath` registry
+/// override (the tier UE reads directly at every editor launch — a Machine
+/// env var written over SSH never reaches the interactive session's already-
+/// running Explorer/Launcher environment, so it only applies after a full
+/// logoff), provisions the directory (create + icacls for the runtime user),
+/// and keeps the legacy `UE-ZenDataPath` Machine env var in sync as a
+/// fallback tier. Requires `ue_runtime_user` (same precondition as
+/// `zen_read_local_runcontext`).
+#[tauri::command]
+pub fn zen_set_local_datapath(
+    db: State<'_, Db>,
+    machine_id: i64,
+    data_path: String,
+) -> VoloResult<ZenSetLocalDataPathResult> {
+    let machine = zen_cli_shared::require_machine(&db, machine_id)?;
+    let ue_user = machines::get_ue_runtime_user(&db, machine_id)?.ok_or_else(|| {
+        VoloError::InvalidInput(format!(
+            "machine id={machine_id} has no ue_runtime_user set — run \
+             `machine set-ue-user --machine {machine_id} --ue-user <USERNAME>` first"
+        ))
+    })?;
+    let data_path = data_path.trim().to_string();
+    let invocation = if data_path.is_empty() {
+        format!("clear local zen data path on machine {machine_id}")
+    } else {
+        format!("set local zen data path {data_path} on machine {machine_id}")
+    };
+    let env = crate::commands::oplog::logged(
+        &db,
+        "zen.set_local_datapath",
+        &[machine_id],
+        &invocation,
+        || {
+            zen_cli_shared::run_node(
+                &machine.ip,
+                "zen-set-local-datapath.ps1",
+                serde_json::json!({ "RuntimeUser": ue_user, "DataPath": data_path }),
+            )
+            .and_then(|raw| zen_cli_shared::parse_envelope(&raw, "zen-set-local-datapath"))
+        },
+    )?;
+    Ok(ZenSetLocalDataPathResult {
+        machine_id,
+        host: machine.ip,
+        ue_runtime_user: ue_user,
+        data_path: if data_path.is_empty() { None } else { Some(data_path) },
+        registry_written: env
+            .get("registry_written")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        message: env
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // GC retention settings (Cache · ZenServer 「缓存回收策略」 module)
 // ---------------------------------------------------------------------------
