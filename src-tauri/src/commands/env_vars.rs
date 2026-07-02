@@ -28,13 +28,20 @@ pub fn set_machine_env_var(
 }
 
 #[tauri::command]
-pub fn get_machine_env_var(
+pub async fn get_machine_env_var(
     db: State<'_, Db>,
     machine_id: i64,
     name: String,
 ) -> VoloResult<Option<String>> {
-    let host = ip_for(&db, machine_id)?;
-    env_vars::get(&host, &name)
+    // 同 run_health_check：同步阻塞 SSH 跑在 Tauri 主线程会冻结 UI（Cache 子页挂载时
+    // 逐台 fan-out 本命令是切页卡顿主因之一）→ async + spawn_blocking。
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        let host = ip_for(&db, machine_id)?;
+        env_vars::get(&host, &name)
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("env var task join: {}", e)))?
 }
 
 #[tauri::command]
@@ -51,13 +58,19 @@ pub fn set_machine_env_var_with_credential(
 }
 
 #[tauri::command]
-pub fn get_machine_env_var_with_credential(
+pub async fn get_machine_env_var_with_credential(
     db: State<'_, Db>,
     machine_id: i64,
     name: String,
     credential_alias: String,
 ) -> VoloResult<Option<String>> {
     let _ = credential_alias; // accepted-but-ignored shim (SSH key auth); Vue still sends it.
-    let host = ip_for(&db, machine_id)?;
-    env_vars::get(&host, &name)
+    // 与 get_machine_env_var 同体：同样 async + spawn_blocking，避免阻塞 SSH 冻结 UI。
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        let host = ip_for(&db, machine_id)?;
+        env_vars::get(&host, &name)
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("env var task join: {}", e)))?
 }

@@ -263,11 +263,15 @@ pub struct ZenCacheStatsReport {
 }
 
 #[tauri::command]
-pub fn zen_cache_stats(
+pub async fn zen_cache_stats(
     db: State<'_, Db>,
     endpoint_id: Option<i64>,
     timeout_seconds: Option<u64>,
 ) -> VoloResult<ZenCacheStatsReport> {
+    // 同 run_health_check：同步阻塞 HTTP（zen /stats）跑在 Tauri 主线程会冻结 UI
+    // （Zen 页挂载即调用）→ async + spawn_blocking。
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || -> VoloResult<ZenCacheStatsReport> {
     let timeout = Duration::from_secs(timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECONDS));
     let endpoints = resolve_endpoints(&db, None, endpoint_id)?;
     let mut samples = Vec::with_capacity(endpoints.len());
@@ -316,6 +320,9 @@ pub fn zen_cache_stats(
         partial_errors,
         samples,
     })
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen cache-stats task join: {}", e)))?
 }
 
 // ---------------------------------------------------------------------------
@@ -339,10 +346,14 @@ pub struct ZenDiskSpaceResult {
 }
 
 #[tauri::command]
-pub fn zen_disk_space(
+pub async fn zen_disk_space(
     db: State<'_, Db>,
     endpoint_id: Option<i64>,
 ) -> VoloResult<Vec<ZenDiskSpaceResult>> {
+    // 同 run_health_check：同步阻塞 SSH（get-disk-space.ps1）跑在 Tauri 主线程会冻结 UI
+    // （Zen 页挂载即调用）→ async + spawn_blocking。
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || -> VoloResult<Vec<ZenDiskSpaceResult>> {
     let endpoints = resolve_endpoints(&db, None, endpoint_id)?;
     let exec = SshExecutor::from_config()?;
     let mut out = Vec::with_capacity(endpoints.len());
@@ -385,6 +396,9 @@ pub fn zen_disk_space(
         }
     }
     Ok(out)
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen disk-space task join: {}", e)))?
 }
 
 // ---------------------------------------------------------------------------
@@ -1185,10 +1199,14 @@ pub struct ZenLocalRunContext {
 /// Read-only; requires `ue_runtime_user` (same precondition and guidance as
 /// `zen_enable_global`).
 #[tauri::command]
-pub fn zen_read_local_runcontext(
+pub async fn zen_read_local_runcontext(
     db: State<'_, Db>,
     machine_id: i64,
 ) -> VoloResult<ZenLocalRunContext> {
+    // 同 run_health_check：同步阻塞 SSH（zen-read-runcontext.ps1）跑在 Tauri 主线程会
+    // 冻结 UI（Zen 页挂载时逐台 fan-out）→ async + spawn_blocking。
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || -> VoloResult<ZenLocalRunContext> {
     let machine = zen_cli_shared::require_machine(&db, machine_id)?;
     let ue_user = machines::get_ue_runtime_user(&db, machine_id)?.ok_or_else(|| {
         VoloError::InvalidInput(format!(
@@ -1215,6 +1233,9 @@ pub fn zen_read_local_runcontext(
         running: env.get("running").and_then(|v| v.as_bool()).unwrap_or(false),
         registry_data_path: s("registry_data_path"),
     })
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen runcontext task join: {}", e)))?
 }
 
 #[derive(Debug, Clone, Serialize)]

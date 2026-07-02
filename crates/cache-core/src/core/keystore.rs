@@ -35,6 +35,12 @@ impl KeyStore {
     /// 而不是误判“已存在”导致后续 `public_key()` 失败；都缺则全新生成。
     /// 可在每次启动时无脑调用。
     pub fn ensure_keypair(&self) -> VoloResult<()> {
+        // 并发防护：读路径命令 async 化（spawn_blocking）后，首启挂载期的远程读会并发
+        // 走到这里；check-then-generate 不加锁时并发 ssh-keygen 撞同一路径——后到者
+        // 碰到已存在的私钥会停在 Overwrite 交互提示、stdin EOF 退出非零，首次运行报
+        // 一堆假错。进程级锁串行化整个检查→生成，后到者拿锁后走 exists() 早返回。
+        static GEN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _gen = GEN_LOCK.lock().unwrap();
         let key = self.private_key_path();
         let pubkey = self.public_key_path();
         if key.exists() && pubkey.exists() {

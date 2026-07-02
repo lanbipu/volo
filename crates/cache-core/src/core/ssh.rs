@@ -310,6 +310,12 @@ impl SshExecutor {
     /// scripts. scp wants a forward-slash remote path even on Windows targets;
     /// the backslash `staging_root` is kept for the `-File` exec path.
     fn ensure_scripts_staged(&self, host: &str, user: &str) -> VoloResult<()> {
+        // 并发防护：读路径命令 async 化（spawn_blocking）后，同一主机的多条读会并发
+        // 首触发 staging；check-then-scp 不加锁时对同一远端路径并发 scp 同名脚本
+        // （半写/Windows 文件占用风险）。锁跨越 检查→scp→标记 全程，后到者拿锁后命中
+        // 缓存早返回；顺带压平首次挂载的并发 SSH 连接峰值。
+        static STAGE_LOCK: Mutex<()> = Mutex::new(());
+        let _stage = STAGE_LOCK.lock().unwrap();
         let cache_key = format!("{user}@{host}");
         if synced_hosts().lock().unwrap().contains(&cache_key) {
             return Ok(());

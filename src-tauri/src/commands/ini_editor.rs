@@ -18,14 +18,21 @@ pub struct WriteIniResponse {
 }
 
 #[tauri::command]
-pub fn read_ini_section(
+pub async fn read_ini_section(
     db: State<'_, Db>,
     machine_id: i64,
     file_path: String,
     section: String,
 ) -> VoloResult<Vec<ini_editor::IniKey>> {
-    let host = ip_for(&db, machine_id)?;
-    ini_editor::read_section(&host, &file_path, &section)
+    // 同 run_health_check：同步阻塞 SSH 跑在 Tauri 主线程会冻结 UI（Zen 页指向回读
+    // 逐台×逐 INI fan-out 本命令是切页卡顿主因之一）→ async + spawn_blocking。
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        let host = ip_for(&db, machine_id)?;
+        ini_editor::read_section(&host, &file_path, &section)
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("ini read task join: {}", e)))?
 }
 
 #[tauri::command]
@@ -104,7 +111,7 @@ pub fn remove_machine_backend_field(
 }
 
 #[tauri::command]
-pub fn read_ini_section_with_credential(
+pub async fn read_ini_section_with_credential(
     db: State<'_, Db>,
     machine_id: i64,
     file_path: String,
@@ -112,8 +119,14 @@ pub fn read_ini_section_with_credential(
     credential_alias: String,
 ) -> VoloResult<Vec<ini_editor::IniKey>> {
     let _ = credential_alias; // accepted-but-ignored shim (SSH key auth); Vue still sends it.
-    let host = ip_for(&db, machine_id)?;
-    ini_editor::read_section(&host, &file_path, &section)
+    // 与 read_ini_section 同体：同样 async + spawn_blocking，避免阻塞 SSH 冻结 UI。
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        let host = ip_for(&db, machine_id)?;
+        ini_editor::read_section(&host, &file_path, &section)
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("ini read task join: {}", e)))?
 }
 
 #[tauri::command]
