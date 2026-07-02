@@ -6,6 +6,7 @@ pub mod boundary_interp;
 pub mod direct;
 pub mod grid_check;
 pub mod nominal;
+pub mod provenance;
 pub mod radial_basis;
 pub mod surface_fit;
 

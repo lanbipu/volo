@@ -2,9 +2,10 @@ use nalgebra::Vector3;
 
 use crate::error::CoreError;
 use crate::measured_points::MeasuredPoints;
+use crate::reconstruct::provenance::{classify_grid, EXTRAPOLATION_THRESHOLD_MULTIPLIER};
 use crate::reconstruct::Reconstructor;
 use crate::shape::ShapePrior;
-use crate::surface::{GridTopology, QualityMetrics, ReconstructedSurface};
+use crate::surface::{GridTopology, QualityMetrics, ReconstructedSurface, VertexProvenance};
 use crate::uv::compute_grid_uv;
 
 /// Pure nominal model: 4-corner bilinear extrapolation across the
@@ -74,7 +75,8 @@ impl Reconstructor for NominalReconstructor {
 
         // FIX-12: any extra in-grid measured point (beyond the 4 exactly
         // reproduced corners) is a genuine holdout against the bilinear
-        // surface — report its residual stats; None when only corners exist.
+        // surface — report its residual stats; None when only corners exist
+        // or when total measured input is below the CV sample floor.
         let residuals = crate::reconstruct::grid_check::grid_residuals_mm(
             points,
             &vertices,
@@ -82,7 +84,32 @@ impl Reconstructor for NominalReconstructor {
             |col, row| (col == 0 || col == cols) && (row == 0 || row == rows),
         );
         let devs: Vec<f64> = residuals.iter().map(|(_, d)| *d).collect();
-        let stats = crate::reconstruct::grid_check::residual_stats_mm(&devs);
+        let stats = crate::reconstruct::grid_check::cv_residual_stats_mm(&devs, points.len());
+
+        // M1 uncertainty-ledger fix: only the 4 corners are exact anchors —
+        // classify everything else against them in (col,row) parameter
+        // space (nominal has no dense interior support, so most of the
+        // interior on a wide/tall wall legitimately comes back Extrapolated).
+        let anchors = [(0, 0), (cols, 0), (0, rows), (cols, rows)];
+        let vertex_provenance =
+            classify_grid(topo, &anchors, EXTRAPOLATION_THRESHOLD_MULTIPLIER);
+        let extrapolated_count = vertex_provenance
+            .iter()
+            .filter(|p| **p == VertexProvenance::Extrapolated)
+            .count();
+
+        let (spacing_outliers, mut warnings) = crate::reconstruct::grid_check::spacing_outliers(
+            &vertices,
+            topo,
+            &points.cabinet_array,
+            &points.screen_id,
+        );
+        if extrapolated_count > 0 {
+            warnings.push(format!(
+                "{extrapolated_count} vertex(es) are extrapolated beyond the 4 measured corners \
+                 — treat like a fabricated point (see vertex_provenance)"
+            ));
+        }
 
         let metrics = QualityMetrics {
             method: "nominal".into(),
@@ -90,6 +117,9 @@ impl Reconstructor for NominalReconstructor {
             expected_count: topo.vertex_count(),
             estimated_rms_mm: stats.map(|(rms, _)| rms),
             estimated_p95_mm: stats.map(|(_, p95)| p95),
+            outliers: spacing_outliers,
+            extrapolated_count,
+            warnings,
             ..Default::default()
         };
 
@@ -100,6 +130,7 @@ impl Reconstructor for NominalReconstructor {
             uv_coords: uvs,
             quality_metrics: metrics,
             scatter_fit: None,
+            vertex_provenance,
         })
     }
 }

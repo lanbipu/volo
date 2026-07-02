@@ -24,6 +24,7 @@ fn sample_2x1_surface() -> ReconstructedSurface {
         uv_coords: uvs,
         quality_metrics: QualityMetrics::default(),
         scatter_fit: None,
+        vertex_provenance: vec![],
     }
 }
 
@@ -59,6 +60,7 @@ fn welding_drops_duplicates() {
         uv_coords: uvs,
         quality_metrics: QualityMetrics::default(),
         scatter_fit: None,
+        vertex_provenance: vec![],
     };
     let cab = CabinetArray::rectangle(1, 1, [500.0, 500.0]);
     let mo = surface_to_mesh_output(&s, &cab, TargetSoftware::Neutral, 0.001).unwrap();
@@ -108,6 +110,7 @@ fn surface_to_mesh_disguise_limit_rejected_before_allocation() {
         uv_coords: uvs,
         quality_metrics: QualityMetrics::default(),
         scatter_fit: None,
+        vertex_provenance: vec![],
     };
     let cab = CabinetArray::rectangle(500, 500, [500.0, 500.0]);
 
