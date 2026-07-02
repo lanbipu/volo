@@ -25,7 +25,7 @@ from vpcal.core.coordinates import (
     to_opentrackio_transform,
     to_ue_transform,
 )
-from vpcal.core.errors import ArgumentError
+from vpcal.core.errors import ArgumentError, PreconditionError
 from vpcal.core.transforms import camera_in_stage_transform, make_transform
 from vpcal.models.lens import LensProfile
 
@@ -102,6 +102,19 @@ def _camera_to_world_sample(
     session_estimate: bool,
     frame_note: str | None,
 ) -> dict:
+    # OpenTrackIO sampleTimestamp seconds/nanoseconds are both unsigned; a
+    # delay shift on a take whose tracking clock starts near 0 can push the
+    # first samples negative — refuse rather than emit a non-conformant file.
+    total_ns = round(timestamp_s * 1e9)
+    if total_ns < 0:
+        raise PreconditionError(
+            f"sample timestamp {timestamp_s:.6f} s (frame {frame_id}) is negative "
+            "after the delay shift — OpenTrackIO sampleTimestamp is unsigned; "
+            "rebase the tracking timestamps (start >= |delay|) or export "
+            "without --apply-delay",
+            details={"frame_id": frame_id, "timestamp_s": timestamp_s},
+        )
+    seconds, nanoseconds = divmod(total_ns, 1_000_000_000)
     t = T_S_from_C_out[:3, 3]
     pan, tilt, roll = matrix_to_opentrackio_euler(T_S_from_C_out[:3, :3])
     tracker: dict = {"status": "calibrated", "recording": False}
@@ -118,8 +131,8 @@ def _camera_to_world_sample(
         "timing": {
             "sequenceNumber": frame_id,
             "sampleTimestamp": {
-                "seconds": int(timestamp_s),
-                "nanoseconds": int(round((timestamp_s - int(timestamp_s)) * 1e9)),
+                "seconds": seconds,
+                "nanoseconds": nanoseconds,
             },
         },
         "tracker": tracker,

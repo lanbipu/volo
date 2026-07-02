@@ -27,6 +27,7 @@ from vpcal.core.projection import CameraIntrinsics, project_point
 from vpcal.core.transforms import make_transform, stage_to_camera_transform
 from vpcal.io.frame_matching import match_frames
 from vpcal.io.tracking_io import load_tracking, to_internal_pose
+from vpcal.models.lens import effective_lens
 from vpcal.models.session import SessionConfig
 
 Array = NDArray[np.float64]
@@ -121,7 +122,12 @@ def overlay_session(
     c2t = result["tracker_to_camera"]
     T_S = make_transform(np.asarray(t2s["rotation"]), np.asarray(t2s["translation"]))
     T_C = make_transform(np.asarray(c2t["rotation"]), np.asarray(c2t["translation"]))
-    intr = CameraIntrinsics.from_lens(session.lens)
+    # A QLE result was solved with result.quality.lens_estimate, not the
+    # nominal session lens — overlaying through the nominal lens would show
+    # phantom reprojection error on a correct calibration.
+    lens_estimate = (result.get("quality") or {}).get("lens_estimate")
+    lens = effective_lens(session.lens, lens_estimate) if lens_estimate else session.lens
+    intr = CameraIntrinsics.from_lens(lens)
 
     marker_map = None
     if session.marker_map is not None:

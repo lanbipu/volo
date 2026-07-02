@@ -15,6 +15,13 @@ that "on a real wall ... come from detecting a known-fiducial test pattern"
      correspondences into ``processor_check.verify_one_to_one``.  A mapping
      that is not 1:1 (or too few fiducials decoded to fit one) raises
      :class:`PreconditionError` with the measured scale/offset in ``details``.
+
+Input domain: the captured image must be PIXEL-ACCURATE in the processor's
+output domain (an output frame grab / monitoring tap).  A camera photograph
+of the physical wall cannot be verified this way — the photo's own
+scale/offset/perspective (camera distance, framing) composes with the
+processor mapping into a single homography, so processor scaling is
+mathematically unrecoverable from fiducial positions alone.
 """
 
 from __future__ import annotations
@@ -120,6 +127,10 @@ def verify_mapping_image(
 ) -> CanvasMapping:
     """Detect the mapping-verify fiducials in a captured image and verify 1:1.
 
+    ``image_path`` must be a pixel-accurate capture of the processor's output
+    (frame grab / monitoring tap), NOT a camera photograph — see the module
+    docstring for why a photo is unverifiable.
+
     ``expected_width``/``expected_height`` is the input canvas resolution the
     pattern was generated at (``generate_mapping_pattern``'s ``width``/``height``).
 
@@ -172,7 +183,10 @@ def verify_mapping_image(
             "LED processor canvas mapping is NOT 1:1 "
             f"(scale {mapping.scale_x:.4f}/{mapping.scale_y:.4f}, "
             f"offset {mapping.offset_x_px:.2f}/{mapping.offset_y_px:.2f} px) — "
-            "marker 3D lookup will be wrong until the processor canvas is corrected",
+            "marker 3D lookup will be wrong until the processor canvas is "
+            "corrected. If this image is a camera PHOTOGRAPH of the wall, the "
+            "measured scale/offset reflects the camera geometry, not the "
+            "processor — re-capture as a pixel-accurate output frame grab",
             details={
                 "scale_x": mapping.scale_x, "scale_y": mapping.scale_y,
                 "offset_x_px": mapping.offset_x_px, "offset_y_px": mapping.offset_y_px,

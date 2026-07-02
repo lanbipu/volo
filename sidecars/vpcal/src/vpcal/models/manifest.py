@@ -184,7 +184,7 @@ def build_manifest() -> ContractManifest:
             "Export calibrated tracking data as OpenTrackIO JSONL.",
             "vpcal export opentrackio",
             tool_name="export_opentrackio",
-            exit_codes=[0, 2, 5],
+            exit_codes=[0, 2, 5, 6],
         ),
         _op(
             "export.ndisplay",
@@ -227,6 +227,13 @@ def build_manifest() -> ContractManifest:
             "vpcal marker-map rebase",
             tool_name="marker_map_rebase",
             exit_codes=[0, 2, 5, 6],
+        ),
+        _op(
+            "verify.mapping",
+            "Generate / check the 1:1 LED-processor canvas mapping test pattern.",
+            "vpcal verify mapping",
+            tool_name="verify_mapping",
+            exit_codes=[0, 1, 2, 6],
         ),
         _op(
             "verify.overlay",

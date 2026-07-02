@@ -1647,7 +1647,8 @@
       "exit_codes": [
         0,
         2,
-        5
+        5,
+        6
       ],
       "cli": {
         "command": "vpcal export opentrackio",
@@ -1995,6 +1996,63 @@
       },
       "mcp": {
         "tool_name": "marker_map_rebase",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      }
+    },
+    {
+      "operation_id": "verify.mapping",
+      "summary": "Generate / check the 1:1 LED-processor canvas mapping test pattern.",
+      "input_schema": {},
+      "output_schema": {},
+      "error_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "exit_code",
+          "message",
+          "retryable"
+        ]
+      },
+      "side_effects": {
+        "writes": true,
+        "external_calls": false,
+        "idempotent": true
+      },
+      "exit_codes": [
+        0,
+        1,
+        2,
+        6
+      ],
+      "cli": {
+        "command": "vpcal verify mapping",
+        "supports_stdin": false,
+        "supports_dry_run": true
+      },
+      "mcp": {
+        "tool_name": "verify_mapping",
         "annotations": {
           "readOnlyHint": false,
           "destructiveHint": false,

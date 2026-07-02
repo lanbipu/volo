@@ -28,6 +28,7 @@ from vpcal.core.errors import PreconditionError
 from vpcal.core.projection import CameraIntrinsics
 from vpcal.io.frame_matching import parse_frame_number
 from vpcal.io.tracking_io import load_tracking, to_internal_pose
+from vpcal.models.lens import effective_lens
 from vpcal.models.session import SessionConfig
 
 
@@ -87,7 +88,12 @@ def run_delay_cal(
             details={"video_dir": str(video_dir), "frames": len(images)},
         )
     world_map, marker_map = _world_map(session, session_dir)
-    intr = CameraIntrinsics.from_lens(session.lens)
+    # A QLE result was solved with result.quality.lens_estimate, not the
+    # nominal session lens — predicting trajectories through the nominal lens
+    # lets the τ scan absorb the lens mismatch into a biased delay_ms.
+    lens_estimate = (result.get("quality") or {}).get("lens_estimate")
+    lens = effective_lens(session.lens, lens_estimate) if lens_estimate else session.lens
+    intr = CameraIntrinsics.from_lens(lens)
 
     tracking = load_tracking(tracking_path)
     samples = []

@@ -30,7 +30,8 @@ def verify(ctx: click.Context) -> None:
 @click.option("--width", type=int, help="Input canvas width (px). Required with --generate or --image.")
 @click.option("--height", type=int, help="Input canvas height (px). Required with --generate or --image.")
 @click.option("--out", "out_path", type=click.Path(), help="Output pattern PNG path (--generate).")
-@click.option("--image", "image_path", type=click.Path(exists=True), help="Captured mapping-verify photo to check.")
+@click.option("--image", "image_path", type=click.Path(exists=True),
+              help="Pixel-accurate mapping-verify capture to check (processor output frame grab, not a photo).")
 @click.option("--scale-tol", type=float, default=None, help="Max |scale - 1| tolerance (default: processor_check.DEFAULT_SCALE_TOL).")
 @click.option("--offset-tol-px", type=float, default=None, help="Max |offset| tolerance in px (default: processor_check.DEFAULT_OFFSET_TOL_PX).")
 @common_options
@@ -41,9 +42,13 @@ def mapping(ctx, generate, width, height, out_path, image_path, scale_tol, offse
     ``--generate --width W --height H --out pattern.png`` renders a test image
     with 5 fiducials (4 corners + centre) at known absolute pixel coordinates
     on the declared input canvas.  Play it full-screen on the processor input
-    and photograph the physical LED wall.
+    and record a PIXEL-ACCURATE capture of the processor's output (output
+    frame grab / monitoring tap).  A camera photograph of the wall is NOT a
+    valid input: the photo's perspective/framing is mathematically
+    indistinguishable from a processor scale/offset, so even a genuine 1:1
+    canvas would fail the check.
 
-    ``--image capture.jpg --width W --height H`` (same W/H as generation)
+    ``--image capture.png --width W --height H`` (same W/H as generation)
     detects the fiducials in the capture, fits the input→physical affine
     mapping, and fails with a ``PreconditionError`` (exit 6) if it is not 1:1
     — printing the measured scale/offset so the processor config can be fixed.

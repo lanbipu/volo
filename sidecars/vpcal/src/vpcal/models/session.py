@@ -218,7 +218,8 @@ class ProcessorCheckConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     mapping_image: Optional[str] = None
-    """Path (relative to the session dir, or absolute) to a captured mapping-verify photo."""
+    """Path (relative to the session dir, or absolute) to a pixel-accurate
+    mapping-verify capture (processor output frame grab, NOT a camera photo)."""
     expected_width_px: Optional[int] = None
     """Input canvas width the mapping-verify pattern was generated at (required with ``mapping_image``)."""
     expected_height_px: Optional[int] = None

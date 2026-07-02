@@ -57,6 +57,19 @@ def parse_id_range(spec: str) -> list[int]:
     return sorted(ids)
 
 
+def _write_print_png(path: Path, sheet: np.ndarray, px_per_mm: float) -> None:
+    """Write a print-ready PNG with physical-scale (DPI/pHYs) metadata.
+
+    cv2.imwrite saves no pixel-density metadata, so a "print at 100% scale"
+    instruction leaves the physical size to the print program's default DPI —
+    silently breaking the mm truth the marker map / cube CAD declares.
+    """
+    from PIL import Image
+
+    dpi = px_per_mm * 25.4
+    Image.fromarray(sheet).save(str(path), dpi=(dpi, dpi))
+
+
 def _annotate(img: np.ndarray, lines: list[str], origin: tuple[int, int]) -> None:
     x, y = origin
     for line in lines:
@@ -125,7 +138,7 @@ def generate_boards(
         marker_id = f"{prefix}_{tag_id}"
         sheet = _tag_sheet(dictionary_name, tag_id, marker_id, size_mm, px_per_mm)
         path = out / f"{marker_id}.png"
-        cv2.imwrite(str(path), sheet)
+        _write_print_png(path, sheet, px_per_mm)
         files.append(str(path))
         for pt in ("c1", "c2", "c3", "c4"):
             csv_lines.append(
@@ -198,7 +211,7 @@ def generate_cube(
         off = (sheet.shape[1] - face_px) // 2
         cv2.rectangle(sheet, (off, off), (off + face_px - 1, off + face_px - 1), 0, 1)
         path = out / f"cube_{face}_{marker_id}.png"
-        cv2.imwrite(str(path), sheet)
+        _write_print_png(path, sheet, px_per_mm)
         files.append(str(path))
 
         centre = [c * size_mm for c in centre_units]

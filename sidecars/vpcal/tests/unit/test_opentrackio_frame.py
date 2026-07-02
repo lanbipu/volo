@@ -64,6 +64,38 @@ def test_m_rh_from_opentrackio_axes():
     assert np.isclose(np.linalg.det(M3), 1.0)       # proper rotation (no flip)
 
 
+def test_sample_timestamp_is_unsigned_with_correct_carry(tmp_path):
+    """seconds/nanoseconds must both be unsigned and in range (spec-conformant).
+
+    ts=1.9999999996 rounds to 2.0 s exactly — a naive frac*1e9 would emit
+    nanoseconds=1000000000 (out of range) next to seconds=1.
+    """
+    out = tmp_path / "otio.jsonl"
+    q, t = np.array([1.0, 0, 0, 0]), np.zeros(3)
+    tp = [(0, 1.9999999996, q, t), (1, 0.25, q, t)]
+    export_opentrackio(tp, IDENT, IDENT, default_lens(), out)
+    samples = [json.loads(line) for line in out.read_text().splitlines()]
+    st0 = samples[0]["timing"]["sampleTimestamp"]
+    assert (st0["seconds"], st0["nanoseconds"]) == (2, 0)
+    st1 = samples[1]["timing"]["sampleTimestamp"]
+    assert (st1["seconds"], st1["nanoseconds"]) == (0, 250_000_000)
+    for st in (st0, st1):
+        assert st["seconds"] >= 0 and 0 <= st["nanoseconds"] <= 999_999_999
+
+
+def test_negative_shifted_timestamp_is_rejected(tmp_path):
+    """A delay shift pushing a 0-based clock negative must not silently emit
+    a non-conformant unsigned-field underflow."""
+    import pytest
+
+    from vpcal.core.errors import PreconditionError
+
+    out = tmp_path / "otio.jsonl"
+    tp = [(0, 0.0, np.array([1.0, 0, 0, 0]), np.zeros(3))]
+    with pytest.raises(PreconditionError, match="unsigned"):
+        export_opentrackio(tp, IDENT, IDENT, default_lens(), out, applied_delay_ms=-40.0)
+
+
 def test_ue_frame_optin_flagged(tmp_path):
     """--frame ue keeps the legacy UE path but flags it as non-spec in notes."""
     out = tmp_path / "otio_ue.jsonl"

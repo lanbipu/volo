@@ -34,6 +34,20 @@ def test_generate_boards_and_detect(tmp_path):
     assert ids is not None and 0 in ids.ravel()
 
 
+def test_printable_png_carries_physical_dpi(tmp_path):
+    """"print at 100% scale" only reproduces the mm truth if the PNG embeds
+    its pixel density — without pHYs the print program picks an arbitrary DPI."""
+    from PIL import Image
+
+    px_per_mm = 8.0
+    summary = generate_boards("DICT_APRILTAG_36h11", [0], tmp_path, size_mm=120.0, px_per_mm=px_per_mm)
+    with Image.open(summary["boards"][0]) as im:
+        dpi = im.info.get("dpi")
+    assert dpi is not None
+    assert dpi[0] == pytest.approx(px_per_mm * 25.4, abs=0.51)  # pHYs rounds to px/metre
+    assert dpi[1] == pytest.approx(px_per_mm * 25.4, abs=0.51)
+
+
 def test_generate_cube_map_valid(tmp_path):
     summary = generate_cube("DICT_APRILTAG_36h11", tmp_path, size_mm=300.0, tolerance_mm=1.0)
     assert summary["num_markers"] == 5

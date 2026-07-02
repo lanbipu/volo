@@ -93,7 +93,7 @@ def test_declared_processor_with_processor_verified_skips_check(tmp_path):
 def test_declared_processor_with_passing_mapping_image(tmp_path):
     from vpcal.core.mapping_verify import generate_mapping_pattern
 
-    proc = ProcessorCanvas(input_width_px=100, input_height_px=100)
+    proc = ProcessorCanvas(input_width_px=640, input_height_px=480)
     session, raw = _make_session(tmp_path, processor=proc)
     generate_mapping_pattern(640, 480, tmp_path / "mapping.png")
     raw["processor_check"] = {
@@ -106,13 +106,29 @@ def test_declared_processor_with_passing_mapping_image(tmp_path):
     assert abs(report["processor_mapping"]["offset_x_px"]) < 0.5
 
 
+def test_mapping_check_canvas_must_match_declared_processor(tmp_path):
+    # A pattern verified at some OTHER resolution certifies nothing about the
+    # declared input canvas — it must not count as "checked".
+    from vpcal.core.mapping_verify import generate_mapping_pattern
+
+    proc = ProcessorCanvas(input_width_px=1920, input_height_px=1080)
+    session, raw = _make_session(tmp_path, processor=proc)
+    generate_mapping_pattern(640, 480, tmp_path / "mapping.png")
+    raw["processor_check"] = {
+        "mapping_image": "mapping.png", "expected_width_px": 640, "expected_height_px": 480,
+    }
+    session = SessionConfig.model_validate(raw)
+    with pytest.raises(PreconditionError, match="declared processor input canvas"):
+        validate_session(session, tmp_path, raw_session=raw)
+
+
 def test_declared_processor_with_failing_mapping_image_blocks(tmp_path):
     import cv2
     import numpy as np
 
     from vpcal.core.mapping_verify import generate_mapping_pattern
 
-    proc = ProcessorCanvas(input_width_px=100, input_height_px=100)
+    proc = ProcessorCanvas(input_width_px=640, input_height_px=480)
     session, raw = _make_session(tmp_path, processor=proc)
     generate_mapping_pattern(640, 480, tmp_path / "mapping_ref.png")
     img = cv2.imread(str(tmp_path / "mapping_ref.png"), cv2.IMREAD_GRAYSCALE)

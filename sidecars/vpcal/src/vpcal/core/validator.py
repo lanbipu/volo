@@ -220,6 +220,23 @@ def validate_session(
         elif pc is not None and pc.mapping_image and pc.expected_width_px and pc.expected_height_px:
             from vpcal.core.mapping_verify import verify_mapping_image
 
+            # The verification only certifies the canvas it was run at — a
+            # pattern generated at some other resolution passing the check says
+            # nothing about the declared processor input canvas.
+            declared = (screen.processor.input_width_px, screen.processor.input_height_px)
+            if (pc.expected_width_px, pc.expected_height_px) != declared:
+                raise PreconditionError(
+                    f"processor_check canvas {pc.expected_width_px}x{pc.expected_height_px} "
+                    f"does not match the declared processor input canvas "
+                    f"{declared[0]}x{declared[1]} — regenerate the mapping-verify "
+                    "pattern at the declared resolution (`vpcal verify mapping --generate`)",
+                    details={
+                        "expected_width_px": pc.expected_width_px,
+                        "expected_height_px": pc.expected_height_px,
+                        "declared_input_width_px": declared[0],
+                        "declared_input_height_px": declared[1],
+                    },
+                )
             mapping_image = _resolve(session_dir, pc.mapping_image)
             mapping = verify_mapping_image(mapping_image, pc.expected_width_px, pc.expected_height_px)
             report["processor_mapping_verified"] = "checked"

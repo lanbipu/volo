@@ -75,7 +75,7 @@ def test_manifest_operation_ids():
         "simulate", "simulate.sweep", "report.generate", "report.diff",
         "export.opentrackio", "export.ndisplay",
         "marker_map.create", "marker_map.validate", "marker_map.board",
-        "marker_map.cube", "marker_map.rebase", "verify.overlay",
+        "marker_map.cube", "marker_map.rebase", "verify.mapping", "verify.overlay",
         "capture.delay_cal",
         "capture.track", "capture.video", "capture.session", "capture.playback",
     }
