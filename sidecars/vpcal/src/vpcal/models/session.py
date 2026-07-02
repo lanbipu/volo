@@ -51,6 +51,23 @@ class ScreenConfig(BaseModel):
     path: str
 
 
+class MarkerMapConfig(BaseModel):
+    """Path to a surveyed marker map (AR mode ground-truth source, plan Phase A).
+
+    Present ⇒ the detect stage routes to the physical ArUco/AprilTag detector
+    and marker 3D coordinates come from the map instead of a screen definition.
+    Mutually exclusive with ``screen``.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    path: str
+    ground_tolerance_mm: float = Field(default=5.0, gt=0)
+    """Ground-plane offset warning threshold (Phase B2)."""
+    ground_tolerance_deg: float = Field(default=0.2, gt=0)
+    """Ground-plane tilt warning threshold (Phase B2)."""
+
+
 class RigidPrior(BaseModel):
     """A rigid-transform prior: translation (mm) + quaternion (w, x, y, z)."""
 
@@ -186,6 +203,30 @@ class ValidationConfig(BaseModel):
     """Fraction of frames (not observations) to hold out when no list is given."""
 
 
+class ProcessorCheckConfig(BaseModel):
+    """LED-processor 1:1 canvas mapping verification (architecture §3.3a, W9.1).
+
+    Only enforced when the referenced screen declares a ``processor``
+    (:class:`vpcal.models.screen.ProcessorCanvas`) — a screen with no processor
+    is assumed direct-drive 1:1 (Phase-1 default), so sessions without one see
+    no behaviour change.  When a processor IS declared, ``validate_session``
+    requires either ``processor_verified=true`` (self-attested, e.g. verified
+    once out-of-band for a fixed installation) or a ``mapping_image`` that
+    passes :func:`vpcal.core.mapping_verify.verify_mapping_image`.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    mapping_image: Optional[str] = None
+    """Path (relative to the session dir, or absolute) to a captured mapping-verify photo."""
+    expected_width_px: Optional[int] = None
+    """Input canvas width the mapping-verify pattern was generated at (required with ``mapping_image``)."""
+    expected_height_px: Optional[int] = None
+    """Input canvas height the mapping-verify pattern was generated at (required with ``mapping_image``)."""
+    processor_verified: bool = False
+    """Skip the mandatory check: the operator attests the processor mapping was already verified."""
+
+
 class SessionConfig(BaseModel):
     """Top-level session configuration (spec §3.2)."""
 
@@ -193,9 +234,26 @@ class SessionConfig(BaseModel):
 
     images: ImagesConfig
     tracking: TrackingConfig
-    screen: ScreenConfig
+    screen: Optional[ScreenConfig] = None
+    """LED screen definition (marker 3D truth for the VP-QSP path).  Exactly
+    one of ``screen`` / ``marker_map`` must be given."""
+    marker_map: Optional[MarkerMapConfig] = None
+    """Surveyed marker map (marker 3D truth for the AR path)."""
     lens: LensProfile
     solver: SolverConfig = Field(default_factory=SolverConfig)
     validation: Optional[ValidationConfig] = None
     """Held-out validation config; omit for the legacy no-holdout behaviour."""
     capture_mode: Literal["legacy", "dual_frame"] = "legacy"
+    processor_check: Optional[ProcessorCheckConfig] = None
+    """LED-processor mapping verification (W9.1); ``None`` = not yet attested.
+    Only enforced when the screen declares a ``processor`` (see
+    :class:`ProcessorCheckConfig`)."""
+
+    @model_validator(mode="after")
+    def _screen_xor_marker_map(self) -> "SessionConfig":
+        if (self.screen is None) == (self.marker_map is None):
+            raise ValueError(
+                "exactly one of 'screen' (LED path) or 'marker_map' (AR path) "
+                "must be configured"
+            )
+        return self

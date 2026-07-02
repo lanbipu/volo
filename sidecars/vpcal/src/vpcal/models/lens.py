@@ -51,6 +51,19 @@ class LensProfile(BaseModel):
     distortion: BrownConradyDistortion = Field(
         default_factory=BrownConradyDistortion,
     )
+    entrance_pupil_offset_mm: float | None = None
+    """Entrance pupil offset along the optical axis (architecture v2.2 §4.3).
+
+    ``None`` (default) reproduces the pre-W8 behaviour exactly (no shift).
+    Sign follows OpenLensIO/OpenTrackIO ``entrancePupilOffset``: positive when
+    the entrance pupil sits on the object side of the nominal reference plane.
+    For a fixed (non-zoom) lens this is degenerate with the Z component of
+    ``T_C_from_B`` when the latter is jointly refined (``refine_tracker_to_camera``)
+    — both add a constant shift along the camera's optical axis; the solver
+    cannot separate them from reprojection error alone. QA surfaces this via
+    ``lens_observability_warning`` / camera-prior diagnostics when both are in
+    play. For a zoom lens, the offset should vary with focus/zoom (FIZ table)
+    — not modelled yet (architecture 4.1 LensCal)."""
 
     @computed_field  # type: ignore[prop-decorator]
     @property

@@ -24,6 +24,10 @@ struct Observation {
 struct LensParams {
     double fx, fy, cx, cy;             // intrinsics
     double k1, k2, k3, p1, p2;        // Brown-Conrady: 3 radial + 2 tangential
+    // Fixed shift along the camera-frame optical axis (architecture §4.3),
+    // applied before the perspective divide.  0.0 reproduces pre-W8 behaviour
+    // exactly.  NOT a solved parameter — mirrors vpcal.core.projection.
+    double entrance_pupil_offset_mm = 0.0;
 };
 
 /// Solver tuning knobs.

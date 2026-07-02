@@ -14,6 +14,7 @@ import click
 from vpcal import __version__
 from vpcal.cli._common import OperationOutput, common_options, run_operation
 from vpcal.cli.export import export
+from vpcal.cli.marker_map import marker_map
 from vpcal.cli.pattern import pattern
 from vpcal.cli.capture import capture
 from vpcal.cli.quick import quick
@@ -21,6 +22,7 @@ from vpcal.cli.report import report
 from vpcal.cli.screen import screen
 from vpcal.cli.simulate import simulate
 from vpcal.cli.tracker_free import tracker_free
+from vpcal.cli.verify import verify
 
 _VERSION = __version__
 
@@ -59,6 +61,8 @@ cli.add_command(report)
 cli.add_command(export)
 cli.add_command(tracker_free)
 cli.add_command(capture)
+cli.add_command(marker_map)
+cli.add_command(verify)
 
 
 # ── Self-describe / meta commands ────────────────────────────────────
@@ -91,13 +95,18 @@ def schema(ctx: click.Context, **flags: object) -> None:
 
     def body() -> OperationOutput:
         from vpcal.models.calibration import CalibrationResult
+        from vpcal.models.marker_map import MarkerMapDefinition
         from vpcal.models.session import SessionConfig
 
         data = {
             "session_config": SessionConfig.model_json_schema(),
             "calibration_result": CalibrationResult.model_json_schema(),
+            "marker_map": MarkerMapDefinition.model_json_schema(),
         }
-        text = "Schemas: session_config, calibration_result (use --output json for full JSON Schema)."
+        text = (
+            "Schemas: session_config, calibration_result, marker_map "
+            "(use --output json for full JSON Schema)."
+        )
         return OperationOutput(data=data, text=text)
 
     run_operation("schema", body, **flags)

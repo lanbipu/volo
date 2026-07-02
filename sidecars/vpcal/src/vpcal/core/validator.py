@@ -79,10 +79,26 @@ def validate_session(
 
     images_dir = _resolve(session_dir, session.images.path)
     tracking_path = _resolve(session_dir, session.tracking.path)
-    screen_path = _resolve(session_dir, session.screen.path)
-    for label, p in [("tracking", tracking_path), ("screen", screen_path)]:
-        if not p.exists():
-            raise ResourceNotFoundError(f"{label} file not found: {p}", details={"path": str(p)})
+    if not tracking_path.exists():
+        raise ResourceNotFoundError(
+            f"tracking file not found: {tracking_path}", details={"path": str(tracking_path)}
+        )
+    screen_path = None
+    if session.screen is not None:
+        screen_path = _resolve(session_dir, session.screen.path)
+        if not screen_path.exists():
+            raise ResourceNotFoundError(
+                f"screen file not found: {screen_path}", details={"path": str(screen_path)}
+            )
+    if session.marker_map is not None:
+        # AR path (plan A2): load + geometric/degeneracy validation of the map.
+        from vpcal.core.marker_map import validate_marker_map
+        from vpcal.io.marker_map_io import load_marker_map
+
+        marker_map = load_marker_map(_resolve(session_dir, session.marker_map.path))
+        map_report = validate_marker_map(marker_map)
+        warnings.extend(map_report.pop("warnings"))
+        report["marker_map"] = map_report
 
     exact_obs = session_dir / "observations.jsonl"
     frames = load_tracking(tracking_path)
@@ -182,13 +198,43 @@ def validate_session(
         from vpcal.core.processor_check import check_screen_consistency
         from vpcal.io.screen_io import load_screen
 
-        screen = load_screen(str(screen_path))
+        screen = load_screen(str(screen_path)) if screen_path is not None else None
     except Exception:
         screen = None
     if screen is not None:
         report["processor_canvas"] = "1:1" if screen.processor is None else "declared"
         for issue in check_screen_consistency(screen):
             warnings.append(f"LED processor: {issue}")
+
+    # 6c. LED processor mapping verification (architecture §3.3a, W9.1): a
+    #     declared processor is a hard precondition for a real capture — a
+    #     scale/offset in the input→physical canvas mapping silently corrupts
+    #     the marker 3D lookup.  Scoped to screens that declare a processor
+    #     (6b); screens with none are the Phase-1 direct-drive 1:1 assumption
+    #     and see no behaviour change.  ``processor_verified=true`` opts out
+    #     (self-attested, e.g. a fixed installation verified once out-of-band).
+    if screen is not None and screen.processor is not None:
+        pc = session.processor_check
+        if pc is not None and pc.processor_verified:
+            report["processor_mapping_verified"] = "skipped (processor_verified=true)"
+        elif pc is not None and pc.mapping_image and pc.expected_width_px and pc.expected_height_px:
+            from vpcal.core.mapping_verify import verify_mapping_image
+
+            mapping_image = _resolve(session_dir, pc.mapping_image)
+            mapping = verify_mapping_image(mapping_image, pc.expected_width_px, pc.expected_height_px)
+            report["processor_mapping_verified"] = "checked"
+            report["processor_mapping"] = {
+                "scale_x": mapping.scale_x, "scale_y": mapping.scale_y,
+                "offset_x_px": mapping.offset_x_px, "offset_y_px": mapping.offset_y_px,
+            }
+        else:
+            raise PreconditionError(
+                "screen declares a LED processor but its 1:1 canvas mapping is "
+                "not verified: set processor_check.processor_verified=true (if "
+                "already verified out-of-band) or processor_check.mapping_image "
+                "+ expected_width_px/expected_height_px (see `vpcal verify mapping`)",
+                details={"screen": screen.name},
+            )
 
     report["passed"] = True
     return report

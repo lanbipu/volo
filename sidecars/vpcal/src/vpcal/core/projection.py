@@ -31,6 +31,10 @@ class CameraIntrinsics:
     height: float = 0.0
     """Image dimensions (px).  0 means unknown → callers fall back to 2·cx/2·cy,
     which is only correct when the principal point is centred."""
+    entrance_pupil_offset_mm: float = 0.0
+    """Fixed shift along the camera-frame optical axis (architecture §4.3), applied
+    before the perspective divide.  0.0 (default) reproduces pre-W8 behaviour
+    exactly.  See :attr:`vpcal.models.lens.LensProfile.entrance_pupil_offset_mm`."""
 
     @classmethod
     def from_lens(cls, lens) -> "CameraIntrinsics":  # type: ignore[no-untyped-def]
@@ -48,6 +52,7 @@ class CameraIntrinsics:
             p2=d.p2,
             width=float(lens.image_width_px),
             height=float(lens.image_height_px),
+            entrance_pupil_offset_mm=lens.entrance_pupil_offset_mm or 0.0,
         )
 
     @property
@@ -68,12 +73,18 @@ def distort_normalized(xn: Array, yn: Array, intr: CameraIntrinsics) -> tuple[Ar
 def project_points(points_cam: Array, intr: CameraIntrinsics) -> Array:
     """Project camera-frame points to pixels.
 
-    ``points_cam`` is ``(N, 3)`` in the OpenCV camera frame; returns ``(N, 2)``
-    pixel coordinates.  Points with ``Z <= 0`` are behind the camera; their
-    pixels are still computed (the caller decides whether to cull).
+    ``points_cam`` is ``(N, 3)`` in the OpenCV camera frame (nominal reference
+    plane, i.e. the ``T_C_from_B`` origin); returns ``(N, 2)`` pixel
+    coordinates.  Points with ``Z <= 0`` are behind the camera; their pixels
+    are still computed (the caller decides whether to cull).
+
+    When ``intr.entrance_pupil_offset_mm`` is non-zero, the point is shifted
+    along the optical axis (Z) before the perspective divide, matching
+    OpenLensIO eq. (1): ``z_p = z - z_epd`` (transverse entrance-pupil offsets
+    are assumed negligible, per spec).  X/Y are unaffected.
     """
     pts = np.atleast_2d(np.asarray(points_cam, dtype=np.float64))
-    z = pts[:, 2]
+    z = pts[:, 2] - intr.entrance_pupil_offset_mm
     # Z<=0 (behind/at camera) yields inf/NaN; keep the whole computation under
     # errstate so the non-finite arithmetic doesn't leak RuntimeWarnings.
     with np.errstate(divide="ignore", invalid="ignore"):

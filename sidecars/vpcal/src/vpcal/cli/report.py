@@ -33,8 +33,10 @@ def generate(ctx, result_path, qa_dir, **flags) -> None:
         qa = Path(qa_dir) if qa_dir else rp.parent / "qa"
         reproj = _load_optional(qa / "reprojection.json")
         coverage = _load_optional(qa / "coverage.json")
-        data = {"result": result, "reprojection": reproj, "coverage": coverage}
-        return OperationOutput(data=data, text=_render(result, reproj, coverage))
+        offsets = _load_optional(qa / "tracker_offsets.json")
+        data = {"result": result, "reprojection": reproj, "coverage": coverage,
+                "tracker_offsets": offsets}
+        return OperationOutput(data=data, text=_render(result, reproj, coverage, offsets))
 
     run_operation("report.generate", body, **flags)
 
@@ -77,7 +79,8 @@ def _load_optional(p: Path) -> dict | None:
     return json.loads(p.read_text()) if p.exists() else None
 
 
-def _render(result: dict, reproj: dict | None, coverage: dict | None) -> str:
+def _render(result: dict, reproj: dict | None, coverage: dict | None,
+            offsets: dict | None = None) -> str:
     q = result.get("quality", {})
     lines = [
         f"Calibration QA report (confidence: {q.get('confidence')})",
@@ -100,4 +103,8 @@ def _render(result: dict, reproj: dict | None, coverage: dict | None) -> str:
                 )
     if q.get("confidence") in ("very_low", "low"):
         lines.append("  suggestion       : low confidence — add poses (8-15 recommended) and ensure >= 50 observations.")
+    if offsets:
+        from vpcal.core.tracker_offsets import render_offsets_text
+
+        lines += render_offsets_text(offsets)
     return "\n".join(lines)

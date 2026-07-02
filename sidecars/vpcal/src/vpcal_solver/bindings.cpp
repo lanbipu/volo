@@ -47,12 +47,17 @@ PYBIND11_MODULE(_vpcal_solver, m) {
 
     py::class_<vpcal::LensParams>(m, "LensParams")
         .def(py::init([](double fx, double fy, double cx, double cy, double k1,
-                         double k2, double k3, double p1, double p2) {
+                         double k2, double k3, double p1, double p2,
+                         double entrance_pupil_offset_mm) {
             vpcal::LensParams l;
             l.fx = fx; l.fy = fy; l.cx = cx; l.cy = cy;
             l.k1 = k1; l.k2 = k2; l.k3 = k3; l.p1 = p1; l.p2 = p2;
+            l.entrance_pupil_offset_mm = entrance_pupil_offset_mm;
             return l;
-        }));
+        }),
+             py::arg("fx"), py::arg("fy"), py::arg("cx"), py::arg("cy"),
+             py::arg("k1"), py::arg("k2"), py::arg("k3"), py::arg("p1"), py::arg("p2"),
+             py::arg("entrance_pupil_offset_mm") = 0.0);
 
     py::class_<vpcal::SolverConfig>(m, "SolverConfig")
         .def(py::init([](bool refine, double robust_scale, double prior_weight,

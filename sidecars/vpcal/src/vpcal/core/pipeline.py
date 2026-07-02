@@ -19,7 +19,7 @@ from numpy.typing import NDArray
 from vpcal.core.coordinates import m_rh_from_source
 from vpcal.core.detector import detect_markers
 from vpcal.core.errors import PreconditionError
-from vpcal.core.observations import MarkerId, Observation
+from vpcal.core.observations import Observation, marker_id_from_dict
 from vpcal.core.projection import CameraIntrinsics
 from vpcal.core.screen_geometry import marker_world_map
 from vpcal.core.solver import (
@@ -48,21 +48,17 @@ def _resolve(session_dir: Path, p: str) -> Path:
     return path if path.is_absolute() else session_dir / path
 
 
-def _world_rh(world_map: dict, marker_id: MarkerId) -> Array | None:
-    w = world_map.get(marker_id)
-    return None if w is None else _M_UE @ w
-
-
 def _load_exact_observations(
     path: Path, world_map: dict, poses: dict[int, tuple[Array, Array]]
 ) -> list[Observation]:
+    """Load exact correspondences; ``world_map`` values are already internal RH."""
     observations: list[Observation] = []
     for line in path.read_text().splitlines():
         if not line.strip():
             continue
         rec = json.loads(line)
-        mid = MarkerId.from_dict(rec["marker_id"])
-        world = _world_rh(world_map, mid)
+        mid = marker_id_from_dict(rec["marker_id"])
+        world = world_map.get(mid)
         pose = poses.get(rec["frame_id"])
         if world is None or pose is None:
             continue
@@ -141,7 +137,7 @@ def _detect_observations(
                 # may be valid but the position contradicts its neighbours.
                 rejected_topology += 1
                 continue
-            world = _world_rh(world_map, det.marker_id)
+            world = world_map.get(det.marker_id)
             if world is None:
                 continue
             observations.append(
@@ -156,6 +152,84 @@ def _detect_observations(
         "images_processed": images_processed,
         "images_differenced": images_differenced,
         "warnings": report_warnings,
+    }
+    return observations, report
+
+
+def _detect_observations_physical(
+    session: SessionConfig,
+    images: list[str],
+    world_map: dict,
+    marker_map,
+    frames,
+) -> tuple[list[Observation], dict]:
+    """Detect physical ArUco/AprilTag markers in the matched images (AR path).
+
+    Same contract as :func:`_detect_observations`; the report counts markers
+    that were detected but absent from the map (warning, never solved) and
+    map markers that were never seen (coverage gap).
+    """
+    import cv2
+
+    from vpcal.core.detector_physical import detect_physical_markers
+
+    frame_ids = [f.frame_id for f in frames]
+    if session.tracking.frame_matching == "timestamp":
+        raise PreconditionError(
+            "frame_matching='timestamp' needs per-image timestamps (EXIF), which "
+            "the offline pipeline cannot extract; use 'frame_id' or 'line_number'",
+            details={"frame_matching": "timestamp"},
+        )
+    match = match_frames(
+        images, frame_ids, strategy=session.tracking.frame_matching,
+        timestamp_tolerance_s=session.tracking.timestamp_tolerance_s,
+    )
+    observations: list[Observation] = []
+    images_processed = 0
+    detected_total = 0
+    unknown_total = 0
+    observed_markers: set[str] = set()
+    for fm in match.matched:
+        frame = frames[fm.tracking_index]
+        img = cv2.imread(fm.image, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            continue
+        images_processed += 1
+        q, t = to_internal_pose(
+            frame, session.tracking.coordinate_system, session.tracking.custom_transform
+        )
+        dets, counters = detect_physical_markers(img, marker_map, frame_id=frame.frame_id)
+        detected_total += counters["detected_markers"]
+        unknown_total += counters["unknown_markers"]
+        for det in dets:
+            world = world_map.get(det.marker_id)
+            if world is None:
+                continue
+            observed_markers.add(det.marker_id.marker)
+            observations.append(
+                Observation(
+                    pixel_u=det.pixel_u, pixel_v=det.pixel_v, world_rh=tuple(world),
+                    track_q=tuple(q), track_t=tuple(t), frame_id=det.frame_id, marker_id=det.marker_id,
+                )
+            )
+    never_detected = sorted(
+        {m.marker_id for m in marker_map.detectable_markers()} - observed_markers
+    )
+    warnings = []
+    if unknown_total:
+        warnings.append(
+            f"{unknown_total} detected marker(s) are not in the marker map — ignored"
+        )
+    report = {
+        "images_processed": images_processed,
+        "detected_markers": detected_total,
+        "unknown_markers": unknown_total,
+        "map_markers_never_detected": never_detected,
+        "warnings": warnings,
+        # Keys shared with the VP-QSP report so downstream consumers need no branch.
+        "detection_rejected_topology": 0,
+        "differencing_enabled": None,
+        "images_differenced": 0,
     }
     return observations, report
 
@@ -282,6 +356,9 @@ def _lens_profile_from_intr(intr: CameraIntrinsics, ref):
         principal_point_offset_mm=((intr.cx - w / 2.0) * sw / w, (intr.cy - h / 2.0) * sh / h),
         image_width_px=w, image_height_px=h,
         distortion=BrownConradyDistortion(k1=intr.k1, k2=intr.k2, k3=intr.k3, p1=intr.p1, p2=intr.p2),
+        # QLE never estimates the entrance pupil — keep the nominal offset so
+        # the exported lens matches what the solver actually used.
+        entrance_pupil_offset_mm=ref.entrance_pupil_offset_mm,
     )
 
 
@@ -555,9 +632,28 @@ def run_quick(
             return {"exit_code": 0, "stage": "validate", "validation": validation}
 
     # ── Build shared inputs ────────────────────────────────────────
-    screen = load_screen(_resolve(session_dir, session.screen.path))
+    # Marker 3D truth source: LED screen (VP-QSP path, UE frame → RH) or a
+    # surveyed marker map (AR path, coordinates already the RH stage frame).
+    # ``world_map`` values are internal-RH in both cases.
+    screen = None
+    marker_map = None
+    if session.marker_map is not None:
+        from vpcal.core.marker_map import physical_world_map
+        from vpcal.io.marker_map_io import load_marker_map
+
+        marker_map = load_marker_map(_resolve(session_dir, session.marker_map.path))
+        world_map = physical_world_map(marker_map)
+        truth_name = marker_map.name or marker_map.frame_name
+    else:
+        screen = load_screen(_resolve(session_dir, session.screen.path))
+        world_map = {
+            mid: _M_UE @ w
+            for mid, w in marker_world_map(
+                screen, markers_per_cabinet=screen.markers_per_cabinet
+            ).items()
+        }
+        truth_name = screen.name
     intr = CameraIntrinsics.from_lens(session.lens)
-    world_map = marker_world_map(screen, markers_per_cabinet=screen.markers_per_cabinet)
     frames = load_tracking(_resolve(session_dir, session.tracking.path))
     poses = to_internal_poses(frames, session.tracking.coordinate_system, session.tracking.custom_transform)
 
@@ -581,7 +677,12 @@ def run_quick(
                             "images_processed": 0, "images_differenced": 0, "warnings": []}
     else:
         images = list_images(_resolve(session_dir, session.images.path))
-        observations, detection_report = _detect_observations(session, session_dir, images, world_map, frames)
+        if marker_map is not None:
+            observations, detection_report = _detect_observations_physical(
+                session, images, world_map, marker_map, frames
+            )
+        else:
+            observations, detection_report = _detect_observations(session, session_dir, images, world_map, frames)
         detection_source = "detector"
     detection_report["detection_source"] = detection_source
 
@@ -678,7 +779,28 @@ def run_quick(
         }
     else:
         reproj["validation"] = "none"
-    coverage = coverage_report(train_obs, eff_intr, screen, tracker_internal)
+    coverage = coverage_report(train_obs, eff_intr, screen, tracker_internal, marker_map=marker_map)
+
+    # ── AR-path QA: ground plane + world-alignment uncertainty (Phase B) ──
+    ground_plane = None
+    world_alignment = None
+    if marker_map is not None:
+        from vpcal.core.marker_map import fit_ground_plane, world_alignment_uncertainty
+
+        ground_plane = fit_ground_plane(
+            marker_map,
+            tolerance_mm=session.marker_map.ground_tolerance_mm,
+            tolerance_deg=session.marker_map.ground_tolerance_deg,
+        )
+        world_alignment = world_alignment_uncertainty(marker_map)
+
+    # ── Tracker offset backfill block (Phase E3) ───────────────────
+    from vpcal.core.tracker_offsets import tracker_offsets_block
+
+    tracker_offsets = tracker_offsets_block(
+        t2s, c2t, session.tracking.coordinate_system, session.tracking.custom_transform
+    )
+
     if lens_obs is not None:
         reproj["spatial_vs_lens_refined"] = {
             "spatial_only_rms_px": lens_obs["summary"]["spatial_only_rms_px"],
@@ -692,7 +814,7 @@ def run_quick(
     confidence = _confidence(num_poses, total_obs, rms, validation_rms)
 
     result = _assemble_result(
-        session, raw_session, screen, solver_result, reproj, confidence, num_poses, total_obs,
+        session, raw_session, truth_name, solver_result, reproj, confidence, num_poses, total_obs,
         __version__, estimated_lens=estimated_lens,
         validation_rms=validation_rms, validation_observations=len(holdout_obs),
     )
@@ -700,15 +822,22 @@ def run_quick(
     _write_outputs(
         out, result, reproj, coverage, validation, frames, poses, t2s, c2t, export_lens, lens_obs,
         session_estimate=estimated_lens is not None, detection_report=detection_report,
-        handeye_report=handeye_report,
+        handeye_report=handeye_report, ground_plane=ground_plane,
+        world_alignment=world_alignment, tracker_offsets=tracker_offsets,
     )
+
+    qa = {"reprojection": reproj, "coverage": coverage, "detection": detection_report,
+          "handeye": handeye_report, "tracker_offsets": tracker_offsets}
+    if ground_plane is not None:
+        qa["ground_plane"] = ground_plane
+    if world_alignment is not None:
+        qa["world_alignment"] = world_alignment
 
     exit_code = 9 if total_obs < MIN_OBSERVATIONS_SOFT else 0
     return {
         "exit_code": exit_code,
         "result": result.model_dump(mode="json"),
-        "qa": {"reprojection": reproj, "coverage": coverage, "detection": detection_report,
-               "handeye": handeye_report},
+        "qa": qa,
         "confidence": confidence,
         "solver_backend": solver_result.solver_backend,
         "detection_source": detection_source,
@@ -717,7 +846,7 @@ def run_quick(
 
 
 def _assemble_result(
-    session, raw_session, screen, sr, reproj, confidence, num_poses, total_obs, version,
+    session, raw_session, truth_name, sr, reproj, confidence, num_poses, total_obs, version,
     *, estimated_lens=None, validation_rms=None, validation_observations=0,
 ):
     from vpcal.models.calibration import (
@@ -753,7 +882,7 @@ def _assemble_result(
             lens_observability_warning=estimated_lens is not None,
         ),
         inputs=Inputs(
-            session_config_hash=config_hash, image_count=num_poses, screen_definition=screen.name
+            session_config_hash=config_hash, image_count=num_poses, screen_definition=truth_name
         ),
         solver_diagnostics=SolverDiagnostics(
             num_iterations=sr.num_iterations, initial_cost=sr.initial_cost, final_cost=sr.final_cost,
@@ -766,7 +895,8 @@ def _assemble_result(
 
 
 def _write_outputs(out, result, reproj, coverage, validation, frames, poses, t2s, c2t, lens, lens_obs=None,
-                   *, session_estimate=False, detection_report=None, handeye_report=None):
+                   *, session_estimate=False, detection_report=None, handeye_report=None,
+                   ground_plane=None, world_alignment=None, tracker_offsets=None):
     from vpcal.io.export.opentrackio import export_opentrackio
 
     (out / "qa").mkdir(parents=True, exist_ok=True)
@@ -779,6 +909,12 @@ def _write_outputs(out, result, reproj, coverage, validation, frames, poses, t2s
         (out / "qa" / "detection.json").write_text(json.dumps(detection_report, indent=2))
     if handeye_report is not None:
         (out / "qa" / "handeye.json").write_text(json.dumps(handeye_report, indent=2))
+    if ground_plane is not None:
+        (out / "qa" / "ground_plane.json").write_text(json.dumps(ground_plane, indent=2))
+    if world_alignment is not None:
+        (out / "qa" / "world_alignment.json").write_text(json.dumps(world_alignment, indent=2))
+    if tracker_offsets is not None:
+        (out / "qa" / "tracker_offsets.json").write_text(json.dumps(tracker_offsets, indent=2))
     if lens_obs is not None:
         (out / "qa" / "lens_observability.json").write_text(json.dumps(lens_obs, indent=2))
     tracker_poses = [

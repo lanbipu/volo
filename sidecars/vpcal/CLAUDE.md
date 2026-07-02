@@ -32,6 +32,15 @@ vpcal pattern generate --screen screen.json --out-dir /tmp/patterns  # generate 
 vpcal screen create --width 5000 --height 2700 -o screen.json  # create screen definition
 vpcal report generate result.json  # generate QA report from calibration result
 vpcal export opentrackio result.json tracking.csv  # export calibrated data as OpenTrackIO JSONL
+# AR mode (no LED wall): the marker 3D truth comes from a surveyed marker map
+vpcal marker-map create --from-csv survey.csv --frame-name "..." --out map.json  # survey CSV → map
+vpcal marker-map board --dict DICT_APRILTAG_36h11 --ids 0-11 --out-dir boards/   # printable tags
+vpcal marker-map cube --size-mm 300 --dict DICT_APRILTAG_36h11 --out-dir cube/   # DIY calibration cube
+vpcal marker-map rebase map.json --to-ground --out map2.json  # explicit ground re-base (audited)
+vpcal simulate --marker-map map.json --output-dir /tmp/ar     # synthetic AR session
+vpcal verify overlay --config session.json --result result.json --out annotated/  # eyes-on check
+vpcal capture delay-cal --config session.json --result result.json \
+    --video frames/ --tracking poses.jsonl   # video↔tracking delay (swing test, offline)
 AI_AGENT=1 vpcal quick run session.json  # agent mode: defaults to JSON output
 ```
 
