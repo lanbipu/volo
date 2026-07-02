@@ -74,6 +74,8 @@ pub fn operations() -> &'static [Operation] {
         Operation { operation_id: "ddc.verify",                summary: "Verify a previously generated .ddp pak exists",                   cli_command: "voloctl cache ddc verify",                 side_effects: SideEffects{writes:false,external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
         Operation { operation_id: "ddc.distribute",            summary: "Distribute the DDC pak to target machines via Robocopy",          cli_command: "voloctl cache ddc distribute",             side_effects: SideEffects{writes:true, external_calls:true, idempotent:false}, exit_codes: &[0,1,2,3,4] },
         Operation { operation_id: "pso.verify",                summary: "Verify PSO precaching CVars (R008-R010) for a project",           cli_command: "voloctl cache pso verify",                 side_effects: SideEffects{writes:true, external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
+        Operation { operation_id: "pso.warmup",                summary: "Warm up & verify PSO readiness on render nodes (hitch count)",    cli_command: "voloctl cache pso warmup",                 side_effects: SideEffects{writes:true, external_calls:true, idempotent:false}, exit_codes: &[0,1,2,3,4] },
+        Operation { operation_id: "pso.runs",                  summary: "List PSO warm-up/verification runs for a project",                cli_command: "voloctl cache pso runs",                   side_effects: SideEffects{writes:false,external_calls:false,idempotent:true},  exit_codes: &[0,3] },
         Operation { operation_id: "pso.collect",               summary: "Run UE -game to collect PSO cache files (streaming)",             cli_command: "voloctl cache pso collect",                side_effects: SideEffects{writes:true, external_calls:true, idempotent:false}, exit_codes: &[0,1,2,3,4] },
         Operation { operation_id: "pso.list",                  summary: "List collected PSO cache files for a project",                    cli_command: "voloctl cache pso list",                   side_effects: SideEffects{writes:false,external_calls:false,idempotent:true},  exit_codes: &[0,3] },
         Operation { operation_id: "pso.distribute",            summary: "Distribute PSO cache files to target machines",                   cli_command: "voloctl cache pso distribute",             side_effects: SideEffects{writes:true, external_calls:true, idempotent:false}, exit_codes: &[0,1,2,3,4] },
@@ -198,6 +200,8 @@ pub fn operation_id_for(cmd: &Domain) -> &'static str {
         },
         Domain::Pso { action } => match action {
             crate::args::PsoAction::Verify { .. } => "pso.verify",
+            crate::args::PsoAction::Warmup { .. } => "pso.warmup",
+            crate::args::PsoAction::Runs { .. } => "pso.runs",
             crate::args::PsoAction::Collect { .. } => "pso.collect",
             crate::args::PsoAction::List { .. } => "pso.list",
             crate::args::PsoAction::Distribute { .. } => "pso.distribute",
@@ -351,7 +355,7 @@ pub fn output_schema_for(operation_id: &str) -> serde_json::Value {
         | "env.set"
         | "project.discover" | "project.create_manual" | "project.set_location"
         | "project.delete" | "project.delete_location"
-        | "pso.collect" | "pso.distribute"
+        | "pso.warmup" | "pso.collect" | "pso.distribute"
         | "health.run"
         | "ini.set" | "ini.remove" | "ini.scan" | "ini.apply" | "ini.skip"
         | "ini.verify_pso_precaching" | "pso.verify"

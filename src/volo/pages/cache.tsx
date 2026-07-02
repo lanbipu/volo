@@ -388,7 +388,8 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
   const taskVis = (st) => st === 'running' ? 'accent' : st === 'success' ? 'positive' : st === 'failed' ? 'negative' : 'neutral';
   const taskIcon = (t) => t.state === 'running' ? h('span', { className: 'spin' }, h(Icon, { name: 'sync', size: 13 }))
     : t.state === 'success' ? h(Icon, { name: 'check', size: 13 })
-    : t.state === 'failed' ? h(Icon, { name: 'x', size: 13 }) : h(Icon, { name: 'pause', size: 13 });
+    : t.state === 'failed' ? h(Icon, { name: 'x', size: 13 })
+    : t.state === 'canceled' ? h(Icon, { name: 'minus', size: 13 }) : h(Icon, { name: 'pause', size: 13 });
 
   function TaskCard({ s, t }) {
     const [open, setOpen] = useState(false);

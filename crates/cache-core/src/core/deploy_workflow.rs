@@ -476,8 +476,12 @@ fn execute_one(
         }
         SetPsoCvars => {
             let project_root = project_root_for(db, plan.project_id, machine_id)?;
+            // UE 5.8 源码核实（ConfigCacheIni.cpp::LoadConsoleVariablesFromINI）：
+            // 工程级 CVar 生效位置是 GEngineIni 层级（DefaultEngine.ini）的
+            // [ConsoleVariables] 段；工程目录下的 ConsoleVariables.ini 引擎不读
+            // （只读引擎目录那份的 [Startup]）。原先写错了文件。
             let ini = format!(
-                "{}\\Config\\ConsoleVariables.ini",
+                "{}\\Config\\DefaultEngine.ini",
                 project_root.trim_end_matches('\\')
             );
             for key in [
@@ -485,11 +489,11 @@ fn execute_one(
                 "r.PSOPrecaching",
                 "r.PSOPrecache.GlobalShaders",
             ] {
-                ini_editor::set_key(host, &ini, "ConsoleVariables", key, "1")?;
+                ini_editor::set_key_create(host, &ini, "ConsoleVariables", key, "1")?;
             }
             // r.PSOPrecache.Compile 不是真实存在的 CVar（UE 5.8 源码核实过），已从这里删除；
             // R009 巡检的是 r.PSOPrecache.Mode，健康值是 0（Full PSO），不是 1。
-            ini_editor::set_key(host, &ini, "ConsoleVariables", "r.PSOPrecache.Mode", "0")?;
+            ini_editor::set_key_create(host, &ini, "ConsoleVariables", "r.PSOPrecache.Mode", "0")?;
             Ok(Some("4 CVars set".into()))
         }
         CollectPso => {

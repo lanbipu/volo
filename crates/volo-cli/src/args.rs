@@ -917,7 +917,38 @@ pub enum PsoAction {
         #[command(flatten)]
         cred: crate::credential_args::CredentialArgs,
     },
-    /// Run UE `-game` to collect PSO cache files. Long-running NDJSON stream.
+    /// Warm up & verify PSO readiness: run UE `-game` ON each target render node
+    /// (interactive session, Session 0 evasion) and count PSO creation hitches via
+    /// LogPSOHitching. First run absorbs hitches into the node's driver cache; a
+    /// re-run with hitch_count 0 is the "ready for show" green light. NDJSON stream.
+    Warmup {
+        #[arg(long)]
+        project_id: i64,
+        /// Target render-node machine ids, comma-separated.
+        #[arg(long, value_name = "M1,M2,...", value_delimiter = ',')]
+        targets: Vec<i64>,
+        #[arg(long, value_name = "WxH", default_value = "1920x1080")]
+        resolution: String,
+        #[arg(long, default_value_t = 20)]
+        max_minutes: u32,
+        /// Pin the UE version on every node (e.g. 5.8). Omit = each node's
+        /// primary install — risky if it differs from the project version.
+        #[arg(long)]
+        ue_version: Option<String>,
+        #[command(flatten)]
+        cred: crate::credential_args::CredentialArgs,
+    },
+    /// List PSO warm-up/verification runs for a project (newest first).
+    Runs {
+        #[arg(long)]
+        project_id: i64,
+        /// Filter to one machine.
+        #[arg(long)]
+        machine: Option<i64>,
+    },
+    /// [DEPRECATED] Run UE `-game` to collect PSO cache files. Verified 2026-07-02:
+    /// uncooked `-game` never writes Saved/CollectedPSOs (FShaderPipelineCache needs
+    /// cooked data), so this records nothing on this cluster — use `pso warmup`.
     Collect {
         #[arg(long)]
         project_id: i64,
@@ -937,7 +968,9 @@ pub enum PsoAction {
         #[arg(long)]
         project_id: i64,
     },
-    /// Distribute PSO cache files to one or more target machines (with GPU mismatch preflight guard).
+    /// [DEPRECATED] Distribute PSO cache files to target machines. Verified: files
+    /// copied to Saved/CollectedPSOs are never loaded by uncooked `-game` builds —
+    /// warm each node locally with `pso warmup` instead.
     Distribute {
         #[arg(long)]
         project_id: i64,

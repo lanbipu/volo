@@ -411,6 +411,28 @@ const MIGRATIONS: &[(&str, &str)] = &[
         ALTER TABLE zen_endpoints ADD COLUMN config_path_override TEXT;
         "#,
     ),
+    (
+        "026_pso_warmup_runs_table",
+        r#"
+        CREATE TABLE IF NOT EXISTS pso_warmup_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            machine_id INTEGER NOT NULL,
+            resolution_w INTEGER NOT NULL,
+            resolution_h INTEGER NOT NULL,
+            max_minutes INTEGER NOT NULL,
+            hitch_count INTEGER,
+            status TEXT NOT NULL DEFAULT 'running',
+            error_message TEXT,
+            started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            duration_secs INTEGER,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (machine_id) REFERENCES machines(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_pso_warmup_runs_project ON pso_warmup_runs(project_id);
+        CREATE INDEX IF NOT EXISTS idx_pso_warmup_runs_machine ON pso_warmup_runs(machine_id);
+        "#,
+    ),
 ];
 
 pub fn migrate(conn: &mut Connection) -> VoloResult<()> {

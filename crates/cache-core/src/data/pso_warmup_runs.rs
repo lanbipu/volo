@@ -1,0 +1,237 @@
+//! CRUD for the `pso_warmup_runs` table (per-node warm-up & verification runs).
+
+use crate::data::Db;
+use crate::error::VoloResult;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum WarmupStatus {
+    Running,
+    /// Ran to planned completion (engine exit 0 or max-minutes watchdog).
+    /// Only this status is green-light eligible.
+    Ok,
+    Err,
+    /// Stopped early by an operator cancel — the node was NOT verified.
+    Cancelled,
+}
+
+impl WarmupStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            WarmupStatus::Running => "running",
+            WarmupStatus::Ok => "ok",
+            WarmupStatus::Err => "err",
+            WarmupStatus::Cancelled => "cancelled",
+        }
+    }
+
+    fn from_str(raw: &str) -> Self {
+        match raw {
+            "ok" => WarmupStatus::Ok,
+            "err" => WarmupStatus::Err,
+            "cancelled" => WarmupStatus::Cancelled,
+            _ => WarmupStatus::Running,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
+pub struct PsoWarmupRun {
+    pub id: Option<i64>,
+    pub project_id: i64,
+    pub machine_id: i64,
+    pub resolution_w: i64,
+    pub resolution_h: i64,
+    pub max_minutes: i64,
+    /// None while running; Some(n) once finished (0 = green light).
+    pub hitch_count: Option<i64>,
+    pub status: WarmupStatus,
+    pub error_message: Option<String>,
+    pub started_at: Option<String>,
+    pub duration_secs: Option<i64>,
+}
+
+pub fn insert_started(
+    db: &Db,
+    project_id: i64,
+    machine_id: i64,
+    resolution: (u32, u32),
+    max_minutes: u32,
+) -> VoloResult<i64> {
+    let conn = db.lock().unwrap();
+    conn.execute(
+        "INSERT INTO pso_warmup_runs
+         (project_id, machine_id, resolution_w, resolution_h, max_minutes, status)
+         VALUES (?, ?, ?, ?, ?, 'running')",
+        rusqlite::params![
+            project_id,
+            machine_id,
+            resolution.0 as i64,
+            resolution.1 as i64,
+            max_minutes as i64,
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn finish(
+    db: &Db,
+    run_id: i64,
+    status: WarmupStatus,
+    hitch_count: Option<i64>,
+    error_message: Option<&str>,
+    duration_secs: i64,
+) -> VoloResult<()> {
+    let conn = db.lock().unwrap();
+    conn.execute(
+        "UPDATE pso_warmup_runs
+         SET status = ?, hitch_count = ?, error_message = ?, duration_secs = ?
+         WHERE id = ?",
+        rusqlite::params![status.as_str(), hitch_count, error_message, duration_secs, run_id],
+    )?;
+    Ok(())
+}
+
+/// Lazy reaper: rows stuck at 'running' past their planned window (watchdog
+/// max_minutes + 30min grace) can only mean the supervising process died
+/// (app quit / crash / reboot) — mark them err so they never read as in-flight
+/// forever. Called from the list paths (UI command + CLI) before querying.
+pub fn reap_overdue(db: &Db) -> VoloResult<usize> {
+    let conn = db.lock().unwrap();
+    let changed = conn.execute(
+        "UPDATE pso_warmup_runs
+         SET status = 'err',
+             error_message = 'orphaned: still running past planned duration (supervisor exited?)'
+         WHERE status = 'running'
+           AND datetime(started_at, printf('+%d minutes', max_minutes + 30)) < datetime('now')",
+        [],
+    )?;
+    Ok(changed)
+}
+
+pub fn list_by_project(
+    db: &Db,
+    project_id: i64,
+    machine_id: Option<i64>,
+) -> VoloResult<Vec<PsoWarmupRun>> {
+    let conn = db.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT id, project_id, machine_id, resolution_w, resolution_h, max_minutes,
+                hitch_count, status, error_message, started_at, duration_secs
+         FROM pso_warmup_runs
+         WHERE project_id = ? AND (?2 IS NULL OR machine_id = ?2)
+         ORDER BY started_at DESC, id DESC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![project_id, machine_id], row_to_run)?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<PsoWarmupRun> {
+    let status_raw: String = row.get(7)?;
+    Ok(PsoWarmupRun {
+        id: Some(row.get(0)?),
+        project_id: row.get(1)?,
+        machine_id: row.get(2)?,
+        resolution_w: row.get(3)?,
+        resolution_h: row.get(4)?,
+        max_minutes: row.get(5)?,
+        hitch_count: row.get(6)?,
+        status: WarmupStatus::from_str(&status_raw),
+        error_message: row.get(8)?,
+        started_at: row.get(9)?,
+        duration_secs: row.get(10)?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::{machines, open_in_memory, projects, schema, Machine, Project};
+
+    fn setup() -> (Db, i64, i64) {
+        let db = open_in_memory().unwrap();
+        {
+            let mut conn = db.lock().unwrap();
+            schema::migrate(&mut conn).unwrap();
+        }
+        let machine_id = machines::insert(&db, &Machine::new("RENDER-01", "192.168.10.21")).unwrap();
+        let project_id = projects::upsert(
+            &db,
+            &Project {
+                id: None,
+                uproject_name: "X.uproject".into(),
+                uproject_stem_lower: "x".into(),
+                uproject_guid: None,
+                display_name: None,
+                first_seen_at: None,
+                last_seen_at: None,
+                ue_version_major: None,
+                ue_version_minor: None,
+                engine_association_raw: None,
+                engine_association_kind: None,
+            },
+        )
+        .unwrap();
+        (db, machine_id, project_id)
+    }
+
+    #[test]
+    fn insert_then_finish_roundtrip() {
+        let (db, machine_id, project_id) = setup();
+        let run_id = insert_started(&db, project_id, machine_id, (1920, 1080), 20).unwrap();
+        let running = list_by_project(&db, project_id, None).unwrap();
+        assert_eq!(running.len(), 1);
+        assert_eq!(running[0].status, WarmupStatus::Running);
+        assert_eq!(running[0].hitch_count, None);
+
+        finish(&db, run_id, WarmupStatus::Ok, Some(0), None, 300).unwrap();
+        let done = list_by_project(&db, project_id, Some(machine_id)).unwrap();
+        assert_eq!(done[0].status, WarmupStatus::Ok);
+        assert_eq!(done[0].hitch_count, Some(0));
+        assert_eq!(done[0].duration_secs, Some(300));
+    }
+
+    #[test]
+    fn machine_filter_excludes_other_machines() {
+        let (db, machine_id, project_id) = setup();
+        insert_started(&db, project_id, machine_id, (1920, 1080), 20).unwrap();
+        let other = list_by_project(&db, project_id, Some(machine_id + 999)).unwrap();
+        assert!(other.is_empty());
+    }
+
+    #[test]
+    fn cancelled_status_roundtrip() {
+        let (db, machine_id, project_id) = setup();
+        let run_id = insert_started(&db, project_id, machine_id, (1920, 1080), 20).unwrap();
+        finish(&db, run_id, WarmupStatus::Cancelled, Some(3), None, 12).unwrap();
+        let rows = list_by_project(&db, project_id, None).unwrap();
+        assert_eq!(rows[0].status, WarmupStatus::Cancelled);
+        assert_eq!(rows[0].hitch_count, Some(3));
+    }
+
+    #[test]
+    fn reap_overdue_only_hits_expired_running_rows() {
+        let (db, machine_id, project_id) = setup();
+        let fresh = insert_started(&db, project_id, machine_id, (1920, 1080), 20).unwrap();
+        let stale = insert_started(&db, project_id, machine_id, (1920, 1080), 20).unwrap();
+        {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "UPDATE pso_warmup_runs SET started_at = datetime('now', '-2 hours') WHERE id = ?",
+                [stale],
+            )
+            .unwrap();
+        }
+        assert_eq!(reap_overdue(&db).unwrap(), 1);
+        let rows = list_by_project(&db, project_id, None).unwrap();
+        let stale_row = rows.iter().find(|r| r.id == Some(stale)).unwrap();
+        let fresh_row = rows.iter().find(|r| r.id == Some(fresh)).unwrap();
+        assert_eq!(stale_row.status, WarmupStatus::Err);
+        assert_eq!(fresh_row.status, WarmupStatus::Running);
+    }
+}

@@ -150,6 +150,7 @@ pub fn launch_generation(
         extra_args: default_extra_args(),
         credential_user: user.map(String::from),
         credential_pass: pass.map(String::from),
+        interactive: false,
     })
 }
 
