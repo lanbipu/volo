@@ -408,16 +408,13 @@ function App() {
   const [leftW, setLeftW] = useState(typeof persisted.leftW === 'number' ? persisted.leftW : 214);
   const [rightW, setRightW] = useState(typeof persisted.rightW === 'number' ? persisted.rightW : 372);
   const [leftCollapsed, setLeftCollapsed] = useState(!!persisted.leftCollapsed);
-  /* 检查器（右栏）每次打开页面都从收起状态开始 —— 不做"记住上次开合"的持久化，只有
-     本次会话里的相关操作（选中机器/工程、打开详情等，见下方 effect）才会自动展开它。
-     两个例外都要在挂载时就展开，而不是等 effect 的上升沿去追：
-     ① 若上次停在 DDC PAK/PSO（操作面只在检查器里），否则重载后右栏 0 宽，
-        生成/校验/收集/分发全不可见、不可达；
-     ② 若上次持久化的 calSel 非空（校正对象选中态是持久化的，drawer/pakSel/psoSel 不是），
-        下方 effect 的 inspectorHasTargetRef 初值会按 calSel 算出 hasTarget=true——
-        若这里仍按"默认收起"处理，挂载时 rightCollapsed(true) 与 ref(true) 表面一致，
-        不会触发边沿判定去展开，选中的校正对象详情会卡在 0 宽列里不可见、不可点。 */
-  const [rightCollapsed, setRightCollapsed] = useState(!/^ddc_p(ak|so)$/.test(persisted.cacheNav || '') && !persisted.calSel);
+  /* 检查器（右栏）每次打开 App 都从收起状态开始 —— 不做"记住上次开合"的持久化，也不再按
+     上次停留的子页 / 选中态在挂载时提前展开；只有本次会话里涉及检查器的操作才会展开它：
+     · 选中目标（机器详情 drawer / 勾选 DDC 工程 / 选中校正对象）→ 下方 effect 的上升沿；
+     · 点击进入 DDC PAK / PSO 子页（操作面在检查器里）→ goCacheNav 显式展开。
+     配套约束：calSel 不再从持久化恢复（见下方 calSel 注释），保证挂载时四个目标必为空——
+     否则会出现"有选中对象但检查器 0 宽、重点同一对象也弹不开"的卡死态。 */
+  const [rightCollapsed, setRightCollapsed] = useState(true);
   const [logH, setLogH] = useState(typeof persisted.logH === 'number' ? persisted.logH : 150);
   const [page, setPage] = useState(() => PAGES.some((p) => p.id === persisted.page) ? persisted.page : 'tools');
   /* 舞台切换器 / 面包屑已移除，stage state 无消费者，随之删除 */
@@ -471,7 +468,9 @@ function App() {
   const [calStep, setCalStep] = useState(CAL_STEPS.some((x) => x.id === persisted.calStep) ? persisted.calStep : 'design');
   const [calScreen, setCalScreen] = useState(persisted.calScreen || 'main');
   const [calMethod, setCalMethod] = useState(persisted.calMethod || 'm1');
-  const [calSel, setCalSel] = useState(persisted.calSel || null);
+  /* calSel 不持久化：检查器初始必收起（见上方 rightCollapsed 注释），若挂载时恢复选中，
+     详情会卡在 0 宽列里不可见，且重点同一对象不产生上升沿、弹不开。 */
+  const [calSel, setCalSel] = useState(null);
   /* 集群总览：全新设置演示（无机器 → 引导扫描添加）+ 本会话已添加机器标记 */
   const [freshSetup, setFreshSetup] = useState(!!persisted.freshSetup);
   const [machinesAdded, setMachinesAdded] = useState(false);
@@ -511,10 +510,10 @@ function App() {
   useEffect(() => {
     clearTimeout(persistTimer.current);
     persistTimer.current = setTimeout(() => {
-      try { localStorage.setItem('volo2', JSON.stringify({ page, selNode, cacheNav, ddcOpen, calStep, calScreen, calMethod, calSel, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed })); } catch (e) {}
+      try { localStorage.setItem('volo2', JSON.stringify({ page, selNode, cacheNav, ddcOpen, calStep, calScreen, calMethod, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed })); } catch (e) {}
     }, 150);
     return () => clearTimeout(persistTimer.current);
-  }, [page, selNode, cacheNav, ddcOpen, calStep, calScreen, calMethod, calSel, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed]);
+  }, [page, selNode, cacheNav, ddcOpen, calStep, calScreen, calMethod, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed]);
 
   /* 禁掉桌面 WebView 的右键菜单（reload / 检查）；calibrate 画布另有本地 preventDefault */
   useEffect(() => {
@@ -763,20 +762,43 @@ function App() {
 
   const cluster = deriveCluster(machines, healthChecks, healthRunAt);
 
-  /* 切缓存子页：清掉残留的就地细节(drawer)，并在进入 DDC PAK / PSO（检查器=操作面）时自动展开右栏。 */
-  const goCacheNav = (v) => { setDrawer(null); if (/^ddc_p(ak|so)$/.test(v)) setRightCollapsed(false); setCacheNav(v); };
-
   /* 检查器（右栏）自动展开 / 收起：只有"选中了对象"的操作才触发——打开机器/工程详情(drawer)、
      勾选 DDC 工程(pakSel/psoSel)、选中校正对象(calSel)。只在 hasTarget 的上升/下降沿切换，
-     不会在用户手动收起后又强行弹回来，取消选择时也会自动收起（细节渲染进 0 宽列不可见/不可点）。 */
-  const inspectorHasTargetRef = useRef(!!drawer || (Array.isArray(pakSel) && pakSel.length > 0) || !!psoSel || !!calSel);
+     不会在用户手动收起后又强行弹回来，取消选择时也会自动收起（细节渲染进 0 宽列不可见/不可点）。
+     ref 初值恒为 false：挂载时四个目标必为空（calSel 不再持久化恢复，其余本就不持久化）。 */
+  const inspectorHasTargetRef = useRef(false);
   useEffect(() => {
     const hasTarget = !!drawer || (Array.isArray(pakSel) && pakSel.length > 0) || !!psoSel || !!calSel;
     if (hasTarget !== inspectorHasTargetRef.current) setRightCollapsed(!hasTarget);
     inspectorHasTargetRef.current = hasTarget;
   }, [drawer, pakSel, psoSel, calSel]);
 
-  const s = { theme, toggleTheme, platform, setPlatform, toolsNav, setToolsNav, page, setPage, logOpen, setLogOpen, logFilter, setLogFilter,
+  /* 切缓存子页：清掉不属于目标子页的检查器目标（drawer / 工程勾选），并显式开合右栏——
+     进入 DDC PAK / PSO（操作面在检查器里）展开，其余子页一律收起（点到与检查器无关的
+     页面时自动隐藏）。目标在此已同步清空，故把 ref 一并对齐，吞掉上方 effect 的下降沿，
+     避免它在 commit 后覆盖这里的显式开合（如 ddc_pak 有勾选 → 切 ddc_pso 会被误收起）。 */
+  const goCacheNav = (v) => {
+    setDrawer(null);
+    if (v !== 'ddc_pak') setPakSel([]);
+    if (v !== 'ddc_pso') setPsoSel(null);
+    inspectorHasTargetRef.current = v === 'ddc_pak' ? pakSel.length > 0 : v === 'ddc_pso' ? !!psoSel : false;
+    setRightCollapsed(!/^ddc_p(ak|so)$/.test(v));
+    setCacheNav(v);
+  };
+
+  /* 切顶层页面：检查器目标都是页面私有的（工具页: drawer/pakSel/psoSel · 校正页: calSel），
+     离开即失效——全部清空并收起右栏（点到与检查器无关的页面时自动隐藏）；同样对齐 ref
+     吞掉 effect 下降沿。回到原页面后重新选中对象即可再次展开。 */
+  const goPage = (v) => {
+    if (v !== page) {
+      setDrawer(null); setPakSel([]); setPsoSel(null); setCalSel(null);
+      inspectorHasTargetRef.current = false;
+      setRightCollapsed(true);
+    }
+    setPage(v);
+  };
+
+  const s = { theme, toggleTheme, platform, setPlatform, toolsNav, setToolsNav, page, setPage: goPage, logOpen, setLogOpen, logFilter, setLogFilter,
     logs, pushLog, pushLogs, logH, setLogH,
     selNode, setSelNode, cacheNav, setCacheNav: goCacheNav, ddcOpen, setDdcOpen, drawer, setDrawer,
     modal, setModal,
