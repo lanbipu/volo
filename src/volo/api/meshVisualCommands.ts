@@ -1,0 +1,199 @@
+/* Volo — Mesh (LMT) M2 visual-BA group typed command bindings.
+   One wrapper per `mesh_visual_*` Tauri command (src-tauri/src/commands/mesh_visual.rs).
+   Arg keys are camelCase (Rust snake_case → JS camelCase); optional Rust params
+   (`Option<T>`) are passed as explicit `null` when omitted. See ./types for the
+   DTO shapes; ./invoke for the transport.
+
+   UI 接入状态：M2 UI 待 Claude Design 交付（本仓 WIREFRAMES.md 只覆盖 Cache /
+   Calibrate 现有稿），本文件全部命令暂无承载页面：
+     📝 no-ui —— 后端已就绪，UI 落地时把 wire-target 记在这里。
+   现状汇总：📝 15（reconstruct 走流式 + cancel，其余同步）。
+
+   `mesh_visual_reconstruct` 是唯一的流式命令：kickoff 立即返回 job_id，
+   进度经 Tauri event `mesh-visual-progress`（payload: MeshVisualProgressPayload），
+   完成经 `mesh-visual-reconstruct-done`（payload: MeshVisualReconstructDonePayload）。
+   用 `mesh_visual_cancel(jobId)` 取消在飞的 job。 */
+import { call } from "./invoke";
+import type {
+  CabinetPoseReportFile, CalibrateResult, CaptureCardResult, CapturePlan, CompareKnownResult,
+  DecodeStructuredLightResult, EvalResult, ExportPoseObjResult, GeneratePatternResult,
+  GenerateStructuredLightResult, MeshVisualJobResponse, SimulateResult, VisualReconstructResult,
+} from "./types";
+
+/* ----------------------------- reconstruct (streaming) + cancel ----------------------------- */
+// 📝 no-ui: kickoff 返回 job_id；进度/完成经 mesh-visual-progress / mesh-visual-reconstruct-done 事件监听
+export const meshVisualReconstruct = (
+  projectPath: string,
+  screenId: string,
+  captureManifest: string,
+  intrinsics?: string | null,
+  intrinsicsCrosscheck?: string | null,
+) =>
+  call<MeshVisualJobResponse>("mesh_visual_reconstruct", {
+    projectPath, screenId, captureManifest,
+    intrinsics: intrinsics ?? null,
+    intrinsicsCrosscheck: intrinsicsCrosscheck ?? null,
+  });
+// 📝 no-ui: 取消 mesh_visual_reconstruct 在飞 job；job 已结束返回 false（非错误）
+export const meshVisualCancel = (jobId: string) => call<boolean>("mesh_visual_cancel", { jobId });
+
+/* ----------------------------- pattern / structured-light generation ----------------------------- */
+// 📝 no-ui: ChArUco/VP-QSP 标定图案生成
+export const meshVisualGeneratePattern = (
+  projectPath: string,
+  screenId: string,
+  method: string,
+  screenIdCode: number,
+  screenMappingPath?: string | null,
+) =>
+  call<GeneratePatternResult>("mesh_visual_generate_pattern", {
+    projectPath, screenId, method, screenIdCode,
+    screenMappingPath: screenMappingPath ?? null,
+  });
+// 📝 no-ui: 结构光点阵序列生成
+export const meshVisualGenerateStructuredLight = (
+  projectPath: string,
+  screenId: string,
+  dotSpacingPx: number | null,
+  dotRadiusPx: number,
+  marginPx: number | null,
+  emitTiffSeq: boolean | null,
+  screenMappingPath?: string | null,
+) =>
+  call<GenerateStructuredLightResult>("mesh_visual_generate_structured_light", {
+    projectPath, screenId, dotSpacingPx, dotRadiusPx, marginPx, emitTiffSeq,
+    screenMappingPath: screenMappingPath ?? null,
+  });
+// 📝 no-ui: 结构光录像/帧目录解码为屏幕↔相机对应文件
+export const meshVisualDecodeStructuredLight = (
+  inputPath: string,
+  slMetaPath: string,
+  outputPath: string,
+  sentinelThreshold: number | null,
+  screenRoi: [number, number, number, number] | null,
+  emitDebugImage: boolean,
+) =>
+  call<DecodeStructuredLightResult>("mesh_visual_decode_structured_light", {
+    inputPath, slMetaPath, outputPath, sentinelThreshold, screenRoi, emitDebugImage,
+  });
+
+/* ----------------------------- calibrate ----------------------------- */
+// 📝 no-ui: 棋盘格图像 → 相机内参
+export const meshVisualCalibrate = (
+  projectPath: string,
+  screenId: string,
+  checkerboardDir: string,
+  squareMm: number,
+  inner: string,
+) => call<CalibrateResult>("mesh_visual_calibrate", { projectPath, screenId, checkerboardDir, squareMm, inner });
+// 📝 no-ui: 结构光多机位对应文件 → 相机内参
+export const meshVisualCalibrateStructuredLight = (
+  projectPath: string,
+  screenId: string,
+  slMeta: string,
+  correspondences: string[],
+  out: string | null,
+  force: boolean,
+  maxRmsPx: number,
+  intrinsicsCrosscheck?: string | null,
+) =>
+  call<CalibrateResult>("mesh_visual_calibrate_structured_light", {
+    projectPath, screenId, slMeta, correspondences, out, force, maxRmsPx,
+    intrinsicsCrosscheck: intrinsicsCrosscheck ?? null,
+  });
+
+/* ----------------------------- reconstruct (structured-light, sync) ----------------------------- */
+// 📝 no-ui: 与 meshVisualReconstruct 同一 BA 内核，多视角结构光路径；本期未走流式
+// （与 charuco/vpqsp 路径同耗时量级，暂按原样同步暴露，见 mesh_visual.rs 注释）
+export const meshVisualReconstructStructuredLight = (
+  projectPath: string,
+  screenId: string,
+  slMeta: string,
+  intrinsics: string,
+  intrinsicsCrosscheck: string | null,
+  correspondences: string[],
+) =>
+  call<VisualReconstructResult>("mesh_visual_reconstruct_structured_light", {
+    projectPath, screenId, slMeta, intrinsics,
+    intrinsicsCrosscheck: intrinsicsCrosscheck ?? null,
+    correspondences,
+  });
+
+/* ----------------------------- simulate / eval / compare-known ----------------------------- */
+// 📝 no-ui: 合成数据集生成（研发/回归用）
+export const meshVisualSimulate = (configPath: string, outDir: string) =>
+  call<SimulateResult>("mesh_visual_simulate", { configPath, outDir });
+// 📝 no-ui: 方法 vs 真值评估（研发/回归用）
+export const meshVisualEval = (datasetDir: string, method: string, seedMatrix: number[], init: string) =>
+  call<EvalResult>("mesh_visual_eval", { datasetDir, method, seedMatrix, init });
+// 📝 no-ui: 重建结果对账已知监视器几何
+export const meshVisualCompareKnown = (
+  reportPath: string,
+  knownPath: string,
+  maxSizeMm?: number | null,
+  maxDistMm?: number | null,
+  maxAngleDeg?: number | null,
+) =>
+  call<CompareKnownResult>("mesh_visual_compare_known", {
+    reportPath, knownPath,
+    maxSizeMm: maxSizeMm ?? null,
+    maxDistMm: maxDistMm ?? null,
+    maxAngleDeg: maxAngleDeg ?? null,
+  });
+
+/* ----------------------------- capture planning ----------------------------- */
+// 📝 no-ui: 采集机位规划（逐箱体覆盖/残差）
+export const meshVisualPlanCapture = (
+  projectPath: string,
+  screenId: string,
+  imageSize: string,
+  hfovDeg: number | null,
+  vfovDeg: number | null,
+  standoff: string,
+  height: string,
+  targetP95ResidualMm: number,
+  trials: number,
+  seed: number,
+  minViews?: number | null,
+) =>
+  call<CapturePlan>("mesh_visual_plan_capture", {
+    projectPath, screenId, imageSize, hfovDeg, vfovDeg, standoff, height,
+    targetP95ResidualMm, trials, seed,
+    minViews: minViews ?? null,
+  });
+// 📝 no-ui: 采集指导 3D HTML 卡片渲染
+export const meshVisualCaptureCard = (
+  projectPath: string,
+  screenId: string,
+  imageSize: string,
+  hfovDeg: number | null,
+  vfovDeg: number | null,
+  standoff: string,
+  height: string,
+  targetP95ResidualMm: number,
+  trials: number,
+  seed: number,
+) =>
+  call<CaptureCardResult>("mesh_visual_capture_card", {
+    projectPath, screenId, imageSize, hfovDeg, vfovDeg, standoff, height,
+    targetP95ResidualMm, trials, seed,
+  });
+
+/* ----------------------------- pose report / export ----------------------------- */
+// 📝 no-ui: 读 cabinet_pose_report.json（重建产出）
+export const meshVisualLoadPoseReport = (poseReportPath: string) =>
+  call<CabinetPoseReportFile>("mesh_visual_load_pose_report", { poseReportPath });
+// 📝 no-ui: pose report 合并导出 OBJ（disguise/neutral；unreal 显式不支持）
+export const meshVisualExportPoseObj = (
+  poseReportPath: string,
+  target: string,
+  outFile: string,
+  root: string | null,
+  ground: boolean,
+  split: boolean,
+  screenMapping?: string | null,
+) =>
+  call<ExportPoseObjResult>("mesh_visual_export_pose_obj", {
+    poseReportPath, target, outFile, root, ground, split,
+    screenMapping: screenMapping ?? null,
+  });

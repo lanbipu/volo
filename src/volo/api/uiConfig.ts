@@ -14,10 +14,11 @@ export const NODE_STATUS = {
   na:       { label: "不适用", variant: "neutral", visual: "neutral", icon: "minus" },
 };
 
-/* remote channel — WinRM (pull 默认) vs 提权 SSH (UAC 过滤的操作) */
+/* remote channel — WinRM (pull 默认) vs 提权 SSH (UAC 过滤的操作) vs 本机(Calibrate mesh 等本地 Tauri command，无远程通道) */
 export const CHANNEL = {
   winrm: { label: "WinRM", short: "WinRM", icon: "net",    note: "pull 默认通道" },
   ssh:   { label: "提权 SSH", short: "SSH", icon: "shield", note: "UAC 过滤操作走此" },
+  local: { label: "本机", short: "本机", icon: "cube",   note: "本地文件 / 数据库操作，无远程通道" },
 };
 
 /* roles for the unified machine selector */
