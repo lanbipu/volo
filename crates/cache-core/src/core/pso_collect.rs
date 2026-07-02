@@ -90,6 +90,7 @@ pub fn launch_collection(
         extra_args: build_ue_args(spec),
         credential_user: user.map(str::to_string),
         credential_pass: pass.map(str::to_string),
+        interactive: false,
     })
 }
 
@@ -202,6 +203,9 @@ pub fn spawn_watchdog(
         let mut state = cancel.lock().await;
         if !state.requested {
             state.requested = true;
+            // Planned-duration stop, not an abort — consumers (warmup finalize)
+            // distinguish this from a user cancel via the flag.
+            state.watchdog = true;
             tracing::info!("pso collection watchdog fired for job {}", job_id);
         }
     });

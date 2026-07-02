@@ -437,6 +437,47 @@ export interface PsoDistributeJobResponse {
   plan: DistributePlanItem[];
 }
 
+/* ------------- pso warm-up & readiness (per-node -game runs) ------------- */
+/** ok = 跑满计划时长或引擎正常退出（唯一可给绿灯的状态）；cancelled = 操作员手动取消（未验证）。 */
+export type WarmupStatus = "running" | "ok" | "err" | "cancelled";
+
+export interface StartPsoWarmupRequest {
+  project_id: number;
+  target_machine_ids: number[];
+  resolution_w: number;
+  resolution_h: number;
+  /** 必须 >= 1：0 会解除 watchdog，后端直接拒绝。 */
+  max_minutes: number;
+  /** 钉死各节点用的 UE 版本；省略 = 各节点 primary 安装（与工程版本不符时有风险）。 */
+  ue_version?: string | null;
+}
+
+export interface PsoWarmupLaunched {
+  machine_id: number;
+  run_id: number;
+  job_id: string;
+}
+
+export interface PsoWarmupJobResponse {
+  job_id: string;
+  runs: PsoWarmupLaunched[];
+}
+
+export interface PsoWarmupRun {
+  id: number | null;
+  project_id: number;
+  machine_id: number;
+  resolution_w: number;
+  resolution_h: number;
+  max_minutes: number;
+  /** null while running; 0 once finished = green light. */
+  hitch_count: number | null;
+  status: WarmupStatus;
+  error_message: string | null;
+  started_at: string | null;
+  duration_secs: number | null;
+}
+
 /* ============================ health check ============================ */
 export interface RunHealthCheckRequest {
   machine_ids: number[];

@@ -37,6 +37,11 @@ pub struct UeRunSpec {
     pub extra_args: Vec<String>,
     pub credential_user: Option<String>,
     pub credential_pass: Option<String>,
+    /// Launch in the target's interactive console session via a scheduled task
+    /// (Session 0 evasion). Required when the run must actually render (`-game`
+    /// warm-up); plain SSH spawn renders nothing on a real node. Local backend
+    /// ignores this — a local spawn already lives in the user session.
+    pub interactive: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -76,6 +81,10 @@ pub struct RunnerHandle {
 #[derive(Debug, Default)]
 pub struct RunnerCancel {
     pub requested: bool,
+    /// Set (together with `requested`) by the max-minutes watchdog: the run
+    /// reached its planned duration — a completion, not an abort. Consumers
+    /// use this to tell watchdog stops apart from user cancels.
+    pub watchdog: bool,
     pub host: Option<String>,
     pub pid: Option<i64>,
     pub credential_user: Option<String>,
@@ -122,6 +131,10 @@ pub fn run(spec: UeRunSpec) -> RunnerHandle {
         let mut offset = 0i64;
         let mut consecutive_tail_errors = 0usize;
         let mut log_tail = Vec::<String>::new();
+        // Tail chunks are byte windows with no newline alignment: hold the
+        // trailing partial line back until its remainder arrives, so a marker
+        // line split across a chunk boundary is never matched as fragments.
+        let mut pending = String::new();
         loop {
             {
                 let state = cancel_handle.lock().await;
@@ -160,10 +173,11 @@ pub fn run(spec: UeRunSpec) -> RunnerHandle {
                 Err(err) => {
                     consecutive_tail_errors += 1;
                     if consecutive_tail_errors >= MAX_CONSECUTIVE_TAIL_ERRORS {
+                        best_effort_stop(&spec, pid, "log tail failed").await;
                         let _ = tx.send(UeRunnerEvent::Error {
                             message: format!(
-                                "log tail failed {} times; last error: {}",
-                                consecutive_tail_errors, err
+                                "log tail failed {} times; last error: {} (UE process {} stopped best-effort)",
+                                consecutive_tail_errors, err, pid
                             ),
                         });
                         return;
@@ -174,10 +188,11 @@ pub fn run(spec: UeRunSpec) -> RunnerHandle {
             if !tail.ok {
                 consecutive_tail_errors += 1;
                 if consecutive_tail_errors >= MAX_CONSECUTIVE_TAIL_ERRORS {
+                    best_effort_stop(&spec, pid, "log tail returned ok=false").await;
                     let _ = tx.send(UeRunnerEvent::Error {
                         message: format!(
-                            "log tail returned ok=false {} times",
-                            consecutive_tail_errors
+                            "log tail returned ok=false {} times (UE process {} stopped best-effort)",
+                            consecutive_tail_errors, pid
                         ),
                     });
                     return;
@@ -190,8 +205,13 @@ pub fn run(spec: UeRunSpec) -> RunnerHandle {
             }
             offset = tail.new_offset.parse().unwrap_or(offset);
 
+            let processable = match take_complete_lines(&mut pending, &tail.new_text) {
+                Some(text) => text,
+                None => continue,
+            };
+
             let mut completed_exit = None;
-            for raw_line in tail.new_text.lines() {
+            for raw_line in processable.lines() {
                 let line = raw_line.to_string();
                 log_tail.push(line.clone());
                 if log_tail.len() > MAX_LOG_TAIL_LINES {
@@ -226,6 +246,22 @@ pub fn run(spec: UeRunSpec) -> RunnerHandle {
     });
 
     RunnerHandle { events: rx, cancel }
+}
+
+/// Append a byte-window tail chunk and return only the complete lines
+/// (up to the last newline); the trailing partial stays buffered until its
+/// remainder arrives, or is flushed whole if it grows pathologically large.
+fn take_complete_lines(pending: &mut String, incoming: &str) -> Option<String> {
+    pending.push_str(incoming);
+    match pending.rfind('\n') {
+        Some(last_nl) => {
+            let head = pending[..=last_nl].to_string();
+            pending.drain(..=last_nl);
+            Some(head)
+        }
+        None if pending.len() > 128 * 1024 => Some(std::mem::take(pending)),
+        None => None,
+    }
 }
 
 #[derive(Debug, Default)]
@@ -282,6 +318,9 @@ fn parse_line(line: &str) -> ParsedLine {
             pct: Some(1.0),
             label: "PSO logging stopped".into(),
         });
+    } else if line.contains("LogPSOHitching: ") && line.contains("PSO creation hitch") {
+        // e.g. `LogPSOHitching: Verbose: Runtime graphics PSO creation hitch (29.86 msec) ...`
+        parsed.kind = Some("pso_hitch");
     } else if line.contains("LogInit: Engine exit requested") || line.contains("LogExit: Exiting.") {
         parsed.kind = Some("exit_clean");
         parsed.completed_exit = Some(0);
@@ -323,6 +362,23 @@ fn extract_pct_in_parens(line: &str) -> Option<f32> {
     Some(current / total)
 }
 
+/// Kill the UE process when the runner loses the ability to monitor it —
+/// leaving a `-game` instance rendering unmanaged on a node is worse than
+/// tearing down a run we can no longer observe.
+async fn best_effort_stop(spec: &UeRunSpec, pid: i64, reason: &str) {
+    if let Err(err) = stop_process(
+        &spec.backend,
+        &spec.host,
+        pid,
+        spec.credential_user.as_deref(),
+        spec.credential_pass.as_deref(),
+    )
+    .await
+    {
+        tracing::warn!(?err, pid, reason, "ue_runner: best-effort stop failed");
+    }
+}
+
 async fn start_process(spec: &UeRunSpec) -> VoloResult<StartScriptResult> {
     match spec.backend {
         UeRunnerBackend::Remote if crate::core::loopback::is_loopback_target(&spec.host) => {
@@ -332,7 +388,14 @@ async fn start_process(spec: &UeRunSpec) -> VoloResult<StartScriptResult> {
             );
             start_local_process(spec).await
         }
-        UeRunnerBackend::Remote => start_remote_process(spec),
+        UeRunnerBackend::Remote => {
+            // Blocking SSH (and the interactive script's up-to-90s appearance
+            // poll) must not pin a tokio worker — fan-out warms N nodes at once.
+            let spec = spec.clone();
+            tokio::task::spawn_blocking(move || start_remote_process(&spec))
+                .await
+                .map_err(|err| VoloError::OperationFailed(format!("start task join: {err}")))?
+        }
         UeRunnerBackend::Local => start_local_process(spec).await,
     }
 }
@@ -340,11 +403,16 @@ async fn start_process(spec: &UeRunSpec) -> VoloResult<StartScriptResult> {
 fn start_remote_process(spec: &UeRunSpec) -> VoloResult<StartScriptResult> {
     // SSH key auth; per-call WinRM cred ignored (kept on spec until A5).
     let exec = crate::core::ssh::SshExecutor::from_config()?;
+    let script_name = if spec.interactive {
+        "start-ue-interactive.ps1"
+    } else {
+        "start-ue-process.ps1"
+    };
     let result: StartScriptResult = crate::core::ssh::run_json(
         &exec,
         &spec.host,
         &crate::core::ssh::NodeScript {
-            name: "start-ue-process.ps1",
+            name: script_name,
             args: serde_json::json!({
                 "EnginePath": spec.engine_path,
                 "ProjectPath": spec.project_path,
@@ -435,16 +503,22 @@ async fn read_tail(
                 return read_tail_local(log_path, offset);
             }
             let _ = (user, pass); // SSH key auth; per-call WinRM cred ignored (kept until A5).
-            let exec = crate::core::ssh::SshExecutor::from_config()?;
-            crate::core::ssh::run_json(
-                &exec,
-                host,
-                &crate::core::ssh::NodeScript {
-                    name: "tail-ue-log.ps1",
-                    args: serde_json::json!({ "LogPath": log_path, "LastReadOffset": offset }),
-                    ssh_user: None,
-                },
-            )
+            let host = host.to_string();
+            let log_path = log_path.to_string();
+            tokio::task::spawn_blocking(move || {
+                let exec = crate::core::ssh::SshExecutor::from_config()?;
+                crate::core::ssh::run_json(
+                    &exec,
+                    &host,
+                    &crate::core::ssh::NodeScript {
+                        name: "tail-ue-log.ps1",
+                        args: serde_json::json!({ "LogPath": log_path, "LastReadOffset": offset }),
+                        ssh_user: None,
+                    },
+                )
+            })
+            .await
+            .map_err(|err| VoloError::OperationFailed(format!("tail task join: {err}")))?
         }
         UeRunnerBackend::Local => read_tail_local(log_path, offset),
     }
@@ -501,18 +575,28 @@ async fn stop_process(
                 return stop_local_process(pid);
             }
             let _ = (user, pass); // SSH key auth; per-call WinRM cred ignored (kept until A5).
-            let exec = crate::core::ssh::SshExecutor::from_config()?;
-            let result: StopScriptResult = crate::core::ssh::run_json(
-                &exec,
-                host,
-                &crate::core::ssh::NodeScript {
-                    name: "stop-ue-process.ps1",
-                    args: serde_json::json!({ "TargetPid": pid }),
-                    ssh_user: None,
-                },
-            )?;
-            if !result.ok || !result.killed {
+            let host_owned = host.to_string();
+            let result: StopScriptResult = tokio::task::spawn_blocking(move || {
+                let exec = crate::core::ssh::SshExecutor::from_config()?;
+                crate::core::ssh::run_json(
+                    &exec,
+                    &host_owned,
+                    &crate::core::ssh::NodeScript {
+                        name: "stop-ue-process.ps1",
+                        args: serde_json::json!({ "TargetPid": pid }),
+                        ssh_user: None,
+                    },
+                )
+            })
+            .await
+            .map_err(|err| VoloError::OperationFailed(format!("stop task join: {err}")))??;
+            if !result.ok {
                 return Err(VoloError::OperationFailed(result.message));
+            }
+            if !result.killed {
+                // Process already gone (e.g. UE exited in the watchdog window)
+                // — the goal state is reached, don't surface it as a failure.
+                tracing::debug!(pid, message = %result.message, "stop-ue-process: nothing to kill");
             }
             Ok(())
         }
@@ -578,6 +662,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_line_recognises_pso_hitch() {
+        let parsed = parse_line(
+            "[2026.07.02-02.24.22:873][  0]LogPSOHitching: Verbose: Runtime graphics PSO creation hitch (29.86 msec) for Resource  in Pass Unknown (precache status: Unknown) - Breadcrumbs: Frame 0/SceneRender",
+        );
+        assert_eq!(parsed.kind, Some("pso_hitch"));
+        assert!(parsed.completed_exit.is_none());
+        // mentions of the log category on other channels must NOT count
+        let raised = parse_line("LogHAL: Log category LogPSOHitching verbosity has been raised to Verbose.");
+        assert_ne!(raised.kind, Some("pso_hitch"));
+    }
+
+    #[test]
     fn parse_line_recognises_critical_fail() {
         let parsed = parse_line("LogCore: Error: Critical fail in shader compile");
         assert_eq!(parsed.completed_exit, Some(1));
@@ -596,6 +692,28 @@ mod tests {
         assert!(extract_pct_in_parens("no parens here").is_none());
         assert!(extract_pct_in_parens("(abc/def)").is_none());
         assert!(extract_pct_in_parens("(0/0)").is_none());
+    }
+
+    #[test]
+    fn take_complete_lines_reassembles_split_marker() {
+        let mut pending = String::new();
+        // hitch line split across a chunk boundary must not surface as fragments
+        assert_eq!(take_complete_lines(&mut pending, "[t]LogPSOHitching: "), None);
+        let out = take_complete_lines(&mut pending, "Verbose: Runtime graphics PSO creation hitch (29.86 msec)\n[t]Log").unwrap();
+        assert_eq!(out.lines().count(), 1);
+        assert!(super::super::pso_warmup::is_hitch_line(out.lines().next().unwrap()));
+        assert_eq!(pending, "[t]Log");
+    }
+
+    #[test]
+    fn take_complete_lines_returns_only_full_lines() {
+        let mut pending = String::new();
+        let out = take_complete_lines(&mut pending, "a\r\nb\nc-partial").unwrap();
+        assert_eq!(out.lines().collect::<Vec<_>>(), vec!["a", "b"]);
+        assert_eq!(pending, "c-partial");
+        let out2 = take_complete_lines(&mut pending, "-rest\n").unwrap();
+        assert_eq!(out2.lines().collect::<Vec<_>>(), vec!["c-partial-rest"]);
+        assert!(pending.is_empty());
     }
 
     #[test]

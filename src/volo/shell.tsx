@@ -271,7 +271,7 @@ function LogPanel({ s }) {
     if (running > prevRunning.current) setRunOpen(true);
     prevRunning.current = running;
   }, [running]);
-  const histTasks = s.tasks ? s.tasks.filter((t) => t.state === 'success' || t.state === 'failed') : [];
+  const histTasks = s.tasks ? s.tasks.filter((t) => t.state === 'success' || t.state === 'failed' || t.state === 'canceled') : [];
   const TaskCard = window.VOLO_CX && window.VOLO_CX.TaskCard;
   const conTab = s.conTab || 'stream';
   return React.createElement('div', { className: 'logpanel' },
@@ -331,7 +331,13 @@ function LogPanel({ s }) {
                   /* 流式任务(runStreamingCmd)有真实逐步 pct → 确定进度；原子任务(runCmd)只有 4%→100% 两点，
                      无中间进度 → 用不确定动画条，不显冻结在 4% 的误导百分比。 */
                   React.createElement('div', { className: 'lrp-bar' }, React.createElement('div', { className: 'lrp-fill' + (t.stream ? '' : ' indet'), style: t.stream ? { width: (t.pct || 0) + '%' } : null })),
-                  React.createElement('div', { className: 'lrp-meta' }, React.createElement('span', { className: 'lrp-target' }, t.target), React.createElement('span', { className: 'lrp-el' }, t.elapsed)))))) : null),
+                  React.createElement('div', { className: 'lrp-meta' },
+                    React.createElement('span', { className: 'lrp-target' }, t.target),
+                    React.createElement('span', { className: 'lrp-el' }, t.elapsed),
+                    t.long && t.state === 'running' && s.cancelTask ? React.createElement('button', {
+                      className: 'lrp-cancel', title: '终止远端 UE 进程并取消该长任务',
+                      onClick: (e) => { e.stopPropagation(); s.cancelTask(t.id); } },
+                      React.createElement(Icon, { name: 'x', size: 11 }), '取消') : null))))) : null),
         React.createElement('button', { className: 'iconbtn', style: { width: 22, height: 22 } }, React.createElement(Icon, { name: s.logOpen ? 'chevd' : 'chevr', size: 15, style: { transform: s.logOpen ? 'rotate(180deg)' : 'none' } })))),
     s.logOpen ? React.createElement('div', { className: 'log-body' + (s.logPaused ? ' paused' : '') + (conTab === 'hist' ? ' log-body--hist' : ''), style: { height: s.logH } },
       conTab === 'hist'
@@ -443,6 +449,10 @@ function App() {
   /* task drawer + NDJSON console */
   const [tasks, setTasks] = useState([]);
   const taskSeq = useRef(1);
+  /* 可取消长任务注册表：taskId -> { requestCancel }（runStreamingCmd 注册，cancelTask 查用） */
+  const streamCtl = useRef({});
+  /* PSO 预热验证运行记录（list_pso_warmup_runs）——主视图就绪矩阵与检查器运行历史共读 */
+  const [psoRuns, setPsoRuns] = useState([]);
   /* 控制台标签页：stream(NDJSON 流) | hist(历史任务卡片)。检查器旧「进行中/历史」tab 已移除，
      原 taskTab 随之删除（无消费者）。 */
   const [conTab, setConTab] = useState('stream');
@@ -623,7 +633,7 @@ function App() {
     const title = `${domain} ${action}`;
     const t0 = Date.now();
     const secs = () => Math.max(1, Math.round((Date.now() - t0) / 1000)) + 's';
-    setTasks((prev) => [{ id, no, domain, action, title, state: 'running', pct: 4, chan, started: nowHM(), elapsed: '0s', target, note, stream: true }, ...prev]);
+    setTasks((prev) => [{ id, no, domain, action, title, state: 'running', pct: 4, chan, started: nowHM(), elapsed: '0s', target, note, stream: true, long: !!wiring.cancellable }, ...prev]);
     setConTab('stream'); /* 派发命令即切回控制台实时流（否则停在「历史任务」页会看不到新流） */
     setLogOpen(true);
     pushLog({ lv: 'info', cat: domain, ch: chan, task: no, msg: esc(note || `${title} …`) });
@@ -636,25 +646,43 @@ function App() {
     }
 
     let jobId = null, finished = false, timer = null;
+    let cancelJobIds = null, cancelWanted = false; /* 用户取消：kickoff 前点了先记账，job_id 到手立即补发 */
     let uns = [];
     const buf = [];
     const st = {};
     const isMine = wiring.isMine || ((p, jid) => p && p.job_id === jid);
     const setPct = (p) => { if (p != null) setTasks((prev) => prev.map((t) => t.id === id ? { ...t, pct: Math.max(4, Math.min(99, Math.round(p))) } : t)); };
-    const finalize = (ok, exit, payload) => {
+    const finalize = (ok, exit, payload, canceled) => {
       if (finished) return;
       finished = true;
       if (timer) { clearTimeout(timer); timer = null; }
+      delete streamCtl.current[id];
       const ex = ok ? 0 : (exit == null ? 2 : exit);
-      setTasks((prev) => prev.map((t) => t.id === id ? { ...t, state: ok ? 'success' : 'failed', pct: 100, exit: ex, elapsed: secs() } : t));
+      const state = ok ? 'success' : canceled ? 'canceled' : 'failed';
+      setTasks((prev) => prev.map((t) => t.id === id ? { ...t, state, pct: 100, exit: ex, elapsed: secs(), note: canceled ? '已手动取消 · 远端 UE 进程已终止' : t.note } : t));
       const detail = fmtDetail([...baseDetailFields(no, domain, action, target, chan, note),
         ['elapsed', secs()], ['exit', ex], ['event', payload === undefined ? undefined : safeJson(payload)]]);
       pushLog(ok
         ? { lv: 'ok', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 完成`, detail }
-        : { lv: 'err', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 失败 · exit ${ex}`, detail });
+        : canceled
+          ? { lv: 'warn', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 已取消 · 远端 UE 进程已终止`, detail }
+          : { lv: 'err', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 失败 · exit ${ex}`, detail });
       uns.forEach((u) => { try { u(); } catch (e) {} });
       if (wiring.onDone) { try { wiring.onDone(ok); } catch (e) {} } /* 完成回调（如收集后重载列表）*/
     };
+    /* 可取消长任务（UE runner 后端有 UeJobRegistry）：注册取消入口。取消 = 对全部 job_id
+       发 cancel_ue_job（预热 fan-out 是每台一个 job），真正的 canceled 终态由事件流回传
+      （runner 停进程 → Cancelled/finalized 事件 → reduce 标 canceled）。 */
+    if (wiring.cancellable) {
+      streamCtl.current[id] = {
+        requestCancel: () => {
+          if (finished || cancelWanted) return;
+          cancelWanted = true;
+          pushLog({ lv: 'warn', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 取消请求已发送 · 正在终止远端 UE 进程…` });
+          (cancelJobIds || []).forEach((jid) => cancelUeJob(jid).catch(() => {}));
+        },
+      };
+    }
     /* 空闲超时计时器：每收到一个真实事件就重置 → 持续出进度的健康长任务永不误判，
        只有真·timeoutMs 内零事件才触发；到点调 onTimeout(jobId)（如 cancelUeJob）避免孤儿进程。 */
     const armTimer = () => {
@@ -676,7 +704,8 @@ function App() {
       const r = wiring.reduce(ev, p, st) || {};
       if (r.log && r.log.msg) pushLog({ lv: r.log.lv || 'info', cat: domain, ch: chan, task: no, msg: esc(r.log.msg) });
       if (r.pct != null) setPct(r.pct);
-      if (r.done) finalize(!!r.ok, r.exit, p);
+      if (r.done) finalize(!!r.ok, r.exit, p, !!r.canceled); /* canceled 只信 reducer 的判定：
+        取消请求后先到达的真实 err 终态必须仍标 failed，不能被 cancelWanted 盖成 canceled */
       else armTimer(); /* 每个非终态事件重置空闲计时器 */
     };
     const handler = (ev) => (e) => {
@@ -703,6 +732,9 @@ function App() {
     if (wiring.mode === 'event') {
       jobId = wiring.jobIdOf(resp);
       if (wiring.total) st.total = wiring.total(resp); /* 分发流：reducer 数到 st.total 即收尾 */
+      /* 取消目标 job 集合就位（预热 fan-out 是每台一个 job_id）；kickoff 前已请求取消则立即补发 */
+      cancelJobIds = wiring.cancelIds ? wiring.cancelIds(resp) : (jobId != null ? [jobId] : []);
+      if (cancelWanted) (cancelJobIds || []).forEach((jid) => cancelUeJob(jid).catch(() => {}));
       buf.forEach(([ev, p]) => { if (!isMine || isMine(p, jobId)) apply(ev, p); });
       if (st.total === 0) finalize(true, 0); /* 空 plan：无事件，立即收尾 */
       else armTimer(); /* 武装空闲超时兜底：generate_ddc_pak 等后端无 watchdog，UE 异常退出且
@@ -712,6 +744,12 @@ function App() {
       finalize(true, 0, resp); /* 'await' 模式：kickoff 已是终态，resp 即真实返回值 */
     }
     return resp;
+  };
+
+  /* cancelTask — 任务抽屉「取消」入口：查注册表转发给对应流式任务的 requestCancel */
+  const cancelTask = (id) => {
+    const ctl = streamCtl.current[id];
+    if (ctl) ctl.requestCancel();
   };
 
   const cluster = deriveCluster(machines, healthChecks, healthRunAt);
@@ -726,10 +764,10 @@ function App() {
     logs, pushLog, pushLogs, logH, setLogH,
     selNode, setSelNode, cacheNav, setCacheNav: goCacheNav, ddcOpen, setDdcOpen, drawer, setDrawer: openDrawer,
     modal, setModal,
-    pakSel, setPakSel, psoSel, setPsoSel, pakVerify, setPakVerify,
+    pakSel, setPakSel, psoSel, setPsoSel, pakVerify, setPakVerify, psoRuns, setPsoRuns,
     freshSetup, setFreshSetup, machinesAdded, setMachinesAdded,
     enrolled, setEnrolled, creds, setCreds,
-    tasks, setTasks, runTask, runCmd, runStreamingCmd, conTab, setConTab, logSearch, setLogSearch, logPaused, setLogPaused,
+    tasks, setTasks, runTask, runCmd, runStreamingCmd, cancelTask, conTab, setConTab, logSearch, setLogSearch, logPaused, setLogPaused,
     calStep, setCalStep, calScreen, setCalScreen, calMethod, setCalMethod, calSel, setCalSel,
     leftCollapsed, setLeftCollapsed, rightCollapsed, setRightCollapsed, maximized,
     machines, setMachines, shares, setShares, projects, setProjects, gpuMatrix, cluster, cacheLoading, cacheError, reloadCache };

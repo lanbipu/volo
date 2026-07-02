@@ -333,10 +333,13 @@ fn pso_cvar_rule(
     symptom: &str,
     rationale: &str,
 ) -> Vec<Finding> {
+    // UE 5.8 源码核实（ConfigCacheIni.cpp::LoadConsoleVariablesFromINI）：
+    // 工程级 [ConsoleVariables] 段只在 GEngineIni 层级（DefaultEngine.ini）生效；
+    // 工程目录下的 ConsoleVariables.ini 引擎根本不读。规则据此扫 DefaultEngine.ini。
     if !file
         .path
         .to_ascii_lowercase()
-        .ends_with("consolevariables.ini")
+        .ends_with("defaultengine.ini")
     {
         return vec![];
     }
@@ -387,10 +390,11 @@ fn pso_cvar_rule(
 /// 其它整数值运行时同样按 0 处理（`GetPSOPrecacheMode()` 的 switch 落到 default），
 /// 归为健康但用 Info 级别记录下来，方便未来发现新的官方取值语义时能第一时间注意到。
 fn rule_r009_pso_precache_mode(file: &ParsedFile) -> Vec<Finding> {
+    // 同 pso_cvar_rule：生效文件是 DefaultEngine.ini 的 [ConsoleVariables] 段。
     if !file
         .path
         .to_ascii_lowercase()
-        .ends_with("consolevariables.ini")
+        .ends_with("defaultengine.ini")
     {
         return vec![];
     }
@@ -884,8 +888,9 @@ mod tests {
     }
 
     fn console_variables(keys: &[(&str, &str)]) -> ParsedFile {
+        // PSO CVar 规则扫 DefaultEngine.ini 的 [ConsoleVariables] 段（生效位置）。
         ParsedFile {
-            path: "C:\\Project\\Config\\ConsoleVariables.ini".into(),
+            path: "C:\\Project\\Config\\DefaultEngine.ini".into(),
             category: Category::Project,
             sections: vec![ParsedSection {
                 name: "ConsoleVariables".into(),
@@ -998,14 +1003,25 @@ mod tests {
     }
 
     #[test]
-    fn r024_silent_for_non_consolevariables_file() {
-        // R024's pso_cvar_rule wraps an early-return for non-CV files.
+    fn r024_silent_for_project_consolevariables_file() {
+        // 引擎不读工程目录的 ConsoleVariables.ini（源码核实），PSO CVar 规则
+        // 对它必须沉默——生效文件是 DefaultEngine.ini。
+        let f = ParsedFile {
+            path: r"C:\Project\Config\ConsoleVariables.ini".into(),
+            category: Category::Project,
+            sections: vec![],
+        };
+        assert_silent("R024", &f);
+    }
+
+    #[test]
+    fn r024_reports_missing_on_defaultengine_without_section() {
         let f = ParsedFile {
             path: r"C:\Project\Config\DefaultEngine.ini".into(),
             category: Category::Project,
             sections: vec![],
         };
-        assert_silent("R024", &f);
+        assert_fires("R024", &f);
     }
 
     // ── BackendGraph rule helpers ─────────────────────────────────────────────

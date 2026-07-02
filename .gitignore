@@ -41,3 +41,4 @@ __pycache__/
 
 # docs 本地文档与生成产物（PRD / 设计导出等），后续不入库
 docs/
+volo-dev.pid

@@ -21,6 +21,7 @@ import type {
   ProjectSummary, ProjectLocation, DiscoveryResult,
   ExecutionLocation, GenerateJobResponse, PakOutput, DistributeJobResponse,
   PsoCollectJobResponse, PsoCacheFile, DistributePsoCacheRequest, PsoDistributeJobResponse,
+  StartPsoWarmupRequest, PsoWarmupJobResponse, PsoWarmupRun,
   RunHealthCheckRequest, HealthRunSummary, HealthCheckRow,
   ZenStatusRow, ZenProbeReport, ZenCacheStatsReport, ZenDetectBinaryReport, ZenEndpoint,
   ZenBinaryExpected, ZenRegisterInput, ZenRegisterOutcome, ZenUnregisterResult,
@@ -271,6 +272,17 @@ export const listPsoCacheFiles = (projectId: number, sourceMachineId?: number | 
 // ✅ wired: cacheDdc distribute → distributePsoCache via runStreamingCmd（pso-distribute-progress；force_gpu_mismatch=false）
 export const distributePsoCache = (request: DistributePsoCacheRequest) =>
   call<PsoDistributeJobResponse>("distribute_pso_cache", { request });
+
+/* -------------------- pso warm-up & readiness -------------------- */
+// 📝 no-ui: 等 Claude Design handoff（PSO 就绪重设计）；事件流 pso-warmup-progress + pso-warmup-finalized
+export const startPsoWarmup = (request: StartPsoWarmupRequest) =>
+  call<PsoWarmupJobResponse>("start_pso_warmup", { request });
+// 📝 no-ui: 等 Claude Design handoff（节点就绪矩阵 + 运行历史数据源）
+export const listPsoWarmupRuns = (projectId: number, machineId?: number | null) =>
+  call<PsoWarmupRun[]>("list_pso_warmup_runs", { projectId, machineId: machineId ?? null });
+// 📝 no-ui: 等 Claude Design handoff（配置合规卡「一键修复」；写 4 个 PSO CVar 到 ConsoleVariables.ini）
+export const fixPsoCvars = (projectId: number, machineId: number) =>
+  call<string[]>("fix_pso_cvars", { projectId, machineId });
 
 /* ----------------------------- health check ----------------------------- */
 // ✅ wired: Overview「立即巡检」refreshScan → runHealthCheck（后端改 async 不冻 UI）+ 诊断面板真实数据
