@@ -1065,6 +1065,17 @@ pub enum ZenAction {
         #[arg(long)]
         machine: Option<i64>,
     },
+    /// Read a machine's LOCAL zen runcontext — the editor-launched zen's
+    /// last-used data path (the EFFECTIVE value after UE's whole priority
+    /// chain: registry > UE-ZenDataPath env var > follow-DDC > default),
+    /// plus the HKCU `Zen\DataPath` registry override when readable.
+    /// Read-only; requires the machine's `ue_runtime_user` to be set
+    /// (same precondition as `zen enable --global`).
+    ReadRuncontext {
+        /// Machine row id to read from.
+        #[arg(long, value_name = "ID")]
+        machine: i64,
+    },
     /// Baseline (zen_binary_expected) inspection and lock/unlock.
     Baseline {
         #[command(subcommand)]

@@ -27,7 +27,7 @@ import type {
   ZenChangeRoleResult, ZenLuaPreviewResult, ZenCredentialInput, ZenApplyConfigResult,
   ZenServiceResult, ZenServiceSummary, ZenServiceStatusResult,
   ZenUrlaclResult, ZenUrlaclListResult, ZenVerifyRunEditorInput, ZenVerifyRulesResult,
-  ZenGcSettingsResult, ZenDedicatedAccountResult, ZenEnableGlobalResult,
+  ZenGcSettingsResult, ZenDedicatedAccountResult, ZenEnableGlobalResult, ZenLocalRunContext,
 } from "./types";
 
 /* ----------------------------- machines ----------------------------- */
@@ -319,6 +319,9 @@ export const zenApplyConfig = (endpointId: number, confirmed: boolean, dryRun: b
 // ✅ wired: cacheZen ②「用户全局」配置范围 → zenEnableGlobal 写该机 UserEngine.ini [StorageServers] Shared（需先设 ue_runtime_user）
 export const zenEnableGlobal = (machineId: number, upstreamEndpointId: number) =>
   call<ZenEnableGlobalResult>("zen_enable_global", { machineId, upstreamEndpointId });
+// ✅ wired: cacheZen ②「本地 Zen 缓存目录」生效值真实回读 → zenReadLocalRuncontext（需先设 ue_runtime_user）
+export const zenReadLocalRuncontext = (machineId: number) =>
+  call<ZenLocalRunContext>("zen_read_local_runcontext", { machineId });
 // ✅ wired: cacheZen「缓存回收策略（GC）」应用更改 → zenUpdateGcSettings（重写 zen_config.lua + 重启服务生效）
 export const zenUpdateGcSettings = (
   endpointId: number, gcIntervalSeconds: number, gcLightweightIntervalSeconds: number, cacheMaxDurationSeconds: number,

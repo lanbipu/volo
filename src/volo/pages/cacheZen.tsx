@@ -12,6 +12,9 @@
         zen_config.lua + 重启服务生效（Zen 不热重载），走破坏性二次确认（会短暂中断）。
    ② 让客户端机器用上这台缓存：多选客户端 → 逐台 set_ini_key 写 [StorageServers] Shared
       指向此服务器 → 逐机成败、可重试。
+   ②+ 客户端本地 Zen 缓存目录：机器级环境变量 UE-ZenDataPath（set_machine_env_var）＋
+      生效值真实回读（zen_read_local_runcontext 读该机 zenserver.runcontext）——注册表等
+      更高优先级配置源可能压过环境变量，配置值与生效值分开展示、不冒充。
    远程操作走 SSH key（cred = {} 全 None），不逐操作选凭据；真实回读来自 zen_probe。 */
 import * as React from "react";
 import "../ds";
@@ -20,7 +23,7 @@ import {
   zenRegister, zenDetectBinary, zenApplyConfig, zenUpdateGcSettings, zenCreateDedicatedAccount,
   zenUrlaclAdd, zenServiceInstall, zenServiceStart, zenServiceStop, zenServiceUninstall,
   zenUnregister, zenProbe, zenStatus, zenListEndpoints, zenCacheStats, setIniKey, readIniSection,
-  refreshMachine, revealPath, zenEnableGlobal,
+  refreshMachine, revealPath, zenEnableGlobal, zenReadLocalRuncontext, setMachineEnvVar, getMachineEnvVar,
 } from "../api/commands";
 
 (function () {
@@ -173,6 +176,45 @@ import {
         h(Button, { variant: 'secondary', size: 'M', onPress: close }, '取消'),
         h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'link', size: 15 }), isDisabled: !selP.length, onPress: confirm },
           '指向此服务器（' + selP.length + ' 个工程）')));
+  }
+
+  /* 批量设置客户端本地 Zen 缓存目录：一个路径应用到多台（渲染农场同盘符布局是常态）*/
+  function ZenDirModal({ machines, recOf, onConfirm, close }) {
+    const [path, setPath] = useState('D:\\UE_DDC\\Zen');
+    const valid = /^[A-Za-z]:\\/.test(path.trim());
+    const confirm = () => { if (!valid) return; close(); onConfirm(path.trim()); };
+    return h('div', { className: 'drawer drawer--preview' },
+      h('div', { className: 'drawer-h' },
+        h('span', { className: 'di info' }, h(Icon, { name: 'folder', size: 17 })),
+        h('div', { style: { minWidth: 0 } },
+          h('h2', null, '批量设置本地 Zen 缓存目录'),
+          h('div', { className: 'sub' },
+            h('span', { className: 'cli-pill' }, 'set_machine_env_var UE-ZenDataPath'),
+            h('span', null, ' · 机器级环境变量 · ' + machines.length + ' 台客户端'))),
+        h('button', { className: 'iconbtn x', onClick: close }, h(Icon, { name: 'x', size: 16 }))),
+      h('div', { className: 'drawer-b' },
+        h('div', { className: 'dblock' },
+          h('div', { className: 'dblock-h' }, h('span', { className: 'no' }, '1'), '统一目录（Windows 绝对路径）'),
+          h('div', { className: 'zdir-form' },
+            h('input', { className: 'dp-input mono', value: path, autoFocus: true, spellCheck: false, placeholder: '如 D:\\UE_DDC\\Zen', onChange: (e) => setPath(e.target.value) })),
+          !valid ? h('div', { className: 'zdir-err', style: { marginTop: 6 } }, h(Icon, { name: 'alert', size: 12 }), '请输入 Windows 绝对路径（如 D:\\UE_DDC\\Zen）') : null,
+          h('div', { className: 'zdir-intro', style: { marginTop: 6 } }, '渲染农场通常同盘符布局，一个路径可直接应用到所有选中机器。')),
+        h('div', { className: 'dblock' },
+          h('div', { className: 'dblock-h' }, h('span', { className: 'no' }, '2'), '目标机器', h('span', { className: 'aff-sum' }, machines.length + ' 台')),
+          h('div', { className: 'zdm-list' }, machines.map((n) => {
+            const rec = recOf(n.id);
+            const stMeta = NODE_STATUS[n.status] || NODE_STATUS.na;
+            return h('div', { key: n.id, className: 'zdm-row' },
+              h('span', { className: 'zdm-host' }, CX.dot(stMeta.visual), n.host),
+              h('span', { className: 'zdm-cur' + (rec.cfg ? '' : ' none') }, rec.cfg ? ('当前 ' + rec.cfg) : (rec.loading ? '当前配置读取中…' : '当前未配置 · 走默认 C 盘')),
+              h('span', { className: 'zdm-arrow' }, h(Icon, { name: 'arrowr', size: 11 }), path.trim() || '—'));
+          }))),
+        h('div', { className: 'cli-note' }, h(Icon, { name: 'shield', size: 13 }),
+          '写机器级环境变量 UE-ZenDataPath，逐台执行、逐台看成败；应用后需重启各机 UE 编辑器才生效，旧缓存不会自动迁移。此目录是「客户端本地 Zen 缓存」，区别于①区「服务器数据目录」（共享缓存本体）与 DDC 页「本地 DDC（文件版）」。')),
+      h('div', { className: 'drawer-f' },
+        h(Button, { variant: 'secondary', size: 'M', onPress: close }, '取消'),
+        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'check', size: 15 }), isDisabled: !valid, onPress: confirm },
+          '应用到 ' + machines.length + ' 台')));
   }
 
   function ZenServer({ s }) {
@@ -347,6 +389,50 @@ import {
       });
       return () => { pointedGenRef.current++; };
     }, [statusSig, nodesSig, projSig]);
+
+    /* ============ ②+ 客户端本地 Zen 缓存目录（机器级环境变量 UE-ZenDataPath）============
+       每台客户端上，UE 编辑器会自动拉起本地 Zen 进程做本地缓存，默认目录在 C 盘 %LOCALAPPDATA%。
+       Volo 写机器级环境变量集中配置；但 UE 端存在优先级更高的配置源（编辑器内手动迁移写下的
+       HKCU Zen\DataPath 注册表键）可能压过它 —— 所以同时展示「配置值」（getMachineEnvVar 读回的
+       环境变量）与「实际生效值」（zen_read_local_runcontext 从该机 zenserver.runcontext 回读的
+       上次实际使用路径），两者可能不一致。三个目录互不相同：①区「服务器数据目录」= 共享缓存
+       本体；本功能 = 客户端本地 Zen 缓存；DDC 页「本地 DDC（文件版）」= 又一个独立目录。 */
+    const [zdirs, setZdirs] = useState({});         /* nodeId -> { cfg, eff, found, regPath, loading, readFail, readErr } */
+    const [zres, setZres] = useState({});           /* nodeId -> { st, msg, path } —— 逐台成败 */
+    const [zdraft, setZdraft] = useState({});       /* nodeId -> 面板输入草稿 */
+    const [zdirOpen, setZdirOpen] = useState(null); /* 展开配置面板的机器 id */
+    const zdirGenRef = useRef(0);
+    /* 单机读取：配置值（env var）+ 生效值（runcontext）并行拉。任一失败都算
+       readFail——runcontext 单独失败时不能把 found=false 冒充成「编辑器从未启动过
+       本地 Zen」，env var 单独失败时也不能把 cfg=null 冒充成「未设置」；面板对
+       失败的那半各自如实标注（cfgFail 单独记录，配置值格显示读取失败）。 */
+    const readZdirFor = (n, gen) => Promise.allSettled([
+      getMachineEnvVar(n.machineId, 'UE-ZenDataPath'),
+      zenReadLocalRuncontext(n.machineId),
+    ]).then(([cfgR, rcR]) => {
+      if (gen !== zdirGenRef.current) return;
+      const rc = rcR.status === 'fulfilled' ? rcR.value : null;
+      const cfgFail = cfgR.status === 'rejected';
+      const rcFail = rcR.status === 'rejected';
+      const errOf = (x) => (x.reason && x.reason.message ? x.reason.message : String(x.reason));
+      setZdirs((d) => Object.assign({}, d, { [n.id]: {
+        cfg: !cfgFail && cfgR.value ? cfgR.value : null,
+        eff: rc && rc.found ? rc.data_path : null,
+        found: !!(rc && rc.found),
+        regPath: rc ? rc.registry_data_path : null,
+        loading: false,
+        cfgFail,
+        readFail: cfgFail || rcFail,
+        readErr: rcFail ? errOf(rcR) : cfgFail ? errOf(cfgR) : null,
+      } }));
+    });
+    useEffect(() => {
+      const gen = ++zdirGenRef.current;
+      (window.RENDER_NODES || [])
+        .filter((n) => n.status !== 'offline' && n.machineId && runtimeUser(n))
+        .forEach((n) => { readZdirFor(n, gen); });
+      return () => { zdirGenRef.current++; };
+    }, [nodesSig]);
 
     const deployed = !!status;
     /* 仅当服务真正 running 才允许把客户端指向它——指向一台已停止/不可达/状态未知的服务器
@@ -591,6 +677,101 @@ import {
        （部署后切了表单 srvId 也不能把真正的服务器自己当客户端指向自己）。 */
     const clients = RN.filter((n) => n.id !== srvNode.id && !(status && n.machineId === status.machineId));
     const pointedCount = clients.filter((n) => pointed.has(n.id)).length;
+
+    /* —— 本地 Zen 缓存目录：状态派生 + 动作 —— */
+    const ZEN_DEF_HINT = '%LOCALAPPDATA%\\UnrealEngine\\Common\\Zen\\Data';
+    /* runcontext 的 DataPath 是正斜杠（D:/…），env var 是反斜杠——比较前归一化 */
+    const normWinPath = (p) => String(p || '').trim().replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+    const zenRecOf = (d, id) => d[id] || { cfg: null, eff: null, loading: true };
+    const zenRec = (id) => zenRecOf(zdirs, id);
+    const zenSt = (n) => {
+      if (n.status === 'offline' || !runtimeUser(n)) return 'blocked';
+      const r = zenRec(n.id);
+      if (r.loading) return 'loading';
+      if (r.readFail) return 'readfail';
+      if (!r.cfg) return 'unset';
+      if (!r.found) return 'mismatch';   /* 已配置但该机编辑器从未启动过本地 Zen —— 尚未生效 */
+      return normWinPath(r.eff) === normWinPath(r.cfg) ? 'match' : 'mismatch';
+    };
+    const ZDIR_META = {
+      unset:    { vis: 'neutral',     icon: 'folder', label: '默认 C 盘' },
+      match:    { vis: 'positive',    icon: 'check',  label: '已生效' },
+      mismatch: { vis: 'notice',      icon: 'alert',  label: '未生效' },
+      loading:  { vis: 'informative', icon: 'sync',   label: '读取中' },
+      blocked:  { vis: 'neutral',     icon: 'minus',  label: '不可读' },
+      readfail: { vis: 'negative',    icon: 'alert',  label: '读取失败' },
+    };
+    const zenMismatchWhy = (rec) => {
+      if (rec.regPath && normWinPath(rec.regPath) !== normWinPath(rec.cfg))
+        return '该机在编辑器内手动迁移过缓存，注册表配置（' + rec.regPath + '）优先级更高，压过了环境变量 —— 生效目录以注册表为准';
+      if (!rec.found)
+        return '已写入环境变量，但该机编辑器还没启动过本地 Zen —— 下次启动 UE 编辑器时生效';
+      return '已写入环境变量，但尚未重启该机 UE 编辑器 —— 生效值仍是旧目录';
+    };
+    /* 应用：逐台执行、逐台成败（与「指向此服务器」的行内模式一致）。写的是机器级
+       环境变量（HKLM），但前置仍要求 ue_runtime_user——没有它读不了生效值，写下去
+       也验证不了，与面板 blocked 拦截保持同一条件；被拦的逐台引导而非静默跳过。 */
+    const applyZenDir = (ids, path) => {
+      ids.forEach((id) => {
+        const n = CX.node(id);
+        if (!n || n.status === 'offline') return;
+        if (!runtimeUser(n)) {
+          setZres((r) => Object.assign({}, r, { [id]: { st: 'fail', msg: '该机未设置 UE 运行用户，无法回读生效值 · 先配置 ue_runtime_user（machine set-ue-user）', path } }));
+          log(s, 'warn', `<b>set_machine_env_var</b> · ${esc(n.host)} 未设 ue_runtime_user，本地 Zen 目录写入跳过`);
+          return;
+        }
+        setZres((r) => Object.assign({}, r, { [id]: { st: 'running' } }));
+        setMachineEnvVar(n.machineId, 'UE-ZenDataPath', path).then(
+          () => {
+            /* setx-machine.ps1 写后回读校验过，cfg=path 是已验证事实；eff 要等编辑器重启 */
+            setZdirs((d) => Object.assign({}, d, { [id]: Object.assign({}, zenRecOf(d, id), { cfg: path, loading: false, readFail: false, readErr: null }) }));
+            setZres((r) => Object.assign({}, r, { [id]: { st: 'ok', msg: '已写入 · 重启该机 UE 编辑器后生效；旧缓存不会自动迁移', path } }));
+            log(s, 'ok', `<b>set_machine_env_var</b> · ${esc(n.host)} UE-ZenDataPath = ${esc(path)}`);
+          },
+          (e) => {
+            const em = e && e.message ? e.message : String(e);
+            setZres((r) => Object.assign({}, r, { [id]: { st: 'fail', msg: em, path } }));
+            log(s, 'err', `<b>set_machine_env_var</b> · ${esc(n.host)} UE-ZenDataPath 写入失败 · ${esc(em)}`);
+          });
+      });
+    };
+    /* 清除配置：写空值 = 删除该机器级变量（setx-machine.ps1 对 Value="" 的删除语义已验证）*/
+    const clearZenDir = (id) => {
+      const n = CX.node(id);
+      if (!n) return;
+      setZres((r) => Object.assign({}, r, { [id]: { st: 'running' } }));
+      setMachineEnvVar(n.machineId, 'UE-ZenDataPath', '').then(
+        () => {
+          setZdirs((d) => Object.assign({}, d, { [id]: Object.assign({}, zenRecOf(d, id), { cfg: null, loading: false }) }));
+          setZres((r) => Object.assign({}, r, { [id]: { st: 'ok', msg: '已清除配置 · 重启该机 UE 编辑器后回到默认目录（' + ZEN_DEF_HINT + '）；旧缓存不会自动迁移' } }));
+          log(s, 'warn', `<b>set_machine_env_var</b> · ${esc(n.host)} 清除 UE-ZenDataPath（还原默认）`);
+        },
+        (e) => {
+          const em = e && e.message ? e.message : String(e);
+          setZres((r) => Object.assign({}, r, { [id]: { st: 'fail', msg: em } }));
+          log(s, 'err', `<b>set_machine_env_var</b> · ${esc(n.host)} 清除 UE-ZenDataPath 失败 · ${esc(em)}`);
+        });
+    };
+    const rereadZenDir = (id) => {
+      const n = CX.node(id);
+      if (!n) return;
+      setZres((r) => { const x = Object.assign({}, r); delete x[id]; return x; });
+      setZdirs((d) => Object.assign({}, d, { [id]: Object.assign({}, zenRecOf(d, id), { loading: true, readFail: false, readErr: null }) }));
+      log(s, 'info', `<b>zen_read_local_runcontext</b> · ${esc(n.host)} 回读 zenserver.runcontext`);
+      readZdirFor(n, zdirGenRef.current);
+    };
+    const openZenDirModal = (ids) => {
+      const machinesArg = ids.map((id) => CX.node(id)).filter((n) => n && n.status !== 'offline');
+      if (!machinesArg.length) return;
+      s.setModal({
+        wide: true,
+        render: ({ close }) => h(ZenDirModal, {
+          machines: machinesArg, recOf: (id) => zenRec(id),
+          onConfirm: (path) => applyZenDir(machinesArg.map((m) => m.id), path),
+          close,
+        }),
+      });
+    };
 
     const toggleSel = (n) => { if (n.status === 'offline') return; setSel((v) => v.includes(n.id) ? v.filter((x) => x !== n.id) : v.concat(n.id)); };
     const onlineSel = sel.filter((id) => { const n = CX.node(id); return n && n.status !== 'offline'; });
@@ -978,19 +1159,90 @@ import {
       if (pointedLoading) return h(ZBadge, { vis: 'neutral', icon: 'sync', label: '读取指向状态…', soft: true });
       return h(ZBadge, { vis: 'notice', icon: 'minus', label: '未指向', soft: true });
     };
+    /* 行内次级徽标：本地 Zen 缓存目录状态（指向是主状态，此为次级信息）· 点击展开配置 */
+    const zdirChip = (n) => {
+      const st = zenSt(n);
+      const r = zres[n.id];
+      const open = zdirOpen === n.id;
+      let vis, icon, label, spinning = false;
+      if (r && r.st === 'running') { vis = 'informative'; icon = 'sync'; label = 'Zen 目录 · 应用中'; spinning = true; }
+      else if (r && r.st === 'fail') { vis = 'negative'; icon = 'alert'; label = 'Zen 目录 · 写入失败'; }
+      else if (r && r.st === 'ok' && st === 'mismatch') { vis = 'notice'; icon = 'alert'; label = 'Zen 目录 · 待重启生效'; }
+      else { const m = ZDIR_META[st]; vis = m.vis; icon = m.icon; label = 'Zen 目录 · ' + m.label; spinning = st === 'loading'; }
+      return h('button', { className: 'zdir-chip zd-' + vis + (open ? ' on' : '') + (st === 'blocked' ? ' soft' : ''),
+        title: '客户端本地 Zen 缓存目录（UE-ZenDataPath）· 点击展开配置', onClick: () => setZdirOpen(open ? null : n.id) },
+        spinning ? h('span', { className: 'spin', style: { display: 'inline-flex' } }, h(Icon, { name: 'sync', size: 11 })) : h(Icon, { name: icon, size: 11 }),
+        label,
+        h(Icon, { name: 'chevd', size: 10, style: { transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .13s' } }));
+    };
+    /* 行内展开：配置值 vs 实际生效值 + 单机应用 / 清除 / 重新读取 */
+    const zdirPanel = (n) => {
+      const rec = zenRec(n.id);
+      const st = zenSt(n);
+      const m = ZDIR_META[st];
+      const blocked = st === 'blocked';
+      const draft = zdraft[n.id] != null ? zdraft[n.id] : (rec.cfg || 'D:\\UE_DDC\\Zen');
+      const valid = /^[A-Za-z]:\\/.test(draft.trim());
+      const r = zres[n.id];
+      const rm = r ? RUN_STATE[r.st] : null;
+      const effCell = blocked
+        ? h('span', { className: 'v none' }, '无法读取')
+        : st === 'loading'
+          ? h('span', { className: 'v loading' }, h('span', { className: 'spin', style: { display: 'inline-flex' } }, h(Icon, { name: 'sync', size: 11 })), '正在从该机回读…')
+          : st === 'readfail'
+            ? h('span', { className: 'v none' }, '回读失败' + (rec.readErr ? ' · ' + rec.readErr : ''))
+            : rec.found
+              ? h('span', { className: 'v mono' }, rec.eff || '—')
+              : h('span', { className: 'v none' }, '尚无记录 · 该机编辑器从未启动过本地 Zen');
+      return h('div', { className: 'zdir-panel' },
+        h('div', { className: 'zdir-h' },
+          h(Icon, { name: 'folder', size: 13 }),
+          h('span', { className: 't' }, '客户端本地 Zen 缓存目录'),
+          h('code', { className: 'zdir-env' }, 'UE-ZenDataPath'),
+          h(ZBadge, { vis: m.vis, icon: st === 'loading' ? 'sync' : m.icon, soft: true,
+            label: st === 'unset' ? '未配置 · 走默认 C 盘' : st === 'match' ? '已配置 · 生效一致' : st === 'mismatch' ? '已配置 · 未生效' : st === 'loading' ? '生效值读取中' : st === 'readfail' ? '回读失败' : '离线 / 未设运行用户' })),
+        h('div', { className: 'zdir-intro' },
+          '该机 UE 编辑器会自动拉起一个本地 Zen 进程做本地缓存，默认目录在系统盘用户目录，项目大了会塞满 C 盘。注意区分：①区「服务器数据目录」是共享缓存本体，DDC 页「本地 DDC（文件版）」是又一个目录 —— 三者互不相同。'),
+        blocked ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }),
+          n.status === 'offline'
+            ? '机器离线，读不了生效值，也无法远程写入 · 恢复在线后再配置'
+            : '该机未设置 UE 运行用户，读不了生效值 · 与「用户全局指向」同一前置条件：先配置 ue_runtime_user（machine set-ue-user）') : null,
+        h('div', { className: 'zdir-kv' },
+          h('span', { className: 'k' }, '配置值 · 环境变量'),
+          h('span', { className: 'v' + (rec.cfg ? ' mono' : ' none') },
+            rec.cfg || (rec.cfgFail ? '读取失败' : '未设置 · 默认 ' + ZEN_DEF_HINT)),
+          h('span', null)),
+        h('div', { className: 'zdir-kv' },
+          h('span', { className: 'k' }, '实际生效值 · runcontext'),
+          effCell,
+          !blocked ? h('button', { className: 'mini-btn', disabled: st === 'loading', onClick: () => rereadZenDir(n.id) }, h(Icon, { name: 'sync', size: 12 }), '重新读取') : null),
+        st === 'mismatch' ? h('div', { className: 'zdir-why' }, h(Icon, { name: 'alert', size: 12 }), zenMismatchWhy(rec)) : null,
+        !blocked ? h('div', { className: 'zdir-form' },
+          h('input', { className: 'dp-input mono', value: draft, spellCheck: false, placeholder: '如 D:\\UE_DDC\\Zen',
+            onChange: (e) => setZdraft((v) => Object.assign({}, v, { [n.id]: e.target.value })) }),
+          h('button', { className: 'mini-btn accent', disabled: !valid || (r && r.st === 'running'), onClick: () => applyZenDir([n.id], draft.trim()) }, h(Icon, { name: 'check', size: 12 }), '应用'),
+          h('button', { className: 'mini-btn danger', disabled: !rec.cfg || (r && r.st === 'running'), onClick: () => clearZenDir(n.id) }, h(Icon, { name: 'trash', size: 12 }), '清除配置（还原默认）')) : null,
+        !blocked && !valid ? h('div', { className: 'zdir-err' }, h(Icon, { name: 'alert', size: 12 }), '请输入 Windows 绝对路径（如 D:\\UE_DDC\\Zen）') : null,
+        r ? h('div', { className: 'zdir-res' },
+          h(ZBadge, { vis: rm.vis, icon: rm.icon, label: r.st === 'running' ? '应用中' : r.st === 'ok' ? '成功' : '失败', soft: true }),
+          r.msg ? h('span', { className: 'zdir-res-msg s-' + rm.vis }, r.msg) : null,
+          r.st === 'fail' ? h('button', { className: 'mini-btn', onClick: () => applyZenDir([n.id], (r.path || draft).trim()) }, h(Icon, { name: 'restart', size: 12 }), '重试') : null) : null);
+    };
     const clientRow = (n) => {
       const off = n.status === 'offline';
       const checked = sel.includes(n.id);
       const stMeta = NODE_STATUS[n.status] || NODE_STATUS.na;
-      return h('div', { key: n.id, className: 'cli-row zcli' + (off ? ' off' : '') + (checked ? ' on' : '') },
-        h('button', { className: 'zck' + (checked ? ' on' : '') + (off ? ' dis' : ''), onClick: () => toggleSel(n), disabled: off, title: off ? '离线机器不可选' : '选择' },
-          checked ? h(Icon, { name: 'check', size: 12 }) : null),
-        h('span', { className: 'zcli-state' }, CX.dot(stMeta.visual),
-          h('span', { className: 'zcli-state-tx s-' + stMeta.visual }, off ? '离线' : '在线')),
-        h('div', { className: 'cli-meta' },
-          h('div', { className: 'cli-host mono' }, n.host),
-          h('div', { className: 'cli-sub' }, n.ip + ' · ' + n.role)),
-        h('div', { className: 'zcli-end' }, clientBadge(n)));
+      return h('div', { key: n.id, className: 'zcli-wrap' + (zdirOpen === n.id ? ' open' : '') },
+        h('div', { className: 'cli-row zcli' + (off ? ' off' : '') + (checked ? ' on' : '') },
+          h('button', { className: 'zck' + (checked ? ' on' : '') + (off ? ' dis' : ''), onClick: () => toggleSel(n), disabled: off, title: off ? '离线机器不可选' : '选择' },
+            checked ? h(Icon, { name: 'check', size: 12 }) : null),
+          h('span', { className: 'zcli-state' }, CX.dot(stMeta.visual),
+            h('span', { className: 'zcli-state-tx s-' + stMeta.visual }, off ? '离线' : '在线')),
+          h('div', { className: 'cli-meta' },
+            h('div', { className: 'cli-host mono' }, n.host),
+            h('div', { className: 'cli-sub' }, n.ip + ' · ' + n.role)),
+          h('div', { className: 'zcli-end' }, zdirChip(n), clientBadge(n))),
+        zdirOpen === n.id ? zdirPanel(n) : null);
     };
 
     return h('div', { className: 'res ddc' },
@@ -1028,6 +1280,9 @@ import {
             h('button', { className: 'zlink-all', onClick: toggleSelectUnpointed, disabled: selectableUnpointed.length === 0 },
               allUnpointedSelected ? '取消选择' : '选中全部未指向（' + selectableUnpointed.length + '）'),
             h('div', { className: 'zcli-go' },
+              h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'folder', size: 14 }), isDisabled: onlineSel.length === 0,
+                onPress: () => openZenDirModal(onlineSel) },
+                onlineSel.length ? '设置缓存目录（' + onlineSel.length + '）' : '设置缓存目录'),
               h(Button, {
                 variant: 'accent', size: 'M', icon: h(Icon, { name: 'link', size: 14 }), isDisabled: onlineSel.length === 0 || !canPoint,
                 onPress: () => { if (cfgScope === 'project') openProjectPicker(onlineSel); else runApply(onlineSel); },

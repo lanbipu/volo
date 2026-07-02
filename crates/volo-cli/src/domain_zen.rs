@@ -98,6 +98,7 @@ pub fn handle(ctx: &mut Ctx<'_>, action: ZenAction) -> VoloResult<()> {
         }
         ZenAction::DetectBinary { machine, all, cred } => detect_binary(ctx, machine, all, &cred),
         ZenAction::ListEndpoints { machine } => list_endpoints(ctx, machine),
+        ZenAction::ReadRuncontext { machine } => read_runcontext(ctx, machine),
         ZenAction::Baseline { action } => match action {
             ZenBaselineAction::List { zen_build_version, kind } => {
                 baseline_list(ctx, zen_build_version.as_deref(), kind.as_deref())
@@ -738,6 +739,38 @@ fn list_endpoints(ctx: &mut Ctx<'_>, machine: Option<i64>) -> VoloResult<()> {
     Ok(())
 }
 
+/// `zen read-runcontext` — CLI twin of the Tauri `zen_read_local_runcontext`
+/// command (same sidecar, same result fields).
+fn read_runcontext(ctx: &mut Ctx<'_>, machine: i64) -> VoloResult<()> {
+    let db = ctx.require_db()?.clone();
+    let m = require_machine(&db, machine)?;
+    let ue_user = machines::get_ue_runtime_user(&db, machine)?.ok_or_else(|| {
+        VoloError::InvalidInput(format!(
+            "machine id={machine} has no ue_runtime_user set — run \
+             `machine set-ue-user --machine {machine} --ue-user <USERNAME>` first"
+        ))
+    })?;
+    let env = run_node(
+        &m.ip,
+        "zen-read-runcontext.ps1",
+        serde_json::json!({ "RuntimeUser": ue_user }),
+    )
+    .and_then(|raw| parse_envelope(&raw, "zen-read-runcontext"))?;
+    let doc = serde_json::json!({
+        "machine_id": machine,
+        "host": m.ip,
+        "ue_runtime_user": ue_user,
+        "found": env.get("found").and_then(|v| v.as_bool()).unwrap_or(false),
+        "data_path": env.get("data_path").and_then(|v| v.as_str()),
+        "executable": env.get("executable").and_then(|v| v.as_str()),
+        "commandline_arguments": env.get("commandline_arguments").and_then(|v| v.as_str()),
+        "running": env.get("running").and_then(|v| v.as_bool()).unwrap_or(false),
+        "registry_data_path": env.get("registry_data_path").and_then(|v| v.as_str()),
+    });
+    ctx.emitter.emit_result(&doc).ok();
+    Ok(())
+}
+
 // -----------------------------------------------------------------------------
 // baseline list / lock / unlock
 // -----------------------------------------------------------------------------
@@ -1271,7 +1304,7 @@ fn gc_set(
         )));
     }
 
-    let (_target_exe, dest_path) = resolve_service_paths(&db, &ep)?;
+    let (target_exe, dest_path) = resolve_service_paths(&db, &ep)?;
     validate_dest_path(&dest_path)?;
 
     // Render from an in-memory preview copy (never touches the DB) for both
@@ -1296,6 +1329,13 @@ fn gc_set(
                 "host": machine.ip,
                 "dest_path": &dest_path,
                 "lua": lua,
+                // GC retention rides the service ImagePath as `--gc-*` flags
+                // (zen 5.8 doesn't read it from the lua) — surface the values
+                // here since the lua preview above no longer carries them.
+                "gc_interval_seconds": gc_interval_seconds,
+                "gc_lightweight_interval_seconds": gc_lightweight_interval_seconds,
+                "cache_max_duration_seconds": cache_max_duration_seconds,
+                "will_patch_image_path_args": true,
                 "will_restart_service": true,
             }),
         );
@@ -1321,7 +1361,19 @@ fn gc_set(
         "zen.gc_settings_update",
     )?;
 
-    // Restart so the new file actually takes effect (Zen doesn't hot-reload).
+    // GC retention rides the service ImagePath (`--gc-*` flags) — zen 5.8
+    // doesn't read it from zen_config.lua (see core::zen::lua_config docs).
+    // Patch the args in place (PatchArgsOnly never touches the service
+    // account), then restart below so the new command line takes effect.
+    cache_core::core::zen::ops::patch_service_image_path_args(
+        &preview_ep,
+        &machine.ip,
+        &target_exe,
+        &dest_path,
+    )?;
+
+    // Restart so the patched ImagePath actually takes effect (the running
+    // process keeps its old command line until a stop+start).
     restart_service(&db, ep.machine_id, &machine.ip)?;
 
     // Only persist once the remote write + restart both actually succeeded —
@@ -1548,7 +1600,9 @@ fn service_install(
         .map(|u| format!(" -ServiceUser {u}"))
         .unwrap_or_default();
     let invocation = redact(&format!(
-        "zen-service-install.ps1 -ZenExePath {zen_exe} -ServiceName {DEFAULT_SERVICE_NAME} -ConfigPath {config_path}{user_marker}{pass_marker}",
+        "zen-service-install.ps1 -ZenExePath {zen_exe} -ServiceName {DEFAULT_SERVICE_NAME} -ConfigPath {config_path} \
+         -Port {} -DataDir {} -HttpServerClass {}{user_marker}{pass_marker}",
+        ep.declared_port, ep.data_dir, ep.httpserverclass,
     ));
     let op_id = operations::start(&db, "zen.service_install", &[ep.machine_id])?;
 
@@ -1559,11 +1613,13 @@ fn service_install(
         "ZenExePath": zen_exe,
         "ServiceName": DEFAULT_SERVICE_NAME,
         "ConfigPath": config_path,
-        // Only used by the PS script to icacls-grant a non-builtin account;
-        // ignored for SYSTEM/LocalService/NetworkService.
+        // Rides the ImagePath as `--data-dir` (zen 5.8 doesn't read it from
+        // zen_config.lua) and icacls-grants a non-builtin ServiceUser.
         "DataDir": ep.data_dir,
     });
     if let Some(obj) = args.as_object_mut() {
+        // --port / --http / --gc-* ImagePath flags (see service_runtime_args).
+        cache_core::core::zen::ops::service_runtime_args(&ep, obj);
         if let Some(u) = service_user {
             obj.insert("ServiceUser".into(), serde_json::Value::String(u.to_string()));
         }

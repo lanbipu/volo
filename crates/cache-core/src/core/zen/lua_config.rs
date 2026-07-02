@@ -1,35 +1,45 @@
 //! Plan 7 T2.2: render zen's `zen_config.lua` config file from a
 //! `ZenEndpoint` row.
 //!
-//! The real config keys come from plan v4 §8 T2.2:
-//! - `server.datadir`
-//! - `network.port`
-//! - `network.httpserverclass`
-//! - `cache.upstream.zen.url` — only emitted when the endpoint has an upstream
-//! - `gc.intervalseconds` / `gc.lightweightintervalseconds` /
-//!   `cache.maxdurationseconds` — GC retention settings (2026-07-01 addition);
-//!   each key is independently optional and omitted when the endpoint's
-//!   corresponding field is `None`.
+//! ## Format: nested `server` table — the ONLY key this file carries is
+//! `server.datadir` (verified empirically 2026-07-02)
 //!
-//! ## Format: flat dotted-key assignments (confirmed 2026-07-01)
+//! Verified against zenserver **5.8.13** on lanPC using zen's own
+//! `--write-config` dump (which echoes exactly the keys zen recognizes) plus
+//! `--config` probe runs:
 //!
-//! Source: <https://dev.epicgames.com/documentation/unreal-engine/set-up-zen-storage-server-as-shared-ddc-for-unreal-engine>
-//! ("Set up Zen Storage Server as Shared DDC for Unreal Engine"). Epic's
-//! template there ships a `zen_config.lua` using flat dotted-key assignments
-//! — e.g. `server.datadir = "..."`, `network.port = 8558`,
-//! `gc.intervalseconds = 28800` — NOT nested Lua tables, and shows the
-//! Windows service install command as `sc create ... binpath="{ZenInstall}
-//! \zenserver.exe --config={ZenInstall}\zen_config.lua"`. An earlier
-//! revision of this module guessed at nested tables (`server = { datadir =
-//! ... }`) because no real sample was available at the time; that guess is
-//! now known wrong and this renderer emits the confirmed dotted-key form
-//! instead.
+//! - zen parses a **nested Lua table**: `server = { datadir = "...", ... }`.
+//!   `datadir` is honored (probe: DataRoot follows it).
+//! - The flat dotted-key form (`server.datadir = ...`, `network.port = ...`)
+//!   from Epic's "Set up Zen Storage Server as Shared DDC" guide is **NOT
+//!   parsed by 5.8.13** — a service deployed with that form silently fell
+//!   back to ALL defaults (data landed in `C:\ProgramData\Epic\Zen\Data`,
+//!   the operator-chosen D:\ drive was ignored). The 2026-07-01 revision of
+//!   this module switched TO the dotted form citing that guide; the guide is
+//!   wrong for 5.8.13 and that revision is what this one reverts.
+//! - `port` / `httpserverclass` keys are NOT honored even inside the nested
+//!   `server` table (probe: `server = { port = 8559 }` still bound 8558).
 //!
-//! The destination filename matters too: Epic's guide requires the file at
-//! `{ZenInstall}\zen_config.lua` (alongside zenserver.exe), because the
-//! Windows service is launched with `--config={ZenInstall}\zen_config.lua`
-//! and has no other way to find its config. See
-//! `core::zen::ops::zen_config_lua_path`.
+//! Port, HTTP server class, and GC retention therefore ride the service
+//! command line instead — zenserver accepts `--port` / `--http` /
+//! `--gc-interval-seconds` / `--gc-lightweight-interval-seconds` /
+//! `--gc-cache-duration-seconds` (hidden from `--help` but verified by probe:
+//! unknown flags dump usage, these don't, and `--port 9877` logged "starting
+//! on port 9877"; UE 5.8 itself launches its local zen with these flags).
+//! `zen-service-install.ps1` bakes them into the service ImagePath.
+//!
+//! The destination filename still matters: the Windows service is launched
+//! with `--config={ZenInstall}\zen_config.lua` and has no other way to find
+//! its config. See `core::zen::ops::zen_config_lua_path`.
+//!
+//! ## Known gap: upstream forwarding (fail closed)
+//!
+//! Plan v4 §8 named a `cache.upstream.zen.url` key for worker endpoints.
+//! That key came from the same unverified doc lineage as the dotted form and
+//! there is no empirically-confirmed lua key or CLI flag for upstream
+//! forwarding on 5.8.13. Rather than emit config that zen silently ignores
+//! (a worker that LOOKS wired but never forwards), [`render`] **refuses**
+//! endpoints with an upstream until a real channel is verified.
 //!
 //! ## Known gap: HTTPS endpoints (fail closed)
 //!
@@ -179,14 +189,27 @@ pub fn render(endpoint: &ZenEndpoint, upstream: Option<&UpstreamInfo>) -> VoloRe
         validate_scheme(&u.scheme)?;
         validate_host(&u.host)?;
         validate_port(u.declared_port)?;
+        // Fail closed (see module docs "Known gap"): no lua key or CLI flag
+        // for upstream forwarding has been verified against zen 5.8.13. The
+        // previously-emitted `cache.upstream.zen.url` dotted key is not
+        // parsed by that binary, so rendering it would produce a worker that
+        // looks wired but never forwards. Validations above still run first
+        // so callers get the precise field error for malformed input.
+        return Err(VoloError::InvalidInput(
+            "lua_config: upstream forwarding is not supported yet — no zen 5.8 config \
+             key or CLI flag for it has been verified (the old `cache.upstream.zen.url` \
+             lua key is silently ignored by zenserver 5.8.13). Register the endpoint \
+             without an upstream."
+                .to_string(),
+        ));
     }
 
-    Ok(render_inner(endpoint, upstream))
+    Ok(render_inner(endpoint))
 }
 
-/// Build the actual text. Assumes `endpoint` + `upstream` have already been
-/// validated; do not call directly.
-fn render_inner(endpoint: &ZenEndpoint, upstream: Option<&UpstreamInfo>) -> String {
+/// Build the actual text. Assumes `endpoint` has already been validated; do
+/// not call directly.
+fn render_inner(endpoint: &ZenEndpoint) -> String {
     let mut out = String::new();
 
     // Header — only fields from the input row, no clock / env lookups, so
@@ -206,62 +229,21 @@ fn render_inner(endpoint: &ZenEndpoint, upstream: Option<&UpstreamInfo>) -> Stri
     out.push_str(
         "-- Edits should be made via `voloctl cache zen apply-config` so the DB row stays the source of truth.\n",
     );
+    out.push_str(
+        "-- zen 5.8 parses only the nested `server` table from this file (verified via\n\
+         -- `zenserver --write-config`; Epic's dotted-key sample is NOT parsed). Port /\n\
+         -- http class / GC retention ride the service ImagePath as zenserver CLI flags\n\
+         -- instead — see zen-service-install.ps1.\n",
+    );
     out.push('\n');
 
+    out.push_str("server = {\n");
     let _ = writeln!(
         out,
-        "server.datadir = \"{}\"",
+        "\tdatadir = \"{}\",",
         escape_lua_string(&endpoint.data_dir)
     );
-    out.push('\n');
-
-    let _ = writeln!(out, "network.port = {}", endpoint.declared_port);
-    let _ = writeln!(
-        out,
-        "network.httpserverclass = \"{}\"",
-        escape_lua_string(&endpoint.httpserverclass)
-    );
-
-    // GC 缓存回收策略 — each key is independently optional: `None` means the
-    // operator hasn't configured that field yet (or this row predates the
-    // GC-settings migration), so we omit the key and let zenserver fall back
-    // to its own compiled-in default rather than assert a value we don't
-    // actually have.
-    if endpoint.gc_interval_seconds.is_some()
-        || endpoint.gc_lightweight_interval_seconds.is_some()
-        || endpoint.cache_max_duration_seconds.is_some()
-    {
-        out.push('\n');
-        if let Some(v) = endpoint.gc_interval_seconds {
-            let _ = writeln!(out, "gc.intervalseconds = {}", v);
-        }
-        if let Some(v) = endpoint.gc_lightweight_interval_seconds {
-            let _ = writeln!(out, "gc.lightweightintervalseconds = {}", v);
-        }
-        if let Some(v) = endpoint.cache_max_duration_seconds {
-            let _ = writeln!(out, "cache.maxdurationseconds = {}", v);
-        }
-    }
-
-    if let Some(u) = upstream {
-        out.push('\n');
-        // IPv6 literals (`::1`, `2001:db8::1`) MUST be bracketed in URLs
-        // (RFC 3986 §3.2.2). `validate_host` only lets `:` through if the
-        // string parses as IPv6, so the `contains(':')` check here is a
-        // safe and sufficient detector.
-        let host_in_url = if u.host.contains(':') {
-            format!("[{}]", escape_lua_string(&u.host))
-        } else {
-            escape_lua_string(&u.host)
-        };
-        let url = format!(
-            "{}://{}:{}",
-            escape_lua_string(&u.scheme),
-            host_in_url,
-            u.declared_port,
-        );
-        let _ = writeln!(out, "cache.upstream.zen.url = \"{}\"", url);
-    }
+    out.push_str("}\n");
 
     out
 }
@@ -500,27 +482,38 @@ mod tests {
     }
 
     #[test]
-    fn standalone_local_no_upstream_emits_server_and_network_only() {
+    fn standalone_local_no_upstream_emits_nested_server_table_only() {
         let endpoint = endpoint_local_no_upstream();
         let out = render(&endpoint, None).unwrap();
 
-        assert!(out.contains("server.datadir = \"F:\\\\Epic\\\\DDC\\\\Zen\""));
-        assert!(out.contains("network.port = 8558"));
-        assert!(out.contains("network.httpserverclass = \"asio\""));
+        // Verified nested-table form — the ONLY runtime key in this file.
+        assert!(out.contains("server = {"));
+        assert!(out.contains("\tdatadir = \"F:\\\\Epic\\\\DDC\\\\Zen\","));
+        // The dotted-key form zen 5.8.13 silently ignores must never come back.
+        assert!(!out.contains("server.datadir"));
+        // Port / http class ride the service ImagePath flags, not this file.
+        assert!(!out.contains("network."));
+        assert!(!out.contains("port ="));
+        assert!(!out.contains("httpserverclass"));
 
         // No upstream section.
         assert!(!out.contains("upstream"));
     }
 
     #[test]
-    fn local_with_upstream_emits_all_three_sections() {
+    fn local_with_upstream_is_refused_as_unverified() {
+        // No zen 5.8 config channel for upstream forwarding has been
+        // verified — render fails closed instead of emitting the dead
+        // `cache.upstream.zen.url` key (see module docs "Known gap").
         let endpoint = endpoint_local_with_upstream();
         let upstream = sample_upstream();
-        let out = render(&endpoint, Some(&upstream)).unwrap();
-
-        assert!(out.contains("server.datadir = "));
-        assert!(out.contains("network.port = "));
-        assert!(out.contains("cache.upstream.zen.url = \"http://192.168.10.20:8559\""));
+        let err = render(&endpoint, Some(&upstream)).unwrap_err();
+        match err {
+            VoloError::InvalidInput(msg) => {
+                assert!(msg.contains("upstream forwarding is not supported"));
+            }
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
     }
 
     #[test]
@@ -533,23 +526,19 @@ mod tests {
         let out = render(&endpoint, None).unwrap();
 
         assert!(out.contains("role=shared_upstream"));
-        assert!(out.contains("server.datadir = \"D:\\\\ZenMaster\""));
-        assert!(out.contains("network.port = 8559"));
-        // No cache/upstream line — but the header's `role=shared_upstream`
-        // legitimately contains "upstream", so we check for the actual
-        // dotted-key line instead of the bare substring.
+        assert!(out.contains("\tdatadir = \"D:\\\\ZenMaster\","));
         assert!(!out.contains("cache.upstream"));
         assert!(!out.contains("url ="));
     }
 
     #[test]
-    fn httpserverclass_httpsys_round_trips() {
+    fn httpserverclass_httpsys_is_validated_but_not_emitted() {
+        // httpserverclass rides the service ImagePath (`--http`), not the
+        // lua file — but the row value is still validated here for hygiene.
         let mut endpoint = endpoint_local_no_upstream();
         endpoint.httpserverclass = "httpsys".into();
         let out = render(&endpoint, None).unwrap();
-        assert!(out.contains("httpserverclass = \"httpsys\""));
-        // And the asio default is gone.
-        assert!(!out.contains("httpserverclass = \"asio\""));
+        assert!(!out.contains("httpserverclass"));
     }
 
     #[test]
@@ -694,12 +683,19 @@ mod tests {
     }
 
     #[test]
-    fn hostname_with_dots_and_dashes_is_accepted() {
+    fn hostname_with_dots_and_dashes_passes_validation_then_hits_upstream_refusal() {
+        // A well-formed upstream host gets PAST the field validations and
+        // lands on the unverified-channel refusal — not on a host error.
         let endpoint = endpoint_local_with_upstream();
         let mut upstream = sample_upstream();
         upstream.host = "cluster-master.uecm.local".into();
-        let out = render(&endpoint, Some(&upstream)).unwrap();
-        assert!(out.contains("url = \"http://cluster-master.uecm.local:8559\""));
+        let err = render(&endpoint, Some(&upstream)).unwrap_err();
+        match err {
+            VoloError::InvalidInput(msg) => {
+                assert!(msg.contains("upstream forwarding is not supported"));
+            }
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
     }
 
     #[test]
@@ -782,36 +778,33 @@ mod tests {
     }
 
     #[test]
-    fn ipv6_upstream_host_is_bracketed_in_url() {
-        // RFC 3986 §3.2.2: IPv6 literals in URL authority must be wrapped
-        // in `[]` so the port colon isn't ambiguous with the address.
+    fn ipv6_upstream_host_passes_validation_then_hits_upstream_refusal() {
+        // IPv6 literals are valid hosts — they must get past validate_host
+        // and land on the unverified-channel refusal, not a host error.
         let endpoint = endpoint_local_with_upstream();
         let mut upstream = sample_upstream();
         upstream.host = "2001:db8::1".into();
-        let out = render(&endpoint, Some(&upstream)).unwrap();
-        assert!(
-            out.contains("url = \"http://[2001:db8::1]:8559\""),
-            "expected bracketed IPv6 URL, got:\n{}",
-            out,
-        );
+        let err = render(&endpoint, Some(&upstream)).unwrap_err();
+        match err {
+            VoloError::InvalidInput(msg) => {
+                assert!(msg.contains("upstream forwarding is not supported"));
+            }
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
     }
 
     #[test]
-    fn ipv6_loopback_upstream_is_bracketed() {
-        let endpoint = endpoint_local_with_upstream();
-        let mut upstream = sample_upstream();
-        upstream.host = "::1".into();
-        let out = render(&endpoint, Some(&upstream)).unwrap();
-        assert!(out.contains("url = \"http://[::1]:8559\""));
-    }
-
-    #[test]
-    fn https_scheme_round_trips_into_upstream_url() {
+    fn https_upstream_scheme_passes_validation_then_hits_upstream_refusal() {
         let endpoint = endpoint_local_with_upstream();
         let mut upstream = sample_upstream();
         upstream.scheme = "https".into();
-        let out = render(&endpoint, Some(&upstream)).unwrap();
-        assert!(out.contains("url = \"https://192.168.10.20:8559\""));
+        let err = render(&endpoint, Some(&upstream)).unwrap_err();
+        match err {
+            VoloError::InvalidInput(msg) => {
+                assert!(msg.contains("upstream forwarding is not supported"));
+            }
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
     }
 
     #[test]
@@ -872,10 +865,9 @@ mod tests {
     fn output_is_deterministic_across_calls() {
         // Same input must produce byte-identical output. Anything else means
         // we accidentally pulled in a clock / env / hashmap iteration order.
-        let endpoint = endpoint_local_with_upstream();
-        let upstream = sample_upstream();
-        let a = render(&endpoint, Some(&upstream)).unwrap();
-        let b = render(&endpoint, Some(&upstream)).unwrap();
+        let endpoint = endpoint_local_no_upstream();
+        let a = render(&endpoint, None).unwrap();
+        let b = render(&endpoint, None).unwrap();
         assert_eq!(a, b);
     }
 
@@ -889,42 +881,29 @@ mod tests {
 
     #[test]
     fn header_comment_carries_endpoint_metadata() {
-        let endpoint = endpoint_local_with_upstream();
-        let out = render(&endpoint, Some(&sample_upstream())).unwrap();
+        let mut endpoint = endpoint_local_no_upstream();
+        endpoint.id = Some(8);
+        endpoint.lifecycle_mode = "installed_service".into();
+        let out = render(&endpoint, None).unwrap();
         // Header must mention id/machine/role/lifecycle for operator trace.
         assert!(out.contains("Endpoint id=8 machine=3 role=local lifecycle=installed_service"));
     }
 
     #[test]
-    fn gc_settings_omitted_when_all_none() {
-        let endpoint = endpoint_local_no_upstream();
-        let out = render(&endpoint, None).unwrap();
-        assert!(!out.contains("gc."));
-        assert!(!out.contains("maxdurationseconds"));
-    }
-
-    #[test]
-    fn gc_settings_emitted_when_set() {
+    fn gc_settings_never_emitted_into_lua() {
+        // GC retention rides the service ImagePath (`--gc-*` flags) — zen
+        // 5.8.13 does not parse the old `gc.*` dotted lua keys, so emitting
+        // them here would silently apply nothing. The row values are still
+        // validated (see gc_setting_zero_or_negative_is_rejected).
         let mut endpoint = endpoint_local_no_upstream();
         endpoint.gc_interval_seconds = Some(28800);
         endpoint.gc_lightweight_interval_seconds = Some(3600);
         endpoint.cache_max_duration_seconds = Some(864000);
         let out = render(&endpoint, None).unwrap();
-        assert!(out.contains("gc.intervalseconds = 28800"));
-        assert!(out.contains("gc.lightweightintervalseconds = 3600"));
-        assert!(out.contains("cache.maxdurationseconds = 864000"));
-    }
-
-    #[test]
-    fn gc_settings_emitted_independently() {
-        // Each field is independently optional — only the ones the operator
-        // configured should appear, not all-or-nothing.
-        let mut endpoint = endpoint_local_no_upstream();
-        endpoint.gc_interval_seconds = Some(28800);
-        let out = render(&endpoint, None).unwrap();
-        assert!(out.contains("gc.intervalseconds = 28800"));
-        assert!(!out.contains("lightweightintervalseconds"));
+        assert!(!out.contains("gc."));
+        assert!(!out.contains("intervalseconds"));
         assert!(!out.contains("maxdurationseconds"));
+        assert!(!out.contains("28800"));
     }
 
     #[test]

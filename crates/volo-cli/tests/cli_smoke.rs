@@ -404,8 +404,12 @@ fn zen_register_then_lua_preview_round_trip() {
         serde_json::from_str(String::from_utf8(preview.stdout).unwrap().trim_end()).unwrap();
     let preview_doc = &preview_env["data"];
     let lua = preview_doc["lua"].as_str().expect("lua string");
-    assert!(lua.contains("network.port = 8558"));
-    assert!(lua.contains("server.datadir = \"D:\\\\ZenData\""));
+    // Verified nested-table form (zen 5.8 doesn't parse the dotted keys);
+    // port rides the service ImagePath, not this file.
+    assert!(lua.contains("server = {"));
+    assert!(lua.contains("\tdatadir = \"D:\\\\ZenData\","));
+    assert!(!lua.contains("server.datadir"));
+    assert!(!lua.contains("network.port"));
 }
 
 #[test]
@@ -1286,7 +1290,9 @@ fn zen_apply_config_dry_run_emits_plan_without_invoking_powershell() {
     assert_eq!(v["type"], "completed");
     assert_eq!(v["summary"]["dry_run"], serde_json::Value::Bool(true));
     assert_eq!(v["summary"]["operation"], "zen.apply-config");
-    assert!(v["summary"]["details"]["lua"].as_str().unwrap().contains("server.datadir"));
+    let plan_lua = v["summary"]["details"]["lua"].as_str().unwrap();
+    assert!(plan_lua.contains("server = {"));
+    assert!(plan_lua.contains("datadir = "));
     // Derived from the seeded zen.exe's directory, not caller-supplied.
     assert_eq!(v["summary"]["details"]["dest_path"], "C:\\Tools\\UECM\\zen_config.lua");
 }
@@ -1463,10 +1469,19 @@ fn zen_gc_set_dry_run_emits_plan_without_invoking_powershell() {
     assert_eq!(v["type"], "completed");
     assert_eq!(v["summary"]["dry_run"], serde_json::Value::Bool(true));
     assert_eq!(v["summary"]["operation"], "zen.gc_settings.update");
+    // GC retention rides the service ImagePath as `--gc-*` flags — the lua
+    // must NOT carry it (zen 5.8 silently ignores the old gc.* keys), and
+    // the plan surfaces the values explicitly instead.
     let lua = v["summary"]["details"]["lua"].as_str().unwrap();
-    assert!(lua.contains("gc.intervalseconds = 28800"));
-    assert!(lua.contains("gc.lightweightintervalseconds = 3600"));
-    assert!(lua.contains("cache.maxdurationseconds = 864000"));
+    assert!(!lua.contains("gc."));
+    assert!(!lua.contains("maxdurationseconds"));
+    assert_eq!(v["summary"]["details"]["gc_interval_seconds"], 28800);
+    assert_eq!(v["summary"]["details"]["gc_lightweight_interval_seconds"], 3600);
+    assert_eq!(v["summary"]["details"]["cache_max_duration_seconds"], 864000);
+    assert_eq!(
+        v["summary"]["details"]["will_patch_image_path_args"],
+        serde_json::Value::Bool(true)
+    );
     assert_eq!(
         v["summary"]["details"]["dest_path"],
         "C:\\Tools\\UECM\\zen_config.lua"

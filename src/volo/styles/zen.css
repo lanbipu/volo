@@ -285,3 +285,49 @@
 .dp-hint { font-size: 10px; color: var(--chrome-faint); font-weight: 600; }
 .dp-hint-btn { all: unset; cursor: pointer; color: var(--volo-400); }
 .dp-hint-btn:hover { color: var(--volo-500); text-decoration: underline; }
+
+/* ============================================================
+   ZenServer · 客户端本地 Zen 缓存目录（UE-ZenDataPath）
+   行内次级 chip + 展开配置面板 + 批量弹层
+   ============================================================ */
+.zcli-wrap { display: flex; flex-direction: column; gap: 4px; }
+/* 次级状态 chip（指向徽标是主状态，chip 更小更弱） */
+.zdir-chip { all: unset; display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; cursor: pointer; border: 1px solid transparent; white-space: nowrap; flex: 0 0 auto; }
+.zdir-chip:hover, .zdir-chip.on { border-color: var(--chrome-line-2); }
+.zdir-chip.soft { opacity: .75; }
+.zd-neutral { color: var(--chrome-faint); background: var(--wash-2); }
+.zd-positive { color: var(--positive-visual); background: color-mix(in srgb, var(--positive-visual) 13%, transparent); }
+.zd-notice { color: var(--notice-visual); background: color-mix(in srgb, var(--notice-visual) 15%, transparent); }
+.zd-negative { color: var(--negative-visual); background: color-mix(in srgb, var(--negative-visual) 13%, transparent); }
+.zd-informative { color: var(--informative-visual); background: color-mix(in srgb, var(--informative-visual) 13%, transparent); }
+/* 行内展开面板 */
+.zdir-panel { border: 1px solid var(--chrome-line); border-radius: 10px; background: var(--wash); padding: 11px 12px; display: flex; flex-direction: column; gap: 8px; margin-left: 26px; }
+.zdir-h { display: flex; align-items: center; gap: 7px; font-size: 11.5px; font-weight: 700; color: var(--chrome-text); flex-wrap: wrap; }
+.zdir-h > svg { color: var(--chrome-faint); flex: 0 0 auto; }
+.zdir-env { font-size: 10px; color: var(--chrome-dim); background: var(--wash-2); padding: 1px 6px; border-radius: 5px; font-family: var(--font-code); }
+.zdir-h .zbadge { margin-left: auto; }
+.zdir-intro { font-size: 10.5px; color: var(--chrome-faint); line-height: 1.55; text-wrap: pretty; }
+.zdir-kv { display: grid; grid-template-columns: 146px minmax(0, 1fr) auto; gap: 8px; align-items: center; font-size: 11px; }
+.zdir-kv .k { color: var(--chrome-faint); font-weight: 700; }
+.zdir-kv .v { color: var(--chrome-text); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zdir-kv .v.none { color: var(--chrome-faint); font-weight: 500; }
+.zdir-kv .v.loading { display: inline-flex; align-items: center; gap: 6px; color: var(--informative-visual); font-weight: 600; overflow: visible; }
+.zdir-kv .mini-btn { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.zdir-why { display: flex; align-items: flex-start; gap: 7px; font-size: 11px; line-height: 1.5; color: var(--notice-visual); background: color-mix(in srgb, var(--notice-visual) 10%, transparent); border: 1px solid color-mix(in srgb, var(--notice-visual) 26%, transparent); border-radius: 8px; padding: 7px 10px; text-wrap: pretty; }
+.zdir-why svg { flex: 0 0 auto; margin-top: 1px; }
+.zdir-form { display: flex; align-items: center; gap: 7px; }
+.zdir-form .dp-input { flex: 1; min-width: 0; }
+.zdir-form .mini-btn { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; flex: 0 0 auto; }
+.zdir-err { display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--negative-visual); }
+.zdir-err svg { flex: 0 0 auto; }
+.zdir-res { display: flex; align-items: flex-start; gap: 7px; font-size: 11px; }
+.zdir-res .zbadge { flex: 0 0 auto; }
+.zdir-res-msg { line-height: 1.5; text-wrap: pretty; min-width: 0; }
+.zdir-res .mini-btn { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+/* 批量弹层机器列表 */
+.zdm-list { display: flex; flex-direction: column; gap: 5px; }
+.zdm-row { display: grid; grid-template-columns: minmax(110px, auto) minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 7px 10px; border-radius: 8px; background: var(--sunken); border: 1px solid var(--chrome-line); font-size: 11.5px; }
+.zdm-host { font-family: var(--font-code); font-weight: 700; color: var(--chrome-text); display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+.zdm-cur { color: var(--chrome-faint); font-family: var(--font-code); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zdm-cur.none { font-family: inherit; }
+.zdm-arrow { display: inline-flex; align-items: center; gap: 5px; color: var(--volo-400); font-family: var(--font-code); font-size: 10.5px; white-space: nowrap; }

@@ -503,6 +503,55 @@ fn paths_equal_ci(a: &str, b: &str) -> bool {
     norm(a) == norm(b)
 }
 
+/// Insert the runtime args every `zen-service-install.ps1` invocation must
+/// carry: zen 5.8 reads port / http class / GC retention ONLY from the
+/// service command line — NOT from `zen_config.lua` (empirically verified
+/// 2026-07-02, see `core::zen::lua_config` module docs) — so the sidecar
+/// bakes them into the service ImagePath as `--port` / `--http` / `--gc-*`
+/// flags. Shared by CLI + Tauri `service install` and the GC-settings
+/// update (PatchArgsOnly) so the call sites can never drift on field names.
+/// GC fields are optional: `None` omits the flag and zenserver falls back
+/// to its compiled-in default.
+pub fn service_runtime_args(
+    ep: &ZenEndpoint,
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    obj.insert("Port".into(), ep.declared_port.into());
+    obj.insert("HttpServerClass".into(), ep.httpserverclass.clone().into());
+    if let Some(v) = ep.gc_interval_seconds {
+        obj.insert("GcIntervalSeconds".into(), v.into());
+    }
+    if let Some(v) = ep.gc_lightweight_interval_seconds {
+        obj.insert("GcLightweightIntervalSeconds".into(), v.into());
+    }
+    if let Some(v) = ep.cache_max_duration_seconds {
+        obj.insert("GcCacheDurationSeconds".into(), v.into());
+    }
+}
+
+/// Rewrite the installed service's ImagePath runtime args to match `ep`
+/// (`PatchArgsOnly` mode: no sc create, no account handling — ImagePath and
+/// the service account are independent, and the GC update flow that calls
+/// this doesn't know the account). The caller restarts the service so the
+/// new command line takes effect. `ep` must already carry the DESIRED
+/// values (GC flows pass their in-memory preview row, not the stale DB row).
+pub fn patch_service_image_path_args(
+    ep: &ZenEndpoint,
+    host: &str,
+    zen_exe: &str,
+    config_path: &str,
+) -> VoloResult<serde_json::Value> {
+    let mut obj = serde_json::Map::new();
+    obj.insert("ZenExePath".into(), zen_exe.into());
+    obj.insert("ServiceName".into(), DEFAULT_SERVICE_NAME.into());
+    obj.insert("ConfigPath".into(), config_path.into());
+    obj.insert("DataDir".into(), ep.data_dir.clone().into());
+    obj.insert("PatchArgsOnly".into(), true.into());
+    service_runtime_args(ep, &mut obj);
+    run_node(host, "zen-service-install.ps1", serde_json::Value::Object(obj))
+        .and_then(|raw| parse_envelope(&raw, "zen-service-install"))
+}
+
 /// Run a staged node-pure zen script over SSH (`-File`), args via stdin JSON.
 /// Returns stdout (the `{ok,...}` envelope; the script's `ok` flag is the source
 /// of truth, so a non-zero exit still surfaces its stdout — mirrors the old

@@ -1069,6 +1069,75 @@ pub fn zen_enable_global(
 }
 
 // ---------------------------------------------------------------------------
+// local zen runcontext (Cache · ZenServer ② 客户端「本地 Zen 缓存目录」真实回读)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ZenLocalRunContext {
+    pub machine_id: i64,
+    pub host: String,
+    pub ue_runtime_user: String,
+    /// `false` = no runcontext file — the editor on that machine has never
+    /// launched a local zen (or the profile path is wrong).
+    pub found: bool,
+    /// The local zen's last-used persistence root — the EFFECTIVE value after
+    /// UE's whole priority chain (registry > env var > follow-DDC > default),
+    /// which is why the UI shows this next to the configured `UE-ZenDataPath`
+    /// env var instead of trusting the env var alone.
+    pub data_path: Option<String>,
+    pub executable: Option<String>,
+    pub commandline_arguments: Option<String>,
+    /// Whether that exact zen binary is running right now (edits to the data
+    /// path only take effect after the editor — and with it the local zen —
+    /// restarts).
+    pub running: bool,
+    /// `HKCU\Software\Epic Games\Zen` `DataPath` override under the runtime
+    /// user (written by in-editor cache migration; it BEATS the
+    /// `UE-ZenDataPath` env var in UE's priority chain). Best-effort read via
+    /// `HKU\<SID>` — `None` means absent OR unreadable (user's hive not
+    /// loaded), so it can explain a mismatch but never prove there is none.
+    pub registry_data_path: Option<String>,
+}
+
+/// Read `machine_id`'s LOCAL zen runcontext (`%LOCALAPPDATA%\UnrealEngine\
+/// Common\Zen\Install\zenserver.runcontext` under `ue_runtime_user`'s
+/// profile) — the real-readback half of the 「本地 Zen 缓存目录」 feature.
+/// Read-only; requires `ue_runtime_user` (same precondition and guidance as
+/// `zen_enable_global`).
+#[tauri::command]
+pub fn zen_read_local_runcontext(
+    db: State<'_, Db>,
+    machine_id: i64,
+) -> VoloResult<ZenLocalRunContext> {
+    let machine = zen_cli_shared::require_machine(&db, machine_id)?;
+    let ue_user = machines::get_ue_runtime_user(&db, machine_id)?.ok_or_else(|| {
+        VoloError::InvalidInput(format!(
+            "machine id={machine_id} has no ue_runtime_user set — run \
+             `machine set-ue-user --machine {machine_id} --ue-user <USERNAME>` first"
+        ))
+    })?;
+    let env = zen_cli_shared::run_node(
+        &machine.ip,
+        "zen-read-runcontext.ps1",
+        serde_json::json!({ "RuntimeUser": ue_user }),
+    )
+    .and_then(|raw| zen_cli_shared::parse_envelope(&raw, "zen-read-runcontext"))?;
+    let found = env.get("found").and_then(|v| v.as_bool()).unwrap_or(false);
+    let s = |k: &str| env.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    Ok(ZenLocalRunContext {
+        machine_id,
+        host: machine.ip,
+        ue_runtime_user: ue_user,
+        found,
+        data_path: s("data_path"),
+        executable: s("executable"),
+        commandline_arguments: s("commandline_arguments"),
+        running: env.get("running").and_then(|v| v.as_bool()).unwrap_or(false),
+        registry_data_path: s("registry_data_path"),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // GC retention settings (Cache · ZenServer 「缓存回收策略」 module)
 // ---------------------------------------------------------------------------
 
@@ -1087,10 +1156,17 @@ pub struct ZenGcSettingsPlan {
     pub host: String,
     pub dest_path: String,
     pub lua: String,
-    /// Zen doesn't hot-reload `zen_config.lua` — applying these settings for
-    /// real always stops+starts the service, briefly interrupting every
-    /// client currently pointed at this cache. Surfaced so the UI can warn
-    /// before the operator confirms.
+    /// GC retention rides the service ImagePath as `--gc-*` flags (zen 5.8
+    /// doesn't read it from the lua) — surfaced here since the `lua` preview
+    /// above no longer carries the values.
+    pub gc_interval_seconds: i64,
+    pub gc_lightweight_interval_seconds: i64,
+    pub cache_max_duration_seconds: i64,
+    pub will_patch_image_path_args: bool,
+    /// The running process keeps its old command line until a stop+start —
+    /// applying these settings for real always restarts the service, briefly
+    /// interrupting every client currently pointed at this cache. Surfaced
+    /// so the UI can warn before the operator confirms.
     pub will_restart_service: bool,
 }
 
@@ -1106,8 +1182,10 @@ pub struct ZenGcSettingsSummary {
 }
 
 /// Persist the three GC retention fields onto the endpoint, re-render +
-/// rewrite `zen_config.lua`, then restart the service so the new values
-/// take effect immediately (Zen reads this file only at startup).
+/// rewrite `zen_config.lua`, patch the service ImagePath's `--gc-*` flags
+/// (zen 5.8 reads GC retention ONLY from the command line, not the lua —
+/// see `core::zen::lua_config` docs), then restart the service so the new
+/// command line takes effect.
 /// Destructive — same `confirmed`/`dry_run` gate as `zen_service_stop`,
 /// because a real apply always causes a brief service interruption.
 #[tauri::command]
@@ -1152,7 +1230,7 @@ pub fn zen_update_gc_settings(
         )));
     }
 
-    let (_target_exe, dest_path) = zen_cli_shared::resolve_service_paths(&db, &ep)?;
+    let (target_exe, dest_path) = zen_cli_shared::resolve_service_paths(&db, &ep)?;
     zen_cli_shared::validate_dest_path(&dest_path)?;
 
     // Render from an in-memory preview copy (never touches the DB) for both
@@ -1175,6 +1253,10 @@ pub fn zen_update_gc_settings(
             host: machine.ip,
             dest_path,
             lua,
+            gc_interval_seconds,
+            gc_lightweight_interval_seconds,
+            cache_max_duration_seconds,
+            will_patch_image_path_args: true,
             will_restart_service: true,
         }));
     }
@@ -1190,7 +1272,19 @@ pub fn zen_update_gc_settings(
         "zen.gc_settings_update",
     )?;
 
-    // Restart so the new file actually takes effect (Zen doesn't hot-reload).
+    // GC retention rides the service ImagePath (`--gc-*` flags) — zen 5.8
+    // doesn't read it from zen_config.lua (see core::zen::lua_config docs).
+    // Patch the args in place (PatchArgsOnly never touches the service
+    // account), then restart below so the new command line takes effect.
+    zen_cli_shared::patch_service_image_path_args(
+        &preview_ep,
+        &machine.ip,
+        &target_exe,
+        &dest_path,
+    )?;
+
+    // Restart so the patched ImagePath actually takes effect (the running
+    // process keeps its old command line until a stop+start).
     zen_cli_shared::restart_service(&db, ep.machine_id, &machine.ip)?;
 
     // Only persist once the remote write + restart both actually succeeded —
@@ -1428,8 +1522,9 @@ pub fn zen_service_install(
         ""
     };
     let invocation = redact(&format!(
-        "zen-service-install.ps1 -ZenExePath {zen_exe} -ServiceName {} -ConfigPath {config_path}{user_marker}{pass_marker}",
-        zen_cli_shared::DEFAULT_SERVICE_NAME,
+        "zen-service-install.ps1 -ZenExePath {zen_exe} -ServiceName {} -ConfigPath {config_path} \
+         -Port {} -DataDir {} -HttpServerClass {}{user_marker}{pass_marker}",
+        zen_cli_shared::DEFAULT_SERVICE_NAME, ep.declared_port, ep.data_dir, ep.httpserverclass,
     ));
     let op_id = operations::start(&db, "zen.service_install", &[ep.machine_id])?;
     // ServiceUser / ServicePassword only added when supplied — the node
@@ -1438,11 +1533,13 @@ pub fn zen_service_install(
         "ZenExePath": zen_exe,
         "ServiceName": zen_cli_shared::DEFAULT_SERVICE_NAME,
         "ConfigPath": config_path,
-        // Only used by the PS script to icacls-grant a non-builtin account;
-        // ignored for SYSTEM/LocalService/NetworkService.
+        // Rides the ImagePath as `--data-dir` (zen 5.8 doesn't read it from
+        // zen_config.lua) and icacls-grants a non-builtin ServiceUser.
         "DataDir": ep.data_dir,
     });
     if let Some(obj) = args.as_object_mut() {
+        // --port / --http / --gc-* ImagePath flags (see service_runtime_args).
+        zen_cli_shared::service_runtime_args(&ep, obj);
         if let Some(u) = service_user.as_deref() {
             obj.insert("ServiceUser".into(), serde_json::Value::String(u.to_string()));
         }

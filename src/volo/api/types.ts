@@ -664,6 +664,24 @@ export interface ZenEnableGlobalResult {
   warnings: string[];
 }
 
+/** `zen_read_local_runcontext` — 客户端本地 Zen 缓存目录的生效值真实回读。 */
+export interface ZenLocalRunContext {
+  machine_id: number;
+  host: string;
+  ue_runtime_user: string;
+  /** false = 该机编辑器从未启动过本地 Zen（无 runcontext 文件）。 */
+  found: boolean;
+  /** 上次实际使用的持久化根目录 —— UE 全优先级链之后的生效值。 */
+  data_path: string | null;
+  executable: string | null;
+  commandline_arguments: string | null;
+  /** runcontext 指向的那个 zen 二进制现在是否在运行。 */
+  running: boolean;
+  /** HKCU Zen\DataPath 注册表覆盖（编辑器内迁移写下，压过 UE-ZenDataPath 环境变量）；
+   *  best-effort：null = 不存在或读不到（该用户 hive 未加载）。 */
+  registry_data_path: string | null;
+}
+
 export interface ZenServicePlan {
   operation: string;
   endpoint_id: number;
