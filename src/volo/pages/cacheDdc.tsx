@@ -1335,17 +1335,17 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
      不再每次卸载重挂、重跑挂载期状态读取。 */
   const ddcViewShell = { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' };
   const DDC_VIEWS = [
-    ['ddc_zen', () => window.VOLO_CACHE_ZEN.view(s)],
-    ['ddc_legacy', () => h(LegacyView, { s })],
-    ['ddc_pak', () => h(PakMaster, { s })],
-    ['ddc_pso', () => h(PsoMaster, { s })],
+    ['ddc_zen', (s) => window.VOLO_CACHE_ZEN.view(s)],
+    ['ddc_legacy', (s) => h(LegacyView, { s })],
+    ['ddc_pak', (s) => h(PakMaster, { s })],
+    ['ddc_pso', (s) => h(PsoMaster, { s })],
   ];
   function ddc(s) {
     const view = /^ddc_/.test(s.cacheNav) ? s.cacheNav : 'ddc_zen';
     const seen = s.ddcViewsSeen || {};
     return h('div', { className: 'ddc-views', style: ddcViewShell },
       DDC_VIEWS.map(([id, render]) => (seen[id]
-        ? h('div', { key: id, className: 'ddc-view', style: Object.assign({}, ddcViewShell, { display: view === id ? 'flex' : 'none' }) }, render())
+        ? h('div', { key: id, className: 'ddc-view', style: Object.assign({}, ddcViewShell, { display: view === id ? 'flex' : 'none' }) }, render(s))
         : null)));
   }
 
