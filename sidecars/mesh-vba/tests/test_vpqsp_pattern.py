@@ -39,8 +39,13 @@ def test_generate_vpqsp_emits_artifacts(tmp_path, capsys):
     assert run_generate_pattern(_cmd(out)) == 0
     _result_event(capsys.readouterr().out)
     assert (out / "full_screen.png").exists()
+    # W5: additive inverted companion (A2.2 signed-difference detection input).
+    assert (out / "full_screen_inverted.png").exists()
     assert (out / "pattern_meta.json").exists()
-    assert {p.name for p in (out / "cabinets").iterdir()} == {"V000_R000.png", "V001_R000.png"}
+    assert {p.name for p in (out / "cabinets").iterdir()} == {
+        "V000_R000.png", "V001_R000.png",
+        "V000_R000_inverted.png", "V001_R000_inverted.png",
+    }
     meta = json.loads((out / "pattern_meta.json").read_text())
     assert meta["schema_version"] == "vpqsp.v1"
     assert meta["screen_id_code"] == 3
@@ -59,6 +64,28 @@ def test_generated_full_screen_decodes_back(tmp_path, capsys):
     cabinets = sorted({tuple(o["cabinet"]) for o in obs})
     assert cabinets == [(0, 0), (1, 0)]
     assert len(obs) == 2 * per_cab  # every marker recovered from the assembled screen
+
+
+def test_generated_full_screen_inverted_is_bitwise_complement(tmp_path, capsys):
+    """W5: full_screen_inverted.png == 255 - full_screen.png everywhere a cabinet
+    is present, and the signed normal/inverted pair still decodes every marker."""
+    import cv2
+
+    out = tmp_path / "pattern"
+    assert run_generate_pattern(_cmd(out, screen_id_code=5)) == 0
+    capsys.readouterr()
+    normal = cv2.imread(str(out / "full_screen.png"), cv2.IMREAD_GRAYSCALE)
+    inverted = cv2.imread(str(out / "full_screen_inverted.png"), cv2.IMREAD_GRAYSCALE)
+    assert inverted.shape == normal.shape
+    assert (inverted.astype(int) + normal.astype(int) == 255).all()
+
+    meta = json.loads((out / "pattern_meta.json").read_text())
+    per_cab = meta["cabinets"][0]["markers_x"] * meta["cabinets"][0]["markers_y"]
+    normal_path, inverted_path = str(out / "full_screen.png"), str(out / "full_screen_inverted.png")
+    obs = detect_vpqsp_markers(
+        [normal_path], inverted_image_paths=[inverted_path], screen_id_code=5,
+    )[normal_path]
+    assert len(obs) == 2 * per_cab
 
 
 def test_tiny_cabinet_below_marker_floor_is_invalid_input(tmp_path, capsys):

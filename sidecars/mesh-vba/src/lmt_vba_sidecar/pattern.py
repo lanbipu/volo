@@ -146,11 +146,20 @@ def _resolve_cabinet_specs(
     } for (col, row) in present]
 
 
-def _assemble_screen(*, out_path, cabinets_dir, specs, screen_resolution) -> None:
+def _assemble_screen(
+    *, out_path, cabinets_dir, specs, screen_resolution,
+    tile_suffix: str = "", background: int = ABSENT_CELL_FILL,
+) -> None:
+    """Composite per-cabinet tiles onto the screen canvas.
+
+    ``tile_suffix`` selects an alternate tile set (e.g. ``"_inverted"`` for the
+    VP-QSP A2.2 inverted companion); default "" preserves the original charuco
+    and vpqsp normal-frame behaviour byte-for-byte.
+    """
     sw, sh = screen_resolution
-    full = np.full((sh, sw), ABSENT_CELL_FILL, dtype=np.uint8)
+    full = np.full((sh, sw), background, dtype=np.uint8)
     for s in specs:
-        tile_path = cabinets_dir / f"V{s['col']:03d}_R{s['row']:03d}.png"
+        tile_path = cabinets_dir / f"V{s['col']:03d}_R{s['row']:03d}{tile_suffix}.png"
         if not tile_path.exists():
             continue
         tile = cv2.imread(str(tile_path), cv2.IMREAD_GRAYSCALE)
