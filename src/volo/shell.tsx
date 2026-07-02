@@ -381,12 +381,17 @@ function LogPanel({ s }) {
 /* ---------- 顶层渲染保护 ----------
    全应用此前无 error boundary：任一面板渲染抛错（如 cacheZen 那次 Hooks 顺序违规）
    都会让 React 卸载整棵树 → 纯黑屏。这里给每个渲染槽包一层，单个面板崩只显示局部错误卡，
-   外壳 / 导航 / 其余面板照常可用。每个槽用随 page/cacheNav 变化的 key → 切页即 remount 清错误。 */
+   外壳 / 导航 / 其余面板照常可用。key 只随 page 变（切顶层页 remount 清错误）；cacheNav 改走
+   resetKey：变化时仅清错误态、不 remount——key 带 cacheNav 会让每次 Cache 子页切换整槽卸载重挂，
+   把 center 的 keep-alive（display 切换）整个架空，切页重跑全部挂载期远程回读。 */
 class ErrBoundary extends React.Component {
   constructor(props) { super(props); this.state = { err: null }; }
   static getDerivedStateFromError(err) { return { err: err }; }
   componentDidCatch(err, info) {
     try { console.error('[volo] 面板渲染异常 · ' + (this.props.slot || ''), err, info && info.componentStack); } catch (e) {}
+  }
+  componentDidUpdate(prevProps) {
+    if (this.state.err && prevProps.resetKey !== this.props.resetKey) this.setState({ err: null });
   }
   render() {
     if (!this.state.err) return this.props.children;
@@ -840,8 +845,9 @@ function App() {
   const pg = window.VOLO_PAGES[page] || window.VOLO_PAGES.tools;
   const mac = platform === 'mac';
   /* 把每个页面渲染槽包进 error boundary；render 是 thunk（在 Slot 子组件内调用，使槽函数本身的
-     同步抛错也被捕获）；key 随 page/cacheNav 变 → 切页/切视图即清错误。 */
-  const guard = (slot, render) => h(ErrBoundary, { key: 'eb-' + slot + '-' + page + '-' + cacheNav, slot: slot }, h(Slot, { render: render }));
+     同步抛错也被捕获）；key 随 page 变 → 切顶层页即 remount 清错误；cacheNav 走 resetKey 只清
+     错误态不 remount（否则 Cache keep-alive 失效，见 ErrBoundary 注释）。 */
+  const guard = (slot, render) => h(ErrBoundary, { key: 'eb-' + slot + '-' + page, resetKey: cacheNav, slot: slot }, h(Slot, { render: render }));
   return h('div', { className: 'desktop is-' + platform + (density === 'clean' ? ' clean' : '') },
     /* SysBar 隐藏：mac 原生系统菜单栏（src-tauri set_menu）已提供真实功能菜单，
        in-window SysBar 是浏览器原型对系统菜单栏的冗余模拟（SysBar 仍保留定义作设计参照） */
