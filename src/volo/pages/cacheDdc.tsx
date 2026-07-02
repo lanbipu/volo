@@ -356,6 +356,110 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
         p.warn ? h('span', { className: 'proj-tag warn', title: p.warn }, h(Icon, { name: 'alert', size: 10 }), '版本不一致') : null));
   }
 
+  /* =================== 搜索根目录 · 快捷选择 + 路径栏 =================== */
+  const DRIVE_OPTS = [
+    { v: 'C:', label: 'C 盘' }, { v: 'D:', label: 'D 盘' },
+    { v: 'E:', label: 'E 盘' }, { v: 'F:', label: 'F 盘' },
+  ];
+  const LVL_PRESETS = [
+    ['UEProject', 'Projects', 'Work'],
+    ['Unreal Project', 'UE Project', 'Client'],
+    ['Project', 'Content', 'Build'],
+  ];
+
+  /* 单个下拉段：预设列表 + 「自定义…」→ 就地输入 */
+  function PathSeg({ kpre, value, custom, opts, placeholder, onPick, width = 168 }) {
+    const [open, setOpen] = useState(false);
+    const ref = useRef(null);
+    useEffect(() => {
+      if (!open) return;
+      const f = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+      document.addEventListener('mousedown', f);
+      return () => document.removeEventListener('mousedown', f);
+    }, [open]);
+    const norm = opts.map((o) => (typeof o === 'string' ? { v: o, label: o } : o));
+    const match = norm.find((o) => o.v === value);
+    const disp = value ? (match ? match.label : value) : '';
+    return h('div', { className: 'pathb-seg', ref, style: { width } },
+      custom
+        ? h('div', { className: 'pathb-cwrap' },
+            h('input', { className: 'dp-input mono pathb-cin', value, placeholder: placeholder || '手动输入', spellCheck: false, autoFocus: true,
+              onChange: (e) => onPick(e.target.value, true) }),
+            h('button', { className: 'pathb-cchev' + (open ? ' on' : ''), type: 'button', title: '选择预设', onClick: () => setOpen((v) => !v) },
+              h(Icon, { name: 'chevd', size: 14 })))
+        : h('div', { className: 'obj-sel pathb-sel', onClick: () => setOpen((v) => !v) },
+            h('div', { className: 'col' }, h('span', { className: 'k' }, kpre),
+              h('span', { className: 'v' + (disp ? '' : ' ph') }, disp || placeholder)),
+            h('span', { className: 'chev', style: { marginLeft: 'auto', display: 'flex' } }, h(Icon, { name: 'chevd', size: 14 }))),
+      open ? h('div', { className: 'popover pathb-pop', style: { left: 0, right: 'auto' } },
+        norm.map((o) => h('div', { key: o.v, className: 'pop-i' + (!custom && o.v === value ? ' on' : ''),
+          onClick: () => { onPick(o.v, false); setOpen(false); } },
+          h('span', { className: 'pop-l' }, o.label),
+          !custom && o.v === value ? h('span', { style: { marginLeft: 'auto', color: 'var(--volo-500)', display: 'flex' } }, h(Icon, { name: 'check', size: 14 })) : null)),
+        h('div', { className: 'pop-i pathb-customopt' + (custom ? ' on' : ''), onClick: () => { onPick(value || '', true); setOpen(false); } },
+          h('span', { className: 'pop-l' }, '自定义…'),
+          custom ? h('span', { style: { marginLeft: 'auto', color: 'var(--volo-500)', display: 'flex' } }, h(Icon, { name: 'check', size: 14 })) : null)) : null);
+  }
+
+  /* 搜索根目录构建器：上=快捷选择，下=实时路径栏（可手动改）*/
+  function PathBuilder({ onChange, initDrive = 'D:', initLvls = ['UEProject', '', ''], onRemove }) {
+    const [drive, setDrive] = useState(initDrive);
+    const [driveCustom, setDriveCustom] = useState(false);
+    const [lvls, setLvls] = useState(initLvls);
+    const [lvlCustom, setLvlCustom] = useState([false, false, false]);
+    const [manual, setManual] = useState(null);   /* null → 跟随快捷选择 */
+
+    const compose = (d, ls) => {
+      const parts = ls.filter((x) => x && x.trim());
+      return (d || '') + (parts.length ? '\\' + parts.join('\\') : '\\');
+    };
+    const composed = compose(drive, lvls);
+    const shown = manual == null ? composed : manual;
+    useEffect(() => { onChange(shown); }, [shown]);
+
+    const pickDrive = (v, c) => { setManual(null); setDrive(v); setDriveCustom(c); };
+    const pickLvl = (i, v, c) => {
+      setManual(null);
+      setLvls((a) => a.map((x, j) => (j === i ? v : x)));
+      setLvlCustom((a) => a.map((x, j) => (j === i ? c : x)));
+    };
+
+    return h('div', { className: 'pathb' },
+      h('div', { className: 'pathb-quick' },
+        h(PathSeg, { kpre: '盘符', value: drive, custom: driveCustom, opts: DRIVE_OPTS, placeholder: '盘符', width: 118, onPick: pickDrive }),
+        [0, 1, 2].map((i) => h(React.Fragment, { key: i },
+          h('span', { className: 'pathb-sep' }, '\\'),
+          h(PathSeg, { kpre: (i + 1) + ' 级文件夹', value: lvls[i], custom: lvlCustom[i], opts: LVL_PRESETS[i],
+            placeholder: i === 0 ? '选择文件夹' : '（可选）', width: 176, onPick: (v, c) => pickLvl(i, v, c) })))),
+      h('div', { className: 'pathb-bar' },
+        h('span', { className: 'pathb-bar-ic' }, h(Icon, { name: 'folder', size: 15 })),
+        h('input', { className: 'dp-input mono pathb-bar-in' + (onRemove ? ' has-rm' : ''), value: shown, spellCheck: false,
+          onChange: (e) => setManual(e.target.value) }),
+        manual != null
+          ? h('button', { className: 'pathb-reset', title: '恢复跟随快捷选择', onClick: () => setManual(null) }, h(Icon, { name: 'rotate', size: 13 }))
+          : h('span', { className: 'pathb-live' }, h('span', { className: 'pathb-live-dot' }), '实时'),
+        onRemove ? h('button', { className: 'pathb-rm', title: '移除此地址', onClick: onRemove }, h(Icon, { name: 'x', size: 14 })) : null));
+  }
+
+  /* 多地址：可添加 / 移除多条搜索根目录，最终以 ; 拼接 */
+  let PATHB_UID = 0;
+  function PathBuilderList({ onChange }) {
+    const [rows, setRows] = useState(() => [{ id: ++PATHB_UID, initDrive: 'D:', initLvls: ['UEProject', '', ''] }]);
+    const vals = useRef({});
+    const emit = () => onChange(rows.map((r) => vals.current[r.id]).filter((x) => x && x.trim()).join(';'));
+    useEffect(() => { emit(); }, [rows]);
+    const setVal = (id, v) => { vals.current[id] = v; emit(); };
+    const add = () => setRows((rs) => rs.concat({ id: ++PATHB_UID, initDrive: 'D:', initLvls: ['', '', ''] }));
+    const remove = (id) => setRows((rs) => { delete vals.current[id]; return rs.filter((r) => r.id !== id); });
+    return h('div', { className: 'pathb-list' },
+      rows.map((r, i) => h('div', { className: 'pathb-rowwrap', key: r.id },
+        rows.length > 1 ? h('span', { className: 'pathb-idx mono' }, i + 1) : null,
+        h(PathBuilder, { onChange: (v) => setVal(r.id, v), initDrive: r.initDrive, initLvls: r.initLvls,
+          onRemove: rows.length > 1 ? () => remove(r.id) : null }))),
+      h('button', { className: 'pathb-add', type: 'button', onClick: add },
+        h(Icon, { name: 'plus', size: 14 }), '添加地址'));
+  }
+
   /* =================== DDC PAK — master (center) =================== */
   function PakMaster({ s }) {
     const [scope, setScope] = useState('all');
@@ -374,12 +478,12 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       h('div', { className: 'ddc-body' },
         h('div', { className: 'ddc-sec-h' }, h('span', null, '扫描 UE 工程'), h('span', { className: 'dim' }, 'discover_projects · 远程扫 .uproject，只发现不写盘')),
         h('div', { className: 'pak-scan' },
-          h('div', { className: 'pak-scan-fields' },
+          h('div', { className: 'pak-scan-top' },
             h('div', { className: 'dp-field' }, h('label', null, '扫描范围'),
               h(Selector, { kpre: '范围', value: scope, options: scopeOpts(), width: 178, onChange: setScope })),
-            h('div', { className: 'dp-field grow' }, h('label', null, '搜索根目录'),
-              h('input', { className: 'dp-input mono', value: roots, spellCheck: false, onChange: (e) => setRoots(e.target.value) })),
             h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'search', size: 14 }), onPress: () => runDiscover(s, scope, roots) }, '扫描')),
+          h('div', { className: 'dp-field pak-root' }, h('label', null, '搜索根目录 · 可添加多个'),
+            h(PathBuilderList, { onChange: setRoots })),
           h('div', { className: 'pak-scan-meta' }, h(Icon, { name: 'check', size: 12 }), '已发现 ' + UE_PROJECTS.length + ' 个工程位置 · 远程扫 .uproject 只发现不写盘')),
 
         h('div', { className: 'ddc-sec-h' }, h('span', null, '选择工程'),

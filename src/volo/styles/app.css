@@ -1698,6 +1698,43 @@ html, body {
 .pak-scan-fields .dp-field.grow { flex: 1; min-width: 200px; }
 .pak-scan-fields .dp-field.grow .dp-input { width: 100%; min-width: 0; box-sizing: border-box; }
 .pak-scan-fields > button { flex: 0 0 auto; }
+/* ---- 搜索根目录 · 快捷选择 + 实时路径栏 ---- */
+.pak-scan-top { display: flex; align-items: flex-end; gap: 12px; margin-bottom: 14px; }
+.pak-scan-top > button { margin-left: auto; }
+.pak-root { width: 100%; }
+.pathb { display: flex; flex-direction: column; gap: 9px; }
+.pathb-quick { display: flex; align-items: flex-end; gap: 4px; flex-wrap: wrap; }
+.pathb-seg { position: relative; flex: 0 0 auto; }
+.pathb-sel { min-width: 0 !important; width: 100%; box-sizing: border-box; padding: 6px 8px 6px 11px; }
+.pathb-sel .v.ph { color: var(--chrome-faint); font-weight: 500; }
+.pathb-cin { width: 100%; box-sizing: border-box; min-width: 0; padding: 8px 11px; }
+.pathb-cwrap { position: relative; display: flex; align-items: center; }
+.pathb-cwrap .pathb-cin { padding-right: 34px; }
+.pathb-cchev { all: unset; position: absolute; right: 5px; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; cursor: pointer; color: var(--chrome-faint); }
+.pathb-cchev:hover, .pathb-cchev.on { background: var(--wash); color: var(--chrome-text); }
+.pathb-sep { color: var(--chrome-faint); font-size: 14px; font-weight: 700; padding: 0 1px 9px; align-self: flex-end; }
+.pathb-pop { min-width: 150px; }
+.pathb-customopt { border-top: 1px solid var(--chrome-line-2); margin-top: 4px; padding-top: 9px; color: var(--volo-400); }
+.pathb-customopt .pop-l { color: var(--volo-400); }
+.pathb-bar { position: relative; display: flex; align-items: center; }
+.pathb-bar-ic { position: absolute; left: 11px; display: flex; color: var(--chrome-faint); pointer-events: none; }
+.pathb-bar-in { flex: 1; min-width: 0; box-sizing: border-box; padding-left: 36px; padding-right: 78px; }
+.pathb-live { position: absolute; right: 11px; display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 700; letter-spacing: .04em; color: var(--chrome-faint); pointer-events: none; }
+.pathb-live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--positive-visual); }
+.pathb-reset { all: unset; position: absolute; right: 7px; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; cursor: pointer; color: var(--chrome-faint); }
+.pathb-reset:hover { background: var(--wash); color: var(--chrome-text); }
+/* 多地址 */
+.pathb-list { display: flex; flex-direction: column; gap: 12px; align-items: flex-start; }
+.pathb-rowwrap { display: flex; gap: 10px; align-items: flex-start; width: 100%; }
+.pathb-rowwrap .pathb { flex: 1; min-width: 0; }
+.pathb-idx { flex: 0 0 auto; margin-top: 9px; width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center; font-size: 11px; font-weight: 700; color: var(--chrome-faint); background: var(--chrome-panel-2); border: 1px solid var(--chrome-line-2); }
+.pathb-bar-in.has-rm { padding-right: 118px; }
+.pathb-rm { all: unset; position: absolute; right: 7px; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; cursor: pointer; color: var(--chrome-faint); }
+.pathb-rm:hover { background: color-mix(in srgb, var(--negative-visual) 16%, transparent); color: var(--negative-visual); }
+.pathb-bar-in.has-rm ~ .pathb-live { right: 44px; }
+.pathb-bar-in.has-rm ~ .pathb-reset { right: 40px; }
+.pathb-add { all: unset; display: inline-flex; align-items: center; gap: 6px; padding: 7px 13px; border-radius: 8px; font-size: 12px; font-weight: 600; color: var(--volo-400); border: 1px dashed var(--chrome-line-2); cursor: pointer; }
+.pathb-add:hover { color: var(--volo-500); border-color: var(--volo-400); background: var(--wash); }
 .pak-scan-meta { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--chrome-faint); margin-top: 12px; }
 .pak-scan-meta svg { color: var(--positive-visual); flex: 0 0 auto; }
 .proj-list { display: flex; flex-direction: column; gap: 7px; }
