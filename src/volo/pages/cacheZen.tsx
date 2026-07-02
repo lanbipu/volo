@@ -293,6 +293,23 @@ import {
     const [deploying, setDeploying] = useState(false);
     const epRef = useRef(null);
 
+    useEffect(() => {
+      requestAnimationFrame(() => {
+        const root = document.querySelector('.drawer--zconfig');
+        if (!root) return;
+        const vEls = root.querySelectorAll('.obj-sel .v');
+        const samples = Array.from(vEls).slice(0, 4).map((el) => ({
+          text: el.textContent,
+          color: getComputedStyle(el).color,
+          kpre: el.closest('.obj-sel')?.querySelector('.k')?.textContent,
+        }));
+        const winColor = document.querySelector('.win') ? getComputedStyle(document.querySelector('.win')).color : null;
+        // #region agent log
+        fetch('http://127.0.0.1:7278/ingest/ba6b3c44-cc27-40da-8bf6-deca990c38bf',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d65d8f'},body:JSON.stringify({sessionId:'d65d8f',location:'cacheZen.tsx:DeployModal',message:'deploy modal selector colors',data:{samples,winColor,inWin:!!root.closest('.win')},timestamp:Date.now(),hypothesisId:'A-B'})}).catch(()=>{});
+        // #endregion
+      });
+    }, []);
+
     const srvNode = CX.node(srvId) || deployedNode || RN.find((n) => n.roleKey !== 'shared') || RN[0];
 
     const createDedicated = () => {
@@ -572,6 +589,23 @@ import {
     const [gcDraft, setGcDraft] = useState(() => cloneGc(gcApplied));
     const [gcBusy, setGcBusy] = useState(false);
     const [gcJustApplied, setGcJustApplied] = useState(false);
+
+    useEffect(() => {
+      requestAnimationFrame(() => {
+        const root = document.querySelector('.drawer--zconfig');
+        if (!root) return;
+        const vEls = root.querySelectorAll('.obj-sel .v');
+        const samples = Array.from(vEls).map((el) => ({
+          text: el.textContent,
+          color: getComputedStyle(el).color,
+          kpre: el.closest('.obj-sel')?.querySelector('.k')?.textContent,
+        }));
+        // #region agent log
+        fetch('http://127.0.0.1:7278/ingest/ba6b3c44-cc27-40da-8bf6-deca990c38bf',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d65d8f'},body:JSON.stringify({sessionId:'d65d8f',location:'cacheZen.tsx:GcModal',message:'gc modal unit selector colors',data:{samples},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
+      });
+    }, []);
+
     const gcFieldDirty = (id) => gcSeconds(gcDraft[id]) !== gcSeconds(gcApplied[id]);
     const gcDirty = GC_FIELDS.some((f) => gcFieldDirty(f.id));
     const gcNonDefault = (id) => gcSeconds(gcApplied[id]) !== gcSeconds(GC_DEFAULTS[id]);

@@ -89,15 +89,30 @@ function detectPlatform() {
 }
 
 /* ---------- Generic selector / popover ---------- */
-function Selector({ kpre, value, options, onChange, width = 188, variant = 'obj' }) {
+function Selector({ kpre, value, options, onChange, width = 188, variant = 'obj', align = 'right' }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
+  const popRef = useRef(null);
   useEffect(() => {
     if (!open) return;
     const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
     document.addEventListener('mousedown', h);
     return () => document.removeEventListener('mousedown', h);
   }, [open]);
+  useEffect(() => {
+    if (!open || !ref.current) return;
+    const vEl = ref.current.querySelector('.v');
+    const popEl = popRef.current;
+    const modalHost = ref.current.closest('.modal-host');
+    const vColor = vEl ? getComputedStyle(vEl).color : null;
+    const winEl = document.querySelector('.win');
+    const winColor = winEl ? getComputedStyle(winEl).color : null;
+    const popRect = popEl ? popEl.getBoundingClientRect() : null;
+    const hostRect = modalHost ? modalHost.getBoundingClientRect() : null;
+  // #region agent log
+    fetch('http://127.0.0.1:7278/ingest/ba6b3c44-cc27-40da-8bf6-deca990c38bf',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d65d8f'},body:JSON.stringify({sessionId:'d65d8f',location:'shell.tsx:Selector',message:'selector open styles',data:{kpre,align,vColor,winColor,popLeft:popRect?.left,popRight:popRect?.right,hostLeft:hostRect?.left,hostRight:hostRect?.right,clippedLeft:popRect&&hostRect?popRect.left<hostRect.left:null,clippedRight:popRect&&hostRect?popRect.right>hostRect.right:null},timestamp:Date.now(),hypothesisId:'A-C'})}).catch(()=>{});
+  // #endregion
+  }, [open, kpre, align]);
   /* fall back to a placeholder when the option list is empty (real backend data
      can yield empty pools — e.g. no credentials, or a project with no online
      source machines — where the mock always had entries). Prevents cur.label
@@ -111,7 +126,7 @@ function Selector({ kpre, value, options, onChange, width = 188, variant = 'obj'
         React.createElement('span', { className: 'k' }, kpre),
         React.createElement('span', { className: 'v' }, cur.label)),
       React.createElement('span', { className: 'chev', style: { marginLeft: 'auto', display: 'flex' } }, React.createElement(Icon, { name: 'chevd', size: 15 }))),
-    open ? React.createElement('div', { className: 'popover' },
+    open ? React.createElement('div', { ref: popRef, className: 'popover' },
       options.map((o) => React.createElement('div', {
         key: o.id, className: 'pop-i' + (o.id === cur.id ? ' on' : ''),
         onClick: () => { onChange && onChange(o.id); setOpen(false); },
