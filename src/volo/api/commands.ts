@@ -10,10 +10,10 @@
      🔌 ui-sim —— 前端有对应 UI 入口（按钮/面板/流程），当前 runTask 模拟或读 mock，
                   待接真实 invoke（wire-target）
      📝 no-ui  —— 当前设计无对应 UI 承载点（后端-only 能力）；附原因，不强造 UI
-   现状汇总：✅ 46 · 🔌 0 · 📝 39 = 85。 */
+   现状汇总：✅ 48 · 🔌 0 · 📝 39 = 87。 */
 import { call } from "./invoke";
 import type {
-  Machine, MachineDetail, WinrmBootstrapResult, PackageBootstrapResult, EchoResult,
+  Machine, MachineDetail, UeRuntimeUserRow, WinrmBootstrapResult, PackageBootstrapResult, EchoResult,
   ScanResult, RefreshResult, CredentialRecord, CredentialKind,
   IniKey, WriteIniResponse, ScanInisRequest, ScanInisResponse, IniFinding, ScanRun,
   VerifyReport, DeployPlan, DeployStep, GpuMatrix, ConsistencyResult,
@@ -27,7 +27,7 @@ import type {
   ZenChangeRoleResult, ZenLuaPreviewResult, ZenCredentialInput, ZenApplyConfigResult,
   ZenServiceResult, ZenServiceSummary, ZenServiceStatusResult,
   ZenUrlaclResult, ZenUrlaclListResult, ZenVerifyRunEditorInput, ZenVerifyRulesResult,
-  ZenGcSettingsResult, ZenDedicatedAccountResult,
+  ZenGcSettingsResult, ZenDedicatedAccountResult, ZenEnableGlobalResult,
 } from "./types";
 
 /* ----------------------------- machines ----------------------------- */
@@ -41,6 +41,8 @@ export const deleteMachine = (id: number) => call<void>("delete_machine", { id }
 export const renameMachine = (id: number, hostname: string) => call<void>("rename_machine", { id, hostname });
 // ✅ wired: 机器详情抽屉 → getMachineDetail（异步填真实 UE 安装 / GPU）
 export const getMachineDetail = (id: number) => call<MachineDetail>("get_machine_detail", { id });
+// ✅ wired: loadCacheResources → toNodeVM(user 字段) + cacheZen ②「用户全局」配置范围就绪判断
+export const listUeRuntimeUsers = () => call<UeRuntimeUserRow[]>("list_ue_runtime_users");
 
 /* ----------------------------- bootstrap / system ----------------------------- */
 // ✅ wired: ScriptPanel → getWinrmBootstrapScript（异步加载真实脚本）
@@ -314,6 +316,9 @@ export const zenLuaPreview = (endpointId: number) => call<ZenLuaPreviewResult>("
 // ✅ wired: cacheZen 部署链路 step3 → zenApplyConfig（落地路径固定为 {ZenInstall}\zen_config.lua，后端自动派生，不再接受调用方传路径；install_dir 已设置时自动拷贝 zen.exe 过去）
 export const zenApplyConfig = (endpointId: number, confirmed: boolean, dryRun: boolean, cred: ZenCredentialInput) =>
   call<ZenApplyConfigResult>("zen_apply_config", { endpointId, confirmed, dryRun, cred });
+// ✅ wired: cacheZen ②「用户全局」配置范围 → zenEnableGlobal 写该机 UserEngine.ini [StorageServers] Shared（需先设 ue_runtime_user）
+export const zenEnableGlobal = (machineId: number, upstreamEndpointId: number) =>
+  call<ZenEnableGlobalResult>("zen_enable_global", { machineId, upstreamEndpointId });
 // ✅ wired: cacheZen「缓存回收策略（GC）」应用更改 → zenUpdateGcSettings（重写 zen_config.lua + 重启服务生效）
 export const zenUpdateGcSettings = (
   endpointId: number, gcIntervalSeconds: number, gcLightweightIntervalSeconds: number, cacheMaxDurationSeconds: number,

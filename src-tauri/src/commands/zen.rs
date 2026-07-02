@@ -34,6 +34,7 @@
 //! `lua_preview` is "read-only" in the no-destination sense) take no
 //! `confirmed` parameter — they aren't destructive in the CLI either.
 
+use cache_core::core::zen::enable as zen_enable;
 use cache_core::core::zen::ops as zen_cli_shared;
 use cache_core::core::zen::endpoint as zen_endpoint;
 use cache_core::core::zen::redaction::redact;
@@ -1010,6 +1011,61 @@ pub fn zen_apply_config(
         sha256: expected_sha,
         remote,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// enable --global (Cache · ZenServer ② 客户端指向 · 「用户全局」配置范围)
+// ---------------------------------------------------------------------------
+
+/// UE DDC namespace Volo always writes — matches the constant baked into the
+/// 「工程级」scope's `[StorageServers] Shared` value (`Namespace="ue.ddc"`, see
+/// `cacheZen.tsx`'s `applyTo`), so both configuration scopes point clients at
+/// the same logical cache namespace.
+const ZEN_GLOBAL_NAMESPACE: &str = "ue.ddc";
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ZenEnableGlobalResult {
+    pub machine_id: i64,
+    pub host: String,
+    pub ini_file: String,
+    pub changed: bool,
+    pub warnings: Vec<String>,
+}
+
+/// Write the `ZenShared` upstream entry into `machine_id`'s global
+/// `UserEngine.ini` — the Tauri counterpart of `voloctl cache zen enable
+/// --global`. Requires `machine_id` to have `ue_runtime_user` set (`machine
+/// set-ue-user`); the UI shows the same guidance this error carries when it
+/// isn't. Not gated by `confirmed`/`dry_run`: a single INI key write, same
+/// risk profile as `set_ini_key` (used for the 「工程级」scope), and the UI
+/// deliberately applies this scope without a confirm dialog (progress shows
+/// inline per-machine instead).
+#[tauri::command]
+pub fn zen_enable_global(
+    db: State<'_, Db>,
+    machine_id: i64,
+    upstream_endpoint_id: i64,
+) -> VoloResult<ZenEnableGlobalResult> {
+    let machine = zen_cli_shared::require_machine(&db, machine_id)?;
+    let ue_user = machines::get_ue_runtime_user(&db, machine_id)?.ok_or_else(|| {
+        VoloError::InvalidInput(format!(
+            "machine id={machine_id} has no ue_runtime_user set — run \
+             `machine set-ue-user --machine {machine_id} --ue-user <USERNAME>` first"
+        ))
+    })?;
+    let ini_path =
+        format!(r"C:\Users\{ue_user}\AppData\Local\Unreal Engine\Engine\Config\UserEngine.ini");
+    let master =
+        zen_cli_shared::resolve_cluster_master(&db, upstream_endpoint_id, ZEN_GLOBAL_NAMESPACE)?;
+    let resolved = zen_cli_shared::build_global_rules()?;
+    let out = zen_enable::enable_global(&machine.ip, &ini_path, &resolved, &master)?;
+    Ok(ZenEnableGlobalResult {
+        machine_id,
+        host: machine.ip,
+        ini_file: ini_path,
+        changed: out.changed,
+        warnings: out.warnings,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2577,6 +2633,59 @@ mod tests {
         // Mirror the pre-check `zen_register` runs before calling
         // `core::zen::endpoint::register`.
         assert!(machines::find_by_id(&db, 9999).unwrap().is_none());
+    }
+
+    #[test]
+    fn enable_global_precondition_requires_ue_runtime_user() {
+        let db = fresh_db();
+        let (machine_id, _) = seed_endpoint(&db, "WS-01", "10.0.0.40", 8558);
+        // Mirror the pre-check `zen_enable_global` runs before resolving the
+        // cluster master / writing UserEngine.ini.
+        assert_eq!(machines::get_ue_runtime_user(&db, machine_id).unwrap(), None);
+        machines::set_ue_runtime_user(&db, machine_id, Some("lanbp")).unwrap();
+        assert_eq!(
+            machines::get_ue_runtime_user(&db, machine_id).unwrap(),
+            Some("lanbp".to_string())
+        );
+    }
+
+    #[test]
+    fn enable_global_resolves_master_and_rules_via_shared_ops() {
+        let db = fresh_db();
+        let (master_machine_id, master_endpoint_id) =
+            seed_endpoint(&db, "ZEN-MASTER", "10.0.0.50", 8558);
+        zen_endpoints::upsert(
+            &db,
+            &ZenEndpoint {
+                id: Some(master_endpoint_id),
+                machine_id: master_machine_id,
+                declared_port: 8558,
+                scheme: "http".into(),
+                role: "shared_upstream".into(),
+                upstream_endpoint_id: None,
+                data_dir: r"D:\ZenMaster".into(),
+                httpserverclass: "asio".into(),
+                lifecycle_mode: "installed_service".into(),
+                created_at: None,
+                updated_at: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // Same composition zen_enable_global runs before calling zen_enable::enable_global.
+        let master = zen_cli_shared::resolve_cluster_master(
+            &db,
+            master_endpoint_id,
+            ZEN_GLOBAL_NAMESPACE,
+        )
+        .unwrap();
+        assert_eq!(master.host, "10.0.0.50");
+        assert_eq!(master.port, 8558);
+        assert_eq!(master.namespace, ZEN_GLOBAL_NAMESPACE);
+
+        let resolved = zen_cli_shared::build_global_rules().unwrap();
+        assert_eq!(resolved.rules.enable_zen_shared.key, "Shared");
     }
 
     #[test]

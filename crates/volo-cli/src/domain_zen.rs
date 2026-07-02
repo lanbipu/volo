@@ -68,12 +68,12 @@ use std::time::Duration;
 // CLI binary crate). Re-export them here so the rest of this module — and its
 // tests — keep referring to them by their original unqualified names.
 pub(crate) use cache_core::core::zen::ops::{
-    copy_binary_if_needed, default_lifecycle_for, finalize_op, parse_envelope, render_lua_for,
-    require_endpoint, require_machine, resolve_install_paths, resolve_service_paths,
-    resolve_upstream_info, restart_service, run_node, url_prefix_for, urlacl_needed_for,
-    validate_data_dir_safe, validate_dest_path, validate_service_account_pair,
-    validate_service_data_dir, workstation_colocation_warning, write_and_verify_lua,
-    DEFAULT_SERVICE_NAME,
+    build_global_rules, copy_binary_if_needed, default_lifecycle_for, finalize_op,
+    parse_envelope, render_lua_for, require_endpoint, require_machine, resolve_cluster_master,
+    resolve_install_paths, resolve_service_paths, resolve_upstream_info, restart_service,
+    run_node, url_prefix_for, urlacl_needed_for, validate_data_dir_safe, validate_dest_path,
+    validate_service_account_pair, validate_service_data_dir, workstation_colocation_warning,
+    write_and_verify_lua, DEFAULT_SERVICE_NAME,
 };
 // Only the tests below reach for these directly (the prod path uses
 // `sha256_hex_of`/`verify_write_response` transitively via
@@ -2139,44 +2139,6 @@ fn project_ini_path(abs_path: &str) -> String {
     format!("{trimmed}\\Config\\DefaultEngine.ini")
 }
 
-/// Build a `ClusterMaster` view from a `shared_upstream` endpoint id. The
-/// endpoint's host comes from its machine row (IP — canonical connect target
-/// in this CLI, mirroring `resolve_host` above). Refuses non-shared_upstream
-/// upstream selections so an operator can't point an enable at a local-role
-/// endpoint and end up writing a self-referential `ZenShared` value.
-fn resolve_cluster_master(
-    db: &Db,
-    upstream_endpoint_id: i64,
-    namespace: &str,
-) -> VoloResult<zen_enable::ClusterMaster> {
-    let ep = zen_endpoints::get(db, upstream_endpoint_id)?.ok_or_else(|| {
-        VoloError::InvalidInput(format!(
-            "upstream endpoint id={} not found",
-            upstream_endpoint_id
-        ))
-    })?;
-    if ep.role != zen_endpoint::ROLE_SHARED_UPSTREAM {
-        return Err(VoloError::InvalidInput(format!(
-            "upstream endpoint id={} has role={:?}; expected {:?}. \
-             Register or pick a shared_upstream endpoint as the cluster master.",
-            upstream_endpoint_id,
-            ep.role,
-            zen_endpoint::ROLE_SHARED_UPSTREAM,
-        )));
-    }
-    let machine = machines::find_by_id(db, ep.machine_id)?.ok_or_else(|| {
-        VoloError::OperationFailed(format!(
-            "upstream endpoint id={} references machine id={} which is missing",
-            upstream_endpoint_id, ep.machine_id,
-        ))
-    })?;
-    Ok(zen_enable::ClusterMaster {
-        host: machine.ip,
-        port: ep.declared_port,
-        namespace: namespace.to_string(),
-    })
-}
-
 /// Invoke `zen-env-cleanup.ps1` once for a single (var, scope) pair. Returns
 /// the parsed JSON envelope on success. Routes through the same SSH bridge
 /// (`run_node`) the rest of the migrated zen domain uses.
@@ -2486,19 +2448,6 @@ fn set_region_host(
         )));
     }
     Ok(())
-}
-
-/// Load + resolve rules for global-mode operations (no project version
-/// available). Uses `resolve_for_diagnostics` which downgrades the
-/// `unverified_policy` from `refuse` → `warn`, so the base rule set applies
-/// on all UE ≥ 5.4 machines regardless of which UE version each machine runs.
-/// The namespace is embedded in `ClusterMaster` at call time, not here.
-fn build_global_rules() -> VoloResult<zen_rules::ResolvedRules> {
-    // 5.4 is the minimum version `applies_to: >=5.4` accepts; using it here
-    // picks up the base rules without any per-version overrides.  This is
-    // intentional: global UserEngine.ini should use the conservative defaults.
-    let rules_raw = zen_rules::load_default()?;
-    zen_rules::resolve_for_diagnostics(&rules_raw, "5.4")
 }
 
 #[allow(clippy::too_many_arguments)]

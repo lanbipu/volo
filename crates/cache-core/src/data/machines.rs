@@ -199,6 +199,20 @@ pub fn set_ue_runtime_user(db: &Db, id: i64, user: Option<&str>) -> VoloResult<(
     Ok(())
 }
 
+/// `(machine_id, ue_runtime_user)` for every machine — bulk read for hydrating
+/// the machine list view, avoiding one `get_ue_runtime_user` round trip per
+/// machine.
+pub fn list_ue_runtime_users(db: &Db) -> VoloResult<Vec<(i64, Option<String>)>> {
+    let conn = db.lock().unwrap();
+    let mut stmt = conn.prepare("SELECT id, ue_runtime_user FROM machines")?;
+    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    let mut result = Vec::new();
+    for r in rows {
+        result.push(r?);
+    }
+    Ok(result)
+}
+
 /// Stamps the machine row with `CURRENT_TIMESTAMP` and a fresh status.
 /// Called by `refresh_machine` so the UI online/offline badge reflects truth.
 pub fn mark_seen(db: &Db, id: i64, status: &str) -> VoloResult<()> {
@@ -371,5 +385,17 @@ mod tests {
             VoloError::InvalidInput(msg) => assert!(msg.contains("9999")),
             other => panic!("expected InvalidInput, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn list_ue_runtime_users_returns_pairs_for_every_machine() {
+        let db = setup();
+        let id1 = insert(&db, &Machine::new("R01", "10.0.0.1")).unwrap();
+        let id2 = insert(&db, &Machine::new("R02", "10.0.0.2")).unwrap();
+        set_ue_runtime_user(&db, id1, Some("lanbp")).unwrap();
+
+        let mut rows = list_ue_runtime_users(&db).unwrap();
+        rows.sort_by_key(|(id, _)| *id);
+        assert_eq!(rows, vec![(id1, Some("lanbp".to_string())), (id2, None)]);
     }
 }

@@ -7,9 +7,11 @@
 //! Everything here is DB / sidecar plumbing + input validation; no `clap`,
 //! no NDJSON emitter, no `tauri` — keeping cache-core zero-tauri.
 
+use crate::core::zen::enable as zen_enable;
 use crate::core::zen::lua_config::{self, UpstreamInfo};
 use crate::core::zen::redaction::redact;
-use crate::data::{machines, operations, Db, Machine, ZenEndpoint};
+use crate::core::zen::rules_loader as zen_rules;
+use crate::data::{machines, operations, zen_endpoints, Db, Machine, ZenEndpoint};
 use crate::core::zen::endpoint as zen_endpoint;
 use crate::error::{VoloError, VoloResult};
 
@@ -950,6 +952,51 @@ pub fn require_machine(db: &Db, machine_id: i64) -> VoloResult<Machine> {
     machines::find_by_id(db, machine_id)?.ok_or_else(|| {
         VoloError::InvalidInput(format!("machine id={} not found", machine_id))
     })
+}
+
+/// Resolve the cluster master (host/port/namespace) `zen enable` / `zen
+/// enable --global` write into `[StorageServers] Shared`, from a
+/// `shared_upstream` endpoint id. Shared by the CLI (`domain_zen::global_enable`
+/// / `project_enable`) and the Tauri `zen_enable_global` command so both
+/// refuse the same non-`shared_upstream` role the same way.
+pub fn resolve_cluster_master(
+    db: &Db,
+    upstream_endpoint_id: i64,
+    namespace: &str,
+) -> VoloResult<zen_enable::ClusterMaster> {
+    let ep = zen_endpoints::get(db, upstream_endpoint_id)?.ok_or_else(|| {
+        VoloError::InvalidInput(format!(
+            "upstream endpoint id={} not found",
+            upstream_endpoint_id
+        ))
+    })?;
+    if ep.role != zen_endpoint::ROLE_SHARED_UPSTREAM {
+        return Err(VoloError::InvalidInput(format!(
+            "upstream endpoint id={} has role={:?}; expected {:?}. \
+             Register or pick a shared_upstream endpoint as the cluster master.",
+            upstream_endpoint_id,
+            ep.role,
+            zen_endpoint::ROLE_SHARED_UPSTREAM,
+        )));
+    }
+    let machine = require_machine(db, ep.machine_id)?;
+    Ok(zen_enable::ClusterMaster {
+        host: machine.ip,
+        port: ep.declared_port,
+        namespace: namespace.to_string(),
+    })
+}
+
+/// Load + resolve rules for global-mode (`UserEngine.ini`) operations, where
+/// no per-project UE version is available. Downgrades `unverified_policy`
+/// from `refuse` to `warn` so the base rule set applies on all UE ≥5.4
+/// machines regardless of which UE version each machine runs — global
+/// `UserEngine.ini` writes intentionally use the conservative defaults.
+/// Shared by `zen enable/disable --global` (CLI) and `zen_enable_global`
+/// (Tauri).
+pub fn build_global_rules() -> VoloResult<zen_rules::ResolvedRules> {
+    let rules_raw = zen_rules::load_default()?;
+    zen_rules::resolve_for_diagnostics(&rules_raw, "5.4")
 }
 
 /// Update the `operations` row with the redacted invocation string and the

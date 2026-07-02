@@ -37,6 +37,11 @@ export interface Machine {
   last_seen_at: string | null;
 }
 
+export interface UeRuntimeUserRow {
+  machine_id: number;
+  ue_runtime_user: string | null;
+}
+
 export interface UeInstall {
   id: number | null;
   machine_id: number;
@@ -650,6 +655,14 @@ export interface ZenApplyConfigSummary {
 
 /** serde(untagged): plan (has `lua`) or summary (has `sha256`). */
 export type ZenApplyConfigResult = ZenApplyConfigPlan | ZenApplyConfigSummary;
+
+export interface ZenEnableGlobalResult {
+  machine_id: number;
+  host: string;
+  ini_file: string;
+  changed: boolean;
+  warnings: string[];
+}
 
 export interface ZenServicePlan {
   operation: string;

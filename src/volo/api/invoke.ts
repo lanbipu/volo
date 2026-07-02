@@ -6,9 +6,11 @@
    - JS arg keys are camelCase (Rust `machine_id` → JS `machineId`); a struct
      input is passed whole under one camelCase key, its inner fields stay
      snake_case (handled by the callers in ./commands).
-   - Every command returns `Result<T, String>`; the `Err(String)` reaches JS as a
-     thrown value. We normalize it to `VoloInvokeError` so callers get a stable
-     `.command` + `.message`. */
+   - Every command returns `Result<T, VoloError>`; `VoloError`'s `Serialize` impl
+     (crates/cache-core/src/error.rs) always emits `{code, message}`, so the
+     `Err(...)` reaches JS as that plain object, never a bare string. We
+     normalize it to `VoloInvokeError` so callers get a stable `.command` +
+     `.message`. */
 import { invoke } from "@tauri-apps/api/core";
 
 /** Normalized failure of a Tauri command (all handlers return `Result<_, String>`). */
@@ -30,6 +32,12 @@ export function isTauri(): boolean {
 function normalize(e: unknown): string {
   if (typeof e === "string") return e;
   if (e instanceof Error) return e.message;
+  /* Rust 侧 VoloError 序列化成 { code, message }（见上方接线说明），不是裸字符串 ——
+     不认这个形状就会掉进下面的 JSON.stringify 兜底，把原始 JSON 文本直接糊在界面上
+     （例如某些页面把这里的 message 原样渲染成失败提示）。 */
+  if (e && typeof e === "object" && typeof (e as { message?: unknown }).message === "string") {
+    return (e as { message: string }).message;
+  }
   try {
     return JSON.stringify(e);
   } catch {

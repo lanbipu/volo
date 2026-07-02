@@ -51,3 +51,23 @@ pub fn get_machine_detail(db: State<'_, Db>, id: i64) -> VoloResult<MachineDetai
         gpus,
     })
 }
+
+#[derive(Debug, Serialize)]
+pub struct UeRuntimeUserRow {
+    pub machine_id: i64,
+    pub ue_runtime_user: Option<String>,
+}
+
+/// Bulk `ue_runtime_user` read for every machine — hydrates the machine list
+/// view's "该机 UE 运行用户" field (Cache · ZenServer ② 客户端指向 · 用户全局
+/// scope readiness) without one round trip per machine.
+#[tauri::command]
+pub fn list_ue_runtime_users(db: State<'_, Db>) -> VoloResult<Vec<UeRuntimeUserRow>> {
+    Ok(data_machines::list_ue_runtime_users(&db)?
+        .into_iter()
+        .map(|(machine_id, ue_runtime_user)| UeRuntimeUserRow {
+            machine_id,
+            ue_runtime_user,
+        })
+        .collect())
+}

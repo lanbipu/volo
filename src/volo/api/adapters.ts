@@ -4,7 +4,7 @@
    project the real `Serialize` DTOs onto the shapes the page reads, filling
    fields the backend cannot provide with safe placeholders ("—" / null / "na")
    so no consumer crashes and no fabricated metric is invented. */
-import type { Machine, CredentialRecord, ShareConfig, ShareMode, ProjectSummary, ProjectLocation, HealthCheckRow, IniFinding } from "./types";
+import type { Machine, CredentialRecord, ShareConfig, ShareMode, ProjectSummary, ProjectLocation, HealthCheckRow, IniFinding, UeRuntimeUserRow } from "./types";
 /* Machine is referenced by toShareVM (host_machine_id → hostname reverse-lookup). */
 
 /* ----------------------------- machine ----------------------------- */
@@ -60,13 +60,16 @@ function normalizeRoleKey(raw: string): NodeVM["roleKey"] {
   return "render";
 }
 
-export function toNodeVM(m: Machine, shares: ShareConfig[] = []): NodeVM {
+export function toNodeVM(m: Machine, shares: ShareConfig[] = [], ueRuntimeUsers: UeRuntimeUserRow[] = []): NodeVM {
   const machineId = m.id ?? 0;
   const roleKey = normalizeRoleKey(m.role);
   /* 该机作为宿主托管的共享（share_configs.host_machine_id 命中）→ 机器详情「关联」
      段显示「共享 DDC 宿主」。客户端是否「已接入」靠机器详情⑥读 UE-SharedDataCachePath
      体现（那是异步逐机读，不放进同步的列表 VM）。 */
   const hosted = shares.find((s) => s.host_machine_id === machineId);
+  /* 该机 UE 运行 Windows 用户（machine set-ue-user 设置）——cacheZen ②「用户全局」配置
+     范围判断该机是否可写 UserEngine.ini 靠这个字段；未设置时占位 "—"（同其余空字段）。 */
+  const ueUser = ueRuntimeUsers.find((r) => r.machine_id === machineId)?.ue_runtime_user;
   return {
     id: String(machineId),
     host: m.hostname,
@@ -85,7 +88,7 @@ export function toNodeVM(m: Machine, shares: ShareConfig[] = []): NodeVM {
     vram: "—",
     ue: "—",
     uePath: "—",
-    user: "—",
+    user: ueUser || "—",
     auth: "SSH 公钥",
     domain: "—",
     zen: null,

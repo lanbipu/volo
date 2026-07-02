@@ -4,7 +4,7 @@
    ViewModels. Used by the shell to replace the former hardcoded mock seeds with
    real backend data behind a loading/error gate. */
 import { listMachines, listCredentials, listShares, listProjects, listProjectLocations, getGpuConsistencyMatrix,
-  listRecentHealthRuns, listHealthResultsForRun, listRecentIniRuns, listFindings } from "./commands";
+  listRecentHealthRuns, listHealthResultsForRun, listRecentIniRuns, listFindings, listUeRuntimeUsers } from "./commands";
 import { toNodeVM, toCredVM, toShareVM, toProjectVM, toHealthVMs, toIniVMs } from "./adapters";
 import type { NodeVM, CredVM, ShareVM, ProjectVM } from "./adapters";
 import type { GpuMatrix } from "./types";
@@ -60,14 +60,15 @@ async function loadProjects(): Promise<ProjectVM[]> {
  *  (reject → error state). projects are non-gating: a failure degrades to []
  *  (the DDC PAK/PSO views fall back to their "先扫描工程" empty states). */
 export async function loadCacheResources(): Promise<CacheResources> {
-  const [machinesRaw, creds, shares, projects, gpuMatrix] = await Promise.all([
+  const [machinesRaw, creds, shares, projects, gpuMatrix, ueRuntimeUsers] = await Promise.all([
     listMachines(),
     listCredentials(),
     listShares(),
     loadProjects().catch(() => [] as ProjectVM[]),
     getGpuConsistencyMatrix().catch(() => null),
+    listUeRuntimeUsers().catch(() => []),
   ]);
-  const machines = machinesRaw.map((m) => toNodeVM(m, shares));
+  const machines = machinesRaw.map((m) => toNodeVM(m, shares, ueRuntimeUsers));
   /* health / ini 需要 machines 做 machine_id→host 反查，故在 machines 就绪后加载；
      非阻断（失败 → []）。 */
   const [health, ini] = await Promise.all([

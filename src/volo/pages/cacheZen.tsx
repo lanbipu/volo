@@ -20,7 +20,7 @@ import {
   zenRegister, zenDetectBinary, zenApplyConfig, zenUpdateGcSettings, zenCreateDedicatedAccount,
   zenUrlaclAdd, zenServiceInstall, zenServiceStart, zenServiceStop, zenServiceUninstall,
   zenUnregister, zenProbe, zenStatus, zenListEndpoints, zenCacheStats, setIniKey, refreshMachine,
-  revealPath,
+  revealPath, zenEnableGlobal,
 } from "../api/commands";
 
 (function () {
@@ -104,6 +104,75 @@ import {
   function ZBadge({ vis, icon, label, soft }) {
     return h('span', { className: 'zbadge zb-' + vis + (soft ? ' soft' : '') },
       icon ? h(Icon, { name: icon, size: 12 }) : h('span', { className: 'zb-dash' }, '—'), label);
+  }
+
+  /* 工程级指向的二级菜单：列出选中机器上已发现的 UE 工程，选择后再指向。
+     每台机器只写入其本机存在的所选工程的 DefaultEngine.ini。UE 版本/体积/版本不一致
+     标记（p.ue / p.size / p.warn）后端暂无源，随 ProjectVM 固定为 "—" / null（见
+     adapters.ts toProjectVM）——按现有诚实占位惯例照常显示，不在此处臆造。 */
+  function ProjPointModal({ machines, host, port, preselect, onConfirm, close }) {
+    const projects = window.UE_PROJECTS || [];
+    const relevant = projects.filter((p) => machines.some((m) => p.machines.includes(m.id)));
+    const relIds = relevant.map((p) => p.id);
+    const [selP, setSelP] = useState(() => {
+      const base = (preselect && preselect.length) ? preselect.filter((id) => relIds.includes(id)) : relIds;
+      return base.length ? base : relIds.slice();
+    });
+    const toggle = (id) => setSelP((v) => v.includes(id) ? v.filter((x) => x !== id) : v.concat(id));
+    const allOn = relIds.length > 0 && relIds.every((id) => selP.includes(id));
+    const toggleAll = () => setSelP(allOn ? [] : relIds.slice());
+    const machinesFor = (p) => machines.filter((m) => p.machines.includes(m.id));
+    const noProjMachines = machines.filter((m) => !relevant.some((p) => p.machines.includes(m.id)));
+    const confirm = () => { if (!selP.length) return; close(); onConfirm(selP); };
+    return h('div', { className: 'drawer drawer--preview' },
+      h('div', { className: 'drawer-h' },
+        h('span', { className: 'di info' }, h(Icon, { name: 'film', size: 17 })),
+        h('div', { style: { minWidth: 0 } },
+          h('h2', null, '选择要指向的 UE 工程'),
+          h('div', { className: 'sub' },
+            h('span', { className: 'cli-pill' }, 'set_ini_key DefaultEngine.ini'),
+            h('span', null, ' · 工程级 · ' + machines.length + ' 台客户端'))),
+        h('button', { className: 'iconbtn x', onClick: close }, h(Icon, { name: 'x', size: 16 }))),
+      h('div', { className: 'drawer-b' },
+        h('div', { className: 'dblock' },
+          h('div', { className: 'dblock-h' }, h('span', { className: 'no' }, '1'), '在这些工程写入指向',
+            h('span', { className: 'aff-sum' }, selP.length + ' / ' + relevant.length + ' 已选'),
+            relIds.length ? h('button', { type: 'button', className: 'ppick-all', onClick: toggleAll }, allOn ? '取消全选' : '全选') : null),
+          relevant.length
+            ? h('div', { className: 'ppick-list' }, relevant.map((p) => {
+                const on = selP.includes(p.id);
+                const ms = machinesFor(p);
+                /* 同一工程在不同机器上的实际落地路径可能不同（locByMachine 每机独立），
+                   不能不加分辨地拿 p.root（首个 location 的路径，未必属于这批机器）当
+                   通用展示——只在这批机器路径一致时才显示单一路径，不一致时如实标注。 */
+                const msPaths = Array.from(new Set(ms.map((m) => p.locByMachine && p.locByMachine[String(m.machineId)]).filter(Boolean)));
+                const pathLine = msPaths.length === 1
+                  ? msPaths[0] + '\\Config\\DefaultEngine.ini'
+                  : msPaths.length > 1
+                    ? '路径因机器而异（' + msPaths.length + ' 种）'
+                    : p.root + '\\Config\\DefaultEngine.ini';
+                return h('button', { key: p.id, type: 'button', className: 'ppick-row' + (on ? ' on' : ''), onClick: () => toggle(p.id) },
+                  h('span', { className: 'zck' + (on ? ' on' : '') }, on ? h(Icon, { name: 'check', size: 12 }) : null),
+                  h('div', { className: 'ppick-meta' },
+                    h('div', { className: 'ppick-name' }, p.name,
+                      h('span', { className: 'ppick-tag mono' }, 'UE ' + p.ue + ' · ' + p.size),
+                      p.warn ? h('span', { className: 'ppick-warn', title: p.warn }, h(Icon, { name: 'alert', size: 11 }), '版本不一致') : null),
+                    h('div', { className: 'ppick-sub mono' }, pathLine)),
+                  h('div', { className: 'ppick-on' },
+                    h('span', { className: 'ppick-ct' }, ms.length + ' 台'),
+                    h('span', { className: 'ppick-hosts mono' }, ms.map((m) => m.host).join(' · '))));
+              }))
+            : h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }), '选中的机器上没有已发现的 UE 工程 · 先去集群总览发现工程')),
+        noProjMachines.length
+          ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }),
+              noProjMachines.length + ' 台机器未发现工程，将被跳过：' + noProjMachines.map((m) => m.host).join('、'))
+          : null,
+        h('div', { className: 'cli-note' }, h(Icon, { name: 'shield', size: 13 }),
+          '每台机器只写入其本机存在的所选工程的 DefaultEngine.ini（[StorageServers] Shared → Host=' + host + '；Port=' + port + '）；远程走 SSH key，逐台看成败。')),
+      h('div', { className: 'drawer-f' },
+        h(Button, { variant: 'secondary', size: 'M', onPress: close }, '取消'),
+        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'link', size: 15 }), isDisabled: !selP.length, onPress: confirm },
+          '指向此服务器（' + selP.length + ' 个工程）')));
   }
 
   function ZenServer({ s }) {
@@ -200,12 +269,29 @@ import {
     const [started, setStarted] = useState(false);
     const [run, setRun] = useState({});           /* stepId -> { st, err } */
     const [deploying, setDeploying] = useState(false);
-    /* pointed/sel/res 必须在任何条件 return 之前声明（Rules of Hooks）。否则首屏 RENDER_NODES 还空、
-       走下面 if(!srvNode) 早返回时这 3 个 hook 不执行；机器异步到达后 re-render 又执行，hook 数变化会让
-       React 抛「Rendered more hooks than during the previous render」并卸载整棵树（纯黑屏）。 */
+    /* pointed/sel/res/cfgScope/lastProjSelRef 必须在任何条件 return 之前声明（Rules of Hooks）。
+       否则首屏 RENDER_NODES 还空、走下面 if(!srvNode) 早返回时这些 hook 不执行；机器异步到达后
+       re-render 又执行，hook 数变化会让 React 抛「Rendered more hooks than during the previous
+       render」并卸载整棵树（纯黑屏）。 */
     const [pointed, setPointed] = useState(() => new Set());  /* 本地跟踪「已成功指向」的机器（后端无逐机查询）*/
     const [sel, setSel] = useState([]);
     const [res, setRes] = useState({});   /* clientId -> { st, msg } */
+    /* —— 配置范围（写哪个 ini）——
+       project = 工程级：写该机已发现 UE 工程的 DefaultEngine.ini [StorageServers] Shared；需先扫描到工程。
+       user    = 用户全局：写 %LOCALAPPDATA%\Unreal Engine\Engine\Config\UserEngine.ini；不依赖工程扫描，
+                 但需知道该机 UE 运行 Windows 用户 ue_runtime_user（取自机器 user 字段，来自 machine
+                 set-ue-user；未设置时引导先配置）。 */
+    const hasAnyProjects = (window.UE_PROJECTS || []).length > 0;
+    const [cfgScope, setCfgScope] = useState(hasAnyProjects ? 'project' : 'user');
+    const lastProjSelRef = useRef(null);   /* 上次工程级选中的工程 id（供单机重试复用）*/
+    /* 切换配置范围时清掉逐机运行状态：不清的话，上一档留下的「已应用/失败」徽标和「重试」
+       按钮会带着旧档的语境继续显示在新档下——重试按钮又是直接调 applyTo 读当前 cfgScope，
+       不清空的话点它会用新档静默重写成另一份 ini，而界面上显示的还是旧档的失败原因。 */
+    useEffect(() => { setRes({}); }, [cfgScope]);
+    const clientProjects = (id) => (window.UE_PROJECTS || []).filter((p) => p.machines.includes(id));
+    const runtimeUser = (n) => (n && n.user && n.user !== '—') ? n.user : null;
+    /* 该机在当前范围下是否可写（工程级需有已发现工程；用户全局需有运行用户）*/
+    const scopeReadyFor = (n) => cfgScope === 'project' ? clientProjects(n.id).length > 0 : !!runtimeUser(n);
 
     const deployed = !!status;
     /* 仅当服务真正 running 才允许把客户端指向它——指向一台已停止/不可达/状态未知的服务器
@@ -460,16 +546,12 @@ import {
       else setSel((v) => Array.from(new Set(v.concat(selectableUnpointed.map((n) => n.id)))));
     };
 
-    /* 推导某客户端的 DefaultEngine.ini 路径：必须取「这台机自己」的工程目录（locByMachine[mid]），
-       不能用 proj.root（那是首个 location 的路径，可能属于别的机器）。 */
-    const iniPathFor = (mid) => {
-      const key = String(mid);
-      const proj = (window.UE_PROJECTS || []).find((p) => p.locByMachine && p.locByMachine[key]);
-      return proj ? (proj.locByMachine[key] + '\\Config\\DefaultEngine.ini') : null;
-    };
+    /* 当前范围下，选中的在线机器中需先引导的有多少台（信息性提示，不拦按钮）*/
+    const selBlocked = onlineSel.filter((id) => !scopeReadyFor(CX.node(id)));
 
-    /* 逐机真实写配置：set_ini_key 写 [StorageServers] Shared 指向此服务器；部分失败是常态 */
-    const applyTo = (ids) => {
+    /* 逐机真实写配置：部分失败是常态。projIds 仅工程级使用——限定只写入这些选中的 UE
+       工程（二级菜单选择的结果），缺省 = 该机所有已发现工程。 */
+    const applyTo = (ids, projIds) => {
       if (!status) return;
       const host = status.host || (srvNode && srvNode.host) || '';
       const scheme = status.scheme || protocol || 'http';
@@ -479,38 +561,82 @@ import {
       const value = '(Host="' + hostUri + '", Namespace="ue.ddc", EnvHostOverride=UE-ZenSharedDataCacheHost, CommandLineHostOverride=ZenSharedDataCacheHost, DeactivateAt=60)';
       ids.filter((id) => { const n = CX.node(id); return n && n.status !== 'offline'; }).forEach((id) => {
         const n = CX.node(id);
-        const iniPath = iniPathFor(n.machineId);
-        if (!iniPath) { setRes((r) => Object.assign({}, r, { [id]: { st: 'fail', msg: '该机未发现 UE 工程 — 先在「集群总览」对这台机扫描发现工程，才知道往哪个 DefaultEngine.ini 写' } })); return; }
         setRes((r) => Object.assign({}, r, { [id]: { st: 'running' } }));
-        setIniKey(n.machineId, iniPath, 'StorageServers', 'Shared', value).then(
-          () => {
-            setRes((r) => Object.assign({}, r, { [id]: { st: 'ok', msg: '已指向 ' + hostUri } }));
+        if (cfgScope === 'project') {
+          let ps = clientProjects(id);
+          if (projIds) ps = ps.filter((p) => projIds.includes(p.id));
+          if (!ps.length) {
+            const noAny = clientProjects(id).length === 0;
+            setRes((r) => Object.assign({}, r, { [id]: { st: 'fail', msg: noAny ? '该机未发现 UE 工程 · 先去集群总览发现工程后重试' : '本机无所选工程 · 本次跳过' } }));
+            log(s, 'warn', `<b>set_ini_key</b> · ${esc(n.host)} 无所选工程，工程级写入跳过`);
+            return;
+          }
+          /* allSettled，不用 all——每个 setIniKey 是独立的远程写、互不回滚；all 遇到某个
+             工程失败会整体 reject，把已成功落盘的其它工程也一并汇报成「失败」，UI 与磁盘
+             实际状态就对不上了。这里逐个工程收集结果，部分失败时列出到底哪几个成功/失败。 */
+          Promise.allSettled(ps.map((p) => setIniKey(n.machineId, p.locByMachine[String(n.machineId)] + '\\Config\\DefaultEngine.ini', 'StorageServers', 'Shared', value))).then(
+            (results) => {
+              const failed = ps.map((p, i) => ({ p, err: results[i] })).filter((x) => x.err.status === 'rejected');
+              if (!failed.length) {
+                const okMsg = '已写 ' + ps.length + ' 个工程 DefaultEngine.ini（' + ps.map((p) => p.name).join('、') + '）→ ' + hostUri;
+                setRes((r) => Object.assign({}, r, { [id]: { st: 'ok', msg: okMsg } }));
+                setPointed((p) => { const np = new Set(p); np.add(id); return np; });
+                log(s, 'ok', `<b>set_ini_key</b> · ${esc(n.host)} DefaultEngine.ini ×${ps.length} → ${esc(hostUri)}`);
+                return;
+              }
+              const okCount = ps.length - failed.length;
+              const firstErr = failed[0].err.reason;
+              const em = firstErr && firstErr.message ? firstErr.message : String(firstErr);
+              const msg = okCount
+                ? okCount + '/' + ps.length + ' 个工程已写入，' + failed.length + ' 个失败（' + failed.map((x) => x.p.name).join('、') + '）· ' + em
+                : em;
+              setRes((r) => Object.assign({}, r, { [id]: { st: 'fail', msg } }));
+              log(s, 'err', `<b>set_ini_key</b> · ${esc(n.host)} 写 [StorageServers] Shared 失败（${failed.length}/${ps.length} 个工程）`);
+            });
+          return;
+        }
+        if (!runtimeUser(n)) {
+          setRes((r) => Object.assign({}, r, { [id]: { st: 'fail', msg: '该机未设置 UE 运行用户 · 先配置 ue_runtime_user（machine set-ue-user）' } }));
+          log(s, 'warn', `<b>zen_enable_global</b> · ${esc(n.host)} 未设 ue_runtime_user，用户全局写入跳过`);
+          return;
+        }
+        zenEnableGlobal(n.machineId, status.endpointId).then(
+          (out) => {
+            const okMsg = 'UserEngine.ini（用户 ' + runtimeUser(n) + '）→ ' + hostUri;
+            setRes((r) => Object.assign({}, r, { [id]: { st: 'ok', msg: okMsg } }));
             setPointed((p) => { const np = new Set(p); np.add(id); return np; });
-            log(s, 'ok', `<b>set_ini_key</b> · ${esc(n.host)} → ${esc(hostUri)}`);
+            log(s, 'ok', `<b>zen_enable_global</b> · ${esc(n.host)} ${esc(out.ini_file)} → ${esc(hostUri)}`);
           },
           (e) => {
             const em = e && e.message ? e.message : String(e);
             setRes((r) => Object.assign({}, r, { [id]: { st: 'fail', msg: em } }));
-            log(s, 'err', `<b>set_ini_key</b> · ${esc(n.host)} 写 [StorageServers] Shared 失败`);
+            log(s, 'err', `<b>zen_enable_global</b> · ${esc(n.host)} 写 UserEngine.ini 失败`);
           });
       });
     };
 
-    const previewApply = (ids) => {
+    /* 直接执行（用户全局）：不弹二级菜单，按下即跑命令，进展看各机行内状态 + 控制台 */
+    const runApply = (ids) => {
+      const online = ids.filter((id) => { const n = CX.node(id); return n && n.status !== 'offline'; });
+      if (online.length) applyTo(online);
+    };
+
+    /* 工程级：弹出居中二级菜单，列出 UE 工程供选择，确认后再指向。默认全选（preselect
+       不传 lastProjSelRef——那是单机重试专用的「复用上次选择」，选中机器集合变化时
+       用它预选会与新集合取交集，可能把新出现的相关工程漏选而不自知）。 */
+    const openProjectPicker = (ids) => {
       const online = ids.filter((id) => { const n = CX.node(id); return n && n.status !== 'offline'; });
       if (!online.length || !status) return;
+      const machinesArg = online.map((id) => CX.node(id));
       const host = status.host || srvNode.host;
-      const hostUri = (status.scheme || protocol || 'http') + '://' + host + ':' + status.port;
-      CX.openPreview(s, {
-        title: '把客户端指向此缓存服务器', icon: 'link', cli: 'set_ini_key [StorageServers] Shared',
-        destructive: false, channel: 'ssh', confirmLabel: '应用到 ' + online.length + ' 台',
-        steps: [
-          '在每台选中机器写入 [StorageServers] Shared → Host=' + hostUri,
-          '逐台远程改缓存配置（远程操作，部分失败是常态，可单独重试）',
-          '写入后该机即把缓存上游指向此共享服务器',
-        ],
-        simpleScope: online.map((id) => { const n = CX.node(id); return { host: n.host, ip: n.ip, msg: '写 [StorageServers] Shared' }; }),
-        onConfirm: () => applyTo(online),
+      s.setModal({
+        wide: true,
+        render: ({ close }) => h(ProjPointModal, {
+          machines: machinesArg, host, port: status.port,
+          preselect: null,
+          onConfirm: (pIds) => { lastProjSelRef.current = pIds; applyTo(online, pIds); },
+          close,
+        }),
       });
     };
 
@@ -744,6 +870,45 @@ import {
       })) : null;
 
     /* ② 客户端列表 */
+    /* 配置范围选择器：工程级 / 用户全局；目标路径 / 前置说明 / 底部安全说明随选项切换 */
+    const SCOPE_OPTS = [
+      { id: 'project', label: '工程级', sub: '写工程 DefaultEngine.ini', disabled: !hasAnyProjects },
+      { id: 'user', label: '用户全局', sub: '写 UserEngine.ini' },
+    ];
+    const scopeBlock = h('div', { className: 'zscope' },
+      h('div', { className: 'zscope-head' },
+        h('span', { className: 'zscope-h-lbl' }, '配置范围'),
+        h('span', { className: 'zscope-h-sub' }, '决定把指向写进哪一份 UE 配置 · 每台机器独立应用')),
+      h('div', { className: 'zscope-seg' },
+        SCOPE_OPTS.map((o) => h('button', {
+          key: o.id, type: 'button',
+          className: 'zscope-opt' + (cfgScope === o.id ? ' on' : '') + (o.disabled ? ' dis' : ''),
+          disabled: o.disabled, title: o.disabled ? '未扫描到 UE 工程，先去集群总览发现工程' : undefined,
+          onClick: () => { if (!o.disabled) setCfgScope(o.id); },
+        },
+          h('span', { className: 'zscope-lbl' }, o.label),
+          h('span', { className: 'zscope-sub' }, o.sub)))),
+      cfgScope === 'project'
+        ? h('div', { className: 'zscope-detail' },
+            h('div', { className: 'zscope-path mono' }, h(Icon, { name: 'film', size: 12 }), '{工程根}\\Config\\DefaultEngine.ini  →  [StorageServers] Shared'),
+            h('div', { className: 'zscope-tx' }, '逐台写入该机已发现的 UE 工程；只对这些工程生效，需先扫描到工程。'))
+        : h('div', { className: 'zscope-detail' },
+            h('div', { className: 'zscope-path mono' }, h(Icon, { name: 'doc', size: 12 }), '%LOCALAPPDATA%\\Unreal Engine\\Engine\\Config\\UserEngine.ini  →  [StorageServers] Shared'),
+            h('div', { className: 'zscope-tx' }, '写入该机 UE 运行用户（ue_runtime_user）的全局配置，对该用户下所有工程生效，不依赖工程扫描。')),
+      /* 不按 cfgScope 门控——全集群零工程时「工程级」选项本身被禁用，用户切不到那一档，
+         这条提示得在「用户全局」档下也看得见，否则「工程级」永远打不开、这条 hint 是死代码。 */
+      !hasAnyProjects
+        ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }),
+            h('span', null, '未扫描到 UE 工程 · '),
+            h('button', { type: 'button', className: 'zscope-link', onClick: () => s.setCacheNav('home') }, '去集群总览发现工程'))
+        : null,
+      selBlocked.length
+        ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }),
+            cfgScope === 'project'
+              ? selBlocked.length + ' 台选中机器未发现工程，将被跳过 · 先去集群总览发现工程'
+              : selBlocked.length + ' 台选中机器未设置 ue_runtime_user，将被跳过 · 先配置运行用户')
+        : null);
+
     const clientBadge = (n) => {
       const r = res[n.id];
       if (r) {
@@ -751,7 +916,7 @@ import {
         return h('div', { className: 'zcli-right' },
           h(ZBadge, { vis: m.vis, icon: m.icon, label: r.st === 'running' ? '应用中' : r.st === 'ok' ? '已应用' : '失败', soft: true }),
           r.msg ? h('span', { className: 'zcli-msg s-' + m.vis }, r.msg) : null,
-          r.st === 'fail' ? h('button', { className: 'mini-btn', onClick: () => applyTo([n.id]) }, h(Icon, { name: 'restart', size: 12 }), '重试') : null);
+          r.st === 'fail' ? h('button', { className: 'mini-btn', onClick: () => applyTo([n.id], cfgScope === 'project' ? lastProjSelRef.current : null) }, h(Icon, { name: 'restart', size: 12 }), '重试') : null);
       }
       if (n.status === 'offline') return h(ZBadge, { vis: 'neutral', icon: 'power', label: '离线 · 跳过' });
       if (pointed.has(n.id)) return h(ZBadge, { vis: 'positive', icon: 'check', label: '已指向此服务器', soft: true });
@@ -807,15 +972,21 @@ import {
             h('button', { className: 'zlink-all', onClick: toggleSelectUnpointed, disabled: selectableUnpointed.length === 0 },
               allUnpointedSelected ? '取消选择' : '选中全部未指向（' + selectableUnpointed.length + '）'),
             h('div', { className: 'zcli-go' },
-              h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'link', size: 14 }), isDisabled: onlineSel.length === 0 || !canPoint, onPress: () => previewApply(sel) },
+              h(Button, {
+                variant: 'accent', size: 'M', icon: h(Icon, { name: 'link', size: 14 }), isDisabled: onlineSel.length === 0 || !canPoint,
+                onPress: () => { if (cfgScope === 'project') openProjectPicker(onlineSel); else runApply(onlineSel); },
+              },
                 onlineSel.length ? '指向此服务器（' + onlineSel.length + '）' : '指向此服务器'))),
+          deployed ? scopeBlock : null,
           !deployed
             ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }), '尚未部署服务器，先在上方①部署一台，再把客户端指向它。')
             : !canPoint
               ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }), '服务器已部署但当前未在运行（' + sMeta.label + '）—— 先在上方①启动 / 探活确认运行中，再指向客户端。')
               : null,
           h('div', { className: 'cli-note' }, h(Icon, { name: 'shield', size: 13 }),
-            '应用 = 改这些机器的缓存配置（写 [StorageServers] Shared，非旧版 [InstalledDerivedDataBackendGraph]）指向上方服务器；远程操作走 SSH key，逐台执行、逐台看成败。'),
+            cfgScope === 'project'
+              ? '应用 = 逐台改这些机器已发现工程的 DefaultEngine.ini（写 [StorageServers] Shared，非旧版 [InstalledDerivedDataBackendGraph]）指向上方服务器；远程操作走 SSH key，逐台执行、逐台看成败。'
+              : '应用 = 逐台改这些机器 UE 运行用户的 UserEngine.ini（写 [StorageServers] Shared）指向上方服务器；远程操作走 SSH key，逐台执行、逐台看成败。'),
           h('div', { className: 'cli-list' }, clients.map(clientRow)))))));
   }
 

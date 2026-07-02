@@ -822,15 +822,16 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
 
   function ModalLayer({ s }) {
     /* busyRef 由 ModalPreview 在 running 阶段置 true → 此时点遮罩不关闭（命令仍在跑、无 X 按钮）。
-       useRef 必须在条件 return 之前（Rules of Hooks）。 */
+       useRef 必须在条件 return 之前（Rules of Hooks）。d.render 是自定义模态（如 cacheZen
+       工程级「选工程」二级菜单）——没有 running 态，遮罩点击直接关，不受 busyRef 影响。 */
     const busyRef = React.useRef(false);
     const d = s.modal;
     if (!d) return null;
     const close = () => s.setModal(null);
     const tryClose = () => { if (!busyRef.current) close(); };
-    return h('div', { className: 'modal-scrim', onClick: tryClose },
-      h('div', { className: 'modal-host' + (d.destructive ? ' danger' : ''), onClick: (e) => e.stopPropagation() },
-        h(ModalPreview, { s, d, close, busyRef })));
+    return h('div', { className: 'modal-scrim', onClick: d.render ? close : tryClose },
+      h('div', { className: 'modal-host' + (d.destructive ? ' danger' : '') + (d.wide ? ' wide' : ''), onClick: (e) => e.stopPropagation() },
+        d.render ? d.render({ s, close }) : h(ModalPreview, { s, d, close, busyRef })));
   }
 
   function CredsPanel({ s }) {
