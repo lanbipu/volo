@@ -38,7 +38,11 @@ use cache_core::core::zen::enable as zen_enable;
 use cache_core::core::zen::ops as zen_cli_shared;
 use cache_core::core::zen::endpoint as zen_endpoint;
 use cache_core::core::zen::redaction::redact;
-use cache_core::core::zen::{binary as zen_binary, cache_stats as zen_cache, probe as zen_probe};
+use cache_core::core::zen::{
+    binary as zen_binary, cache_stats as zen_cache, disk_space as zen_disk_space_core,
+    probe as zen_probe,
+};
+use cache_core::core::ssh::SshExecutor;
 use cache_core::data::{
     credentials as data_creds, machines, operations, zen_binary_expected, zen_endpoints,
     zen_probes, Db, ZenBinaryExpected, ZenEndpoint,
@@ -312,6 +316,75 @@ pub fn zen_cache_stats(
         partial_errors,
         samples,
     })
+}
+
+// ---------------------------------------------------------------------------
+// disk-space
+// ---------------------------------------------------------------------------
+
+/// Total/free bytes of the disk volume hosting an endpoint's `data_dir`.
+/// Distinct from [`ZenCacheStatsRecord::cache_disk_size_bytes`] — that's what
+/// the `z$` cache provider itself has written; this is the whole volume's
+/// capacity, read via SSH (`get-disk-space.ps1`) since zen's own `/stats`
+/// wire format has no such field.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZenDiskSpaceResult {
+    pub endpoint_id: i64,
+    pub machine_id: i64,
+    pub host: String,
+    pub drive: String,
+    pub total_bytes: Option<i64>,
+    pub free_bytes: Option<i64>,
+    pub error_message: Option<String>,
+}
+
+#[tauri::command]
+pub fn zen_disk_space(
+    db: State<'_, Db>,
+    endpoint_id: Option<i64>,
+) -> VoloResult<Vec<ZenDiskSpaceResult>> {
+    let endpoints = resolve_endpoints(&db, None, endpoint_id)?;
+    let exec = SshExecutor::from_config()?;
+    let mut out = Vec::with_capacity(endpoints.len());
+    for ep in &endpoints {
+        let eid = ep.id.expect("endpoint id");
+        let host = match resolve_host(&db, ep.machine_id)? {
+            Some(h) => h,
+            None => {
+                out.push(ZenDiskSpaceResult {
+                    endpoint_id: eid,
+                    machine_id: ep.machine_id,
+                    host: String::new(),
+                    drive: String::new(),
+                    total_bytes: None,
+                    free_bytes: None,
+                    error_message: Some(format!("machine id={} not found", ep.machine_id)),
+                });
+                continue;
+            }
+        };
+        match zen_disk_space_core::run(&exec, &host, &ep.data_dir) {
+            Ok(s) => out.push(ZenDiskSpaceResult {
+                endpoint_id: eid,
+                machine_id: ep.machine_id,
+                host,
+                drive: s.drive,
+                total_bytes: Some(s.total_bytes as i64),
+                free_bytes: Some(s.free_bytes as i64),
+                error_message: None,
+            }),
+            Err(e) => out.push(ZenDiskSpaceResult {
+                endpoint_id: eid,
+                machine_id: ep.machine_id,
+                host,
+                drive: String::new(),
+                total_bytes: None,
+                free_bytes: None,
+                error_message: Some(e.to_string()),
+            }),
+        }
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------

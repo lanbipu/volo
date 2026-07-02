@@ -370,6 +370,13 @@
 .zsv-hero.t-accent .zsv-hero-v { color: var(--volo-500); }
 .zsv-hero-u { font-size: 13px; font-weight: 700; color: var(--chrome-faint); letter-spacing: 0; }
 .zsv-hero-l { font-size: 11px; color: var(--chrome-faint); margin-top: 7px; }
+.zsv-bar { background: var(--chrome-card); border: 1px solid var(--chrome-line); border-radius: 11px; padding: 12px 14px; margin-top: 10px; }
+.zsv-bar-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.zsv-bar-k { font-size: 11.5px; color: var(--chrome-faint); }
+.zsv-bar-v { font-size: 12px; font-weight: 700; color: var(--chrome-text); }
+.zsv-bar-track { position: relative; height: 8px; border-radius: 99px; background: var(--wash-2); margin-top: 9px; overflow: hidden; }
+.zsv-bar-fill { position: absolute; inset: 0 auto 0 0; border-radius: 99px; background: var(--volo-500); }
+.zsv-bar-pct { font-size: 10.5px; color: var(--chrome-faint); margin-top: 5px; text-align: right; }
 .zsv-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .zsv-chip { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 3px; background: var(--chrome-card); border: 1px solid var(--chrome-line); border-radius: 9px; padding: 8px 11px; }
 .zsv-chip-k { font-size: 10px; color: var(--chrome-faint); }
