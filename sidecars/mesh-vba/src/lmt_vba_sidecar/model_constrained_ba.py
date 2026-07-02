@@ -8,10 +8,11 @@ local coords — no anchors, no total station.
 """
 from __future__ import annotations
 from dataclasses import dataclass
+import functools
 import cv2
 import numpy as np
 from scipy.optimize import least_squares
-from scipy.sparse import csc_matrix, lil_matrix
+from scipy.sparse import coo_matrix, csc_matrix
 from scipy.sparse.linalg import splu
 
 
@@ -120,17 +121,131 @@ def _residuals(x, n_cams, nonroot, root, K, obs_arrays):
     return res_2d.ravel()
 
 
-def _sparsity(n_cams, nonroot, root, obs):
-    n = n_cams*6 + len(nonroot)*6
-    A = lil_matrix((len(obs)*2, n), dtype=int)
+def _unpack_with_jac(x, n_cams, nonroot, root):
+    """Like the forward-pass half of `_unpack`, but also returns the Rodrigues
+    rotation Jacobians (d(R.flatten())/d(rvec), reshaped (k,a,b) so R[a,b]'s
+    derivative w.r.t. rvec[k] is jac3[k,a,b]) needed by `_jacobian`."""
+    all_R_cam = np.zeros((n_cams, 3, 3))
+    all_t_cam = np.zeros((n_cams, 3))
+    jac_cam3 = np.zeros((n_cams, 3, 3, 3))
+    for i in range(n_cams):
+        seg = x[i*6:i*6+6]
+        R, J = cv2.Rodrigues(seg[:3])
+        all_R_cam[i] = R
+        jac_cam3[i] = J.reshape(3, 3, 3)
+        all_t_cam[i] = seg[3:6]
+    base = n_cams * 6
+    all_R_cab = {root: np.eye(3)}
+    all_t_cab = {root: np.zeros(3)}
+    jac_cab3 = np.zeros((len(nonroot), 3, 3, 3))
+    for k, j in enumerate(nonroot):
+        seg = x[base + k*6: base + k*6 + 6]
+        R, J = cv2.Rodrigues(seg[:3])
+        all_R_cab[j] = R
+        jac_cab3[k] = J.reshape(3, 3, 3)
+        all_t_cab[j] = seg[3:6]
+    return all_R_cam, all_t_cam, jac_cam3, all_R_cab, all_t_cab, jac_cab3
+
+
+def _jac_layout(n_cams, nonroot, root, obs_arrays):
+    """Fixed (row, col) index arrays for the analytic sparse Jacobian. Depends
+    only on the observation structure (camera_idx/cabinet_idx), not on x, so
+    it is computed once per BA problem and reused across all least_squares
+    iterations instead of rebuilding a lil_matrix sparsity pattern each call."""
+    cam_idx, cab_idx, _, _, _ = obs_arrays
+    n = len(cam_idx)
+    n_cabinets = len(nonroot) + 1
+    base = n_cams * 6
+    nonroot_pos = np.full(n_cabinets, -1, dtype=np.int64)
+    for k, j in enumerate(nonroot):
+        nonroot_pos[j] = k
+    cab_pos = nonroot_pos[cab_idx]
+    is_nonroot = cab_pos >= 0
+
+    obs_row0 = 2 * np.arange(n)
+    row2x6 = np.broadcast_to(
+        obs_row0[:, None, None] + np.arange(2)[None, :, None], (n, 2, 6))
+    cam_cols = np.broadcast_to(
+        (cam_idx * 6)[:, None, None] + np.arange(6)[None, None, :], (n, 2, 6))
+
+    cab_col0 = base + cab_pos * 6
+    n_nonroot_obs = int(is_nonroot.sum())
+    cab_rows = row2x6[is_nonroot]
+    cab_cols = np.broadcast_to(
+        cab_col0[is_nonroot][:, None, None] + np.arange(6)[None, None, :],
+        (n_nonroot_obs, 2, 6))
+
+    return {
+        "cam_rows": row2x6.ravel(),
+        "cam_cols": cam_cols.ravel(),
+        "cab_rows": cab_rows.ravel(),
+        "cab_cols": cab_cols.ravel(),
+        "is_nonroot": is_nonroot,
+    }
+
+
+def _jacobian(x, n_cams, nonroot, root, K, obs_arrays, layout):
+    """Analytic Jacobian of `_residuals` w.r.t. x (camera + non-root cabinet
+    SE3 params), replacing scipy's finite-difference estimate.
+
+    Chain rule: residual = (K @ xc)[:2]/(K @ xc)[2] / sigma, xc = Rc@xw+tc,
+    xw = Rb@p_local+tb. Rotation derivatives use cv2.Rodrigues's own Jacobian
+    (dR/drvec) so the analytic derivative matches the exact parameterization
+    `_pack`/`_unpack` use, rather than a separately-derived SO(3) chain rule.
+    """
+    cam_idx, cab_idx, p_local, pixel, sigma = obs_arrays
+    n = len(cam_idx)
+    n_params = n_cams * 6 + len(nonroot) * 6
+
+    all_R_cam, all_t_cam, jac_cam3, all_R_cab, all_t_cab, jac_cab3 = \
+        _unpack_with_jac(x, n_cams, nonroot, root)
     nonroot_pos = {j: k for k, j in enumerate(nonroot)}
-    base = n_cams*6
-    for k, o in enumerate(obs):
-        A[k*2:k*2+2, o.camera_idx*6:o.camera_idx*6+6] = 1
-        if o.cabinet_idx != root:
-            c = base + nonroot_pos[o.cabinet_idx]*6
-            A[k*2:k*2+2, c:c+6] = 1
-    return A
+
+    Rc = all_R_cam[cam_idx]           # (n,3,3)
+    tc = all_t_cam[cam_idx]           # (n,3)
+    jac_cam3_obs = jac_cam3[cam_idx]  # (n,3,3,3) axes (k,a,b)
+
+    unique_cabs = np.unique(cab_idx)
+    Rb = np.zeros((n, 3, 3))
+    tb = np.zeros((n, 3))
+    jac_cab3_obs = np.zeros((n, 3, 3, 3))
+    for j in unique_cabs:
+        mask = cab_idx == j
+        Rb[mask] = all_R_cab[j]
+        tb[mask] = all_t_cab[j]
+        if j != root:
+            jac_cab3_obs[mask] = jac_cab3[nonroot_pos[j]]
+
+    xw = np.einsum('nab,nb->na', Rb, p_local) + tb
+    xc = np.einsum('nab,nb->na', Rc, xw) + tc
+    proj = np.einsum('ab,nb->na', K, xc)
+
+    inv_p2 = 1.0 / proj[:, 2]
+    d_proj = np.zeros((n, 2, 3))
+    d_proj[:, 0, 0] = inv_p2
+    d_proj[:, 0, 2] = -proj[:, 0] * inv_p2**2
+    d_proj[:, 1, 1] = inv_p2
+    d_proj[:, 1, 2] = -proj[:, 1] * inv_p2**2
+    # d(projected)/d(xc), weighted by 1/sigma to match `_residuals`.
+    J_proj_xc = np.einsum('nij,jk->nik', d_proj, K) / sigma[:, None, None]
+
+    d_xc_drvec_cam = np.einsum('nkab,nb->nak', jac_cam3_obs, xw)
+    d_res_drvec_cam = np.einsum('nja,nak->njk', J_proj_xc, d_xc_drvec_cam)
+    cam_block = np.concatenate([d_res_drvec_cam, J_proj_xc], axis=2)  # (n,2,6)
+
+    d_xw_drvec_cab = np.einsum('nkab,nb->nak', jac_cab3_obs, p_local)
+    d_xc_drvec_cab = np.einsum('nca,nak->nck', Rc, d_xw_drvec_cab)
+    d_res_drvec_cab = np.einsum('nja,nak->njk', J_proj_xc, d_xc_drvec_cab)
+    d_res_dt_cab = np.einsum('nja,nak->njk', J_proj_xc, Rc)
+    cab_block = np.concatenate([d_res_drvec_cab, d_res_dt_cab], axis=2)  # (n,2,6)
+
+    data = np.concatenate([
+        cam_block.ravel(),
+        cab_block[layout["is_nonroot"]].ravel(),
+    ])
+    rows = np.concatenate([layout["cam_rows"], layout["cab_rows"]])
+    cols = np.concatenate([layout["cam_cols"], layout["cab_cols"]])
+    return coo_matrix((data, (rows, cols)), shape=(2 * n, n_params)).tocsr()
 
 
 def model_constrained_ba(*, K, observations, n_cameras, n_cabinets,
@@ -142,10 +257,11 @@ def model_constrained_ba(*, K, observations, n_cameras, n_cabinets,
     for j in nonroot:
         cabs0.setdefault(j, (np.eye(3), np.zeros(3)))
     x0 = _pack(init_cameras, cabs0, nonroot)
-    sp = _sparsity(n_cameras, nonroot, root_cabinet_idx, observations)
     obs_arrays = _precompute_obs_arrays(observations)
+    layout = _jac_layout(n_cameras, nonroot, root_cabinet_idx, obs_arrays)
+    jac_fn = functools.partial(_jacobian, layout=layout)
     sol = least_squares(
-        _residuals, x0, jac_sparsity=sp, method="trf",
+        _residuals, x0, jac=jac_fn, method="trf",
         loss=loss, f_scale=f_scale, max_nfev=max_nfev, x_scale=x_scale, verbose=0,
         args=(n_cameras, nonroot, root_cabinet_idx, K, obs_arrays),
     )

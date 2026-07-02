@@ -1,6 +1,11 @@
 import numpy as np
 import cv2
-from lmt_vba_sidecar.model_constrained_ba import model_constrained_ba, Observation
+from scipy.optimize import least_squares
+from scipy.sparse import lil_matrix
+from lmt_vba_sidecar.model_constrained_ba import (
+    model_constrained_ba, Observation, _residuals, _jacobian, _jac_layout,
+    _pack, _precompute_obs_arrays, _nonroot_cabinets,
+)
 
 def _project(K, R_cam, t_cam, R_cab, t_cab, p_local):
     xw = R_cab @ p_local + t_cab
@@ -197,3 +202,186 @@ def test_heteroscedastic_weighting_improves_pose():
     assert improvement > 0.10, (
         f"heteroscedastic weighting did not improve: err_w={err_w:.3f}, "
         f"err_eq={err_eq:.3f}, improvement={improvement:.1%}")
+
+
+def _sparsity_fd(n_cams, nonroot, root, obs):
+    """Pre-W7 sparsity-guided finite-difference baseline (jac_sparsity path),
+    kept here only to parity-test the W7 analytic Jacobian against it."""
+    n = n_cams * 6 + len(nonroot) * 6
+    A = lil_matrix((len(obs) * 2, n), dtype=int)
+    nonroot_pos = {j: k for k, j in enumerate(nonroot)}
+    base = n_cams * 6
+    for k, o in enumerate(obs):
+        A[k * 2:k * 2 + 2, o.camera_idx * 6:o.camera_idx * 6 + 6] = 1
+        if o.cabinet_idx != root:
+            c = base + nonroot_pos[o.cabinet_idx] * 6
+            A[k * 2:k * 2 + 2, c:c + 6] = 1
+    return A
+
+
+def test_analytic_jacobian_matches_finite_difference():
+    """W7: the analytic Jacobian must agree with a central-difference estimate
+    to within FD truncation error, on both the rotation and translation
+    columns of both camera and (non-root) cabinet blocks."""
+    rng = np.random.default_rng(0)
+    K = np.array([[2000., 0, 960], [0, 2000, 540], [0, 0, 1]])
+    n_cams, n_cabs, root = 3, 3, 0
+    nonroot = _nonroot_cabinets(n_cabs, root)
+
+    cams = []
+    for i in range(n_cams):
+        Rc, _ = cv2.Rodrigues(rng.normal(0, 0.2, 3))
+        tc = np.array([50. * i, -20. * i, 2500.]) + rng.normal(0, 5, 3)
+        cams.append((Rc, tc))
+    boards = {0: (np.eye(3), np.zeros(3))}
+    for j in range(1, n_cabs):
+        Rb, _ = cv2.Rodrigues(rng.normal(0, 0.3, 3))
+        boards[j] = (Rb, np.array([700. * j, 0, 0]) + rng.normal(0, 10, 3))
+
+    corners = np.array([[-300, -170, 0], [300, -170, 0], [300, 170, 0],
+                         [-300, 170, 0], [0, 0, 0]], float)
+    obs = []
+    for ci, (Rc, tc) in enumerate(cams):
+        for bj, (Rb, tb) in boards.items():
+            for p in corners:
+                px = _project(K, Rc, tc, Rb, tb, p) + rng.normal(0, 0.1, 2)
+                sigma = 1.0 + 0.5 * rng.random()
+                obs.append(Observation(camera_idx=ci, cabinet_idx=bj,
+                                        p_local=p.copy(), pixel=px.copy(), sigma_px=sigma))
+
+    obs_arrays = _precompute_obs_arrays(obs)
+    layout = _jac_layout(n_cams, nonroot, root, obs_arrays)
+    x0 = _pack(cams, boards, nonroot) + rng.normal(0, 0.05, n_cams * 6 + len(nonroot) * 6)
+
+    J_analytic = _jacobian(x0, n_cams, nonroot, root, K, obs_arrays, layout).toarray()
+
+    eps = 1e-5
+    n_params = len(x0)
+    J_num = np.zeros((2 * len(obs), n_params))
+    for k in range(n_params):
+        dx = np.zeros(n_params)
+        dx[k] = eps
+        fp = _residuals(x0 + dx, n_cams, nonroot, root, K, obs_arrays)
+        fm = _residuals(x0 - dx, n_cams, nonroot, root, K, obs_arrays)
+        J_num[:, k] = (fp - fm) / (2 * eps)
+
+    diff = np.abs(J_analytic - J_num)
+    assert diff.max() < 1e-5, f"analytic vs central-diff Jacobian max abs diff {diff.max():.3e}"
+    mask = np.abs(J_num) > 1e-4
+    rel = diff[mask] / np.abs(J_num[mask])
+    assert rel.max() < 1e-4, f"analytic vs central-diff Jacobian max rel diff {rel.max():.3e}"
+
+
+def test_analytic_jacobian_matches_fd_solve_zero_noise():
+    """W7 hard constraint: on a well-posed (zero-noise, linear-loss) small
+    problem, the analytic-Jacobian solve and the pre-W7 sparsity-guided
+    finite-difference solve must land on the same optimum (params <1e-6,
+    cost <1%) — they should converge to the identical unique minimum
+    regardless of which Jacobian estimate TRF used along the way."""
+    K = np.array([[2000., 0, 960], [0, 2000, 540], [0, 0, 1]])
+    R0, t0 = np.eye(3), np.zeros(3)
+    R1, _ = cv2.Rodrigues(np.array([0., np.deg2rad(15), 0.]))
+    t1 = np.array([700., 0., 0.])
+    corners = np.array([[-300, -170, 0], [300, -170, 0], [300, 170, 0], [-300, 170, 0]], float)
+    boards = [(R0, t0), (R1, t1)]
+    cams = []
+    for i in range(5):
+        rvec = np.array([0.05 * i, 0.1 * i, 0.0])
+        Rc, _ = cv2.Rodrigues(rvec)
+        tc = np.array([50. * i, -20. * i, 2500.])
+        cams.append((Rc, tc))
+    obs = []
+    for ci, (Rc, tc) in enumerate(cams):
+        for bj, (Rb, tb) in enumerate(boards):
+            for p in corners:
+                px = _project(K, Rc, tc, Rb, tb, p)
+                obs.append(Observation(camera_idx=ci, cabinet_idx=bj,
+                                        p_local=p.copy(), pixel=px.copy()))
+    init_cams = [(Rc, tc) for Rc, tc in cams]
+    init_boards = {1: (np.eye(3), np.array([700., 0, 0]))}
+    n_cams, n_cabs, root = 5, 2, 0
+    nonroot = _nonroot_cabinets(n_cabs, root)
+
+    result = model_constrained_ba(
+        K=K, observations=obs, n_cameras=n_cams, n_cabinets=n_cabs,
+        root_cabinet_idx=root, init_cameras=init_cams, init_cabinets=init_boards,
+        loss="linear", compute_covariance=False,
+    )
+    x_analytic = _pack(result.camera_poses, result.cabinet_poses, nonroot)
+
+    cabs0 = dict(init_boards)
+    for j in nonroot:
+        cabs0.setdefault(j, (np.eye(3), np.zeros(3)))
+    x0 = _pack(init_cams, cabs0, nonroot)
+    obs_arrays = _precompute_obs_arrays(obs)
+    sp = _sparsity_fd(n_cams, nonroot, root, obs)
+    sol_fd = least_squares(
+        _residuals, x0, jac_sparsity=sp, method="trf",
+        loss="linear", f_scale=2.0, max_nfev=200, x_scale="jac", verbose=0,
+        args=(n_cams, nonroot, root, K, obs_arrays),
+    )
+
+    param_diff = np.max(np.abs(x_analytic - sol_fd.x))
+    cost_analytic = 0.5 * float(np.sum(_residuals(x_analytic, n_cams, nonroot, root, K, obs_arrays) ** 2))
+    assert param_diff < 1e-6, f"param diff {param_diff:.3e} exceeds 1e-6"
+    # This is a zero-noise exact-fit problem, so both costs are near
+    # machine-precision zero — a *relative* cost ratio here is dominated by
+    # floating-point noise rather than any real discrepancy. Parity means
+    # both solves reached an (effectively) perfect fit, i.e. cost <1% of a
+    # single-pixel-squared unit of residual.
+    assert cost_analytic < 1e-2 and sol_fd.cost < 1e-2, (
+        f"expected near-zero cost for both solves on exact-fit problem: "
+        f"analytic={cost_analytic:.3e} fd={sol_fd.cost:.3e}")
+
+
+def test_analytic_jacobian_matches_fd_solve_with_noise():
+    """W7 hard constraint (cost <1%) exercised on a non-degenerate problem:
+    with real (nonzero) pixel noise the cost is bounded away from the
+    floating-point noise floor, so the relative comparison is meaningful."""
+    rng = np.random.default_rng(3)
+    K = np.array([[2000., 0, 960], [0, 2000, 540], [0, 0, 1]])
+    R0, t0 = np.eye(3), np.zeros(3)
+    R1, _ = cv2.Rodrigues(np.array([0., np.deg2rad(15), 0.]))
+    t1 = np.array([700., 0., 0.])
+    corners = np.array([[-300, -170, 0], [300, -170, 0], [300, 170, 0], [-300, 170, 0]], float)
+    boards = [(R0, t0), (R1, t1)]
+    cams = []
+    for i in range(5):
+        rvec = np.array([0.05 * i, 0.1 * i, 0.0])
+        Rc, _ = cv2.Rodrigues(rvec)
+        tc = np.array([50. * i, -20. * i, 2500.])
+        cams.append((Rc, tc))
+    obs = []
+    for ci, (Rc, tc) in enumerate(cams):
+        for bj, (Rb, tb) in enumerate(boards):
+            for p in corners:
+                px = _project(K, Rc, tc, Rb, tb, p) + rng.normal(0, 0.05, 2)
+                obs.append(Observation(camera_idx=ci, cabinet_idx=bj,
+                                        p_local=p.copy(), pixel=px.copy()))
+    init_cams = [(Rc, tc) for Rc, tc in cams]
+    init_boards = {1: (np.eye(3), np.array([700., 0, 0]))}
+    n_cams, n_cabs, root = 5, 2, 0
+    nonroot = _nonroot_cabinets(n_cabs, root)
+
+    result = model_constrained_ba(
+        K=K, observations=obs, n_cameras=n_cams, n_cabinets=n_cabs,
+        root_cabinet_idx=root, init_cameras=init_cams, init_cabinets=init_boards,
+        loss="linear", compute_covariance=False,
+    )
+    x_analytic = _pack(result.camera_poses, result.cabinet_poses, nonroot)
+
+    cabs0 = dict(init_boards)
+    for j in nonroot:
+        cabs0.setdefault(j, (np.eye(3), np.zeros(3)))
+    x0 = _pack(init_cams, cabs0, nonroot)
+    obs_arrays = _precompute_obs_arrays(obs)
+    sp = _sparsity_fd(n_cams, nonroot, root, obs)
+    sol_fd = least_squares(
+        _residuals, x0, jac_sparsity=sp, method="trf",
+        loss="linear", f_scale=2.0, max_nfev=200, x_scale="jac", verbose=0,
+        args=(n_cams, nonroot, root, K, obs_arrays),
+    )
+
+    cost_analytic = 0.5 * float(np.sum(_residuals(x_analytic, n_cams, nonroot, root, K, obs_arrays) ** 2))
+    cost_diff_rel = abs(cost_analytic - sol_fd.cost) / sol_fd.cost
+    assert cost_diff_rel < 0.01, f"cost diff {cost_diff_rel:.1%} exceeds 1%"
