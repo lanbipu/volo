@@ -375,13 +375,17 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
                 t.state === 'running' ? h('span', { className: 'tk-pct' }, t.pct + '%') : h('span', { className: 'tk-el' }, t.elapsed)))))))));
   }
 
-  /* =================== center router =================== */
+  /* =================== center router ===================
+     keep-alive：首次进入任一 DDC 子页后，集群总览与 DDC 路由各自常驻挂载、用 display
+     切换可见性，避免 home ↔ ZenServer 来回切时整页卸载重挂 + 重跑挂载期 SSH fan-out。 */
+  const cacheViewShell = { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' };
   function center(s) {
-    switch (s.cacheNav) {
-      case 'ddc_zen': case 'ddc_legacy': case 'ddc_pak': case 'ddc_pso':
-        return window.VOLO_CACHE_DDC.ddc(s);
-      default:         return h(Overview, { s });
-    }
+    const onDdc = /^ddc_/.test(s.cacheNav);
+    return h('div', { className: 'cache-views', style: cacheViewShell },
+      h('div', { style: Object.assign({}, cacheViewShell, { display: onDdc ? 'none' : 'flex' }) }, h(Overview, { s })),
+      s.cacheDdcEverOpened
+        ? h('div', { style: Object.assign({}, cacheViewShell, { display: onDdc ? 'flex' : 'none' }) }, window.VOLO_CACHE_DDC.ddc(s))
+        : null);
   }
 
   /* =================== task drawer (right column) =================== */

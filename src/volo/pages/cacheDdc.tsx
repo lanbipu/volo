@@ -1330,13 +1330,23 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
               h('div', { className: 'cli-list' }, IP_SORTED_NODES.map(localRow)))))));
   }
 
-  /* =================== center router =================== */
+  /* =================== center router ===================
+     keep-alive：各 DDC 子视图在首次访问后常驻挂载，display 切换——ZenServer ↔ 文件系统 DDC
+     不再每次卸载重挂、重跑挂载期状态读取。 */
+  const ddcViewShell = { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' };
+  const DDC_VIEWS = [
+    ['ddc_zen', () => window.VOLO_CACHE_ZEN.view(s)],
+    ['ddc_legacy', () => h(LegacyView, { s })],
+    ['ddc_pak', () => h(PakMaster, { s })],
+    ['ddc_pso', () => h(PsoMaster, { s })],
+  ];
   function ddc(s) {
     const view = /^ddc_/.test(s.cacheNav) ? s.cacheNav : 'ddc_zen';
-    if (view === 'ddc_zen') return window.VOLO_CACHE_ZEN.view(s);
-    if (view === 'ddc_legacy') return h(LegacyView, { s });
-    if (view === 'ddc_pak') return h(PakMaster, { s });
-    return h(PsoMaster, { s });
+    const seen = s.ddcViewsSeen || {};
+    return h('div', { className: 'ddc-views', style: ddcViewShell },
+      DDC_VIEWS.map(([id, render]) => (seen[id]
+        ? h('div', { key: id, className: 'ddc-view', style: Object.assign({}, ddcViewShell, { display: view === id ? 'flex' : 'none' }) }, render())
+        : null)));
   }
 
   /* =================== inspector router (right column) =================== */

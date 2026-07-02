@@ -446,8 +446,16 @@ function App() {
   const [cacheError, setCacheError] = useState(null);
   const CACHE_NAVS = ['home', 'ddc_zen', 'ddc_legacy', 'ddc_pak', 'ddc_pso',
     'diag_net', 'diag_sync', 'diag_thm', 'diag_term'];
-  const [cacheNav, setCacheNav] = useState(CACHE_NAVS.includes(persisted.cacheNav) ? persisted.cacheNav : 'home');
+  const initCacheNav = CACHE_NAVS.includes(persisted.cacheNav) ? persisted.cacheNav : 'home';
+  const [cacheNav, setCacheNav] = useState(initCacheNav);
   const [ddcOpen, setDdcOpen] = useState(persisted.ddcOpen != null ? persisted.ddcOpen : /^ddc_/.test(persisted.cacheNav || ''));
+  /* Cache keep-alive：在 goCacheNav（非 render）里置位，center/ddc 只读这些 flag 决定 display 切换 vs 卸载。 */
+  const [cacheDdcEverOpened, setCacheDdcEverOpened] = useState(/^ddc_/.test(initCacheNav));
+  const [ddcViewsSeen, setDdcViewsSeen] = useState(() => {
+    const seen = { ddc_zen: false, ddc_legacy: false, ddc_pak: false, ddc_pso: false };
+    if (/^ddc_/.test(initCacheNav)) seen[initCacheNav] = true;
+    return seen;
+  });
   const [drawer, setDrawer] = useState(null);
   /* 居中二级对话框（部署 / 修复 / 巡检走此，见 cache.tsx 的 ModalPreview / ModalLayer）。 */
   const [modal, setModal] = useState(null);
@@ -789,6 +797,10 @@ function App() {
     if (v !== 'ddc_pso') setPsoSel(null);
     inspectorHasTargetRef.current = v === 'ddc_pak' ? pakSel.length > 0 : v === 'ddc_pso' ? !!psoSel : false;
     setRightCollapsed(!/^ddc_p(ak|so)$/.test(v));
+    if (/^ddc_/.test(v)) {
+      setCacheDdcEverOpened(true);
+      setDdcViewsSeen((prev) => (prev[v] ? prev : Object.assign({}, prev, { [v]: true })));
+    }
     setCacheNav(v);
   };
 
@@ -806,7 +818,8 @@ function App() {
 
   const s = { theme, toggleTheme, platform, setPlatform, toolsNav, setToolsNav, page, setPage: goPage, logOpen, setLogOpen, logFilter, setLogFilter,
     logs, pushLog, pushLogs, logH, setLogH,
-    selNode, setSelNode, cacheNav, setCacheNav: goCacheNav, ddcOpen, setDdcOpen, drawer, setDrawer,
+    selNode, setSelNode, cacheNav, setCacheNav: goCacheNav, ddcOpen, setDdcOpen,
+    cacheDdcEverOpened, ddcViewsSeen, drawer, setDrawer,
     modal, setModal,
     pakSel, setPakSel, psoSel, setPsoSel, pakVerify, setPakVerify, psoRuns, setPsoRuns,
     freshSetup, setFreshSetup, machinesAdded, setMachinesAdded,

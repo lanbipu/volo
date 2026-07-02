@@ -120,6 +120,9 @@ import {
   const UNIT_LABEL = { minutes: '分钟', hours: '小时', days: '天' };
   const fmtGc = (f) => f.value + ' ' + UNIT_LABEL[f.unit];
 
+  /* 跨子页导航快照（per-mount ref）：切走再切回时先用上次数据即时绘帧，后台静默刷新。
+     主要避免 pointed 回读（逐台 SSH 读 INI）在每次重挂时阻塞首帧。keep-alive 下通常不 remount；
+     ref 按实例隔离，避免多挂载时模块级变量串台。 */
   /* 三通道徽标：颜色 + 图标 + 文字 */
   function ZBadge({ vis, icon, label, soft }) {
     return h('span', { className: 'zbadge zb-' + vis + (soft ? ' soft' : '') },
@@ -1031,20 +1034,27 @@ import {
   }
 
   function ZenServer({ s }) {
+    const snapRef = useRef({ status: null, gcApplied: null, gcSeededFor: null, pointed: null });
     /* —— 真实状态（zen_list_endpoints + zen_status + zen_cache_stats）—— */
-    const [status, setStatus] = useState(null);   /* {endpointId,machineId,host,ip,port,scheme,version,dataDir,svc,records,gc*,serviceAccount*} | null */
-    const [statusLoading, setStatusLoading] = useState(true);
-    const loadStatus = () => {
-      setStatusLoading(true);
+    const [status, setStatus] = useState(() => snapRef.current.status);   /* {endpointId,machineId,host,ip,port,scheme,version,dataDir,svc,records,gc*,serviceAccount*} | null */
+    const [statusLoading, setStatusLoading] = useState(() => !snapRef.current.status);
+    const loadStatus = (opts) => {
+      const silent = !!(opts && opts.silent);
+      if (!silent) setStatusLoading(true);
       Promise.allSettled([zenListEndpoints(null), zenStatus(null)]).then(([epR, stR]) => {
         const eps = epR.status === 'fulfilled' && Array.isArray(epR.value) ? epR.value : [];
         const rows = stR.status === 'fulfilled' && Array.isArray(stR.value) ? stR.value : [];
         const ep = eps.find((e) => e.role === 'shared_upstream') || eps[0] || null;
-        if (!ep) { setStatus(null); setStatusLoading(false); return; }
+        if (!ep) {
+          setStatus(null);
+          snapRef.current.status = null;
+          setStatusLoading(false);
+          return;
+        }
         const row = rows.find((r) => r.endpoint_id === ep.id) || null;
         /* reachable 三态：true→运行中 / false→不可达 / null（从未探活）→状态未知（不冒充已停止）*/
         const svc = row ? (row.reachable === true ? 'running' : row.reachable === false ? 'unreachable' : 'unknown') : 'unknown';
-        setStatus({
+        const nextStatus = {
           endpointId: ep.id, machineId: ep.machine_id,
           host: row ? row.hostname : '', ip: row ? row.ip : '',
           port: ep.declared_port, scheme: ep.scheme, dataDir: ep.data_dir,
@@ -1052,7 +1062,9 @@ import {
           gcIntervalSeconds: ep.gc_interval_seconds, gcLightweightIntervalSeconds: ep.gc_lightweight_interval_seconds,
           cacheMaxDurationSeconds: ep.cache_max_duration_seconds,
           serviceAccountUsername: ep.service_account_username, serviceAccountCredAlias: ep.service_account_cred_alias,
-        });
+        };
+        setStatus(nextStatus);
+        snapRef.current.status = nextStatus;
         setStatusLoading(false);
         zenCacheStats(ep.id, null).then((cs) => {
           const sample = cs && Array.isArray(cs.samples) && cs.samples[0] ? cs.samples[0] : null;
@@ -1069,81 +1081,98 @@ import {
         }, () => {});
       });
     };
-    useEffect(() => { loadStatus(); }, []);
+    useEffect(() => { loadStatus({ silent: !!snapRef.current.status }); }, []);
+    useEffect(() => { snapRef.current.status = status; }, [status]);
 
     /* —— GC 已应用值：仅保留供 Dashboard 卡二展示；草稿/应用中/破坏性确认全在 GcModal 内部。
        首次拿到真实 endpoint 数据时按其 gc_* 字段种一次（缺省=尚未配置过，视作官方默认）。 —— */
-    const [gcApplied, setGcApplied] = useState(() => cloneGc(GC_DEFAULTS));
-    const gcSeededForRef = useRef(null);
+    const [gcApplied, setGcApplied] = useState(() => snapRef.current.gcApplied || cloneGc(GC_DEFAULTS));
+    const gcSeededForRef = useRef(snapRef.current.gcSeededFor);
+    const setGcAppliedTracked = (updater) => setGcApplied((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      snapRef.current.gcApplied = next;
+      return next;
+    });
     useEffect(() => {
       if (!status || gcSeededForRef.current === status.endpointId) return;
       gcSeededForRef.current = status.endpointId;
-      setGcApplied({
+      snapRef.current.gcSeededFor = status.endpointId;
+      const nextGc = {
         interval: status.gcIntervalSeconds != null ? bestVU(status.gcIntervalSeconds, GC_FIELDS[0].units) : Object.assign({}, GC_DEFAULTS.interval),
         lw: status.gcLightweightIntervalSeconds != null ? bestVU(status.gcLightweightIntervalSeconds, GC_FIELDS[1].units) : Object.assign({}, GC_DEFAULTS.lw),
         maxDur: status.cacheMaxDurationSeconds != null ? bestVU(status.cacheMaxDurationSeconds, GC_FIELDS[2].units) : Object.assign({}, GC_DEFAULTS.maxDur),
-      });
+      };
+      setGcAppliedTracked(nextGc);
     }, [status]);
 
     /* pointed 必须在任何条件 return 之前声明（Rules of Hooks）。否则首屏 RENDER_NODES 还空、
        走下面 if(!RN.length) 早返回时这些 hook 不执行；机器异步到达后 re-render 又执行，
        hook 数变化会让 React 抛「Rendered more hooks than during the previous render」并
        卸载整棵树（纯黑屏）。 */
-    const [pointed, setPointed] = useState(() => new Set());  /* 「已指向」机器（下方 effect 真实回读 + 应用成功的乐观更新）*/
+    const [pointed, setPointed] = useState(() => (snapRef.current.pointed ? new Set(snapRef.current.pointed) : new Set()));  /* 「已指向」机器（下方 effect 真实回读 + 应用成功的乐观更新）*/
     const [pointedLoading, setPointedLoading] = useState(false); /* 指向状态回读进行中 */
+    const setPointedTracked = (updater) => setPointed((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      snapRef.current.pointed = next;
+      return next;
+    });
 
     /* —— 指向状态真实回读 ——
-       pointed 只活在本组件挂载周期里：切去集群总览（比如跑巡检）再切回来会整组件重挂，
-       全部退回「未指向」，而机器上的 ini 其实原封没动。这里对在线客户端逐台真实回读
-       [StorageServers] Shared（用户全局读 UserEngine.ini，工程级读各工程 DefaultEngine.ini，
+       对在线客户端逐台真实回读 [StorageServers] Shared（用户全局读 UserEngine.ini，工程级读各工程 DefaultEngine.ini，
        与 ClientModal.applyTo 的两条写入路径一一对应），Host 主机名/IP + 端口命中当前端点即
        「已指向」。代次令牌 + 并集合并同 cacheDdc readStatus：作废过期回读、不覆盖回读期间
-       「应用成功」的乐观更新（本页没有「取消指向」操作，并集不会复活已解除项）。 */
+       「应用成功」的乐观更新（本页没有「取消指向」操作，并集不会复活已解除项）。
+       回读延后到首帧之后执行，避免与导航同帧抢跑大量 SSH invoke。 */
     const pointedGenRef = useRef(0);
     const statusSig = status ? [status.endpointId, status.machineId, status.host, status.ip, status.port].join('|') : '';
     const nodesSig = (window.RENDER_NODES || []).map((n) => n.id + ':' + n.status + ':' + n.user).join(',');
     const projSig = (window.UE_PROJECTS || []).map((p) => p.id).join(',');
     useEffect(() => {
-      const gen = ++pointedGenRef.current;
       if (!status) { setPointedLoading(false); return; }
       const nodes = (window.RENDER_NODES || []).filter((n) =>
         n.status !== 'offline' && n.machineId && n.machineId !== status.machineId);
       if (!nodes.length) { setPointedLoading(false); return; }
-      /* 与 ClientModal.applyTo 的 hostUri 同源比对：Host 主机部分接受端点 hostname 或 IP，端口必须一致 */
-      const serverNode = (window.RENDER_NODES || []).find((n) => n.machineId === status.machineId);
-      const hostCands = [status.host, status.ip, serverNode && serverNode.host, serverNode && serverNode.ip]
-        .filter(Boolean).map((x) => String(x).toLowerCase());
-      const hitsServer = (keys) => (Array.isArray(keys) ? keys : []).some((k) => {
-        if (!k || String(k.name || '').toLowerCase() !== 'shared') return false;
-        const m = /Host\s*=\s*"([^"]+)"/i.exec(String(k.value || ''));
-        if (!m) return false;
-        try {
-          const u = new URL(m[1]);
-          return String(u.port) === String(status.port) && hostCands.includes(u.hostname.toLowerCase());
-        } catch { return false; }
-      });
-      setPointedLoading(true);
-      Promise.allSettled(nodes.map((n) => {
-        const reads = [];
-        const user = runtimeUser(n);
-        if (user) reads.push(readIniSection(n.machineId, 'C:\\Users\\' + user + '\\AppData\\Local\\Unreal Engine\\Engine\\Config\\UserEngine.ini', 'StorageServers'));
-        clientProjects(n.id).forEach((p) => {
-          const loc = p.locByMachine && p.locByMachine[String(n.machineId)];
-          if (loc) reads.push(readIniSection(n.machineId, loc + '\\Config\\DefaultEngine.ini', 'StorageServers'));
+      const gen = ++pointedGenRef.current;
+      const hasCachedPointed = snapRef.current.pointed && snapRef.current.pointed.size > 0;
+      /* 延后到首帧之后：逐台 SSH 读 INI 是切换卡顿主因，不应与导航同帧抢跑。 */
+      const timer = setTimeout(() => {
+        if (gen !== pointedGenRef.current) return;
+        /* 与 ClientModal.applyTo 的 hostUri 同源比对：Host 主机部分接受端点 hostname 或 IP，端口必须一致 */
+        const serverNode = (window.RENDER_NODES || []).find((n) => n.machineId === status.machineId);
+        const hostCands = [status.host, status.ip, serverNode && serverNode.host, serverNode && serverNode.ip]
+          .filter(Boolean).map((x) => String(x).toLowerCase());
+        const hitsServer = (keys) => (Array.isArray(keys) ? keys : []).some((k) => {
+          if (!k || String(k.name || '').toLowerCase() !== 'shared') return false;
+          const m = /Host\s*=\s*"([^"]+)"/i.exec(String(k.value || ''));
+          if (!m) return false;
+          try {
+            const u = new URL(m[1]);
+            return String(u.port) === String(status.port) && hostCands.includes(u.hostname.toLowerCase());
+          } catch { return false; }
         });
-        if (!reads.length) return Promise.resolve({ id: n.id, hit: false });
-        /* 文件不存在 / 机器读不到 → rejected → 不算命中；任一份 ini 命中即已指向 */
-        return Promise.allSettled(reads).then((rs) => ({
-          id: n.id,
-          hit: rs.some((r) => r.status === 'fulfilled' && hitsServer(r.value)),
-        }));
-      })).then((rs) => {
-        if (gen !== pointedGenRef.current) return; /* 被更新的回读取代 / 已卸载 → 丢弃 */
-        const hits = rs.filter((r) => r.status === 'fulfilled' && r.value.hit).map((r) => r.value.id);
-        if (hits.length) setPointed((prev) => { const np = new Set(prev); hits.forEach((id) => np.add(id)); return np; });
-        setPointedLoading(false);
-      });
-      return () => { pointedGenRef.current++; };
+        if (!hasCachedPointed) setPointedLoading(true);
+        Promise.allSettled(nodes.map((n) => {
+          const reads = [];
+          const user = runtimeUser(n);
+          if (user) reads.push(readIniSection(n.machineId, 'C:\\Users\\' + user + '\\AppData\\Local\\Unreal Engine\\Engine\\Config\\UserEngine.ini', 'StorageServers'));
+          clientProjects(n.id).forEach((p) => {
+            const loc = p.locByMachine && p.locByMachine[String(n.machineId)];
+            if (loc) reads.push(readIniSection(n.machineId, loc + '\\Config\\DefaultEngine.ini', 'StorageServers'));
+          });
+          if (!reads.length) return Promise.resolve({ id: n.id, hit: false });
+          /* 文件不存在 / 机器读不到 → rejected → 不算命中；任一份 ini 命中即已指向 */
+          return Promise.allSettled(reads).then((rs) => ({
+            id: n.id,
+            hit: rs.some((r) => r.status === 'fulfilled' && hitsServer(r.value)),
+          }));
+        })).then((rs) => {
+          if (gen !== pointedGenRef.current) return; /* 被更新的回读取代 / 已卸载 → 丢弃 */
+          const hits = rs.filter((r) => r.status === 'fulfilled' && r.value.hit).map((r) => r.value.id);
+          if (hits.length) setPointedTracked((prev) => { const np = new Set(prev); hits.forEach((id) => np.add(id)); return np; });
+          setPointedLoading(false);
+        });
+      }, 0);
+      return () => { clearTimeout(timer); pointedGenRef.current++; };
     }, [statusSig, nodesSig, projSig]);
 
     const deployed = !!status;
@@ -1287,12 +1316,12 @@ import {
 
     const openGcModal = () => s.setModal({
       xwide: true,
-      render: ({ close }) => h(GcModal, { s, deployed, status, gcApplied, setGcApplied, close, onApplied: loadStatus }),
+      render: ({ close }) => h(GcModal, { s, deployed, status, gcApplied, setGcApplied: setGcAppliedTracked, close, onApplied: loadStatus }),
     });
 
     const openClientModal = () => s.setModal({
       xwide: true,
-      render: ({ close }) => h(ClientModal, { s, clients, status, deployed, canPoint, targetVis, pointed, setPointed, pointedLoading, close }),
+      render: ({ close }) => h(ClientModal, { s, clients, status, deployed, canPoint, targetVis, pointed, setPointed: setPointedTracked, pointedLoading, close }),
     });
 
     /* ============ 一级 Dashboard：三张概览卡，仅展示状态，具体配置点「更改/部署/管理」进二级弹层 ============ */
