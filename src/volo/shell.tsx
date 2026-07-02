@@ -89,7 +89,7 @@ function detectPlatform() {
 }
 
 /* ---------- Generic selector / popover ---------- */
-function Selector({ kpre, value, options, onChange, width = 188, variant = 'obj', align = 'right' }) {
+function Selector({ kpre, value, options, onChange, width = 188, variant = 'obj', align = 'right', popMin }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   const popRef = useRef(null);
@@ -99,26 +99,17 @@ function Selector({ kpre, value, options, onChange, width = 188, variant = 'obj'
     document.addEventListener('mousedown', h);
     return () => document.removeEventListener('mousedown', h);
   }, [open]);
-  useEffect(() => {
-    if (!open || !ref.current) return;
-    const vEl = ref.current.querySelector('.v');
-    const popEl = popRef.current;
-    const modalHost = ref.current.closest('.modal-host');
-    const vColor = vEl ? getComputedStyle(vEl).color : null;
-    const winEl = document.querySelector('.win');
-    const winColor = winEl ? getComputedStyle(winEl).color : null;
-    const popRect = popEl ? popEl.getBoundingClientRect() : null;
-    const hostRect = modalHost ? modalHost.getBoundingClientRect() : null;
-  // #region agent log
-    fetch('http://127.0.0.1:7278/ingest/ba6b3c44-cc27-40da-8bf6-deca990c38bf',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d65d8f'},body:JSON.stringify({sessionId:'d65d8f',location:'shell.tsx:Selector',message:'selector open styles',data:{kpre,align,vColor,winColor,popLeft:popRect?.left,popRight:popRect?.right,hostLeft:hostRect?.left,hostRight:hostRect?.right,clippedLeft:popRect&&hostRect?popRect.left<hostRect.left:null,clippedRight:popRect&&hostRect?popRect.right>hostRect.right:null},timestamp:Date.now(),hypothesisId:'A-C'})}).catch(()=>{});
-  // #endregion
-  }, [open, kpre, align]);
   /* fall back to a placeholder when the option list is empty (real backend data
      can yield empty pools — e.g. no credentials, or a project with no online
      source machines — where the mock always had entries). Prevents cur.label
      crashing the render. */
   const cur = options.find((o) => o.id === value) || options[0] || { id: value, label: '—' };
   const cls = variant === 'stage' ? 'stage-switch' : 'obj-sel';
+  const popStyle = Object.assign(
+    {},
+    align === 'left' ? { left: 0, right: 'auto' } : { right: 0, left: 'auto' },
+    popMin != null ? { minWidth: popMin } : null,
+  );
   return React.createElement('div', { ref, style: { position: 'relative' } },
     React.createElement('div', { className: cls, style: variant === 'obj' ? { minWidth: width } : null, onClick: () => setOpen((v) => !v) },
       variant === 'stage' && cur.pip ? React.createElement('span', { className: 'pip', style: { background: `var(--${cur.pip}-visual)`, boxShadow: 'none' } }) : null,
@@ -126,7 +117,7 @@ function Selector({ kpre, value, options, onChange, width = 188, variant = 'obj'
         React.createElement('span', { className: 'k' }, kpre),
         React.createElement('span', { className: 'v' }, cur.label)),
       React.createElement('span', { className: 'chev', style: { marginLeft: 'auto', display: 'flex' } }, React.createElement(Icon, { name: 'chevd', size: 15 }))),
-    open ? React.createElement('div', { ref: popRef, className: 'popover' },
+    open ? React.createElement('div', { ref: popRef, className: 'popover', style: popStyle },
       options.map((o) => React.createElement('div', {
         key: o.id, className: 'pop-i' + (o.id === cur.id ? ' on' : ''),
         onClick: () => { onChange && onChange(o.id); setOpen(false); },

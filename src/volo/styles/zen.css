@@ -333,6 +333,11 @@
    + 二级配置弹层（.modal-host.xwide）
    ============================================================ */
 .modal-host.xwide { width: 760px; }
+/* Zen 二级配置弹层：下拉菜单不被 modal-host 圆角裁切，且浮于内容之上 */
+.modal-host:has(> .drawer--zconfig) { overflow: visible; }
+.modal-host > .drawer--zconfig { border-radius: 16px; overflow: hidden; }
+.modal-host > .drawer--zconfig .popover { z-index: 200; }
+.modal-host > .drawer--zconfig .gc-field-row .popover { min-width: 0; width: max-content; }
 .drawer--zconfig .drawer-b { display: flex; flex-direction: column; gap: 14px; }
 .drawer--zconfig .deploy-panel, .drawer--zconfig .gc-panel, .drawer--zconfig .cli-panel { margin-top: 0; }
 

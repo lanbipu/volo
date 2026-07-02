@@ -136,6 +136,7 @@ html, body {
   display: flex; flex-direction: column;
   min-width: 0; min-height: 0;
   background: var(--chrome-canvas);
+  color: var(--chrome-text);
 }
 .win {
   width: 100%;
@@ -358,7 +359,7 @@ html, body {
 }
 .obj-sel:hover { background: var(--wash-2); }
 .obj-sel .k { font-size: 9.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--chrome-faint); white-space: nowrap; }
-.obj-sel .v { font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.obj-sel .v { font-size: 12.5px; font-weight: 600; color: var(--chrome-text); white-space: nowrap; }
 .obj-sel .col { min-width: 0; }
 .obj-sel .col { display: flex; flex-direction: column; line-height: 1.15; }
 .obj-sel .chev { margin-left: auto; color: var(--chrome-faint); }
