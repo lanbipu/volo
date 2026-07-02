@@ -130,6 +130,11 @@ import {
      的指向回读 effect 与 ClientModal 的配置范围逻辑都要用，提到模块级避免两份实现分叉。 */
   const clientProjects = (id) => (window.UE_PROJECTS || []).filter((p) => p.machines.includes(id));
   const runtimeUser = (n) => (n && n.user && n.user !== '—') ? n.user : null;
+  /* 本地 Zen 缓存目录：默认目录提示 + 路径归一比较。zdirs 状态已提升到 ZenServer
+     （一级 Dashboard「已指向机器」明细也要显示各机缓存目录），这两个纯 helper 随之提到模块级。 */
+  const ZEN_DEF_HINT = '%LOCALAPPDATA%\\UnrealEngine\\Common\\Zen\\Data';
+  const normWinPath = (p) => String(p || '').trim().replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+  const zenRecOf = (d, id) => d[id] || { cfg: null, eff: null, loading: true };
 
   /* 工程级指向的二级菜单：列出选中机器上已发现的 UE 工程，选择后再指向。
      每台机器只写入其本机存在的所选工程的 DefaultEngine.ini。UE 版本/体积/版本不一致
@@ -672,8 +677,10 @@ import {
     }, gcPanel);
   }
 
-  /* ============ 二级弹层③ 客户端指向管理 ============ */
-  function ClientModal({ s, clients, status, deployed, canPoint, targetVis, pointed, setPointed, pointedLoading, close }) {
+  /* ============ 二级弹层③ 客户端指向管理 ============
+     zdirs（各机本地 Zen 缓存目录回读）已提升到 ZenServer —— 一级 Dashboard「已指向机器」
+     明细也要显示缓存目录，弹层内的应用/清除/重读通过 props 落回同一份 state，两处同步。 */
+  function ClientModal({ s, clients, status, deployed, canPoint, targetVis, pointed, setPointed, pointedLoading, zdirs, setZdirs, zdirGenRef, readZdirFor, close }) {
     const hasAnyProjects = (window.UE_PROJECTS || []).length > 0;
     const [sel, setSel] = useState([]);
     const [res, setRes] = useState({});
@@ -682,13 +689,8 @@ import {
     useEffect(() => { setRes({}); }, [cfgScope]);
     const scopeReadyFor = (n) => cfgScope === 'project' ? clientProjects(n.id).length > 0 : !!runtimeUser(n);
 
-    /* —— 本地 Zen 缓存目录：状态派生 + 动作（仅弹层内使用，见 zdirStatusChip / rereadBtn / clientRow）—— */
-    const ZEN_DEF_HINT = '%LOCALAPPDATA%\\UnrealEngine\\Common\\Zen\\Data';
-    const normWinPath = (p) => String(p || '').trim().replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
-    const [zdirs, setZdirs] = useState({});
+    /* —— 本地 Zen 缓存目录：状态派生 + 动作（读回来的记录存 ZenServer 的 zdirs）—— */
     const [zres, setZres] = useState({});
-    const zdirGenRef = useRef(0);
-    const zenRecOf = (d, id) => d[id] || { cfg: null, eff: null, loading: true };
     const zenRec = (id) => zenRecOf(zdirs, id);
     const zenSt = (n) => {
       if (n.status === 'offline' || !runtimeUser(n)) return 'blocked';
@@ -707,34 +709,12 @@ import {
       blocked:  { vis: 'neutral',     icon: 'minus',  label: '不可读' },
       readfail: { vis: 'negative',    icon: 'alert',  label: '读取失败' },
     };
-    const readZdirFor = (n, gen) => Promise.allSettled([
-      getMachineEnvVar(n.machineId, 'UE-ZenDataPath'),
-      zenReadLocalRuncontext(n.machineId),
-    ]).then(([cfgR, rcR]) => {
-      if (gen !== zdirGenRef.current) return;
-      const rc = rcR.status === 'fulfilled' ? rcR.value : null;
-      const envFail = cfgR.status === 'rejected';
-      const rcFail = rcR.status === 'rejected';
-      const envCfg = !envFail && cfgR.value ? cfgR.value : null;
-      const regCfg = rc && rc.registry_data_path ? rc.registry_data_path : null;
-      const cfgFail = envFail && !regCfg;
-      const errOf = (x) => (x.reason && x.reason.message ? x.reason.message : String(x.reason));
-      setZdirs((d) => Object.assign({}, d, { [n.id]: {
-        cfg: regCfg || envCfg,
-        cfgSrc: regCfg ? 'registry' : envCfg ? 'env' : null,
-        eff: rc && rc.found ? rc.data_path : null,
-        found: !!(rc && rc.found),
-        regPath: rc ? rc.registry_data_path : null,
-        loading: false,
-        cfgFail,
-        readFail: cfgFail || rcFail,
-        readErr: rcFail ? errOf(rcR) : cfgFail ? errOf(cfgR) : null,
-      } }));
-    });
+    /* 打开弹层时刷新一轮回读（页面挂载时 ZenServer 已读过一轮，这里拿最新值）。
+       ++gen 作废旧 in-flight；不设 cleanup 作废 —— state 活在 ZenServer，弹层关闭后
+       迟到的回读结果落回 Dashboard 正是想要的。 */
     useEffect(() => {
       const gen = ++zdirGenRef.current;
       clients.filter((n) => n.status !== 'offline' && n.machineId && runtimeUser(n)).forEach((n) => { readZdirFor(n, gen); });
-      return () => { zdirGenRef.current++; };
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
@@ -949,33 +929,34 @@ import {
       if (pointedLoading) return h(ZBadge, { vis: 'neutral', icon: 'sync', label: '读取指向状态…', soft: true });
       return h(ZBadge, { vis: 'notice', icon: 'minus', label: '未指向', soft: true });
     };
-    /* 只读次级徽标：本地 Zen 缓存目录状态（指向是主状态，此为次级信息）· 不可点开，
-       目录配置全部收进三级「设置缓存目录」弹层（见 openZenDirModal / ZenDirModal）。失败时的
-       具体原因（zres[n.id].msg）与重试入口不在这个只读徽标里展开——如需重试请在下方
-       「重新读取」或重新打开「设置缓存目录」用同一路径重新应用；控制台 NDJSON 日志流里有
-       每一步的完整错误信息。 */
+    /* 只读次级状态：本地 Zen 缓存目录（指向是主状态，此为次级信息）· 降为「小圆点 + 文字」
+       的安静展示（去掉填充胶囊，避免与主徽标抢视觉）· 不可点开，目录配置全部收进三级
+       「设置缓存目录」弹层（见 openZenDirModal / ZenDirModal）。失败时的具体原因
+       （zres[n.id].msg）与重试入口不在这里展开——如需重试请在旁边「重新读取」或重新打开
+       「设置缓存目录」用同一路径重新应用；控制台 NDJSON 日志流里有每一步的完整错误信息。 */
     const zdirStatusChip = (n) => {
       const st = zenSt(n);
       const r = zres[n.id];
-      let vis, icon, label, spinning = false;
-      if (r && r.st === 'running') { vis = 'informative'; icon = 'sync'; label = 'Zen 目录 · 应用中'; spinning = true; }
-      else if (r && r.st === 'fail') { vis = 'negative'; icon = 'alert'; label = 'Zen 目录 · 写入失败'; }
-      else if (r && r.st === 'ok' && st === 'mismatch') { vis = 'notice'; icon = 'alert'; label = 'Zen 目录 · 待重启生效'; }
-      else { const m = ZDIR_META[st]; vis = m.vis; icon = m.icon; label = 'Zen 目录 · ' + m.label; spinning = st === 'loading'; }
+      let vis, label, spinning = false;
+      if (r && r.st === 'running') { vis = 'informative'; label = 'Zen 目录 · 应用中'; spinning = true; }
+      else if (r && r.st === 'fail') { vis = 'negative'; label = 'Zen 目录 · 写入失败'; }
+      else if (r && r.st === 'ok' && st === 'mismatch') { vis = 'notice'; label = 'Zen 目录 · 待重启生效'; }
+      else { const m = ZDIR_META[st]; vis = m.vis; label = 'Zen 目录 · ' + m.label; spinning = st === 'loading'; }
       const title = (r && r.st === 'fail' && r.msg)
         ? ('写入失败 · ' + r.msg)
         : '客户端本地 Zen 缓存目录（注册表 Zen\\DataPath）· 目录配置在「设置缓存目录」中集中管理';
-      return h('span', { className: 'zdir-chip ro zd-' + vis + (st === 'blocked' ? ' soft' : ''), title },
-        spinning ? h('span', { className: 'spin', style: { display: 'inline-flex' } }, h(Icon, { name: 'sync', size: 11 })) : h(Icon, { name: icon, size: 11 }),
+      return h('span', { className: 'zdir-stat zd-' + vis + (st === 'blocked' ? ' soft' : ''), title },
+        spinning ? h('span', { className: 'spin', style: { display: 'inline-flex' } }, h(Icon, { name: 'sync', size: 11 })) : h('span', { className: 'zdir-stat-dot' }),
         label);
     };
+    /* 重新读取：图标幽灵按钮，紧贴目录状态，弱化存在感 */
     const rereadBtn = (n) => {
       const st = zenSt(n);
       const blocked = st === 'blocked';
-      return h('button', { className: 'mini-btn', disabled: blocked || st === 'loading',
+      return h('button', { className: 'zdir-reread', disabled: blocked || st === 'loading',
         title: blocked ? '离线 / 未设运行用户，无法回读生效值' : '重新读取该机 Zen 缓存目录生效值',
-        onClick: () => rereadZenDir(n.id) },
-        h(Icon, { name: 'sync', size: 12 }), '重新读取');
+        'aria-label': '重新读取', onClick: () => rereadZenDir(n.id) },
+        h(Icon, { name: 'sync', size: 13 }));
     };
     const clientRow = (n) => {
       const off = n.status === 'offline';
@@ -990,7 +971,10 @@ import {
           h('div', { className: 'cli-meta' },
             h('div', { className: 'cli-host mono' }, n.host),
             h('div', { className: 'cli-sub' }, n.ip + ' · ' + n.role)),
-          h('div', { className: 'zcli-end' }, zdirStatusChip(n), off ? null : rereadBtn(n), clientBadge(n))));
+          /* 主状态徽标居上，Zen 目录状态 + 重新读取降为下方次级行 —— 建立视觉层级 */
+          h('div', { className: 'zcli-end' },
+            clientBadge(n),
+            h('div', { className: 'zcli-dir' }, zdirStatusChip(n), off ? null : rereadBtn(n)))));
     };
 
     const srvHost = status ? status.host : null;
@@ -1001,23 +985,25 @@ import {
       sub: clients.filter((n) => pointed.has(n.id)).length + ' / ' + clients.length + ' 已指向 · 逐台改缓存配置指向此服务器',
     },
       h('div', { className: 'cli-panel' },
+        /* 顶部工具栏两层：目标上下文 chip 单独在上；操作行在下（「选中全部未指向」降为
+           纯文字链接、「设置缓存目录」为低调描边次级按钮、仅「指向此服务器」保留主强调色）。 */
         h('div', { className: 'zcli-bar' },
           h('div', { className: 'cli-server-chip vis-' + targetVis },
             h('span', { className: 'csc-ico' }, h(Icon, { name: 'cube', size: 15 })),
             h('div', { style: { minWidth: 0 } },
               h('div', { className: 'csc-t' }, deployed ? ('指向目标 · ' + srvHost) : '指向目标 · 尚未部署'),
               h('div', { className: 'csc-s mono' }, deployed ? (status.ip + ' : ' + status.port) : '—'))),
-          h('button', { className: 'zlink-all', onClick: toggleSelectUnpointed, disabled: selectableUnpointed.length === 0 },
-            allUnpointedSelected ? '取消选择' : '选中全部未指向（' + selectableUnpointed.length + '）'),
-          h('div', { className: 'zcli-go' },
-            h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'folder', size: 14 }), isDisabled: onlineClientCount === 0,
-              onPress: openZenDirModal },
-              '设置缓存目录'),
-            h(Button, {
-              variant: 'accent', size: 'M', icon: h(Icon, { name: 'link', size: 14 }), isDisabled: onlineSel.length === 0 || !canPoint,
-              onPress: () => { if (cfgScope === 'project') openProjectPicker(onlineSel); else runApply(onlineSel); },
-            },
-              onlineSel.length ? '指向此服务器（' + onlineSel.length + '）' : '指向此服务器'))),
+          h('div', { className: 'zcli-actions' },
+            h('button', { className: 'zlink-all', onClick: toggleSelectUnpointed, disabled: selectableUnpointed.length === 0 },
+              allUnpointedSelected ? '取消选择' : '选中全部未指向（' + selectableUnpointed.length + '）'),
+            h('div', { className: 'zcli-go' },
+              h('button', { className: 'zcli-side-btn', disabled: onlineClientCount === 0, onClick: openZenDirModal },
+                h(Icon, { name: 'folder', size: 14 }), '设置缓存目录'),
+              h(Button, {
+                variant: 'accent', size: 'M', icon: h(Icon, { name: 'link', size: 14 }), isDisabled: onlineSel.length === 0 || !canPoint,
+                onPress: () => { if (cfgScope === 'project') openProjectPicker(onlineSel); else runApply(onlineSel); },
+              },
+                onlineSel.length ? '指向此服务器（' + onlineSel.length + '）' : '指向此服务器')))),
         deployed ? scopeBlock : null,
         !deployed
           ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }), '尚未部署服务器，先部署一台，再把客户端指向它。')
@@ -1049,7 +1035,7 @@ import {
           endpointId: ep.id, machineId: ep.machine_id,
           host: row ? row.hostname : '', ip: row ? row.ip : '',
           port: ep.declared_port, scheme: ep.scheme, dataDir: ep.data_dir,
-          version: row && row.build_version ? row.build_version : '—', svc, providers: null, cacheDiskBytes: null, diskTotalBytes: null,
+          version: row && row.build_version ? row.build_version : '—', svc, providers: null, cacheDiskBytes: null, diskTotalBytes: null, diskFreeBytes: null,
           gcIntervalSeconds: ep.gc_interval_seconds, gcLightweightIntervalSeconds: ep.gc_lightweight_interval_seconds,
           cacheMaxDurationSeconds: ep.cache_max_duration_seconds,
           serviceAccountUsername: ep.service_account_username, serviceAccountCredAlias: ep.service_account_cred_alias,
@@ -1061,12 +1047,13 @@ import {
           const diskBytes = sample && typeof sample.cache_disk_size_bytes === 'number' ? sample.cache_disk_size_bytes : null;
           setStatus((s2) => (s2 ? Object.assign({}, s2, { providers: provs, cacheDiskBytes: diskBytes }) : s2));
         }, () => {});
-        /* 数据盘总容量走单独一条 SSH 通道（zen 自己的 /stats 里没有这个字段，见 zenDiskSpace 注释），
-           跟上面的 HTTP 缓存用量并行取，谁先回来谁先展示，互不阻塞。 */
+        /* 数据盘总容量 + 可用容量走单独一条 SSH 通道（zen 自己的 /stats 里没有这些字段，
+           见 zenDiskSpace 注释），跟上面的 HTTP 缓存用量并行取，谁先回来谁先展示，互不阻塞。 */
         zenDiskSpace(ep.id).then((rows) => {
           const rec = Array.isArray(rows) && rows[0] ? rows[0] : null;
           const totalBytes = rec && typeof rec.total_bytes === 'number' ? rec.total_bytes : null;
-          setStatus((s2) => (s2 ? Object.assign({}, s2, { diskTotalBytes: totalBytes }) : s2));
+          const freeBytes = rec && typeof rec.free_bytes === 'number' ? rec.free_bytes : null;
+          setStatus((s2) => (s2 ? Object.assign({}, s2, { diskTotalBytes: totalBytes, diskFreeBytes: freeBytes }) : s2));
         }, () => {});
       });
     };
@@ -1146,6 +1133,45 @@ import {
       });
       return () => { pointedGenRef.current++; };
     }, [statusSig, nodesSig, projSig]);
+
+    /* —— 各机本地 Zen 缓存目录回读（zdirs）——
+       原先只活在 ClientModal 里；「已指向机器」明细现在要逐台显示缓存目录，提升到本组件。
+       ClientModal 通过 props 共用这份 state：弹层内应用/清除/重读都落回这里，Dashboard 同步。
+       同样必须在下方 if(!RN.length) 早返回之前声明（Rules of Hooks，见 pointed 的注释）。 */
+    const [zdirs, setZdirs] = useState({});
+    const zdirGenRef = useRef(0);
+    const readZdirFor = (n, gen) => Promise.allSettled([
+      getMachineEnvVar(n.machineId, 'UE-ZenDataPath'),
+      zenReadLocalRuncontext(n.machineId),
+    ]).then(([cfgR, rcR]) => {
+      if (gen !== zdirGenRef.current) return;
+      const rc = rcR.status === 'fulfilled' ? rcR.value : null;
+      const envFail = cfgR.status === 'rejected';
+      const rcFail = rcR.status === 'rejected';
+      const envCfg = !envFail && cfgR.value ? cfgR.value : null;
+      const regCfg = rc && rc.registry_data_path ? rc.registry_data_path : null;
+      const cfgFail = envFail && !regCfg;
+      const errOf = (x) => (x.reason && x.reason.message ? x.reason.message : String(x.reason));
+      setZdirs((d) => Object.assign({}, d, { [n.id]: {
+        cfg: regCfg || envCfg,
+        cfgSrc: regCfg ? 'registry' : envCfg ? 'env' : null,
+        eff: rc && rc.found ? rc.data_path : null,
+        found: !!(rc && rc.found),
+        regPath: rc ? rc.registry_data_path : null,
+        loading: false,
+        cfgFail,
+        readFail: cfgFail || rcFail,
+        readErr: rcFail ? errOf(rcR) : cfgFail ? errOf(cfgR) : null,
+      } }));
+    });
+    useEffect(() => {
+      const gen = ++zdirGenRef.current;
+      (window.RENDER_NODES || [])
+        .filter((n) => n.status !== 'offline' && n.machineId && runtimeUser(n) && !(status && n.machineId === status.machineId))
+        .forEach((n) => { readZdirFor(n, gen); });
+      return () => { zdirGenRef.current++; };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [statusSig, nodesSig]);
 
     const deployed = !!status;
     /* 仅当服务真正 running 才允许把客户端指向它——指向一台已停止/不可达/状态未知的服务器
@@ -1233,14 +1259,18 @@ import {
        URL ACL 取部署时实际下发的 urlacl 前缀（zen_urlacl_add 写入的 netsh 规则），非猜测值。 */
     const urlAclPrefix = deployed ? (status.scheme + '://*:' + status.port + '/') : null;
     const [cacheSizeVal, cacheSizeUnit] = heroBytes(status && status.cacheDiskBytes);
-    /* 数据盘占用条：分子=zen 缓存自身占用（cacheDiskBytes），分母=数据盘所在卷总容量
-       （diskTotalBytes，SSH 读，见 zenDiskSpace）；任一缺失都不编造百分比，条子留白。
-       floor 3% 是抄设计稿的做法——用量再小也留一道可见的色块，不会看着像空条。 */
+    /* 缓存盘容量条（分段）：缓存已用（cacheDiskBytes，zen /stats 上报）＋盘内其它
+       （＝总量−缓存−可用，非缓存数据）＋可用容量（free_bytes）；总量/可用都来自
+       zenDiskSpace 的 SSH 读盘。三个数齐了才画分段与算「其它」，缺任何一个都不编造，
+       条子留白、图例如实显示「—」。floor 1% 是抄设计稿的做法——用量再小也留一道
+       可见的色块，不会看着像空条。 */
     const cacheBytesRaw = status && status.cacheDiskBytes;
     const diskTotalBytes = status && status.diskTotalBytes;
-    const diskUsePct = (diskTotalBytes != null && diskTotalBytes > 0 && cacheBytesRaw != null)
-      ? Math.max(3, Math.min(100, Math.round(cacheBytesRaw / diskTotalBytes * 100)))
-      : null;
+    const diskFreeBytes = status && status.diskFreeBytes;
+    const diskDataReady = diskTotalBytes != null && diskTotalBytes > 0 && cacheBytesRaw != null && diskFreeBytes != null;
+    const diskOtherBytes = diskDataReady ? Math.max(0, diskTotalBytes - cacheBytesRaw - diskFreeBytes) : null;
+    const diskCachePct = diskDataReady ? Math.max(1, Math.min(100, Math.round(cacheBytesRaw / diskTotalBytes * 100))) : null;
+    const diskOtherPct = diskDataReady ? Math.max(0, Math.min(100 - diskCachePct, Math.round(diskOtherBytes / diskTotalBytes * 100))) : null;
     const statusCard = statusLoading
       ? h('div', { className: 'zen-empty' },
           h('span', { className: 'ze-ico' }, h('span', { className: 'zstep-spin' })),
@@ -1259,17 +1289,23 @@ import {
                   : h('button', { className: 'mini-btn', onClick: startServer }, h(Icon, { name: 'play', size: 12 }), '启动'),
                 h('button', { className: 'mini-btn danger', onClick: uninstallServer }, h(Icon, { name: 'trash', size: 12 }), '卸载'))),
             h('div', { className: 'zsv-heros' },
-              hero(pointedCount, '台', '客户端数量', 'accent'),
-              hero(cacheSizeVal, cacheSizeUnit, '缓存容量', null,
+              hero(pointedCount, '台', '已连客户端', 'accent'),
+              hero(cacheSizeVal, cacheSizeUnit, '缓存已用', null,
                 cacheSizeVal === '—' ? 'z$ 缓存 provider 未上报磁盘用量，或本次探测失败' : null)),
-            h('div', { className: 'zsv-bar', title: diskUsePct == null ? '数据盘总容量读取中或读取失败（SSH · get-disk-space）' : null },
+            h('div', { className: 'zsv-bar', title: diskDataReady ? null : '数据盘容量读取中或读取失败（SSH · get-disk-space）' },
               h('div', { className: 'zsv-bar-top' },
-                h('span', { className: 'zsv-bar-k' }, '数据盘占用'),
-                h('span', { className: 'zsv-bar-v mono' },
-                  diskUsePct == null ? '—' : fmtBytesStr(cacheBytesRaw) + ' / ' + fmtBytesStr(diskTotalBytes))),
+                h('span', { className: 'zsv-bar-k' }, '缓存盘容量'),
+                h('span', { className: 'zsv-bar-v mono' }, diskTotalBytes == null ? '—' : fmtBytesStr(diskTotalBytes))),
               h('div', { className: 'zsv-bar-track' },
-                h('div', { className: 'zsv-bar-fill', style: { width: (diskUsePct == null ? 0 : diskUsePct) + '%' } })),
-              h('div', { className: 'zsv-bar-pct mono' }, diskUsePct == null ? '暂无数据' : diskUsePct + '%')),
+                diskDataReady ? h('div', { className: 'zsv-bar-seg cache', style: { width: diskCachePct + '%' } }) : null,
+                diskDataReady ? h('div', { className: 'zsv-bar-seg other', style: { left: diskCachePct + '%', width: diskOtherPct + '%' } }) : null),
+              h('div', { className: 'zsv-bar-legend' },
+                h('div', { className: 'zsv-leg' }, h('span', { className: 'zsv-leg-dot cache' }),
+                  h('span', { className: 'zsv-leg-k' }, '缓存已用'), h('span', { className: 'zsv-leg-v mono' }, cacheBytesRaw == null ? '—' : fmtBytesStr(cacheBytesRaw))),
+                h('div', { className: 'zsv-leg' }, h('span', { className: 'zsv-leg-dot other' }),
+                  h('span', { className: 'zsv-leg-k' }, '盘内其它'), h('span', { className: 'zsv-leg-v mono' }, diskOtherBytes == null ? '—' : fmtBytesStr(diskOtherBytes))),
+                h('div', { className: 'zsv-leg' }, h('span', { className: 'zsv-leg-dot free' }),
+                  h('span', { className: 'zsv-leg-k' }, '可用容量'), h('span', { className: 'zsv-leg-v mono' }, diskFreeBytes == null ? '—' : fmtBytesStr(diskFreeBytes))))),
             h('div', { className: 'zsv-chips' },
               chip('端口', String(status.port), true),
               chip('协议', status.scheme),
@@ -1293,7 +1329,7 @@ import {
 
     const openClientModal = () => s.setModal({
       xwide: true,
-      render: ({ close }) => h(ClientModal, { s, clients, status, deployed, canPoint, targetVis, pointed, setPointed, pointedLoading, close }),
+      render: ({ close }) => h(ClientModal, { s, clients, status, deployed, canPoint, targetVis, pointed, setPointed, pointedLoading, zdirs, setZdirs, zdirGenRef, readZdirFor, close }),
     });
 
     /* ============ 一级 Dashboard：三张概览卡，仅展示状态，具体配置点「更改/部署/管理」进二级弹层 ============ */
@@ -1306,7 +1342,10 @@ import {
             : h('span', { className: 'toolchip dim' }, h(Icon, { name: 'minus', size: 14 }), '未部署共享缓存服务器'))),
       h('div', { className: 'ddc-body' },
         h('div', { className: 'zen-dash' },
-          /* 卡片一 · 服务器状态（大，左上） */
+          /* 左列容器：服务器卡 + 回收策略卡垂直排布，卡间距固定 16px 与列间距一致
+             （不再走 grid areas —— 避免客户端卡跨行拉伸把左下卡顶出大片空白）。 */
+          h('div', { className: 'zdc-col-left' },
+          /* 卡片一 · 服务器状态（左上） */
           h('div', { className: 'zdc zdc--server' },
             h('div', { className: 'zdc-head' },
               h('span', { className: 'zdc-ico' }, h(Icon, { name: 'cube', size: 17 })),
@@ -1317,7 +1356,7 @@ import {
             h('div', { className: 'zdc-foot' },
               h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'settings', size: 14 }), onPress: openDeployModal },
                 deployed ? '更改部署配置' : '部署服务器'))),
-          /* 卡片二 · 缓存回收策略（小，左下） */
+          /* 卡片二 · 缓存回收策略（左下） */
           h('div', { className: 'zdc zdc--gc' },
             h('div', { className: 'zdc-head' },
               h('span', { className: 'zdc-ico' }, h(Icon, { name: 'flush', size: 17 })),
@@ -1329,7 +1368,7 @@ import {
                 h('span', { className: 'k' }, f.label), h('span', { className: 'v' }, fmtGc(gcApplied[f.id]))))),
             h('div', { className: 'zdc-foot' },
               h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'settings', size: 14 }), isDisabled: !deployed, onPress: openGcModal }, '更改回收策略'),
-              !deployed ? h('span', { className: 'zdc-hint' }, '先部署服务器') : null)),
+              !deployed ? h('span', { className: 'zdc-hint' }, '先部署服务器') : null))),
           /* 卡片三 · 客户端指向管理（最大，右侧整列） */
           h('div', { className: 'zdc zdc--client' },
             h('div', { className: 'zdc-head' },
@@ -1356,14 +1395,39 @@ import {
                 h('div', { className: 'zcl-list' },
                   pointedClientRows.length === 0
                     ? h('div', { className: 'zcl-empty' }, h(Icon, { name: 'link', size: 18 }), '暂无客户端指向此服务器')
-                    : pointedClientRows.map(({ n, isProject, projs }) => h('div', { className: 'zcl-row', key: n.id },
-                        CX.dot(NODE_STATUS[n.status].visual),
-                        h('div', { className: 'zcl-row-main' },
-                          h('div', { className: 'zcl-row-host mono' }, n.host),
-                          isProject && projs.length
-                            ? h('div', { className: 'zcl-row-projs' }, projs.map((p) => h('span', { className: 'zcl-proj', key: p.id }, p.name)))
-                            : h('div', { className: 'zcl-row-sub' }, '用户全局 · UserEngine.ini')),
-                        h('span', { className: 'zcl-row-badge' + (isProject ? ' proj' : ' user') }, isProject ? '工程级' : '用户全局')))));
+                    : pointedClientRows.map(({ n, isProject, projs }) => {
+                        /* 逐行明细：IP + 本地 Zen 缓存目录（zdirs 真实回读：自定义配置值优先，
+                           其次 runcontext 生效值，未配置 = 默认 C 盘提示；读取中/不可读如实展示）；
+                           工程级再逐个列出工程名 + 该机上的工程根路径（locByMachine 每机独立，
+                           取不到才退 p.root），用户全局显示 UserEngine.ini 说明。 */
+                        const zr = zenRecOf(zdirs, n.id);
+                        const zrBlocked = n.status === 'offline' || !runtimeUser(n);
+                        const cacheDir = zrBlocked ? '不可读 · 离线或未设 UE 运行用户'
+                          : zr.loading ? '读取中…'
+                          : zr.readFail ? '读取失败'
+                          : (zr.cfg || (zr.found && zr.eff) || ZEN_DEF_HINT + '（默认）');
+                        return h('div', { className: 'zcl-row', key: n.id },
+                          CX.dot(NODE_STATUS[n.status].visual),
+                          h('div', { className: 'zcl-row-main' },
+                            h('div', { className: 'zcl-row-topline' },
+                              h('span', { className: 'zcl-row-host mono' }, n.host),
+                              h('span', { className: 'zcl-row-ip mono' }, n.ip),
+                              h('span', { className: 'zcl-row-badge' + (isProject ? ' proj' : ' user') }, isProject ? '工程级' : '用户全局')),
+                            h('div', { className: 'zcl-meta' },
+                              h('div', { className: 'zcl-meta-row' },
+                                h('span', { className: 'zcl-meta-k' }, '缓存目录'),
+                                h('span', { className: 'zcl-meta-v mono' }, cacheDir)),
+                              isProject && projs.length
+                                ? h('div', { className: 'zcl-meta-row top' },
+                                    h('span', { className: 'zcl-meta-k' }, '工程缓存'),
+                                    h('div', { className: 'zcl-meta-projs' },
+                                      projs.map((p) => h('div', { className: 'zcl-projline', key: p.id },
+                                        h('span', { className: 'zcl-proj-name' }, p.name),
+                                        h('span', { className: 'zcl-proj-path mono' }, (p.locByMachine && p.locByMachine[String(n.machineId)]) || p.root)))))
+                                : h('div', { className: 'zcl-meta-row' },
+                                    h('span', { className: 'zcl-meta-k' }, '配置'),
+                                    h('span', { className: 'zcl-meta-v mono' }, '用户全局 · UserEngine.ini')))));
+                      })));
             })(),
             h('div', { className: 'zdc-foot' },
               h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'settings', size: 14 }), isDisabled: !deployed, onPress: openClientModal }, '管理客户端指向'),

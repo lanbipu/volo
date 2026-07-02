@@ -84,12 +84,19 @@
 .zstep-acts { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .zstep > .zbadge { margin-top: 2px; }
 
-.zcli-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.zcli-bar .cli-server-chip { margin-right: auto; }
-.zlink-all { all: unset; cursor: pointer; font-size: 12px; font-weight: 700; color: var(--volo-400); padding: 7px 12px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--volo-700) 32%, transparent); }
-.zlink-all:hover { background: var(--highlight-selected); }
-.zlink-all:disabled { opacity: .45; cursor: default; color: var(--chrome-faint); border-color: var(--chrome-line); }
-.zcli-go { flex: 0 0 auto; }
+/* 顶部工具栏两层：目标上下文 chip 单独在上，操作行在下 */
+.zcli-bar { display: flex; flex-direction: column; gap: 12px; }
+.zcli-bar .cli-server-chip { align-self: flex-start; margin-right: 0; }
+.zcli-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.zcli-go { flex: 0 0 auto; margin-left: auto; display: flex; align-items: center; gap: 8px; }
+/* 「设置缓存目录」：低调描边次级按钮 */
+.zcli-side-btn { all: unset; box-sizing: border-box; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--chrome-dim); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--chrome-line-2); background: transparent; white-space: nowrap; transition: background .12s, color .12s; }
+.zcli-side-btn:hover { background: var(--wash-2); color: var(--chrome-text); }
+.zcli-side-btn:disabled { opacity: .45; cursor: default; background: transparent; color: var(--chrome-faint); }
+/* 「选中全部未指向」：降为纯文字链接 */
+.zlink-all { all: unset; cursor: pointer; font-size: 12px; font-weight: 600; color: var(--chrome-dim); padding: 6px 2px; border-radius: 6px; white-space: nowrap; transition: color .12s; }
+.zlink-all:hover { color: var(--volo-400); text-decoration: underline; text-underline-offset: 3px; }
+.zlink-all:disabled { opacity: .45; cursor: default; color: var(--chrome-faint); text-decoration: none; }
 .cli-row.zcli { align-items: center; gap: 11px; }
 .zck { all: unset; box-sizing: border-box; width: 19px; height: 19px; border-radius: 6px; border: 1.5px solid var(--chrome-line-2);
   display: grid; place-items: center; cursor: pointer; color: #fff; flex: 0 0 auto; transition: background .12s, border-color .12s; }
@@ -98,7 +105,9 @@
 .zck.dis { opacity: .35; cursor: default; }
 .zcli-state { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; width: 58px; }
 .zcli-state-tx { font-size: 11px; font-weight: 700; }
-.zcli-end { margin-left: auto; flex: 0 0 auto; }
+/* 行右侧建立层级：主状态徽标居上，Zen 目录次级信息在下 */
+.zcli-end { margin-left: auto; flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.zcli-dir { display: inline-flex; align-items: center; gap: 3px; }
 .zcli-right { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
 .zcli-msg { font-size: 11px; }
 .cli-note.warn { color: var(--notice-visual); }
@@ -275,10 +284,16 @@
    行内次级 chip + 展开配置面板 + 批量弹层
    ============================================================ */
 .zcli-wrap { display: flex; flex-direction: column; gap: 4px; }
-/* 次级状态 chip（指向徽标是主状态，chip 更小更弱） */
-.zdir-chip { all: unset; display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; cursor: pointer; border: 1px solid transparent; white-space: nowrap; flex: 0 0 auto; }
-.zdir-chip:hover, .zdir-chip.on { border-color: var(--chrome-line-2); }
-.zdir-chip.soft { opacity: .75; }
+/* 二级列表的 Zen 目录状态：降为「小圆点 + 文字」的安静次级信息（指向徽标是主状态），
+   不再用填充胶囊，避免与主徽标抢视觉 */
+.zdir-stat { display: inline-flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 600; white-space: nowrap; background: transparent !important; border: 0; padding: 0; }
+.zdir-stat.soft { opacity: .7; }
+.zdir-stat .zdir-stat-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
+.zdir-stat .spin { color: var(--informative-visual); }
+/* 重新读取：图标幽灵按钮，紧贴目录状态，弱化存在感 */
+.zdir-reread { all: unset; box-sizing: border-box; display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; color: var(--chrome-faint); cursor: pointer; flex: 0 0 auto; transition: background .12s, color .12s; }
+.zdir-reread:hover { background: var(--wash-2); color: var(--chrome-dim); }
+.zdir-reread:disabled { opacity: .35; cursor: default; background: transparent; color: var(--chrome-faint); }
 .zd-neutral { color: var(--chrome-faint); background: var(--wash-2); }
 .zd-positive { color: var(--positive-visual); background: color-mix(in srgb, var(--positive-visual) 13%, transparent); }
 .zd-notice { color: var(--notice-visual); background: color-mix(in srgb, var(--notice-visual) 15%, transparent); }
@@ -336,14 +351,16 @@
 .drawer--zconfig .drawer-b { display: flex; flex-direction: column; gap: 14px; }
 .drawer--zconfig .deploy-panel, .drawer--zconfig .gc-panel, .drawer--zconfig .cli-panel { margin-top: 0; }
 
+/* 左侧两卡包进 .zdc-col-left flex 列（卡间距固定 16px 与列间距一致），不再走 grid areas
+   —— 避免右侧客户端卡跨行拉伸导致左下卡之间出现大片空白 */
 .zen-dash { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.18fr);
-  grid-template-areas: "server client" "gc client"; gap: 16px; align-items: start; }
-.zdc--server { grid-area: server; }
-.zdc--gc { grid-area: gc; }
-.zdc--client { grid-area: client; align-self: stretch; }
+  gap: 16px; align-items: start; }
+.zdc-col-left { grid-column: 1; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.zdc--client { grid-column: 2; align-self: stretch; }
 @media (max-width: 1180px) {
-  .zen-dash { grid-template-columns: minmax(0, 1fr); grid-template-areas: "server" "client" "gc"; }
-  .zdc--client { align-self: auto; }
+  .zen-dash { grid-template-columns: minmax(0, 1fr); }
+  .zdc-col-left { grid-column: 1; }
+  .zdc--client { grid-column: 1; align-self: auto; }
 }
 .zdc { min-width: 0; display: flex; flex-direction: column; background: var(--chrome-panel-2); border: 1px solid var(--chrome-line-2); border-radius: 12px; padding: 15px 16px; }
 .zdc-head { display: flex; align-items: center; gap: 11px; margin-bottom: 13px; }
@@ -375,8 +392,18 @@
 .zsv-bar-k { font-size: 11.5px; color: var(--chrome-faint); }
 .zsv-bar-v { font-size: 12px; font-weight: 700; color: var(--chrome-text); }
 .zsv-bar-track { position: relative; height: 8px; border-radius: 99px; background: var(--wash-2); margin-top: 9px; overflow: hidden; }
-.zsv-bar-fill { position: absolute; inset: 0 auto 0 0; border-radius: 99px; background: var(--volo-500); }
-.zsv-bar-pct { font-size: 10.5px; color: var(--chrome-faint); margin-top: 5px; text-align: right; }
+/* 分段占用条：缓存已用 / 盘内其它（非缓存数据）/ 余下即可用容量（track 底色） */
+.zsv-bar-seg { position: absolute; top: 0; bottom: 0; }
+.zsv-bar-seg.cache { left: 0; border-radius: 99px 0 0 99px; background: var(--volo-500); }
+.zsv-bar-seg.other { background: color-mix(in oklch, var(--chrome-faint) 55%, transparent); }
+.zsv-bar-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 9px; }
+.zsv-leg { display: flex; align-items: center; gap: 6px; }
+.zsv-leg-dot { width: 8px; height: 8px; border-radius: 3px; flex: none; }
+.zsv-leg-dot.cache { background: var(--volo-500); }
+.zsv-leg-dot.other { background: color-mix(in oklch, var(--chrome-faint) 55%, transparent); }
+.zsv-leg-dot.free { background: var(--wash-2); box-shadow: inset 0 0 0 1px var(--chrome-line); }
+.zsv-leg-k { font-size: 10.5px; color: var(--chrome-faint); }
+.zsv-leg-v { font-size: 11px; font-weight: 700; color: var(--chrome-text); }
 .zsv-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .zsv-chip { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 3px; background: var(--chrome-card); border: 1px solid var(--chrome-line); border-radius: 9px; padding: 8px 11px; }
 .zsv-chip-k { font-size: 10px; color: var(--chrome-faint); }
@@ -387,13 +414,23 @@
 .zcl-list-h > span:first-child { font-size: 11.5px; font-weight: 700; color: var(--chrome-dim); }
 .zcl-list-ct { font-size: 11.5px; font-weight: 700; color: var(--chrome-faint); }
 .zcl-list { display: flex; flex-direction: column; gap: 8px; }
-.zcl-row { display: flex; align-items: center; gap: 11px; background: var(--chrome-card); border: 1px solid var(--chrome-line); border-radius: 10px; padding: 11px 13px; }
-.zcl-row > .sdot { flex: 0 0 auto; }
+.zcl-row { display: flex; align-items: flex-start; gap: 11px; background: var(--chrome-card); border: 1px solid var(--chrome-line); border-radius: 10px; padding: 11px 13px; }
+.zcl-row > .sdot { flex: 0 0 auto; margin-top: 4px; }
 .zcl-row-main { flex: 1 1 auto; min-width: 0; }
+/* 首行：主机名 + IP + 范围徽标；下方 meta 区逐行列缓存目录 / 工程明细 */
+.zcl-row-topline { display: flex; align-items: center; gap: 9px; }
 .zcl-row-host { font-size: 12.5px; font-weight: 700; color: var(--chrome-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.zcl-row-sub { font-size: 10.5px; color: var(--chrome-faint); margin-top: 4px; }
-.zcl-row-projs { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
-.zcl-proj { font-size: 10.5px; color: var(--chrome-dim); background: var(--wash); border: 1px solid var(--chrome-line); padding: 2px 7px; border-radius: 5px; white-space: nowrap; }
+.zcl-row-ip { font-size: 11px; color: var(--chrome-faint); white-space: nowrap; }
+.zcl-row-topline .zcl-row-badge { margin-left: auto; }
+.zcl-meta { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; }
+.zcl-meta-row { display: flex; align-items: baseline; gap: 9px; }
+.zcl-meta-row.top { align-items: flex-start; }
+.zcl-meta-k { flex: 0 0 auto; width: 58px; font-size: 10.5px; color: var(--chrome-faint); }
+.zcl-meta-v { flex: 1 1 auto; min-width: 0; font-size: 11px; color: var(--chrome-dim); word-break: break-all; }
+.zcl-meta-projs { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.zcl-projline { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.zcl-proj-name { font-size: 11px; font-weight: 700; color: var(--chrome-text); }
+.zcl-proj-path { font-size: 10.5px; color: var(--chrome-faint); word-break: break-all; }
 .zcl-row-badge { font-size: 10px; font-weight: 700; padding: 3px 9px; border-radius: 99px; white-space: nowrap; flex: 0 0 auto; }
 .zcl-row-badge.proj { color: var(--volo-500); background: var(--highlight-selected); }
 .zcl-row-badge.user { color: var(--chrome-dim); background: var(--wash-2); }
@@ -402,7 +439,3 @@
 
 /* 客户端指向管理卡占右侧整列，明细列表随卡片高度伸展 */
 .zdc--client .zcl-list { flex: 1 1 auto; }
-
-/* 二级列表行：只读 Zen 目录状态徽标（不可点开）+「重新读取」直点按钮 */
-.zdir-chip.ro { cursor: default; }
-.zdir-chip.ro:hover { border-color: transparent; }
