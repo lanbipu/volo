@@ -467,6 +467,37 @@ pub struct ExportPoseObjResult {
     pub files: Vec<String>,
 }
 
+// ── W6 R1: M1(total-station)+ M2(visual BA) fuse DTO types ───────────────────
+
+/// Per-anchor alignment residual (mm) — one row per matched grid-vertex point.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FuseAnchorResidual {
+    /// Grid-vertex point name shared by both sides, e.g. `MAIN_V001_R001`.
+    pub point_name: String,
+    pub residual_mm: f64,
+    pub delta_mm: [f64; 3],
+}
+
+/// `lmt fuse run` 结果:视觉重建(M2 cabinet_pose_report)对齐到全站仪
+/// 测点(M1 measured.yaml)的刚体/相似变换 + 逐锚点残差。
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FuseResult {
+    pub screen_id: String,
+    /// 参与配准的锚点数(两侧按 grid-vertex 命名匹配上的点)。
+    pub anchor_count: usize,
+    /// 3×3 旋转矩阵(行主序)。
+    pub rotation: [[f64; 3]; 3],
+    pub translation_mm: [f64; 3],
+    /// 相似变换缩放因子。`scale_locked=true` 时恒为 1.0。
+    pub scale: f64,
+    /// `--allow-scale` 未传时为 true(scale 锁 1.0,不吸收系统性误差)。
+    pub scale_locked: bool,
+    pub anchor_residuals: Vec<FuseAnchorResidual>,
+    pub anchor_rms_mm: f64,
+    /// 对齐后的 cabinet_pose_report 副本路径(全部角点 + 协方差已变换)。
+    pub fused_pose_report_path: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct InstructionCardResult {

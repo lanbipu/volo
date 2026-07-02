@@ -141,6 +141,8 @@ pub fn build() -> ContractManifest {
            "lmt visual plan-capture <project> <screen_id> --image-size <WxH> (--hfov-deg <f> | --vfov-deg <f>) --standoff <MIN..MAX> --height <MIN..MAX> [--target-mm 3.0] [--trials 20] [--seed 0]", WriteSafe, false, false, true, Some("CapturePlan"), &[0, 2, 3]),
         op("visual.capture_card", "Render the capture plan as a self-contained HTML guidance card (top-down plan view + front-elevation coverage heatmap + station table) on stdout",
            "lmt visual capture-card <project> <screen_id> --image-size <WxH> (--hfov-deg <f> | --vfov-deg <f>) --standoff <MIN..MAX> --height <MIN..MAX> [--target-mm 3.0] [--trials 20] [--seed 0]", ReadOnly, false, false, true, Some("CaptureCardResult"), &[0, 2, 3]),
+        op("fuse.run", "W6 R1: fuse M1 (total-station measured.yaml) + M2 (visual cabinet_pose_report.json) by matching grid-vertex point names, Umeyama-aligning the visual reconstruction onto the total-station anchors (scale locked to 1.0 unless --allow-scale), and writing an aligned pose-report copy with a per-anchor residual table",
+           "lmt fuse <project> <screen_id> --pose-report <json> --measurements <yaml> [--allow-scale]", Destructive, true, false, false, Some("FuseResult"), &[0, 2, 3, 4, 6]),
     ];
 
     ContractManifest {
@@ -190,10 +192,11 @@ mod tests {
             "visual.compare_known",
             "visual.plan_capture",
             "visual.capture_card",
+            "fuse.run",
         ] {
             assert!(ids.contains(&expected), "manifest missing operation_id {expected}; got {ids:?}");
         }
-        assert_eq!(m.operations.len(), 28, "operation count changed — update both build() and this test");
+        assert_eq!(m.operations.len(), 29, "operation count changed — update both build() and this test");
     }
 
     #[test]
@@ -240,6 +243,7 @@ mod tests {
             "visual.reconstruct",
             "visual.reconstruct_structured_light",
             "visual.simulate",
+            "fuse.run",
         ] {
             assert!(!find(id).idempotent, "{id} mutates observable state -> not idempotent");
         }
