@@ -8,6 +8,7 @@
 //! no NDJSON emitter, no `tauri` — keeping cache-core zero-tauri.
 
 use crate::core::zen::enable as zen_enable;
+use crate::core::zen::local_port;
 use crate::core::zen::lua_config::{self, UpstreamInfo};
 use crate::core::zen::redaction::redact;
 use crate::core::zen::rules_loader as zen_rules;
@@ -274,15 +275,179 @@ pub fn pick_service_zen_exe(
 pub fn workstation_colocation_warning(
     db: &Db,
     machine_id: i64,
+    shared_port: i64,
+    local_port_override: Option<i64>,
 ) -> VoloResult<Option<String>> {
-    Ok(machines::get_ue_runtime_user(db, machine_id)?.map(|user| {
-        format!(
-            "machine id={machine_id} looks like a UE workstation (ue_runtime_user={user:?} is \
-             set); installing the shared ZenServer service here is not recommended — run it on a \
-             dedicated server so it doesn't contend with the workstation's editor-managed local \
-             Zen. Proceeding because this check is advisory only."
-        )
-    }))
+    let Some(user) = machines::get_ue_runtime_user(db, machine_id)? else {
+        return Ok(None);
+    };
+    // 方案一: a DesiredPort override that moves the editor-managed local zen
+    // off the shared service's port resolves the contention — no warning.
+    if let Some(p) = local_port_override {
+        if p != shared_port {
+            return Ok(None);
+        }
+    }
+    Ok(Some(format!(
+        "machine id={machine_id} looks like a UE workstation (ue_runtime_user={user:?} is \
+         set); its editor-managed local Zen also defaults to port {shared_port}, so \
+         co-locating the shared ZenServer service here invites port/ownership contention. \
+         Fix: move the local zen off the shared port with \
+         `voloctl cache zen local-port set --machine {machine_id} --port 8559` \
+         (writes [Zen.AutoLaunch] DesiredPort into the machine's UserEngine.ini; takes \
+         effect at the next editor restart). Proceeding because this check is advisory only."
+    )))
+}
+
+// -----------------------------------------------------------------------------
+// Local zen desired-port override (方案一 — [Zen.AutoLaunch] DesiredPort)
+// -----------------------------------------------------------------------------
+
+/// The machine-local `UserEngine.ini` path under `ue_runtime_user`'s profile —
+/// identical construction to `zen enable --global`.
+pub fn user_engine_ini_path(ue_user: &str) -> String {
+    format!(r"C:\Users\{ue_user}\AppData\Local\Unreal Engine\Engine\Config\UserEngine.ini")
+}
+
+/// Standard "`machine set-ue-user` first" resolver shared by every
+/// UserEngine.ini-touching surface.
+pub fn require_ue_runtime_user(db: &Db, machine_id: i64) -> VoloResult<String> {
+    machines::get_ue_runtime_user(db, machine_id)?.ok_or_else(|| {
+        VoloError::InvalidInput(format!(
+            "machine id={machine_id} has no ue_runtime_user set — run \
+             `machine set-ue-user --machine {machine_id} --ue-user <USERNAME>` first"
+        ))
+    })
+}
+
+/// The `declared_port` of the `shared_upstream` endpoint registered on
+/// `machine_id`, if any — the port a local-zen override must avoid.
+pub fn shared_upstream_port_on_machine(db: &Db, machine_id: i64) -> VoloResult<Option<i64>> {
+    Ok(zen_endpoints::list_for_machine(db, machine_id)?
+        .into_iter()
+        .find(|e| e.role == zen_endpoint::ROLE_SHARED_UPSTREAM)
+        .map(|e| e.declared_port))
+}
+
+/// Best-effort read of `machine_id`'s current `DesiredPort` override.
+/// `None` = no override OR machine unreachable / no ue_runtime_user — callers
+/// use this for advisory logic only, never as proof of absence.
+pub fn local_port_override_best_effort(db: &Db, machine_id: i64, host: &str) -> Option<i64> {
+    let ue_user = machines::get_ue_runtime_user(db, machine_id).ok().flatten()?;
+    local_port::read_configured_port(host, &user_engine_ini_path(&ue_user))
+        .ok()
+        .flatten()
+}
+
+/// Merged local-port status for one machine: configured (INI) + actual
+/// (runcontext) + the shared-service port it must avoid.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ZenLocalPortStatus {
+    pub machine_id: i64,
+    pub host: String,
+    pub ue_runtime_user: String,
+    pub ini_file: String,
+    /// `DesiredPort` from `[Zen.AutoLaunch]`; `None` = no override (UE default
+    /// 8558 applies).
+    pub configured_port: Option<i64>,
+    /// Whether the local zen binary from the runcontext is running right now.
+    /// `None` = runcontext unreadable (machine offline / never launched zen).
+    pub running: Option<bool>,
+    /// `--port` value the local zen was actually launched with (from the
+    /// runcontext's commandline). Stale until the editor restarts after a
+    /// config change; `None` = unknown.
+    pub actual_port: Option<i64>,
+    /// `declared_port` of this machine's `shared_upstream` endpoint, if any.
+    pub shared_upstream_port: Option<i64>,
+}
+
+/// Outcome of a local-port set/clear, ready for NDJSON / Tauri serialization.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ZenLocalPortApply {
+    pub machine_id: i64,
+    pub host: String,
+    pub ini_file: String,
+    pub changed: bool,
+    pub previous_port: Option<i64>,
+    /// `None` = override cleared (UE default 8558 applies).
+    pub port: Option<i64>,
+    pub backup: Option<String>,
+}
+
+/// Write `[Zen.AutoLaunch] DesiredPort = port` to `machine_id`'s
+/// `UserEngine.ini`. Rejects the machine's own shared_upstream port.
+pub fn zen_local_port_set(db: &Db, machine_id: i64, port: i64) -> VoloResult<ZenLocalPortApply> {
+    let machine = require_machine(db, machine_id)?;
+    let ue_user = require_ue_runtime_user(db, machine_id)?;
+    let ini_file = user_engine_ini_path(&ue_user);
+    let forbidden = shared_upstream_port_on_machine(db, machine_id)?;
+    let out = local_port::set_local_port(&machine.ip, &ini_file, port, forbidden)?;
+    Ok(ZenLocalPortApply {
+        machine_id,
+        host: machine.ip,
+        ini_file,
+        changed: out.changed,
+        previous_port: out.previous,
+        port: Some(port),
+        backup: out.backup,
+    })
+}
+
+/// Remove the `DesiredPort` override from `machine_id`'s `UserEngine.ini`.
+pub fn zen_local_port_clear(db: &Db, machine_id: i64) -> VoloResult<ZenLocalPortApply> {
+    let machine = require_machine(db, machine_id)?;
+    let ue_user = require_ue_runtime_user(db, machine_id)?;
+    let ini_file = user_engine_ini_path(&ue_user);
+    let out = local_port::clear_local_port(&machine.ip, &ini_file)?;
+    Ok(ZenLocalPortApply {
+        machine_id,
+        host: machine.ip,
+        ini_file,
+        changed: out.changed,
+        previous_port: out.previous,
+        port: None,
+        backup: out.backup,
+    })
+}
+
+/// Assemble the merged status: configured `DesiredPort` (INI read — hard
+/// error if the machine is unreachable) + best-effort actual running port
+/// from the local zen runcontext (soft: `running`/`actual_port` stay `None`
+/// when the runcontext sidecar fails).
+pub fn zen_local_port_status(db: &Db, machine_id: i64) -> VoloResult<ZenLocalPortStatus> {
+    let machine = require_machine(db, machine_id)?;
+    let ue_user = require_ue_runtime_user(db, machine_id)?;
+    let ini_file = user_engine_ini_path(&ue_user);
+    let configured_port = local_port::read_configured_port(&machine.ip, &ini_file)?;
+    let shared_upstream_port = shared_upstream_port_on_machine(db, machine_id)?;
+
+    let mut running = None;
+    let mut actual_port = None;
+    if let Ok(env) = run_node(
+        &machine.ip,
+        "zen-read-runcontext.ps1",
+        serde_json::json!({ "RuntimeUser": ue_user }),
+    )
+    .and_then(|raw| parse_envelope(&raw, "zen-read-runcontext"))
+    {
+        running = env.get("running").and_then(|v| v.as_bool());
+        actual_port = env
+            .get("commandline_arguments")
+            .and_then(|v| v.as_str())
+            .and_then(local_port::parse_port_from_cmdline)
+            .map(i64::from);
+    }
+
+    Ok(ZenLocalPortStatus {
+        machine_id,
+        host: machine.ip,
+        ue_runtime_user: ue_user,
+        ini_file,
+        configured_port,
+        running,
+        actual_port,
+        shared_upstream_port,
+    })
 }
 
 /// Build the canonical `<scheme>://*:<port>/` reservation URL for an endpoint.

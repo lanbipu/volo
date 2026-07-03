@@ -29,6 +29,7 @@ import type {
   ZenServiceResult, ZenServiceSummary, ZenServiceStatusResult,
   ZenUrlaclResult, ZenUrlaclListResult, ZenVerifyRunEditorInput, ZenVerifyRulesResult,
   ZenGcSettingsResult, ZenDedicatedAccountResult, ZenEnableGlobalResult, ZenLocalRunContext, ZenSetLocalDataPathResult,
+  ZenLocalPortApply, ZenLocalPortStatus,
 } from "./types";
 
 /* ----------------------------- machines ----------------------------- */
@@ -361,6 +362,16 @@ export const zenReadLocalRuncontext = (machineId: number) =>
 //    创建目录 + 同步机器级 UE-ZenDataPath 兜底；dataPath 空串 = 清除两处；需先设 ue_runtime_user）
 export const zenSetLocalDatapath = (machineId: number, dataPath: string) =>
   call<ZenSetLocalDataPathResult>("zen_set_local_datapath", { machineId, dataPath });
+// ✅ wired: cacheZen「本地端口管理」→ 写该机 UserEngine.ini [Zen.AutoLaunch] DesiredPort（需先设 ue_runtime_user；
+//    编辑器重启后生效；拒绝本机 shared_upstream 端口）
+export const zenLocalPortSet = (machineId: number, port: number) =>
+  call<ZenLocalPortApply>("zen_local_port_set", { machineId, port });
+// ✅ wired: cacheZen「本地端口管理」清除覆盖 → 恢复 UE 默认 8558
+export const zenLocalPortClear = (machineId: number) =>
+  call<ZenLocalPortApply>("zen_local_port_clear", { machineId });
+// ✅ wired: cacheZen「本地端口管理」状态读出（配置端口 + 实际运行端口 + 本机共享服务端口）
+export const zenLocalPortStatus = (machineId: number) =>
+  call<ZenLocalPortStatus>("zen_local_port_status", { machineId });
 // ✅ wired: cacheZen「缓存回收策略（GC）」应用更改 → zenUpdateGcSettings（重写 zen_config.lua + 重启服务生效）
 export const zenUpdateGcSettings = (
   endpointId: number, gcIntervalSeconds: number, gcLightweightIntervalSeconds: number, cacheMaxDurationSeconds: number,

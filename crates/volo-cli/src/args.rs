@@ -1127,6 +1127,18 @@ pub enum ZenAction {
         #[arg(long)]
         clear: bool,
     },
+    /// Manage a machine's LOCAL zen desired-port override
+    /// (`[Zen.AutoLaunch] DesiredPort` in the machine-local `UserEngine.ini`,
+    /// same file as `zen enable --global`). UE's editor auto-launch passes it
+    /// verbatim as `--port <n>` (default 8558; a busy port is NOT retried) —
+    /// on a workstation co-hosting the shared ZenServer service, move the
+    /// local zen to e.g. 8559. Affects every UE project on the machine;
+    /// takes effect at the next editor restart. Requires the machine's
+    /// `ue_runtime_user` (same precondition as `zen enable --global`).
+    LocalPort {
+        #[command(subcommand)]
+        action: ZenLocalPortAction,
+    },
     /// Baseline (zen_binary_expected) inspection and lock/unlock.
     Baseline {
         #[command(subcommand)]
@@ -1489,6 +1501,40 @@ pub enum ZenAction {
         dry_run: bool,
         #[command(flatten)]
         cred: crate::credential_args::CredentialArgs,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ZenLocalPortAction {
+    /// Write `DesiredPort = <port>` (destructive: requires --yes or --dry-run).
+    Set {
+        /// Machine row id to configure.
+        #[arg(long, value_name = "ID")]
+        machine: i64,
+        /// Local zen port, 1024–65535 and not the machine's own shared
+        /// service port (suggested: 8559).
+        #[arg(long, value_name = "PORT")]
+        port: i64,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Remove the override — back to UE default 8558 at next editor restart
+    /// (destructive: requires --yes or --dry-run).
+    Clear {
+        #[arg(long, value_name = "ID")]
+        machine: i64,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Read-only merged view: configured DesiredPort + actual running port
+    /// (from the local zen runcontext) + the machine's shared service port.
+    Status {
+        #[arg(long, value_name = "ID")]
+        machine: i64,
     },
 }
 

@@ -38,6 +38,7 @@ import {
   zenUrlaclAdd, zenServiceInstall, zenServiceStart, zenServiceStop, zenServiceUninstall,
   zenUnregister, zenProbe, zenStatus, zenListEndpoints, zenCacheStats, zenDiskSpace, setIniKey, readIniSection,
   refreshMachine, revealPath, zenEnableGlobal, zenReadLocalRuncontext, zenSetLocalDatapath, getMachineEnvVar,
+  zenLocalPortSet, zenLocalPortClear, zenLocalPortStatus,
 } from "../api/commands";
 
 (function () {
@@ -138,6 +139,13 @@ import {
   const ZEN_DEF_HINT = '%LOCALAPPDATA%\\UnrealEngine\\Common\\Zen\\Data';
   const normWinPath = (p) => String(p || '').trim().replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
   const zenRecOf = (d, id) => d[id] || { cfg: null, eff: null, loading: true };
+  /* 本地 Zen 端口：客户端本机 UE Editor 自动拉起的本地 Zen 的监听端口，默认 8558；同机
+     既跑共享 ZenServer 又开 Editor 时冲突，改 [Zen.AutoLaunch] DesiredPort 挪走本地 Zen。
+     zports 记录来自 zen_local_port_status 真实回读：configured=INI 配置值（null=默认 8558）、
+     actual=runcontext 命令行里的 --port（Editor 重启前可能滞后）、running=本地 Zen 是否在跑。 */
+  const ZEN_LOCAL_DEFAULT_PORT = 8558;
+  const ZEN_SUGGEST_PORT = 8559;
+  const zportRecOf = (d, id) => d[id] || { configured: null, actual: null, running: null, loading: true, fail: false };
 
   /* 工程级指向的二级菜单：列出选中机器上已发现的 UE 工程，选择后再指向。
      每台机器只写入其本机存在的所选工程的 DefaultEngine.ini。UE 版本/体积/版本不一致
@@ -261,6 +269,95 @@ import {
         h(Button, { variant: 'secondary', size: 'M', onPress: close }, '完成')));
   }
 
+  /* 小弹窗：修改单台机器的本地 Zen 端口（写 UserEngine.ini [Zen.AutoLaunch] DesiredPort，
+     zen_local_port_set / clear）。自包含（自带 useState，弹层内实时响应输入 / 进度）；
+     三通道反馈成败；应用 / 清除后「返回列表」重开来源弹层（读到刷新后的持久状态——
+     规避内联渲染弹层的陈旧闭包问题，见文件头注释）。打开时先 zen_local_port_status
+     真实回读一轮（INI 配置值 + runcontext 实际端口），不拿行内快照冒充最新值。 */
+  function ZenPortModal({ s, node, rec, suggest, onApply, onClear, close, onBack }) {
+    const [cur, setCur] = useState(() => rec || null);      /* {configured, actual, running} */
+    const [curLoading, setCurLoading] = useState(true);
+    const [port, setPort] = useState(String((rec && rec.configured != null) ? rec.configured : suggest));
+    const [phase, setPhase] = useState('idle');   /* idle | applying | done | fail */
+    const [msg, setMsg] = useState('');
+    useEffect(() => {
+      let alive = true;
+      zenLocalPortStatus(node.machineId).then(
+        (st) => { if (!alive) return;
+          setCur({ configured: st.configured_port, actual: st.actual_port, running: st.running });
+          if (st.configured_port != null) setPort(String(st.configured_port));
+          setCurLoading(false); },
+        () => { if (alive) setCurLoading(false); });
+      return () => { alive = false; };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+    const overridden = !!(cur && cur.configured != null);
+    const configured = overridden ? cur.configured : ZEN_LOCAL_DEFAULT_PORT;
+    const running = cur && cur.running && cur.actual != null ? cur.actual : null;
+    const num = parseInt(port, 10);
+    const valid = /^\d+$/.test(port.trim()) && num >= 1024 && num <= 65535;
+    const same = valid && overridden && num === cur.configured;
+    const busy = phase === 'applying';
+    const settled = phase === 'done' || phase === 'fail';
+    const back = () => { if (onBack) onBack(); else close(); };
+    const runOp = (kind) => {
+      if (busy) return;
+      setPhase('applying');
+      const p = kind === 'clear' ? onClear(node.id) : onApply(node.id, num);
+      p.then(
+        () => {
+          setMsg(kind === 'clear'
+            ? '已清除 override · 重启该机 UE 编辑器后恢复默认 ' + ZEN_LOCAL_DEFAULT_PORT + ' 端口'
+            : '已写入 DesiredPort=' + num + ' · 重启该机 UE 编辑器后实际生效');
+          setPhase('done');
+        },
+        (e) => { setMsg((e && e.message) ? e.message : String(e)); setPhase('fail'); });
+    };
+    const CHIPS = [ZEN_SUGGEST_PORT, 8560, 8561];
+    return h('div', { className: 'drawer drawer--zport' },
+      h('div', { className: 'drawer-h' },
+        h('span', { className: 'di info' }, h(Icon, { name: 'link', size: 17 })),
+        h('div', { style: { minWidth: 0 } },
+          h('h2', null, '修改本地 Zen 端口'),
+          h('div', { className: 'sub' },
+            h('span', { className: 'cli-pill' }, 'zen_local_port_set UserEngine.ini'),
+            h('span', null, ' · ' + node.host))),
+        h('button', { className: 'iconbtn x', onClick: close }, h(Icon, { name: 'x', size: 16 }))),
+      h('div', { className: 'drawer-b' },
+        h('div', { className: 'zport-cur' },
+          h('div', { className: 'zport-cur-col' },
+            h('span', { className: 'zport-cur-k' }, '配置端口'),
+            h('span', { className: 'zport-cur-v mono' + (curLoading ? ' none' : '') }, curLoading ? '读取中…' : String(configured))),
+          h('span', { className: 'zport-cur-arr' }, h(Icon, { name: 'arrowr', size: 15 })),
+          h('div', { className: 'zport-cur-col' },
+            h('span', { className: 'zport-cur-k' }, '实际运行'),
+            h('span', { className: 'zport-cur-v mono' + (curLoading || running == null ? ' none' : '') },
+              curLoading ? '读取中…' : running != null ? String(running) : '未运行 · —')),
+          curLoading ? null : overridden ? h('span', { className: 'zport-tag' }, '已改端口') : h('span', { className: 'zport-tag ghost' }, '默认端口')),
+        !settled ? h('div', { className: 'zport-field' },
+          h('label', null, '新的本地端口'),
+          h('div', { className: 'zport-input-row' },
+            h('input', { className: 'dp-input mono', type: 'number', min: 1024, max: 65535, inputMode: 'numeric',
+              value: port, spellCheck: false, disabled: busy, autoFocus: true, onChange: (e) => setPort(e.target.value) }),
+            h('div', { className: 'zport-chips' }, CHIPS.map((c) => h('button', {
+              key: c, type: 'button', className: 'zport-chip' + (String(c) === port ? ' on' : ''),
+              disabled: busy, onClick: () => setPort(String(c)) }, String(c))))),
+          (!valid && port.trim() !== '') ? h('div', { className: 'zport-err' }, h(Icon, { name: 'alert', size: 12 }), '端口需为 1024–65535 的整数') : null) : null,
+        settled ? h('div', { className: 'zport-res zr-' + (phase === 'done' ? 'ok' : 'fail') },
+          h(Icon, { name: phase === 'done' ? 'check' : 'alert', size: 15 }), h('span', null, msg)) : null,
+        h('div', { className: 'cli-note' }, h(Icon, { name: 'shield', size: 13 }),
+          h('span', null, '写入该机 UserEngine.ini 的 ', h('span', { className: 'mono' }, '[Zen.AutoLaunch] DesiredPort'),
+            '，对该机所有 UE 工程生效；Editor 重启后生效。')),),
+      h('div', { className: 'drawer-f' + (settled ? '' : ' between') },
+        settled
+          ? h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'check', size: 15 }), onPress: back }, '返回列表')
+          : h(React.Fragment, null,
+              h(Button, { variant: 'secondary', size: 'M', isDisabled: busy || !overridden, onPress: () => runOp('clear') }, '清除 override（恢复 ' + ZEN_LOCAL_DEFAULT_PORT + '）'),
+              h('div', { style: { display: 'flex', gap: 10 } },
+                h(Button, { variant: 'secondary', size: 'M', isDisabled: busy, onPress: back }, '取消'),
+                h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: busy ? 'sync' : 'check', size: 15 }), isDisabled: !valid || same || busy || curLoading, onPress: () => runOp('apply') }, busy ? '应用中…' : '应用')))));
+  }
+
   /* 通用弹层壳：图标 + 标题 + 副标题 + 关闭按钮 / 内容体 / 底部按钮区 */
   function ModalChrome({ icon, title, sub, close, children, footer }) {
     return h('div', { className: 'drawer drawer--zconfig' },
@@ -276,7 +373,7 @@ import {
      独立有状态组件（同 ZenDirModal 模式）：表单字段、部署步骤器全部是这个组件自己的
      useState，不依赖 ZenServer 某一次 render 的闭包快照，弹层内输入框/选择器才能正常
      响应用户操作。 */
-  function DeployModal({ s, RN, deployed, deployedNode, status, close, onDeployed }) {
+  function DeployModal({ s, RN, deployed, deployedNode, status, close, onDeployed, zports, openPortModal, backToDeploy }) {
     const [srvId, setSrvId] = useState(null);
     const [port, setPort] = useState('8558');
     const [protocol, setProtocol] = useState('http');
@@ -507,9 +604,44 @@ import {
       h('button', { type: 'button', className: 'dp-path-open', title: '在文件资源管理器中打开该目录', tabIndex: -1, onClick: () => openPath(val) },
         h(Icon, { name: 'folder', size: 13 })));
 
+    /* 共置告警（可操作）：目标机是 UE 工作站时，Editor 自动拉起的本地 Zen（默认 8558）与
+       共享服务要占的端口相撞 → 给「把本地 Zen 改到 8559」按钮直接打开端口弹窗；已改走后
+       切换为绿色「可共存」确认态。zports 是打开本弹层时的快照 —— 端口弹窗应用后经
+       backToDeploy 重开本弹层，读到刷新后的状态（表单值会重置，部署前改端口影响可接受）。 */
+    const zpRec = zportRecOf(zports || {}, srvNode.id);
+    const zpConfigured = zpRec.configured != null ? zpRec.configured : 8558;
+    const coloWarn = (srvNode.roleKey === 'workstation' && openPortModal)
+      ? (String(zpConfigured) === String(port)
+        ? h('div', { className: 'zcolo' },
+            h('span', { className: 'zcolo-ico' }, h(Icon, { name: 'alert', size: 16 })),
+            h('div', { className: 'zcolo-tx' },
+              h('div', { className: 'zcolo-t' }, '与本机 UE Editor 的本地 Zen 端口冲突'),
+              h('div', { className: 'zcolo-s' },
+                srvNode.host + ' 同时是 UE 工作站 —— Editor 会自动拉起本地 Zen（默认 ',
+                h('span', { className: 'mono' }, '8558'),
+                '），与这台共享服务要占用的端口 ',
+                h('span', { className: 'mono' }, String(port)),
+                ' 相撞。把本机的本地 Zen 端口改走，二者即可共存。')),
+            h('button', { type: 'button', className: 'zcolo-btn', onClick: () => openPortModal(srvNode.id, 8559, backToDeploy) },
+              h(Icon, { name: 'bolt', size: 13 }), '把本地 Zen 改到 8559'))
+        : h('div', { className: 'zcolo ok' },
+            h('span', { className: 'zcolo-ico' }, h(Icon, { name: 'check', size: 16 })),
+            h('div', { className: 'zcolo-tx' },
+              h('div', { className: 'zcolo-t' }, '本地 Zen 端口已改走 · 可与共享服务共存'),
+              h('div', { className: 'zcolo-s' },
+                srvNode.host + ' 的本地 Zen 已配置到 ',
+                h('span', { className: 'mono' }, 'DesiredPort=' + zpConfigured),
+                '，不再与共享服务的 ',
+                h('span', { className: 'mono' }, String(port)),
+                ' 冲突。')),
+            h('button', { type: 'button', className: 'zcolo-btn ghost', onClick: () => openPortModal(srvNode.id, zpConfigured, backToDeploy) },
+              h(Icon, { name: 'settings', size: 13 }), '调整本地端口')))
+      : null;
+
     const deployForm = h('div', { className: 'deploy-panel' },
       h('div', { className: 'dp-h' }, h(Icon, { name: 'bolt', size: 15 }), '部署链路参数',
         h('span', { className: 'dp-h-note' }, '逐步真实执行 · 每步可单独重试')),
+      coloWarn,
       h('div', { className: 'zform-grid' },
         h('div', { className: 'dp-field grow' }, h('label', null, '服务器机器'),
           h(Selector, { kpre: '机器', value: srvNode.id, options: srvOpts, width: 280, onChange: pickServer })),
@@ -682,7 +814,7 @@ import {
   /* ============ 二级弹层③ 客户端指向管理 ============
      zdirs（各机本地 Zen 缓存目录回读）已提升到 ZenServer —— 一级 Dashboard「已指向机器」
      明细也要显示缓存目录，弹层内的应用/清除/重读通过 props 落回同一份 state，两处同步。 */
-  function ClientModal({ s, clients, status, deployed, canPoint, targetVis, pointed, setPointed, pointedLoading, zdirs, setZdirs, zdirGenRef, readZdirFor, close }) {
+  function ClientModal({ s, clients, status, deployed, canPoint, targetVis, pointed, setPointed, pointedLoading, zdirs, setZdirs, zdirGenRef, readZdirFor, close, zports, zpres, openPortModal, backToClient }) {
     const hasAnyProjects = (window.UE_PROJECTS || []).length > 0;
     const [sel, setSel] = useState([]);
     const [res, setRes] = useState({});
@@ -960,6 +1092,31 @@ import {
         'aria-label': '重新读取', onClick: () => rereadZenDir(n.id) },
         h(Icon, { name: 'sync', size: 13 }));
     };
+    /* 本地端口读出（配置 → 实际）+「已改端口」标签 + 行内持久结果 + 修改入口。
+       数据来自 zports（zen_local_port_status 真实回读，活在 ZenServer）；未设运行用户 /
+       离线机器读不到，如实显示「—」。修改走 ZenPortModal（替换本弹层，返回路径 backToClient）。 */
+    const portIO = (n) => {
+      const rec = zportRecOf(zports, n.id);
+      const off = n.status === 'offline';
+      const blocked = off || !runtimeUser(n);
+      const overridden = rec.configured != null;
+      const configured = overridden ? rec.configured : ZEN_LOCAL_DEFAULT_PORT;
+      const running = !blocked && rec.running && rec.actual != null ? rec.actual : null;
+      const pr = zpres[n.id];
+      return h('div', { className: 'zcli-port' },
+        h('span', { className: 'zcli-port-lbl' }, '本地端口'),
+        h('span', { className: 'zcli-port-io mono' + (overridden ? ' ov' : '') },
+          blocked ? '—' : rec.loading ? '…' : String(configured),
+          h('span', { className: 'zcli-port-arr' }, '→'),
+          running != null ? String(running) : '—'),
+        overridden ? h('span', { className: 'zport-tag' }, '已改端口') : null,
+        pr ? h('span', { className: 'zcli-port-res zb-' + (pr.st === 'ok' ? 'positive' : 'negative'), title: pr.msg || '' },
+          h(Icon, { name: pr.st === 'ok' ? 'check' : 'alert', size: 11 }),
+          pr.st === 'ok' ? '已应用' : '失败') : null,
+        blocked ? null : h('button', { type: 'button', className: 'zcli-port-btn',
+          onClick: () => openPortModal(n.id, ZEN_SUGGEST_PORT, backToClient) },
+          h(Icon, { name: 'settings', size: 12 }), '修改本地端口'));
+    };
     const clientRow = (n) => {
       const off = n.status === 'offline';
       const checked = sel.includes(n.id);
@@ -973,9 +1130,10 @@ import {
           h('div', { className: 'cli-meta' },
             h('div', { className: 'cli-host mono' }, n.host),
             h('div', { className: 'cli-sub' }, n.ip + ' · ' + n.role)),
-          /* 主状态徽标居上，Zen 目录状态 + 重新读取降为下方次级行 —— 建立视觉层级 */
+          /* 主状态徽标居上，本地端口 + Zen 目录状态降为下方次级行 —— 建立视觉层级 */
           h('div', { className: 'zcli-end' },
             clientBadge(n),
+            portIO(n),
             h('div', { className: 'zcli-dir' }, zdirStatusChip(n), off ? null : rereadBtn(n)))));
     };
 
@@ -1201,6 +1359,31 @@ import {
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [statusSig, nodesSig]);
 
+    /* —— 本地 Zen 端口回读（zports）+ 行内持久结果（zpres）——
+       zen_local_port_status 合并读该机 UserEngine.ini 的 DesiredPort（配置值）与 runcontext
+       命令行 --port（实际运行值）。与 zdirs 不同：包含服务器机器本身 —— 部署弹层的共置
+       告警要用它判断本机本地 Zen 是否已挪走端口。需 ue_runtime_user（同 zdirs）。 */
+    const [zports, setZports] = useState({});
+    const [zpres, setZpres] = useState({});      /* nodeId -> { st: 'ok'|'fail', msg } */
+    const zportGenRef = useRef(0);
+    const reopenClientRef = useRef(null);
+    const reopenDeployRef = useRef(null);
+    const readZportFor = (n, gen) => zenLocalPortStatus(n.machineId).then(
+      (st) => { if (gen !== zportGenRef.current) return;
+        setZports((d) => Object.assign({}, d, { [n.id]: {
+          configured: st.configured_port, actual: st.actual_port, running: st.running,
+          sharedPort: st.shared_upstream_port, loading: false, fail: false } })); },
+      () => { if (gen !== zportGenRef.current) return;
+        setZports((d) => Object.assign({}, d, { [n.id]: Object.assign({}, zportRecOf(d, n.id), { loading: false, fail: true }) })); });
+    useEffect(() => {
+      const gen = ++zportGenRef.current;
+      (window.RENDER_NODES || [])
+        .filter((n) => n.status !== 'offline' && n.machineId && runtimeUser(n))
+        .forEach((n) => { readZportFor(n, gen); });
+      return () => { zportGenRef.current++; };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [nodesSig]);
+
     const deployed = !!status;
     /* 仅当服务真正 running 才允许把客户端指向它——指向一台已停止/不可达/状态未知的服务器
        会让客户端缓存上游失效。stopped/unreachable/unknown 都不放行。 */
@@ -1345,9 +1528,64 @@ import {
               h('div', { className: 'ze-s' }, '集群里还没有共享缓存服务器。填写下方参数并部署一台，让渲染机都用上它。')),
             h(ZBadge, { vis: 'neutral', label: '未部署' }));
 
+    /* —— 本地 Zen 端口：应用 / 清除（真实 zen_local_port_set / clear）+ 弹窗打开 ——
+       返回 Promise 给 ZenPortModal 驱动三通道结果条；成功后回写 zports（乐观）+ zpres
+       （行内持久状态）。返回路径走 reopen ref：s.modal 单槽，端口弹窗会替换来源弹层，
+       「返回列表」时重开来源弹层读到最新 zports（规避内联渲染的陈旧闭包）。 */
+    const applyZenPort = (id, portNum) => {
+      const n = CX.node(id);
+      return zenLocalPortSet(n.machineId, portNum).then(
+        (res) => {
+          setZports((d) => Object.assign({}, d, { [id]: Object.assign({}, zportRecOf(d, id), { configured: portNum, loading: false, fail: false }) }));
+          setZpres((r) => Object.assign({}, r, { [id]: { st: 'ok', msg: '已写入 DesiredPort=' + portNum + ' · 重启该机 UE 编辑器后实际生效' } }));
+          log(s, 'ok', `<b>zen_local_port_set</b> · ${esc(n.host)} UserEngine.ini [Zen.AutoLaunch] DesiredPort=${portNum}`);
+          return res;
+        },
+        (e) => {
+          const em = e && e.message ? e.message : String(e);
+          setZpres((r) => Object.assign({}, r, { [id]: { st: 'fail', msg: em } }));
+          log(s, 'err', `<b>zen_local_port_set</b> · ${esc(n.host)} 写 [Zen.AutoLaunch] DesiredPort 失败 · ${esc(em)}`);
+          throw e;
+        });
+    };
+    const clearZenPort = (id) => {
+      const n = CX.node(id);
+      return zenLocalPortClear(n.machineId).then(
+        (res) => {
+          setZports((d) => Object.assign({}, d, { [id]: Object.assign({}, zportRecOf(d, id), { configured: null, loading: false, fail: false }) }));
+          setZpres((r) => Object.assign({}, r, { [id]: { st: 'ok', msg: '已清除 override · 重启该机 UE 编辑器后恢复默认 ' + ZEN_LOCAL_DEFAULT_PORT } }));
+          log(s, 'warn', `<b>zen_local_port_clear</b> · ${esc(n.host)} 清除 [Zen.AutoLaunch] DesiredPort（恢复默认 ${ZEN_LOCAL_DEFAULT_PORT}）`);
+          return res;
+        },
+        (e) => {
+          const em = e && e.message ? e.message : String(e);
+          setZpres((r) => Object.assign({}, r, { [id]: { st: 'fail', msg: em } }));
+          log(s, 'err', `<b>zen_local_port_clear</b> · ${esc(n.host)} 清除失败 · ${esc(em)}`);
+          throw e;
+        });
+    };
+    const backToClient = () => { if (reopenClientRef.current) reopenClientRef.current(); };
+    const backToDeploy = () => { if (reopenDeployRef.current) reopenDeployRef.current(); };
+    const openPortModal = (id, suggest, returnTo) => {
+      const n = CX.node(id);
+      if (!n || !n.machineId) return;
+      if (!runtimeUser(n)) {
+        log(s, 'warn', `<b>zen_local_port_set</b> · ${esc(n.host)} 未设 ue_runtime_user，无法定位 UserEngine.ini · 先配置运行用户（machine set-ue-user）`);
+        return;
+      }
+      s.setModal({
+        render: ({ close }) => h(ZenPortModal, {
+          s, node: n, rec: zportRecOf(zports, id), suggest: suggest || ZEN_SUGGEST_PORT,
+          onApply: applyZenPort, onClear: clearZenPort,
+          close, onBack: returnTo || null,
+        }),
+      });
+    };
+
     const openDeployModal = () => s.setModal({
       xwide: true,
-      render: ({ close }) => h(DeployModal, { s, RN, deployed, deployedNode, status, close, onDeployed: loadStatus }),
+      render: ({ close }) => h(DeployModal, { s, RN, deployed, deployedNode, status, close, onDeployed: loadStatus,
+        zports, openPortModal, backToDeploy }),
     });
 
     const openGcModal = () => s.setModal({
@@ -1357,8 +1595,12 @@ import {
 
     const openClientModal = () => s.setModal({
       xwide: true,
-      render: ({ close }) => h(ClientModal, { s, clients, status, deployed, canPoint, targetVis, pointed, setPointed: setPointedTracked, pointedLoading, zdirs, setZdirs, zdirGenRef, readZdirFor, close }),
+      render: ({ close }) => h(ClientModal, { s, clients, status, deployed, canPoint, targetVis, pointed, setPointed: setPointedTracked, pointedLoading, zdirs, setZdirs, zdirGenRef, readZdirFor, close,
+        zports, zpres, openPortModal, backToClient }),
     });
+    /* 每次渲染刷新 reopen 引用，指向持有最新 zports/zpres 快照的弹窗构造器 */
+    reopenClientRef.current = openClientModal;
+    reopenDeployRef.current = openDeployModal;
 
     /* ============ 一级 Dashboard：三张概览卡，仅展示状态，具体配置点「更改/部署/管理」进二级弹层 ============ */
     return h('div', { className: 'res ddc' },
@@ -1445,6 +1687,18 @@ import {
                               h('div', { className: 'zcl-meta-row' },
                                 h('span', { className: 'zcl-meta-k' }, '缓存目录'),
                                 h('span', { className: 'zcl-meta-v mono' }, cacheDir)),
+                              (function () {
+                                /* 本地端口读出（配置 → 实际）；不可读时如实「—」 */
+                                const pRec = zportRecOf(zports, n.id);
+                                const pOv = pRec.configured != null;
+                                const pConf = pOv ? pRec.configured : ZEN_LOCAL_DEFAULT_PORT;
+                                const pRun = !zrBlocked && pRec.running && pRec.actual != null ? pRec.actual : null;
+                                return h('div', { className: 'zcl-meta-row' },
+                                  h('span', { className: 'zcl-meta-k' }, '本地端口'),
+                                  h('span', { className: 'zcl-meta-v mono' },
+                                    zrBlocked ? '不可读' : pRec.loading ? '读取中…' : (pConf + ' → ' + (pRun != null ? pRun : '—'))),
+                                  pOv ? h('span', { className: 'zport-tag' }, '已改端口') : null);
+                              })(),
                               isProject && projs.length
                                 ? h('div', { className: 'zcl-meta-row top' },
                                     h('span', { className: 'zcl-meta-k' }, '工程缓存'),

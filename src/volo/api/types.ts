@@ -748,6 +748,36 @@ export interface ZenSetLocalDataPathResult {
   message: string;
 }
 
+/** `zen_local_port_set` / `zen_local_port_clear` — 本地 Zen DesiredPort 覆盖写入结果。 */
+export interface ZenLocalPortApply {
+  machine_id: number;
+  host: string;
+  ini_file: string;
+  /** false = INI 已处于目标状态（幂等无写入）。 */
+  changed: boolean;
+  previous_port: number | null;
+  /** null = 已清除覆盖（恢复 UE 默认 8558）。 */
+  port: number | null;
+  /** PS sidecar 的 .bak.<timestamp> 备份路径；无写入时为 null。 */
+  backup: string | null;
+}
+
+/** `zen_local_port_status` — 配置端口（INI）+ 实际运行端口（runcontext）合并视图。 */
+export interface ZenLocalPortStatus {
+  machine_id: number;
+  host: string;
+  ue_runtime_user: string;
+  ini_file: string;
+  /** [Zen.AutoLaunch] DesiredPort；null = 无覆盖（UE 默认 8558 生效）。 */
+  configured_port: number | null;
+  /** 本地 Zen 当前是否在运行；null = runcontext 读不到（离线 / 从未启动）。 */
+  running: boolean | null;
+  /** 实际启动命令行里的 --port 值；编辑器重启前可能滞后于配置值；null = 未知。 */
+  actual_port: number | null;
+  /** 本机 shared_upstream 端点的 declared_port；本地端口必须避开它。 */
+  shared_upstream_port: number | null;
+}
+
 export interface ZenServicePlan {
   operation: string;
   endpoint_id: number;

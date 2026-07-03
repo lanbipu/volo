@@ -1313,6 +1313,66 @@ pub fn zen_set_local_datapath(
 }
 
 // ---------------------------------------------------------------------------
+// Local zen desired-port override (Cache · ZenServer「本地端口管理」方案一)
+// ---------------------------------------------------------------------------
+
+/// Write `[Zen.AutoLaunch] DesiredPort = port` into `machine_id`'s
+/// machine-local `UserEngine.ini` (same file as `zen_enable_global`;
+/// requires `ue_runtime_user`). Rejects 1024–65535 violations and the
+/// machine's own shared_upstream port. Takes effect at next editor restart.
+/// SSH sidecar off the main thread, same as `zen_read_local_runcontext`.
+#[tauri::command]
+pub async fn zen_local_port_set(
+    db: State<'_, Db>,
+    machine_id: i64,
+    port: i64,
+) -> VoloResult<cache_core::core::zen::ops::ZenLocalPortApply> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        let invocation = format!("set local zen DesiredPort {port} on machine {machine_id}");
+        crate::commands::oplog::logged(&db, "zen.local_port_set", &[machine_id], &invocation, || {
+            cache_core::core::zen::ops::zen_local_port_set(&db, machine_id, port)
+        })
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen local-port task join: {}", e)))?
+}
+
+/// Remove the `DesiredPort` override — the machine reverts to UE default
+/// 8558 at the next editor restart.
+#[tauri::command]
+pub async fn zen_local_port_clear(
+    db: State<'_, Db>,
+    machine_id: i64,
+) -> VoloResult<cache_core::core::zen::ops::ZenLocalPortApply> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        let invocation = format!("clear local zen DesiredPort override on machine {machine_id}");
+        crate::commands::oplog::logged(&db, "zen.local_port_clear", &[machine_id], &invocation, || {
+            cache_core::core::zen::ops::zen_local_port_clear(&db, machine_id)
+        })
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen local-port task join: {}", e)))?
+}
+
+/// Merged read-only view: configured `DesiredPort` (INI) + actual running
+/// port (local zen runcontext, best-effort) + this machine's shared service
+/// port. Read-only, no oplog.
+#[tauri::command]
+pub async fn zen_local_port_status(
+    db: State<'_, Db>,
+    machine_id: i64,
+) -> VoloResult<cache_core::core::zen::ops::ZenLocalPortStatus> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        cache_core::core::zen::ops::zen_local_port_status(&db, machine_id)
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen local-port task join: {}", e)))?
+}
+
+// ---------------------------------------------------------------------------
 // GC retention settings (Cache · ZenServer 「缓存回收策略」 module)
 // ---------------------------------------------------------------------------
 

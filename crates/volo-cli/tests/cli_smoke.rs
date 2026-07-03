@@ -1509,3 +1509,90 @@ fn zen_account_create_for_unknown_machine_returns_invalid_input() {
     assert_eq!(v["status"], "error");
     assert_eq!(v["error"]["code"], "invalid_input");
 }
+
+// -------------------------------------------------------------------------
+// 方案一: zen local-port set / clear / status
+// -------------------------------------------------------------------------
+
+#[test]
+fn zen_local_port_set_without_yes_returns_invalid_input() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let path = tmp.path().to_string_lossy().to_string();
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
+        .args(["--json", "zen", "local-port", "set", "--machine", "1", "--port", "8559"])
+        .output()
+        .expect("spawn");
+    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(stderr.trim_end()).expect("stderr JSON envelope");
+    assert_eq!(v["error"]["code"], "invalid_input");
+}
+
+#[test]
+fn zen_local_port_set_dry_run_emits_plan_and_rejects_shared_port() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let path = tmp.path().to_string_lossy().to_string();
+    // Seed machine + ue_runtime_user + a shared_upstream endpoint on 8558.
+    for args in [
+        vec!["--json", "machine", "add", "--ip", "192.168.10.20", "--hostname", "WS-1"],
+        vec!["--json", "machine", "set-ue-user", "--machine", "1", "--ue-user", "lanpc"],
+        vec!["--json", "zen", "register", "--machine", "1", "--role", "shared_upstream", "--data-dir", "D:\\ZenData"],
+    ] {
+        let out = cache_cmd().env("VOLO_DB_PATH", &path).args(&args).output().expect("spawn");
+        assert!(out.status.success(), "seed {:?} stderr: {}", args, String::from_utf8_lossy(&out.stderr));
+    }
+
+    // Dry-run with a valid port → plan naming the INI section/key.
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
+        .args(["--json", "zen", "local-port", "set", "--machine", "1", "--port", "8559", "--dry-run"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let env: serde_json::Value =
+        serde_json::from_str(String::from_utf8(out.stdout).unwrap().trim_end()).unwrap();
+    let v = &env["data"]["events"][0];
+    assert_eq!(v["type"], "completed");
+    let details = &v["summary"]["details"];
+    assert_eq!(v["summary"]["operation"], "zen.local_port_set");
+    assert_eq!(details["section"], "Zen.AutoLaunch");
+    assert_eq!(details["key"], "DesiredPort");
+    assert_eq!(details["port"], serde_json::Value::from(8559));
+    assert_eq!(details["shared_upstream_port"], serde_json::Value::from(8558));
+    assert!(details["ini_file"].as_str().unwrap().contains(r"C:\Users\lanpc\"));
+
+    // The machine's own shared service port is rejected even on dry-run.
+    let bad = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
+        .args(["--json", "zen", "local-port", "set", "--machine", "1", "--port", "8558", "--dry-run"])
+        .output()
+        .expect("spawn");
+    assert!(!bad.status.success());
+    assert_eq!(bad.status.code(), Some(2));
+}
+
+#[test]
+fn zen_local_port_status_requires_ue_runtime_user() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let path = tmp.path().to_string_lossy().to_string();
+    let out = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
+        .args(["--json", "machine", "add", "--ip", "192.168.10.21", "--hostname", "WS-2"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success());
+    let st = cache_cmd()
+        .env("VOLO_DB_PATH", &path)
+        .args(["--json", "zen", "local-port", "status", "--machine", "1"])
+        .output()
+        .expect("spawn");
+    assert!(!st.status.success());
+    let stderr = String::from_utf8(st.stderr).unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(stderr.trim_end()).expect("stderr JSON envelope");
+    assert_eq!(v["error"]["code"], "invalid_input");
+    assert!(v["error"]["message"].as_str().unwrap().contains("set-ue-user"));
+}

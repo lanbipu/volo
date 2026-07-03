@@ -11,6 +11,7 @@ pub mod cb_parser;
 pub mod disk_space;
 pub mod enable;
 pub mod endpoint;
+pub mod local_port;
 pub mod lockfile;
 pub mod lua_config;
 pub mod ops;

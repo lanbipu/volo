@@ -43,7 +43,7 @@
 //! - 3 environment / DB / IO failure
 //! - 4 credential / PowerShell failure (e.g. detect-binary can't reach host)
 
-use crate::args::{ZenAction, ZenBaselineAction, ZenServiceAction, ZenUrlaclAction};
+use crate::args::{ZenAction, ZenBaselineAction, ZenLocalPortAction, ZenServiceAction, ZenUrlaclAction};
 use crate::credential_args::CredentialArgs;
 use crate::destructive::{self, Outcome};
 use crate::output::Event;
@@ -102,6 +102,15 @@ pub fn handle(ctx: &mut Ctx<'_>, action: ZenAction) -> VoloResult<()> {
         ZenAction::SetLocalDatapath { machine, data_path, clear } => {
             set_local_datapath(ctx, machine, data_path.as_deref(), clear)
         }
+        ZenAction::LocalPort { action } => match action {
+            ZenLocalPortAction::Set { machine, port, yes, dry_run } => {
+                local_port_set(ctx, machine, port, yes, dry_run)
+            }
+            ZenLocalPortAction::Clear { machine, yes, dry_run } => {
+                local_port_clear(ctx, machine, yes, dry_run)
+            }
+            ZenLocalPortAction::Status { machine } => local_port_status(ctx, machine),
+        },
         ZenAction::Baseline { action } => match action {
             ZenBaselineAction::List { zen_build_version, kind } => {
                 baseline_list(ctx, zen_build_version.as_deref(), kind.as_deref())
@@ -807,6 +816,83 @@ fn set_local_datapath(
         "message": env.get("message").and_then(|v| v.as_str()),
     });
     ctx.emitter.emit_result(&doc).ok();
+    Ok(())
+}
+
+// -----------------------------------------------------------------------------
+// local-port set / clear / status (方案一 — [Zen.AutoLaunch] DesiredPort)
+// -----------------------------------------------------------------------------
+
+fn local_port_set(
+    ctx: &mut Ctx<'_>,
+    machine: i64,
+    port: i64,
+    yes: bool,
+    dry_run: bool,
+) -> VoloResult<()> {
+    let outcome = destructive::check(yes, dry_run, "zen.local_port_set")?;
+    let db = ctx.require_db()?.clone();
+    let m = require_machine(&db, machine)?;
+    let ue_user = cache_core::core::zen::ops::require_ue_runtime_user(&db, machine)?;
+    let ini_file = cache_core::core::zen::ops::user_engine_ini_path(&ue_user);
+    let forbidden = cache_core::core::zen::ops::shared_upstream_port_on_machine(&db, machine)?;
+    // Validate before the gate output so a dry-run of an invalid port fails
+    // the same way the real apply would.
+    cache_core::core::zen::local_port::validate_port(port, forbidden)?;
+
+    if outcome == Outcome::DryRun {
+        destructive::emit_plan(
+            ctx.emitter.as_mut(),
+            "zen.local_port_set",
+            serde_json::json!({
+                "machine_id": machine,
+                "host": m.ip,
+                "ini_file": ini_file,
+                "section": cache_core::core::zen::local_port::SECTION,
+                "key": cache_core::core::zen::local_port::KEY,
+                "port": port,
+                "shared_upstream_port": forbidden,
+            }),
+        );
+        return Ok(());
+    }
+
+    let res = cache_core::core::zen::ops::zen_local_port_set(&db, machine, port)?;
+    ctx.emitter.emit_result(&res).ok();
+    Ok(())
+}
+
+fn local_port_clear(ctx: &mut Ctx<'_>, machine: i64, yes: bool, dry_run: bool) -> VoloResult<()> {
+    let outcome = destructive::check(yes, dry_run, "zen.local_port_clear")?;
+    let db = ctx.require_db()?.clone();
+    let m = require_machine(&db, machine)?;
+    let ue_user = cache_core::core::zen::ops::require_ue_runtime_user(&db, machine)?;
+    let ini_file = cache_core::core::zen::ops::user_engine_ini_path(&ue_user);
+
+    if outcome == Outcome::DryRun {
+        destructive::emit_plan(
+            ctx.emitter.as_mut(),
+            "zen.local_port_clear",
+            serde_json::json!({
+                "machine_id": machine,
+                "host": m.ip,
+                "ini_file": ini_file,
+                "section": cache_core::core::zen::local_port::SECTION,
+                "key": cache_core::core::zen::local_port::KEY,
+            }),
+        );
+        return Ok(());
+    }
+
+    let res = cache_core::core::zen::ops::zen_local_port_clear(&db, machine)?;
+    ctx.emitter.emit_result(&res).ok();
+    Ok(())
+}
+
+fn local_port_status(ctx: &mut Ctx<'_>, machine: i64) -> VoloResult<()> {
+    let db = ctx.require_db()?.clone();
+    let res = cache_core::core::zen::ops::zen_local_port_status(&db, machine)?;
+    ctx.emitter.emit_result(&res).ok();
     Ok(())
 }
 
@@ -1551,7 +1637,15 @@ fn service_install(
 
     // ZEN-3: workstation co-location pre-flight (advisory only — NOT a hard
     // error, since co-location can be a deliberate choice).
-    let workstation_warning = workstation_colocation_warning(&db, ep.machine_id)?;
+    // Best-effort DesiredPort readback: an override that already moves the
+    // local zen off the shared port suppresses the warning entirely.
+    let local_override = cache_core::core::zen::ops::local_port_override_best_effort(
+        &db,
+        ep.machine_id,
+        &machine.ip,
+    );
+    let workstation_warning =
+        workstation_colocation_warning(&db, ep.machine_id, ep.declared_port, local_override)?;
     if let Some(ref w) = workstation_warning {
         ctx.emitter
             .emit_event(&Event::LogLine {
@@ -4279,20 +4373,39 @@ mod tests {
 
         // Dedicated server (no ue_runtime_user) → no warning.
         assert!(
-            workstation_colocation_warning(&db, machine_id).unwrap().is_none(),
+            workstation_colocation_warning(&db, machine_id, 8558, None).unwrap().is_none(),
             "a machine without ue_runtime_user is a dedicated server — no warning"
         );
 
         // Workstation (ue_runtime_user set) → advisory warning naming the user.
         machines::set_ue_runtime_user(&db, machine_id, Some("lanbp")).unwrap();
-        let w = workstation_colocation_warning(&db, machine_id)
+        let w = workstation_colocation_warning(&db, machine_id, 8558, None)
             .unwrap()
             .expect("workstation must produce a warning");
         assert!(w.contains("workstation"), "warning should call it a workstation: {w}");
         assert!(w.contains("lanbp"), "warning should name the ue_runtime_user: {w}");
         assert!(
-            w.contains("not recommended"),
+            w.contains("advisory"),
             "warning should be advisory wording: {w}"
+        );
+        assert!(
+            w.contains("local-port set"),
+            "warning should carry the fix guidance: {w}"
+        );
+
+        // DesiredPort override moves local zen off the shared port → suppressed.
+        assert!(
+            workstation_colocation_warning(&db, machine_id, 8558, Some(8559))
+                .unwrap()
+                .is_none(),
+            "an override off the shared port resolves the contention — no warning"
+        );
+        // Override that still collides with the shared port → still warns.
+        assert!(
+            workstation_colocation_warning(&db, machine_id, 8558, Some(8558))
+                .unwrap()
+                .is_some(),
+            "an override equal to the shared port does not resolve anything"
         );
     }
 
