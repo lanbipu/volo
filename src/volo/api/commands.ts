@@ -62,6 +62,22 @@ export const pickFile = (filterName?: string, filterExtensions?: string[]) =>
   call<string | null>("pick_file", { filterName: filterName ?? null, filterExtensions: filterExtensions ?? null });
 // ✅ wired: UsbPackPanel 成功态「在文件夹中显示」→ revealPath（系统文件管理器定位）
 export const revealPath = (path: string) => call<void>("reveal_path", { path });
+
+// ✅ wired: Calibrate AR「历史与导出」步 → listArRuns。扫描 runs 根目录下 vpcal quick run 写出的
+// <output_dir>/result.json（根目录本身 + 直接子目录），汇总 solve 历史（newest-first）。无 runs 注册表，
+// 读现有产物、零新格式（src-tauri/src/commands/vpcal_runs.rs）。
+export interface ArRunSummary {
+  /** run 标识 = result.json 所在目录名 */
+  id: string;
+  result_path: string;
+  timestamp: string | null;
+  schema_version: string | null;
+  reprojection_rms_px: number | null;
+  validation_rms_px: number | null;
+  confidence: string | null;
+  num_poses: number | null;
+}
+export const listArRuns = (runsRoot: string) => call<ArRunSummary[]>("list_ar_runs", { runsRoot });
 // 📝 no-ui: PowerShell 桥诊断用，无 UI 承载点
 export const testPowershellBridge = (message: string) => call<EchoResult>("test_powershell_bridge", { message });
 

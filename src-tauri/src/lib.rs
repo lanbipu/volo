@@ -309,6 +309,7 @@ pub fn run() {
             commands::mesh_reconstruct::reconstruct_surface,
             commands::mesh_reconstruct::list_runs,
             commands::mesh_reconstruct::get_run_report,
+            commands::vpcal_runs::list_ar_runs,
             commands::mesh_export::export_obj,
             commands::mesh_total_station::import_total_station_csv,
             commands::mesh_total_station::generate_instruction_card,

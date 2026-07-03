@@ -12,6 +12,7 @@ import "./styles/app.css";
 import "./styles/clean.css";
 import "./styles/zen.css";       // ZenServer 重做版样式（zen-status / zbadge / zsteps / zcli …）
 import "./styles/pso.css";       // PSO 上场就绪保障样式（nm-矩阵 / wv-预热 / hist-历史 / cvar-合规 / lrp-cancel）
+import "./styles/calExt.css";    // Calibrate 增量样式（实时采集 / AR 分支 / Lens 报告 / Survey M2 / 融合）
 
 import "./ds";          // window.Spectrum2DesignSystem_b6d1b3 (+ React global)
 import "./data";        // window data globals + Icon
@@ -23,6 +24,9 @@ import "./pages/cacheMachines"; // window.VOLO_CACHE_MACHINES
 import "./pages/cacheZen";      // window.VOLO_CACHE_ZEN（ZenServer 重做版，须在 cacheDdc 前）
 import "./pages/cacheDdc";      // window.VOLO_CACHE_DDC
 import "./pages/skeletons";     // window.VOLO_PAGES.{previz,color,live,tools}
+import "./pages/calCapture";    // window.VOLO_CAL_CAPTURE（须在 calibrate 前，供其 center 委派）
+import "./pages/calAr";         // window.VOLO_CAL_AR
+import "./pages/calLedExt";     // window.VOLO_CAL_LED
 import "./pages/calibrate";     // window.VOLO_PAGES.calibrate
 
 export { App };

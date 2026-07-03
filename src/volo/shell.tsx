@@ -490,6 +490,12 @@ function App() {
   /* calSel 不持久化：检查器初始必收起（见上方 rightCollapsed 注释），若挂载时恢复选中，
      详情会卡在 0 宽列里不可见，且重点同一对象不产生上升沿、弹不开。 */
   const [calSel, setCalSel] = useState(null);
+  /* Claude Design 增量：LED/AR 舞台分支、AR 六步、AR marker map、Lens 运行态、网格重建态 */
+  const [calStageType, setCalStageType] = useState(persisted.calStageType === 'ar' ? 'ar' : 'led');
+  const [calArStep, setCalArStep] = useState(persisted.calArStep || 'markers');
+  const [calArMap, setCalArMap] = useState(persisted.calArMap || 'floor');
+  const [calLensState, setCalLensState] = useState(persisted.calLensState || 'idle');
+  const [calMeshState, setCalMeshState] = useState(persisted.calMeshState || 'built');
   /* 集群总览：全新设置演示（无机器 → 引导扫描添加）+ 本会话已添加机器标记 */
   const [freshSetup, setFreshSetup] = useState(!!persisted.freshSetup);
   const [machinesAdded, setMachinesAdded] = useState(false);
@@ -529,10 +535,10 @@ function App() {
   useEffect(() => {
     clearTimeout(persistTimer.current);
     persistTimer.current = setTimeout(() => {
-      try { localStorage.setItem('volo2', JSON.stringify({ page, selNode, cacheNav, ddcOpen, calStep, calScreen, calMethod, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed })); } catch (e) {}
+      try { localStorage.setItem('volo2', JSON.stringify({ page, selNode, cacheNav, ddcOpen, calStep, calScreen, calMethod, calStageType, calArStep, calArMap, calLensState, calMeshState, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed })); } catch (e) {}
     }, 150);
     return () => clearTimeout(persistTimer.current);
-  }, [page, selNode, cacheNav, ddcOpen, calStep, calScreen, calMethod, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed]);
+  }, [page, selNode, cacheNav, ddcOpen, calStep, calScreen, calMethod, calStageType, calArStep, calArMap, calLensState, calMeshState, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed]);
 
   /* 禁掉桌面 WebView 的右键菜单（reload / 检查）；calibrate 画布另有本地 preventDefault */
   useEffect(() => {
@@ -831,6 +837,8 @@ function App() {
     enrolled, setEnrolled, creds, setCreds,
     tasks, setTasks, runTask, runCmd, runStreamingCmd, cancelTask, conTab, setConTab, logSearch, setLogSearch, logPaused, setLogPaused,
     calStep, setCalStep, calScreen, setCalScreen, calMethod, setCalMethod, calSel, setCalSel,
+    calStageType, setCalStageType, calArStep, setCalArStep, calArMap, setCalArMap,
+    calLensState, setCalLensState, calMeshState, setCalMeshState,
     leftCollapsed, setLeftCollapsed, rightCollapsed, setRightCollapsed, maximized,
     machines, setMachines, shares, setShares, projects, setProjects, gpuMatrix, cluster, cacheLoading, cacheError, reloadCache };
 

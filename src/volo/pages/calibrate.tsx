@@ -174,17 +174,59 @@ import {
   }
 
   /* =================== context toolbar =================== */
-  /* 重建 / 导出 / 生成指导卡 三个按钮已移除（导出 / 生成指导卡 迁至左侧导航「输出」），
-     仅保留居中显示的「屏幕」选择器 */
+  /* 块5 · 项目上下文 chip —— 接真实 projStore：最近项目（list_recent_projects）/
+     打开 project.yaml（pickAndOpenProject）/ 一键 seed 示例项目。 */
+  function ProjectChip({ s }) {
+    const proj = useProj();
+    const [open, setOpen] = useState(false);
+    const ref = useRef(null);
+    useEffect(() => {
+      if (!open) return;
+      const fn = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+      document.addEventListener('mousedown', fn);
+      return () => document.removeEventListener('mousedown', fn);
+    }, [open]);
+    const curName = proj.config && proj.config.project ? proj.config.project.name
+      : (proj.path ? proj.path.split(/[\\/]/).pop() : null);
+    return h('div', { className: 'ctx-drop cal-proj', ref },
+      h('button', { className: 'ctx-drop-btn cal-proj-btn', onClick: () => setOpen((v) => !v) },
+        h(Icon, { name: 'folder', size: 15 }),
+        h('div', { className: 'cal-proj-lbl' }, h('span', { className: 'k' }, '项目'), h('span', { className: 'v' }, curName || '未打开')),
+        h(Icon, { name: 'chevd', size: 14 })),
+      open ? h('div', { className: 'popover cal-proj-pop', style: { left: 0, right: 'auto' } },
+        h('div', { className: 'cpp-h' }, '最近项目'),
+        !proj.recent.length ? h('div', { className: 'cpp-empty' }, h(Icon, { name: 'folder', size: 20 }),
+          h('span', null, '尚未打开任何项目'), h('em', null, '选择 project.yaml 或一键 seed 示例项目')) : null,
+        proj.recent.slice(0, 6).map((r) => h('div', { key: r.id, className: 'pop-i' + (r.abs_path === proj.path ? ' on' : ''),
+          onClick: () => { setOpen(false); openProjectPath(r.abs_path, s).catch((e) => projStore.patch({ error: e && e.message ? e.message : String(e) })); } },
+          h('div', { style: { display: 'flex', flexDirection: 'column', lineHeight: 1.35, minWidth: 0 } },
+            h('span', { className: 'pop-l' }, r.display_name),
+            h('span', { className: 'pop-s' }, r.abs_path)),
+          r.abs_path === proj.path ? h('span', { style: { marginLeft: 'auto', color: 'var(--volo-500)', display: 'flex' } }, h(Icon, { name: 'check', size: 15 })) : null)),
+        h('div', { className: 'cpp-acts' },
+          h('button', { onClick: () => { setOpen(false); pickAndOpenProject(s); } }, h(Icon, { name: 'folder', size: 14 }), '打开项目…'),
+          h('button', { onClick: () => { setOpen(false); pickAndSeedExample(s, 'curved-flat'); } }, h(Icon, { name: 'plus', size: 14 }), '示例项目'))) : null);
+  }
+
+  /* ctx：LED/AR 舞台切换 + 项目 chip + （AR）Marker Map 选择器 / （LED）屏幕选择器。 */
   function ctx(s) {
     const proj = useProj();
+    const ar = s.calStageType === 'ar';
     const screens = deriveScreens(proj.config);
+    const seg = h('div', { className: 'cap-phase-seg', style: { marginLeft: 10 } },
+      h('button', { className: ar ? '' : 'on', onClick: () => s.setCalStageType('led') }, 'LED'),
+      h('button', { className: ar ? 'on' : '', onClick: () => s.setCalStageType('ar') }, 'AR'));
     return h(React.Fragment, null,
-      h(CtxTitle, { icon: 'calibrate', title: 'Calibrate', sub: 'LED 网格重建 → 镜头校正' }),
-      h('div', { className: 'ctx-center' },
-        screens.length ? h(Selector, { kpre: '屏幕', value: s.calScreen, width: 196,
-          options: screens.map((x) => ({ id: x.id, label: x.name, sub: `${x.cols}×${x.rows} · ${x.panels} 面板` })),
-          onChange: s.setCalScreen }) : h('span', { className: 'toolchip' }, proj.loading ? '加载中…' : '未打开项目')));
+      h(CtxTitle, { icon: 'calibrate', title: 'Calibrate', sub: ar ? 'AR 舞台 · 空间校正 → 拍摄就绪' : 'LED 网格重建 → 镜头校正' }),
+      seg,
+      h('div', { className: 'ctx-div' }),
+      h('div', { style: { marginLeft: 'auto', marginRight: 'auto', display: 'flex', alignItems: 'center', gap: 8 } },
+        h(ProjectChip, { s }),
+        ar
+          ? (window.VOLO_CAL_AR ? window.VOLO_CAL_AR.markerMapSelector(s) : null)
+          : (screens.length ? h(Selector, { kpre: '屏幕', value: s.calScreen, width: 196,
+              options: screens.map((x) => ({ id: x.id, label: x.name, sub: `${x.cols}×${x.rows} · ${x.panels} 面板` })),
+              onChange: s.setCalScreen }) : h('span', { className: 'toolchip' }, proj.loading ? '加载中…' : '未打开项目'))));
   }
 
   /* =================== left: workflow =================== */
@@ -220,6 +262,8 @@ import {
 
   function left(s) {
     const proj = useProj();
+    /* AR 舞台分支：整栏委派给 VOLO_CAL_AR（useProj 已无条件调用，hooks 顺序稳定）。 */
+    if (s.calStageType === 'ar' && window.VOLO_CAL_AR) return window.VOLO_CAL_AR.left(s);
     const mesh = CAL_STEPS.filter((x) => x.group === 'mesh');
     const lens = CAL_STEPS.filter((x) => x.group === 'lens');
     const runId = proj.reconstruction && proj.reconstruction.run_id;
@@ -261,8 +305,10 @@ import {
         h('div', { className: 'farm-roll' },
           h('div', { className: 'top' }, h('span', null, '重建进度'), h('span', null, '4 / 5')),
           h('div', { className: 'vmeter vmeter--accent' }, h('div', { className: 'vmeter__fill', style: { width: '80%' } })),
-          h('div', { className: 'top', style: { marginTop: 10 } }, h('span', null, '镜头校正'), h('span', null, '未运行')),
-          h('div', { className: 'vmeter vmeter--neutral' }, h('div', { className: 'vmeter__fill', style: { width: '0%' } })))));
+          h('div', { className: 'top', style: { marginTop: 10 } }, h('span', null, '镜头校正'),
+            h('span', null, s.calLensState === 'done' ? '已校正' : s.calLensState === 'running' ? '运行中' : '未运行')),
+          h('div', { className: 'vmeter vmeter--' + (s.calLensState === 'done' ? 'positive' : 'neutral') },
+            h('div', { className: 'vmeter__fill', style: { width: s.calLensState === 'done' ? '100%' : s.calLensState === 'running' ? '50%' : '0%' } })))));
   }
 
   /* =================== Design: cabinet editor =================== */
@@ -582,6 +628,8 @@ import {
   }
   function surveyView(s, proj) {
     if (s.calMethod === 'm2') {
+      /* M2 视觉：Claude Design 块3（pattern / manifest / 内参 / BA 重建 / 摘要），接真 mesh_visual_*。 */
+      if (window.VOLO_CAL_LED) return h(window.VOLO_CAL_LED.SurveyM2, { s, proj });
       return h(React.Fragment, null,
         h('div', { className: 'canvas-head' }, h('span', { className: 't' }, '测量导入 · M2 视觉')),
         h('div', { className: 'surv' },
@@ -752,18 +800,28 @@ import {
         h('span', { className: 'toolchip' }, h(Icon, { name: 'layers', size: 14 }), surface.vertices.length.toLocaleString() + ' 顶点'),
         h('div', { className: 'right' }, rmsBadge(qm.estimated_rms_mm))),
       h('div', { className: 'cabstage', style: { padding: 0 } },
-        h('div', { className: 'prev-badge' },
-          h('span', { className: 'toolchip' }, h('span', { className: 'leg-sw', style: { background: 'url(#none)', backgroundColor: 'rgba(255,150,40,.3)', border: '1px solid rgba(255,150,40,.6)' } }),
-            `外插 / 低置信 · ${qm.extrapolated_count}`)),
+        /* 块1 · 顶点来源三态图例（measured / interpolated / extrapolated），
+           surface.vertex_provenance 为空时不显示（不假设「全部已测量」）。 */
+        (surface.vertex_provenance && surface.vertex_provenance.length)
+          ? h('div', { className: 'prev-badge prev-prov' },
+              Object.keys(PROVENANCE).map((k) => h('span', { key: k, className: 'prov-leg' },
+                h('span', { className: 'prov-sw', style: { background: PROVENANCE[k].dot } }), PROVENANCE[k].label)))
+          : null,
         h('div', { className: 'cal-axis' }, 'PERSP · world'),
         h(MeshPreview3D, { surface }),
         h('div', { className: 'rot-hint' }, h(Icon, { name: 'rotate', size: 13 }), '拖动旋转')),
-      h('div', { className: 'modebar', style: { gap: 9 } },
+      h('div', { className: 'modebar', style: { gap: 9, flexWrap: 'wrap' } },
         h('div', { className: 'qbar' },
           Q('middle_max_dev', fmt(qm.middle_max_dev_mm), 'mm', visOf(qm.middle_max_dev_mm)),
           Q('middle_mean_dev', fmt(qm.middle_mean_dev_mm), 'mm', visOf(qm.middle_mean_dev_mm)),
           Q('estimated_rms', fmt(qm.estimated_rms_mm), 'mm', visOf(qm.estimated_rms_mm)),
-          Q('estimated_p95', fmt(qm.estimated_p95_mm), 'mm', visOf(qm.estimated_p95_mm)))));
+          Q('estimated_p95', fmt(qm.estimated_p95_mm), 'mm', visOf(qm.estimated_p95_mm)),
+          /* 块1 · extrapolated 计数：0 → positive，>0 → notice + tooltip */
+          h('div', { className: 'qmetric', title: qm.extrapolated_count > 0 ? '凸包外 / 距实测点过远的外推顶点，误差不受 RMS 背书' : '无外推顶点' },
+            h('div', { className: 'qk' }, 'extrapolated'),
+            h('div', { className: 'qv s-' + (qm.extrapolated_count > 0 ? 'notice' : 'positive') }, qm.extrapolated_count,
+              qm.extrapolated_count > 0 ? h(Icon, { name: 'alert', size: 12, style: { marginLeft: 4, verticalAlign: '-1px' } }) : null))),
+        qm.estimated_rms_mm == null ? h('div', { className: 'prev-warn' }, h(Icon, { name: 'info', size: 13 }), '实测点不足，无法背书精度') : null));
   }
 
   /* =================== Runs =================== */
@@ -1092,20 +1150,30 @@ import {
     switch (s.calStep) {
       case 'method': return methodView(s);
       case 'survey': return surveyView(s, proj);
+      case 'capture': return window.VOLO_CAL_CAPTURE ? h(window.VOLO_CAL_CAPTURE.CaptureView, { s }) : null;
       case 'preview': return previewView(s, proj);
       case 'runs': return h(React.Fragment, null,
         h('div', { className: 'canvas-head' }, h('span', { className: 't' }, '重建历史'),
           h('div', { className: 'right' }, h('span', { className: 'toolchip' }, (proj.runs || []).length + ' 次重建'))),
-        h(RunsTable, { s, proj }));
-      case 'lens': return h(LensPanel, { s });
+        h('div', { className: 'cal-scroll', style: { minHeight: 0 } },
+          window.VOLO_CAL_LED ? h(window.VOLO_CAL_LED.FusePanel, { s, proj }) : null,
+          h(RunsTable, { s, proj })));
+      /* Lens 步用 Claude Design 的完整报告视图（VOLO_CAL_LED.LensView，接真 vpcal quick-run）；
+         回退到旧 LensPanel（同样接 vpcal）以防模块未加载。 */
+      case 'lens': return window.VOLO_CAL_LED ? h(window.VOLO_CAL_LED.LensView, { s }) : h(LensPanel, { s });
       default: return h(CabinetEditor, { s });
     }
   }
   function center(s) {
     const proj = useProj();
-    /* 仅 Design 步（非 method/survey/preview/runs/lens）走满铺画布：
+    /* AR 舞台分支：整块 center 委派给 VOLO_CAL_AR；CalController 仍挂载以维持 LED 项目状态。
+       useProj() 已无条件调用，hooks 顺序稳定。 */
+    if (s.calStageType === 'ar' && window.VOLO_CAL_AR) {
+      return h(React.Fragment, null, h(CalController, { s }), window.VOLO_CAL_AR.center(s));
+    }
+    /* 仅 Design 步（非 method/survey/capture/preview/runs/lens）走满铺画布：
        画布铺满编辑区，顶部工具栏 / 底部模式按钮 / 图例浮动其上，取消外层卡片框 */
-    const bleed = !['method', 'survey', 'preview', 'runs', 'lens'].includes(s.calStep);
+    const bleed = !['method', 'survey', 'capture', 'preview', 'runs', 'lens'].includes(s.calStep);
     return h(React.Fragment, null,
       h(CalController, { s }),
       h('div', { className: 'dash cal-dash' + (bleed ? ' cal-dash--bleed' : '') },
@@ -1131,6 +1199,9 @@ import {
         .catch((e) => { if (!cancelled) setRunReport({ id: sel.id, error: e && e.message ? e.message : String(e) }); });
       return () => { cancelled = true; };
     }, [sel && sel.type === 'run' ? sel.id : null]);
+
+    /* AR 舞台分支：检查器委派给 VOLO_CAL_AR（LED 相关 hooks 已全部无条件调用完毕）。 */
+    if (s.calStageType === 'ar' && window.VOLO_CAL_AR) return window.VOLO_CAL_AR.inspector(s);
 
     if (!sel) return h('div', { className: 'insp-empty' },
       h('div', { className: 'ph' }, h(Icon, { name: 'target', size: 30 })),
