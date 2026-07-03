@@ -194,6 +194,7 @@ pub fn run() {
             commands::machines::rename_machine,
             commands::machines::get_machine_detail,
             commands::machines::list_ue_runtime_users,
+            commands::machines::set_ue_runtime_user,
             commands::bootstrap::bootstrap_winrm,
             commands::bootstrap::get_winrm_bootstrap_script,
             commands::bootstrap::package_ssh_bootstrap,

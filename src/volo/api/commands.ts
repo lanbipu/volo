@@ -45,6 +45,8 @@ export const renameMachine = (id: number, hostname: string) => call<void>("renam
 export const getMachineDetail = (id: number) => call<MachineDetail>("get_machine_detail", { id });
 // ✅ wired: loadCacheResources → toNodeVM(user 字段) + cacheZen ②「用户全局」配置范围就绪判断
 export const listUeRuntimeUsers = () => call<UeRuntimeUserRow[]>("list_ue_runtime_users");
+// ✅ wired: 机器详情抽屉「① 身份 · UE 运行用户」内联编辑 → setUeRuntimeUser + reloadCache（空串 = 清除）
+export const setUeRuntimeUser = (machineId: number, ueUser: string) => call<void>("set_ue_runtime_user", { machineId, ueUser });
 
 /* ----------------------------- bootstrap / system ----------------------------- */
 // ✅ wired: ScriptPanel → getWinrmBootstrapScript（异步加载真实脚本）

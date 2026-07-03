@@ -58,6 +58,18 @@ pub struct UeRuntimeUserRow {
     pub ue_runtime_user: Option<String>,
 }
 
+/// Set (or clear, with empty / blank string) `machine_id`'s UE runtime
+/// Windows username — the in-app counterpart of `voloctl cache machine
+/// set-ue-user`. Zen 的用户全局指向 / 本地端口 / 本地缓存目录 / runcontext
+/// 回读都要靠它定位 `C:\Users\<user>\...`；没有 App 内入口时全新环境会
+/// 卡死在只能跑 CLI 的指引上。
+#[tauri::command]
+pub fn set_ue_runtime_user(db: State<'_, Db>, machine_id: i64, ue_user: String) -> VoloResult<()> {
+    let trimmed = ue_user.trim();
+    let user_opt = if trimmed.is_empty() { None } else { Some(trimmed) };
+    data_machines::set_ue_runtime_user(&db, machine_id, user_opt)
+}
+
 /// Bulk `ue_runtime_user` read for every machine — hydrates the machine list
 /// view's "该机 UE 运行用户" field (Cache · ZenServer ② 客户端指向 · 用户全局
 /// scope readiness) without one round trip per machine.

@@ -628,7 +628,7 @@ import {
                 ' 相撞。',
                 runtimeUser(srvNode)
                   ? '把本机的本地 Zen 端口改走，二者即可共存。'
-                  : '该机未设置 UE 运行用户，无法定位 UserEngine.ini —— 先在集群总览配置运行用户（machine set-ue-user），再来改端口。')),
+                  : '该机未设置 UE 运行用户，无法定位 UserEngine.ini —— 先到集群总览点开这台机器，在「① 身份 · UE 运行用户」里填上，再来改端口。')),
             runtimeUser(srvNode)
               ? h('button', { type: 'button', className: 'zcolo-btn', onClick: () => openPortModal(srvNode.id, 8559, backToDeploy) },
                   h(Icon, { name: 'bolt', size: 13 }), '把本地 Zen 改到 8559')
@@ -867,7 +867,7 @@ import {
         const n = CX.node(id);
         if (!n || n.status === 'offline') return;
         if (!runtimeUser(n)) {
-          setZres((r) => Object.assign({}, r, { [id]: { st: 'fail', msg: '该机未设置 UE 运行用户，无法定位注册表 hive，也无法回读生效值 · 先配置 ue_runtime_user（machine set-ue-user）', path } }));
+          setZres((r) => Object.assign({}, r, { [id]: { st: 'fail', msg: '该机未设置 UE 运行用户，无法定位注册表 hive，也无法回读生效值 · 到集群总览打开该机详情，在「UE 运行用户」里填上', path } }));
           log(s, 'warn', `<b>zen_set_local_datapath</b> · ${esc(n.host)} 未设 ue_runtime_user，本地 Zen 目录写入跳过`);
           return;
         }
@@ -983,7 +983,7 @@ import {
           return;
         }
         if (!runtimeUser(n)) {
-          setRes((r) => Object.assign({}, r, { [id]: { st: 'fail', msg: '该机未设置 UE 运行用户 · 先配置 ue_runtime_user（machine set-ue-user）' } }));
+          setRes((r) => Object.assign({}, r, { [id]: { st: 'fail', msg: '该机未设置 UE 运行用户 · 到集群总览打开该机详情，在「UE 运行用户」里填上' } }));
           log(s, 'warn', `<b>zen_enable_global</b> · ${esc(n.host)} 未设 ue_runtime_user，用户全局写入跳过`);
           return;
         }
@@ -1056,7 +1056,7 @@ import {
         ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }),
             cfgScope === 'project'
               ? selBlocked.length + ' 台选中机器未发现工程，将被跳过 · 先去集群总览发现工程'
-              : selBlocked.length + ' 台选中机器未设置 ue_runtime_user，将被跳过 · 先配置运行用户')
+              : selBlocked.length + ' 台选中机器未设置 UE 运行用户，将被跳过 · 到集群总览逐台打开机器详情填「UE 运行用户」')
         : null);
 
     const clientBadge = (n) => {
@@ -1512,14 +1512,18 @@ import {
        「已指向机器」明细仍只统计客户端。 */
     const clients = RN.filter((n) => !(status && n.machineId === status.machineId) && !(deployedNode && n.id === deployedNode.id));
 
-    /* 一级页面直显：已指向此服务器的客户端逐台明细 —— 名称 / 部署类型（工程级 or 用户全局）/
+    /* 一级页面直显：已指向此服务器的机器逐台明细 —— 名称 / 部署类型（工程级 or 用户全局）/
        工程级时具体指向了哪些工程。没有单独持久化「每台机器用的范围」，用该机是否有已发现
-       工程作为判定依据。pointedCount 由此派生，避免同一个 filter 对 clients 重复跑两遍。 */
-    const pointedClientRows = clients.filter((n) => pointed.has(n.id)).map((n) => {
-      const projs = clientProjects(n.id);
-      return { n, isProject: projs.length > 0, projs };
-    });
+       工程作为判定依据。pointedCount 由此派生，避免同一个 filter 对 clients 重复跑两遍。
+       服务器本机回环指向后也计入 —— 弹层里能指它，一级明细却不显示会看起来像指向丢了；
+       行内加「服务器本机」徽标区分。 */
+    const pointedClientRows = (deployedNode && pointed.has(deployedNode.id) ? [deployedNode] : [])
+      .concat(clients.filter((n) => pointed.has(n.id))).map((n) => {
+        const projs = clientProjects(n.id);
+        return { n, isProject: projs.length > 0, projs, isServer: !!(deployedNode && n.id === deployedNode.id) };
+      });
     const pointedCount = pointedClientRows.length;
+    const pointableCount = clients.length + (deployedNode ? 1 : 0);
 
     /* ============ 渲染 ============ */
     const sMeta = SVC_STATE[(status && status.svc) || 'unknown'] || SVC_STATE.unknown;
@@ -1644,7 +1648,7 @@ import {
       const n = CX.node(id);
       if (!n || !n.machineId) return;
       if (!runtimeUser(n)) {
-        log(s, 'warn', `<b>zen_local_port_set</b> · ${esc(n.host)} 未设 ue_runtime_user，无法定位 UserEngine.ini · 先配置运行用户（machine set-ue-user）`);
+        log(s, 'warn', `<b>zen_local_port_set</b> · ${esc(n.host)} 未设 ue_runtime_user，无法定位 UserEngine.ini · 到集群总览打开该机详情填「UE 运行用户」`);
         return;
       }
       s.setModal({
@@ -1730,10 +1734,10 @@ import {
               projScope.forEach((r) => r.projs.forEach((p) => distinctProjs.add(p.id)));
               return h(React.Fragment, null,
                 h('div', { className: 'zsv-heros' },
-                  hero(pointedCount, '台', '已指向客户端', 'accent'),
+                  hero(pointedCount, '台', '已指向机器', 'accent'),
                   hero(distinctProjs.size, '个', '覆盖工程')),
                 h('div', { className: 'zsv-chips' },
-                  chip('指向覆盖', pointedCount + ' / ' + clients.length + ' 台'),
+                  chip('指向覆盖', pointedCount + ' / ' + pointableCount + ' 台'),
                   chip('工程级', projScope.length + ' 台'),
                   chip('用户全局', userScope.length + ' 台')),
                 h('div', { className: 'zcl-list-h' },
@@ -1742,7 +1746,7 @@ import {
                 h('div', { className: 'zcl-list' },
                   pointedClientRows.length === 0
                     ? h('div', { className: 'zcl-empty' }, h(Icon, { name: 'link', size: 18 }), '暂无客户端指向此服务器')
-                    : pointedClientRows.map(({ n, isProject, projs }) => {
+                    : pointedClientRows.map(({ n, isProject, projs, isServer }) => {
                         /* 逐行明细：IP + 本地 Zen 缓存目录（zdirs 真实回读：自定义配置值优先，
                            其次 runcontext 生效值，未配置 = 默认 C 盘提示；读取中/不可读如实展示）；
                            工程级再逐个列出工程名 + 该机上的工程根路径（locByMachine 每机独立，
@@ -1759,6 +1763,7 @@ import {
                             h('div', { className: 'zcl-row-topline' },
                               h('span', { className: 'zcl-row-host mono' }, n.host),
                               h('span', { className: 'zcl-row-ip mono' }, n.ip),
+                              isServer ? h('span', { className: 'zsrv-badge' }, h(Icon, { name: 'server', size: 11 }), '服务器本机') : null,
                               h('span', { className: 'zcl-row-badge' + (isProject ? ' proj' : ' user') }, isProject ? '工程级' : '用户全局')),
                             h('div', { className: 'zcl-meta' },
                               h('div', { className: 'zcl-meta-row' },

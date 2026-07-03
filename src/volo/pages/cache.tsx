@@ -10,7 +10,7 @@ import "../ds";
 import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
   getWinrmBootstrapScript, getMachineDetail, scanNetwork, addDiscoveredMachine,
   runHealthCheck, scanInis, applyFinding, getMachineEnvVar, readIniSection,
-  packageSshBootstrap, pickDirectory, revealPath } from "../api/commands";
+  packageSshBootstrap, pickDirectory, revealPath, setUeRuntimeUser } from "../api/commands";
 
 (function () {
   const { Button, Badge } = window.Spectrum2DesignSystem_b6d1b3;
@@ -565,6 +565,21 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
       loadDdcConfig(mid).then((v) => { if (alive) setDdc(v); }, () => { if (alive) setDdc({ err: true }); });
       return () => { alive = false; };
     }, [n ? n.machineId : null]);
+    /* ①「UE 运行用户」内联编辑：Zen 用户全局指向 / 本地端口 / 本地缓存目录都靠它定位
+       C:\Users\<用户>\…；这是它在 App 内唯一的写入口（原先只有 CLI machine set-ue-user，
+       全新环境会卡死）。保存 = DB 本地写（无远程副作用），成功后 reloadCache 即时生效。 */
+    const savedUeUser = n && n.user !== '—' ? n.user : '';
+    const [ueUserDraft, setUeUserDraft] = useState(savedUeUser);
+    const [ueUserSt, setUeUserSt] = useState(null); /* null | 'saving' | 'ok' | {err} */
+    useEffect(() => { setUeUserDraft(savedUeUser); setUeUserSt(null); }, [n ? n.machineId : null, savedUeUser]);
+    const ueUserDirty = ueUserDraft.trim() !== savedUeUser;
+    const saveUeUser = () => {
+      if (!ueUserDirty || ueUserSt === 'saving') return;
+      setUeUserSt('saving');
+      setUeRuntimeUser(n.machineId, ueUserDraft.trim()).then(
+        () => { setUeUserSt('ok'); s.reloadCache(); },
+        (e) => setUeUserSt({ err: e && e.message ? e.message : String(e) }));
+    };
     if (!n) return null;
     const off = n.status === 'offline';
     const close = () => s.setDrawer(null);
@@ -595,7 +610,22 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
               onPress: () => s.setDrawer({ kind: 'script', id: n.id }) }, '获取入网脚本'),
             h('div', { className: 'deploy-ok-note' }, 'SSH key 现场入网 · 拷到目标机运行后回来刷新'))) : null,
         h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '① 身份'),
-          KV('IP 地址', n.ip, true), KV('角色', n.role), KV('最后在线', n.last)),
+          KV('IP 地址', n.ip, true), KV('角色', n.role), KV('最后在线', n.last),
+          h('div', { className: 'ueuser-edit' },
+            h('div', { className: 'ueuser-row' },
+              h('span', { className: 'k' }, 'UE 运行用户'),
+              h('input', { className: 'ss-input mono ueuser-input', value: ueUserDraft, spellCheck: false,
+                placeholder: '该机跑 UE 的 Windows 用户名',
+                onChange: (e) => { setUeUserDraft(e.target.value); setUeUserSt(null); },
+                onKeyDown: (e) => { if (e.key === 'Enter') saveUeUser(); } }),
+              h('button', { className: 'mini-btn', disabled: !ueUserDirty || ueUserSt === 'saving', onClick: saveUeUser },
+                ueUserSt === 'saving' ? '保存中…' : '保存')),
+            ueUserSt && ueUserSt.err
+              ? h('div', { className: 'ueuser-note s-negative' }, h(Icon, { name: 'alert', size: 11 }), '保存失败 · ' + ueUserSt.err)
+              : ueUserSt === 'ok'
+                ? h('div', { className: 'ueuser-note s-positive' }, h(Icon, { name: 'check', size: 11 }), '已保存 · 即时生效')
+                : h('div', { className: 'ueuser-note' },
+                    'Zen 的「用户全局」指向、本地端口、本地缓存目录都需要它来定位 C:\\Users\\<用户>\\… 配置；留空保存 = 清除。'))),
         h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '② UE 安装'),
           KV('版本', ueVer), KV('安装路径', uePath, true)),
         h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '③ GPU（入网后自动采集 · 已过滤虚拟适配器）'),
