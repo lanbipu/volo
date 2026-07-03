@@ -65,11 +65,22 @@ pub fn validate_port(port: i64, forbidden: Option<i64>) -> VoloResult<()> {
 
 /// Read the configured `DesiredPort` from `ini_path` on `host`.
 /// `None` = file/section/key absent (UE default 8558 applies) — a missing
-/// file is NOT an error, matching `enable_global`'s read semantics.
+/// file is NOT an error, matching `enable_global`'s read semantics. Any other
+/// read failure (SSH unreachable, sidecar error) propagates: reporting an
+/// unreadable machine as "no override" would be a lie the status view acts on.
 pub fn read_configured_port(host: &str, ini_path: &str) -> VoloResult<Option<i64>> {
     let rows = match read_section(host, ini_path, SECTION) {
         Ok(rows) => rows,
-        Err(_) => return Ok(None),
+        Err(e) => {
+            // Missing file: local loopback surfaces io NotFound ("No such
+            // file"); the read-ini-section.ps1 sidecar throws "file not
+            // found: <path>". Both mean "no override yet", not a failure.
+            let msg = e.to_string();
+            if msg.contains("file not found") || msg.contains("No such file") {
+                return Ok(None);
+            }
+            return Err(e);
+        }
     };
     Ok(rows
         .iter()

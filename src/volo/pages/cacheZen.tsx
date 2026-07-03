@@ -277,6 +277,7 @@ import {
   function ZenPortModal({ s, node, rec, suggest, onApply, onClear, close, onBack }) {
     const [cur, setCur] = useState(() => rec || null);      /* {configured, actual, running} */
     const [curLoading, setCurLoading] = useState(true);
+    const [curFail, setCurFail] = useState(false);
     const [port, setPort] = useState(String((rec && rec.configured != null) ? rec.configured : suggest));
     const [phase, setPhase] = useState('idle');   /* idle | applying | done | fail */
     const [msg, setMsg] = useState('');
@@ -287,7 +288,7 @@ import {
           setCur({ configured: st.configured_port, actual: st.actual_port, running: st.running });
           if (st.configured_port != null) setPort(String(st.configured_port));
           setCurLoading(false); },
-        () => { if (alive) setCurLoading(false); });
+        () => { if (alive) { setCurFail(true); setCurLoading(false); } });
       return () => { alive = false; };
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -327,13 +328,14 @@ import {
         h('div', { className: 'zport-cur' },
           h('div', { className: 'zport-cur-col' },
             h('span', { className: 'zport-cur-k' }, '配置端口'),
-            h('span', { className: 'zport-cur-v mono' + (curLoading ? ' none' : '') }, curLoading ? '读取中…' : String(configured))),
+            h('span', { className: 'zport-cur-v mono' + (curLoading || curFail ? ' none' : '') },
+              curLoading ? '读取中…' : curFail ? '读取失败 · —' : String(configured))),
           h('span', { className: 'zport-cur-arr' }, h(Icon, { name: 'arrowr', size: 15 })),
           h('div', { className: 'zport-cur-col' },
             h('span', { className: 'zport-cur-k' }, '实际运行'),
-            h('span', { className: 'zport-cur-v mono' + (curLoading || running == null ? ' none' : '') },
-              curLoading ? '读取中…' : running != null ? String(running) : '未运行 · —')),
-          curLoading ? null : overridden ? h('span', { className: 'zport-tag' }, '已改端口') : h('span', { className: 'zport-tag ghost' }, '默认端口')),
+            h('span', { className: 'zport-cur-v mono' + (curLoading || curFail || running == null ? ' none' : '') },
+              curLoading ? '读取中…' : curFail ? '—' : running != null ? String(running) : '未运行 · —')),
+          curLoading || curFail ? null : overridden ? h('span', { className: 'zport-tag' }, '已改端口') : h('span', { className: 'zport-tag ghost' }, '默认端口')),
         !settled ? h('div', { className: 'zport-field' },
           h('label', null, '新的本地端口'),
           h('div', { className: 'zport-input-row' },
