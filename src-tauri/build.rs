@@ -5,7 +5,10 @@ fn main() {
     // a sidecar `build_exe.sh` run — so ensure an (empty) dir exists on every
     // build. Empty is fine: it bundles nothing until the sidecars are built.
     // CARGO_MANIFEST_DIR = <workspace>/src-tauri; target/ is one level up.
-    let vendor = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    // Runtime env::var, NOT the env! macro: env! bakes the path in at compile
+    // time, so a cached build-script binary compiled in a since-deleted git
+    // worktree would recreate that worktree's directory on every rebuild.
+    let vendor = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
         .join("../target/sidecar-vendor");
     let _ = std::fs::create_dir_all(&vendor);
 
