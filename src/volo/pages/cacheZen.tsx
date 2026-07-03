@@ -286,7 +286,9 @@ import {
       zenLocalPortStatus(node.machineId).then(
         (st) => { if (!alive) return;
           setCur({ configured: st.configured_port, actual: st.actual_port, running: st.running });
-          if (st.configured_port != null) setPort(String(st.configured_port));
+          /* 预填跟随真实读数：有 override 用它，已被清除则回到建议端口——
+             不留打开时快照里的过期端口号冒充默认新值 */
+          setPort(st.configured_port != null ? String(st.configured_port) : String(suggest));
           setCurLoading(false); },
         () => { if (alive) { setCurFail(true); setCurLoading(false); } });
       return () => { alive = false; };
@@ -623,9 +625,14 @@ import {
                 h('span', { className: 'mono' }, '8558'),
                 '），与这台共享服务要占用的端口 ',
                 h('span', { className: 'mono' }, String(port)),
-                ' 相撞。把本机的本地 Zen 端口改走，二者即可共存。')),
-            h('button', { type: 'button', className: 'zcolo-btn', onClick: () => openPortModal(srvNode.id, 8559, backToDeploy) },
-              h(Icon, { name: 'bolt', size: 13 }), '把本地 Zen 改到 8559'))
+                ' 相撞。',
+                runtimeUser(srvNode)
+                  ? '把本机的本地 Zen 端口改走，二者即可共存。'
+                  : '该机未设置 UE 运行用户，无法定位 UserEngine.ini —— 先在集群总览配置运行用户（machine set-ue-user），再来改端口。')),
+            runtimeUser(srvNode)
+              ? h('button', { type: 'button', className: 'zcolo-btn', onClick: () => openPortModal(srvNode.id, 8559, backToDeploy) },
+                  h(Icon, { name: 'bolt', size: 13 }), '把本地 Zen 改到 8559')
+              : null)
         : h('div', { className: 'zcolo ok' },
             h('span', { className: 'zcolo-ico' }, h(Icon, { name: 'check', size: 16 })),
             h('div', { className: 'zcolo-tx' },
@@ -1368,15 +1375,23 @@ import {
     const [zports, setZports] = useState({});
     const [zpres, setZpres] = useState({});      /* nodeId -> { st: 'ok'|'fail', msg } */
     const zportGenRef = useRef(0);
+    /* 逐机代次：apply/clear 成功时 ++，作废该机所有在途回读——否则「另一台机器状态变化
+       触发的整轮回读」里针对本机、apply 前发出的请求可能晚于写入落地，把刚应用的乐观值
+       静默覆盖回旧值（全局 gen 挡不住同代次内的这种时序）。 */
+    const zportIdGenRef = useRef({});
     const reopenClientRef = useRef(null);
     const reopenDeployRef = useRef(null);
-    const readZportFor = (n, gen) => zenLocalPortStatus(n.machineId).then(
-      (st) => { if (gen !== zportGenRef.current) return;
-        setZports((d) => Object.assign({}, d, { [n.id]: {
-          configured: st.configured_port, actual: st.actual_port, running: st.running,
-          sharedPort: st.shared_upstream_port, loading: false, fail: false } })); },
-      () => { if (gen !== zportGenRef.current) return;
-        setZports((d) => Object.assign({}, d, { [n.id]: Object.assign({}, zportRecOf(d, n.id), { loading: false, fail: true }) })); });
+    const readZportFor = (n, gen) => {
+      const idGen = zportIdGenRef.current[n.id] || 0;
+      const fresh = () => gen === zportGenRef.current && idGen === (zportIdGenRef.current[n.id] || 0);
+      return zenLocalPortStatus(n.machineId).then(
+        (st) => { if (!fresh()) return;
+          setZports((d) => Object.assign({}, d, { [n.id]: {
+            configured: st.configured_port, actual: st.actual_port, running: st.running,
+            sharedPort: st.shared_upstream_port, loading: false, fail: false } })); },
+        () => { if (!fresh()) return;
+          setZports((d) => Object.assign({}, d, { [n.id]: Object.assign({}, zportRecOf(d, n.id), { loading: false, fail: true }) })); });
+    };
     useEffect(() => {
       const gen = ++zportGenRef.current;
       (window.RENDER_NODES || [])
@@ -1538,6 +1553,7 @@ import {
       const n = CX.node(id);
       return zenLocalPortSet(n.machineId, portNum).then(
         (res) => {
+          zportIdGenRef.current[id] = (zportIdGenRef.current[id] || 0) + 1;
           setZports((d) => Object.assign({}, d, { [id]: Object.assign({}, zportRecOf(d, id), { configured: portNum, loading: false, fail: false }) }));
           setZpres((r) => Object.assign({}, r, { [id]: { st: 'ok', msg: '已写入 DesiredPort=' + portNum + ' · 重启该机 UE 编辑器后实际生效' } }));
           log(s, 'ok', `<b>zen_local_port_set</b> · ${esc(n.host)} UserEngine.ini [Zen.AutoLaunch] DesiredPort=${portNum}`);
@@ -1554,6 +1570,7 @@ import {
       const n = CX.node(id);
       return zenLocalPortClear(n.machineId).then(
         (res) => {
+          zportIdGenRef.current[id] = (zportIdGenRef.current[id] || 0) + 1;
           setZports((d) => Object.assign({}, d, { [id]: Object.assign({}, zportRecOf(d, id), { configured: null, loading: false, fail: false }) }));
           setZpres((r) => Object.assign({}, r, { [id]: { st: 'ok', msg: '已清除 override · 重启该机 UE 编辑器后恢复默认 ' + ZEN_LOCAL_DEFAULT_PORT } }));
           log(s, 'warn', `<b>zen_local_port_clear</b> · ${esc(n.host)} 清除 [Zen.AutoLaunch] DesiredPort（恢复默认 ${ZEN_LOCAL_DEFAULT_PORT}）`);

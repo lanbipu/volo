@@ -281,17 +281,19 @@ pub fn workstation_colocation_warning(
     let Some(user) = machines::get_ue_runtime_user(db, machine_id)? else {
         return Ok(None);
     };
-    // 方案一: a DesiredPort override that moves the editor-managed local zen
-    // off the shared service's port resolves the contention — no warning.
-    if let Some(p) = local_port_override {
-        if p != shared_port {
-            return Ok(None);
-        }
+    // 方案一: warn only when the port the editor-managed local zen will
+    // actually use (DesiredPort override, else the UE default 8558) collides
+    // with the shared service's port. A shared service on a non-default port
+    // never contends with an un-overridden local zen.
+    let effective_local = local_port_override.unwrap_or(crate::core::zen::local_port::DEFAULT_PORT);
+    if effective_local != shared_port {
+        return Ok(None);
     }
     Ok(Some(format!(
         "machine id={machine_id} looks like a UE workstation (ue_runtime_user={user:?} is \
-         set); its editor-managed local Zen also defaults to port {shared_port}, so \
-         co-locating the shared ZenServer service here invites port/ownership contention. \
+         set); its editor-managed local Zen will use port {effective_local}, colliding with \
+         the shared ZenServer service's port {shared_port} — co-location invites \
+         port/ownership contention. \
          Fix: move the local zen off the shared port with \
          `voloctl cache zen local-port set --machine {machine_id} --port 8559` \
          (writes [Zen.AutoLaunch] DesiredPort into the machine's UserEngine.ini; takes \

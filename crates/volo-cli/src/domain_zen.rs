@@ -4407,6 +4407,14 @@ mod tests {
                 .is_some(),
             "an override equal to the shared port does not resolve anything"
         );
+        // Shared service on a non-default port + no override → the local zen
+        // stays on 8558 and never contends — no warning.
+        assert!(
+            workstation_colocation_warning(&db, machine_id, 9500, None)
+                .unwrap()
+                .is_none(),
+            "a shared service off 8558 does not collide with an un-overridden local zen"
+        );
     }
 
     // ZEN-4: region-host normalization. Operators may pass a bare host, host:port,

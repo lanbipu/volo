@@ -71,16 +71,17 @@ pub fn validate_port(port: i64, forbidden: Option<i64>) -> VoloResult<()> {
 pub fn read_configured_port(host: &str, ini_path: &str) -> VoloResult<Option<i64>> {
     let rows = match read_section(host, ini_path, SECTION) {
         Ok(rows) => rows,
-        Err(e) => {
-            // Missing file: local loopback surfaces io NotFound ("No such
-            // file"); the read-ini-section.ps1 sidecar throws "file not
-            // found: <path>". Both mean "no override yet", not a failure.
-            let msg = e.to_string();
-            if msg.contains("file not found") || msg.contains("No such file") {
-                return Ok(None);
-            }
-            return Err(e);
+        // Missing file means "no override yet", not a failure. Local loopback
+        // surfaces io NotFound — match on the ErrorKind, NOT the message: on
+        // Windows the io::Error Display text is a localized FormatMessageW
+        // string that contains neither "file not found" nor "No such file".
+        Err(VoloError::Io(ref io)) if io.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(None);
         }
+        // The read-ini-section.ps1 sidecar throws its own fixed English
+        // "file not found: <path>" for an absent remote file.
+        Err(e) if e.to_string().contains("file not found") => return Ok(None),
+        Err(e) => return Err(e),
     };
     Ok(rows
         .iter()
