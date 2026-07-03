@@ -61,8 +61,15 @@ try {
     # failed SID translate / unloaded hive degrades to null, never to an error.
     $regDataPath = $null
     try {
-        $sid = (New-Object System.Security.Principal.NTAccount($RuntimeUser)).Translate(
-            [System.Security.Principal.SecurityIdentifier]).Value
+        # Microsoft-account-linked local users can fail the bare NTAccount
+        # lookup — retry machine-qualified before degrading to null.
+        try {
+            $sid = (New-Object System.Security.Principal.NTAccount($RuntimeUser)).Translate(
+                [System.Security.Principal.SecurityIdentifier]).Value
+        } catch {
+            $sid = (New-Object System.Security.Principal.NTAccount($env:COMPUTERNAME, $RuntimeUser)).Translate(
+                [System.Security.Principal.SecurityIdentifier]).Value
+        }
         $zenKey = "Registry::HKEY_USERS\$sid\Software\Epic Games\Zen"
         if (Test-Path -LiteralPath $zenKey) {
             $regDataPath = (Get-ItemProperty -LiteralPath $zenKey -ErrorAction SilentlyContinue).DataPath

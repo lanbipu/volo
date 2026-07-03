@@ -53,8 +53,15 @@ try {
         throw "DataPath must be an absolute Windows path (got '$DataPath')"
     }
 
-    $sid = (New-Object System.Security.Principal.NTAccount($RuntimeUser)).Translate(
-        [System.Security.Principal.SecurityIdentifier]).Value
+    # Microsoft-account-linked local users can fail the bare NTAccount lookup
+    # ("未能转换部分或所有标识引用") — retry machine-qualified before giving up.
+    try {
+        $sid = (New-Object System.Security.Principal.NTAccount($RuntimeUser)).Translate(
+            [System.Security.Principal.SecurityIdentifier]).Value
+    } catch {
+        $sid = (New-Object System.Security.Principal.NTAccount($env:COMPUTERNAME, $RuntimeUser)).Translate(
+            [System.Security.Principal.SecurityIdentifier]).Value
+    }
     $zenKey = "Registry::HKEY_USERS\$sid\Software\Epic Games\Zen"
     $hiveLoaded = Test-Path -LiteralPath "Registry::HKEY_USERS\$sid"
 
