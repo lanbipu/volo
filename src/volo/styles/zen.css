@@ -382,8 +382,9 @@
 .zdc-kv { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 9px 12px; background: var(--chrome-card); font-size: 12px; }
 .zdc-kv .k { color: var(--chrome-faint); flex: 0 0 auto; white-space: nowrap; }
 .zdc-kv .v { color: var(--chrome-text); font-weight: 700; flex: 1 1 auto; min-width: 0; text-align: right; white-space: normal; text-wrap: pretty; }
-.zdc-foot { display: flex; align-items: center; gap: 10px; margin-top: auto; padding-top: 14px; }
-.zdc-hint { font-size: 11px; color: var(--chrome-faint); }
+.zdc-hint { font-size: 11px; color: var(--chrome-faint); white-space: nowrap; }
+/* 卡片操作按钮上移到头部右侧，显眼易找（不再沉在卡底部）*/
+.zdc-head-act { margin-left: auto; display: flex; align-items: center; gap: 9px; flex: 0 0 auto; }
 
 /* 服务器卡 · 仪表化信息展示（大数字 hero + chip 组）*/
 .zsv-heros { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -517,3 +518,25 @@
 .zcolo-btn svg { flex: 0 0 auto; }
 .zcolo-btn.ghost { color: var(--chrome-dim); background: var(--wash); border: 1px solid var(--chrome-line-2); }
 .zcolo-btn.ghost:hover { background: var(--wash-2); color: var(--chrome-text); filter: none; }
+
+/* 客户端指向管理 · 分组标题（服务器本机 / 客户端） */
+.zcli-group-h { display: flex; align-items: baseline; gap: 8px; padding: 0 2px; }
+.cli-list .zcli-group-h:not(:first-child) { margin-top: 6px; }
+.zcli-group-t { font-size: 11px; font-weight: 800; letter-spacing: .04em; color: var(--chrome-dim); }
+.zcli-group-s { font-size: 10.5px; color: var(--chrome-faint); }
+.zcli-group-ct { font-size: 10.5px; font-weight: 700; color: var(--chrome-faint); background: var(--wash); padding: 1px 7px; border-radius: 8px; }
+
+/* 服务器本机行 · 明显标识（色 + 图标 + 文字三通道 badge，行体带弱强调底 + 强调边） */
+.cli-row.zcli--server { border-color: color-mix(in srgb, var(--volo-700) 34%, var(--chrome-line));
+  background: color-mix(in srgb, var(--volo-500) 6%, var(--chrome-card)); }
+.zsrv-hostline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.zsrv-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 800; letter-spacing: .02em;
+  color: var(--volo-400); background: var(--highlight-selected); border: 1px solid color-mix(in srgb, var(--volo-700) 34%, transparent);
+  padding: 1px 7px; border-radius: 6px; white-space: nowrap; flex: 0 0 auto; }
+.zsrv-badge svg { flex: 0 0 auto; }
+
+/* 端口冲突 · 行内紧凑告警（与部署层共置告警同语义、同视觉，紧凑形态） */
+.zcolo.compact { margin-top: 6px; padding: 9px 12px; gap: 9px; border-radius: 9px; }
+.zcolo.compact .zcolo-t { font-size: 12px; }
+.zcolo.compact .zcolo-s { font-size: 11px; margin-top: 2px; }
+.zcolo.compact .zcolo-btn { padding: 6px 12px; font-size: 11px; }

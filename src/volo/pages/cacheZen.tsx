@@ -823,7 +823,7 @@ import {
   /* ============ 二级弹层③ 客户端指向管理 ============
      zdirs（各机本地 Zen 缓存目录回读）已提升到 ZenServer —— 一级 Dashboard「已指向机器」
      明细也要显示缓存目录，弹层内的应用/清除/重读通过 props 落回同一份 state，两处同步。 */
-  function ClientModal({ s, clients, status, deployed, canPoint, targetVis, pointed, setPointed, pointedLoading, zdirs, setZdirs, zdirGenRef, readZdirFor, close, zports, zpres, openPortModal, backToClient }) {
+  function ClientModal({ s, clients, srvNode, status, deployed, canPoint, targetVis, pointed, setPointed, pointedLoading, zdirs, setZdirs, zdirGenRef, readZdirFor, close, zports, zpres, openPortModal, backToClient }) {
     const hasAnyProjects = (window.UE_PROJECTS || []).length > 0;
     const [sel, setSel] = useState([]);
     const [res, setRes] = useState({});
@@ -857,7 +857,8 @@ import {
        迟到的回读结果落回 Dashboard 正是想要的。 */
     useEffect(() => {
       const gen = ++zdirGenRef.current;
-      clients.filter((n) => n.status !== 'offline' && n.machineId && runtimeUser(n)).forEach((n) => { readZdirFor(n, gen); });
+      (srvNode ? [srvNode].concat(clients) : clients)
+        .filter((n) => n.status !== 'offline' && n.machineId && runtimeUser(n)).forEach((n) => { readZdirFor(n, gen); });
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
@@ -914,15 +915,16 @@ import {
       log(s, 'info', `<b>zen_read_local_runcontext</b> · ${esc(n.host)} 回读 zenserver.runcontext`);
       readZdirFor(n, zdirGenRef.current);
     };
-    const onlineClients = clients.filter((n) => n.status !== 'offline');
-    /* 三级弹层「设置缓存目录」：面向全部在线客户端，机器多选（全选/取消全选）与二级列表的
-       「指向此服务器」勾选（sel）互不影响——目录配置与指向是两件独立的事，不该共用一份选中态。 */
+    /* 三级弹层「设置缓存目录」：面向全部在线机器（服务器本机也纳入，与列表分组一致，排在首位），
+       机器多选（全选/取消全选）与二级列表的「指向此服务器」勾选（sel）互不影响——目录配置
+       与指向是两件独立的事，不该共用一份选中态。 */
+    const dirMachines = (deployed && srvNode ? [srvNode].concat(clients) : clients).filter((n) => n.status !== 'offline');
     const openZenDirModal = () => {
-      if (!onlineClients.length) return;
+      if (!dirMachines.length) return;
       s.setModal({
         wide: true,
         render: ({ close: closeInner }) => h(ZenDirModal, {
-          machines: onlineClients, recOf: (id) => zenRec(id),
+          machines: dirMachines, recOf: (id) => zenRec(id),
           onApply: (ids, path) => applyZenDir(ids, path),
           onClear: (ids) => ids.forEach((id) => clearZenDir(id)),
           close: closeInner,
@@ -932,7 +934,6 @@ import {
 
     const toggleSel = (n) => { if (n.status === 'offline') return; setSel((v) => v.includes(n.id) ? v.filter((x) => x !== n.id) : v.concat(n.id)); };
     const onlineSel = sel.filter((id) => { const n = CX.node(id); return n && n.status !== 'offline'; });
-    const onlineClientCount = onlineClients.length;
     const selectableUnpointed = clients.filter((n) => n.status !== 'offline' && !pointed.has(n.id));
     const allUnpointedSelected = selectableUnpointed.length > 0 && selectableUnpointed.every((n) => sel.includes(n.id));
     const toggleSelectUnpointed = () => {
@@ -1146,6 +1147,49 @@ import {
             h('div', { className: 'zcli-dir' }, zdirStatusChip(n), off ? null : rereadBtn(n)))));
     };
 
+    /* 服务器本机行：把部署了共享 Zen Server 的那台机纳入客户端列表，单独成组、明显标识。
+       能力与普通客户端一致 —— 可回环指向共享缓存 / 设本地 Zen 目录 / 改本地 Zen 端口，均复用
+       行内操作与弹窗；额外：本机本地 Zen 端口与共享服务端口相同（默认都 8558）时常驻端口冲突
+       告警，与部署层共置告警同语义、同视觉的紧凑形态。端口读不到（离线 / 未设运行用户 / 回读
+       中 / 回读失败）时不下冲突结论 —— 不拿默认值冒充实测。 */
+    const serverPointRow = () => {
+      const n = srvNode;
+      const off = n.status === 'offline';
+      const checked = sel.includes(n.id);
+      const stMeta = NODE_STATUS[n.status] || NODE_STATUS.na;
+      const rec = zportRecOf(zports, n.id);
+      const portReadable = !off && !!runtimeUser(n) && !rec.loading && !rec.fail;
+      const localPort = rec.configured != null ? rec.configured : ZEN_LOCAL_DEFAULT_PORT;
+      const conflict = portReadable && status && String(localPort) === String(status.port);
+      return h('div', { key: 'srv-' + n.id, className: 'zcli-wrap is-server' },
+        h('div', { className: 'cli-row zcli zcli--server' + (off ? ' off' : '') + (checked ? ' on' : '') },
+          h('button', { className: 'zck' + (checked ? ' on' : '') + (off ? ' dis' : ''), onClick: () => toggleSel(n), disabled: off, title: off ? '离线机器不可选' : '选择' },
+            checked ? h(Icon, { name: 'check', size: 12 }) : null),
+          h('span', { className: 'zcli-state' }, CX.dot(stMeta.visual),
+            h('span', { className: 'zcli-state-tx s-' + stMeta.visual }, off ? '离线' : '在线')),
+          h('div', { className: 'cli-meta' },
+            h('div', { className: 'zsrv-hostline' },
+              h('span', { className: 'cli-host mono' }, n.host),
+              h('span', { className: 'zsrv-badge' }, h(Icon, { name: 'server', size: 11 }), '服务器本机')),
+            h('div', { className: 'cli-sub' }, n.ip + ' · 共享 Zen 服务所在机' + (status ? ' · 指向即本机回环（' + (status.host || n.host) + ':' + status.port + '）' : ''))),
+          h('div', { className: 'zcli-end' },
+            clientBadge(n),
+            portIO(n),
+            h('div', { className: 'zcli-dir' }, zdirStatusChip(n), off ? null : rereadBtn(n)))),
+        conflict ? h('div', { className: 'zcolo compact' },
+          h('span', { className: 'zcolo-ico' }, h(Icon, { name: 'alert', size: 15 })),
+          h('div', { className: 'zcolo-tx' },
+            h('div', { className: 'zcolo-t' }, '本地 Zen 端口与共享服务冲突'),
+            h('div', { className: 'zcolo-s' },
+              '本机 UE Editor 会自动拉起本地 Zen（',
+              h('span', { className: 'mono' }, String(localPort)),
+              '），与共享服务占用的 ',
+              h('span', { className: 'mono' }, String(status.port)),
+              ' 端口相撞。把本地 Zen 端口改走即可与共享服务共存。')),
+          h('button', { type: 'button', className: 'zcolo-btn', onClick: () => openPortModal(n.id, ZEN_SUGGEST_PORT, backToClient) },
+            h(Icon, { name: 'bolt', size: 13 }), '调整本地端口')) : null);
+    };
+
     const srvHost = status ? status.host : null;
 
     return h(ModalChrome, {
@@ -1166,7 +1210,7 @@ import {
             h('button', { className: 'zlink-all', onClick: toggleSelectUnpointed, disabled: selectableUnpointed.length === 0 },
               allUnpointedSelected ? '取消选择' : '选中全部未指向（' + selectableUnpointed.length + '）'),
             h('div', { className: 'zcli-go' },
-              h('button', { className: 'zcli-side-btn', disabled: onlineClientCount === 0, onClick: openZenDirModal },
+              h('button', { className: 'zcli-side-btn', disabled: dirMachines.length === 0, onClick: openZenDirModal },
                 h(Icon, { name: 'folder', size: 14 }), '设置缓存目录'),
               h(Button, {
                 variant: 'accent', size: 'M', icon: h(Icon, { name: 'link', size: 14 }), isDisabled: onlineSel.length === 0 || !canPoint,
@@ -1183,7 +1227,15 @@ import {
           cfgScope === 'project'
             ? '应用 = 逐台改这些机器已发现工程的 DefaultEngine.ini（写 [StorageServers] Shared，非旧版 [InstalledDerivedDataBackendGraph]）指向上方服务器；远程操作走 SSH key，逐台执行、逐台看成败。'
             : '应用 = 逐台改这些机器 UE 运行用户的 UserEngine.ini（写 [StorageServers] Shared）指向上方服务器；远程操作走 SSH key，逐台执行、逐台看成败。'),
-        h('div', { className: 'cli-list' }, clients.map(clientRow))));
+        h('div', { className: 'cli-list' },
+          deployed && srvNode ? h('div', { className: 'zcli-group-h' },
+            h('span', { className: 'zcli-group-t' }, '服务器本机'),
+            h('span', { className: 'zcli-group-s' }, '共享 Zen 服务所在机 · 可回环指向')) : null,
+          deployed && srvNode ? serverPointRow() : null,
+          h('div', { className: 'zcli-group-h' },
+            h('span', { className: 'zcli-group-t' }, '客户端'),
+            h('span', { className: 'zcli-group-ct mono' }, clients.length)),
+          clients.map(clientRow))));
   }
 
   function ZenServer({ s }) {
@@ -1283,8 +1335,9 @@ import {
     const projSig = (window.UE_PROJECTS || []).map((p) => p.id).join(',');
     useEffect(() => {
       if (!status) { setPointedLoading(false); return; }
+      /* 服务器本机不排除 —— 它也能回环指向自己的共享缓存，指向状态同样真实回读 */
       const nodes = (window.RENDER_NODES || []).filter((n) =>
-        n.status !== 'offline' && n.machineId && n.machineId !== status.machineId);
+        n.status !== 'offline' && n.machineId);
       if (!nodes.length) { setPointedLoading(false); return; }
       const gen = ++pointedGenRef.current;
       const hasCachedPointed = snapRef.current.pointed && snapRef.current.pointed.size > 0;
@@ -1362,7 +1415,7 @@ import {
     useEffect(() => {
       const gen = ++zdirGenRef.current;
       (window.RENDER_NODES || [])
-        .filter((n) => n.status !== 'offline' && n.machineId && runtimeUser(n) && !(status && n.machineId === status.machineId))
+        .filter((n) => n.status !== 'offline' && n.machineId && runtimeUser(n))
         .forEach((n) => { readZdirFor(n, gen); });
       return () => { zdirGenRef.current++; };
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1454,8 +1507,10 @@ import {
         .then(() => loadStatus(), () => {}),
     });
 
-    /* ============ ② 客户端：把选中机器指向此缓存服务器 ============ */
-    const clients = RN.filter((n) => !(status && n.machineId === status.machineId));
+    /* ============ ② 客户端：把选中机器指向此缓存服务器 ============
+       服务器本机不混进 clients —— 弹层里单独成组（serverPointRow），一级 Dashboard 的
+       「已指向机器」明细仍只统计客户端。 */
+    const clients = RN.filter((n) => !(status && n.machineId === status.machineId) && !(deployedNode && n.id === deployedNode.id));
 
     /* 一级页面直显：已指向此服务器的客户端逐台明细 —— 名称 / 部署类型（工程级 or 用户全局）/
        工程级时具体指向了哪些工程。没有单独持久化「每台机器用的范围」，用该机是否有已发现
@@ -1614,7 +1669,7 @@ import {
 
     const openClientModal = () => s.setModal({
       xwide: true,
-      render: ({ close }) => h(ClientModal, { s, clients, status, deployed, canPoint, targetVis, pointed, setPointed: setPointedTracked, pointedLoading, zdirs, setZdirs, zdirGenRef, readZdirFor, close,
+      render: ({ close }) => h(ClientModal, { s, clients, srvNode: deployedNode, status, deployed, canPoint, targetVis, pointed, setPointed: setPointedTracked, pointedLoading, zdirs, setZdirs, zdirGenRef, readZdirFor, close,
         zports, zpres, openPortModal, backToClient }),
     });
     /* 每次渲染刷新 reopen 引用，指向持有最新 zports/zpres 快照的弹窗构造器 */
@@ -1638,33 +1693,36 @@ import {
           h('div', { className: 'zdc zdc--server' },
             h('div', { className: 'zdc-head' },
               h('span', { className: 'zdc-ico' }, h(Icon, { name: 'cube', size: 17 })),
-              h('div', null,
+              h('div', { style: { minWidth: 0, flex: '1 1 auto' } },
                 h('div', { className: 'zdc-t' }, 'Zen 缓存服务器'),
-                h('div', { className: 'zdc-s' }, '在集群某一台机器上立起的共享缓存服务器'))),
-            statusCard,
-            h('div', { className: 'zdc-foot' },
-              h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'settings', size: 14 }), onPress: openDeployModal },
-                deployed ? '更改部署配置' : '部署服务器'))),
+                h('div', { className: 'zdc-s' }, '在集群某一台机器上立起的共享缓存服务器')),
+              h('div', { className: 'zdc-head-act' },
+                h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'settings', size: 14 }), onPress: openDeployModal },
+                  deployed ? '更改部署配置' : '部署服务器'))),
+            statusCard),
           /* 卡片二 · 缓存回收策略（左下） */
           h('div', { className: 'zdc zdc--gc' },
             h('div', { className: 'zdc-head' },
               h('span', { className: 'zdc-ico' }, h(Icon, { name: 'flush', size: 17 })),
               h('div', null,
                 h('div', { className: 'zdc-t' }, '缓存回收策略'),
-                h('div', { className: 'zdc-s' }, '控制服务器清理过期缓存的频率与保留时长'))),
+                h('div', { className: 'zdc-s' }, '控制服务器清理过期缓存的频率与保留时长')),
+              h('div', { className: 'zdc-head-act' },
+                !deployed ? h('span', { className: 'zdc-hint' }, '先部署') : null,
+                h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'settings', size: 14 }), isDisabled: !deployed, onPress: openGcModal }, '更改回收策略'))),
             h('div', { className: 'zdc-kv-list' },
               GC_FIELDS.map((f) => h('div', { className: 'zdc-kv', key: f.id },
-                h('span', { className: 'k' }, f.label), h('span', { className: 'v' }, fmtGc(gcApplied[f.id]))))),
-            h('div', { className: 'zdc-foot' },
-              h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'settings', size: 14 }), isDisabled: !deployed, onPress: openGcModal }, '更改回收策略'),
-              !deployed ? h('span', { className: 'zdc-hint' }, '先部署服务器') : null))),
+                h('span', { className: 'k' }, f.label), h('span', { className: 'v' }, fmtGc(gcApplied[f.id]))))))),
           /* 卡片三 · 客户端指向管理（最大，右侧整列） */
           h('div', { className: 'zdc zdc--client' },
             h('div', { className: 'zdc-head' },
               h('span', { className: 'zdc-ico' }, h(Icon, { name: 'link', size: 17 })),
-              h('div', null,
+              h('div', { style: { minWidth: 0, flex: '1 1 auto' } },
                 h('div', { className: 'zdc-t' }, '客户端指向管理'),
-                h('div', { className: 'zdc-s' }, '把渲染机的缓存配置指向这台共享服务器'))),
+                h('div', { className: 'zdc-s' }, '把渲染机的缓存配置指向这台共享服务器')),
+              h('div', { className: 'zdc-head-act' },
+                !deployed ? h('span', { className: 'zdc-hint' }, '先部署') : null,
+                h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'settings', size: 14 }), isDisabled: !deployed, onPress: openClientModal }, '管理客户端指向'))),
             (function () {
               const projScope = pointedClientRows.filter((r) => r.isProject);
               const userScope = pointedClientRows.filter((r) => !r.isProject);
@@ -1729,10 +1787,7 @@ import {
                                     h('span', { className: 'zcl-meta-k' }, '配置'),
                                     h('span', { className: 'zcl-meta-v mono' }, '用户全局 · UserEngine.ini')))));
                       })));
-            })(),
-            h('div', { className: 'zdc-foot' },
-              h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'settings', size: 14 }), isDisabled: !deployed, onPress: openClientModal }, '管理客户端指向'),
-              !deployed ? h('span', { className: 'zdc-hint' }, '先部署服务器') : null)))));
+            })()))));
   }
 
   window.VOLO_CACHE_ZEN = { view: (s) => h(ZenServer, { s }) };
