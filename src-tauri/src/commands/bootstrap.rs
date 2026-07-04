@@ -232,15 +232,31 @@ fn remote_reveal_target(host: &str, abs_path: &str) -> Result<String, String> {
 #[tauri::command]
 pub fn reveal_path(app: tauri::AppHandle, path: String, host: Option<String>) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
-    let target = match host {
-        Some(h) if !h.is_empty() && !cache_core::core::loopback::is_loopback_target(&h) => {
-            remote_reveal_target(&h, &path)?
-        }
-        _ => path,
+    let Some(h) = host.filter(|h| !h.is_empty() && !cache_core::core::loopback::is_loopback_target(h))
+    else {
+        return app
+            .opener()
+            .reveal_item_in_dir(&path)
+            .map_err(|e| e.to_string());
     };
-    app.opener()
-        .reveal_item_in_dir(&target)
-        .map_err(|e| e.to_string())
+    let target = remote_reveal_target(&h, &path)?;
+    app.opener().reveal_item_in_dir(&target).map_err(|e| {
+        let raw = e.to_string();
+        // Two workgroup Windows boxes with different local-account passwords is the
+        // single most common way this admin-share open fails — worth spelling out
+        // since the raw OS message ("拒绝访问"/"Access is denied") gives the operator
+        // no next step on its own.
+        if raw.contains("拒绝访问") || raw.to_lowercase().contains("access is denied") {
+            format!(
+                "{raw} —— 本机对 {h} 的管理共享（{target}）没有访问权限。工作组环境下两台机器本地账户/\
+                 密码不一致时常见，需要先在本机对 {h} 建立已认证连接（如执行 `net use \\\\{h}` 并输入其\
+                 账户密码），或在 {h} 上把注册表 LocalAccountTokenFilterPolicy 设为 1 以放开本地账户的\
+                 远程管理共享限制。"
+            )
+        } else {
+            format!("{raw}（尝试打开 {target}）")
+        }
+    })
 }
 
 /// Whether `host` (IP or hostname) resolves to the machine Volo itself runs
