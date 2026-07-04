@@ -602,7 +602,9 @@ import {
           'ZenServer 对外为无认证服务——域账号只决定服务以谁的身份运行、能否读写本机目录，不会给客户端访问 Zen 数据加上认证。'),
         h('div', { className: 'zacct-subhint' }, '需域管理员预先为该账号授予「登录为服务」权限；推荐优先使用 gMSA 以避免手动管理密码带来的风险。')) : null);
 
-    const openPath = (p) => { revealPath(p).catch(() => {}); };
+    /* installDir/dataDir/configPath 都是 srvNode（部署目标机）上的路径，不是 Volo 本机的——
+       revealPath 只认本机路径，跨机需转成 \\host\D$\... 管理共享 UNC，见 reveal_path 的 host 参数。 */
+    const openPath = (p) => { revealPath(p, srvNode.ip || srvNode.host).catch(() => {}); };
     const pathInput = (val, onChange) => h('div', { className: 'dp-path' },
       h('input', { className: 'dp-input mono', value: val, spellCheck: false, onChange }),
       h('button', { type: 'button', className: 'dp-path-open', title: '在文件资源管理器中打开该目录', tabIndex: -1, onClick: () => openPath(val) },
@@ -1559,14 +1561,15 @@ import {
       h('div', { className: 'zsv-hero-v' }, val, unit ? h('span', { className: 'zsv-hero-u' }, unit) : null),
       h('div', { className: 'zsv-hero-l' }, label));
     const chip = (k, v, mono, title) => h('div', { className: 'zsv-chip', title }, h('span', { className: 'zsv-chip-k' }, k), h('span', { className: 'zsv-chip-v' + (mono ? ' mono' : '') }, v));
-    /* 在文件资源管理器中打开该路径；行内值可能是「读取中…」「不可读」「%LOCALAPPDATA%\...（默认）」
-       等占位/未展开文案，此时不可点击。reveal_path 只能打开 Volo 所在这台机器的本地路径——当
-       目标是远端渲染节点的路径时会静默找不到，这是既有限制（DeployModal 的 pathInput 同样如此），
-       这里至少把失败原因回显到控制台，不让点击看起来毫无反应。 */
-    const openPath = (p) => { revealPath(p).catch((e) => log(s, 'err', `<b>reveal_path</b> · 打开 ${esc(p)} 失败 · ${esc((e && e.message) || String(e))}`)); };
+    /* 在文件资源管理器中打开该路径；host 是路径实际所在的机器（服务器/某台客户端），不传或传
+       Volo 本机时按本机路径直接打开，否则转成 \\host\D$\... 管理共享 UNC 再打开（见 reveal_path
+       的 host 参数）——这两行不再是同一台机器时（比如 Volo 就跑在服务器机器上，行内又要打开
+       其它客户端的路径），不做这层转换点开的会是 Volo 本机同名盘符下的目录，而不是目标机器的。
+       行内值可能是「读取中…」「不可读」「%LOCALAPPDATA%\...（默认）」等占位/未展开文案，此时不可点击。 */
+    const openPath = (p, host) => { revealPath(p, host).catch((e) => log(s, 'err', `<b>reveal_path</b> · 打开 ${esc(p)} 失败 · ${esc((e && e.message) || String(e))}`)); };
     const isRealPath = (v) => !!v && v !== '—' && !/^(读取中|读取失败|不可读)/.test(v) && !/%[A-Za-z_]+%/.test(v) && !v.endsWith('（默认）');
-    const pathBtn = (val, title) => isRealPath(val)
-      ? h('button', { type: 'button', className: 'zcl-meta-v mono zcl-open', title, onClick: () => openPath(val) }, val, h(Icon, { name: 'external', size: 11 }))
+    const pathBtn = (val, host, title) => isRealPath(val)
+      ? h('button', { type: 'button', className: 'zcl-meta-v mono zcl-open', title, onClick: () => openPath(val, host) }, val, h(Icon, { name: 'external', size: 11 }))
       : h('span', { className: 'zcl-meta-v mono' }, val);
     /* zen 自身 /stats/z$ 上报的 cache.size.disk，来自 zenCacheStats 拉取的 status.cacheDiskBytes；
        未探测到（z$ 未注册 / 探测失败）时为 null，如实显示「—」而非编造。 */
@@ -1616,7 +1619,7 @@ import {
                 cacheSizeVal === '—' ? 'z$ 缓存 provider 未上报磁盘用量，或本次探测失败' : null)),
             h('button', {
               type: 'button', className: 'zsv-addr', title: '在文件资源管理器中打开该缓存目录',
-              onClick: () => openPath(status.dataDir) },
+              onClick: () => openPath(status.dataDir, status.ip || status.host) },
               h('span', { className: 'zsv-addr-k' }, h(Icon, { name: 'folder', size: 13 }), '缓存地址'),
               h('span', { className: 'zsv-addr-v mono' }, status.dataDir),
               h('span', { className: 'zsv-addr-open' }, h(Icon, { name: 'external', size: 12 }), '打开')),
@@ -1808,7 +1811,7 @@ import {
                             h('div', { className: 'zcl-meta' },
                               h('div', { className: 'zcl-meta-row' },
                                 h('span', { className: 'zcl-meta-k' }, '本地缓存'),
-                                pathBtn(cacheDir, '在文件资源管理器中打开该本地缓存目录')),
+                                pathBtn(cacheDir, n.ip || n.host, '在文件资源管理器中打开该本地缓存目录')),
                               (function () {
                                 /* 本地端口读出（配置 → 实际）；不可读时如实「—」 */
                                 const pRec = zportRecOf(zports, n.id);
@@ -1823,7 +1826,7 @@ import {
                               })(),
                               h('div', { className: 'zcl-meta-row' },
                                 h('span', { className: 'zcl-meta-k' }, '共享缓存'),
-                                pathBtn(projectCachePath, '在文件资源管理器中打开该共享缓存目录')))));
+                                pathBtn(projectCachePath, status.ip || status.host, '在文件资源管理器中打开该共享缓存目录')))));
                       })));
             })()))));
   }

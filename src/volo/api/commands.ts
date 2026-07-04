@@ -63,8 +63,9 @@ export const pickDirectory = () => call<string | null>("pick_directory");
 // 「打开项目」(yaml)/「导入 CSV」(csv) → pickFile（原生文件选择器，取消返回 null）
 export const pickFile = (filterName?: string, filterExtensions?: string[]) =>
   call<string | null>("pick_file", { filterName: filterName ?? null, filterExtensions: filterExtensions ?? null });
-// ✅ wired: UsbPackPanel 成功态「在文件夹中显示」→ revealPath（系统文件管理器定位）
-export const revealPath = (path: string) => call<void>("reveal_path", { path });
+// ✅ wired: UsbPackPanel 成功态「在文件夹中显示」→ revealPath（系统文件管理器定位）。
+// host 为路径实际所在机器（省略/传本机 = 走本机路径；其它机器会被转成 \\host\D$\... 管理共享 UNC 路径再打开）。
+export const revealPath = (path: string, host?: string | null) => call<void>("reveal_path", { path, host: host ?? null });
 // ✅ wired: cacheDdc openFolder → 判断目标机是否就是本机，决定直接 revealPath 还是走 revealRemotePath
 export const isLoopbackMachine = (host: string) => call<boolean>("is_loopback_machine", { host });
 // ✅ wired: cacheDdc openFolder 远程分支 → 按 Volo 运行时所在 OS 走 UNC（Windows）或 smb:// URL（其余平台）
