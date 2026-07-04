@@ -270,48 +270,133 @@ function LogPanel({ s }) {
     s.logFilter === 'warn' ? l.lv === 'warn' : l.lv === 'err');
   const rows = q ? byLevel.filter((l) => strip(l.msg).toLowerCase().includes(q) || (l.cat || '').includes(q) || (l.ch || '').includes(q)) : byLevel;
   const tabs = [['all', '全部'], ['info', '信息'], ['warn', '警告'], ['err', '错误']];
-  const running = s.tasks ? s.tasks.filter((t) => t.state === 'running').length : 0;
-  const activeTasks = s.tasks ? s.tasks.filter((t) => t.state === 'running' || t.state === 'queued') : [];
+  const allTasks = s.tasks || [];
+  const running = allTasks.filter((t) => t.state === 'running').length;
+  const activeTasks = allTasks.filter((t) => t.state === 'running' || t.state === 'queued');
+  /* 状态框三态所需数据：最近完成（最多 3）· 失败任务（报警源，最多 6） */
+  const doneTasks = allTasks.filter((t) => t.state === 'success' || t.state === 'failed' || t.state === 'canceled').slice(0, 3);
+  const failedTasks = allTasks.filter((t) => t.state === 'failed').slice(0, 6);
+  /* 报警 = 尚未查看的失败任务。LogPanel 挂载前已存在的失败视为“已知/已读”，
+     只有挂载后新发生的失败才把状态框点红提示；查看后即标记已读。 */
+  const [ackAlerts, setAckAlerts] = React.useState(() => new Set(allTasks.filter((t) => t.state === 'failed').map((t) => t.id)));
+  const unreadFailed = failedTasks.filter((t) => !ackAlerts.has(t.id));
+  const status = unreadFailed.length ? 'alert' : running ? 'running' : 'idle';
   const [runOpen, setRunOpen] = React.useState(false);
+  const [popView, setPopView] = React.useState('running'); /* 打开时定格的视图：running|idle|alert */
+  const openPop = () => {
+    setPopView(status);
+    if (unreadFailed.length) setAckAlerts((prev) => { const n = new Set(prev); failedTasks.forEach((t) => n.add(t.id)); return n; });
+    setRunOpen(true);
+  };
   /* 触发运行时自动弹出一次「运行中」气泡；用户再次点击或点击别处即关闭。quiet 任务
      （扫描/生成/分发/删除等有自己进度呈现的操作）通过 s.suppressRunPop 抑制这次自动弹起；
      Cache 页一律不自动弹气泡。 */
   const prevRunning = React.useRef(running);
   React.useEffect(() => {
-    if (running > prevRunning.current && !(s.suppressRunPop && s.suppressRunPop.current) && s.page !== 'cache') setRunOpen(true);
+    if (running > prevRunning.current && !(s.suppressRunPop && s.suppressRunPop.current) && s.page !== 'cache') { setPopView('running'); setRunOpen(true); }
     if (s.suppressRunPop) s.suppressRunPop.current = false;
     prevRunning.current = running;
   }, [running]);
-  const histTasks = s.tasks ? s.tasks.filter((t) => t.state === 'success' || t.state === 'failed' || t.state === 'canceled') : [];
+  /* 任务完成 → 状态框上方弹出小提示（某某任务已完成/失败）· 不自动消失，点任意处才关；
+     弹出的同时收起「任务进行中」二级弹窗。 */
+  const [toast, setToast] = React.useState(null);
+  const prevStatesRef = React.useRef(null);
+  React.useEffect(() => {
+    const map = {}; allTasks.forEach((t) => { map[t.id] = t.state; });
+    if (prevStatesRef.current) {
+      let done = null;
+      allTasks.forEach((t) => {
+        const ps = prevStatesRef.current[t.id];
+        if ((ps === 'running' || ps === 'queued') && (t.state === 'success' || t.state === 'failed')) done = t;
+      });
+      if (done) { setToast({ id: done.id, title: done.title, no: done.no, ok: done.state === 'success' }); setRunOpen(false); }
+    }
+    prevStatesRef.current = map;
+  }, [s.tasks]);
+  React.useEffect(() => {
+    if (!toast) return undefined;
+    const onDown = () => setToast(null);
+    document.addEventListener('pointerdown', onDown, true);
+    return () => document.removeEventListener('pointerdown', onDown, true);
+  }, [toast]);
+  const histTasks = allTasks.filter((t) => t.state === 'success' || t.state === 'failed' || t.state === 'canceled');
   const TaskCard = window.VOLO_CX && window.VOLO_CX.TaskCard;
   const conTab = s.conTab || 'stream';
-  /* 「运行中」二级弹窗：触发器与控制台头部各有一个入口，同一时刻只会渲染其中一处
-     （触发器收起时 runOpen && !s.logOpen；控制台展开时 runOpen && s.logOpen），复用同一份 DOM。 */
-  const runPop = [
-    React.createElement('div', { key: 'rbd', className: 'log-run-backdrop', onClick: (e) => { e.stopPropagation(); setRunOpen(false); } }),
-    React.createElement('div', { key: 'rpop', className: 'log-run-pop', onClick: (e) => e.stopPropagation() },
-      React.createElement('div', { className: 'lrp-h' },
-        React.createElement(Icon, { name: 'sync', size: 13 }), '进行中任务',
-        React.createElement('span', { className: 'lrp-n' }, activeTasks.length)),
-      activeTasks.length === 0
-        ? React.createElement('div', { className: 'lrp-empty' }, '当前没有运行中的任务')
-        : React.createElement('div', { className: 'lrp-list' }, activeTasks.map((t) => React.createElement('div', { key: t.id, className: 'lrp-row' },
+  /* 控制台 / 运行中弹窗均「点击穿透关闭」：不用挡点击的 backdrop，改在 document 捕获阶段
+     监听 pointerdown —— 点击其他地方时弹层关闭的同时，被点的按钮/页面一次点击即生效。 */
+  React.useEffect(() => {
+    if (!runOpen) return undefined;
+    const onDown = (e) => {
+      if (e.target.closest && (e.target.closest('.log-run-pop') || e.target.closest('.log-trigger-stat'))) return;
+      setRunOpen(false);
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    return () => document.removeEventListener('pointerdown', onDown, true);
+  }, [runOpen]);
+  React.useEffect(() => {
+    if (!s.logOpen) return undefined;
+    const onDown = (e) => {
+      if (e.target.closest && (e.target.closest('.log-window') || e.target.closest('.log-trigger-wrap'))) return;
+      s.setLogOpen(false);
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    return () => document.removeEventListener('pointerdown', onDown, true);
+  }, [s.logOpen]);
+  const stateLabel = { success: '完成', failed: '失败', canceled: '已取消' };
+  const alertText = (t) => `[${t.title} #${t.no}] ${t.target || ''} · exit ${t.exit != null ? t.exit : 2}\n${t.err || t.note || '失败'}`;
+  const runHead = popView === 'alert'
+    ? React.createElement('div', { className: 'lrp-h lrp-h--alert' }, React.createElement(Icon, { name: 'alert', size: 13 }), '报警信息', React.createElement('span', { className: 'lrp-n' }, failedTasks.length))
+    : popView === 'idle'
+      ? React.createElement('div', { className: 'lrp-h' }, React.createElement(Icon, { name: 'check', size: 13 }), '最近完成', React.createElement('span', { className: 'lrp-n' }, doneTasks.length))
+      : React.createElement('div', { className: 'lrp-h' }, React.createElement(Icon, { name: 'sync', size: 13 }), '进行中任务', React.createElement('span', { className: 'lrp-n' }, activeTasks.length));
+  const runBody = popView === 'alert'
+    ? (failedTasks.length === 0
+        ? React.createElement('div', { className: 'lrp-empty' }, '当前没有报警')
+        : React.createElement('div', { className: 'lrp-list' }, failedTasks.map((t) => React.createElement('button', {
+            key: t.id, className: 'lrp-alert' + (copied === ('AL_' + t.id) ? ' copied' : ''),
+            title: '点击复制这条报警信息',
+            onClick: (e) => { e.stopPropagation(); copyToClipboard(alertText(t), () => flash('AL_' + t.id)); } },
             React.createElement('div', { className: 'lrp-top' },
               React.createElement('span', { className: 'lrp-title' }, t.title, React.createElement('span', { className: 'lrp-no' }, '#' + t.no)),
-              React.createElement('span', { className: 'lrp-pct' }, t.stream ? ((t.pct || 0) + '%') : '运行中')),
-            /* 流式任务(runStreamingCmd)有真实逐步 pct → 确定进度；原子任务(runCmd)只有 4%→100% 两点，
-               无中间进度 → 用不确定动画条，不显冻结在 4% 的误导百分比。 */
-            React.createElement('div', { className: 'lrp-bar' }, React.createElement('div', { className: 'lrp-fill' + (t.stream ? '' : ' indet'), style: t.stream ? { width: (t.pct || 0) + '%' } : null })),
+              React.createElement('span', { className: 'lrp-copyhint' }, React.createElement(Icon, { name: copied === ('AL_' + t.id) ? 'check' : 'copy', size: 12 }), copied === ('AL_' + t.id) ? '已复制' : '复制')),
+            React.createElement('div', { className: 'lrp-errmsg' }, t.err || t.note || '失败'),
             React.createElement('div', { className: 'lrp-meta' },
               React.createElement('span', { className: 'lrp-target' }, t.target),
-              React.createElement('span', { className: 'lrp-el' }, t.elapsed),
-              t.long && t.state === 'running' && s.cancelTask ? React.createElement('button', {
-                className: 'lrp-cancel', title: '终止远端 UE 进程并取消该长任务',
-                onClick: (e) => { e.stopPropagation(); s.cancelTask(t.id); } },
-                React.createElement(Icon, { name: 'x', size: 11 }), '取消') : null))))),
+              React.createElement('span', { className: 'lrp-el' }, 'exit ' + (t.exit != null ? t.exit : 2)))))))
+    : popView === 'idle'
+      ? (doneTasks.length === 0
+          ? React.createElement('div', { className: 'lrp-empty' }, '暂无最近完成的任务')
+          : React.createElement('div', { className: 'lrp-list' }, doneTasks.map((t) => React.createElement('div', { key: t.id, className: 'lrp-row' },
+              React.createElement('div', { className: 'lrp-top' },
+                React.createElement('span', { className: 'lrp-title' }, t.title, React.createElement('span', { className: 'lrp-no' }, '#' + t.no)),
+                React.createElement('span', { className: 'lrp-badge lrp-badge--' + t.state }, stateLabel[t.state] || t.state)),
+              React.createElement('div', { className: 'lrp-meta' },
+                React.createElement('span', { className: 'lrp-target' }, t.note || t.target),
+                React.createElement('span', { className: 'lrp-el' }, t.elapsed))))))
+      : (activeTasks.length === 0
+          ? React.createElement('div', { className: 'lrp-empty' }, '当前没有运行中的任务')
+          : React.createElement('div', { className: 'lrp-list' }, activeTasks.map((t) => React.createElement('div', { key: t.id, className: 'lrp-row' },
+              React.createElement('div', { className: 'lrp-top' },
+                React.createElement('span', { className: 'lrp-title' }, t.title, React.createElement('span', { className: 'lrp-no' }, '#' + t.no)),
+                React.createElement('span', { className: 'lrp-pct' }, t.stream ? ((t.pct || 0) + '%') : '运行中')),
+              /* 流式任务(runStreamingCmd)有真实逐步 pct → 确定进度；原子任务(runCmd)只有 4%→100% 两点，
+                 无中间进度 → 用不确定动画条，不显冻结在 4% 的误导百分比。 */
+              React.createElement('div', { className: 'lrp-bar' }, React.createElement('div', { className: 'lrp-fill' + (t.stream ? '' : ' indet'), style: t.stream ? { width: (t.pct || 0) + '%' } : null })),
+              React.createElement('div', { className: 'lrp-meta' },
+                React.createElement('span', { className: 'lrp-target' }, t.target),
+                React.createElement('span', { className: 'lrp-el' }, t.elapsed),
+                t.long && t.state === 'running' && s.cancelTask ? React.createElement('button', {
+                  className: 'lrp-cancel', title: '终止远端 UE 进程并取消该长任务',
+                  onClick: (e) => { e.stopPropagation(); s.cancelTask(t.id); } },
+                  React.createElement(Icon, { name: 'x', size: 11 }), '取消') : null)))));
+  const runPop = [
+    React.createElement('div', { key: 'rpop', className: 'log-run-pop log-run-pop--' + popView, onClick: (e) => e.stopPropagation() },
+      runHead, runBody),
   ];
   return React.createElement('div', { className: 'logpanel' + (s.logOpen ? ' is-open' : '') },
-    s.logOpen ? React.createElement('div', { className: 'log-backdrop', onClick: () => s.setLogOpen(false) }) : null,
+    toast ? React.createElement('div', { className: 'task-toast task-toast--' + (toast.ok ? 'ok' : 'fail'), onClick: () => setToast(null), title: '点击关闭' },
+      React.createElement('span', { className: 'task-toast-ico' }, React.createElement(Icon, { name: toast.ok ? 'check' : 'alert', size: 14 })),
+      React.createElement('span', { className: 'task-toast-tx' }, React.createElement('b', null, toast.title + ' #' + toast.no), toast.ok ? ' 已完成' : ' 执行失败')) : null,
     React.createElement('div', { className: 'log-trigger-wrap' + (s.logOpen ? ' on' : '') },
       React.createElement('button', {
         className: 'log-trigger' + (s.logOpen ? ' on' : ''),
@@ -320,12 +405,12 @@ function LogPanel({ s }) {
         React.createElement(Icon, { name: 'terminal', size: 14 }),
         React.createElement('span', null, '控制台')),
       React.createElement('button', {
-        className: 'log-trigger-stat' + (running ? ' run' : '') + (runOpen && !s.logOpen ? ' on' : ''),
-        title: running ? '查看进行中任务' : '当前没有运行中的任务',
-        onClick: (e) => { e.stopPropagation(); setRunOpen((v) => !v); } },
-        React.createElement('span', { className: 'rec-dot', style: { width: 7, height: 7, background: running ? 'var(--volo-600)' : 'var(--positive-visual)', animationPlayState: s.logPaused ? 'paused' : 'running' } }),
-        running ? (running + ' 运行中') : '空闲'),
-      (runOpen && !s.logOpen) ? runPop : null),
+        className: 'log-trigger-stat' + (status === 'running' ? ' run' : '') + (status === 'alert' ? ' alert' : '') + (runOpen ? ' on' : ''),
+        title: status === 'alert' ? '有报警 · 点击查看并复制' : status === 'running' ? '查看进行中任务' : '查看最近完成的任务',
+        onClick: (e) => { e.stopPropagation(); if (runOpen) setRunOpen(false); else openPop(); } },
+        React.createElement('span', { className: 'rec-dot', style: { width: 7, height: 7, background: status === 'alert' ? 'var(--negative-visual)' : status === 'running' ? 'var(--volo-600)' : 'var(--positive-visual)', animationPlayState: (status === 'idle' || s.logPaused) ? 'paused' : 'running' } }),
+        status === 'alert' ? (unreadFailed.length + ' 报警') : status === 'running' ? (running + ' 运行中') : '空闲'),
+      runOpen ? runPop : null),
     s.logOpen ? React.createElement('div', { className: 'log-window' },
       React.createElement('div', {
         className: 'resizer resizer--row',
@@ -362,14 +447,6 @@ function LogPanel({ s }) {
             onClick: (e) => { e.stopPropagation(); if (!rows.length) return; copyToClipboard(rows.map(rowText).join('\n'), () => flash('ALL')); } },
             React.createElement(Icon, { name: copied === 'ALL' ? 'check' : 'copy', size: 13 }),
             copied === 'ALL' ? '已复制' : '复制全部') : null,
-          React.createElement('span', { className: 'log-run-wrap' },
-            React.createElement('button', {
-              className: 'log-run' + (runOpen ? ' on' : ''),
-              title: running ? '查看进行中任务的完整进度' : '当前没有运行中的任务',
-              onClick: (e) => { e.stopPropagation(); setRunOpen((v) => !v); } },
-              React.createElement('span', { className: 'rec-dot', style: { width: 7, height: 7, background: running ? 'var(--volo-600)' : 'var(--positive-visual)', animationPlayState: s.logPaused ? 'paused' : 'running' } }),
-              React.createElement('span', { className: 'log-run-tx' }, running ? (running + ' 运行中') : '空闲')),
-            (runOpen && s.logOpen) ? runPop : null),
           React.createElement('button', { className: 'iconbtn', style: { width: 22, height: 22 }, title: '关闭控制台', onClick: (e) => { e.stopPropagation(); s.setLogOpen(false); } }, React.createElement(Icon, { name: 'x', size: 15 })))),
       React.createElement('div', { className: 'log-body' + (s.logPaused ? ' paused' : '') + (conTab === 'hist' ? ' log-body--hist' : ''), style: { height: s.logH } },
         conTab === 'hist'
@@ -495,14 +572,13 @@ function App() {
   const taskSeq = useRef(1);
   /* 可取消长任务注册表：taskId -> { requestCancel }（runStreamingCmd 注册，cancelTask 查用） */
   const streamCtl = useRef({});
-  /* quiet 任务（meta.quiet=true）抑制「运行中」气泡自动弹起一次；noLogOpen 只折叠控制台不展开。
-     二者可独立组合（如已部署 PAK 刷新：noLogOpen 但不 quiet → 气泡仍弹、面板不展开）。
-     Cache 页一律不自动展开控制台（等同永久 noLogOpen）。LogPanel 读到 suppressRunPop
-     后立即复位；任务仍照常 setTasks/pushLog。 */
+  /* quiet 任务（meta.quiet=true）抑制「运行中」气泡自动弹起一次。控制台（log-window）
+     不再由任何任务自动打开——只有用户手动点击「控制台」按钮，或页面内明确的
+     「查看日志/看日志流」入口才会展开；noLogOpen 因此不再影响行为，调用方仍可传但
+     已是历史参数。LogPanel 读到 suppressRunPop 后立即复位；任务仍照常 setTasks/pushLog。 */
   const suppressRunPop = useRef(false);
-  const applyTaskLogPop = ({ quiet, noLogOpen }) => {
+  const applyTaskLogPop = ({ quiet }) => {
     if (quiet) suppressRunPop.current = true;
-    if (!quiet && !noLogOpen && page !== 'cache') { setConTab('stream'); setLogOpen(true); }
   };
   /* PSO 预热验证运行记录（list_pso_warmup_runs）——主视图就绪矩阵与检查器运行历史共读 */
   const [psoRuns, setPsoRuns] = useState([]);
@@ -668,7 +744,8 @@ function App() {
       return res;
     } catch (e) {
       const m = e && e.message ? e.message : String(e);
-      setTasks((prev) => prev.map((t) => t.id === id ? { ...t, state: 'failed', pct: 100, exit: 2, elapsed: secs() } : t));
+      /* err 落在任务对象上（不止推日志流），供状态框报警卡「点击复制错误信息」读取 */
+      setTasks((prev) => prev.map((t) => t.id === id ? { ...t, state: 'failed', pct: 100, exit: 2, elapsed: secs(), err: m } : t));
       pushLog({ lv: 'err', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 失败 · ${esc(m)}`,
         detail: fmtDetail([...baseDetailFields(no, domain, action, target, chan, note),
           ['command', e && e.command], ['elapsed', secs()], ['error', m]]) });
@@ -703,7 +780,7 @@ function App() {
 
     /* 浏览器预览（无 Tauri runtime）：不能 listen，直接失败收尾，不挂起。 */
     if (!isTauri()) {
-      setTasks((prev) => prev.map((t) => t.id === id ? { ...t, state: 'failed', pct: 100, exit: 2, elapsed: secs() } : t));
+      setTasks((prev) => prev.map((t) => t.id === id ? { ...t, state: 'failed', pct: 100, exit: 2, elapsed: secs(), err: '浏览器预览无后端' } : t));
       pushLog({ lv: 'err', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 失败 · 浏览器预览无后端` });
       throw new VoloInvokeError('runStreamingCmd', '未运行在 Tauri 运行时');
     }
@@ -715,14 +792,16 @@ function App() {
     const st = {};
     const isMine = wiring.isMine || ((p, jid) => p && p.job_id === jid);
     const setPct = (p) => { if (p != null) setTasks((prev) => prev.map((t) => t.id === id ? { ...t, pct: Math.max(4, Math.min(99, Math.round(p))) } : t)); };
-    const finalize = (ok, exit, payload, canceled) => {
+    const finalize = (ok, exit, payload, canceled, errMsg) => {
       if (finished) return;
       finished = true;
       if (timer) { clearTimeout(timer); timer = null; }
       delete streamCtl.current[id];
       const ex = ok ? 0 : (exit == null ? 2 : exit);
       const state = ok ? 'success' : canceled ? 'canceled' : 'failed';
-      setTasks((prev) => prev.map((t) => t.id === id ? { ...t, state, pct: 100, exit: ex, elapsed: secs(), note: canceled ? '已手动取消 · 远端 UE 进程已终止' : t.note } : t));
+      /* err 落在任务对象上（不止推日志流）：reducer 终态日志行通常就是真实失败原因，
+         供状态框报警卡「点击复制错误信息」读取，而不是只能读到静态的 note 描述。 */
+      setTasks((prev) => prev.map((t) => t.id === id ? { ...t, state, pct: 100, exit: ex, elapsed: secs(), note: canceled ? '已手动取消 · 远端 UE 进程已终止' : t.note, err: (!ok && !canceled) ? (errMsg || t.err) : t.err } : t));
       const detail = fmtDetail([...baseDetailFields(no, domain, action, target, chan, note),
         ['elapsed', secs()], ['exit', ex], ['event', payload === undefined ? undefined : safeJson(payload)]]);
       pushLog(ok
@@ -753,22 +832,25 @@ function App() {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         if (finished) return;
-        pushLog({ lv: 'warn', cat: domain, ch: chan, task: no, msg: `超时 ${Math.round(wiring.timeoutMs / 60000)} 分钟无进度事件，停止等待` });
+        const timeoutMsg = `超时 ${Math.round(wiring.timeoutMs / 60000)} 分钟无进度事件，停止等待`;
+        pushLog({ lv: 'warn', cat: domain, ch: chan, task: no, msg: timeoutMsg });
         if (jobId != null) {
           try {
             if (wiring.onTimeout) wiring.onTimeout(jobId);
             else cancelUeJob(jobId).catch(() => {});
           } catch (e) {}
         }
-        finalize(false, 124);
+        finalize(false, 124, undefined, false, timeoutMsg);
       }, wiring.timeoutMs);
     };
     const apply = (ev, p) => {
       const r = wiring.reduce(ev, p, st) || {};
       if (r.log && r.log.msg) pushLog({ lv: r.log.lv || 'info', cat: domain, ch: chan, task: no, msg: esc(r.log.msg) });
       if (r.pct != null) setPct(r.pct);
-      if (r.done) finalize(!!r.ok, r.exit, p, !!r.canceled); /* canceled 只信 reducer 的判定：
-        取消请求后先到达的真实 err 终态必须仍标 failed，不能被 cancelWanted 盖成 canceled */
+      /* 失败时把 reducer 这一步的终态日志文案（真实失败原因）带给 finalize 落到任务 err 字段上；
+         canceled 只信 reducer 的判定：取消请求后先到达的真实 err 终态必须仍标 failed，不能被
+         cancelWanted 盖成 canceled */
+      if (r.done) finalize(!!r.ok, r.exit, p, !!r.canceled, (!r.ok && r.log) ? r.log.msg : undefined);
       else armTimer(); /* 每个非终态事件重置空闲计时器 */
     };
     const handler = (ev) => (e) => {
@@ -784,7 +866,7 @@ function App() {
       resp = await kickoff();
     } catch (e) {
       const m = e && e.message ? e.message : String(e);
-      setTasks((prev) => prev.map((t) => t.id === id ? { ...t, state: 'failed', pct: 100, exit: 2, elapsed: secs() } : t));
+      setTasks((prev) => prev.map((t) => t.id === id ? { ...t, state: 'failed', pct: 100, exit: 2, elapsed: secs(), err: m } : t));
       pushLog({ lv: 'err', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 失败 · ${esc(m)}`,
         detail: fmtDetail([...baseDetailFields(no, domain, action, target, chan, note),
           ['command', e && e.command], ['elapsed', secs()], ['error', m]]) });

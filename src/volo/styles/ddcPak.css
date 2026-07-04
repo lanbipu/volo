@@ -132,11 +132,11 @@
   border-radius: 6px; color: var(--chrome-faint); cursor: pointer; }
 .pak-search-clear:hover { background: var(--wash-2); color: var(--chrome-text); }
 
-/* 显示 / 排序 / 范围 控件（紧凑一行，可换行） */
+/* 范围 / 扫描 控件（紧凑一行，可换行；显示 / 排序 已下移到列表工具条） */
 .pak-controls { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
 .pak-ctl { display: flex; flex-direction: column; gap: 5px; }
 .pak-ctl > label { font-size: 10.5px; color: var(--chrome-faint); font-weight: 600; }
-.pak-controls .pak-ctl.scan { margin-left: auto; }
+.pak-controls .pak-ctl.scan { margin-left: 0; }
 .pak-controls .obj-sel { min-width: 0 !important; }
 
 /* 搜索根目录 · chip token 编辑器 + 预设快捷 */
@@ -285,8 +285,16 @@
 /* =========================================================================
    6 · 工程列表 · 平铺矩形小模块（网格）+ 全选 + 显示比例滑块
    ========================================================================= */
-/* 列表工具条：左「全选」· 右「显示比例」滑块 */
-.pak-list-bar { display: flex; align-items: center; gap: 12px; }
+/* 列表工具条：左「全选」· 右「显示 / 排序 / 显示比例」 */
+.pak-list-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; row-gap: 8px; }
+/* flex:1 1 auto + min-width:0 + 自身 flex-wrap：窄窗口（原生 App 最小宽度 1100px，居中双栏对半后
+   右栏可用宽度明显小于设计稿浏览器视口）下，显示/排序/显示比例三组横向挤不下时纵向换行，
+   而不是把整条工具条撑出去导致横向溢出。 */
+.pak-list-tools { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;
+  gap: 8px 14px; flex: 1 1 auto; min-width: 0; }
+.pak-list-tools .pak-ctl--row { flex-direction: row; align-items: center; gap: 7px; }
+.pak-list-tools .pak-zoom { margin-left: 0; }
+.pak-list-tools .obj-sel { min-width: 0 !important; }
 .pak-selall { all: unset; display: inline-flex; align-items: center; gap: 8px; padding: 5px 11px 5px 8px;
   border-radius: 8px; border: 1px solid var(--chrome-line-2); background: var(--sunken); cursor: pointer;
   transition: background .12s, border-color .12s; }

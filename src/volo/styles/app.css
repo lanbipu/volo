@@ -432,10 +432,11 @@ html, body {
    ============================================================ */
 .logpanel { display: flex; align-items: center; background: transparent; border: none; padding: 0; }
 
-/* 精简触发器（右下）—— 两段胶囊："控制台"段开全窗；"运行中"段只弹出运行中二级窗 */
+/* 精简触发器（右下）—— 两段胶囊："控制台"段开全窗；"运行中/空闲/报警"段弹出对应二级窗。
+   两段各自独立高亮（选中哪段哪段亮），胶囊整体边框不再随任一段状态变化。 */
 .log-trigger-wrap { position: relative; flex: 0 0 auto; display: inline-flex; align-items: stretch; white-space: nowrap;
   background: var(--sunken); border: 1px solid var(--chrome-line-2); border-radius: 99px; }
-.log-trigger-wrap.on { border-color: color-mix(in srgb, var(--volo-700) 50%, transparent); }
+.log-trigger-wrap.on { border-color: var(--chrome-line-2); }
 .log-trigger { all: unset; box-sizing: border-box; display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
   font-size: 11.5px; font-weight: 700; color: var(--chrome-dim); padding: 4px 10px 4px 12px; border-radius: 99px 0 0 99px;
   transition: background .12s, color .12s; }
@@ -450,18 +451,21 @@ html, body {
 .log-trigger-stat:hover { background: var(--wash); color: var(--chrome-text); }
 .log-trigger-stat.run { color: var(--volo-400); }
 .log-trigger-stat.on { background: color-mix(in srgb, var(--volo-500) 12%, transparent); color: var(--volo-400); }
+.log-trigger-stat.alert { color: var(--negative-visual); }
+.log-trigger-stat.alert.on { background: color-mix(in srgb, var(--negative-visual) 14%, transparent); color: var(--negative-visual); }
+.log-trigger-stat.alert:hover { color: var(--negative-visual); background: color-mix(in srgb, var(--negative-visual) 12%, transparent); }
 
-/* 点击外部关闭的遮罩 + 浮层控制台窗口（悬浮在触发按钮上方）*/
-.log-backdrop { position: fixed; inset: 0; z-index: 80; }
-/* overflow 不设 hidden：控制台头部「运行中」段展开的 .log-run-pop 是 position:absolute
-   向上弹出（bottom: calc(100% + 9px)），hidden 会把它整个裁没——子元素都没有需要靠外层裁角的
-   撑满背景色块，去掉不影响圆角视觉。 */
+/* 控制台 / 运行中弹窗均改为「点击穿透关闭」——不再用挡点击的 backdrop，
+   改由 document 捕获阶段 pointerdown 监听（见 shell.tsx LogPanel）：点击其他地方时
+   弹层关闭的同时，被点的按钮/页面一次点击即生效。 */
 .log-window { position: fixed; left: 14px; right: 14px; bottom: 56px; z-index: 90;
   display: flex; flex-direction: column; background: var(--chrome-menubar);
   border: 1px solid var(--chrome-line-2); border-radius: 12px; box-shadow: var(--shadow-dragged); }
 @media (prefers-reduced-motion: no-preference) { .log-window { animation: logwin .16s var(--ease-default) both; } }
 @keyframes logwin { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-.log-head { display: flex; align-items: center; gap: 12px; height: 34px; padding: 0 8px 0 14px; }
+/* 拖拽手柄仍可用，只是不再画顶部那条分割线 */
+.log-window .resizer--row::after { display: none; }
+.log-head { display: flex; align-items: center; gap: 12px; height: 34px; padding: 0 8px 0 14px; margin-top: -5px; }
 .log-head .ttl { font-size: 11.5px; font-weight: 700; letter-spacing: .04em; display: flex; align-items: center; gap: 8px; }
 .log-tabs { display: flex; gap: 2px; }
 .log-tab { font-size: 11px; color: var(--chrome-faint); padding: 2px 8px; border-radius: 5px; cursor: pointer; display: flex; align-items: center; gap: 5px; }
@@ -508,6 +512,8 @@ html, body {
 .seg button { all: unset; font-size: 12px; font-weight: 600; color: var(--chrome-dim); padding: 4px 11px; border-radius: 5px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
 .seg button:hover { color: var(--chrome-text); }
 .seg button.on { background: var(--volo-700); color: #fff; }
+/* PAK 页显示/排序切换：改用中性的"抬起白片"高亮，避免与橙色功能色冲突 */
+.pak-page .seg button.on { background: var(--chrome-panel-2); color: var(--chrome-text); box-shadow: 0 1px 2px rgba(0,0,0,.2); }
 
 .iconbtn { all: unset; width: 28px; height: 28px; border-radius: 7px; display: grid; place-items: center; color: var(--chrome-dim); cursor: pointer; }
 .iconbtn:hover { background: var(--wash-2); color: var(--chrome-text); }
@@ -2314,15 +2320,9 @@ html, body {
 .mfail__ic { width: 26px; height: 26px; border-radius: 8px; flex: 0 0 auto; display: grid; place-items: center;
   background: color-mix(in srgb, var(--negative-visual) 18%, transparent); color: var(--negative-visual); }
 
-/* 控制台：可点的「运行中」状态 → 正上方临时浮层显示进行中任务实时进度 */
-.log-run { all: unset; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 11px; font-weight: 700;
-  color: var(--chrome-dim); padding: 3px 9px; border-radius: 99px; border: 1px solid var(--chrome-line); }
-.log-run:hover { background: var(--wash); color: var(--chrome-text); border-color: var(--chrome-line-2); }
-.log-run.on { color: var(--volo-400); border-color: color-mix(in srgb, var(--volo-700) 50%, transparent); background: color-mix(in srgb, var(--volo-500) 10%, transparent); }
-.log-run .log-run-tx { font-variant-numeric: tabular-nums; }
-.log-run-wrap { position: relative; display: inline-flex; }
-.log-run-backdrop { position: fixed; inset: 0; z-index: 88; }
-.log-run-pop { position: absolute; bottom: calc(100% + 9px); right: 0; z-index: 90; width: 304px;
+/* 状态框「运行中/最近完成/报警」二级弹窗 —— 独立触发器上方浮层，z-index 高于控制台
+   （见下方 .log-window: 90），可遮挡控制台；不再嵌在控制台头部弹出。 */
+.log-run-pop { position: absolute; bottom: calc(100% + 9px); right: 0; z-index: 96; width: 304px;
   background: var(--chrome-panel-2); border: 1px solid var(--chrome-line-2); border-radius: 12px;
   box-shadow: var(--shadow-dragged); padding: 11px 12px 12px; }
 @media (prefers-reduced-motion: no-preference) { .log-run-pop { animation: runpop .16s var(--ease-default) both; } }
@@ -2349,6 +2349,32 @@ html, body {
 .lrp-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--chrome-faint); }
 .lrp-target { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .lrp-el { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+/* 状态框弹窗 · 报警视图（可点击复制的错误卡）*/
+.lrp-h--alert svg { color: var(--negative-visual); }
+.lrp-alert { all: unset; box-sizing: border-box; display: flex; flex-direction: column; gap: 5px; cursor: pointer;
+  padding: 9px 10px; border-radius: 9px; background: color-mix(in srgb, var(--negative-visual) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--negative-visual) 28%, transparent); transition: background .12s, border-color .12s; }
+.lrp-alert:hover { background: color-mix(in srgb, var(--negative-visual) 13%, transparent); border-color: color-mix(in srgb, var(--negative-visual) 45%, transparent); }
+.lrp-alert.copied { border-color: color-mix(in srgb, var(--positive-visual) 55%, transparent); background: color-mix(in srgb, var(--positive-visual) 12%, transparent); }
+.lrp-copyhint { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 700; color: var(--chrome-faint); }
+.lrp-alert.copied .lrp-copyhint { color: var(--positive-visual); }
+.lrp-errmsg { font-family: var(--font-code); font-size: 11px; line-height: 1.5; color: var(--chrome-dim); white-space: normal; word-break: break-word; }
+/* 状态框弹窗 · 最近完成视图（状态徽标）*/
+.lrp-badge { flex: 0 0 auto; font-size: 10px; font-weight: 700; padding: 1.5px 8px; border-radius: 999px; }
+.lrp-badge--success { color: var(--positive-visual); background: color-mix(in srgb, var(--positive-visual) 15%, transparent); }
+.lrp-badge--failed { color: var(--negative-visual); background: color-mix(in srgb, var(--negative-visual) 15%, transparent); }
+.lrp-badge--canceled { color: var(--chrome-faint); background: var(--wash-2); }
+/* 任务完成小提示 —— 悬浮在状态框上方，点击页面任意位置才关闭 */
+.task-toast { position: fixed; right: 14px; bottom: 56px; z-index: 97; display: inline-flex; align-items: center; gap: 9px;
+  max-width: 340px; padding: 9px 13px 9px 11px; border-radius: 11px; cursor: pointer; font-family: var(--font-sans);
+  background: var(--chrome-panel-2); border: 1px solid var(--chrome-line-2); box-shadow: var(--shadow-dragged); }
+@media (prefers-reduced-motion: no-preference) { .task-toast { animation: tasttoast .2s var(--ease-default) both; } }
+@keyframes tasttoast { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.task-toast-ico { flex: 0 0 auto; width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center; }
+.task-toast--ok .task-toast-ico { color: var(--positive-visual); background: color-mix(in srgb, var(--positive-visual) 16%, transparent); }
+.task-toast--fail .task-toast-ico { color: var(--negative-visual); background: color-mix(in srgb, var(--negative-visual) 16%, transparent); }
+.task-toast-tx { font-size: 12px; color: var(--chrome-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.task-toast-tx b { color: var(--chrome-text); font-weight: 700; }
 
 /* 控制台：历史任务标签 + 任务卡片网格 */
 .log-tab--hist { gap: 5px; }

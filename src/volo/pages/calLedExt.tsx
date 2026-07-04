@@ -108,7 +108,7 @@ import { listen } from "@tauri-apps/api/event";
       /* 真实路径：Tauri + 已选 session → vpcal quick run */
       if (isTauri()) {
         if (!sessionPath) { await pickSession(); return; }
-        s.setCalLensState('running'); s.setLogOpen && s.setLogOpen(true);
+        s.setCalLensState('running');
         s.pushLog && s.pushLog({ lv: 'info', cat: 'lens', msg: `运行 <b>vpcal quick run</b> · ${sessionPath}` });
         try {
           const resp = await spawnSidecarStreaming('vpcal', ['quick', 'run', '--config', sessionPath, '--output', 'json']);
@@ -120,7 +120,7 @@ import { listen } from "@tauri-apps/api/event";
         return;
       }
       /* 浏览器演示：无后端时按设计跑一次假流水线 */
-      s.setCalLensState('running'); s.setLogOpen && s.setLogOpen(true);
+      s.setCalLensState('running');
       s.pushLogs && s.pushLogs([{ lv: 'info', cat: 'lens', msg: '镜头求解（演示）· validate → detect → solve → report' }]);
       let i = 0;
       timer.current = setInterval(() => {
@@ -363,7 +363,7 @@ import { listen } from "@tauri-apps/api/event";
     const runBa = async () => {
       setBaErr(null); setWarns([]); setResult(null); setBaStage('');
       if (!hasBackend) {
-        setBaState('running'); setBaPct(4); s.setLogOpen && s.setLogOpen(true);
+        setBaState('running'); setBaPct(4);
         s.pushLogs && s.pushLogs([{ lv: 'info', cat: 'survey', msg: 'BA 重建启动（演示）· ' + M2_RECONSTRUCT.ba_observations_total.toLocaleString() + ' 观测' }]);
         let p = 4; timer.current = setInterval(() => {
           p += 16; setBaPct(Math.min(100, p));
@@ -373,7 +373,7 @@ import { listen } from "@tauri-apps/api/event";
       }
       if (!manifestPath) { await pickManifest(); return; }
       if (intr === 'chessboard' && !intrPath) { await pickIntr(); return; }
-      setBaState('running'); setBaPct(0); s.setLogOpen && s.setLogOpen(true);
+      setBaState('running'); setBaPct(0);
       s.pushLog && s.pushLog({ lv: 'info', cat: 'survey', msg: `BA 重建 · mesh_visual_reconstruct · ${intr === 'auto' ? 'auto 自标定' : '外部内参'}` });
       try {
         const resp = await meshVisualReconstruct(proj.path, s.calScreen, manifestPath, intr === 'auto' ? null : intrPath, null);

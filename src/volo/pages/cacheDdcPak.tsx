@@ -27,8 +27,8 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
   const Selector = window.Selector;
   const DDC = window.VOLO_CACHE_DDC;
 
-  const VIEW_OPTS = [{ id: 'flat', label: '平铺列表', icon: 'list' }, { id: 'grouped', label: '按文件夹层级', icon: 'folder' }];
-  const SORT_OPTS = [{ id: 'updated', label: '按最近更新时间' }, { id: 'name', label: '按名称' }, { id: 'path', label: '按路径' }, { id: 'time', label: '按发现时间' }];
+  const VIEW_OPTS = [{ id: 'flat', label: '列表', icon: 'list' }, { id: 'grouped', label: '文件夹', icon: 'folder' }];
+  const SORT_OPTS = [{ id: 'updated', label: '更新时间' }, { id: 'name', label: '名称' }, { id: 'path', label: '路径' }, { id: 'time', label: '发现时间' }];
   const ROOT_PRESETS = ['D:\\Unreal Projects', 'D:\\UE_Projects', 'D:\\Projects', 'E:\\UEProjects'];
   /* get_project_thumbnail 只回传策略 key，人话文案留在前端（PROBE_DICT/PROBE_NARRATIVE 同款分工）。 */
   const THUMB_FROM_LABEL = {
@@ -297,6 +297,9 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
     const [sort, setSort] = useState('updated');
     const [sel, setSel] = useState([]);
     const [tileScale, setTileScale] = useState(150); /* 平铺矩形模块显示比例（列宽 px）*/
+    /* 清空当前列表显示（只清屏，不动 UE_PROJECTS 原始工程；重新扫描即恢复）+ 二次确认门 */
+    const [cleared, setCleared] = useState(false);
+    const [confirmClear, setConfirmClear] = useState(false);
 
     /* ---------- 缩略图（懒加载，只在本页 merge 进 project 对象，不写回全局 UE_PROJECTS） ----------
        每个工程用 DDC.pickSrc 选源机（与生成/校验同一套「哪台机代表这个工程」的既有约定）。
@@ -420,13 +423,16 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
     const removeRoot = (id) => setRoots((rs) => rs.filter((r) => r.id !== id));
     const commitDraft = () => { addRoots(rootDraft); setRootDraft(''); };
     const doScan = () => {
+      setCleared(false); setConfirmClear(false);
       const scanned = DDC.runDiscover(s, scope, rootsStr);
       if (scanned) scanned.then(() => { thumbTriedRef.current = new Set(); setThumbGen((g) => g + 1); });
     };
+    /* 清空当前列表显示 —— 只清屏，不动原始工程；重新扫描（doScan）即恢复 */
+    const clearList = () => { setCleared(true); setSel([]); setConfirmClear(false); };
 
     /* ---------- 过滤 / 排序 / 分组 ---------- */
     const q = query.trim().toLowerCase();
-    const matched = UE_PROJECTS.filter((p) => !q
+    const matched = cleared ? [] : UE_PROJECTS.filter((p) => !q
       || p.name.toLowerCase().includes(q) || (p.root + '\\' + p.uproject).toLowerCase().includes(q));
     /* 「按最近更新时间」用探测到的缩略图/autosequence 截图的文件 mtime 排序——它反映工程
        内容实际变动（编辑器里工作时才会更新截图），不是 discovered_at 那种"上次被 Volo
@@ -515,7 +521,7 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
     /* ---------- 右栏 · 工程列表 ---------- */
     const listBody = sorted.length === 0
       ? h('div', { className: 'pak-list-empty' }, h(Icon, { name: 'search', size: 22 }),
-          h('span', null, q ? ('无匹配「' + query + '」的工程') : '尚未发现工程，点上方「扫描」'))
+          h('span', null, q ? ('无匹配「' + query + '」的工程') : cleared ? '已清空列表 · 点上方「扫描」重新发现工程' : '尚未发现工程，点上方「扫描」'))
       : view === 'grouped'
         ? (() => {
             const groups = [];
@@ -543,19 +549,25 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
               allSelected ? h(Icon, { name: 'check', size: 12 }) : someSelected ? h(Icon, { name: 'minus', size: 12 }) : null),
             h('span', { className: 'pak-selall-tx' }, allSelected ? '取消全选' : '全选'),
             h('span', { className: 'pak-selall-ct' }, visibleSelectedCount ? (visibleSelectedCount + ' / ' + sorted.length) : (sorted.length + ' 个工程'))),
-          view === 'flat' ? h('div', { className: 'pak-zoom', title: '调节矩形模块的显示比例' },
-            h('span', { className: 'pak-zoom-ic sm' }, h(Icon, { name: 'grid', size: 12 })),
-            h('input', { type: 'range', className: 'pak-zoom-range', min: 118, max: 220, step: 1,
-              value: tileScale, 'aria-label': '显示比例',
-              onChange: (e) => setTileScale(+e.target.value) }),
-            h('span', { className: 'pak-zoom-ic lg' }, h(Icon, { name: 'grid', size: 17 }))) : null);
+          h('div', { className: 'pak-list-tools' },
+            h('div', { className: 'pak-ctl pak-ctl--row' }, h('label', null, '显示'),
+              h('div', { className: 'seg' }, VIEW_OPTS.map((o) => h('button', { key: o.id, className: view === o.id ? 'on' : '', onClick: () => setView(o.id) },
+                h(Icon, { name: o.icon, size: 13 }), o.label)))),
+            h('div', { className: 'pak-ctl pak-ctl--row' }, h('label', null, '排序'),
+              h(Selector, { kpre: '排序', value: sort, options: SORT_OPTS, width: 156, align: 'left', onChange: setSort })),
+            view === 'flat' ? h('div', { className: 'pak-zoom', title: '调节矩形模块的显示比例' },
+              h('span', { className: 'pak-zoom-ic sm' }, h(Icon, { name: 'grid', size: 12 })),
+              h('input', { type: 'range', className: 'pak-zoom-range', min: 118, max: 220, step: 1,
+                value: tileScale, 'aria-label': '显示比例',
+                onChange: (e) => setTileScale(+e.target.value) }),
+              h('span', { className: 'pak-zoom-ic lg' }, h(Icon, { name: 'grid', size: 17 }))) : null));
 
     return h('div', { className: 'res ddc pak-page' },
       h('div', { className: 'canvas-head' },
         h('span', { className: 't' }, 'DDC · DDC PAK'),
         h('div', { className: 'right' },
           h('span', { className: 'toolchip' }, h(Icon, { name: 'cache', size: 14 }), '已部署 ' + deployed.length + ' 个'),
-          h('span', { className: 'toolchip' }, h(Icon, { name: 'film', size: 14 }), '发现 ' + UE_PROJECTS.length + ' 工程'))),
+          h('span', { className: 'toolchip' }, h(Icon, { name: 'film', size: 14 }), '发现 ' + (cleared ? 0 : UE_PROJECTS.length) + ' 工程'))),
       h('div', { className: 'pak2' },
         /* ============ 左栏 · 已部署 DDC PAK ============ */
         h('section', { className: 'pak2-col pak2-left' },
@@ -585,11 +597,6 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
               q ? h('span', { className: 'pak-search-ct' }, '匹配 ' + matched.length + ' / ' + UE_PROJECTS.length) : null,
               q ? h('button', { className: 'pak-search-clear', title: '清除搜索', onClick: () => setQuery('') }, h(Icon, { name: 'x', size: 13 })) : null),
             h('div', { className: 'pak-controls' },
-              h('div', { className: 'pak-ctl' }, h('label', null, '显示'),
-                h('div', { className: 'seg' }, VIEW_OPTS.map((o) => h('button', { key: o.id, className: view === o.id ? 'on' : '', onClick: () => setView(o.id) },
-                  h(Icon, { name: o.icon, size: 13 }), o.label)))),
-              h('div', { className: 'pak-ctl' }, h('label', null, '排序'),
-                h(Selector, { kpre: '排序', value: sort, options: SORT_OPTS, width: 188, align: 'left', onChange: setSort })),
               h('div', { className: 'pak-ctl scan' }, h('label', null, '扫描范围'),
                 h(Selector, { kpre: '范围', value: scope, options: DDC.scopeOpts(), width: 168, onChange: setScope })),
               h('div', { className: 'pak-ctl' }, h('label', { style: { visibility: 'hidden' } }, '扫描'),
@@ -615,12 +622,21 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
             h('div', { className: 'pak-scan-meta' }, h(Icon, { name: 'check', size: 12 }), '已发现 ' + UE_PROJECTS.length + ' 个工程位置 · 远程扫 .uproject 只发现不写盘'),
             listBar,
             listBody),
-          h('div', { className: 'pak2-foot' },
-            h('span', { className: 'pak-genbar-info' }, h(Icon, { name: 'info', size: 12 }),
-              sel.length ? h(React.Fragment, null, '已选 ', h('b', null, sel.length), ' 个工程 · 仅工程级 Pak（DDC.ddp）') : '勾选工程后生成 DDC PAK'),
-            h('span', { className: 'pak-genbar-spacer' }),
-            h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'bolt', size: 14 }), isDisabled: sel.length === 0, onPress: generateSelected },
-              '生成 DDC PAK' + (sel.length ? '（' + sel.length + '）' : ''))))));
+          h('div', { className: 'pak2-foot' + (confirmClear ? ' confirming' : '') },
+            confirmClear
+              ? h(React.Fragment, null,
+                  h('span', { className: 'pak-genbar-info' }, h(Icon, { name: 'alert', size: 13 }),
+                    h('span', null, '确认清空当前列表？仅清除列表显示，不影响原始工程，扫描即可恢复。')),
+                  h('span', { className: 'pak-genbar-spacer' }),
+                  h(Button, { variant: 'secondary', size: 'M', onPress: () => setConfirmClear(false) }, '取消'),
+                  h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'x', size: 14 }), onPress: clearList }, '确认清空'))
+              : h(React.Fragment, null,
+                  h('span', { className: 'pak-genbar-info' }, h(Icon, { name: 'info', size: 12 }),
+                    sel.length ? h(React.Fragment, null, '已选 ', h('b', null, sel.length), ' 个工程 · 仅工程级 Pak（DDC.ddp）') : '勾选工程后生成 DDC PAK'),
+                  h('span', { className: 'pak-genbar-spacer' }),
+                  h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'x', size: 14 }), isDisabled: sorted.length === 0, onPress: () => setConfirmClear(true) }, '清空'),
+                  h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'bolt', size: 14 }), isDisabled: sel.length === 0, onPress: generateSelected },
+                    '生成 DDC PAK' + (sel.length ? '（' + sel.length + '）' : '')))))));
   }
 
   window.VOLO_CACHE_DDC_PAK = { page: (s) => h(PakPage, { s }) };
