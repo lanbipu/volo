@@ -823,7 +823,7 @@ import {
   /* ============ 二级弹层③ 客户端指向管理 ============
      zdirs（各机本地 Zen 缓存目录回读）已提升到 ZenServer —— 一级 Dashboard「已指向机器」
      明细也要显示缓存目录，弹层内的应用/清除/重读通过 props 落回同一份 state，两处同步。 */
-  function ClientModal({ s, clients, srvNode, status, deployed, canPoint, targetVis, pointed, setPointed, pointedLoading, zdirs, setZdirs, zdirGenRef, readZdirFor, close, zports, zpres, openPortModal, backToClient }) {
+  function ClientModal({ s, clients, srvNode, status, deployed, canPoint, targetVis, pointed, setPointed, pointedScope, setPointedScope, pointedLoading, zdirs, setZdirs, zdirGenRef, readZdirFor, close, zports, zpres, openPortModal, backToClient }) {
     const hasAnyProjects = (window.UE_PROJECTS || []).length > 0;
     const [sel, setSel] = useState([]);
     const [res, setRes] = useState({});
@@ -968,6 +968,7 @@ import {
                 const okMsg = '已写 ' + ps.length + ' 个工程 DefaultEngine.ini（' + ps.map((p) => p.name).join('、') + '）→ ' + hostUri;
                 setRes((r) => Object.assign({}, r, { [id]: { st: 'ok', msg: okMsg } }));
                 setPointed((p) => { const np = new Set(p); np.add(id); return np; });
+                setPointedScope((prev) => Object.assign({}, prev, { [id]: 'project' }));
                 log(s, 'ok', `<b>set_ini_key</b> · ${esc(n.host)} DefaultEngine.ini ×${ps.length} → ${esc(hostUri)}`);
                 return;
               }
@@ -992,6 +993,7 @@ import {
             const okMsg = 'UserEngine.ini（用户 ' + runtimeUser(n) + '）→ ' + hostUri;
             setRes((r) => Object.assign({}, r, { [id]: { st: 'ok', msg: okMsg } }));
             setPointed((p) => { const np = new Set(p); np.add(id); return np; });
+            setPointedScope((prev) => Object.assign({}, prev, { [id]: 'user' }));
             log(s, 'ok', `<b>zen_enable_global</b> · ${esc(n.host)} ${esc(out.ini_file)} → ${esc(hostUri)}`);
           },
           (e) => {
@@ -1239,7 +1241,7 @@ import {
   }
 
   function ZenServer({ s }) {
-    const snapRef = useRef({ status: null, gcApplied: null, gcSeededFor: null, pointed: null });
+    const snapRef = useRef({ status: null, gcApplied: null, gcSeededFor: null, pointed: null, pointedScope: null });
     /* —— 真实状态（zen_list_endpoints + zen_status + zen_cache_stats）—— */
     const [status, setStatus] = useState(() => snapRef.current.status);   /* {endpointId,machineId,host,ip,port,scheme,version,dataDir,svc,records,gc*,serviceAccount*} | null */
     const [statusLoading, setStatusLoading] = useState(() => !snapRef.current.status);
@@ -1316,10 +1318,16 @@ import {
        hook 数变化会让 React 抛「Rendered more hooks than during the previous render」并
        卸载整棵树（纯黑屏）。 */
     const [pointed, setPointed] = useState(() => (snapRef.current.pointed ? new Set(snapRef.current.pointed) : new Set()));  /* 「已指向」机器（下方 effect 真实回读 + 应用成功的乐观更新）*/
+    const [pointedScope, setPointedScope] = useState(() => snapRef.current.pointedScope || {}); /* id → 'user' | 'project'，真实回读 UserEngine / DefaultEngine.ini 判定 */
     const [pointedLoading, setPointedLoading] = useState(false); /* 指向状态回读进行中 */
     const setPointedTracked = (updater) => setPointed((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
       snapRef.current.pointed = next;
+      return next;
+    });
+    const setPointedScopeTracked = (updater) => setPointedScope((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      snapRef.current.pointedScope = next;
       return next;
     });
 
@@ -1361,21 +1369,40 @@ import {
         Promise.allSettled(nodes.map((n) => {
           const reads = [];
           const user = runtimeUser(n);
-          if (user) reads.push(readIniSection(n.machineId, 'C:\\Users\\' + user + '\\AppData\\Local\\Unreal Engine\\Engine\\Config\\UserEngine.ini', 'StorageServers'));
+          let userReadIdx = -1;
+          const projReadIdxs = [];
+          if (user) {
+            userReadIdx = reads.length;
+            reads.push(readIniSection(n.machineId, 'C:\\Users\\' + user + '\\AppData\\Local\\Unreal Engine\\Engine\\Config\\UserEngine.ini', 'StorageServers'));
+          }
           clientProjects(n.id).forEach((p) => {
             const loc = p.locByMachine && p.locByMachine[String(n.machineId)];
-            if (loc) reads.push(readIniSection(n.machineId, loc + '\\Config\\DefaultEngine.ini', 'StorageServers'));
+            if (loc) {
+              projReadIdxs.push(reads.length);
+              reads.push(readIniSection(n.machineId, loc + '\\Config\\DefaultEngine.ini', 'StorageServers'));
+            }
           });
-          if (!reads.length) return Promise.resolve({ id: n.id, hit: false });
-          /* 文件不存在 / 机器读不到 → rejected → 不算命中；任一份 ini 命中即已指向 */
-          return Promise.allSettled(reads).then((rs) => ({
-            id: n.id,
-            hit: rs.some((r) => r.status === 'fulfilled' && hitsServer(r.value)),
-          }));
+          if (!reads.length) return Promise.resolve({ id: n.id, hit: false, scope: null });
+          /* 文件不存在 / 机器读不到 → rejected → 不算命中；任一份 ini 命中即已指向。
+             范围判定：UserEngine.ini 命中 → 用户全局；否则任一工程 DefaultEngine.ini 命中 → 工程级。 */
+          return Promise.allSettled(reads).then((rs) => {
+            const userHit = userReadIdx >= 0 && rs[userReadIdx].status === 'fulfilled' && hitsServer(rs[userReadIdx].value);
+            const projHit = projReadIdxs.some((i) => rs[i].status === 'fulfilled' && hitsServer(rs[i].value));
+            const hit = userHit || projHit;
+            const scope = userHit ? 'user' : (projHit ? 'project' : null);
+            return { id: n.id, hit, scope };
+          });
         })).then((rs) => {
           if (gen !== pointedGenRef.current) return; /* 被更新的回读取代 / 已卸载 → 丢弃 */
-          const hits = rs.filter((r) => r.status === 'fulfilled' && r.value.hit).map((r) => r.value.id);
+          const hits = [];
+          const scopes = {};
+          rs.forEach((r) => {
+            if (r.status !== 'fulfilled') return;
+            if (r.value.hit) hits.push(r.value.id);
+            if (r.value.scope) scopes[r.value.id] = r.value.scope;
+          });
           if (hits.length) setPointedTracked((prev) => { const np = new Set(prev); hits.forEach((id) => np.add(id)); return np; });
+          if (Object.keys(scopes).length) setPointedScopeTracked((prev) => Object.assign({}, prev, scopes));
           setPointedLoading(false);
         });
       }, 0);
@@ -1513,14 +1540,13 @@ import {
     const clients = RN.filter((n) => !(status && n.machineId === status.machineId) && !(deployedNode && n.id === deployedNode.id));
 
     /* 一级页面直显：已指向此服务器的机器逐台明细 —— 名称 / 部署类型（工程级 or 用户全局）/
-       工程级时显示 ZenServer data-dir（共享 DDC 工程缓存存储地址）。没有单独持久化
-       「每台机器用的范围」，用该机是否有已发现工程作为判定依据。pointedCount 由此派生，
-       避免同一个 filter 对 clients 重复跑两遍。服务器本机回环指向后也计入 —— 弹层里能指它，
-       一级明细却不显示会看起来像指向丢了；行内加「服务器本机」徽标区分。 */
+       范围由 pointedScope 真实回读（UserEngine.ini vs DefaultEngine.ini）判定，不再用
+       「该机是否有已发现工程」冒充。pointedCount 由此派生。服务器本机回环指向后也计入。 */
     const pointedClientRows = (deployedNode && pointed.has(deployedNode.id) ? [deployedNode] : [])
       .concat(clients.filter((n) => pointed.has(n.id))).map((n) => {
         const projs = clientProjects(n.id);
-        return { n, isProject: projs.length > 0, projs, isServer: !!(deployedNode && n.id === deployedNode.id) };
+        const scope = pointedScope[n.id];
+        return { n, isProject: scope === 'project', scope, projs, isServer: !!(deployedNode && n.id === deployedNode.id) };
       });
     const pointedCount = pointedClientRows.length;
     const pointableCount = clients.length + (deployedNode ? 1 : 0);
@@ -1688,7 +1714,7 @@ import {
 
     const openClientModal = () => s.setModal({
       xwide: true,
-      render: ({ close }) => h(ClientModal, { s, clients, srvNode: deployedNode, status, deployed, canPoint, targetVis, pointed, setPointed: setPointedTracked, pointedLoading, zdirs, setZdirs, zdirGenRef, readZdirFor, close,
+      render: ({ close }) => h(ClientModal, { s, clients, srvNode: deployedNode, status, deployed, canPoint, targetVis, pointed, setPointed: setPointedTracked, pointedScope, setPointedScope: setPointedScopeTracked, pointedLoading, zdirs, setZdirs, zdirGenRef, readZdirFor, close,
         zports, zpres, openPortModal, backToClient }),
     });
     /* 每次渲染刷新 reopen 引用，指向持有最新 zports/zpres 快照的弹窗构造器 */
@@ -1761,11 +1787,9 @@ import {
                 h('div', { className: 'zcl-list' },
                   pointedClientRows.length === 0
                     ? h('div', { className: 'zcl-empty' }, h(Icon, { name: 'link', size: 18 }), '暂无客户端指向此服务器')
-                    : pointedClientRows.map(({ n, isProject, isServer }) => {
-                        /* 逐行明细：IP + 本地 Zen 缓存目录（zdirs 真实回读：自定义配置值优先，
-                           其次 runcontext 生效值，未配置 = 默认 C 盘提示；读取中/不可读如实展示）；
-                           工程级显示 ZenServer 部署的 data-dir（共享 DDC 工程缓存存储地址），
-                           用户全局显示 UserEngine.ini 说明。 */
+                    : pointedClientRows.map(({ n, isProject, scope, isServer }) => {
+                        /* 逐行明细：本地缓存 + 本地端口 + 共享缓存（ZenServer data-dir）；
+                           工程级/用户全局徽标由 pointedScope 真实回读判定。 */
                         const zr = zenRecOf(zdirs, n.id);
                         const zrBlocked = n.status === 'offline' || !runtimeUser(n);
                         const cacheDir = zrBlocked ? '不可读 · 离线或未设 UE 运行用户'
@@ -1780,7 +1804,7 @@ import {
                               h('span', { className: 'zcl-row-host mono' }, n.host),
                               h('span', { className: 'zcl-row-ip mono' }, n.ip),
                               isServer ? h('span', { className: 'zsrv-badge' }, h(Icon, { name: 'server', size: 11 }), '服务器本机') : null,
-                              h('span', { className: 'zcl-row-badge' + (isProject ? ' proj' : ' user') }, isProject ? '工程级' : '用户全局')),
+                              scope ? h('span', { className: 'zcl-row-badge' + (isProject ? ' proj' : ' user') }, isProject ? '工程级' : '用户全局') : null),
                             h('div', { className: 'zcl-meta' },
                               h('div', { className: 'zcl-meta-row' },
                                 h('span', { className: 'zcl-meta-k' }, '本地缓存'),
@@ -1797,13 +1821,9 @@ import {
                                     zrBlocked ? '不可读' : pRec.loading ? '读取中…' : (pConf + ' → ' + (pRun != null ? pRun : '—'))),
                                   pOv ? h('span', { className: 'zport-tag' }, '已改端口') : null);
                               })(),
-                              isProject
-                                ? h('div', { className: 'zcl-meta-row' },
-                                    h('span', { className: 'zcl-meta-k' }, '共享缓存'),
-                                    pathBtn(projectCachePath, '在文件资源管理器中打开该目录'))
-                                : h('div', { className: 'zcl-meta-row' },
-                                    h('span', { className: 'zcl-meta-k' }, '配置'),
-                                    h('span', { className: 'zcl-meta-v mono' }, '用户全局 · UserEngine.ini')))));
+                              h('div', { className: 'zcl-meta-row' },
+                                h('span', { className: 'zcl-meta-k' }, '共享缓存'),
+                                pathBtn(projectCachePath, '在文件资源管理器中打开该共享缓存目录')))));
                       })));
             })()))));
   }
