@@ -186,8 +186,11 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak } from "../api/comm
     const [depScan, setDepScan] = useState(() => DEPLOYED_CACHE.scannedAt);
     const [confirmId, setConfirmId] = useState(null);
 
-    const loadDeployed = (quiet) => s.runCmd(
-      { domain: 'ddc', action: 'scan-deployed', target: '已部署 DDC PAK', chan: 'ssh', note: '扫描已部署 DDC PAK', quiet },
+    const loadDeployed = (opts) => {
+      const quiet = opts === true || !!(opts && opts.quiet);
+      const noLogOpen = !!(opts && opts.noLogOpen);
+      return s.runCmd(
+      { domain: 'ddc', action: 'scan-deployed', target: '已部署 DDC PAK', chan: 'ssh', note: '扫描已部署 DDC PAK', quiet, noLogOpen },
       () => listDeployedDdcPaks(),
       { okMsg: (rows) => '已刷新 · ' + rows.length + ' 条已部署位置' })
       .then((rows) => {
@@ -196,6 +199,7 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak } from "../api/comm
         setDeployedRaw(rows);
         setDepScan(DEPLOYED_CACHE.scannedAt);
       }, () => {});
+    };
     /* 仅本会话首次进入且尚无缓存时静默扫一次；从其他顶层页切回时走 useState 初始值复用缓存 */
     useEffect(() => {
       if (DEPLOYED_CACHE.raw !== undefined) return;
@@ -407,7 +411,7 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak } from "../api/comm
               h('div', { className: 'pak2-sub' }, '扫描工程目录自动发现 · 已生成 / 部署过 Pak 的工程')),
             h('div', { className: 'right' },
               h('span', { className: 'pak2-scan' }, h(Icon, { name: 'check', size: 11 }), '刷新于 ' + fmtScanTime(depScan)),
-              h('button', { className: 'mini-btn', title: '扫描工程目录，刷新已部署 DDC PAK 的最新情况', onClick: () => loadDeployed(false) },
+              h('button', { className: 'mini-btn', title: '扫描工程目录，刷新已部署 DDC PAK 的最新情况', onClick: () => loadDeployed({ noLogOpen: true }) },
                 h(Icon, { name: 'sync', size: 12 }), '刷新'))),
           h('div', { className: 'pak2-b' }, leftBody)),
         /* ============ 右栏 · 工程扫描与生成 ============ */
