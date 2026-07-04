@@ -401,6 +401,16 @@ export interface DeployedPakEntry {
   modified_at: string | null;
 }
 
+/** `get_project_thumbnail` result: a same-name PNG next to the .uproject, or
+ *  the Saved\autosequence_shot.png fallback. `from` is a raw key
+ *  ("uproject_same_name" | "saved_autosequence") — the frontend maps it to a
+ *  human label, mirroring the PROBE_DICT/PROBE_NARRATIVE split in adapters.ts. */
+export interface ProjectThumbnail {
+  path: string;
+  base64: string;
+  from: string;
+}
+
 export type UeRunnerEvent =
   | { kind: "spawned"; pid: number; log_path: string }
   | { kind: "log_line"; text: string; parsed_kind: string | null }

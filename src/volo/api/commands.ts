@@ -1,5 +1,5 @@
 /* Volo — Cache typed command bindings.
-   One wrapper per registered `#[tauri::command]` (85 total). Arg keys are
+   One wrapper per registered `#[tauri::command]` (88 total). Arg keys are
    camelCase (Rust snake_case → JS camelCase); a struct/request input is passed
    whole under one camelCase key, its inner fields staying snake_case. Optional
    Rust params (`Option<T>`) are passed as explicit `null` when omitted.
@@ -10,7 +10,7 @@
      🔌 ui-sim —— 前端有对应 UI 入口（按钮/面板/流程），当前 runTask 模拟或读 mock，
                   待接真实 invoke（wire-target）
      📝 no-ui  —— 当前设计无对应 UI 承载点（后端-only 能力）；附原因，不强造 UI
-   现状汇总：✅ 49 · 🔌 0 · 📝 39 = 88。 */
+   现状汇总：✅ 52 · 🔌 0 · 📝 39 = 91。 */
 import { call } from "./invoke";
 import type {
   Machine, MachineDetail, UeRuntimeUserRow, WinrmBootstrapResult, PackageBootstrapResult, EchoResult,
@@ -19,7 +19,7 @@ import type {
   VerifyReport, DeployPlan, DeployStep, GpuMatrix, ConsistencyResult,
   ShareMode, CreateShareResponse, TeardownShareResult, InjectionResult, ShareConfig,
   ProjectSummary, ProjectLocation, DiscoveryResult,
-  ExecutionLocation, GenerateJobResponse, PakOutput, DistributeJobResponse, DeployedPakEntry,
+  ExecutionLocation, GenerateJobResponse, PakOutput, DistributeJobResponse, DeployedPakEntry, ProjectThumbnail,
   PsoCollectJobResponse, PsoCacheFile, DistributePsoCacheRequest, PsoDistributeJobResponse,
   StartPsoWarmupRequest, PsoWarmupJobResponse, PsoWarmupRun,
   RunHealthCheckRequest, HealthRunSummary, HealthCheckRow,
@@ -65,6 +65,10 @@ export const pickFile = (filterName?: string, filterExtensions?: string[]) =>
   call<string | null>("pick_file", { filterName: filterName ?? null, filterExtensions: filterExtensions ?? null });
 // ✅ wired: UsbPackPanel 成功态「在文件夹中显示」→ revealPath（系统文件管理器定位）
 export const revealPath = (path: string) => call<void>("reveal_path", { path });
+// ✅ wired: cacheDdc openFolder → 判断目标机是否就是本机，决定直接 revealPath 还是走 revealRemotePath
+export const isLoopbackMachine = (host: string) => call<boolean>("is_loopback_machine", { host });
+// ✅ wired: cacheDdc openFolder 远程分支 → 按 Volo 运行时所在 OS 走 UNC（Windows）或 smb:// URL（其余平台）
+export const revealRemotePath = (host: string, path: string) => call<void>("reveal_remote_path", { host, path });
 
 // ✅ wired: Calibrate AR「历史与导出」步 → listArRuns。扫描 runs 根目录下 vpcal quick run 写出的
 // <output_dir>/result.json（根目录本身 + 直接子目录），汇总 solve 历史（newest-first）。无 runs 注册表，
@@ -284,6 +288,9 @@ export const listDeployedDdcPaks = () => call<DeployedPakEntry[]>("list_deployed
 // ✅ wired: cacheDdcPak 已部署卡片「删除 PAK」（红色确认门）→ deleteDdcPak + 重新扫描
 export const deleteDdcPak = (machineId: number, projectId: number) =>
   call<void>("delete_ddc_pak", { machineId, projectId });
+// ✅ wired: cacheDdcPak 工程行缩略图（懒加载）→ getProjectThumbnail；null = 无缩略图，回退 film 图标
+export const getProjectThumbnail = (projectId: number, machineId: number) =>
+  call<ProjectThumbnail | null>("get_project_thumbnail", { projectId, machineId });
 
 /* ----------------------------- pso ----------------------------- */
 // ✅ wired: cacheDdc collectPso → startPsoCollection via runStreamingCmd（ue-runner-progress + pso-collect-finalized）

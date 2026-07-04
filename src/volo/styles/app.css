@@ -1760,11 +1760,20 @@ html, body {
 .proj-mck.on { background: var(--volo-500); border-color: var(--volo-500); }
 .proj-mck.part { background: var(--volo-500); border-color: var(--volo-500); }
 .proj-mck.dis { opacity: 0.5; }
-.proj-ico { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; flex: 0 0 auto; color: var(--volo-400); background: var(--wash-2); }
+.proj-ico { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; flex: 0 0 auto; color: var(--volo-400); background: var(--wash-2); overflow: hidden; }
+.proj-ico.has-thumb { background: var(--sunken); padding: 0; box-shadow: inset 0 0 0 1px var(--chrome-line); }
+.proj-thumb { width: 100%; height: 100%; object-fit: cover; display: block; border-radius: inherit; }
+.proj-row.on .proj-ico.has-thumb { background: var(--sunken); color: inherit; box-shadow: inset 0 0 0 1.5px var(--volo-500); }
 .proj-row.on .proj-ico { color: #fff; background: var(--volo-500); }
 .proj-main { flex: 1; min-width: 0; }
 .proj-name { font-size: 13.5px; font-weight: 700; color: var(--chrome-text); }
 .proj-sub { font-family: var(--font-code); font-size: 11px; color: var(--chrome-dim); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 可点击路径：点按在资源管理器中打开工程文件夹 */
+.proj-sub-open { display: flex; align-items: center; gap: 5px; max-width: 100%; padding: 1px 5px 1px 0; margin: 2px 0 0 -2px; border: 0; border-radius: 6px; background: none; cursor: pointer; text-align: left; color: var(--chrome-dim); transition: color .12s, background .12s; }
+.proj-sub-open .proj-sub-tx { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.proj-sub-open .proj-sub-ico { display: inline-grid; place-items: center; flex: 0 0 auto; opacity: 0; transform: translateX(-3px); transition: opacity .12s, transform .12s; color: var(--volo-400); }
+.proj-sub-open:hover { color: var(--volo-400); background: var(--highlight-selected); padding-left: 5px; }
+.proj-sub-open:hover .proj-sub-ico { opacity: 1; transform: none; }
 .proj-tags { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; max-width: 50%; }
 .proj-tag { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 7px; background: var(--wash-2); color: var(--chrome-dim); white-space: nowrap; }
 .proj-tag.ue { font-family: var(--font-code); }
