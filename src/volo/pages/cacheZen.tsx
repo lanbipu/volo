@@ -39,6 +39,7 @@ import {
   zenUnregister, zenProbe, zenStatus, zenListEndpoints, zenCacheStats, zenDiskSpace, setIniKey, readIniSection,
   refreshMachine, revealPath, zenEnableGlobal, zenReadLocalRuncontext, zenSetLocalDatapath, getMachineEnvVar,
   zenLocalPortSet, zenLocalPortClear, zenLocalPortStatus,
+  ensureOpenDirShare, removeOpenDirShare,
 } from "../api/commands";
 
 (function () {
@@ -137,6 +138,10 @@ import {
   /* 本地 Zen 缓存目录：默认目录提示 + 路径归一比较。zdirs 状态已提升到 ZenServer
      （一级 Dashboard「已指向机器」明细也要显示各机缓存目录），这两个纯 helper 随之提到模块级。 */
   const ZEN_DEF_HINT = '%LOCALAPPDATA%\\UnrealEngine\\Common\\Zen\\Data';
+  /* 设置本地 Zen 缓存目录时自动创建的 Mode A（Guest）共享名——固定一个名字，
+     ensure/remove 幂等替换；reveal_path 后端按 share_configs 把该目录下的路径
+     改写成 \\host\volo-zen\... 打开（工作组环境 D$ 管理共享不可达的替代通路）。 */
+  const ZEN_DIR_SHARE = 'volo-zen';
   const normWinPath = (p) => String(p || '').trim().replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
   const zenRecOf = (d, id) => d[id] || { cfg: null, eff: null, loading: true };
   /* 本地 Zen 端口：客户端本机 UE Editor 自动拉起的本地 Zen 的监听端口，默认 8558；同机
@@ -264,7 +269,7 @@ import {
             h('div', { className: 'zdm-clear-tx' }, clearableSel.length ? ('选中机器中有 ' + clearableSel.length + ' 台已配置自定义目录，可一键清除还原默认。') : '选中机器均未配置自定义目录，无需清除。'),
             h('button', { className: 'mini-btn danger', disabled: !clearableSel.length, onClick: clearNow }, h(Icon, { name: 'trash', size: 12 }), '清除选中配置（' + clearableSel.length + '）'))),
         h('div', { className: 'cli-note' }, h(Icon, { name: 'shield', size: 13 }),
-          '逐台写各机 UE 运行用户的注册表 Zen\\DataPath 并创建目录（同步机器级 UE-ZenDataPath 环境变量兜底），逐台看成败；应用后重启各机 UE 编辑器即生效，旧缓存不会自动迁移。此目录是「客户端本地 Zen 缓存」，区别于①区「服务器数据目录」（共享缓存本体）与 DDC 页「本地 DDC（文件版）」。')),
+          '逐台写各机 UE 运行用户的注册表 Zen\\DataPath 并创建目录（同步机器级 UE-ZenDataPath 环境变量兜底），逐台看成败；应用后重启各机 UE 编辑器即生效，旧缓存不会自动迁移。此目录是「客户端本地 Zen 缓存」，区别于①区「服务器数据目录」（共享缓存本体）与 DDC 页「本地 DDC（文件版）」。设置成功后会把该目录开放为 Guest 共享（volo-zen）并为其余机器做免弹窗预连——集群里任何机器上的 Volo 都能直接在资源管理器打开它；清除配置时共享一并撤销（文件保留）。')),
       h('div', { className: 'drawer-f' },
         h(Button, { variant: 'secondary', size: 'M', onPress: close }, '完成')));
   }
@@ -603,7 +608,8 @@ import {
         h('div', { className: 'zacct-subhint' }, '需域管理员预先为该账号授予「登录为服务」权限；推荐优先使用 gMSA 以避免手动管理密码带来的风险。')) : null);
 
     /* installDir/dataDir/configPath 都是 srvNode（部署目标机）上的路径，不是 Volo 本机的——
-       revealPath 只认本机路径，跨机需转成 \\host\D$\... 管理共享 UNC，见 reveal_path 的 host 参数。 */
+       revealPath 只认本机路径，跨机时后端优先按已登记共享改写成 \\host\share\...（如设置缓存目录
+       时自动建的 volo-zen Guest 共享），查不到才回落 \\host\D$\... 管理共享 UNC，见 reveal_path。 */
     const openPath = (p) => {
       revealPath(p, srvNode.ip || srvNode.host).catch((e) => {
         log(s, 'err', `<b>reveal_path</b> · 打开 ${esc(p)} 失败 · ${esc((e && e.message) || String(e))}`);
@@ -869,6 +875,32 @@ import {
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
+    /* 设目录成功后自动「开放远程访问」：在该机上对缓存目录建 Mode A Guest 共享,
+       并对集群其余在线机器做免弹窗预连(AllowInsecureGuestAuth + Guest cmdkey +
+       net use 登录任务)——此后任何机器上的 Volo 点该机缓存路径都能直接在资源
+       管理器打开(reveal_path 改走 \\host\volo-zen\...)。失败不影响目录写入本身,
+       按 warn 报告。 */
+    const otherClientIds = (hostNodeId) =>
+      (deployed && srvNode ? [srvNode].concat(clients) : clients)
+        .filter((m) => m.id !== hostNodeId && m.status !== 'offline' && m.machineId)
+        .map((m) => m.machineId);
+    const openDirAccess = (n, path) => {
+      log(s, 'info', `<b>ensure_open_dir_share</b> · ${esc(n.host)} 建 Guest 共享 ${ZEN_DIR_SHARE} → ${esc(path)} 并预连其余客户端`);
+      return ensureOpenDirShare(n.machineId, ZEN_DIR_SHARE, path, otherClientIds(n.id)).then(
+        (r) => {
+          const bad = (r.client_results || []).filter((x) => !x.ok);
+          const okN = (r.client_results || []).length - bad.length;
+          log(s, bad.length ? 'warn' : 'ok', `<b>ensure_open_dir_share</b> · ${esc(n.host)} ${esc(r.unc_path)} 就绪 · 客户端预连 ${okN} 成功${bad.length ? ` / ${bad.length} 失败：${esc(bad.map((x) => x.message).join('；'))}` : ''}`);
+          return bad.length
+            ? `已开放远程访问（${r.unc_path}），但 ${bad.length} 台客户端免弹窗预连失败——这些机器上打开该路径可能弹凭据框`
+            : `已开放远程访问（${r.unc_path}）· 其他机器可直接在资源管理器打开`;
+        },
+        (e) => {
+          const em = e && e.message ? e.message : String(e);
+          log(s, 'warn', `<b>ensure_open_dir_share</b> · ${esc(n.host)} 开放远程访问失败 · ${esc(em)}`);
+          return `目录已写入，但开放远程访问（Guest 共享）失败：${em}`;
+        });
+    };
     const applyZenDir = (ids, path) => {
       ids.forEach((id) => {
         const n = CX.node(id);
@@ -890,6 +922,12 @@ import {
               ? '已写入注册表并创建目录 · 重启该机 UE 编辑器后生效；旧缓存不会自动迁移'
               : '目录与环境变量已写入，但该机 UE 运行用户未登录，注册表没写成 —— 该用户下次登录后生效', path } }));
             log(s, 'ok', `<b>zen_set_local_datapath</b> · ${esc(n.host)} Zen\\DataPath = ${esc(path)}${regOk ? '' : '（仅 env var，用户未登录）'}`);
+            openDirAccess(n, path).then((shareMsg) => {
+              setZres((r) => {
+                const prev = r[id] || {};
+                return Object.assign({}, r, { [id]: Object.assign({}, prev, { msg: (prev.msg ? prev.msg + ' · ' : '') + shareMsg }) });
+              });
+            });
           },
           (e) => {
             const em = e && e.message ? e.message : String(e);
@@ -907,6 +945,11 @@ import {
           setZdirs((d) => Object.assign({}, d, { [id]: Object.assign({}, zenRecOf(d, id), { cfg: null, cfgSrc: null, regPath: null, loading: false }) }));
           setZres((r) => Object.assign({}, r, { [id]: { st: 'ok', msg: '已清除配置（注册表 + 环境变量）· 重启该机 UE 编辑器后回到默认目录（' + ZEN_DEF_HINT + '）；旧缓存不会自动迁移' } }));
           log(s, 'warn', `<b>zen_set_local_datapath</b> · ${esc(n.host)} 清除本地 Zen 目录配置（还原默认）`);
+          /* 目录配置清了,配套的 Guest 共享一并撤掉(撤客户端预连 + Remove-SmbShare,
+             文件保留)。没登记过共享时后端直接返回空数组,静默。 */
+          removeOpenDirShare(n.machineId, ZEN_DIR_SHARE, otherClientIds(n.id)).then(
+            (rs) => { if (rs.length) log(s, 'warn', `<b>remove_open_dir_share</b> · ${esc(n.host)} 撤销 Guest 共享 ${ZEN_DIR_SHARE} · 客户端撤连 ${rs.filter((x) => x.ok).length}/${rs.length} 成功`); },
+            (e) => log(s, 'warn', `<b>remove_open_dir_share</b> · ${esc(n.host)} 撤销 Guest 共享失败 · ${esc((e && e.message) || String(e))}`));
         },
         (e) => {
           const em = e && e.message ? e.message : String(e);
@@ -1567,8 +1610,9 @@ import {
       h('div', { className: 'zsv-hero-l' }, label));
     const chip = (k, v, mono, title) => h('div', { className: 'zsv-chip', title }, h('span', { className: 'zsv-chip-k' }, k), h('span', { className: 'zsv-chip-v' + (mono ? ' mono' : '') }, v));
     /* 在文件资源管理器中打开该路径；host 是路径实际所在的机器（服务器/某台客户端），不传或传
-       Volo 本机时按本机路径直接打开，否则转成 \\host\D$\... 管理共享 UNC 再打开（见 reveal_path
-       的 host 参数）——这两行不再是同一台机器时（比如 Volo 就跑在服务器机器上，行内又要打开
+       Volo 本机时按本机路径直接打开，否则后端优先按已登记共享改写成 \\host\share\...（设置缓存
+       目录时自动建的 volo-zen Guest 共享即在此生效），查不到才回落 \\host\D$\... 管理共享 UNC
+       （见 reveal_path 的 host 参数）——这两行不再是同一台机器时（比如 Volo 就跑在服务器机器上，行内又要打开
        其它客户端的路径），不做这层转换点开的会是 Volo 本机同名盘符下的目录，而不是目标机器的。
        行内值可能是「读取中…」「不可读」「%LOCALAPPDATA%\...（默认）」等占位/未展开文案，此时不可点击。 */
     const openPath = (p, host) => {

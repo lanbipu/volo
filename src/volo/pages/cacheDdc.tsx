@@ -46,11 +46,12 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
 
   /* 打开工程文件夹（在系统文件资源管理器中 reveal）。工程可能在远程渲染节点而非本机
      ——is_loopback_machine 判断目标是否就是 Volo 自身所在机器：是则直接 reveal_path 本机路径；
-     否则走 reveal_remote_path——按 Volo 运行时所在 OS 决定用 UNC 管理员共享路径（Windows）
-     还是 smb:// URL（macOS/Linux，reveal_item_in_dir 的 canonicalize 在这些平台上不认
-     Windows UNC 字符串，永远失败，故不能不分平台一律拼 UNC 交给本机 revealPath）——前提
-     是操作员机器对目标机的管理员共享网络可达 + 有权限，连不通时会 reject，按失败态提示，
-     不静默假装成功。 */
+     否则走 reveal_remote_path——后端优先按已登记共享（DDC 部署共享 / Zen「设置缓存目录」
+     自动建的 volo-zen）把路径改写成 \\host\share\...（免凭据可达），查不到覆盖该路径的
+     共享才回落管理员共享；按 Volo 运行时所在 OS 决定用 UNC（Windows）还是 smb:// URL
+     （macOS/Linux，reveal_item_in_dir 的 canonicalize 在这些平台上不认 Windows UNC 字符串，
+     永远失败，故不能不分平台一律拼 UNC 交给本机 revealPath）。管理共享回落在工作组环境
+     通常拒绝访问，会 reject，按失败态提示，不静默假装成功。 */
   const openFolder = (s, path, label, machine) => {
     const fail = (e) => s.pushLog({ lv: 'err', cat: 'ddc', ch: 'ssh',
       msg: '打开文件夹失败 · ' + label + ' · ' + (e && e.message ? e.message : e) });

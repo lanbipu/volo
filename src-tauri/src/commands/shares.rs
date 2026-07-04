@@ -550,3 +550,163 @@ pub fn teardown_share(
         message,
     })
 }
+
+#[derive(Debug, Serialize)]
+pub struct EnsureOpenDirShareResponse {
+    pub share_config_id: i64,
+    pub unc_path: String,
+    pub created: bool,
+    pub client_results: Vec<InjectionResult>,
+}
+
+/// Case-insensitive Windows path equality (separator- and trailing-slash-
+/// tolerant) for deciding whether an existing share already covers `path`.
+fn same_win_path(a: &str, b: &str) -> bool {
+    let norm = |p: &str| {
+        p.replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_ascii_lowercase()
+    };
+    norm(a) == norm(b)
+}
+
+/// Union of the guest-reachable UNC variants of EVERY Mode A share on one
+/// host. `prepare-open-share-client.ps1` keys its targets file + scheduled
+/// task on the UNC host alone — preparing a client with a single share's UNCs
+/// would silently clobber the auto-reconnect list of any other open share on
+/// the same machine, so every (re-)prep must carry the full per-host set.
+fn open_share_target_uncs_for_host(db: &Db, host_machine_id: i64) -> VoloResult<Vec<String>> {
+    let mut all: Vec<String> = Vec::new();
+    for share in data_shares::find_by_host(db, host_machine_id)? {
+        if share.mode != ShareMode::Open {
+            continue;
+        }
+        for unc in core_shares::unc_variants_for_share(db, &share)? {
+            if !all.iter().any(|u| u.eq_ignore_ascii_case(&unc)) {
+                all.push(unc);
+            }
+        }
+    }
+    Ok(all)
+}
+
+/// One-call orchestration behind「设置缓存目录 → 同时开放远程访问」: ensure a
+/// Mode A (Guest) share named `share_name` exists on `host_machine_id` for
+/// exactly `local_path`, then prep every machine in `client_machine_ids` for
+/// silent guest access (AllowInsecureGuestAuth + cmdkey + net use logon task).
+/// Idempotent: an existing share row with the same name+path skips the host-side
+/// re-create; a same-named share pointing elsewhere is replaced (the Mode A PS
+/// script re-creates host-side idempotently, `create_share` replaces the row).
+/// Client prep failures are reported per machine, never fail the whole call.
+#[tauri::command]
+pub fn ensure_open_dir_share(
+    db: State<'_, Db>,
+    host_machine_id: i64,
+    share_name: String,
+    local_path: String,
+    client_machine_ids: Vec<i64>,
+) -> VoloResult<EnsureOpenDirShareResponse> {
+    let existing = data_shares::find_by_host(&db, host_machine_id)?
+        .into_iter()
+        .find(|s| {
+            s.mode == ShareMode::Open
+                && s.share_name.eq_ignore_ascii_case(&share_name)
+                && same_win_path(&s.local_path, &local_path)
+        });
+    let (share_config_id, unc_path, created) = match existing {
+        Some(share) => (share.id.unwrap_or_default(), share.unc_path, false),
+        None => {
+            let resp = create_share(
+                db.clone(),
+                host_machine_id,
+                ShareMode::Open,
+                share_name,
+                local_path,
+                None,
+                None,
+            )?;
+            (resp.share_config_id, resp.unc_path, true)
+        }
+    };
+
+    // Full per-host UNC set (includes the row just ensured above) — see
+    // `open_share_target_uncs_for_host` for why prep must never be per-share.
+    let target_uncs = open_share_target_uncs_for_host(&db, host_machine_id)?;
+    let mut client_results = Vec::with_capacity(client_machine_ids.len());
+    for client_id in client_machine_ids {
+        let outcome = host_ip(&db, client_id)
+            .and_then(|ip| core_shares::prepare_open_share_client(&ip, &target_uncs));
+        match outcome {
+            Ok(msg) => client_results.push(InjectionResult {
+                client_machine_id: client_id,
+                ok: true,
+                message: msg,
+            }),
+            Err(e) => client_results.push(InjectionResult {
+                client_machine_id: client_id,
+                ok: false,
+                message: e.to_string(),
+            }),
+        }
+    }
+
+    Ok(EnsureOpenDirShareResponse {
+        share_config_id,
+        unc_path,
+        created,
+        client_results,
+    })
+}
+
+/// Undo `ensure_open_dir_share` for one host. Order matters:
+/// 1. tear the share down host-side first (Remove-SmbShare, files kept) — if
+///    that fails the SQLite row survives and the whole call is retriable;
+/// 2. then fix up each client: if OTHER Mode A shares remain on this host,
+///    re-prep with the remaining per-host UNC union (rewrites the host-keyed
+///    targets file instead of deleting the shared logon task); only when none
+///    remain, unprep (drop task + targets + guest sessions).
+/// A client that's offline here keeps a stale logon task pointing at the
+/// removed share — harmless (its guest `net use` just fails silently) and
+/// self-healing: the next per-host prep re-registers with `-Force`.
+/// No-op success if no matching Mode A share is on record.
+#[tauri::command]
+pub fn remove_open_dir_share(
+    db: State<'_, Db>,
+    host_machine_id: i64,
+    share_name: String,
+    client_machine_ids: Vec<i64>,
+) -> VoloResult<Vec<InjectionResult>> {
+    let Some(share) = data_shares::find_by_host(&db, host_machine_id)?
+        .into_iter()
+        .find(|s| s.mode == ShareMode::Open && s.share_name.eq_ignore_ascii_case(&share_name))
+    else {
+        return Ok(Vec::new());
+    };
+    let share_id = share.id.unwrap_or_default();
+    let removed_uncs = core_shares::unc_variants_for_share(&db, &share)?;
+    teardown_share(db.clone(), share_id, true)?;
+    let remaining_uncs = open_share_target_uncs_for_host(&db, host_machine_id)?;
+    let mut results = Vec::with_capacity(client_machine_ids.len());
+    for client_id in client_machine_ids {
+        let outcome = host_ip(&db, client_id).and_then(|ip| {
+            if remaining_uncs.is_empty() {
+                core_shares::unprepare_open_share_client(&ip, &removed_uncs)
+            } else {
+                core_shares::prepare_open_share_client(&ip, &remaining_uncs)
+            }
+        });
+        match outcome {
+            Ok(msg) => results.push(InjectionResult {
+                client_machine_id: client_id,
+                ok: true,
+                message: msg,
+            }),
+            Err(e) => results.push(InjectionResult {
+                client_machine_id: client_id,
+                ok: false,
+                message: e.to_string(),
+            }),
+        }
+    }
+    Ok(results)
+}

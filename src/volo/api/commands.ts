@@ -17,7 +17,7 @@ import type {
   ScanResult, RefreshResult, CredentialRecord, CredentialKind,
   IniKey, WriteIniResponse, ScanInisRequest, ScanInisResponse, IniFinding, ScanRun,
   VerifyReport, DeployPlan, DeployStep, GpuMatrix, ConsistencyResult,
-  ShareMode, CreateShareResponse, TeardownShareResult, InjectionResult, ShareConfig,
+  ShareMode, CreateShareResponse, TeardownShareResult, InjectionResult, ShareConfig, EnsureOpenDirShareResponse,
   ProjectSummary, ProjectLocation, DiscoveryResult,
   ExecutionLocation, GenerateJobResponse, PakOutput, DistributeJobResponse, DeployedPakEntry, ProjectThumbnail,
   PsoCollectJobResponse, PsoCacheFile, DistributePsoCacheRequest, PsoDistributeJobResponse,
@@ -235,6 +235,12 @@ export const deleteShare = (shareConfigId: number, alsoRemoveRemote: boolean) =>
 // ✅ wired: cacheDdc undeploySMB「取消该服务器部署」→ teardownShare(id, keepFiles=true)（Remove-SmbShare + Mode B Remove-LocalUser，保留文件夹）+ reloadCache
 export const teardownShare = (shareConfigId: number, keepFiles: boolean) =>
   call<TeardownShareResult>("teardown_share", { shareConfigId, keepFiles });
+// ✅ wired: cacheZen 设置缓存目录 → 建 Mode A Guest 共享 + 其余机器免弹窗预连（reveal_path 据此改走 \\host\share）
+export const ensureOpenDirShare = (hostMachineId: number, shareName: string, localPath: string, clientMachineIds: number[]) =>
+  call<EnsureOpenDirShareResponse>("ensure_open_dir_share", { hostMachineId, shareName, localPath, clientMachineIds });
+// ✅ wired: cacheZen 清除缓存目录配置 → 撤客户端免弹窗预连 + Remove-SmbShare（保留文件）
+export const removeOpenDirShare = (hostMachineId: number, shareName: string, clientMachineIds: number[]) =>
+  call<InjectionResult[]>("remove_open_dir_share", { hostMachineId, shareName, clientMachineIds });
 
 /* ----------------------------- projects ----------------------------- */
 // ✅ wired: shell → loadProjects → window.UE_PROJECTS（DDC PAK/PSO 工程列表）

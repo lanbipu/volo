@@ -324,6 +324,13 @@ export interface InjectionResult {
   message: string;
 }
 
+export interface EnsureOpenDirShareResponse {
+  share_config_id: number;
+  unc_path: string;
+  created: boolean;
+  client_results: InjectionResult[];
+}
+
 export interface ShareConfig {
   id: number | null;
   host_machine_id: number;

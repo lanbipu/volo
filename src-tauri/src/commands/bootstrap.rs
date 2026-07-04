@@ -222,6 +222,73 @@ fn remote_reveal_target(host: &str, abs_path: &str) -> Result<String, String> {
     ))
 }
 
+/// If a share registered on the machine known as `host` covers `abs_path`
+/// (its `local_path` is a case-insensitive path-prefix of it), rewrite the
+/// path into that share: a `\\host\share\...` UNC on Windows, an `smb://`
+/// URL elsewhere (Finder mounts guest shares on demand). Longest matching
+/// prefix wins. `None` → caller falls back to the admin-share route.
+fn share_reveal_target(db: &Db, host: &str, abs_path: &str) -> Option<String> {
+    let machine = data_machines::list_all(db)
+        .ok()?
+        .into_iter()
+        .find(|m| m.ip.eq_ignore_ascii_case(host) || m.hostname.eq_ignore_ascii_case(host))?;
+    let shares = cache_core::data::share_configs::find_by_host(db, machine.id?).ok()?;
+    // ASCII-only lowering keeps byte offsets valid for slicing the original.
+    let norm = |p: &str| p.replace('/', "\\").trim_end_matches('\\').to_ascii_lowercase();
+    let path_norm = abs_path.replace('/', "\\");
+    let path_low = norm(abs_path);
+    let (share, rel) = shares
+        .iter()
+        .filter_map(|s| {
+            let base_low = norm(&s.local_path);
+            if base_low.is_empty() {
+                return None;
+            }
+            if path_low == base_low {
+                Some((s, ""))
+            } else if path_low.starts_with(&base_low)
+                && path_low.as_bytes().get(base_low.len()) == Some(&b'\\')
+            {
+                Some((s, path_norm[base_low.len() + 1..].trim_end_matches('\\')))
+            } else {
+                None
+            }
+        })
+        .max_by_key(|(s, _)| s.local_path.len())?;
+    // Rebuild the UNC around the caller-supplied `host` (the address the UI
+    // actually reaches the machine by — typically its IP) instead of trusting
+    // `share.unc_path`: that one carries the remote `$env:COMPUTERNAME`, which
+    // an IP-only workgroup with no NetBIOS/DNS resolution can't resolve. The
+    // client-prep step registers cmdkey/net use for both IP and hostname
+    // variants, so either spelling authenticates.
+    if cfg!(target_os = "windows") {
+        Some(if rel.is_empty() {
+            format!("\\\\{host}\\{}", share.share_name)
+        } else {
+            format!("\\\\{host}\\{}\\{rel}", share.share_name)
+        })
+    } else {
+        let share_name = share.share_name.clone();
+        let encode = |seg: &str| {
+            seg.chars()
+                .map(|c| match c {
+                    ' ' => "%20".to_string(),
+                    '#' => "%23".to_string(),
+                    '?' => "%3F".to_string(),
+                    '%' => "%25".to_string(),
+                    other => other.to_string(),
+                })
+                .collect::<String>()
+        };
+        let mut url = format!("smb://{host}/{encoded}", encoded = encode(&share_name));
+        for seg in rel.split('\\').filter(|s| !s.is_empty()) {
+            url.push('/');
+            url.push_str(&encode(seg));
+        }
+        Some(url)
+    }
+}
+
 /// Reveal a path in the OS file manager (the USB-export drawer's "在文件夹中显示",
 /// and Zen cache-address rows). `host` names the machine the path actually lives
 /// on; omit it (or pass the local machine) for a path on the machine Volo itself
@@ -230,7 +297,12 @@ fn remote_reveal_target(host: &str, abs_path: &str) -> Result<String, String> {
 /// which is a different credential story than the SSH automation account Volo
 /// otherwise uses.
 #[tauri::command]
-pub fn reveal_path(app: tauri::AppHandle, path: String, host: Option<String>) -> Result<(), String> {
+pub fn reveal_path(
+    app: tauri::AppHandle,
+    db: State<'_, Db>,
+    path: String,
+    host: Option<String>,
+) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     let Some(h) = host.filter(|h| !h.is_empty() && !cache_core::core::loopback::is_loopback_target(h))
     else {
@@ -239,6 +311,22 @@ pub fn reveal_path(app: tauri::AppHandle, path: String, host: Option<String>) ->
             .reveal_item_in_dir(&path)
             .map_err(|e| e.to_string());
     };
+    // A registered share covering the path beats the admin-share fallback:
+    // guest/managed shares are exactly what Volo provisions so workgroup
+    // machines can reach each other without local-account credentials, while
+    // `\\host\D$` is dead on arrival between mutually-distrusting boxes.
+    if let Some(target) = share_reveal_target(&db, &h, &path) {
+        #[cfg(target_os = "windows")]
+        return app
+            .opener()
+            .reveal_item_in_dir(&target)
+            .map_err(|e| format!("{e}（{target}）"));
+        #[cfg(not(target_os = "windows"))]
+        return app
+            .opener()
+            .open_url(&target, None::<&str>)
+            .map_err(|e| format!("{e}（{target}）"));
+    }
     let target = remote_reveal_target(&h, &path)?;
     app.opener().reveal_item_in_dir(&target).map_err(|e| {
         // tauri-plugin-opener's Windows existence pre-check is a bare
@@ -279,14 +367,43 @@ pub fn is_loopback_machine(host: String) -> bool {
 /// keeps the existing admin-share UNC path (its `canonicalize` resolves UNC
 /// via the Shell APIs); everywhere else this opens an `smb://` URL instead,
 /// which Finder/most Linux file managers mount and navigate on demand.
+///
+/// Like `reveal_path`, a registered share covering the path (DDC Mode A/B
+/// shares, the auto `volo-zen` dir share) is preferred over `\\host\<drive>$`:
+/// workgroup machines can't reach each other's admin shares, but Volo-managed
+/// shares come with cmdkey / guest client prep that authenticates silently.
 #[tauri::command]
-pub fn reveal_remote_path(app: tauri::AppHandle, host: String, path: String) -> Result<(), String> {
+pub fn reveal_remote_path(
+    app: tauri::AppHandle,
+    db: State<'_, Db>,
+    host: String,
+    path: String,
+) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
+    if let Some(target) = share_reveal_target(&db, &host, &path) {
+        #[cfg(windows)]
+        return app
+            .opener()
+            .reveal_item_in_dir(&target)
+            .map_err(|e| format!("{e}（{target}）"));
+        #[cfg(not(windows))]
+        return app
+            .opener()
+            .open_url(&target, None::<&str>)
+            .map_err(|e| format!("{e}（{target}）"));
+    }
     #[cfg(windows)]
     {
-        app.opener()
-            .reveal_item_in_dir(&windows_admin_share_unc(&host, &path))
-            .map_err(|e| e.to_string())
+        let target = windows_admin_share_unc(&host, &path);
+        app.opener().reveal_item_in_dir(&target).map_err(|e| {
+            // Same ambiguity as reveal_path: the opener's Windows pre-check
+            // collapses access-denied and not-found into one message.
+            format!(
+                "{e}（{target}）—— 这条报错既可能是目标路径真的不存在，也可能是本机对 {host} 的\
+                 管理共享没有访问权限（工作组环境两台机器本地账户互不信任时必然如此）。该目录在 \
+                 Volo 里开放为共享（DDC 部署共享 / Zen「设置缓存目录」自动共享）后即可免凭据打开。"
+            )
+        })
     }
     #[cfg(not(windows))]
     {

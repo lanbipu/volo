@@ -68,7 +68,11 @@ export async function loadCacheResources(): Promise<CacheResources> {
     getGpuConsistencyMatrix().catch(() => null),
     listUeRuntimeUsers().catch(() => []),
   ]);
-  const machines = machinesRaw.map((m) => toNodeVM(m, shares, ueRuntimeUsers));
+  /* volo-zen 是「设置本地 Zen 缓存目录」时自动创建的目录开放共享，仅供 reveal_path
+     跨机改写 UNC 用——不是 FileSystem DDC 服务器。滤掉它，否则 cacheDdc 会把它当
+     DDC 共享展示/加入/拆除，且宿主机会因 shareHostIds 被排除出 DDC client 候选。 */
+  const ddcShares = shares.filter((sh) => sh.share_name.toLowerCase() !== 'volo-zen');
+  const machines = machinesRaw.map((m) => toNodeVM(m, ddcShares, ueRuntimeUsers));
   /* health / ini 需要 machines 做 machine_id→host 反查，故在 machines 就绪后加载；
      非阻断（失败 → []）。 */
   const [health, ini] = await Promise.all([
@@ -80,7 +84,7 @@ export async function loadCacheResources(): Promise<CacheResources> {
     creds: creds.map(toCredVM),
     // toShareVM 需 machines 反查 host_machine_id → hostname / hostId（行内显示宿主 +
     // 部署面板「该服务器是否已部署」匹配）。
-    shares: shares.map((sh) => toShareVM(sh, machinesRaw)),
+    shares: ddcShares.map((sh) => toShareVM(sh, machinesRaw)),
     projects,
     gpuMatrix,
     health: health.vms,

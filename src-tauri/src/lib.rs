@@ -244,6 +244,8 @@ pub fn run() {
             commands::shares::list_shares,
             commands::shares::delete_share,
             commands::shares::teardown_share,
+            commands::shares::ensure_open_dir_share,
+            commands::shares::remove_open_dir_share,
             commands::projects::list_projects,
             commands::projects::list_project_locations,
             commands::projects::discover_projects,
