@@ -1513,10 +1513,10 @@ import {
     const clients = RN.filter((n) => !(status && n.machineId === status.machineId) && !(deployedNode && n.id === deployedNode.id));
 
     /* 一级页面直显：已指向此服务器的机器逐台明细 —— 名称 / 部署类型（工程级 or 用户全局）/
-       工程级时具体指向了哪些工程。没有单独持久化「每台机器用的范围」，用该机是否有已发现
-       工程作为判定依据。pointedCount 由此派生，避免同一个 filter 对 clients 重复跑两遍。
-       服务器本机回环指向后也计入 —— 弹层里能指它，一级明细却不显示会看起来像指向丢了；
-       行内加「服务器本机」徽标区分。 */
+       工程级时显示 ZenServer data-dir（共享 DDC 工程缓存存储地址）。没有单独持久化
+       「每台机器用的范围」，用该机是否有已发现工程作为判定依据。pointedCount 由此派生，
+       避免同一个 filter 对 clients 重复跑两遍。服务器本机回环指向后也计入 —— 弹层里能指它，
+       一级明细却不显示会看起来像指向丢了；行内加「服务器本机」徽标区分。 */
     const pointedClientRows = (deployedNode && pointed.has(deployedNode.id) ? [deployedNode] : [])
       .concat(clients.filter((n) => pointed.has(n.id))).map((n) => {
         const projs = clientProjects(n.id);
@@ -1746,17 +1746,18 @@ import {
                 h('div', { className: 'zcl-list' },
                   pointedClientRows.length === 0
                     ? h('div', { className: 'zcl-empty' }, h(Icon, { name: 'link', size: 18 }), '暂无客户端指向此服务器')
-                    : pointedClientRows.map(({ n, isProject, projs, isServer }) => {
+                    : pointedClientRows.map(({ n, isProject, isServer }) => {
                         /* 逐行明细：IP + 本地 Zen 缓存目录（zdirs 真实回读：自定义配置值优先，
                            其次 runcontext 生效值，未配置 = 默认 C 盘提示；读取中/不可读如实展示）；
-                           工程级再逐个列出工程名 + 该机上的工程根路径（locByMachine 每机独立，
-                           取不到才退 p.root），用户全局显示 UserEngine.ini 说明。 */
+                           工程级显示 ZenServer 部署的 data-dir（共享 DDC 工程缓存存储地址），
+                           用户全局显示 UserEngine.ini 说明。 */
                         const zr = zenRecOf(zdirs, n.id);
                         const zrBlocked = n.status === 'offline' || !runtimeUser(n);
                         const cacheDir = zrBlocked ? '不可读 · 离线或未设 UE 运行用户'
                           : zr.loading ? '读取中…'
                           : zr.readFail ? '读取失败'
                           : (zr.cfg || (zr.found && zr.eff) || ZEN_DEF_HINT + '（默认）');
+                        const projectCachePath = (status && status.dataDir) ? status.dataDir : '—';
                         return h('div', { className: 'zcl-row', key: n.id },
                           CX.dot(NODE_STATUS[n.status].visual),
                           h('div', { className: 'zcl-row-main' },
@@ -1781,13 +1782,10 @@ import {
                                     zrBlocked ? '不可读' : pRec.loading ? '读取中…' : (pConf + ' → ' + (pRun != null ? pRun : '—'))),
                                   pOv ? h('span', { className: 'zport-tag' }, '已改端口') : null);
                               })(),
-                              isProject && projs.length
-                                ? h('div', { className: 'zcl-meta-row top' },
+                              isProject
+                                ? h('div', { className: 'zcl-meta-row' },
                                     h('span', { className: 'zcl-meta-k' }, '工程缓存'),
-                                    h('div', { className: 'zcl-meta-projs' },
-                                      projs.map((p) => h('div', { className: 'zcl-projline', key: p.id },
-                                        h('span', { className: 'zcl-proj-name' }, p.name),
-                                        h('span', { className: 'zcl-proj-path mono' }, (p.locByMachine && p.locByMachine[String(n.machineId)]) || p.root)))))
+                                    h('span', { className: 'zcl-meta-v mono' }, projectCachePath))
                                 : h('div', { className: 'zcl-meta-row' },
                                     h('span', { className: 'zcl-meta-k' }, '配置'),
                                     h('span', { className: 'zcl-meta-v mono' }, '用户全局 · UserEngine.ini')))));
