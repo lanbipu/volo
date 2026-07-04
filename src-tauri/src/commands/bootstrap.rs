@@ -178,11 +178,67 @@ pub async fn pick_file(
     .flatten()
 }
 
-/// Reveal a path in the OS file manager (the USB-export drawer's "在文件夹中显示").
+/// Resolves what `reveal_item_in_dir` should actually be given for a path that
+/// lives on `host`, a machine other than the one Volo itself runs on.
+///
+/// Only meaningful on Windows: `reveal_item_in_dir` there natively understands
+/// UNC prefixes, so a remote machine's `D:\...` can be rewritten to the
+/// `\\host\D$\...` admin-share form and opened directly. Zen's own `data_dir` /
+/// `install_dir` validation (`validate_data_dir` et al.) also accepts an
+/// already-UNC value outright — that must pass through unrewritten instead of
+/// being mistaken for a bare drive-rooted path and rejected.
+#[cfg(target_os = "windows")]
+fn remote_reveal_target(host: &str, abs_path: &str) -> Result<String, String> {
+    let normalized = abs_path.replace('/', "\\");
+    if normalized.starts_with(r"\\") {
+        return Ok(normalized);
+    }
+    let mut chars = normalized.chars();
+    let drive = chars
+        .next()
+        .filter(char::is_ascii_alphabetic)
+        .ok_or_else(|| format!("path is not drive-rooted: {abs_path}"))?;
+    if chars.next() != Some(':') {
+        return Err(format!("path is not a drive-rooted Windows path: {abs_path}"));
+    }
+    // `chars` has already consumed the drive letter + colon; `as_str()` hands
+    // back the remainder at its current (guaranteed char-boundary) position —
+    // no manual byte-offset slicing, so a multi-byte first character can't
+    // land the cut mid-codepoint and panic.
+    let rest = chars.as_str().trim_start_matches('\\');
+    Ok(format!("\\\\{host}\\{drive}$\\{rest}"))
+}
+
+/// On macOS/Linux there is no admin-share equivalent, and `reveal_item_in_dir`
+/// canonicalizes via `std::fs::canonicalize`, which treats backslashes as
+/// literal filename characters rather than a UNC path — handing it a rewritten
+/// `\\host\D$\...` string would just fail with "not found". Say so plainly
+/// instead of pretending the reveal could work.
+#[cfg(not(target_os = "windows"))]
+fn remote_reveal_target(host: &str, abs_path: &str) -> Result<String, String> {
+    Err(format!(
+        "{abs_path} 位于远程机器 {host} 上，Volo 所在系统无法直接跳转 —— 请在该 Windows 机器上打开，\
+         或在 Finder 用「前往 · 连接服务器」手动挂载 smb://{host}/ 对应的共享。"
+    ))
+}
+
+/// Reveal a path in the OS file manager (the USB-export drawer's "在文件夹中显示",
+/// and Zen cache-address rows). `host` names the machine the path actually lives
+/// on; omit it (or pass the local machine) for a path on the machine Volo itself
+/// runs on. For any other host, see `remote_reveal_target` — this requires the
+/// current session to have admin access to that machine's `<drive>$` share,
+/// which is a different credential story than the SSH automation account Volo
+/// otherwise uses.
 #[tauri::command]
-pub fn reveal_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
+pub fn reveal_path(app: tauri::AppHandle, path: String, host: Option<String>) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
+    let target = match host {
+        Some(h) if !h.is_empty() && !cache_core::core::loopback::is_loopback_target(&h) => {
+            remote_reveal_target(&h, &path)?
+        }
+        _ => path,
+    };
     app.opener()
-        .reveal_item_in_dir(&path)
+        .reveal_item_in_dir(&target)
         .map_err(|e| e.to_string())
 }
