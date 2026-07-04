@@ -24,6 +24,8 @@ struct ThumbnailRaw {
     #[serde(default)]
     from: String,
     #[serde(default)]
+    mtime: Option<String>,
+    #[serde(default)]
     message: Option<String>,
 }
 
@@ -34,6 +36,12 @@ pub struct ProjectThumbnail {
     /// "uproject_same_name" | "saved_autosequence" — the human-readable label
     /// is a frontend concern (mirrors the PROBE_DICT/PROBE_NARRATIVE split).
     pub from: String,
+    /// The thumbnail candidate's own last-write time (UTC RFC3339-ish) — a
+    /// proxy for "recently worked on" (editor-exported thumbnails/autosequence
+    /// shots update while someone's active in the project), independent of
+    /// `project_locations.discovered_at` (which only tracks when Volo last
+    /// rescanned, not when project content actually changed).
+    pub mtime: Option<String>,
 }
 
 /// The `.uproject` filename without its extension, e.g. `D:\Projects\Aurora\
@@ -87,6 +95,7 @@ pub fn read_thumbnail(
         path: result.path,
         base64: result.base64,
         from: result.from,
+        mtime: result.mtime,
     }))
 }
 
@@ -110,10 +119,15 @@ fn read_thumbnail_local(project_dir: &str, uproject_stem: &str) -> Option<Projec
             continue;
         }
         if let Ok(bytes) = std::fs::read(&path) {
+            let mtime = meta
+                .modified()
+                .ok()
+                .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
             return Some(ProjectThumbnail {
                 path: path.to_string_lossy().to_string(),
                 base64: base64::engine::general_purpose::STANDARD.encode(bytes),
                 from: from.to_string(),
+                mtime,
             });
         }
     }
@@ -158,6 +172,15 @@ mod tests {
 
         let thumb = read_thumbnail_local(dir.path().to_str().unwrap(), "Aurora").unwrap();
         assert_eq!(thumb.from, "saved_autosequence");
+    }
+
+    #[test]
+    fn read_thumbnail_local_includes_mtime() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Aurora.png"), b"same-name").unwrap();
+
+        let thumb = read_thumbnail_local(dir.path().to_str().unwrap(), "Aurora").unwrap();
+        assert!(thumb.mtime.is_some());
     }
 
     #[test]

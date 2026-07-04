@@ -409,6 +409,9 @@ export interface ProjectThumbnail {
   path: string;
   base64: string;
   from: string;
+  /** Candidate file's last-write time (UTC RFC3339-ish) — proxy for "recently
+   *  worked on", independent of `project_locations.discovered_at` (scan time). */
+  mtime: string | null;
 }
 
 export type UeRunnerEvent =
