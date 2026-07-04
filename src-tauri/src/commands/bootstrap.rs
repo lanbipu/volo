@@ -306,20 +306,27 @@ pub fn reveal_path(
     use tauri_plugin_opener::OpenerExt;
     let Some(h) = host.filter(|h| !h.is_empty() && !cache_core::core::loopback::is_loopback_target(h))
     else {
-        return app
-            .opener()
-            .reveal_item_in_dir(&path)
-            .map_err(|e| e.to_string());
+        // Directories open AS the folder (Explorer lands inside it); only a
+        // file keeps reveal-in-parent semantics (select it in its folder) —
+        // callers pass both (cache dirs vs USB-export packs / OBJ outputs).
+        return if std::path::Path::new(&path).is_dir() {
+            app.opener().open_path(&path, None::<&str>)
+        } else {
+            app.opener().reveal_item_in_dir(&path)
+        }
+        .map_err(|e| e.to_string());
     };
     // A registered share covering the path beats the admin-share fallback:
     // guest/managed shares are exactly what Volo provisions so workgroup
     // machines can reach each other without local-account credentials, while
     // `\\host\D$` is dead on arrival between mutually-distrusting boxes.
+    // Remote callers always point at directories (cache/data dirs) — open the
+    // folder itself, not its parent with the item selected.
     if let Some(target) = share_reveal_target(&db, &h, &path) {
         #[cfg(target_os = "windows")]
         return app
             .opener()
-            .reveal_item_in_dir(&target)
+            .open_path(&target, None::<&str>)
             .map_err(|e| format!("{e}（{target}）"));
         #[cfg(not(target_os = "windows"))]
         return app
@@ -328,7 +335,7 @@ pub fn reveal_path(
             .map_err(|e| format!("{e}（{target}）"));
     }
     let target = remote_reveal_target(&h, &path)?;
-    app.opener().reveal_item_in_dir(&target).map_err(|e| {
+    app.opener().open_path(&target, None::<&str>).map_err(|e| {
         // tauri-plugin-opener's Windows existence pre-check is a bare
         // `path.exists()` (see its windows_shell_path::absolute_and_check_exists) —
         // it swallows the real OS error and always reports "path doesn't exist",
@@ -380,11 +387,12 @@ pub fn reveal_remote_path(
     path: String,
 ) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
+    // Always a directory (project/cache folder) — open it, don't reveal-in-parent.
     if let Some(target) = share_reveal_target(&db, &host, &path) {
         #[cfg(windows)]
         return app
             .opener()
-            .reveal_item_in_dir(&target)
+            .open_path(&target, None::<&str>)
             .map_err(|e| format!("{e}（{target}）"));
         #[cfg(not(windows))]
         return app
@@ -395,7 +403,7 @@ pub fn reveal_remote_path(
     #[cfg(windows)]
     {
         let target = windows_admin_share_unc(&host, &path);
-        app.opener().reveal_item_in_dir(&target).map_err(|e| {
+        app.opener().open_path(&target, None::<&str>).map_err(|e| {
             // Same ambiguity as reveal_path: the opener's Windows pre-check
             // collapses access-denied and not-found into one message.
             format!(
