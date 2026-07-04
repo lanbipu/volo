@@ -415,6 +415,22 @@
 .zsv-chip-k { font-size: 10px; color: var(--chrome-faint); }
 .zsv-chip-v { font-size: 12.5px; font-weight: 700; color: var(--chrome-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* 服务器缓存地址行 · 整行可点击，在资源管理器打开该目录 */
+.zsv-addr { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; margin-top: 10px; padding: 9px 12px; background: var(--chrome-card); border: 1px solid var(--chrome-line); border-radius: 10px; cursor: pointer; transition: border-color .12s, background .12s; }
+.zsv-addr:hover { border-color: var(--volo-500); background: color-mix(in oklch, var(--volo-500) 6%, var(--chrome-card)); }
+.zsv-addr-k { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; font-size: 11px; color: var(--chrome-faint); }
+.zsv-addr-k svg { color: var(--chrome-faint); }
+.zsv-addr-v { flex: 1 1 auto; min-width: 0; font-size: 12.5px; font-weight: 700; color: var(--chrome-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.zsv-addr:hover .zsv-addr-v { color: var(--volo-500); }
+.zsv-addr-open { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; font-size: 11px; font-weight: 700; color: var(--chrome-faint); opacity: 0; transition: opacity .12s; }
+.zsv-addr:hover .zsv-addr-open { opacity: 1; color: var(--volo-500); }
+
+/* 客户端行内可点击路径 · 共享缓存 / 本地缓存地址 */
+.zcl-open { display: inline-flex; align-items: center; gap: 5px; background: none; border: none; padding: 0; cursor: pointer; text-align: left; color: inherit; font: inherit; border-radius: 4px; }
+.zcl-open svg { flex: 0 0 auto; opacity: 0; color: var(--volo-500); transition: opacity .12s; }
+.zcl-open:hover { color: var(--volo-500); text-decoration: underline; text-underline-offset: 2px; }
+.zcl-open:hover svg { opacity: 1; }
+
 /* 客户端卡 · 已指向机器列表（统一配色的浮动磁贴）*/
 .zcl-list-h { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-top: 16px; margin-bottom: 9px; }
 .zcl-list-h > span:first-child { font-size: 11.5px; font-weight: 700; color: var(--chrome-dim); }
