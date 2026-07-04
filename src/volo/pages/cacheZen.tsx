@@ -1533,6 +1533,15 @@ import {
       h('div', { className: 'zsv-hero-v' }, val, unit ? h('span', { className: 'zsv-hero-u' }, unit) : null),
       h('div', { className: 'zsv-hero-l' }, label));
     const chip = (k, v, mono, title) => h('div', { className: 'zsv-chip', title }, h('span', { className: 'zsv-chip-k' }, k), h('span', { className: 'zsv-chip-v' + (mono ? ' mono' : '') }, v));
+    /* 在文件资源管理器中打开该路径；行内值可能是「读取中…」「不可读」「%LOCALAPPDATA%\...（默认）」
+       等占位/未展开文案，此时不可点击。reveal_path 只能打开 Volo 所在这台机器的本地路径——当
+       目标是远端渲染节点的路径时会静默找不到，这是既有限制（DeployModal 的 pathInput 同样如此），
+       这里至少把失败原因回显到控制台，不让点击看起来毫无反应。 */
+    const openPath = (p) => { revealPath(p).catch((e) => log(s, 'err', `<b>reveal_path</b> · 打开 ${esc(p)} 失败 · ${esc((e && e.message) || String(e))}`)); };
+    const isRealPath = (v) => !!v && v !== '—' && !/^(读取中|读取失败|不可读)/.test(v) && !/%[A-Za-z_]+%/.test(v) && !v.endsWith('（默认）');
+    const pathBtn = (val, title) => isRealPath(val)
+      ? h('button', { type: 'button', className: 'zcl-meta-v mono zcl-open', title, onClick: () => openPath(val) }, val, h(Icon, { name: 'external', size: 11 }))
+      : h('span', { className: 'zcl-meta-v mono' }, val);
     /* zen 自身 /stats/z$ 上报的 cache.size.disk，来自 zenCacheStats 拉取的 status.cacheDiskBytes；
        未探测到（z$ 未注册 / 探测失败）时为 null，如实显示「—」而非编造。 */
     const heroBytes = (b) => b == null ? ['—', null]
@@ -1579,6 +1588,12 @@ import {
               hero(pointedCount, '台', '已连客户端', 'accent'),
               hero(cacheSizeVal, cacheSizeUnit, '缓存已用', null,
                 cacheSizeVal === '—' ? 'z$ 缓存 provider 未上报磁盘用量，或本次探测失败' : null)),
+            h('button', {
+              type: 'button', className: 'zsv-addr', title: '在文件资源管理器中打开该缓存目录',
+              onClick: () => openPath(status.dataDir) },
+              h('span', { className: 'zsv-addr-k' }, h(Icon, { name: 'folder', size: 13 }), '缓存地址'),
+              h('span', { className: 'zsv-addr-v mono' }, status.dataDir),
+              h('span', { className: 'zsv-addr-open' }, h(Icon, { name: 'external', size: 12 }), '打开')),
             h('div', { className: 'zsv-bar', title: diskDataReady ? null : '数据盘容量读取中或读取失败（SSH · get-disk-space）' },
               h('div', { className: 'zsv-bar-top' },
                 h('span', { className: 'zsv-bar-k' }, '缓存盘容量'),
@@ -1768,8 +1783,8 @@ import {
                               h('span', { className: 'zcl-row-badge' + (isProject ? ' proj' : ' user') }, isProject ? '工程级' : '用户全局')),
                             h('div', { className: 'zcl-meta' },
                               h('div', { className: 'zcl-meta-row' },
-                                h('span', { className: 'zcl-meta-k' }, '缓存目录'),
-                                h('span', { className: 'zcl-meta-v mono' }, cacheDir)),
+                                h('span', { className: 'zcl-meta-k' }, '本地缓存'),
+                                pathBtn(cacheDir, '在文件资源管理器中打开该本地缓存目录')),
                               (function () {
                                 /* 本地端口读出（配置 → 实际）；不可读时如实「—」 */
                                 const pRec = zportRecOf(zports, n.id);
@@ -1784,8 +1799,8 @@ import {
                               })(),
                               isProject
                                 ? h('div', { className: 'zcl-meta-row' },
-                                    h('span', { className: 'zcl-meta-k' }, '工程缓存'),
-                                    h('span', { className: 'zcl-meta-v mono' }, projectCachePath))
+                                    h('span', { className: 'zcl-meta-k' }, '共享缓存'),
+                                    pathBtn(projectCachePath, '在文件资源管理器中打开该目录'))
                                 : h('div', { className: 'zcl-meta-row' },
                                     h('span', { className: 'zcl-meta-k' }, '配置'),
                                     h('span', { className: 'zcl-meta-v mono' }, '用户全局 · UserEngine.ini')))));
