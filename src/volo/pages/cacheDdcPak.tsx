@@ -182,6 +182,35 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
      raw===undefined 表示本会话尚未扫过；[]=已扫且空；非空数组=已扫有结果。 */
   const DEPLOYED_CACHE = { raw: undefined, scannedAt: null };
 
+  /* 完整路径悬浮提示 —— 自绘浮层（挂到 body，避开卡片 overflow:hidden 裁剪），
+     近乎即时显示（120ms），替代原生 title 的 ~2s 延迟 */
+  let _pathTipEl = null, _pathTipTimer = null;
+  function ensurePathTip() {
+    if (!_pathTipEl) { _pathTipEl = document.createElement('div'); _pathTipEl.className = 'proj-path-tip'; document.body.appendChild(_pathTipEl); }
+    return _pathTipEl;
+  }
+  function showPathTip(el, text) {
+    if (!el || !el.isConnected) return;
+    const tip = ensurePathTip();
+    tip.textContent = text;
+    tip.style.display = 'block';
+    const r = el.getBoundingClientRect();
+    const left = Math.max(8, Math.min(r.left, window.innerWidth - tip.offsetWidth - 8));
+    let top = r.top - tip.offsetHeight - 6;
+    if (top < 8) top = r.bottom + 6;
+    tip.style.left = left + 'px';
+    tip.style.top = top + 'px';
+  }
+  function schedulePathTip(e, text) {
+    const el = e.currentTarget;
+    clearTimeout(_pathTipTimer);
+    _pathTipTimer = setTimeout(() => showPathTip(el, text), 120);
+  }
+  function hidePathTip() {
+    clearTimeout(_pathTipTimer);
+    if (_pathTipEl) _pathTipEl.style.display = 'none';
+  }
+
   /* 工程平铺矩形小模块（紧凑网格 · 勾选）—— 只在本页用，不进 window.VOLO_CACHE_DDC 共享
      （projRow 才是跨页共享的行形态，见 cacheDdc.tsx）。路径解析 / 打开文件夹与 projRow 同一套
      既有约定：pickSrc 选中的源机可能不是该工程第一条 location，必须按 locByMachine 取该源机
@@ -190,9 +219,6 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
     const src = s ? DDC.pickSrc(p) : null;
     const path = (src && p.locByMachine && p.locByMachine[String(src.machineId)]) || p.root;
     const full = path + '\\' + p.uproject;
-    const cut = full.lastIndexOf('\\');
-    const head = cut >= 0 ? full.slice(0, cut + 1) : full;
-    const tail = cut >= 0 ? full.slice(cut + 1) : '';
     return h('div', { key: p.id, className: 'proj-tile' + (selected ? ' on' : ''),
         title: p.name + '  ·  ' + full, onClick: () => onClick(p) },
       h('span', { className: 'proj-tile-mck' + (selected ? ' on' : '') }, selected ? h(Icon, { name: 'check', size: 11 }) : null),
@@ -204,18 +230,14 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
           p.hasPak ? h('span', { className: 'proj-tile-badge pak', title: '已有 DDC PAK' }, h(Icon, { name: 'check', size: 10 }), 'PAK') : null,
           p.warn ? h('span', { className: 'proj-tile-badge warn', title: p.warn }, h(Icon, { name: 'alert', size: 10 })) : null)),
       h('div', { className: 'proj-tile-info' },
+        h('div', { className: 'proj-tile-name' }, p.name),
         h('div', { className: 'proj-tile-nrow' },
-          h('div', { className: 'proj-tile-name' }, p.name),
-          h('button', { type: 'button', className: 'proj-tile-open', title: '在文件资源管理器中打开工程文件夹',
-              onClick: (e) => { e.stopPropagation(); s && DDC.openFolder(s, path, p.name, src); } },
-            h(Icon, { name: 'folder', size: 12 }))),
-        h('div', { className: 'proj-tile-meta' },
-          h('span', { className: 'proj-tile-tag ue' }, 'UE ' + p.ue),
-          h('span', { className: 'proj-tile-tag' }, p.size)),
-        h('button', { type: 'button', className: 'proj-tile-path mono', title: '在文件资源管理器中打开：' + full,
-            onClick: (e) => { e.stopPropagation(); s && DDC.openFolder(s, path, p.name, src); } },
-          h('span', { className: 'ptp-head' }, head),
-          tail ? h('span', { className: 'ptp-tail' }, tail) : null)));
+          h('div', { className: 'proj-tile-sub' }, 'UE ' + p.ue + ' · ' + p.size),
+          h('button', { type: 'button', className: 'proj-tile-open', 'aria-label': '在文件资源管理器中打开：' + full,
+              onMouseEnter: (e) => schedulePathTip(e, full),
+              onMouseLeave: hidePathTip,
+              onClick: (e) => { e.stopPropagation(); hidePathTip(); s && DDC.openFolder(s, path, p.name, src); } },
+            h(Icon, { name: 'folder', size: 14 })))));
   }
 
   /* =========================================================================

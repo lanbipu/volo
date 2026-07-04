@@ -310,50 +310,58 @@
 
 /* 平铺网格：弹性换行 + 固定基准宽度（由 --tile-w 显示比例滑块驱动），宽度带过渡。
    不使用 flex-grow —— 模块严格等于 --tile-w，拖动滑块即平滑改变尺寸；放不下自动换行。 */
-.proj-grid { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 9px; }
+.proj-grid { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 13px; }
 
 .proj-tile { position: relative; display: flex; flex-direction: column;
   flex: 0 0 var(--tile-w, 150px); width: var(--tile-w, 150px);
-  border-radius: 10px; background: var(--sunken); border: 1px solid var(--chrome-line); cursor: pointer; overflow: hidden;
+  border-radius: 16px; background: var(--chrome-panel); border: 1px solid transparent; cursor: pointer; overflow: hidden;
   transition: flex-basis .2s var(--ease-default), width .2s var(--ease-default),
     border-color .12s var(--ease-default), background .12s var(--ease-default), box-shadow .12s var(--ease-default); }
-.proj-tile:hover { border-color: var(--chrome-line-2); background: var(--wash-3); }
-.proj-tile.on { border-color: color-mix(in srgb, var(--volo-700) 55%, transparent);
-  background: color-mix(in srgb, var(--volo-500) 8%, var(--sunken)); box-shadow: inset 0 0 0 1px var(--volo-500); }
+.proj-tile:hover { background: var(--chrome-card); }
+.proj-tile.on { border-color: transparent; box-shadow: inset 0 0 0 2px var(--volo-500); }
 
-.proj-tile-mck { position: absolute; top: 7px; left: 7px; z-index: 2; width: 18px; height: 18px; border-radius: 50%;
-  border: 1.5px solid var(--chrome-line-2); background: color-mix(in srgb, var(--sunken) 80%, transparent);
-  display: grid; place-items: center; color: #fff; transition: background .12s, border-color .12s; }
-.proj-tile:hover .proj-tile-mck { border-color: var(--chrome-faint); }
+.proj-tile-mck { position: absolute; top: 9px; left: 9px; z-index: 3; width: 18px; height: 18px; border-radius: 50%;
+  border: 1.5px solid var(--chrome-line-2); background: color-mix(in srgb, #000 45%, transparent);
+  display: grid; place-items: center; color: #fff; opacity: 0; transition: opacity .12s, background .12s, border-color .12s; }
+.proj-tile:hover .proj-tile-mck, .proj-tile.on .proj-tile-mck { opacity: 1; }
 .proj-tile.on .proj-tile-mck { background: var(--volo-500); border-color: var(--volo-500); }
 
-.proj-tile-media { position: relative; aspect-ratio: 16 / 10; display: grid; place-items: center;
-  background: var(--wash-2); color: var(--volo-400); overflow: hidden; border-bottom: 1px solid var(--chrome-line); }
-.proj-tile-media.has-thumb { background: var(--sunken); }
-.proj-tile-thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
-.proj-tile-badges { position: absolute; right: 6px; bottom: 6px; display: flex; gap: 4px; }
+/* 缩略图区：方形区；原图完整居中（contain），大面积留白，与卡片底色融合 */
+.proj-tile-media { position: relative; aspect-ratio: 1 / 1; display: grid; place-items: center;
+  padding: 15%; box-sizing: border-box; background: transparent; color: var(--chrome-faint); overflow: hidden; }
+.proj-tile-media.has-thumb { background: transparent; }
+.proj-tile-thumb { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; display: block;
+  border-radius: 3px; }
+.proj-tile-badges { position: absolute; right: 9px; top: 9px; z-index: 2; display: flex; gap: 4px; }
 .proj-tile-badge { display: inline-flex; align-items: center; gap: 3px; font-size: 9.5px; font-weight: 700;
   padding: 2px 5px; border-radius: 5px; color: var(--chrome-dim);
   background: color-mix(in srgb, var(--sunken) 74%, transparent); backdrop-filter: blur(3px); }
 .proj-tile-badge.pak { color: var(--positive-visual); background: color-mix(in srgb, var(--positive-visual) 24%, var(--sunken)); }
 .proj-tile-badge.warn { color: var(--notice-visual); background: color-mix(in srgb, var(--notice-visual) 26%, var(--sunken)); }
 
-.proj-tile-info { display: flex; flex-direction: column; gap: 5px; padding: 8px 9px 9px; }
-.proj-tile-nrow { display: flex; align-items: center; gap: 6px; }
-.proj-tile-name { flex: 1; min-width: 0; font-size: 12px; font-weight: 700; color: var(--chrome-text);
+.proj-tile-info { display: flex; flex-direction: column; gap: 5px; padding: 2px 15px 15px; }
+.proj-tile-name { min-width: 0; font-size: 15px; font-weight: 700; color: var(--chrome-text); letter-spacing: -.01em;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.proj-tile-open { all: unset; flex: 0 0 auto; display: inline-grid; place-items: center; width: 20px; height: 20px;
-  border-radius: 5px; color: var(--chrome-faint); cursor: pointer; opacity: 0; transition: opacity .12s, background .12s, color .12s; }
-.proj-tile:hover .proj-tile-open { opacity: 1; }
-.proj-tile-open:hover { background: var(--highlight-selected); color: var(--volo-400); }
+.proj-tile-nrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.proj-tile-sub { flex: 1; min-width: 0; font-size: 13px; color: var(--chrome-faint);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.proj-tile-open { all: unset; flex: 0 0 auto; display: inline-grid; place-items: center; width: 22px; height: 22px;
+  border-radius: 6px; color: var(--chrome-faint); cursor: pointer; transition: background .12s, color .12s; }
+.proj-tile-open:hover { background: var(--wash-2); color: var(--chrome-text); }
 .proj-tile-meta { display: flex; flex-wrap: wrap; gap: 4px; }
 .proj-tile-tag { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 5px;
   background: var(--wash-2); color: var(--chrome-dim); white-space: nowrap; }
 .proj-tile-tag.ue { font-family: var(--font-code); color: var(--volo-400); background: var(--highlight-selected); }
 /* 工程路径单行 · 中间自适应省略：前段（目录）裁剪加省略号，末段（文件名）始终完整。可点击打开文件夹 */
 .proj-tile-path { all: unset; box-sizing: border-box; display: flex; align-items: baseline; min-width: 0; max-width: 100%;
-  font-family: var(--font-code); font-size: 10.5px; color: var(--chrome-faint); cursor: pointer;
-  padding: 1px 4px; margin: 0 -4px; border-radius: 5px; transition: color .12s, background .12s; }
-.proj-tile-path:hover { color: var(--volo-400); background: var(--highlight-selected); }
+  font-family: var(--font-code); font-size: 11px; color: var(--chrome-faint); cursor: pointer;
+  padding: 1px 0; margin: 1px 0 0; border-radius: 5px; transition: color .12s; }
+.proj-tile-path:hover { color: var(--chrome-dim); }
 .proj-tile-path .ptp-head { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .proj-tile-path .ptp-tail { flex: 0 0 auto; white-space: nowrap; }
+/* 完整路径悬浮提示 · 自绘浮层（挂在 body，不受卡片裁切），近乎即时显示 */
+.proj-path-tip { position: fixed; z-index: 200; display: none; max-width: min(520px, 92vw);
+  font-family: var(--font-code); font-size: 11px; line-height: 1.45; color: var(--chrome-text);
+  background: var(--chrome-panel-2); border: 1px solid var(--chrome-line-2); border-radius: 8px;
+  padding: 6px 9px; box-shadow: var(--shadow-elevated); pointer-events: none;
+  white-space: normal; overflow-wrap: anywhere; }

@@ -207,9 +207,11 @@ function PageTabs({ s }) {
       React.createElement('span', { className: 'pico' }, React.createElement(Icon, { name: p.icon, size: 17 })),
       p.label,
       p.skeleton ? React.createElement('span', { className: 'skl' }, 'WIP') : null)),
-    React.createElement('div', { className: 'meta' },
-      React.createElement('span', { className: 'sdot bg-' + (s.cluster.health == null ? 'neutral' : s.cluster.health >= 85 ? 'positive' : s.cluster.health >= 60 ? 'notice' : 'negative') }),
-      React.createElement('span', null, '缓存健康分 ' + (s.cluster.health == null ? '—' : s.cluster.health))));
+    React.createElement('div', { className: 'pagetabs-right' },
+      React.createElement('div', { className: 'meta' },
+        React.createElement('span', { className: 'sdot bg-' + (s.cluster.health == null ? 'neutral' : s.cluster.health >= 85 ? 'positive' : s.cluster.health >= 60 ? 'notice' : 'negative') }),
+        React.createElement('span', null, '缓存健康分 ' + (s.cluster.health == null ? '—' : s.cluster.health))),
+      React.createElement(LogPanel, { s })));
 }
 
 /* ---------- clipboard helper (falls back to execCommand inside sandboxed frames) ---------- */
@@ -283,102 +285,122 @@ function LogPanel({ s }) {
   const histTasks = s.tasks ? s.tasks.filter((t) => t.state === 'success' || t.state === 'failed' || t.state === 'canceled') : [];
   const TaskCard = window.VOLO_CX && window.VOLO_CX.TaskCard;
   const conTab = s.conTab || 'stream';
-  return React.createElement('div', { className: 'logpanel' },
-    s.logOpen ? React.createElement('div', {
-      className: 'resizer resizer--row',
-      title: '拖动调整高度',
-      onPointerDown: (e) => startResize(e, 'y', -1, s.logH, s.setLogH, 90, 440),
-    }) : null,
-    React.createElement('div', { className: 'log-head', onClick: (e) => { if (e.target.closest('.log-tab') || e.target.closest('.log-tools')) return; s.setLogOpen((v) => !v); } },
-      React.createElement('span', { className: 'ttl' }, React.createElement(Icon, { name: 'terminal', size: 15 }), '控制台',
-        React.createElement('span', { className: 'ndjson-tag' }, 'NDJSON')),
-      React.createElement('div', { className: 'log-tabs' },
-        tabs.map(([id, lbl]) => React.createElement('div', {
-          key: id, className: 'log-tab' + (conTab === 'stream' && s.logFilter === id ? ' on' : ''),
-          onClick: () => { s.setConTab('stream'); s.setLogFilter(id); s.setLogOpen(true); },
-        }, lbl, React.createElement('span', { className: 'n' }, counts[id]))),
-        React.createElement('div', {
-          className: 'log-tab log-tab--hist' + (conTab === 'hist' ? ' on' : ''),
-          onClick: () => { s.setConTab('hist'); s.setLogOpen(true); },
-        }, React.createElement(Icon, { name: 'list', size: 12 }), '历史任务', React.createElement('span', { className: 'n' }, histTasks.length))),
-      React.createElement('div', { className: 'right log-tools' },
-        React.createElement('div', { className: 'log-search' },
-          React.createElement(Icon, { name: 'search', size: 13 }),
-          React.createElement('input', {
-            value: s.logSearch || '', placeholder: '搜索流…',
-            onChange: (e) => { s.setLogSearch(e.target.value); if (s.page !== 'cache') s.setLogOpen(true); },
-            onClick: (e) => e.stopPropagation() })),
-        React.createElement('button', {
-          className: 'log-pause' + (s.logPaused ? ' on' : ''), title: s.logPaused ? '已暂停 — 点击恢复' : '暂停自动滚动',
-          onClick: (e) => { e.stopPropagation(); s.setLogPaused((v) => !v); } },
-          React.createElement(Icon, { name: s.logPaused ? 'play' : 'pause', size: 13 }), s.logPaused ? '已暂停' : '实时'),
-        conTab === 'stream' ? React.createElement('button', {
-          className: 'log-copyall' + (copied === 'ALL' ? ' done' : ''),
-          title: rows.length ? `复制当前 ${rows.length} 条日志（含明细）到剪贴板` : '当前没有可复制的日志',
-          disabled: rows.length === 0,
-          onClick: (e) => { e.stopPropagation(); if (!rows.length) return; copyToClipboard(rows.map(rowText).join('\n'), () => flash('ALL')); } },
-          React.createElement(Icon, { name: copied === 'ALL' ? 'check' : 'copy', size: 13 }),
-          copied === 'ALL' ? '已复制' : '复制全部') : null,
-        React.createElement('span', { className: 'log-run-wrap' },
+  /* 「运行中」二级弹窗：触发器与控制台头部各有一个入口，同一时刻只会渲染其中一处
+     （触发器收起时 runOpen && !s.logOpen；控制台展开时 runOpen && s.logOpen），复用同一份 DOM。 */
+  const runPop = [
+    React.createElement('div', { key: 'rbd', className: 'log-run-backdrop', onClick: (e) => { e.stopPropagation(); setRunOpen(false); } }),
+    React.createElement('div', { key: 'rpop', className: 'log-run-pop', onClick: (e) => e.stopPropagation() },
+      React.createElement('div', { className: 'lrp-h' },
+        React.createElement(Icon, { name: 'sync', size: 13 }), '进行中任务',
+        React.createElement('span', { className: 'lrp-n' }, activeTasks.length)),
+      activeTasks.length === 0
+        ? React.createElement('div', { className: 'lrp-empty' }, '当前没有运行中的任务')
+        : React.createElement('div', { className: 'lrp-list' }, activeTasks.map((t) => React.createElement('div', { key: t.id, className: 'lrp-row' },
+            React.createElement('div', { className: 'lrp-top' },
+              React.createElement('span', { className: 'lrp-title' }, t.title, React.createElement('span', { className: 'lrp-no' }, '#' + t.no)),
+              React.createElement('span', { className: 'lrp-pct' }, t.stream ? ((t.pct || 0) + '%') : '运行中')),
+            /* 流式任务(runStreamingCmd)有真实逐步 pct → 确定进度；原子任务(runCmd)只有 4%→100% 两点，
+               无中间进度 → 用不确定动画条，不显冻结在 4% 的误导百分比。 */
+            React.createElement('div', { className: 'lrp-bar' }, React.createElement('div', { className: 'lrp-fill' + (t.stream ? '' : ' indet'), style: t.stream ? { width: (t.pct || 0) + '%' } : null })),
+            React.createElement('div', { className: 'lrp-meta' },
+              React.createElement('span', { className: 'lrp-target' }, t.target),
+              React.createElement('span', { className: 'lrp-el' }, t.elapsed),
+              t.long && t.state === 'running' && s.cancelTask ? React.createElement('button', {
+                className: 'lrp-cancel', title: '终止远端 UE 进程并取消该长任务',
+                onClick: (e) => { e.stopPropagation(); s.cancelTask(t.id); } },
+                React.createElement(Icon, { name: 'x', size: 11 }), '取消') : null))))),
+  ];
+  return React.createElement('div', { className: 'logpanel' + (s.logOpen ? ' is-open' : '') },
+    s.logOpen ? React.createElement('div', { className: 'log-backdrop', onClick: () => s.setLogOpen(false) }) : null,
+    React.createElement('div', { className: 'log-trigger-wrap' + (s.logOpen ? ' on' : '') },
+      React.createElement('button', {
+        className: 'log-trigger' + (s.logOpen ? ' on' : ''),
+        title: s.logOpen ? '收起控制台' : '打开控制台',
+        onClick: () => s.setLogOpen((v) => !v) },
+        React.createElement(Icon, { name: 'terminal', size: 14 }),
+        React.createElement('span', null, '控制台')),
+      React.createElement('button', {
+        className: 'log-trigger-stat' + (running ? ' run' : '') + (runOpen && !s.logOpen ? ' on' : ''),
+        title: running ? '查看进行中任务' : '当前没有运行中的任务',
+        onClick: (e) => { e.stopPropagation(); setRunOpen((v) => !v); } },
+        React.createElement('span', { className: 'rec-dot', style: { width: 7, height: 7, background: running ? 'var(--volo-600)' : 'var(--positive-visual)', animationPlayState: s.logPaused ? 'paused' : 'running' } }),
+        running ? (running + ' 运行中') : '空闲'),
+      (runOpen && !s.logOpen) ? runPop : null),
+    s.logOpen ? React.createElement('div', { className: 'log-window' },
+      React.createElement('div', {
+        className: 'resizer resizer--row',
+        title: '拖动调整高度',
+        onPointerDown: (e) => startResize(e, 'y', -1, s.logH, s.setLogH, 90, 440),
+      }),
+      React.createElement('div', { className: 'log-head' },
+        React.createElement('span', { className: 'ttl' }, React.createElement(Icon, { name: 'terminal', size: 15 }), '控制台',
+          React.createElement('span', { className: 'ndjson-tag' }, 'NDJSON')),
+        React.createElement('div', { className: 'log-tabs' },
+          tabs.map(([id, lbl]) => React.createElement('div', {
+            key: id, className: 'log-tab' + (conTab === 'stream' && s.logFilter === id ? ' on' : ''),
+            onClick: () => { s.setConTab('stream'); s.setLogFilter(id); },
+          }, lbl, React.createElement('span', { className: 'n' }, counts[id]))),
+          React.createElement('div', {
+            className: 'log-tab log-tab--hist' + (conTab === 'hist' ? ' on' : ''),
+            onClick: () => s.setConTab('hist'),
+          }, React.createElement(Icon, { name: 'list', size: 12 }), '历史任务', React.createElement('span', { className: 'n' }, histTasks.length))),
+        React.createElement('div', { className: 'right log-tools' },
+          React.createElement('div', { className: 'log-search' },
+            React.createElement(Icon, { name: 'search', size: 13 }),
+            React.createElement('input', {
+              value: s.logSearch || '', placeholder: '搜索流…',
+              onChange: (e) => s.setLogSearch(e.target.value),
+              onClick: (e) => e.stopPropagation() })),
           React.createElement('button', {
-            className: 'log-run' + (runOpen ? ' on' : ''),
-            title: running ? '查看进行中任务的完整进度' : '当前没有运行中的任务',
-            onClick: (e) => { e.stopPropagation(); setRunOpen((v) => !v); } },
-            React.createElement('span', { className: 'rec-dot', style: { width: 7, height: 7, background: running ? 'var(--volo-600)' : 'var(--positive-visual)', animationPlayState: s.logPaused ? 'paused' : 'running' } }),
-            React.createElement('span', { className: 'log-run-tx' }, running ? (running + ' 运行中') : '空闲')),
-          runOpen ? React.createElement('div', { className: 'log-run-backdrop', onClick: (e) => { e.stopPropagation(); setRunOpen(false); } }) : null,
-          runOpen ? React.createElement('div', { className: 'log-run-pop', onClick: (e) => e.stopPropagation() },
-            React.createElement('div', { className: 'lrp-h' },
-              React.createElement(Icon, { name: 'sync', size: 13 }), '进行中任务',
-              React.createElement('span', { className: 'lrp-n' }, activeTasks.length)),
-            activeTasks.length === 0
-              ? React.createElement('div', { className: 'lrp-empty' }, '当前没有运行中的任务')
-              : React.createElement('div', { className: 'lrp-list' }, activeTasks.map((t) => React.createElement('div', { key: t.id, className: 'lrp-row' },
-                  React.createElement('div', { className: 'lrp-top' },
-                    React.createElement('span', { className: 'lrp-title' }, t.title, React.createElement('span', { className: 'lrp-no' }, '#' + t.no)),
-                    React.createElement('span', { className: 'lrp-pct' }, t.stream ? ((t.pct || 0) + '%') : '运行中')),
-                  /* 流式任务(runStreamingCmd)有真实逐步 pct → 确定进度；原子任务(runCmd)只有 4%→100% 两点，
-                     无中间进度 → 用不确定动画条，不显冻结在 4% 的误导百分比。 */
-                  React.createElement('div', { className: 'lrp-bar' }, React.createElement('div', { className: 'lrp-fill' + (t.stream ? '' : ' indet'), style: t.stream ? { width: (t.pct || 0) + '%' } : null })),
-                  React.createElement('div', { className: 'lrp-meta' },
-                    React.createElement('span', { className: 'lrp-target' }, t.target),
-                    React.createElement('span', { className: 'lrp-el' }, t.elapsed),
-                    t.long && t.state === 'running' && s.cancelTask ? React.createElement('button', {
-                      className: 'lrp-cancel', title: '终止远端 UE 进程并取消该长任务',
-                      onClick: (e) => { e.stopPropagation(); s.cancelTask(t.id); } },
-                      React.createElement(Icon, { name: 'x', size: 11 }), '取消') : null))))) : null),
-        React.createElement('button', { className: 'iconbtn', style: { width: 22, height: 22 } }, React.createElement(Icon, { name: s.logOpen ? 'chevd' : 'chevr', size: 15, style: { transform: s.logOpen ? 'rotate(180deg)' : 'none' } })))),
-    s.logOpen ? React.createElement('div', { className: 'log-body' + (s.logPaused ? ' paused' : '') + (conTab === 'hist' ? ' log-body--hist' : ''), style: { height: s.logH } },
-      conTab === 'hist'
-        ? (histTasks.length === 0
-            ? React.createElement('div', { className: 'log-empty' }, '暂无历史任务')
-            : React.createElement('div', { className: 'log-hist' }, histTasks.map((t) => TaskCard ? React.createElement(TaskCard, { key: t.id, s, t }) : null)))
-        : (rows.length === 0 ? React.createElement('div', { className: 'log-empty' }, q ? `无匹配「${s.logSearch}」的流` : '暂无日志')
-        : rows.map((l) => {
-            const key = keyOf(l);
-            const isOpen = expanded.has(key);
-            const hasDetail = !!l.detail;
-            return React.createElement('div', { key, className: 'log-entry' + (isOpen ? ' is-open' : '') },
-              React.createElement('div', {
-                className: 'log-row' + (hasDetail ? ' has-detail' : '') + (copied === key ? ' copied' : ''),
-                onClick: () => copyToClipboard(rowText(l), () => flash(key)),
-                title: '点击复制整条日志' + (hasDetail ? '（含明细）' : '') },
-                React.createElement('span', { className: 'ts' }, l.ts),
-                React.createElement('span', { className: 'lv ' + l.lv }, l.lv === 'ok' ? 'OK' : l.lv.toUpperCase()),
-                React.createElement('span', { className: 'ch' + (l.ch ? ' ch-' + l.ch : '') }, l.ch ? CHANNEL[l.ch].short : '·'),
-                React.createElement('span', { className: 'msg' },
-                  hasDetail ? React.createElement('button', {
-                    className: 'log-caret', style: { transform: isOpen ? 'rotate(90deg)' : 'none' },
-                    title: isOpen ? '收起明细' : '展开明细',
-                    onClick: (e) => { e.stopPropagation(); toggle(key); } },
-                    React.createElement(Icon, { name: 'chevr', size: 12 })) : null,
-                  React.createElement('span', { className: 'msg-tx', dangerouslySetInnerHTML: { __html: l.msg } })),
-                React.createElement('span', { className: 'log-copy' + (copied === key ? ' done' : '') },
-                  React.createElement(Icon, { name: copied === key ? 'check' : 'copy', size: 12 }),
-                  React.createElement('span', { className: 'log-copy-tx' }, copied === key ? '已复制' : '点击复制'))),
-              isOpen ? React.createElement('pre', { className: 'log-detail' }, l.detail) : null);
-          })))
-      : null);
+            className: 'log-pause' + (s.logPaused ? ' on' : ''), title: s.logPaused ? '已暂停 — 点击恢复' : '暂停自动滚动',
+            onClick: (e) => { e.stopPropagation(); s.setLogPaused((v) => !v); } },
+            React.createElement(Icon, { name: s.logPaused ? 'play' : 'pause', size: 13 }), s.logPaused ? '已暂停' : '实时'),
+          conTab === 'stream' ? React.createElement('button', {
+            className: 'log-copyall' + (copied === 'ALL' ? ' done' : ''),
+            title: rows.length ? `复制当前 ${rows.length} 条日志（含明细）到剪贴板` : '当前没有可复制的日志',
+            disabled: rows.length === 0,
+            onClick: (e) => { e.stopPropagation(); if (!rows.length) return; copyToClipboard(rows.map(rowText).join('\n'), () => flash('ALL')); } },
+            React.createElement(Icon, { name: copied === 'ALL' ? 'check' : 'copy', size: 13 }),
+            copied === 'ALL' ? '已复制' : '复制全部') : null,
+          React.createElement('span', { className: 'log-run-wrap' },
+            React.createElement('button', {
+              className: 'log-run' + (runOpen ? ' on' : ''),
+              title: running ? '查看进行中任务的完整进度' : '当前没有运行中的任务',
+              onClick: (e) => { e.stopPropagation(); setRunOpen((v) => !v); } },
+              React.createElement('span', { className: 'rec-dot', style: { width: 7, height: 7, background: running ? 'var(--volo-600)' : 'var(--positive-visual)', animationPlayState: s.logPaused ? 'paused' : 'running' } }),
+              React.createElement('span', { className: 'log-run-tx' }, running ? (running + ' 运行中') : '空闲')),
+            (runOpen && s.logOpen) ? runPop : null),
+          React.createElement('button', { className: 'iconbtn', style: { width: 22, height: 22 }, title: '关闭控制台', onClick: (e) => { e.stopPropagation(); s.setLogOpen(false); } }, React.createElement(Icon, { name: 'x', size: 15 })))),
+      React.createElement('div', { className: 'log-body' + (s.logPaused ? ' paused' : '') + (conTab === 'hist' ? ' log-body--hist' : ''), style: { height: s.logH } },
+        conTab === 'hist'
+          ? (histTasks.length === 0
+              ? React.createElement('div', { className: 'log-empty' }, '暂无历史任务')
+              : React.createElement('div', { className: 'log-hist' }, histTasks.map((t) => TaskCard ? React.createElement(TaskCard, { key: t.id, s, t }) : null)))
+          : (rows.length === 0 ? React.createElement('div', { className: 'log-empty' }, q ? `无匹配「${s.logSearch}」的流` : '暂无日志')
+          : rows.map((l) => {
+              const key = keyOf(l);
+              const isOpen = expanded.has(key);
+              const hasDetail = !!l.detail;
+              return React.createElement('div', { key, className: 'log-entry' + (isOpen ? ' is-open' : '') },
+                React.createElement('div', {
+                  className: 'log-row' + (hasDetail ? ' has-detail' : '') + (copied === key ? ' copied' : ''),
+                  onClick: () => copyToClipboard(rowText(l), () => flash(key)),
+                  title: '点击复制整条日志' + (hasDetail ? '（含明细）' : '') },
+                  React.createElement('span', { className: 'ts' }, l.ts),
+                  React.createElement('span', { className: 'lv ' + l.lv }, l.lv === 'ok' ? 'OK' : l.lv.toUpperCase()),
+                  React.createElement('span', { className: 'ch' + (l.ch ? ' ch-' + l.ch : '') }, l.ch ? CHANNEL[l.ch].short : '·'),
+                  React.createElement('span', { className: 'msg' },
+                    hasDetail ? React.createElement('button', {
+                      className: 'log-caret', style: { transform: isOpen ? 'rotate(90deg)' : 'none' },
+                      title: isOpen ? '收起明细' : '展开明细',
+                      onClick: (e) => { e.stopPropagation(); toggle(key); } },
+                      React.createElement(Icon, { name: 'chevr', size: 12 })) : null,
+                    React.createElement('span', { className: 'msg-tx', dangerouslySetInnerHTML: { __html: l.msg } })),
+                  React.createElement('span', { className: 'log-copy' + (copied === key ? ' done' : '') },
+                    React.createElement(Icon, { name: copied === key ? 'check' : 'copy', size: 12 }),
+                    React.createElement('span', { className: 'log-copy-tx' }, copied === key ? '已复制' : '点击复制'))),
+                isOpen ? React.createElement('pre', { className: 'log-detail' }, l.detail) : null);
+            })))) : null);
 }
 
 /* ---------- 顶层渲染保护 ----------
@@ -881,7 +903,6 @@ function App() {
         /* 检查器（右栏）= 就地细节显示：机器详情 / 操作预览 / 入网脚本 / 凭据 / DDC PAK·PSO 检查器
            都在 inspector 列内就地渲染（见 cache.tsx 的 inspector dispatcher），不再弹滑窗 + 遮罩。 */
         h('div', { className: 'inspector' + (rightCollapsed ? ' is-collapsed' : '') }, guard('inspector', () => pg.inspector(s)))),
-      h(LogPanel, { s }),
       h(PageTabs, { s })),
     /* 居中二级对话框层（部署 / 修复 / 巡检的 preview→进度→成功/失败），挂在 .desktop 顶层覆盖全窗。
        包进 ErrBoundary（同其它渲染槽）：modal 渲染操作驱动的动态内容，是最易抛错的覆盖层，崩了不该黑屏整树。 */
