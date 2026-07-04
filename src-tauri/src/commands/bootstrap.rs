@@ -241,20 +241,20 @@ pub fn reveal_path(app: tauri::AppHandle, path: String, host: Option<String>) ->
     };
     let target = remote_reveal_target(&h, &path)?;
     app.opener().reveal_item_in_dir(&target).map_err(|e| {
-        let raw = e.to_string();
-        // Two workgroup Windows boxes with different local-account passwords is the
-        // single most common way this admin-share open fails — worth spelling out
-        // since the raw OS message ("拒绝访问"/"Access is denied") gives the operator
-        // no next step on its own.
-        if raw.contains("拒绝访问") || raw.to_lowercase().contains("access is denied") {
-            format!(
-                "{raw} —— 本机对 {h} 的管理共享（{target}）没有访问权限。工作组环境下两台机器本地账户/\
-                 密码不一致时常见，需要先在本机对 {h} 建立已认证连接（如执行 `net use \\\\{h}` 并输入其\
-                 账户密码），或在 {h} 上把注册表 LocalAccountTokenFilterPolicy 设为 1 以放开本地账户的\
-                 远程管理共享限制。"
-            )
-        } else {
-            format!("{raw}（尝试打开 {target}）")
-        }
+        // tauri-plugin-opener's Windows existence pre-check is a bare
+        // `path.exists()` (see its windows_shell_path::absolute_and_check_exists) —
+        // it swallows the real OS error and always reports "path doesn't exist",
+        // so an admin-share access-denied looks byte-for-byte identical to a
+        // genuinely missing folder. For a remote target that's overwhelmingly the
+        // former (two workgroup Windows boxes with no shared local-account
+        // credentials), so spell out the fix rather than let the ambiguous message
+        // send the operator chasing a "missing folder" that isn't actually missing.
+        format!(
+            "{e}（{target}）—— 这条报错既可能是目标路径真的不存在，也可能是本机对 {h} 的管理共享没有\
+             访问权限（tauri 无法区分两者，工作组环境下两台机器本地账户/密码不一致时会得到一模一样的\
+             提示）。先确认路径本身没写错；如果确认无误，需要先在本机对 {h} 建立已认证连接（如执行\
+             `net use \\\\{h}` 并输入其账户密码），或在 {h} 上把注册表 LocalAccountTokenFilterPolicy\
+             设为 1 以放开本地账户的远程管理共享限制。"
+        )
     })
 }
