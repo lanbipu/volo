@@ -52,7 +52,10 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
     const e = p && p.event ? p.event : {};
     switch (e.kind) {
       case 'spawned':   return { pct: 8, log: { lv: 'info', msg: '已启动 · pid ' + e.pid } };
-      case 'log_line':  return { log: { lv: ueLineLv(e.parsed_kind), msg: e.text } };
+      case 'log_line':  return e.parsed_kind
+        ? { log: { lv: ueLineLv(e.parsed_kind), msg: e.text } }
+        : {}; /* 只转发有 parsed_kind 的行：DDC fill 全量 UE 日志逐行进控制台会把
+                 WebView 主线程打满（每行一次 setLogs + LogPanel 全量重渲染），App 卡死 */
       case 'progress': {
         const pct = e.pct == null ? null : (e.pct <= 1 ? e.pct * 100 : e.pct);
         return { pct: terminalOnCompleted ? pct : (pct == null ? null : Math.min(96, pct)), log: e.label ? { lv: 'info', msg: e.label } : null };

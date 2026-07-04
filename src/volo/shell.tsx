@@ -576,7 +576,12 @@ function App() {
   const pushLog = (entry) => {
     const d = new Date();
     const ts = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}.${String(d.getMilliseconds()).padStart(3, '0')}`;
-    setLogs((prev) => [{ ts, ...entry }, ...prev]);
+    /* 封顶：LogPanel 无虚拟化，每条日志都触发全量 filter+map 重渲染；
+       任何事件洪泛下无上限数组会让渲染成本 O(n²) 累积直至 WebView 冻结 */
+    setLogs((prev) => {
+      const next = [{ ts, ...entry }, ...prev];
+      return next.length > 800 ? next.slice(0, 800) : next;
+    });
   };
   const pushLogs = (entries) => entries.forEach((e, i) => setTimeout(() => pushLog(e), 60 * i));
 
