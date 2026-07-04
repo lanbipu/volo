@@ -303,7 +303,9 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       : [CX.node(scope) ? CX.node(scope).machineId : null].filter((x) => x != null);
     if (!targets.length) return;
     const tgtLabel = scope === 'all' ? targets.length + ' 台在线机' : (CX.node(scope) || {}).host;
-    s.runCmd({ domain: 'project', action: 'discover', target: tgtLabel, chan: 'ssh', note: '远程扫描 UE 工程（.uproject）' },
+    /* 返回 settle 后的 promise（成功/失败都 resolve）——cacheDdcPak.tsx 借此在扫描落地后
+       触发一次缩略图/mtime 重新探测；本页自身的调用方不消费返回值，加 return 不影响它们。 */
+    return s.runCmd({ domain: 'project', action: 'discover', target: tgtLabel, chan: 'ssh', note: '远程扫描 UE 工程（.uproject）' },
       () => Promise.allSettled(targets.map((mid) => discoverProjects(mid, roots, null))).then((rs) => {
         const ok = rs.filter((r) => r.status === 'fulfilled');
         if (!ok.length) throw new Error('全部目标扫描失败');

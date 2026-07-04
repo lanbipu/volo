@@ -4,7 +4,7 @@
 #
 # Node-pure: runs locally on the target (shipped + executed via SSH -File).
 # stdin: JSON { "ProjectDir": "...", "UprojectStem": "Aurora" }
-# Output: JSON { ok, found, path, base64, from, message }
+# Output: JSON { ok, found, path, base64, from, mtime, message }
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; chcp 65001 | Out-Null
 $ErrorActionPreference = 'Continue'
 
@@ -29,7 +29,7 @@ try {
             if ($item.Length -gt 0 -and $item.Length -le $MaxBytes) {
                 $bytes = [System.IO.File]::ReadAllBytes($c.path)
                 $b64 = [Convert]::ToBase64String($bytes)
-                @{ ok = $true; found = $true; path = "$($c.path)"; base64 = $b64; from = $c.from } | ConvertTo-Json -Compress
+                @{ ok = $true; found = $true; path = "$($c.path)"; base64 = $b64; from = $c.from; mtime = "$($item.LastWriteTimeUtc.ToString('o'))" } | ConvertTo-Json -Compress
                 exit 0
             }
         }

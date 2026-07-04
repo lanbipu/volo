@@ -1823,15 +1823,14 @@ import {
                                 h('span', { className: 'zcl-meta-k' }, '本地缓存'),
                                 pathBtn(cacheDir, n.ip || n.host, '在文件资源管理器中打开该本地缓存目录')),
                               (function () {
-                                /* 本地端口读出（配置 → 实际）；不可读时如实「—」 */
+                                /* 只显示实际运行端口（与箭头指向一致）；不可读时如实「—」，不再展示配置端口 */
                                 const pRec = zportRecOf(zports, n.id);
                                 const pOv = pRec.configured != null;
-                                const pConf = pOv ? pRec.configured : ZEN_LOCAL_DEFAULT_PORT;
                                 const pRun = !zrBlocked && pRec.running && pRec.actual != null ? pRec.actual : null;
                                 return h('div', { className: 'zcl-meta-row' },
                                   h('span', { className: 'zcl-meta-k' }, '本地端口'),
                                   h('span', { className: 'zcl-meta-v mono' },
-                                    zrBlocked ? '不可读' : pRec.loading ? '读取中…' : (pConf + ' → ' + (pRun != null ? pRun : '—'))),
+                                    zrBlocked ? '不可读' : pRec.loading ? '读取中…' : (pRun != null ? String(pRun) : '—')),
                                   pOv ? h('span', { className: 'zport-tag' }, '已改端口') : null);
                               })(),
                               h('div', { className: 'zcl-meta-row' },
