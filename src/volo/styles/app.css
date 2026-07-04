@@ -1674,6 +1674,21 @@ html, body {
 .cli-pathin { flex: 1; min-width: 130px; font-family: var(--font-code); font-size: 11.5px; background: var(--sunken); border: 1px solid var(--chrome-line); border-radius: 7px; padding: 7px 10px; color: var(--chrome-text); }
 .cli-pathin:focus { outline: none; border-color: var(--volo-700); box-shadow: 0 0 0 2px color-mix(in srgb, var(--volo-700) 22%, transparent); }
 .cli-pathin:disabled { opacity: 0.45; cursor: not-allowed; }
+/* 路径地址栏 + 内嵌「在资源管理器中打开」图标按钮（文件系统 DDC 各处路径统一复用） */
+.pathio { position: relative; display: flex; align-items: stretch; min-width: 0; }
+.pathio > input { flex: 1 1 auto; min-width: 0; padding-right: 34px; }
+.pathio-open { all: unset; box-sizing: border-box; position: absolute; top: 50%; right: 5px; transform: translateY(-50%);
+  display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; cursor: pointer;
+  color: var(--chrome-faint); background: var(--wash-2); transition: color .12s, background .12s; }
+.pathio-open svg { display: block; }
+.pathio-open:hover { color: var(--volo-400); background: var(--wash-3); }
+.pathio-open:disabled { opacity: 0.4; cursor: not-allowed; background: transparent; }
+.cli-row .cli-pathio { flex: 1; min-width: 130px; }
+.cli-pathio .cli-pathin { min-width: 0; }
+/* 共享服务器下拉旁的独立「打开」按钮 */
+.sel-with-open { display: flex; align-items: stretch; gap: 8px; }
+.pathio-open.standalone { position: static; transform: none; width: 34px; height: auto; align-self: stretch;
+  flex: 0 0 auto; border: 1px solid var(--chrome-line-2); }
 .local-act { display: flex; align-items: center; gap: 9px; flex: 0 0 auto; justify-content: flex-end; min-width: 168px; }
 /* ② 其他服务器加入共享 DDC · 逐机环境变量行 */
 .cli-row.join .cli-meta { width: 190px; flex: 0 0 auto; }
@@ -2206,6 +2221,9 @@ html, body {
 /* 统一路径开关（③ 本地 DDC cli-top 右侧）*/
 .cli-unify { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: 0 0 auto; }
 .cli-unify label { font-size: 11px; font-weight: 700; color: var(--chrome-dim); white-space: nowrap; }
+/* 统一路径地址栏 */
+.cli-unify .pathio { flex: 0 0 auto; width: 188px; }
+.cli-unify .pathio > input { width: 100%; }
 /* ---- 文件系统 DDC 两列布局：窄列内自适应（路径输入 / 环境变量各自换到第二行）---- */
 .zen-col .cli-top { flex-direction: column; align-items: stretch; gap: 10px; }
 .zen-col .cli-unify { margin-left: 0; width: 100%; }
@@ -2216,6 +2234,8 @@ html, body {
 .zen-col .cli-row.local .cli-meta, .zen-col .cli-row.join .cli-meta { width: auto; flex: 1 1 auto; }
 .zen-col .cli-row.local .local-act, .zen-col .cli-row.join .local-act { min-width: 0; margin-left: auto; }
 .zen-col .cli-row.local .cli-pathin { order: 9; flex: 1 1 100%; min-width: 0; }
+.zen-col .cli-row.local .cli-pathio { order: 9; flex: 1 1 100%; min-width: 0; }
+.zen-col .cli-unify .pathio { flex: 1 1 auto; width: 100% !important; }
 .zen-col .cli-row.join .cli-envvar { order: 9; flex: 1 1 100%; }
 @media (max-width: 1180px) {
   .zen-2col { grid-template-columns: minmax(0, 1fr); }
