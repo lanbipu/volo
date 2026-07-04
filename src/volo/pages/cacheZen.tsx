@@ -604,7 +604,12 @@ import {
 
     /* installDir/dataDir/configPath 都是 srvNode（部署目标机）上的路径，不是 Volo 本机的——
        revealPath 只认本机路径，跨机需转成 \\host\D$\... 管理共享 UNC，见 reveal_path 的 host 参数。 */
-    const openPath = (p) => { revealPath(p, srvNode.ip || srvNode.host).catch(() => {}); };
+    const openPath = (p) => {
+      revealPath(p, srvNode.ip || srvNode.host).catch((e) => {
+        log(s, 'err', `<b>reveal_path</b> · 打开 ${esc(p)} 失败 · ${esc((e && e.message) || String(e))}`);
+        s.setConTab('stream'); s.setLogOpen(true);
+      });
+    };
     const pathInput = (val, onChange) => h('div', { className: 'dp-path' },
       h('input', { className: 'dp-input mono', value: val, spellCheck: false, onChange }),
       h('button', { type: 'button', className: 'dp-path-open', title: '在文件资源管理器中打开该目录', tabIndex: -1, onClick: () => openPath(val) },
@@ -1540,7 +1545,12 @@ import {
        的 host 参数）——这两行不再是同一台机器时（比如 Volo 就跑在服务器机器上，行内又要打开
        其它客户端的路径），不做这层转换点开的会是 Volo 本机同名盘符下的目录，而不是目标机器的。
        行内值可能是「读取中…」「不可读」「%LOCALAPPDATA%\...（默认）」等占位/未展开文案，此时不可点击。 */
-    const openPath = (p, host) => { revealPath(p, host).catch((e) => log(s, 'err', `<b>reveal_path</b> · 打开 ${esc(p)} 失败 · ${esc((e && e.message) || String(e))}`)); };
+    const openPath = (p, host) => {
+      revealPath(p, host).catch((e) => {
+        log(s, 'err', `<b>reveal_path</b> · 打开 ${esc(p)} 失败 · ${esc((e && e.message) || String(e))}`);
+        s.setConTab('stream'); s.setLogOpen(true);
+      });
+    };
     const isRealPath = (v) => !!v && v !== '—' && !/^(读取中|读取失败|不可读)/.test(v) && !/%[A-Za-z_]+%/.test(v) && !v.endsWith('（默认）');
     const pathBtn = (val, host, title) => isRealPath(val)
       ? h('button', { type: 'button', className: 'zcl-meta-v mono zcl-open', title, onClick: () => openPath(val, host) }, val, h(Icon, { name: 'external', size: 11 }))
