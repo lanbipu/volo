@@ -71,6 +71,14 @@
 .dpak-tag.ue { color: var(--volo-400); background: var(--highlight-selected); }
 .dpak-path { font-family: var(--font-code); font-size: 11px; color: var(--chrome-faint); margin-top: 3px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 可点击路径：点按在资源管理器中打开工程文件夹 */
+.dpak-path-open { display: flex; align-items: center; gap: 5px; max-width: 100%; padding: 1px 5px 1px 0; margin: 2px 0 0 -2px;
+  border: 0; border-radius: 6px; background: none; cursor: pointer; text-align: left; transition: color .12s, background .12s; }
+.dpak-path-open .proj-sub-tx { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dpak-path-open .proj-sub-ico { display: inline-grid; place-items: center; flex: 0 0 auto; opacity: 0; transform: translateX(-3px);
+  transition: opacity .12s, transform .12s; color: var(--volo-400); }
+.dpak-path-open:hover { color: var(--volo-400); background: var(--highlight-selected); padding-left: 5px; }
+.dpak-path-open:hover .proj-sub-ico { opacity: 1; transform: none; }
 .dpak-top .spill { flex: 0 0 auto; }
 
 .dpak-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 14px; padding: 9px 11px;

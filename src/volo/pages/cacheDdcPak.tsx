@@ -17,7 +17,7 @@
 import * as React from "react";
 import "../ds";
 import "./cacheDdc";
-import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak } from "../api/commands";
+import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnail } from "../api/commands";
 
 (function () {
   const { Button } = window.Spectrum2DesignSystem_b6d1b3;
@@ -30,6 +30,11 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak } from "../api/comm
   const VIEW_OPTS = [{ id: 'flat', label: '平铺列表', icon: 'list' }, { id: 'grouped', label: '按文件夹层级', icon: 'folder' }];
   const SORT_OPTS = [{ id: 'name', label: '按名称' }, { id: 'path', label: '按路径' }, { id: 'time', label: '按发现时间' }];
   const ROOT_PRESETS = ['D:\\Unreal Projects', 'D:\\UE_Projects', 'D:\\Projects', 'E:\\UEProjects'];
+  /* get_project_thumbnail 只回传策略 key，人话文案留在前端（PROBE_DICT/PROBE_NARRATIVE 同款分工）。 */
+  const THUMB_FROM_LABEL = {
+    uproject_same_name: 'uproject 同名缩略图',
+    saved_autosequence: 'Saved 回退缩略图（无同名图）',
+  };
 
   const fmtMtime = (iso) => {
     if (!iso) return '—';
@@ -234,6 +239,45 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak } from "../api/comm
     const [sort, setSort] = useState('name');
     const [sel, setSel] = useState([]);
 
+    /* ---------- 缩略图（懒加载，只在本页 merge 进 project 对象，不写回全局 UE_PROJECTS） ----------
+       每个工程用 DDC.pickSrc 选源机（与生成/校验同一套「哪台机代表这个工程」的既有约定）。
+       THUMB_CONCURRENCY 个 worker 从队列里拉取，而不是对全部 UE_PROJECTS 一次性并发发起
+       ——工程一多，无限并发会同时起一堆 ssh 子进程（每条请求最多 8MB base64），既打满
+       WebView 又可能把源机 SSH 撑爆。thumbTriedRef 只在 promise 真正 resolve（拿到「有/无
+       缩略图」这个确定结果）后才标记，reject（如源机瞬时离线、SSH 抖动）不标记——否则一次
+       瞬时失败会让该工程在这个常驻页面的整个生命周期里都拿不到缩略图，直到 project count
+       变化触发下一次 effect。machine 暂不在线（pickSrc 返回 null）同样不标记，原地跳过换
+       下一个候选，让 worker 不因为一个工程卡住。 */
+    const [thumbs, setThumbs] = useState({});
+    const thumbTriedRef = useRef(new Set());
+    const THUMB_CONCURRENCY = 8; // 对齐后端 batch::DEFAULT_MAX_CONCURRENCY 的既有并发约定
+    useEffect(() => {
+      let alive = true;
+      const queue = UE_PROJECTS.filter((p) => !thumbTriedRef.current.has(p.id));
+      let next = 0;
+      const pump = () => {
+        if (!alive || next >= queue.length) return;
+        const p = queue[next++];
+        const src = DDC.pickSrc(p);
+        if (!src) { pump(); return; }
+        getProjectThumbnail(Number(p.id), src.machineId).then(
+          (t) => {
+            if (!alive) return;
+            thumbTriedRef.current.add(p.id);
+            if (t) setThumbs((m) => Object.assign({}, m, { [p.id]: {
+              thumb: 'data:image/png;base64,' + t.base64,
+              thumbSrc: t.path,
+              thumbFrom: THUMB_FROM_LABEL[t.from] || t.from,
+            } }));
+            pump();
+          },
+          () => { if (alive) pump(); });
+      };
+      for (let i = 0; i < THUMB_CONCURRENCY; i++) pump();
+      return () => { alive = false; };
+    }, [UE_PROJECTS.length]);
+    const withThumb = (p) => { const t = thumbs[p.id]; return t ? Object.assign({}, p, t) : p; };
+
     /* gate 必须在全部 Hooks 之后才能条件 return：否则加载态(仅走 gate 分支、零 Hook)
        与加载完成态(走到这里、调用一串 useState/useEffect)之间 Hook 调用数量不一致，
        React 会抛 "Rendered more hooks than during the previous render"。 */
@@ -327,6 +371,8 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak } from "../api/comm
     /* ---------- 左栏 · 已部署卡片 ---------- */
     const deployedCard = (dp) => {
       const srcHost = hostOf(dp.source.machine_id);
+      const srcNode = CX.node(String(dp.source.machine_id));
+      const srcPath = (dp.project.locByMachine && dp.project.locByMachine[String(dp.source.machine_id)]) || dp.project.root;
       const distHosts = dp.distributedTo.map(hostOf).join('、');
       const confirming = confirmId === dp.project.id;
       return h('div', { key: dp.project.id, className: 'dpak-card' + (confirming ? ' confirming' : '') },
@@ -335,7 +381,10 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak } from "../api/comm
           h('div', { className: 'dpak-meta' },
             h('div', { className: 'dpak-name' }, dp.project.name,
               dp.project.ue !== '—' ? h('span', { className: 'dpak-tag ue' }, 'UE ' + dp.project.ue) : null),
-            h('div', { className: 'dpak-path' }, dp.project.root)),
+            h('button', { type: 'button', className: 'dpak-path dpak-path-open', title: '在文件资源管理器中打开工程文件夹',
+                onClick: (e) => { e.stopPropagation(); DDC.openFolder(s, srcPath, dp.project.name, srcNode); } },
+              h('span', { className: 'proj-sub-tx' }, srcPath),
+              h('span', { className: 'proj-sub-ico' }, h(Icon, { name: 'folder', size: 12 })))),
           h('span', { className: 'spill spill--positive' }, h(Icon, { name: 'check', size: 12 }), '就绪')),
         h('div', { className: 'dpak-grid' },
           h('div', { className: 'dpak-kv' }, h('span', { className: 'k' }, 'PAK 文件大小'), h('span', { className: 'v' }, DDC.humanBytes(dp.source.size_bytes))),
@@ -391,9 +440,9 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak } from "../api/comm
             return h(React.Fragment, null, groups.map((grp) => h('div', { key: grp.dir, className: 'pak-group' },
               h('div', { className: 'pak-group-h' }, h(Icon, { name: 'folder', size: 13 }),
                 h('span', { className: 'mono' }, grp.dir), h('span', { className: 'ct' }, grp.items.length + ' 个')),
-              h('div', { className: 'proj-list' }, grp.items.map((p) => DDC.projRow(p, sel.includes(p.id), toggleSel))))));
+              h('div', { className: 'proj-list' }, grp.items.map((p) => DDC.projRow(withThumb(p), sel.includes(p.id), toggleSel, s))))));
           })()
-        : h('div', { className: 'proj-list' }, sorted.map((p) => DDC.projRow(p, sel.includes(p.id), toggleSel)));
+        : h('div', { className: 'proj-list' }, sorted.map((p) => DDC.projRow(withThumb(p), sel.includes(p.id), toggleSel, s)));
 
     return h('div', { className: 'res ddc pak-page' },
       h('div', { className: 'canvas-head' },

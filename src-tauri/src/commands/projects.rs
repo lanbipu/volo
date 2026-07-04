@@ -2,6 +2,7 @@
 
 use cache_core::core::project_discovery::{self, DiscoveryResult};
 use cache_core::core::project_identity::stem_lower;
+use cache_core::core::project_thumbnail::{self, ProjectThumbnail};
 use cache_core::data::{
     machines as data_machines, project_cache_backend, project_locations, projects, Db,
     DiscoveryStatus, Project, ProjectLocation, ProjectCacheBackend,
@@ -119,6 +120,32 @@ pub fn create_project_manual(
             engine_association_kind: None,
         },
     )
+}
+
+/// Resolves the project's thumbnail on `machine_id`'s copy: a same-name PNG
+/// next to the .uproject, else `Saved\autosequence_shot.png`, else `None`
+/// (the frontend falls back to a generic icon — no thumbnail is not an error).
+#[tauri::command]
+pub async fn get_project_thumbnail(
+    db: State<'_, Db>,
+    project_id: i64,
+    machine_id: i64,
+) -> VoloResult<Option<ProjectThumbnail>> {
+    let machine = data_machines::find_by_id(&db, machine_id)?
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?;
+    let location = project_locations::get_for_project_machine(&db, project_id, machine_id)?
+        .ok_or_else(|| {
+            VoloError::InvalidInput(format!(
+                "project {} not located on machine {}",
+                project_id, machine_id
+            ))
+        })?;
+    let stem = project_thumbnail::uproject_stem(&location.uproject_path);
+    let host = machine.ip;
+    let project_dir = location.abs_path;
+    tokio::task::spawn_blocking(move || project_thumbnail::read_thumbnail(&host, &project_dir, &stem))
+        .await
+        .map_err(|err| VoloError::OperationFailed(format!("get_project_thumbnail task failed: {err}")))?
 }
 
 #[tauri::command]
