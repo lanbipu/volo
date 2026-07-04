@@ -607,7 +607,7 @@ import {
     const openPath = (p) => {
       revealPath(p, srvNode.ip || srvNode.host).catch((e) => {
         log(s, 'err', `<b>reveal_path</b> · 打开 ${esc(p)} 失败 · ${esc((e && e.message) || String(e))}`);
-        s.setConTab('stream'); s.setLogOpen(true);
+        s.setConTab('stream');
       });
     };
     const pathInput = (val, onChange) => h('div', { className: 'dp-path' },
@@ -1574,7 +1574,7 @@ import {
     const openPath = (p, host) => {
       revealPath(p, host).catch((e) => {
         log(s, 'err', `<b>reveal_path</b> · 打开 ${esc(p)} 失败 · ${esc((e && e.message) || String(e))}`);
-        s.setConTab('stream'); s.setLogOpen(true);
+        s.setConTab('stream');
       });
     };
     const isRealPath = (v) => !!v && v !== '—' && !/^(读取中|读取失败|不可读)/.test(v) && !/%[A-Za-z_]+%/.test(v) && !v.endsWith('（默认）');

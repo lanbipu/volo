@@ -477,7 +477,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
     const selId = s.psoSel;
     psoSelLive = selId; /* 长任务回填读活值（见 loadWarmupRuns 上方注释） */
     const p = UE_PROJECTS.find((x) => x.id === selId) || null; /* 选中工程被 reloadCache 剔除时回退「未选工程」，与检查器空态一致 */
-    const pick = (x) => s.setPsoSel(selId === x.id ? null : x.id);
+    const pick = (x) => { const next = selId === x.id ? null : x.id; s.setPsoSel(next); if (next) CX.showInspector(s); };
     const nodes = psoNodes();
     const maj = majorityDriver(s);
     const runs = s.psoRuns || [];

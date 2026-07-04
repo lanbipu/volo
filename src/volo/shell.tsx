@@ -272,11 +272,11 @@ function LogPanel({ s }) {
   const activeTasks = s.tasks ? s.tasks.filter((t) => t.state === 'running' || t.state === 'queued') : [];
   const [runOpen, setRunOpen] = React.useState(false);
   /* 触发运行时自动弹出一次「运行中」气泡；用户再次点击或点击别处即关闭。quiet 任务
-     （扫描/生成/分发/删除等有自己进度呈现的操作）通过 s.suppressRunPop 抑制这次自动弹起，
-     气泡状态旗标本身在读取后立即复位，不影响后续非 quiet 任务。 */
+     （扫描/生成/分发/删除等有自己进度呈现的操作）通过 s.suppressRunPop 抑制这次自动弹起；
+     Cache 页一律不自动弹气泡。 */
   const prevRunning = React.useRef(running);
   React.useEffect(() => {
-    if (running > prevRunning.current && !(s.suppressRunPop && s.suppressRunPop.current)) setRunOpen(true);
+    if (running > prevRunning.current && !(s.suppressRunPop && s.suppressRunPop.current) && s.page !== 'cache') setRunOpen(true);
     if (s.suppressRunPop) s.suppressRunPop.current = false;
     prevRunning.current = running;
   }, [running]);
@@ -422,12 +422,9 @@ function App() {
   const [leftW, setLeftW] = useState(typeof persisted.leftW === 'number' ? persisted.leftW : 214);
   const [rightW, setRightW] = useState(typeof persisted.rightW === 'number' ? persisted.rightW : 372);
   const [leftCollapsed, setLeftCollapsed] = useState(!!persisted.leftCollapsed);
-  /* 检查器（右栏）每次打开 App 都从收起状态开始 —— 不做"记住上次开合"的持久化，也不再按
-     上次停留的子页 / 选中态在挂载时提前展开；只有本次会话里涉及检查器的操作才会展开它：
-     · 选中目标（机器详情 drawer / 勾选 DDC 工程 / 选中校正对象）→ 下方 effect 的上升沿；
-     · 点击进入 DDC PAK / PSO 子页（操作面在检查器里）→ goCacheNav 显式展开。
-     配套约束：calSel 不再从持久化恢复（见下方 calSel 注释），保证挂载时四个目标必为空——
-     否则会出现"有选中对象但检查器 0 宽、重点同一对象也弹不开"的卡死态。 */
+  /* 检查器（右栏）每次打开 App 都从收起状态开始 —— 不做"记住上次开合"的持久化。
+     Cache 页：不因选中目标 / 切子页自动展开，只在用户点击「检查器」按钮或页内显式打开
+     详情/预览/脚本的入口时展开；取消选择时仍自动收起。其它顶层页保持「选中即展开」。 */
   const [rightCollapsed, setRightCollapsed] = useState(true);
   const [logH, setLogH] = useState(typeof persisted.logH === 'number' ? persisted.logH : 150);
   const [page, setPage] = useState(() => PAGES.some((p) => p.id === persisted.page) ? persisted.page : 'tools');
@@ -798,28 +795,26 @@ function App() {
 
   const cluster = deriveCluster(machines, healthChecks, healthRunAt);
 
-  /* 检查器（右栏）自动展开 / 收起：只有"选中了对象"的操作才触发——打开机器/工程详情(drawer)、
-     选中 PSO 工程(psoSel)、选中校正对象(calSel)。DDC PAK 双栏自管选择，不再驱动检查器
-     （进入 ddc_pak 走下方 goCacheNav 的显式开合，与是否有勾选无关）。只在 hasTarget 的
-     上升/下降沿切换，不会在用户手动收起后又强行弹回来，取消选择时也会自动收起（细节渲染进
-     0 宽列不可见/不可点）。ref 初值恒为 false：挂载时目标必为空（calSel 不再持久化恢复，
-     其余本就不持久化）。 */
+  /* 检查器（右栏）自动展开 / 收起：非 Cache 页在选中目标时展开、取消时收起。
+     Cache 页只随取消选择收起，不随选中 / 切子页自动展开（由页内显式入口或「检查器」按钮打开）。 */
   const inspectorHasTargetRef = useRef(false);
   useEffect(() => {
     const hasTarget = !!drawer || !!psoSel || !!calSel;
+    if (page === 'cache') {
+      if (!hasTarget && inspectorHasTargetRef.current) setRightCollapsed(true);
+      inspectorHasTargetRef.current = hasTarget;
+      return;
+    }
     if (hasTarget !== inspectorHasTargetRef.current) setRightCollapsed(!hasTarget);
     inspectorHasTargetRef.current = hasTarget;
-  }, [drawer, psoSel, calSel]);
+  }, [drawer, psoSel, calSel, page]);
 
-  /* 切缓存子页：清掉不属于目标子页的检查器目标（drawer），并显式开合右栏——
-     进入 DDC PAK / PSO（操作面就地展开）展开，其余子页一律收起（点到与检查器无关的
-     页面时自动隐藏）。目标在此已同步清空，故把 ref 一并对齐，吞掉上方 effect 的下降沿，
-     避免它在 commit 后覆盖这里的显式开合。 */
+  /* 切缓存子页：清掉不属于目标子页的检查器目标（drawer），检查器保持收起。 */
   const goCacheNav = (v) => {
     setDrawer(null);
     if (v !== 'ddc_pso') setPsoSel(null);
     inspectorHasTargetRef.current = v === 'ddc_pso' ? !!psoSel : false;
-    setRightCollapsed(!/^ddc_p(ak|so)$/.test(v));
+    setRightCollapsed(true);
     if (/^ddc_/.test(v)) {
       setCacheDdcEverOpened(true);
       setDdcViewsSeen((prev) => (prev[v] ? prev : Object.assign({}, prev, { [v]: true })));
