@@ -173,21 +173,34 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak } from "../api/comm
         h(Button, { variant: 'secondary', size: 'M', isDisabled: true }, '生成中…')));
   }
 
+  /* 已部署列表会话缓存：切顶层页（Cache↔校正等）会 remount PakPage，但不能因此重跑扫描。
+     raw===undefined 表示本会话尚未扫过；[]=已扫且空；非空数组=已扫有结果。 */
+  const DEPLOYED_CACHE = { raw: undefined, scannedAt: null };
+
   /* =========================================================================
      DDC PAK 主页 · 左右双栏
      ========================================================================= */
   function PakPage({ s }) {
     /* ---------- 左栏 · 已部署 DDC PAK（真实扫描） ---------- */
-    const [deployedRaw, setDeployedRaw] = useState(null); /* null=未加载过；[]=已加载且为空 */
-    const [depScan, setDepScan] = useState(null);
+    const [deployedRaw, setDeployedRaw] = useState(() => (DEPLOYED_CACHE.raw === undefined ? null : DEPLOYED_CACHE.raw));
+    const [depScan, setDepScan] = useState(() => DEPLOYED_CACHE.scannedAt);
     const [confirmId, setConfirmId] = useState(null);
 
     const loadDeployed = (quiet) => s.runCmd(
       { domain: 'ddc', action: 'scan-deployed', target: '已部署 DDC PAK', chan: 'ssh', note: '扫描已部署 DDC PAK', quiet },
       () => listDeployedDdcPaks(),
       { okMsg: (rows) => '已刷新 · ' + rows.length + ' 条已部署位置' })
-      .then((rows) => { setDeployedRaw(rows); setDepScan(new Date()); }, () => {});
-    useEffect(() => { loadDeployed(true); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+      .then((rows) => {
+        DEPLOYED_CACHE.raw = rows;
+        DEPLOYED_CACHE.scannedAt = new Date();
+        setDeployedRaw(rows);
+        setDepScan(DEPLOYED_CACHE.scannedAt);
+      }, () => {});
+    /* 仅本会话首次进入且尚无缓存时静默扫一次；从其他顶层页切回时走 useState 初始值复用缓存 */
+    useEffect(() => {
+      if (DEPLOYED_CACHE.raw !== undefined) return;
+      loadDeployed(true);
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
     /* 按工程聚合：source = 该工程 primary 机（若也在已发现列表里），否则第一条命中；
        distributedTo = 其余持有该 pak 的机器。陈旧 project_id（工程已被移出列表）静默丢弃。 */
