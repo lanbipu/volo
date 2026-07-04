@@ -387,6 +387,18 @@ export interface DistributeJobResponse {
 export interface PakOutput {
   path: string;
   size_bytes: number;
+  /** File mtime (RFC 3339 UTC); null for paks verified before this field existed. */
+  modified_at: string | null;
+}
+
+/** One (project, machine) location where `list_deployed_ddc_paks` found a
+ *  generated DDC pak. The frontend groups by `project_id` — see cacheDdcPak.tsx. */
+export interface DeployedPakEntry {
+  project_id: number;
+  machine_id: number;
+  pak_path: string;
+  size_bytes: number;
+  modified_at: string | null;
 }
 
 export type UeRunnerEvent =

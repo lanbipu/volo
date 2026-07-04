@@ -11,8 +11,7 @@ import * as React from "react";
 import "../ds";
 import "./cache";
 import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createShare,
-  generateDdcPak, verifyPakOutput,
-  distributeDdcPak,
+  generateDdcPak,
   startPsoWarmup, listPsoWarmupRuns, fixPsoCvars, verifyPsoPrecaching,
   setMachineEnvVar, getMachineEnvVar, createLocalCache,
   prepareManagedShareClients, unprepareManagedShareClients,
@@ -69,12 +68,16 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       default:          return {};
     }
   };
-  /* generate：ue-runner 'completed' 即终止；pak-verified 是次级校验事件（非终止）。
-     注：pak-verified 在 completed 后才发，finalize 已同步 unlisten → 这行校验日志可能
-     被吞（best-effort）；任务成败由 completed 的 exit_code 决定，用户可另点检查器「校验产物」。 */
+  /* generate：exit_code 只说明 UE 进程退出，不代表 pak 真的写出——以 pak-verified 的真实
+     校验结果收尾（后端 completed 之后总会紧跟着发一条 pak-verified，即便 exit_code≠0 也会
+     发 verified:false，故这里必收得到）。旧版以 completed 的 exit_code 收尾、校验只是
+     best-effort 日志，靠检查器手动「校验产物」兜底 exit=0 但 DDC.ddp 缺失的情况；该按钮
+     已随双栏重构下线，故改为直接等 pak-verified 才是终态，避免误报成功。cancelled/error
+     仍在 completed 之前就终止（ueProgressReduce 对它们恒返回 done，不受下面这个 false 影响）。 */
   const genReduce = (ev, p) => ev === 'pak-verified'
-    ? { log: { lv: p.verified ? 'ok' : 'warn', msg: '产物校验 ' + (p.verified ? '通过' : '未通过') + (p.output && p.output.path ? (' · ' + p.output.path) : '') } }
-    : ueProgressReduce(p, true);
+    ? { done: true, ok: !!p.verified, exit: p.verified ? 0 : 2,
+        log: { lv: p.verified ? 'ok' : 'err', msg: '产物校验 ' + (p.verified ? '通过' : '未通过') + (p.output && p.output.path ? (' · ' + p.output.path) : '') } }
+    : ueProgressReduce(p, false);
   /* pso warmup（fan-out）：kickoff 返回 {job_id(父), runs:[{machine_id,run_id,job_id}]}；
      事件 pso-warmup-progress 是各机 UeRunnerEvent 信封（带 machine_id / parent_job_id），
      真终态是每机一条 pso-warmup-finalized{status:'ok'|'cancelled'|'err', hitch_count}——
@@ -295,51 +298,23 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
   /* generate_ddc_pak（流式）：源机取工程 primary（检查器无 src 选择器）；invoke 的
      ExecutionLocation='remote' 是执行位置（远端源机 vs 操作员本机），与工程的缓存路由（zen/legacy_pak）
      无关——任意路由都直接生成 PAK，不再需要先切工程后端；ue_version null；
-     ue-runner-progress 'completed' 即终止。 */
+     真正终态是 pak-verified（见 genReduce），不是 completed。 */
+  /* 返回值等待真实终态，不是 kickoff 落地就 resolve——runStreamingCmd 的 promise 只在
+     kickoff 成功后立刻 resolve（沿用 launchWarmup 的既定语义：kickoff 落地即返回，真正
+     完成走 wiring.onDone），这里包一层 Promise 让 onDone 驱动 resolve/reject，
+     cacheDdcPak.tsx 的生成对话框才能真正串行等每个工程完成再推进下一个。kickoff 阶段
+     失败（IPC/网络错误）由 runStreamingCmd 自身 reject，直接转发。无源机走 noSrcFail
+     留痕后仍需 reject，调用方才能把该工程记为失败而非误判成功。 */
   const genPak = (s, p) => {
     const src = pickSrc(p);
-    if (!src) { noSrcFail(s, 'ddc', 'generate', p); return; } /* 无可用在线源机：可见失败而非静默 */
-    s.runStreamingCmd(
-      { domain: 'ddc', action: 'generate', target: p.name, chan: 'ssh', note: '生成 DDC PAK · ' + p.name + '（长任务）· 源 ' + src.host },
-      () => generateDdcPak('remote', Number(p.id), src.machineId, null, null, null, null),
-      { mode: 'event', events: ['ue-runner-progress', 'pak-verified'], jobIdOf: (r) => r.job_id, reduce: genReduce, timeoutMs: 45 * 60 * 1000 });
-  };
-
-  /* verify_pak_output：返回 PakOutput{path,size_bytes}，产物不存在=后端抛 OperationFailed
-     → .then(ok, fail) 把成功/失败映射成 {found,...}。源机取工程 primary。 */
-  const verifyPak = (s, p) => {
-    const src = pickSrc(p);
-    if (!src) return Promise.resolve({ found: false });
-    return s.runCmd({ domain: 'ddc', action: 'verify', target: p.name, chan: 'ssh', note: '校验 DDC PAK 产物 · ' + p.name },
-      () => verifyPakOutput(src.machineId, Number(p.id), null),
-      { okMsg: (r) => '找到 DDC.ddp · ' + r.path + ' · ' + humanBytes(r.size_bytes) })
-      .then(
-        (r) => ({ found: true, path: r.path, size: humanBytes(r.size_bytes), name: 'DDC_' + p.name, srcId: src.machineId }),
-        () => ({ found: false }));
-  };
-
-  /* 真实分发（流式，仅 DDC PAK）：art.srcId(源机 machineId)+art.projId；目标机来自确认门里
-     编辑后的选择（排除源机、转 numeric machineId）。PSO 分发已随「上场就绪保障」重设计下线
-     ——未 cook 的 -game 不消费分发过去的 .upipelinecache（就绪靠各节点本机预热验证）。 */
-  const distribute = (s, art) => {
-    const srcId = art.srcId;
-    if (srcId == null || art.projId == null) return;
-    const scopeIds = RENDER_NODES.filter((n) => n.status !== 'offline' && n.roleKey === 'render').map((n) => n.id);
-    CX.openPreview(s, {
-      title: '分发 · ' + art.name, icon: 'download', cli: 'ddc distribute', destructive: false, channel: 'ssh',
-      steps: ['把这份缓存包复制分发到选中的渲染机',
-        '只传缺少的部分，已有的自动跳过',
-        '逐台显示成功 / 失败'],
-      scope: scopeIds,
-      onConfirm: (sel) => {
-        const targets = (sel || []).map((id) => (CX.node(id) || {}).machineId).filter((x) => x != null && x !== srcId);
-        if (!targets.length) return;
-        s.runStreamingCmd(
-          { domain: 'ddc', action: 'distribute', target: art.name, chan: 'ssh', note: '分发 · ' + art.name + ' → ' + targets.length + ' 台' },
-          () => distributeDdcPak(srcId, Number(art.projId), targets, null, null, null),
-          { mode: 'event', events: ['pak-distribute-progress'], jobIdOf: (r) => r.job_id, total: (r) => (r.plan || []).length, reduce: batchReduce,
-            timeoutMs: 30 * 60 * 1000 });  /* 空闲超时兜底：单台拷贝间隔超 30 分钟无任何 batch 事件才判超时 */
-      },
+    if (!src) return noSrcFail(s, 'ddc', 'generate', p).then(() => { throw new Error('该工程没有可用的在线源机器'); });
+    return new Promise((resolve, reject) => {
+      s.runStreamingCmd(
+        { domain: 'ddc', action: 'generate', target: p.name, chan: 'ssh', note: '生成 DDC PAK · ' + p.name + '（长任务）· 源 ' + src.host, quiet: true },
+        () => generateDdcPak('remote', Number(p.id), src.machineId, null, null, null, null),
+        { mode: 'event', events: ['ue-runner-progress', 'pak-verified'], jobIdOf: (r) => r.job_id, reduce: genReduce, timeoutMs: 45 * 60 * 1000,
+          onDone: (ok) => { if (ok) resolve(); else reject(new Error('DDC PAK 生成失败，详见控制台日志')); } })
+        .catch(reject);
     });
   };
 
@@ -461,96 +436,6 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
           onRemove: rows.length > 1 ? () => remove(r.id) : null }))),
       h('button', { className: 'pathb-add', type: 'button', onClick: add },
         h(Icon, { name: 'plus', size: 14 }), '添加地址'));
-  }
-
-  /* =================== DDC PAK — master (center) =================== */
-  function PakMaster({ s }) {
-    const [scope, setScope] = useState('all');
-    const [roots, setRoots] = useState('D:\\Projects;E:\\UEProjects');
-    const g = gate(s); if (g) return g;
-    /* 只算「仍存在于当前工程列表」的已选项：reloadCache 后被剔除的工程 id 不计入，与检查器(PakDetail
-       同样 filter)计数一致；toggle 基于该剪枝后的数组写回 → 顺带把陈旧 id 清理掉。 */
-    const sel = (s.pakSel || []).filter((id) => UE_PROJECTS.some((p) => p.id === id));
-    const toggle = (p) => s.setPakSel(sel.includes(p.id) ? sel.filter((x) => x !== p.id) : sel.concat(p.id));
-
-    return h('div', { className: 'res ddc' },
-      h('div', { className: 'canvas-head' },
-        h('span', { className: 't' }, 'DDC · DDC PAK'),
-        h('div', { className: 'right' },
-          h('span', { className: 'toolchip' }, h(Icon, { name: 'film', size: 14 }), '已选 ' + sel.length + ' 个工程'))),
-      h('div', { className: 'ddc-body' },
-        h('div', { className: 'ddc-sec-h' }, h('span', null, '扫描 UE 工程'), h('span', { className: 'dim' }, 'discover_projects · 远程扫 .uproject，只发现不写盘')),
-        h('div', { className: 'pak-scan' },
-          h('div', { className: 'pak-scan-top' },
-            h('div', { className: 'dp-field' }, h('label', null, '扫描范围'),
-              h(Selector, { kpre: '范围', value: scope, options: scopeOpts(), width: 178, onChange: setScope })),
-            h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'search', size: 14 }), onPress: () => runDiscover(s, scope, roots) }, '扫描')),
-          h('div', { className: 'dp-field pak-root' }, h('label', null, '搜索根目录 · 可添加多个'),
-            h(PathBuilderList, { onChange: setRoots })),
-          h('div', { className: 'pak-scan-meta' }, h(Icon, { name: 'check', size: 12 }), '已发现 ' + UE_PROJECTS.length + ' 个工程位置 · 远程扫 .uproject 只发现不写盘')),
-
-        h('div', { className: 'ddc-sec-h' }, h('span', null, '选择工程'),
-          h('span', { className: 'dim' }, sel.length ? ('已选 ' + sel.length + ' 个 · 在右侧检查器生成 / 校验') : '勾选要处理的工程，操作在右侧检查器中进行')),
-        h('div', { className: 'proj-list' }, UE_PROJECTS.map((p) => projRow(p, sel.includes(p.id), toggle))),
-        UE_PROJECTS.length === 0 ? h('div', { className: 'gen-empty' }, h(Icon, { name: 'film', size: 22 }), h('span', null, '尚未发现工程，先在上方扫描 UE 工程')) : null));
-  }
-
-  /* =================== DDC PAK — detail (inspector) =================== */
-  function PakDetail({ s }) {
-    const verify = s.pakVerify || {};   /* projId -> info（提到 shell：分发开 preview drawer 会卸载 PakDetail，本地态会丢）*/
-    const sel = (s.pakSel || []).map((id) => UE_PROJECTS.find((p) => p.id === id)).filter(Boolean);
-    const remove = (id) => s.setPakSel((s.pakSel || []).filter((x) => x !== id));
-    const doVerify = (p) => verifyPak(s, p).then((info) => s.setPakVerify((m) => Object.assign({}, m, { [p.id]: info })));
-
-    const projCard = (p) => {
-      const v = verify[p.id];
-      const src = pickSrc(p);
-      return h('div', { key: p.id, className: 'id-proj' },
-        h('div', { className: 'id-proj-top' },
-          h('span', { className: 'id-proj-ico' }, h(Icon, { name: 'film', size: 16 })),
-          h('div', { className: 'id-proj-meta' },
-            h('div', { className: 'id-proj-name' }, p.name, h('span', { className: 'ue' }, 'UE ' + p.ue)),
-            h('div', { className: 'id-proj-path' }, p.root + '\\' + p.uproject)),
-          h('button', { className: 'id-proj-x', title: '从选择中移除', onClick: () => remove(p.id) }, h(Icon, { name: 'x', size: 14 }))),
-        h('div', { className: 'id-proj-tags' },
-          h('span', { className: 't' }, p.size),
-          h('span', { className: 't' }, '源 · ' + ((src || {}).host || '—')),
-          p.hasPak ? h('span', { className: 't pak' }, '已有 PAK') : null,
-          p.warn ? h('span', { className: 't warn', title: p.warn }, '版本不一致') : null),
-        v ? h('div', { className: 'id-verify' + (v.found ? ' ok' : ' miss') },
-          h('div', { className: 'id-verify-h' },
-            h('span', { className: 's-' + (v.found ? 'positive' : 'notice') }, h(Icon, { name: v.found ? 'check' : 'alert', size: 13 })),
-            v.found ? 'DDC.ddp 存在' : '未找到 DDC.ddp'),
-          v.found ? h('div', { className: 'id-verify-kv' }, h('span', null, '路径'), h('span', { className: 'v' }, v.path)) : null,
-          v.found ? h('div', { className: 'id-verify-kv' }, h('span', null, '大小'), h('span', { className: 'v' }, v.size)) : null,
-          v.found
-            ? h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'download', size: 13 }), onPress: () => distribute(s, { kind: 'DDC pak', name: v.name, srcId: v.srcId, projId: p.id }) }, '分发到渲染机')
-            : h('div', { className: 'id-note' }, h(Icon, { name: 'eye', size: 12 }), '该工程在源机上尚无 PAK 产物，先在下方生成。')) : null,
-        h('div', { className: 'id-proj-acts' },
-          h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'search', size: 13 }), onPress: () => doVerify(p) }, v ? '重新校验产物' : '校验产物')));
-    };
-
-    const body = sel.length === 0
-      ? h('div', { className: 'id-empty' }, h('div', { className: 'ph' }, h(Icon, { name: 'film', size: 24 })),
-          h('div', null, '在主视图勾选一个或多个工程'), h('div', { style: { fontSize: 11 } }, '选中的工程会列在这里，可生成 / 校验其 DDC PAK 产物'))
-      : h(React.Fragment, null,
-          h('div', { className: 'id-sec-h' }, '已选工程', h('span', { className: 'ct' }, sel.length + ' 个')),
-          sel.map(projCard),
-          h('div', { className: 'id-note' }, h(Icon, { name: 'eye', size: 12 }),
-            '校验 = verify_pak_output 检查该工程在源机上的 PAK 是否存在（路径 / 大小 / 是否存在），不列举全部产物。'));
-
-    return h('div', { className: 'insp-detail' },
-      h('div', { className: 'insp-head' },
-        h('span', { className: 'ico' }, h(Icon, { name: 'cache', size: 15 })),
-        h('div', { style: { minWidth: 0 } }, h('div', { className: 'tt' }, '检查器 · DDC PAK'),
-          h('div', { className: 'sub' }, 'generate_ddc_pak / verify_pak_output'))),
-      h('div', { className: 'id-body' }, body),
-      sel.length ? h('div', { className: 'id-foot' },
-        h('div', { className: 'id-foot-scope' }, h(Icon, { name: 'info', size: 12 }),
-          '仅处理工程级 Pak（DDC.ddp），不含引擎级 Pak'),
-        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'bolt', size: 14 }),
-          onPress: () => sel.forEach((p) => genPak(s, p)) },
-          '生成 DDC PAK（' + sel.length + '）')) : null);
   }
 
   /* =================== PSO 缓存 — master (center) · 选工程 + 节点就绪矩阵 =================== */
@@ -1340,7 +1225,8 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
   const DDC_VIEWS = [
     ['ddc_zen', (s) => window.VOLO_CACHE_ZEN.view(s)],
     ['ddc_legacy', (s) => h(LegacyView, { s })],
-    ['ddc_pak', (s) => h(PakMaster, { s })],
+    /* DDC PAK 子页已重设计为左右双栏（已部署 PAK | 扫描与生成），见 cacheDdcPak.tsx */
+    ['ddc_pak', (s) => window.VOLO_CACHE_DDC_PAK.page(s)],
     ['ddc_pso', (s) => h(PsoMaster, { s })],
   ];
   function ddc(s) {
@@ -1354,12 +1240,19 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
 
   /* =================== inspector router (right column) =================== */
   function detail(s) {
-    if (s.cacheNav === 'ddc_pak') return h(PakDetail, { s });
+    /* DDC PAK 的操作全部整合进主视图双栏，检查器不再承载 PAK；给出说明性空态 */
+    if (s.cacheNav === 'ddc_pak') return h('div', { className: 'insp-empty' },
+      h('div', { className: 'ph' }, h(Icon, { name: 'panel', size: 30 })),
+      h('div', null,
+        h('div', { style: { color: 'var(--chrome-dim)', fontWeight: 600, marginBottom: 4 } }, 'DDC PAK 已整合到主视图'),
+        '扫描、生成、已部署与分发都在左右双栏中就地完成，无需检查器'));
     if (s.cacheNav === 'ddc_pso') return h(PsoDetail, { s });
     return null;
   }
 
-  window.VOLO_CACHE_DDC = { ddc, detail };
+  /* window.VOLO_CACHE_DDC_PAK（cacheDdcPak.tsx）复用这些 DDC 域共享 helper，
+     避免在新页面里重新实现流式进度归约 / 源机选取等已验证过的逻辑。 */
+  window.VOLO_CACHE_DDC = { ddc, detail, gate, projRow, scopeOpts, runDiscover, genPak, pickSrc, humanBytes, batchReduce };
 })();
 
 export {};

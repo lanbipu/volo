@@ -271,10 +271,13 @@ function LogPanel({ s }) {
   const running = s.tasks ? s.tasks.filter((t) => t.state === 'running').length : 0;
   const activeTasks = s.tasks ? s.tasks.filter((t) => t.state === 'running' || t.state === 'queued') : [];
   const [runOpen, setRunOpen] = React.useState(false);
-  /* 触发运行时自动弹出一次「运行中」气泡；用户再次点击或点击别处即关闭 */
+  /* 触发运行时自动弹出一次「运行中」气泡；用户再次点击或点击别处即关闭。quiet 任务
+     （扫描/生成/分发/删除等有自己进度呈现的操作）通过 s.suppressRunPop 抑制这次自动弹起，
+     气泡状态旗标本身在读取后立即复位，不影响后续非 quiet 任务。 */
   const prevRunning = React.useRef(running);
   React.useEffect(() => {
-    if (running > prevRunning.current) setRunOpen(true);
+    if (running > prevRunning.current && !(s.suppressRunPop && s.suppressRunPop.current)) setRunOpen(true);
+    if (s.suppressRunPop) s.suppressRunPop.current = false;
     prevRunning.current = running;
   }, [running]);
   const histTasks = s.tasks ? s.tasks.filter((t) => t.state === 'success' || t.state === 'failed' || t.state === 'canceled') : [];
@@ -464,18 +467,17 @@ function App() {
   const [drawer, setDrawer] = useState(null);
   /* 居中二级对话框（部署 / 修复 / 巡检走此，见 cache.tsx 的 ModalPreview / ModalLayer）。 */
   const [modal, setModal] = useState(null);
-  /* DDC PAK / PSO 工程选择（主视图勾选 · 检查器就地显示 + 操作）。pakSel 多选(数组)，
-     psoSel 单选。提到 shell：主视图(center)写选择，检查器(inspector)读选择，两栏共享。 */
-  const [pakSel, setPakSel] = useState([]);
+  /* PSO 工程选择（主视图勾选 · 检查器就地显示 + 操作）。DDC PAK 已改为主视图双栏自管选择/
+     操作（cacheDdcPak.tsx 内部 state），不再经由 shell 的 pakSel/pakVerify。 */
   const [psoSel, setPsoSel] = useState(null);
-  /* DDC PAK 校验结果（projId → {found,path,size,…}）提到 shell：分发走 preview drawer 会把
-     PakDetail 从检查器槽换下卸载，本地 verify state 会丢；放 shell 才能跨 preview 存活。 */
-  const [pakVerify, setPakVerify] = useState({});
   /* task drawer + NDJSON console */
   const [tasks, setTasks] = useState([]);
   const taskSeq = useRef(1);
   /* 可取消长任务注册表：taskId -> { requestCancel }（runStreamingCmd 注册，cancelTask 查用） */
   const streamCtl = useRef({});
+  /* quiet 任务（meta.quiet=true）抑制控制台/运行气泡自动弹起一次；LogPanel 读到后立即复位。
+     任务仍照常 setTasks/pushLog，只是不抢占用户当前正在看的面板。 */
+  const suppressRunPop = useRef(false);
   /* PSO 预热验证运行记录（list_pso_warmup_runs）——主视图就绪矩阵与检查器运行历史共读 */
   const [psoRuns, setPsoRuns] = useState([]);
   /* 控制台标签页：stream(NDJSON 流) | hist(历史任务卡片)。检查器旧「进行中/历史」tab 已移除，
@@ -587,13 +589,14 @@ function App() {
 
   /* runTask — push an async task into the drawer + stream NDJSON to the console */
   const nowHM = () => { const d = new Date(); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
-  const runTask = ({ domain, action, target, chan = 'winrm', note, lines = [], fail = false }) => {
+  const runTask = ({ domain, action, target, chan = 'winrm', note, lines = [], fail = false, quiet = false }) => {
     const no = taskSeq.current++;
     const id = 't_' + no;
     setTasks((prev) => [{ id, no, domain, action, title: `${domain} ${action}`, state: 'running',
       pct: 4, chan, started: nowHM(), elapsed: '0s', target, note, stream: lines.length > 2 }, ...prev]);
-    setConTab('stream'); /* 派发命令即切回控制台实时流（否则停在「历史任务」页会看不到新流） */
-    setLogOpen(true);
+    /* quiet：任务仍记录到控制台，但不抢占式切标签/展开面板/弹运行气泡（调用方另有进度呈现） */
+    if (quiet) suppressRunPop.current = true;
+    else { setConTab('stream'); setLogOpen(true); } /* 派发命令即切回控制台实时流（否则停在「历史任务」页会看不到新流） */
     const n = Math.max(lines.length, 1);
     lines.forEach((ln, i) => setTimeout(() => {
       pushLog({ lv: ln.lv || 'info', cat: domain, ch: chan, task: no, msg: ln.msg });
@@ -623,15 +626,16 @@ function App() {
      opts.okMsg(res) builds the success line from the result. Rethrows on failure
      so callers can react (e.g. skip optimistic UI). */
   const runCmd = async (meta, exec, opts = {}) => {
-    const { domain, action, target, chan = 'winrm', note } = meta;
+    const { domain, action, target, chan = 'winrm', note, quiet } = meta;
     const no = taskSeq.current++;
     const id = 't_' + no;
     const title = `${domain} ${action}`;
     const t0 = Date.now();
     const secs = () => Math.max(1, Math.round((Date.now() - t0) / 1000)) + 's';
     setTasks((prev) => [{ id, no, domain, action, title, state: 'running', pct: 4, chan, started: nowHM(), elapsed: '0s', target, note, stream: false }, ...prev]);
-    setConTab('stream'); /* 派发命令即切回控制台实时流（否则停在「历史任务」页会看不到新流） */
-    setLogOpen(true);
+    /* quiet：任务仍记录到控制台，但不抢占式切标签/展开面板/弹运行气泡（调用方另有进度呈现） */
+    if (quiet) suppressRunPop.current = true;
+    else { setConTab('stream'); setLogOpen(true); } /* 派发命令即切回控制台实时流（否则停在「历史任务」页会看不到新流） */
     pushLog({ lv: 'info', cat: domain, ch: chan, task: no, msg: esc(opts.startMsg || `${title} …`) });
     try {
       const res = await exec();
@@ -665,15 +669,16 @@ function App() {
      Subscribes BEFORE kickoff to avoid losing early events; filters by job_id via
      wiring.isMine (ue-runner-progress is shared across concurrent jobs). */
   const runStreamingCmd = async (meta, kickoff, wiring) => {
-    const { domain, action, target, chan = 'winrm', note } = meta;
+    const { domain, action, target, chan = 'winrm', note, quiet } = meta;
     const no = taskSeq.current++;
     const id = 't_' + no;
     const title = `${domain} ${action}`;
     const t0 = Date.now();
     const secs = () => Math.max(1, Math.round((Date.now() - t0) / 1000)) + 's';
     setTasks((prev) => [{ id, no, domain, action, title, state: 'running', pct: 4, chan, started: nowHM(), elapsed: '0s', target, note, stream: true, long: !!wiring.cancellable }, ...prev]);
-    setConTab('stream'); /* 派发命令即切回控制台实时流（否则停在「历史任务」页会看不到新流） */
-    setLogOpen(true);
+    /* quiet：任务仍记录到控制台，但不抢占式切标签/展开面板/弹运行气泡（调用方另有进度呈现） */
+    if (quiet) suppressRunPop.current = true;
+    else { setConTab('stream'); setLogOpen(true); } /* 派发命令即切回控制台实时流（否则停在「历史任务」页会看不到新流） */
     pushLog({ lv: 'info', cat: domain, ch: chan, task: no, msg: esc(note || `${title} …`) });
 
     /* 浏览器预览（无 Tauri runtime）：不能 listen，直接失败收尾，不挂起。 */
@@ -793,25 +798,26 @@ function App() {
   const cluster = deriveCluster(machines, healthChecks, healthRunAt);
 
   /* 检查器（右栏）自动展开 / 收起：只有"选中了对象"的操作才触发——打开机器/工程详情(drawer)、
-     勾选 DDC 工程(pakSel/psoSel)、选中校正对象(calSel)。只在 hasTarget 的上升/下降沿切换，
-     不会在用户手动收起后又强行弹回来，取消选择时也会自动收起（细节渲染进 0 宽列不可见/不可点）。
-     ref 初值恒为 false：挂载时四个目标必为空（calSel 不再持久化恢复，其余本就不持久化）。 */
+     选中 PSO 工程(psoSel)、选中校正对象(calSel)。DDC PAK 双栏自管选择，不再驱动检查器
+     （进入 ddc_pak 走下方 goCacheNav 的显式开合，与是否有勾选无关）。只在 hasTarget 的
+     上升/下降沿切换，不会在用户手动收起后又强行弹回来，取消选择时也会自动收起（细节渲染进
+     0 宽列不可见/不可点）。ref 初值恒为 false：挂载时目标必为空（calSel 不再持久化恢复，
+     其余本就不持久化）。 */
   const inspectorHasTargetRef = useRef(false);
   useEffect(() => {
-    const hasTarget = !!drawer || (Array.isArray(pakSel) && pakSel.length > 0) || !!psoSel || !!calSel;
+    const hasTarget = !!drawer || !!psoSel || !!calSel;
     if (hasTarget !== inspectorHasTargetRef.current) setRightCollapsed(!hasTarget);
     inspectorHasTargetRef.current = hasTarget;
-  }, [drawer, pakSel, psoSel, calSel]);
+  }, [drawer, psoSel, calSel]);
 
-  /* 切缓存子页：清掉不属于目标子页的检查器目标（drawer / 工程勾选），并显式开合右栏——
-     进入 DDC PAK / PSO（操作面在检查器里）展开，其余子页一律收起（点到与检查器无关的
+  /* 切缓存子页：清掉不属于目标子页的检查器目标（drawer），并显式开合右栏——
+     进入 DDC PAK / PSO（操作面就地展开）展开，其余子页一律收起（点到与检查器无关的
      页面时自动隐藏）。目标在此已同步清空，故把 ref 一并对齐，吞掉上方 effect 的下降沿，
-     避免它在 commit 后覆盖这里的显式开合（如 ddc_pak 有勾选 → 切 ddc_pso 会被误收起）。 */
+     避免它在 commit 后覆盖这里的显式开合。 */
   const goCacheNav = (v) => {
     setDrawer(null);
-    if (v !== 'ddc_pak') setPakSel([]);
     if (v !== 'ddc_pso') setPsoSel(null);
-    inspectorHasTargetRef.current = v === 'ddc_pak' ? pakSel.length > 0 : v === 'ddc_pso' ? !!psoSel : false;
+    inspectorHasTargetRef.current = v === 'ddc_pso' ? !!psoSel : false;
     setRightCollapsed(!/^ddc_p(ak|so)$/.test(v));
     if (/^ddc_/.test(v)) {
       setCacheDdcEverOpened(true);
@@ -820,12 +826,12 @@ function App() {
     setCacheNav(v);
   };
 
-  /* 切顶层页面：检查器目标都是页面私有的（工具页: drawer/pakSel/psoSel · 校正页: calSel），
+  /* 切顶层页面：检查器目标都是页面私有的（工具页: drawer/psoSel · 校正页: calSel），
      离开即失效——全部清空并收起右栏（点到与检查器无关的页面时自动隐藏）；同样对齐 ref
      吞掉 effect 下降沿。回到原页面后重新选中对象即可再次展开。 */
   const goPage = (v) => {
     if (v !== page) {
-      setDrawer(null); setPakSel([]); setPsoSel(null); setCalSel(null);
+      setDrawer(null); setPsoSel(null); setCalSel(null);
       inspectorHasTargetRef.current = false;
       setRightCollapsed(true);
     }
@@ -837,10 +843,10 @@ function App() {
     selNode, setSelNode, cacheNav, setCacheNav: goCacheNav, ddcOpen, setDdcOpen,
     cacheDdcEverOpened, ddcViewsSeen, drawer, setDrawer,
     modal, setModal,
-    pakSel, setPakSel, psoSel, setPsoSel, pakVerify, setPakVerify, psoRuns, setPsoRuns,
+    psoSel, setPsoSel, psoRuns, setPsoRuns,
     freshSetup, setFreshSetup, machinesAdded, setMachinesAdded,
     enrolled, setEnrolled, creds, setCreds,
-    tasks, setTasks, runTask, runCmd, runStreamingCmd, cancelTask, conTab, setConTab, logSearch, setLogSearch, logPaused, setLogPaused,
+    tasks, setTasks, runTask, runCmd, runStreamingCmd, cancelTask, suppressRunPop, conTab, setConTab, logSearch, setLogSearch, logPaused, setLogPaused,
     calStep, setCalStep, calScreen, setCalScreen, calMethod, setCalMethod, calSel, setCalSel,
     calStageType, setCalStageType, calArStep, setCalArStep, calArMap, setCalArMap,
     calLensState, setCalLensState, calMeshState, setCalMeshState,

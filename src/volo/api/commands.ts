@@ -19,7 +19,7 @@ import type {
   VerifyReport, DeployPlan, DeployStep, GpuMatrix, ConsistencyResult,
   ShareMode, CreateShareResponse, TeardownShareResult, InjectionResult, ShareConfig,
   ProjectSummary, ProjectLocation, DiscoveryResult,
-  ExecutionLocation, GenerateJobResponse, PakOutput, DistributeJobResponse,
+  ExecutionLocation, GenerateJobResponse, PakOutput, DistributeJobResponse, DeployedPakEntry,
   PsoCollectJobResponse, PsoCacheFile, DistributePsoCacheRequest, PsoDistributeJobResponse,
   StartPsoWarmupRequest, PsoWarmupJobResponse, PsoWarmupRun,
   RunHealthCheckRequest, HealthRunSummary, HealthCheckRow,
@@ -279,6 +279,11 @@ export const distributeDdcPak = (
   namedShareUnc: namedShareUnc ?? null, operatorCredentialAlias: operatorCredentialAlias ?? null,
   sourceSmbCredentialAlias: sourceSmbCredentialAlias ?? null,
 });
+// ✅ wired: cacheDdcPak 左栏「已部署 DDC PAK」→ 扇出扫描全部 project_locations 找已生成的 DDC.ddp
+export const listDeployedDdcPaks = () => call<DeployedPakEntry[]>("list_deployed_ddc_paks");
+// ✅ wired: cacheDdcPak 已部署卡片「删除 PAK」（红色确认门）→ deleteDdcPak + 重新扫描
+export const deleteDdcPak = (machineId: number, projectId: number) =>
+  call<void>("delete_ddc_pak", { machineId, projectId });
 
 /* ----------------------------- pso ----------------------------- */
 // ✅ wired: cacheDdc collectPso → startPsoCollection via runStreamingCmd（ue-runner-progress + pso-collect-finalized）

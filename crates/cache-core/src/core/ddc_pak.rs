@@ -2,6 +2,7 @@
 
 use crate::core::ssh::{run_json, NodeScript, SshExecutor};
 use crate::core::ue_runner::{self, UeRunSpec, UeRunnerBackend};
+use crate::data::Db;
 use crate::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +27,15 @@ struct VerifyRaw {
     #[serde(default)]
     size: String,
     #[serde(default)]
+    last_write: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeleteRaw {
+    ok: bool,
+    #[serde(default)]
     message: Option<String>,
 }
 
@@ -33,6 +43,24 @@ struct VerifyRaw {
 pub struct PakOutput {
     pub path: String,
     pub size_bytes: i64,
+    /// File mtime (RFC 3339 UTC), when the verify script reported one.
+    /// `None` for outputs verified before this field existed / local paks
+    /// whose mtime read failed.
+    pub modified_at: Option<String>,
+}
+
+/// One (project, machine) location where a DDC pak was found by
+/// `scan_deployed`. The frontend groups these by `project_id` — it already
+/// holds full project/machine identity (`UE_PROJECTS`/`RENDER_NODES`) and
+/// picks a "source" using the same primary-machine preference it applies
+/// elsewhere, so this DTO stays a flat fact list rather than pre-aggregating.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeployedPakEntry {
+    pub project_id: i64,
+    pub machine_id: i64,
+    pub pak_path: String,
+    pub size_bytes: i64,
+    pub modified_at: Option<String>,
 }
 
 fn default_extra_args() -> Vec<String> {
@@ -113,6 +141,7 @@ pub fn verify_output(
     Ok(PakOutput {
         path: result.path,
         size_bytes,
+        modified_at: result.last_write,
     })
 }
 
@@ -123,15 +152,107 @@ pub fn verify_output_local(project_dir: &str) -> VoloResult<PakOutput> {
         .join("DerivedDataCache")
         .join("DDC.ddp");
     if path.exists() {
-        let size = std::fs::metadata(&path).map_err(VoloError::Io)?.len() as i64;
+        let meta = std::fs::metadata(&path).map_err(VoloError::Io)?;
+        let size = meta.len() as i64;
         if size > 0 {
+            let modified_at = meta
+                .modified()
+                .ok()
+                .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
             return Ok(PakOutput {
                 path: path.to_string_lossy().to_string(),
                 size_bytes: size,
+                modified_at,
             });
         }
     }
     Err(VoloError::OperationFailed("DDC.ddp not found locally".into()))
+}
+
+/// Deletes the generated DDC pak on a remote host over SSH. Idempotent-ish:
+/// the script no-ops (but still `ok`) when the file is already gone.
+pub fn delete_output(host: &str, project_dir: &str) -> VoloResult<()> {
+    let exec = SshExecutor::from_config()?;
+    let result: DeleteRaw = run_json(
+        &exec,
+        host,
+        &NodeScript {
+            name: "delete-pak-output.ps1",
+            args: serde_json::json!({ "ProjectDir": project_dir }),
+            ssh_user: None,
+        },
+    )?;
+    if !result.ok {
+        return Err(VoloError::OperationFailed(
+            result.message.unwrap_or_else(|| "pak delete failed".into()),
+        ));
+    }
+    Ok(())
+}
+
+/// Local-backend counterpart of `delete_output`.
+pub fn delete_output_local(project_dir: &str) -> VoloResult<()> {
+    let path = std::path::Path::new(project_dir)
+        .join("DerivedDataCache")
+        .join("DDC.ddp");
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(VoloError::Io)?;
+    }
+    Ok(())
+}
+
+/// Fans out `verify_output` across every known (project, machine) location to
+/// find already-generated DDC paks. Per-location failures (no pak there yet,
+/// unreachable host, …) are dropped silently — that is the expected common
+/// case, not an error worth surfacing.
+pub async fn scan_deployed(db: &Db) -> VoloResult<Vec<DeployedPakEntry>> {
+    let projects = crate::data::projects::list(db)?;
+    // Bounded like the existing batch fan-out (core::batch::run_batch): unbounded
+    // spawn_blocking here would open one SSH process per (project, location) at
+    // once, which scales badly and can hit the remote sshd's MaxStartups.
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(
+        crate::core::batch::DEFAULT_MAX_CONCURRENCY,
+    ));
+    let mut handles = Vec::new();
+    for project in &projects {
+        let project_id = match project.id {
+            Some(id) => id,
+            None => continue,
+        };
+        for loc in crate::data::project_locations::list_by_project(db, project_id)? {
+            let machine = match crate::data::machines::find_by_id(db, loc.machine_id)? {
+                Some(m) => m,
+                None => continue,
+            };
+            let host = machine.ip;
+            let abs_path = loc.abs_path;
+            let machine_id = loc.machine_id;
+            // Acquired on the async side before spawning: the loop itself stalls
+            // here once all permits are checked out, throttling how many blocking
+            // SSH calls are in flight rather than racing them all immediately.
+            let permit = semaphore.clone().acquire_owned().await.map_err(|err| {
+                VoloError::OperationFailed(format!("scan_deployed semaphore closed: {err}"))
+            })?;
+            handles.push(tokio::task::spawn_blocking(move || {
+                let _permit = permit; // held until this task finishes, then released
+                let result = verify_output(&host, &abs_path, None, None);
+                (project_id, machine_id, result)
+            }));
+        }
+    }
+    let mut out = Vec::new();
+    for handle in handles {
+        if let Ok((project_id, machine_id, Ok(pak))) = handle.await {
+            out.push(DeployedPakEntry {
+                project_id,
+                machine_id,
+                pak_path: pak.path,
+                size_bytes: pak.size_bytes,
+                modified_at: pak.modified_at,
+            });
+        }
+    }
+    Ok(out)
 }
 
 pub fn launch_generation(

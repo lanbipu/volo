@@ -578,6 +578,33 @@ pub async fn distribute_ddc_pak(
     })
 }
 
+#[tauri::command]
+pub async fn list_deployed_ddc_paks(db: State<'_, Db>) -> VoloResult<Vec<ddc_pak::DeployedPakEntry>> {
+    ddc_pak::scan_deployed(&db).await
+}
+
+#[tauri::command]
+pub async fn delete_ddc_pak(
+    db: State<'_, Db>,
+    machine_id: i64,
+    project_id: i64,
+) -> VoloResult<()> {
+    let machine = data_machines::find_by_id(&db, machine_id)?
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?;
+    let location = project_locations::get_for_project_machine(&db, project_id, machine_id)?
+        .ok_or_else(|| {
+            VoloError::InvalidInput(format!(
+                "project {} not located on machine {}",
+                project_id, machine_id
+            ))
+        })?;
+    let host = machine.ip;
+    let project_dir = location.abs_path;
+    tokio::task::spawn_blocking(move || ddc_pak::delete_output(&host, &project_dir))
+        .await
+        .map_err(|err| VoloError::OperationFailed(format!("delete_ddc_pak task failed: {err}")))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
