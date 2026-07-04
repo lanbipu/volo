@@ -258,3 +258,122 @@ pub fn reveal_path(app: tauri::AppHandle, path: String, host: Option<String>) ->
         )
     })
 }
+
+/// Whether `host` (IP or hostname) resolves to the machine Volo itself runs
+/// on. The frontend uses this to decide whether a project folder can be
+/// revealed directly (`reveal_path` only ever acts on the operator's own
+/// filesystem) or must go through `reveal_remote_path` for a genuinely
+/// remote render node.
+#[tauri::command]
+pub fn is_loopback_machine(host: String) -> bool {
+    cache_core::core::loopback::is_loopback_target(&host)
+}
+
+/// Reveals a project folder that lives on a remote machine (`host` — IP or
+/// hostname), `path` being the Windows-style absolute path on that machine
+/// (e.g. `D:\Projects\Aurora`). Volo itself ships for macOS as well as
+/// Windows (see the per-OS menu/decorations branches in `lib.rs`), so this
+/// can't just hand a Windows UNC string to `reveal_item_in_dir` unconditionally
+/// — its `canonicalize()` step is `std::fs::canonicalize` on non-Windows,
+/// which has no notion of `\\host\D$\...` and always fails there. Windows
+/// keeps the existing admin-share UNC path (its `canonicalize` resolves UNC
+/// via the Shell APIs); everywhere else this opens an `smb://` URL instead,
+/// which Finder/most Linux file managers mount and navigate on demand.
+#[tauri::command]
+pub fn reveal_remote_path(app: tauri::AppHandle, host: String, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    #[cfg(windows)]
+    {
+        app.opener()
+            .reveal_item_in_dir(&windows_admin_share_unc(&host, &path))
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        app.opener()
+            .open_url(smb_url(&host, &path), None::<&str>)
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// `D:\Projects\Aurora` + `192.168.10.20` -> `\\192.168.10.20\D$\Projects\Aurora`.
+/// Not cfg-gated to `windows` (unlike its caller above) so it stays unit-testable
+/// from a non-Windows dev machine; only actually called there, hence the
+/// `allow` (this file's non-Windows builds would otherwise warn on it).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_admin_share_unc(host: &str, path: &str) -> String {
+    match path.split_once(':') {
+        Some((drive, rest)) => format!("\\\\{host}\\{drive}${rest}"),
+        None => path.to_string(),
+    }
+}
+
+/// `D:\Unreal Projects\Aurora` + `192.168.10.20` ->
+/// `smb://192.168.10.20/D$/Unreal%20Projects/Aurora`. Percent-encodes the
+/// handful of characters that are common in Windows folder names and reserved
+/// in URLs (a full percent-encoder is overkill for admin-share path segments).
+/// Only actually called on non-Windows (see `reveal_remote_path`), hence the
+/// `allow` for Windows builds.
+#[cfg_attr(windows, allow(dead_code))]
+fn smb_url(host: &str, path: &str) -> String {
+    let encode_segment = |seg: &str| -> String {
+        seg.chars()
+            .map(|c| match c {
+                ' ' => "%20".to_string(),
+                '#' => "%23".to_string(),
+                '?' => "%3F".to_string(),
+                '%' => "%25".to_string(),
+                other => other.to_string(),
+            })
+            .collect()
+    };
+    let (share, rest) = match path.split_once(':') {
+        Some((drive, rest)) => (format!("{drive}$"), rest),
+        None => (String::new(), path),
+    };
+    let segments: Vec<String> = rest
+        .split(['\\', '/'])
+        .filter(|s| !s.is_empty())
+        .map(encode_segment)
+        .collect();
+    let mut url = format!("smb://{host}/{share}");
+    if !segments.is_empty() {
+        url.push('/');
+        url.push_str(&segments.join("/"));
+    }
+    url
+}
+
+#[cfg(test)]
+mod remote_path_tests {
+    use super::*;
+
+    #[test]
+    fn windows_admin_share_unc_converts_drive_letter() {
+        assert_eq!(
+            windows_admin_share_unc("192.168.10.20", r"D:\Projects\Aurora"),
+            r"\\192.168.10.20\D$\Projects\Aurora"
+        );
+    }
+
+    #[test]
+    fn windows_admin_share_unc_passes_through_non_drive_paths() {
+        assert_eq!(
+            windows_admin_share_unc("192.168.10.20", r"\\already\unc\path"),
+            r"\\already\unc\path"
+        );
+    }
+
+    #[test]
+    fn smb_url_converts_drive_letter_and_encodes_spaces() {
+        assert_eq!(
+            smb_url("192.168.10.20", r"D:\Unreal Projects\Aurora"),
+            "smb://192.168.10.20/D$/Unreal%20Projects/Aurora"
+        );
+    }
+
+    #[test]
+    fn smb_url_handles_bare_drive_root() {
+        assert_eq!(smb_url("192.168.10.20", r"D:\"), "smb://192.168.10.20/D$");
+    }
+}

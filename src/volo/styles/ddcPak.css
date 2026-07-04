@@ -71,6 +71,14 @@
 .dpak-tag.ue { color: var(--volo-400); background: var(--highlight-selected); }
 .dpak-path { font-family: var(--font-code); font-size: 11px; color: var(--chrome-faint); margin-top: 3px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 可点击路径：点按在资源管理器中打开工程文件夹 */
+.dpak-path-open { display: flex; align-items: center; gap: 5px; max-width: 100%; padding: 1px 5px 1px 0; margin: 2px 0 0 -2px;
+  border: 0; border-radius: 6px; background: none; cursor: pointer; text-align: left; transition: color .12s, background .12s; }
+.dpak-path-open .proj-sub-tx { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dpak-path-open .proj-sub-ico { display: inline-grid; place-items: center; flex: 0 0 auto; opacity: 0; transform: translateX(-3px);
+  transition: opacity .12s, transform .12s; color: var(--volo-400); }
+.dpak-path-open:hover { color: var(--volo-400); background: var(--highlight-selected); padding-left: 5px; }
+.dpak-path-open:hover .proj-sub-ico { opacity: 1; transform: none; }
 .dpak-top .spill { flex: 0 0 auto; }
 
 .dpak-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 14px; padding: 9px 11px;
@@ -273,3 +281,79 @@
   .pak2 { flex-direction: column; overflow-y: auto; }
   .pak2-col { flex: 0 0 auto; min-height: 340px; }
 }
+
+/* =========================================================================
+   6 · 工程列表 · 平铺矩形小模块（网格）+ 全选 + 显示比例滑块
+   ========================================================================= */
+/* 列表工具条：左「全选」· 右「显示比例」滑块 */
+.pak-list-bar { display: flex; align-items: center; gap: 12px; }
+.pak-selall { all: unset; display: inline-flex; align-items: center; gap: 8px; padding: 5px 11px 5px 8px;
+  border-radius: 8px; border: 1px solid var(--chrome-line-2); background: var(--sunken); cursor: pointer;
+  transition: background .12s, border-color .12s; }
+.pak-selall:hover { background: var(--wash-3); }
+.pak-selall-box { width: 17px; height: 17px; border-radius: 5px; border: 1.5px solid var(--chrome-line-2);
+  display: grid; place-items: center; color: #fff; flex: 0 0 auto; transition: background .12s, border-color .12s; }
+.pak-selall.on .pak-selall-box, .pak-selall.part .pak-selall-box { background: var(--volo-500); border-color: var(--volo-500); }
+.pak-selall.part .pak-selall-box { background: color-mix(in srgb, var(--volo-500) 78%, transparent); }
+.pak-selall-tx { font-size: 12px; font-weight: 700; color: var(--chrome-text); }
+.pak-selall-ct { font-size: 11px; color: var(--chrome-faint); font-variant-numeric: tabular-nums; }
+
+.pak-zoom { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.pak-zoom-ic { display: inline-grid; place-items: center; color: var(--chrome-faint); flex: 0 0 auto; }
+.pak-zoom-range { -webkit-appearance: none; appearance: none; width: 104px; height: 4px; border-radius: 9999px;
+  background: var(--wash-2); cursor: pointer; }
+.pak-zoom-range::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 14px; height: 14px;
+  border-radius: 50%; background: var(--volo-500); border: 2px solid var(--chrome-panel-2); box-shadow: 0 0 0 1px var(--volo-500); cursor: pointer; }
+.pak-zoom-range::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: var(--volo-500);
+  border: 2px solid var(--chrome-panel-2); box-shadow: 0 0 0 1px var(--volo-500); cursor: pointer; }
+.pak-zoom-range:focus-visible { outline: 2px solid var(--volo-500); outline-offset: 3px; }
+
+/* 平铺网格：弹性换行 + 固定基准宽度（由 --tile-w 显示比例滑块驱动），宽度带过渡。
+   不使用 flex-grow —— 模块严格等于 --tile-w，拖动滑块即平滑改变尺寸；放不下自动换行。 */
+.proj-grid { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 9px; }
+
+.proj-tile { position: relative; display: flex; flex-direction: column;
+  flex: 0 0 var(--tile-w, 150px); width: var(--tile-w, 150px);
+  border-radius: 10px; background: var(--sunken); border: 1px solid var(--chrome-line); cursor: pointer; overflow: hidden;
+  transition: flex-basis .2s var(--ease-default), width .2s var(--ease-default),
+    border-color .12s var(--ease-default), background .12s var(--ease-default), box-shadow .12s var(--ease-default); }
+.proj-tile:hover { border-color: var(--chrome-line-2); background: var(--wash-3); }
+.proj-tile.on { border-color: color-mix(in srgb, var(--volo-700) 55%, transparent);
+  background: color-mix(in srgb, var(--volo-500) 8%, var(--sunken)); box-shadow: inset 0 0 0 1px var(--volo-500); }
+
+.proj-tile-mck { position: absolute; top: 7px; left: 7px; z-index: 2; width: 18px; height: 18px; border-radius: 50%;
+  border: 1.5px solid var(--chrome-line-2); background: color-mix(in srgb, var(--sunken) 80%, transparent);
+  display: grid; place-items: center; color: #fff; transition: background .12s, border-color .12s; }
+.proj-tile:hover .proj-tile-mck { border-color: var(--chrome-faint); }
+.proj-tile.on .proj-tile-mck { background: var(--volo-500); border-color: var(--volo-500); }
+
+.proj-tile-media { position: relative; aspect-ratio: 16 / 10; display: grid; place-items: center;
+  background: var(--wash-2); color: var(--volo-400); overflow: hidden; border-bottom: 1px solid var(--chrome-line); }
+.proj-tile-media.has-thumb { background: var(--sunken); }
+.proj-tile-thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
+.proj-tile-badges { position: absolute; right: 6px; bottom: 6px; display: flex; gap: 4px; }
+.proj-tile-badge { display: inline-flex; align-items: center; gap: 3px; font-size: 9.5px; font-weight: 700;
+  padding: 2px 5px; border-radius: 5px; color: var(--chrome-dim);
+  background: color-mix(in srgb, var(--sunken) 74%, transparent); backdrop-filter: blur(3px); }
+.proj-tile-badge.pak { color: var(--positive-visual); background: color-mix(in srgb, var(--positive-visual) 24%, var(--sunken)); }
+.proj-tile-badge.warn { color: var(--notice-visual); background: color-mix(in srgb, var(--notice-visual) 26%, var(--sunken)); }
+
+.proj-tile-info { display: flex; flex-direction: column; gap: 5px; padding: 8px 9px 9px; }
+.proj-tile-nrow { display: flex; align-items: center; gap: 6px; }
+.proj-tile-name { flex: 1; min-width: 0; font-size: 12px; font-weight: 700; color: var(--chrome-text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.proj-tile-open { all: unset; flex: 0 0 auto; display: inline-grid; place-items: center; width: 20px; height: 20px;
+  border-radius: 5px; color: var(--chrome-faint); cursor: pointer; opacity: 0; transition: opacity .12s, background .12s, color .12s; }
+.proj-tile:hover .proj-tile-open { opacity: 1; }
+.proj-tile-open:hover { background: var(--highlight-selected); color: var(--volo-400); }
+.proj-tile-meta { display: flex; flex-wrap: wrap; gap: 4px; }
+.proj-tile-tag { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 5px;
+  background: var(--wash-2); color: var(--chrome-dim); white-space: nowrap; }
+.proj-tile-tag.ue { font-family: var(--font-code); color: var(--volo-400); background: var(--highlight-selected); }
+/* 工程路径单行 · 中间自适应省略：前段（目录）裁剪加省略号，末段（文件名）始终完整。可点击打开文件夹 */
+.proj-tile-path { all: unset; box-sizing: border-box; display: flex; align-items: baseline; min-width: 0; max-width: 100%;
+  font-family: var(--font-code); font-size: 10.5px; color: var(--chrome-faint); cursor: pointer;
+  padding: 1px 4px; margin: 0 -4px; border-radius: 5px; transition: color .12s, background .12s; }
+.proj-tile-path:hover { color: var(--volo-400); background: var(--highlight-selected); }
+.proj-tile-path .ptp-head { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.proj-tile-path .ptp-tail { flex: 0 0 auto; white-space: nowrap; }

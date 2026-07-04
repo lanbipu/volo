@@ -306,7 +306,7 @@ function LogPanel({ s }) {
           React.createElement(Icon, { name: 'search', size: 13 }),
           React.createElement('input', {
             value: s.logSearch || '', placeholder: '搜索流…',
-            onChange: (e) => { s.setLogSearch(e.target.value); s.setLogOpen(true); },
+            onChange: (e) => { s.setLogSearch(e.target.value); if (s.page !== 'cache') s.setLogOpen(true); },
             onClick: (e) => e.stopPropagation() })),
         React.createElement('button', {
           className: 'log-pause' + (s.logPaused ? ' on' : ''), title: s.logPaused ? '已暂停 — 点击恢复' : '暂停自动滚动',
@@ -432,8 +432,9 @@ function App() {
   const [logH, setLogH] = useState(typeof persisted.logH === 'number' ? persisted.logH : 150);
   const [page, setPage] = useState(() => PAGES.some((p) => p.id === persisted.page) ? persisted.page : 'tools');
   /* 舞台切换器 / 面包屑已移除，stage state 无消费者，随之删除 */
-  /* 控制台（底部日志面板）每次打开页面都从收起状态开始 —— 不持久化开合；只有相关操作
-     （运行任务、点击日志标签/历史任务、输入搜索）才会自动展开它。 */
+  /* 控制台（底部日志面板）每次打开 App 都从收起状态开始 —— 不持久化开合。
+     Cache 页：任何后台任务/搜索输入都不自动展开，只有用户点击控制台标题/标签或页内
+     「查看日志」链才会弹起；其它顶层页仍可在运行任务时自动展开。 */
   const [logOpen, setLogOpen] = useState(false);
   const [logFilter, setLogFilter] = useState('all');
   const [logs, setLogs] = useState([]); /* NDJSON 流 —— 真实命令派发的事件后续批次接入 */
@@ -475,9 +476,15 @@ function App() {
   const taskSeq = useRef(1);
   /* 可取消长任务注册表：taskId -> { requestCancel }（runStreamingCmd 注册，cancelTask 查用） */
   const streamCtl = useRef({});
-  /* quiet 任务（meta.quiet=true）抑制控制台/运行气泡自动弹起一次；LogPanel 读到后立即复位。
-     任务仍照常 setTasks/pushLog，只是不抢占用户当前正在看的面板。 */
+  /* quiet 任务（meta.quiet=true）抑制「运行中」气泡自动弹起一次；noLogOpen 只折叠控制台不展开。
+     二者可独立组合（如已部署 PAK 刷新：noLogOpen 但不 quiet → 气泡仍弹、面板不展开）。
+     Cache 页一律不自动展开控制台（等同永久 noLogOpen）。LogPanel 读到 suppressRunPop
+     后立即复位；任务仍照常 setTasks/pushLog。 */
   const suppressRunPop = useRef(false);
+  const applyTaskLogPop = ({ quiet, noLogOpen }) => {
+    if (quiet) suppressRunPop.current = true;
+    if (!quiet && !noLogOpen && page !== 'cache') { setConTab('stream'); setLogOpen(true); }
+  };
   /* PSO 预热验证运行记录（list_pso_warmup_runs）——主视图就绪矩阵与检查器运行历史共读 */
   const [psoRuns, setPsoRuns] = useState([]);
   /* 控制台标签页：stream(NDJSON 流) | hist(历史任务卡片)。检查器旧「进行中/历史」tab 已移除，
@@ -589,14 +596,12 @@ function App() {
 
   /* runTask — push an async task into the drawer + stream NDJSON to the console */
   const nowHM = () => { const d = new Date(); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
-  const runTask = ({ domain, action, target, chan = 'winrm', note, lines = [], fail = false, quiet = false }) => {
+  const runTask = ({ domain, action, target, chan = 'winrm', note, lines = [], fail = false, quiet = false, noLogOpen = false }) => {
     const no = taskSeq.current++;
     const id = 't_' + no;
     setTasks((prev) => [{ id, no, domain, action, title: `${domain} ${action}`, state: 'running',
       pct: 4, chan, started: nowHM(), elapsed: '0s', target, note, stream: lines.length > 2 }, ...prev]);
-    /* quiet：任务仍记录到控制台，但不抢占式切标签/展开面板/弹运行气泡（调用方另有进度呈现） */
-    if (quiet) suppressRunPop.current = true;
-    else { setConTab('stream'); setLogOpen(true); } /* 派发命令即切回控制台实时流（否则停在「历史任务」页会看不到新流） */
+    applyTaskLogPop({ quiet, noLogOpen });
     const n = Math.max(lines.length, 1);
     lines.forEach((ln, i) => setTimeout(() => {
       pushLog({ lv: ln.lv || 'info', cat: domain, ch: chan, task: no, msg: ln.msg });
@@ -626,16 +631,14 @@ function App() {
      opts.okMsg(res) builds the success line from the result. Rethrows on failure
      so callers can react (e.g. skip optimistic UI). */
   const runCmd = async (meta, exec, opts = {}) => {
-    const { domain, action, target, chan = 'winrm', note, quiet } = meta;
+    const { domain, action, target, chan = 'winrm', note, quiet, noLogOpen } = meta;
     const no = taskSeq.current++;
     const id = 't_' + no;
     const title = `${domain} ${action}`;
     const t0 = Date.now();
     const secs = () => Math.max(1, Math.round((Date.now() - t0) / 1000)) + 's';
     setTasks((prev) => [{ id, no, domain, action, title, state: 'running', pct: 4, chan, started: nowHM(), elapsed: '0s', target, note, stream: false }, ...prev]);
-    /* quiet：任务仍记录到控制台，但不抢占式切标签/展开面板/弹运行气泡（调用方另有进度呈现） */
-    if (quiet) suppressRunPop.current = true;
-    else { setConTab('stream'); setLogOpen(true); } /* 派发命令即切回控制台实时流（否则停在「历史任务」页会看不到新流） */
+    applyTaskLogPop({ quiet, noLogOpen });
     pushLog({ lv: 'info', cat: domain, ch: chan, task: no, msg: esc(opts.startMsg || `${title} …`) });
     try {
       const res = await exec();
@@ -669,16 +672,14 @@ function App() {
      Subscribes BEFORE kickoff to avoid losing early events; filters by job_id via
      wiring.isMine (ue-runner-progress is shared across concurrent jobs). */
   const runStreamingCmd = async (meta, kickoff, wiring) => {
-    const { domain, action, target, chan = 'winrm', note, quiet } = meta;
+    const { domain, action, target, chan = 'winrm', note, quiet, noLogOpen } = meta;
     const no = taskSeq.current++;
     const id = 't_' + no;
     const title = `${domain} ${action}`;
     const t0 = Date.now();
     const secs = () => Math.max(1, Math.round((Date.now() - t0) / 1000)) + 's';
     setTasks((prev) => [{ id, no, domain, action, title, state: 'running', pct: 4, chan, started: nowHM(), elapsed: '0s', target, note, stream: true, long: !!wiring.cancellable }, ...prev]);
-    /* quiet：任务仍记录到控制台，但不抢占式切标签/展开面板/弹运行气泡（调用方另有进度呈现） */
-    if (quiet) suppressRunPop.current = true;
-    else { setConTab('stream'); setLogOpen(true); } /* 派发命令即切回控制台实时流（否则停在「历史任务」页会看不到新流） */
+    applyTaskLogPop({ quiet, noLogOpen });
     pushLog({ lv: 'info', cat: domain, ch: chan, task: no, msg: esc(note || `${title} …`) });
 
     /* 浏览器预览（无 Tauri runtime）：不能 listen，直接失败收尾，不挂起。 */
@@ -834,6 +835,7 @@ function App() {
       setDrawer(null); setPsoSel(null); setCalSel(null);
       inspectorHasTargetRef.current = false;
       setRightCollapsed(true);
+      if (v === 'cache') setLogOpen(false);
     }
     setPage(v);
   };

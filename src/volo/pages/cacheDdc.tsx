@@ -16,7 +16,8 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
   setMachineEnvVar, getMachineEnvVar, createLocalCache,
   prepareManagedShareClients, unprepareManagedShareClients,
   prepareOpenShareClients, unprepareOpenShareClients,
-  setMachineBackendField, removeMachineBackendField } from "../api/commands";
+  setMachineBackendField, removeMachineBackendField,
+  revealPath, isLoopbackMachine, revealRemotePath } from "../api/commands";
 
 (function () {
   const { Button } = window.Spectrum2DesignSystem_b6d1b3;
@@ -42,6 +43,24 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
     : b >= 1e9 ? (b / 1073741824).toFixed(1) + ' GB'
     : b >= 1e6 ? (b / 1048576).toFixed(0) + ' MB'
     : (b / 1024).toFixed(0) + ' KB';
+
+  /* 打开工程文件夹（在系统文件资源管理器中 reveal）。工程可能在远程渲染节点而非本机
+     ——is_loopback_machine 判断目标是否就是 Volo 自身所在机器：是则直接 reveal_path 本机路径；
+     否则走 reveal_remote_path——按 Volo 运行时所在 OS 决定用 UNC 管理员共享路径（Windows）
+     还是 smb:// URL（macOS/Linux，reveal_item_in_dir 的 canonicalize 在这些平台上不认
+     Windows UNC 字符串，永远失败，故不能不分平台一律拼 UNC 交给本机 revealPath）——前提
+     是操作员机器对目标机的管理员共享网络可达 + 有权限，连不通时会 reject，按失败态提示，
+     不静默假装成功。 */
+  const openFolder = (s, path, label, machine) => {
+    const fail = (e) => s.pushLog({ lv: 'err', cat: 'ddc', ch: 'ssh',
+      msg: '打开文件夹失败 · ' + label + ' · ' + (e && e.message ? e.message : e) });
+    if (!machine) { fail(new Error('找不到该工程所在的机器')); return; }
+    const logOk = () => s.pushLog({ lv: 'info', cat: 'ddc', ch: 'ssh',
+      msg: '<b>explorer</b> · 在文件资源管理器中打开' + (label ? '（' + label + '）' : '') + ' ' + path });
+    isLoopbackMachine(machine.ip).then(
+      (loopback) => (loopback ? revealPath(path) : revealRemotePath(machine.ip, path)).then(logOk, fail),
+      fail);
+  };
 
   /* UeRunnerEvent reduce（generate_ddc_pak / start_pso_collection 共用进度流）.
      payload = {job_id, source_machine_id, project_id, event:UeRunnerEvent}，
@@ -284,7 +303,9 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       : [CX.node(scope) ? CX.node(scope).machineId : null].filter((x) => x != null);
     if (!targets.length) return;
     const tgtLabel = scope === 'all' ? targets.length + ' 台在线机' : (CX.node(scope) || {}).host;
-    s.runCmd({ domain: 'project', action: 'discover', target: tgtLabel, chan: 'ssh', note: '远程扫描 UE 工程（.uproject）' },
+    /* 返回 settle 后的 promise（成功/失败都 resolve）——cacheDdcPak.tsx 借此在扫描落地后
+       触发一次缩略图/mtime 重新探测；本页自身的调用方不消费返回值，加 return 不影响它们。 */
+    return s.runCmd({ domain: 'project', action: 'discover', target: tgtLabel, chan: 'ssh', note: '远程扫描 UE 工程（.uproject）' },
       () => Promise.allSettled(targets.map((mid) => discoverProjects(mid, roots, null))).then((rs) => {
         const ok = rs.filter((r) => r.status === 'fulfilled');
         if (!ok.length) throw new Error('全部目标扫描失败');
@@ -319,13 +340,25 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
   };
 
   /* =================== 主视图共用工程行（master list）=================== */
-  function projRow(p, selected, onClick) {
+  /* p.thumb/thumbFrom/thumbSrc（若有）由调用方按需懒加载后 merge 进传入的 project 对象
+     （见 cacheDdcPak.tsx）——projRow 本身不发起任何缩略图请求。s 缺省时（PSO 主视图那处
+     调用）跳过「打开文件夹」：既不取源机、也不渲染缩略图态，行为与改动前一致。 */
+  function projRow(p, selected, onClick, s) {
+    const src = s ? pickSrc(p) : null;
+    const path = (src && p.locByMachine && p.locByMachine[String(src.machineId)]) || p.root;
     return h('div', { key: p.id, className: 'proj-row' + (selected ? ' on' : ''), onClick: () => onClick(p) },
       h('span', { className: 'proj-mck' + (selected ? ' on' : '') }, selected ? h(Icon, { name: 'check', size: 12 }) : null),
-      h('span', { className: 'proj-ico' }, h(Icon, { name: 'film', size: 17 })),
+      h('span', { className: 'proj-ico' + (p.thumb ? ' has-thumb' : ''),
+          title: p.thumb ? ('缩略图来源 · ' + (p.thumbFrom || '') + '\n' + (p.thumbSrc || '')) : null },
+        p.thumb
+          ? h('img', { className: 'proj-thumb', src: p.thumb, alt: '', draggable: false })
+          : h(Icon, { name: 'film', size: 17 })),
       h('div', { className: 'proj-main' },
         h('div', { className: 'proj-name' }, p.name),
-        h('div', { className: 'proj-sub' }, p.root + '\\' + p.uproject)),
+        h('button', { type: 'button', className: 'proj-sub proj-sub-open mono', title: '在文件资源管理器中打开工程文件夹',
+            onClick: (e) => { e.stopPropagation(); s && openFolder(s, path, p.name, src); } },
+          h('span', { className: 'proj-sub-tx' }, path + '\\' + p.uproject),
+          h('span', { className: 'proj-sub-ico' }, h(Icon, { name: 'folder', size: 12 })))),
       h('div', { className: 'proj-tags' },
         h('span', { className: 'proj-tag ue' }, 'UE ' + p.ue),
         h('span', { className: 'proj-tag' }, p.size),
@@ -1252,7 +1285,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
 
   /* window.VOLO_CACHE_DDC_PAK（cacheDdcPak.tsx）复用这些 DDC 域共享 helper，
      避免在新页面里重新实现流式进度归约 / 源机选取等已验证过的逻辑。 */
-  window.VOLO_CACHE_DDC = { ddc, detail, gate, projRow, scopeOpts, runDiscover, genPak, pickSrc, humanBytes, batchReduce };
+  window.VOLO_CACHE_DDC = { ddc, detail, gate, projRow, scopeOpts, runDiscover, genPak, pickSrc, humanBytes, batchReduce, openFolder };
 })();
 
 export {};

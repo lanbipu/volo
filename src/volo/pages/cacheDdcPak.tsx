@@ -17,7 +17,7 @@
 import * as React from "react";
 import "../ds";
 import "./cacheDdc";
-import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak } from "../api/commands";
+import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnail } from "../api/commands";
 
 (function () {
   const { Button } = window.Spectrum2DesignSystem_b6d1b3;
@@ -28,8 +28,13 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak } from "../api/comm
   const DDC = window.VOLO_CACHE_DDC;
 
   const VIEW_OPTS = [{ id: 'flat', label: '平铺列表', icon: 'list' }, { id: 'grouped', label: '按文件夹层级', icon: 'folder' }];
-  const SORT_OPTS = [{ id: 'name', label: '按名称' }, { id: 'path', label: '按路径' }, { id: 'time', label: '按发现时间' }];
+  const SORT_OPTS = [{ id: 'updated', label: '按最近更新时间' }, { id: 'name', label: '按名称' }, { id: 'path', label: '按路径' }, { id: 'time', label: '按发现时间' }];
   const ROOT_PRESETS = ['D:\\Unreal Projects', 'D:\\UE_Projects', 'D:\\Projects', 'E:\\UEProjects'];
+  /* get_project_thumbnail 只回传策略 key，人话文案留在前端（PROBE_DICT/PROBE_NARRATIVE 同款分工）。 */
+  const THUMB_FROM_LABEL = {
+    uproject_same_name: 'uproject 同名缩略图',
+    saved_autosequence: 'Saved 回退缩略图（无同名图）',
+  };
 
   const fmtMtime = (iso) => {
     if (!iso) return '—';
@@ -173,21 +178,74 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak } from "../api/comm
         h(Button, { variant: 'secondary', size: 'M', isDisabled: true }, '生成中…')));
   }
 
+  /* 已部署列表会话缓存：切顶层页（Cache↔校正等）会 remount PakPage，但不能因此重跑扫描。
+     raw===undefined 表示本会话尚未扫过；[]=已扫且空；非空数组=已扫有结果。 */
+  const DEPLOYED_CACHE = { raw: undefined, scannedAt: null };
+
+  /* 工程平铺矩形小模块（紧凑网格 · 勾选）—— 只在本页用，不进 window.VOLO_CACHE_DDC 共享
+     （projRow 才是跨页共享的行形态，见 cacheDdc.tsx）。路径解析 / 打开文件夹与 projRow 同一套
+     既有约定：pickSrc 选中的源机可能不是该工程第一条 location，必须按 locByMachine 取该源机
+     自己的路径，不能落回 p.root——否则显示路径与实际点开的文件夹对不上（此前修过的坑）。 */
+  function projTile(p, selected, onClick, s) {
+    const src = s ? DDC.pickSrc(p) : null;
+    const path = (src && p.locByMachine && p.locByMachine[String(src.machineId)]) || p.root;
+    const full = path + '\\' + p.uproject;
+    const cut = full.lastIndexOf('\\');
+    const head = cut >= 0 ? full.slice(0, cut + 1) : full;
+    const tail = cut >= 0 ? full.slice(cut + 1) : '';
+    return h('div', { key: p.id, className: 'proj-tile' + (selected ? ' on' : ''),
+        title: p.name + '  ·  ' + full, onClick: () => onClick(p) },
+      h('span', { className: 'proj-tile-mck' + (selected ? ' on' : '') }, selected ? h(Icon, { name: 'check', size: 11 }) : null),
+      h('div', { className: 'proj-tile-media' + (p.thumb ? ' has-thumb' : '') },
+        p.thumb
+          ? h('img', { className: 'proj-tile-thumb', src: p.thumb, alt: '', draggable: false })
+          : h(Icon, { name: 'film', size: 22 }),
+        h('div', { className: 'proj-tile-badges' },
+          p.hasPak ? h('span', { className: 'proj-tile-badge pak', title: '已有 DDC PAK' }, h(Icon, { name: 'check', size: 10 }), 'PAK') : null,
+          p.warn ? h('span', { className: 'proj-tile-badge warn', title: p.warn }, h(Icon, { name: 'alert', size: 10 })) : null)),
+      h('div', { className: 'proj-tile-info' },
+        h('div', { className: 'proj-tile-nrow' },
+          h('div', { className: 'proj-tile-name' }, p.name),
+          h('button', { type: 'button', className: 'proj-tile-open', title: '在文件资源管理器中打开工程文件夹',
+              onClick: (e) => { e.stopPropagation(); s && DDC.openFolder(s, path, p.name, src); } },
+            h(Icon, { name: 'folder', size: 12 }))),
+        h('div', { className: 'proj-tile-meta' },
+          h('span', { className: 'proj-tile-tag ue' }, 'UE ' + p.ue),
+          h('span', { className: 'proj-tile-tag' }, p.size)),
+        h('button', { type: 'button', className: 'proj-tile-path mono', title: '在文件资源管理器中打开：' + full,
+            onClick: (e) => { e.stopPropagation(); s && DDC.openFolder(s, path, p.name, src); } },
+          h('span', { className: 'ptp-head' }, head),
+          tail ? h('span', { className: 'ptp-tail' }, tail) : null)));
+  }
+
   /* =========================================================================
      DDC PAK 主页 · 左右双栏
      ========================================================================= */
   function PakPage({ s }) {
     /* ---------- 左栏 · 已部署 DDC PAK（真实扫描） ---------- */
-    const [deployedRaw, setDeployedRaw] = useState(null); /* null=未加载过；[]=已加载且为空 */
-    const [depScan, setDepScan] = useState(null);
+    const [deployedRaw, setDeployedRaw] = useState(() => (DEPLOYED_CACHE.raw === undefined ? null : DEPLOYED_CACHE.raw));
+    const [depScan, setDepScan] = useState(() => DEPLOYED_CACHE.scannedAt);
     const [confirmId, setConfirmId] = useState(null);
 
-    const loadDeployed = (quiet) => s.runCmd(
-      { domain: 'ddc', action: 'scan-deployed', target: '已部署 DDC PAK', chan: 'ssh', note: '扫描已部署 DDC PAK', quiet },
+    const loadDeployed = (opts) => {
+      const quiet = opts === true || !!(opts && opts.quiet);
+      const noLogOpen = !!(opts && opts.noLogOpen);
+      return s.runCmd(
+      { domain: 'ddc', action: 'scan-deployed', target: '已部署 DDC PAK', chan: 'ssh', note: '扫描已部署 DDC PAK', quiet, noLogOpen },
       () => listDeployedDdcPaks(),
       { okMsg: (rows) => '已刷新 · ' + rows.length + ' 条已部署位置' })
-      .then((rows) => { setDeployedRaw(rows); setDepScan(new Date()); }, () => {});
-    useEffect(() => { loadDeployed(true); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+      .then((rows) => {
+        DEPLOYED_CACHE.raw = rows;
+        DEPLOYED_CACHE.scannedAt = new Date();
+        setDeployedRaw(rows);
+        setDepScan(DEPLOYED_CACHE.scannedAt);
+      }, () => {});
+    };
+    /* 仅本会话首次进入且尚无缓存时静默扫一次；从其他顶层页切回时走 useState 初始值复用缓存 */
+    useEffect(() => {
+      if (DEPLOYED_CACHE.raw !== undefined) return;
+      loadDeployed(true);
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
     /* 按工程聚合：source = 该工程 primary 机（若也在已发现列表里），否则第一条命中；
        distributedTo = 其余持有该 pak 的机器。陈旧 project_id（工程已被移出列表）静默丢弃。 */
@@ -214,8 +272,55 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak } from "../api/comm
     const [rootDraft, setRootDraft] = useState('');
     const [query, setQuery] = useState('');
     const [view, setView] = useState('flat');
-    const [sort, setSort] = useState('name');
+    const [sort, setSort] = useState('updated');
     const [sel, setSel] = useState([]);
+    const [tileScale, setTileScale] = useState(150); /* 平铺矩形模块显示比例（列宽 px）*/
+
+    /* ---------- 缩略图（懒加载，只在本页 merge 进 project 对象，不写回全局 UE_PROJECTS） ----------
+       每个工程用 DDC.pickSrc 选源机（与生成/校验同一套「哪台机代表这个工程」的既有约定）。
+       THUMB_CONCURRENCY 个 worker 从队列里拉取，而不是对全部 UE_PROJECTS 一次性并发发起
+       ——工程一多，无限并发会同时起一堆 ssh 子进程（每条请求最多 8MB base64），既打满
+       WebView 又可能把源机 SSH 撑爆。thumbTriedRef 只在 promise 真正 resolve（拿到「有/无
+       缩略图」这个确定结果）后才标记，reject（如源机瞬时离线、SSH 抖动）不标记——否则一次
+       瞬时失败会让该工程在这个常驻页面的整个生命周期里都拿不到缩略图，直到 project count
+       变化触发下一次 effect。machine 暂不在线（pickSrc 返回 null）同样不标记，原地跳过换
+       下一个候选，让 worker 不因为一个工程卡住。 */
+    const [thumbs, setThumbs] = useState({});
+    const thumbTriedRef = useRef(new Set());
+    const THUMB_CONCURRENCY = 8; // 对齐后端 batch::DEFAULT_MAX_CONCURRENCY 的既有并发约定
+    /* thumbGen：工程扫描（doScan）完成后打一次点，强制已探测过的工程重新探测一轮——
+       否则「按最近更新时间」排序会一直用首次挂载时探测到的旧 mtime，直到本组件真正卸载重挂
+       （sort 键依赖同一份缩略图探测）。只挂在 doScan 上，不挂在通用 reloadCache 上：机器/凭据
+       等无关操作也会触发 reloadCache，若跟着清空 thumbTriedRef 会让所有工程重新探测一遍，
+       白白打一堆 SSH（这正是本页缩略图并发池设计要避免的“探测风暴”）。 */
+    const [thumbGen, setThumbGen] = useState(0);
+    useEffect(() => {
+      let alive = true;
+      const queue = UE_PROJECTS.filter((p) => !thumbTriedRef.current.has(p.id));
+      let next = 0;
+      const pump = () => {
+        if (!alive || next >= queue.length) return;
+        const p = queue[next++];
+        const src = DDC.pickSrc(p);
+        if (!src) { pump(); return; }
+        getProjectThumbnail(Number(p.id), src.machineId).then(
+          (t) => {
+            if (!alive) return;
+            thumbTriedRef.current.add(p.id);
+            if (t) setThumbs((m) => Object.assign({}, m, { [p.id]: {
+              thumb: 'data:image/png;base64,' + t.base64,
+              thumbSrc: t.path,
+              thumbFrom: THUMB_FROM_LABEL[t.from] || t.from,
+              mtime: t.mtime || '',
+            } }));
+            pump();
+          },
+          () => { if (alive) pump(); });
+      };
+      for (let i = 0; i < THUMB_CONCURRENCY; i++) pump();
+      return () => { alive = false; };
+    }, [UE_PROJECTS.length, thumbGen]);
+    const withThumb = (p) => { const t = thumbs[p.id]; return t ? Object.assign({}, p, t) : p; };
 
     /* gate 必须在全部 Hooks 之后才能条件 return：否则加载态(仅走 gate 分支、零 Hook)
        与加载完成态(走到这里、调用一串 useState/useEffect)之间 Hook 调用数量不一致，
@@ -292,13 +397,22 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak } from "../api/comm
     const updateRoot = (id, v) => setRoots((rs) => rs.map((r) => r.id === id ? { id, val: v } : r));
     const removeRoot = (id) => setRoots((rs) => rs.filter((r) => r.id !== id));
     const commitDraft = () => { addRoots(rootDraft); setRootDraft(''); };
-    const doScan = () => DDC.runDiscover(s, scope, rootsStr);
+    const doScan = () => {
+      const scanned = DDC.runDiscover(s, scope, rootsStr);
+      if (scanned) scanned.then(() => { thumbTriedRef.current = new Set(); setThumbGen((g) => g + 1); });
+    };
 
     /* ---------- 过滤 / 排序 / 分组 ---------- */
     const q = query.trim().toLowerCase();
     const matched = UE_PROJECTS.filter((p) => !q
       || p.name.toLowerCase().includes(q) || (p.root + '\\' + p.uproject).toLowerCase().includes(q));
+    /* 「按最近更新时间」用探测到的缩略图/autosequence 截图的文件 mtime 排序——它反映工程
+       内容实际变动（编辑器里工作时才会更新截图），不是 discovered_at 那种"上次被 Volo
+       扫描到"的时间（同一次扫描全部会让一批工程的 discovered_at 几乎相同，排序没有区分度）。
+       缩略图是懒加载的，暂未探测到 / 确认没有缩略图的工程一律排到最后（空字符串排序键）。 */
+    const mtimeOf = (p) => (thumbs[p.id] && thumbs[p.id].mtime) || '';
     const sorters = {
+      updated: (a, b) => mtimeOf(b).localeCompare(mtimeOf(a)),
       name: (a, b) => a.name.localeCompare(b.name),
       path: (a, b) => (a.root + '\\' + a.uproject).localeCompare(b.root + '\\' + b.uproject),
       time: (a, b) => String(b.last).localeCompare(String(a.last)),
@@ -307,9 +421,24 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak } from "../api/comm
     const parentDir = (p) => { const parts = p.root.split('\\'); parts.pop(); return parts.join('\\') || p.root; };
     const toggleSel = (p) => setSel((v) => v.includes(p.id) ? v.filter((x) => x !== p.id) : v.concat(p.id));
 
+    /* ---------- 全选（只作用于当前可见 / 过滤后的工程） ----------
+       状态与计数都必须按 sel 与 visibleIds 的交集算，不能直接用 sel.length——否则搜索把
+       已选工程过滤掉一部分时，这里会显示类似「3 / 1」的错误计数；toggleAll 也只增删可见
+       ID，不整体覆盖 sel，避免清空搜索框之外那些不可见但仍处于选中状态的工程。 */
+    const visibleIds = sorted.map((p) => p.id);
+    const visibleSelectedCount = visibleIds.filter((id) => sel.includes(id)).length;
+    const allSelected = visibleIds.length > 0 && visibleSelectedCount === visibleIds.length;
+    const someSelected = visibleSelectedCount > 0 && !allSelected;
+    const toggleAll = () => setSel((v) => allSelected
+      ? v.filter((id) => !visibleIds.includes(id))
+      : Array.from(new Set(v.concat(visibleIds))));
+    const tileStyle = { '--tile-w': tileScale + 'px' };
+
     /* ---------- 左栏 · 已部署卡片 ---------- */
     const deployedCard = (dp) => {
       const srcHost = hostOf(dp.source.machine_id);
+      const srcNode = CX.node(String(dp.source.machine_id));
+      const srcPath = (dp.project.locByMachine && dp.project.locByMachine[String(dp.source.machine_id)]) || dp.project.root;
       const distHosts = dp.distributedTo.map(hostOf).join('、');
       const confirming = confirmId === dp.project.id;
       return h('div', { key: dp.project.id, className: 'dpak-card' + (confirming ? ' confirming' : '') },
@@ -318,7 +447,10 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak } from "../api/comm
           h('div', { className: 'dpak-meta' },
             h('div', { className: 'dpak-name' }, dp.project.name,
               dp.project.ue !== '—' ? h('span', { className: 'dpak-tag ue' }, 'UE ' + dp.project.ue) : null),
-            h('div', { className: 'dpak-path' }, dp.project.root)),
+            h('button', { type: 'button', className: 'dpak-path dpak-path-open', title: '在文件资源管理器中打开工程文件夹',
+                onClick: (e) => { e.stopPropagation(); DDC.openFolder(s, srcPath, dp.project.name, srcNode); } },
+              h('span', { className: 'proj-sub-tx' }, srcPath),
+              h('span', { className: 'proj-sub-ico' }, h(Icon, { name: 'folder', size: 12 })))),
           h('span', { className: 'spill spill--positive' }, h(Icon, { name: 'check', size: 12 }), '就绪')),
         h('div', { className: 'dpak-grid' },
           h('div', { className: 'dpak-kv' }, h('span', { className: 'k' }, 'PAK 文件大小'), h('span', { className: 'v' }, DDC.humanBytes(dp.source.size_bytes))),
@@ -374,9 +506,27 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak } from "../api/comm
             return h(React.Fragment, null, groups.map((grp) => h('div', { key: grp.dir, className: 'pak-group' },
               h('div', { className: 'pak-group-h' }, h(Icon, { name: 'folder', size: 13 }),
                 h('span', { className: 'mono' }, grp.dir), h('span', { className: 'ct' }, grp.items.length + ' 个')),
-              h('div', { className: 'proj-list' }, grp.items.map((p) => DDC.projRow(p, sel.includes(p.id), toggleSel))))));
+              h('div', { className: 'proj-list' }, grp.items.map((p) => DDC.projRow(withThumb(p), sel.includes(p.id), toggleSel, s))))));
           })()
-        : h('div', { className: 'proj-list' }, sorted.map((p) => DDC.projRow(p, sel.includes(p.id), toggleSel)));
+        : h('div', { className: 'proj-grid', style: tileStyle }, sorted.map((p) => projTile(withThumb(p), sel.includes(p.id), toggleSel, s)));
+
+    /* 列表工具条 · 全选（左）+ 显示比例滑块（右上角，仅平铺视图） */
+    const listBar = sorted.length === 0 ? null
+      : h('div', { className: 'pak-list-bar' },
+          h('button', { type: 'button',
+              className: 'pak-selall' + (allSelected ? ' on' : someSelected ? ' part' : ''),
+              onClick: toggleAll,
+              title: allSelected ? '取消全选' : '选择全部可见工程' },
+            h('span', { className: 'pak-selall-box' },
+              allSelected ? h(Icon, { name: 'check', size: 12 }) : someSelected ? h(Icon, { name: 'minus', size: 12 }) : null),
+            h('span', { className: 'pak-selall-tx' }, allSelected ? '取消全选' : '全选'),
+            h('span', { className: 'pak-selall-ct' }, visibleSelectedCount ? (visibleSelectedCount + ' / ' + sorted.length) : (sorted.length + ' 个工程'))),
+          view === 'flat' ? h('div', { className: 'pak-zoom', title: '调节矩形模块的显示比例' },
+            h('span', { className: 'pak-zoom-ic sm' }, h(Icon, { name: 'grid', size: 12 })),
+            h('input', { type: 'range', className: 'pak-zoom-range', min: 118, max: 220, step: 1,
+              value: tileScale, 'aria-label': '显示比例',
+              onChange: (e) => setTileScale(+e.target.value) }),
+            h('span', { className: 'pak-zoom-ic lg' }, h(Icon, { name: 'grid', size: 17 }))) : null);
 
     return h('div', { className: 'res ddc pak-page' },
       h('div', { className: 'canvas-head' },
@@ -394,7 +544,7 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak } from "../api/comm
               h('div', { className: 'pak2-sub' }, '扫描工程目录自动发现 · 已生成 / 部署过 Pak 的工程')),
             h('div', { className: 'right' },
               h('span', { className: 'pak2-scan' }, h(Icon, { name: 'check', size: 11 }), '刷新于 ' + fmtScanTime(depScan)),
-              h('button', { className: 'mini-btn', title: '扫描工程目录，刷新已部署 DDC PAK 的最新情况', onClick: () => loadDeployed(false) },
+              h('button', { className: 'mini-btn', title: '扫描工程目录，刷新已部署 DDC PAK 的最新情况', onClick: () => loadDeployed({ noLogOpen: true }) },
                 h(Icon, { name: 'sync', size: 12 }), '刷新'))),
           h('div', { className: 'pak2-b' }, leftBody)),
         /* ============ 右栏 · 工程扫描与生成 ============ */
@@ -417,7 +567,7 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak } from "../api/comm
                 h('div', { className: 'seg' }, VIEW_OPTS.map((o) => h('button', { key: o.id, className: view === o.id ? 'on' : '', onClick: () => setView(o.id) },
                   h(Icon, { name: o.icon, size: 13 }), o.label)))),
               h('div', { className: 'pak-ctl' }, h('label', null, '排序'),
-                h(Selector, { kpre: '排序', value: sort, options: SORT_OPTS, width: 150, align: 'left', onChange: setSort })),
+                h(Selector, { kpre: '排序', value: sort, options: SORT_OPTS, width: 188, align: 'left', onChange: setSort })),
               h('div', { className: 'pak-ctl scan' }, h('label', null, '扫描范围'),
                 h(Selector, { kpre: '范围', value: scope, options: DDC.scopeOpts(), width: 168, onChange: setScope })),
               h('div', { className: 'pak-ctl' }, h('label', { style: { visibility: 'hidden' } }, '扫描'),
@@ -441,6 +591,7 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak } from "../api/comm
                   return h('button', { key: r, className: 'pp-chip' + (added ? ' added' : ''), disabled: added, onClick: () => addRoots(r) },
                     added ? h(Icon, { name: 'check', size: 11 }) : h(Icon, { name: 'plus', size: 11 }), r); }))),
             h('div', { className: 'pak-scan-meta' }, h(Icon, { name: 'check', size: 12 }), '已发现 ' + UE_PROJECTS.length + ' 个工程位置 · 远程扫 .uproject 只发现不写盘'),
+            listBar,
             listBody),
           h('div', { className: 'pak2-foot' },
             h('span', { className: 'pak-genbar-info' }, h(Icon, { name: 'info', size: 12 }),
