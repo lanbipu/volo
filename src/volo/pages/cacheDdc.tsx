@@ -11,7 +11,7 @@ import * as React from "react";
 import "../ds";
 import "./cache";
 import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createShare,
-  generateDdcPak,
+  generateDdcPak, getProjectThumbnail,
   startPsoWarmup, listPsoWarmupRuns, fixPsoCvars, verifyPsoPrecaching,
   setMachineEnvVar, getMachineEnvVar, createLocalCache,
   prepareManagedShareClients, unprepareManagedShareClients,
@@ -471,9 +471,15 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
         h(Icon, { name: 'plus', size: 14 }), '添加地址'));
   }
 
+  /* PSO 主视图工程行的缩略图来源标签（同 cacheDdcPak.tsx 的 THUMB_FROM_LABEL，两页各自懒加载，
+     不共享/不写回全局 UE_PROJECTS——PSO 页不需要 DDC Pak 那套按 mtime 排序的额外复杂度）。 */
+  const PSO_THUMB_FROM_LABEL = {
+    uproject_same_name: 'uproject 同名缩略图',
+    saved_autosequence: 'Saved 回退缩略图（无同名图）',
+  };
+
   /* =================== PSO 缓存 — master (center) · 选工程 + 节点就绪矩阵 =================== */
   function PsoMaster({ s }) {
-    const g = gate(s); if (g) return g;
     const selId = s.psoSel;
     psoSelLive = selId; /* 长任务回填读活值（见 loadWarmupRuns 上方注释） */
     const p = UE_PROJECTS.find((x) => x.id === selId) || null; /* 选中工程被 reloadCache 剔除时回退「未选工程」，与检查器空态一致 */
@@ -482,6 +488,40 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
     const maj = majorityDriver(s);
     const runs = s.psoRuns || [];
     const readyCt = p ? nodes.filter((n) => readinessOf(runs, n.machineId).state === 'ready').length : 0;
+
+    /* 工程缩略图（懒加载，对齐 DDC Pak 页面同款体验：有缩略图显示图片，无则回退 film 图标）——
+       gate 早退必须放在全部 Hooks 之后，否则加载态/完成态两次渲染的 Hook 调用数不一致，
+       React 会抛 "Rendered more hooks than during the previous render"（同 cacheDdcPak.tsx 注释）。 */
+    const [thumbs, setThumbs] = useState({});
+    const thumbTriedRef = useRef(new Set());
+    useEffect(() => {
+      let alive = true;
+      const queue = UE_PROJECTS.filter((x) => !thumbTriedRef.current.has(x.id));
+      let next = 0;
+      const pump = () => {
+        if (!alive || next >= queue.length) return;
+        const x = queue[next++];
+        const src = pickSrc(x);
+        if (!src) { pump(); return; }
+        getProjectThumbnail(Number(x.id), src.machineId).then(
+          (t) => {
+            if (!alive) return;
+            thumbTriedRef.current.add(x.id);
+            if (t) setThumbs((m) => Object.assign({}, m, { [x.id]: {
+              thumb: 'data:image/png;base64,' + t.base64,
+              thumbSrc: t.path,
+              thumbFrom: PSO_THUMB_FROM_LABEL[t.from] || t.from,
+            } }));
+            pump();
+          },
+          () => { if (alive) pump(); });
+      };
+      for (let i = 0; i < 8; i++) pump();
+      return () => { alive = false; };
+    }, [UE_PROJECTS.length]);
+    const withThumb = (x) => { const t = thumbs[x.id]; return t ? Object.assign({}, x, t) : x; };
+
+    const g = gate(s); if (g) return g;
 
     const nmRow = (n) => {
       const r = readinessOf(runs, n.machineId);
@@ -520,7 +560,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
         h('div', { className: 'ddc-sec-h' }, h('span', null, '选择工程'),
           h('span', { className: 'dim' }, '选中一个工程，预热验证 / 运行历史都在右侧检查器中进行')),
         h('div', { className: 'pak-scan-meta', style: { margin: '0 0 12px' } }, h(Icon, { name: 'check', size: 12 }), '已发现 ' + UE_PROJECTS.length + ' 个工程位置'),
-        h('div', { className: 'proj-list' }, UE_PROJECTS.map((x) => projRow(x, selId === x.id, pick))),
+        h('div', { className: 'proj-list' }, UE_PROJECTS.map((x) => projRow(withThumb(x), selId === x.id, pick, s))),
         UE_PROJECTS.length === 0 ? h('div', { className: 'gen-empty' }, h(Icon, { name: 'film', size: 22 }), h('span', null, '尚未发现工程，先在右侧检查器扫描')) : null,
 
         /* 节点就绪矩阵 —— 选中工程后显示，每台 render 节点一行 */
@@ -816,6 +856,25 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
     const onlineLocalTargets = IP_SORTED_NODES.filter((n) => n.status !== 'offline');
     const badge = (cls, icon, txt) => h('span', { className: 'cli-badge ' + cls }, h(Icon, { name: icon, size: 11 }), txt);
 
+    /* 路径栏内嵌「在资源管理器中打开」图标按钮（本页四处路径统一复用）：machine 给定时按
+       openFolder 同款语义（本机直开 / 远程转 UNC-SMB，跨平台安全）；machine 缺省——「本地 DDC
+       统一路径」不对应单台具体机器，只是套用到全部在线机的路径模板——则直接 reveal Volo 自身
+       所在机器的路径，不做远程判定。 */
+    const openLocalPath = (path, label) => {
+      const fail = (e) => s.pushLog({ lv: 'err', cat: 'ddc', ch: 'ssh',
+        msg: '打开文件夹失败 · ' + (label || '') + ' · ' + (e && e.message ? e.message : e) });
+      const logOk = () => s.pushLog({ lv: 'info', cat: 'ddc', ch: 'ssh',
+        msg: '<b>explorer</b> · 在文件资源管理器中打开' + (label ? '（' + label + '）' : '') + ' ' + path });
+      revealPath(path).then(logOk, fail);
+    };
+    const pathOpenBtn = (path, opts) => {
+      const o = opts || {};
+      return h('button', { type: 'button', className: 'pathio-open' + (o.standalone ? ' standalone' : ''), tabIndex: -1,
+        title: '在资源管理器中打开该文件夹', disabled: !!o.disabled || !String(path || '').trim(),
+        onClick: () => ('machine' in o ? openFolder(s, path, o.label, o.machine) : openLocalPath(path, o.label)) },
+        h(Icon, { name: 'folder', size: 13 }));
+    };
+
     /* ===== ① 共享 DDC（SMB）服务器：创建 / 解除纳管 / 拆除部署（破坏性，走确认门）===== */
     /* 真实 create_share：host=sharedNode.machineId，mode 序列化 'open'|'managed'；
        operator_credential_alias 传 null（SSH key 鉴权）；Mode B 的 svc_username 留空 → 后端默认 'ddc-svc'。 */
@@ -888,7 +947,9 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
           h('div', { className: 'dp-field' }, h('label', null, '共享名'),
             h('input', { className: 'dp-input mono', value: shareName, spellCheck: false, onChange: (e) => setShareName(e.target.value) })),
           h('div', { className: 'dp-field' }, h('label', null, '本地路径'),
-            h('input', { className: 'dp-input mono', value: shareLocal, spellCheck: false, onChange: (e) => setShareLocal(e.target.value) })),
+            h('div', { className: 'pathio' },
+              h('input', { className: 'dp-input mono', value: shareLocal, spellCheck: false, onChange: (e) => setShareLocal(e.target.value) }),
+              pathOpenBtn(shareLocal, { machine: sharedNode, label: sharedNode.host }))),
           h('div', { className: 'dp-field' }, h('label', null, '模式'),
             h(Selector, { kpre: '模式', value: shareMode, width: 200, onChange: setShareMode,
               options: [{ id: 'open', label: 'Mode A · 开放' }, { id: 'managed', label: 'Mode B · 专用账号' }] })),
@@ -1172,8 +1233,10 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
         h('div', { className: 'cli-meta' },
           h('div', { className: 'cli-host mono' }, n.host),
           h('div', { className: 'cli-sub' }, n.ip + ' · ' + n.role)),
-        h('input', { className: 'cli-pathin mono', value: localDirOf(n), disabled: off,
-          spellCheck: false, onChange: (e) => setLocalDir(n.id, e.target.value) }),
+        h('div', { className: 'pathio cli-pathio' },
+          h('input', { className: 'cli-pathin mono', value: localDirOf(n), disabled: off,
+            spellCheck: false, onChange: (e) => setLocalDir(n.id, e.target.value) }),
+          pathOpenBtn(localDirOf(n), { machine: n, label: n.host, disabled: off })),
         h('div', { className: 'local-act' },
           off ? badge('off', 'power', '离线')
             : pend === 'deploy' ? badge('pend', 'sync', '部署中…')
@@ -1215,7 +1278,10 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
                       h('div', { className: 'csc-t' }, '加入目标 · ' + (joinTargetShare ? joinTargetShare.host : '—')),
                       h('div', { className: 'csc-s mono' }, joinTargetShare ? joinTargetShare.path : '—'))),
                   SHARES.length > 1 ? h('div', { className: 'dp-field' }, h('label', null, '共享服务器'),
-                    h(Selector, { kpre: '共享', value: joinTargetShare ? joinTargetShare.id : null, options: shareSelOpts, width: 240, onChange: setJoinTarget })) : null,
+                    h('div', { className: 'sel-with-open' },
+                      h(Selector, { kpre: '共享', value: joinTargetShare ? joinTargetShare.id : null, options: shareSelOpts, width: 240, onChange: setJoinTarget }),
+                      pathOpenBtn(joinTargetShare ? joinTargetShare.path : '',
+                        { machine: joinTargetShare ? CX.node(joinTargetShare.hostId) : null, label: joinTargetShare ? joinTargetShare.host : '', standalone: true }))) : null,
                   h('div', { className: 'cli-go' },
                     h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'link', size: 14 }), isDisabled: unjoinedCandidates.length === 0, onPress: joinShareAll },
                       '全部加入（' + unjoinedCandidates.length + '）'))),
@@ -1232,7 +1298,9 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
                 h('div', { className: 'local-hint' }, h(Icon, { name: 'server', size: 15 }), '逐台本地缓存回退层 · 命中链路兜底'),
                 h('div', { className: 'cli-unify' },
                   h('label', null, '统一路径'),
-                  h('input', { className: 'dp-input mono', value: commonLocalDir, spellCheck: false, onChange: (e) => setCommonLocalDir(e.target.value), style: { width: 188 } }),
+                  h('div', { className: 'pathio cli-unify-io' },
+                    h('input', { className: 'dp-input mono', value: commonLocalDir, spellCheck: false, onChange: (e) => setCommonLocalDir(e.target.value) }),
+                    pathOpenBtn(commonLocalDir, { label: '本地 DDC 统一路径' })),
                   h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'bolt', size: 14 }), isDisabled: !commonLocalDir.trim() || onlineLocalTargets.filter((n) => !localPending[n.id]).length === 0, onPress: applyCommonLocal },
                     '全选并统一部署（' + onlineLocalTargets.length + '）'))),
               h('div', { className: 'cli-note' }, h(Icon, { name: 'shield', size: 13 }),
