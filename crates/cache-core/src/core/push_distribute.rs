@@ -33,10 +33,13 @@ const TRANSFER_OUT_ROOT_FWD: &str = "C:/ProgramData/UECM/transfer/out";
 /// Inbound staging dir on a target node, chosen on the SAME volume as the
 /// final path so `Move-Item` is a rename, not a second full copy of a
 /// multi-GB file (staging on `C:` while the target sits on `D:` doubled the
-/// write). Space-free so scp needs no remote quoting; per-job subdir;
-/// `receive-transfer.ps1` creates it in preflight and removes it after
-/// install. Falls back to `C:` when the target path isn't drive-rooted.
-fn staging_dir_win(target_local: &str, job_id: &str) -> String {
+/// write). Space-free so scp needs no remote quoting. The dir is FIXED (no
+/// per-job subdir — a skipped transfer would leave an empty dir behind every
+/// repeat distribute); concurrency safety comes from the job-unique staged
+/// file name instead. `receive-transfer.ps1` creates it in preflight and
+/// removes the staged FILE after install. Falls back to `C:` when the target
+/// path isn't drive-rooted.
+fn staging_dir_win(target_local: &str) -> String {
     let drive = target_local
         .as_bytes()
         .first()
@@ -44,11 +47,17 @@ fn staging_dir_win(target_local: &str, job_id: &str) -> String {
         .filter(|c| c.is_ascii_alphabetic() && target_local.as_bytes().get(1) == Some(&b':'))
         .map(|c| c as char)
         .unwrap_or('C');
-    format!("{drive}:\\VoloTransfer\\in\\{job_id}")
+    format!("{drive}:\\VoloTransfer\\in")
 }
 
-fn staging_dir_fwd(target_local: &str, job_id: &str) -> String {
-    staging_dir_win(target_local, job_id).replace('\\', "/")
+fn staging_dir_fwd(target_local: &str) -> String {
+    staging_dir_win(target_local).replace('\\', "/")
+}
+
+/// The job-unique staged file name on targets (scp names the remote file
+/// explicitly, decoupled from the local file name).
+pub fn staged_leaf(job_id: &str) -> String {
+    format!("{job_id}.bin")
 }
 
 /// The source file resolved onto the operator machine, ready to push.
@@ -205,10 +214,10 @@ pub fn acquire_source(source_host: &str, source_file: &str, job_id: &str) -> Vol
     })
 }
 
-fn receive_args(item: &DistributePlanItem, job_id: &str, staged_name: &str, expected_size: i64, preflight: bool) -> serde_json::Value {
+fn receive_args(item: &DistributePlanItem, job_id: &str, expected_size: i64, preflight: bool) -> serde_json::Value {
     serde_json::json!({
-        "StagingDir": staging_dir_win(&item.target_local, job_id),
-        "StagedName": staged_name,
+        "StagingDir": staging_dir_win(&item.target_local),
+        "StagedName": staged_leaf(job_id),
         "TargetLocal": item.target_local,
         "FileName": item.file_name.as_deref().unwrap_or_default(),
         "ExpectedSize": expected_size,
@@ -226,7 +235,6 @@ fn receive_args(item: &DistributePlanItem, job_id: &str, staged_name: &str, expe
 pub fn preflight_push_one(
     item: &DistributePlanItem,
     job_id: &str,
-    staged_name: &str,
 ) -> VoloResult<Option<i64>> {
     if crate::core::loopback::is_loopback_target(&item.target_host) {
         std::fs::create_dir_all(&item.target_local).map_err(|e| {
@@ -245,7 +253,7 @@ pub fn preflight_push_one(
         &item.target_host,
         &NodeScript {
             name: "receive-transfer.ps1",
-            args: receive_args(item, job_id, staged_name, 0, true),
+            args: receive_args(item, job_id, 0, true),
             ssh_user: None,
         },
     )?;
@@ -260,7 +268,7 @@ pub fn preflight_push_one(
 /// Current byte count of the staged file on a target while scp is writing it
 /// (-1 → not created yet). One cheap SSH round-trip; progress pollers call
 /// this every few seconds and convert bytes into UI progress events.
-pub fn query_staged_size(item: &DistributePlanItem, job_id: &str, staged_name: &str) -> VoloResult<i64> {
+pub fn query_staged_size(item: &DistributePlanItem, job_id: &str) -> VoloResult<i64> {
     #[derive(Deserialize)]
     struct SizeRaw {
         ok: bool,
@@ -268,7 +276,7 @@ pub fn query_staged_size(item: &DistributePlanItem, job_id: &str, staged_name: &
         size: String,
     }
     let exec = SshExecutor::from_config()?;
-    let path = format!("{}\\{}", staging_dir_win(&item.target_local, job_id), staged_name);
+    let path = format!("{}\\{}", staging_dir_win(&item.target_local), staged_leaf(job_id));
     let raw: SizeRaw = run_json(
         &exec,
         &item.target_host,
@@ -303,12 +311,6 @@ pub fn push_one(item: &DistributePlanItem, source: &PushSource, job_id: &str) ->
             message: None,
         });
     }
-    let staged_name = source
-        .local_file
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| VoloError::InvalidInput("source file has no utf-8 name".into()))?
-        .to_string();
     let exec = SshExecutor::from_config()?;
     ssh::scp_push_file(
         &exec.key_path,
@@ -316,14 +318,14 @@ pub fn push_one(item: &DistributePlanItem, source: &PushSource, job_id: &str) ->
         &exec.default_user,
         &item.target_host,
         &source.local_file,
-        &staging_dir_fwd(&item.target_local, job_id),
+        &format!("{}/{}", staging_dir_fwd(&item.target_local), staged_leaf(job_id)),
     )?;
     let raw: ReceiveRaw = run_json(
         &exec,
         &item.target_host,
         &NodeScript {
             name: "receive-transfer.ps1",
-            args: receive_args(item, job_id, &staged_name, source.expected_size, false),
+            args: receive_args(item, job_id, source.expected_size, false),
             ssh_user: None,
         },
     )?;
@@ -335,18 +337,6 @@ pub fn push_one(item: &DistributePlanItem, source: &PushSource, job_id: &str) ->
         stdout_tail: raw.stdout_tail,
         message: raw.message,
     })
-}
-
-/// The staged leaf name used on targets: the leaf of the operator-local file.
-/// (Loopback sources keep the real file name, e.g. `DDC.ddp`; remote sources
-/// were staged as `<job_id>.bin`.)
-pub fn staged_name_of(source: &PushSource) -> String {
-    source
-        .local_file
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("transfer.bin")
-        .to_string()
 }
 
 #[cfg(test)]
@@ -434,11 +424,12 @@ mod tests {
             source_smb_user: None,
             source_smb_pass: None,
         };
-        let v = receive_args(&item, "job1", "DDC.ddp", 42, true);
+        let v = receive_args(&item, "job1", 42, true);
         // Staging sits on the SAME volume as the final path (D:), so the
-        // install Move-Item is a rename, not a second full copy.
-        assert_eq!(v["StagingDir"], "D:\\VoloTransfer\\in\\job1");
-        assert_eq!(v["StagedName"], "DDC.ddp");
+        // install Move-Item is a rename, not a second full copy; the staged
+        // name is job-unique (fixed dir, no per-job subdir to leak).
+        assert_eq!(v["StagingDir"], "D:\\VoloTransfer\\in");
+        assert_eq!(v["StagedName"], "job1.bin");
         assert_eq!(v["FileName"], "DDC.ddp");
         assert_eq!(v["ExpectedSize"], 42);
         assert_eq!(v["PreflightOnly"], true);

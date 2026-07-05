@@ -745,8 +745,7 @@ fn distribute(
             let mut skip_up_to_date = false;
             let preflight = match push_source.as_ref() {
                 Some(source) => {
-                    let staged = cache_core::core::push_distribute::staged_name_of(source);
-                    cache_core::core::push_distribute::preflight_push_one(&item, &job_id, &staged)
+                    cache_core::core::push_distribute::preflight_push_one(&item, &job_id)
                         .map(|existing| {
                             skip_up_to_date = existing == Some(source.expected_size);
                         })

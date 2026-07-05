@@ -59,7 +59,6 @@ try {
     }
     $dest = Join-Path -Path $TargetLocal -ChildPath $FileName
     Move-Item -LiteralPath $staged -Destination $dest -Force
-    Remove-Item -LiteralPath $StagingDir -Recurse -Force -ErrorAction SilentlyContinue
     @{ ok = $true; exit_code = "0"; bytes_copied = "$actual"; stdout_tail = "installed $dest"; preflight = $false } | ConvertTo-Json -Compress
 }
 catch {

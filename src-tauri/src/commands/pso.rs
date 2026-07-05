@@ -369,12 +369,10 @@ pub async fn distribute_pso_cache(
         if push_mode {
             let item_for_preflight = item.clone();
             let job_for_preflight = job_id.clone();
-            let staged = file.file_name.clone();
             tokio::task::spawn_blocking(move || {
                 cache_core::core::push_distribute::preflight_push_one(
                     &item_for_preflight,
                     &job_for_preflight,
-                    &staged,
                 )
             })
             .await

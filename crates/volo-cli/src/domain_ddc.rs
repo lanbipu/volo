@@ -466,8 +466,7 @@ fn distribute(
 
             let outcome = match push_source.as_ref() {
                 Some(source) => {
-                    let staged = cache_core::core::push_distribute::staged_name_of(source);
-                    cache_core::core::push_distribute::preflight_push_one(&item, &job_id, &staged)
+                    cache_core::core::push_distribute::preflight_push_one(&item, &job_id)
                         .and_then(|existing| {
                             // Same-file skip: identical-size copy already at the
                             // final path (robocopy-equivalent semantics).

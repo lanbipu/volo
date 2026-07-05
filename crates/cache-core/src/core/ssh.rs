@@ -272,19 +272,20 @@ pub fn scp_pull(
     run_scp(cmd, "scp pull")
 }
 
-/// scp 推送本地单个文件到节点目录。`remote_dir` 同样必须是无空格的
-/// forward-slash 路径，且须已存在（receive-transfer preflight 负责创建）。
+/// scp 推送本地单个文件到节点上的明确远端路径（含目标文件名——staged 名由
+/// 调用方指定,与本地文件名解耦）。`remote_path` 同样必须是无空格的
+/// forward-slash 路径,其父目录须已存在（receive-transfer preflight 负责创建）。
 pub fn scp_push_file(
     key_path: &Path,
     known_hosts: &Path,
     ssh_user: &str,
     host: &str,
     local_file: &Path,
-    remote_dir: &str,
+    remote_path: &str,
 ) -> VoloResult<()> {
     let mut cmd = scp_base(key_path, known_hosts);
     cmd.arg(local_file);
-    cmd.arg(format!("{ssh_user}@{host}:{remote_dir}/"));
+    cmd.arg(format!("{ssh_user}@{host}:{remote_path}"));
     run_scp(cmd, "scp push")
 }
 

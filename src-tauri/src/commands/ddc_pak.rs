@@ -636,7 +636,7 @@ async fn distribute_ddc_pak_push(
     // path's same-file skip — repeat distributes complete in seconds).
     let mut existing_sizes: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
     for item in &plan {
-        let existing = push_distribute::preflight_push_one(item, &job_id, file_name).map_err(|e| {
+        let existing = push_distribute::preflight_push_one(item, &job_id).map_err(|e| {
             VoloError::OperationFailed(format!(
                 "target {} push preflight failed: {}",
                 item.target_machine_id, e
@@ -757,7 +757,6 @@ async fn distribute_ddc_pak_push(
                     // Byte-progress poller: while scp writes into the staging
                     // dir, poll its size and emit running events with
                     // "bytes:<cur>/<total>" so the UI can show real progress.
-                    let staged_name = push_distribute::staged_name_of(&source);
                     let poll_item = item.clone();
                     let poll_job = job_progress.clone();
                     let poll_total = source.expected_size;
@@ -766,9 +765,8 @@ async fn distribute_ddc_pak_push(
                             tokio::time::sleep(std::time::Duration::from_secs(4)).await;
                             let item = poll_item.clone();
                             let job = poll_job.clone();
-                            let name = staged_name.clone();
                             let size = tokio::task::spawn_blocking(move || {
-                                push_distribute::query_staged_size(&item, &job, &name)
+                                push_distribute::query_staged_size(&item, &job)
                             })
                             .await
                             .ok()
