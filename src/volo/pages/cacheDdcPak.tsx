@@ -197,6 +197,11 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
      raw===undefined 表示本会话尚未扫过；[]=已扫且空；非空数组=已扫有结果。 */
   const DEPLOYED_CACHE = { raw: undefined, scannedAt: null };
 
+  /* 缩略图跨挂载缓存（同 DEPLOYED_CACHE 模式）：顶层切页会卸载重挂本组件（shell 的
+     ErrBoundary key 带 page），若缓存放组件内，每次切回都对全部工程重发 SSH 探测，
+     列表闪烁 1-2 秒。thumbs 为已取回的缩略图 patch，tried 为已出确定结果的工程 id。 */
+  const THUMB_CACHE = { thumbs: {}, tried: new Set() };
+
   /* 完整路径悬浮提示 —— 自绘浮层（挂到 body，避开卡片 overflow:hidden 裁剪），
      近乎即时显示（120ms），替代原生 title 的 ~2s 延迟 */
   let _pathTipEl = null, _pathTipTimer = null;
@@ -370,23 +375,22 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
        每个工程用 DDC.pickSrc 选源机（与生成/校验同一套「哪台机代表这个工程」的既有约定）。
        THUMB_CONCURRENCY 个 worker 从队列里拉取，而不是对全部 UE_PROJECTS 一次性并发发起
        ——工程一多，无限并发会同时起一堆 ssh 子进程（每条请求最多 8MB base64），既打满
-       WebView 又可能把源机 SSH 撑爆。thumbTriedRef 只在 promise 真正 resolve（拿到「有/无
+       WebView 又可能把源机 SSH 撑爆。THUMB_CACHE.tried 只在 promise 真正 resolve（拿到「有/无
        缩略图」这个确定结果）后才标记，reject（如源机瞬时离线、SSH 抖动）不标记——否则一次
-       瞬时失败会让该工程在这个常驻页面的整个生命周期里都拿不到缩略图，直到 project count
-       变化触发下一次 effect。machine 暂不在线（pickSrc 返回 null）同样不标记，原地跳过换
-       下一个候选，让 worker 不因为一个工程卡住。 */
-    const [thumbs, setThumbs] = useState({});
-    const thumbTriedRef = useRef(new Set());
+       瞬时失败会让该工程拿不到缩略图，直到 project count 变化触发下一次 effect。machine 暂
+       不在线（pickSrc 返回 null）同样不标记，原地跳过换下一个候选，让 worker 不因为一个工程
+       卡住。模块级缓存跨挂载存活，切页回来不重探。 */
+    const [thumbs, setThumbs] = useState(() => THUMB_CACHE.thumbs);
     const THUMB_CONCURRENCY = 8; // 对齐后端 batch::DEFAULT_MAX_CONCURRENCY 的既有并发约定
     /* thumbGen：工程扫描（doScan）完成后打一次点，强制已探测过的工程重新探测一轮——
        否则「按最近更新时间」排序会一直用首次挂载时探测到的旧 mtime，直到本组件真正卸载重挂
        （sort 键依赖同一份缩略图探测）。只挂在 doScan 上，不挂在通用 reloadCache 上：机器/凭据
-       等无关操作也会触发 reloadCache，若跟着清空 thumbTriedRef 会让所有工程重新探测一遍，
+       等无关操作也会触发 reloadCache，若跟着清空 THUMB_CACHE.tried 会让所有工程重新探测一遍，
        白白打一堆 SSH（这正是本页缩略图并发池设计要避免的“探测风暴”）。 */
     const [thumbGen, setThumbGen] = useState(0);
     useEffect(() => {
       let alive = true;
-      const queue = UE_PROJECTS.filter((p) => !thumbTriedRef.current.has(p.id));
+      const queue = UE_PROJECTS.filter((p) => !THUMB_CACHE.tried.has(p.id));
       let next = 0;
       const pump = () => {
         if (!alive || next >= queue.length) return;
@@ -396,7 +400,7 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
         getProjectThumbnail(Number(p.id), src.machineId).then(
           (probe) => {
             if (!alive) return;
-            thumbTriedRef.current.add(p.id);
+            THUMB_CACHE.tried.add(p.id);
             const t = probe && probe.thumbnail;
             const patch = {};
             if (t) Object.assign(patch, {
@@ -406,7 +410,11 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
               mtime: t.mtime || '',
             });
             if (probe && probe.size_bytes != null) patch.size = DDC.humanBytes(probe.size_bytes);
-            if (Object.keys(patch).length) setThumbs((m) => Object.assign({}, m, { [p.id]: patch }));
+            if (Object.keys(patch).length) setThumbs((m) => {
+              const nextMap = Object.assign({}, m, { [p.id]: patch });
+              THUMB_CACHE.thumbs = nextMap;
+              return nextMap;
+            });
             pump();
           },
           () => { if (alive) pump(); });
@@ -622,7 +630,7 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
     const doScan = () => {
       setCleared(false); setConfirmClear(false);
       const scanned = DDC.runDiscover(s, scope, rootsStr);
-      if (scanned) scanned.then(() => { thumbTriedRef.current = new Set(); setThumbGen((g) => g + 1); });
+      if (scanned) scanned.then(() => { THUMB_CACHE.tried = new Set(); setThumbGen((g) => g + 1); });
     };
     /* 清空已发现工程 —— 从 Volo 数据库删除全部工程记录（级联各机位置），不删磁盘文件。
        此前只 setCleared 清屏不删库，重扫后旧记录（DB 里仍在）原样回来，等于没清 —— 现在
