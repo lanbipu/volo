@@ -20,13 +20,18 @@ try {
     if (-not (Test-Path -LiteralPath $TargetLocal)) {
         New-Item -Path $TargetLocal -ItemType Directory -Force | Out-Null
     }
-    $driveName = "uecmsrc$PID"
+    $shareRoot = $SourceUnc
+    if ($SourceUnc -match '^(\\\\[^\\]+\\[^\\]+)') { $shareRoot = $Matches[1] }
     $mounted = $false
     try {
         if (-not [string]::IsNullOrEmpty($SmbUser) -and -not [string]::IsNullOrEmpty($SmbPass)) {
-            $secure = ConvertTo-SecureString -String $SmbPass -AsPlainText -Force
-            $smbCred = New-Object System.Management.Automation.PSCredential($SmbUser, $secure)
-            New-PSDrive -Name $driveName -PSProvider FileSystem -Root $SourceUnc -Credential $smbCred -ErrorAction Stop | Out-Null
+            # net use with HOST\user (forwarded qualified by Rust) — New-PSDrive with a
+            # bare local account name fails remote SMB with "Access is denied".
+            cmd.exe /c "net use `"$shareRoot`" /delete /y" 2>&1 | Out-Null
+            $netOut = ((cmd.exe /c "net use `"$shareRoot`" `"$SmbPass`" /user:$SmbUser /persistent:no" 2>&1) | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0) {
+                throw "net use $shareRoot failed: $netOut"
+            }
             $mounted = $true
         }
         # Exact-filename robocopy filter (see below) matches nothing and still
@@ -64,7 +69,7 @@ try {
         @{ ok = ($code -lt 8); exit_code = "$code"; bytes_copied = "$bytesCopied"; stdout_tail = "$tail"; preflight = $false } | ConvertTo-Json -Compress
     }
     finally {
-        if ($mounted) { Remove-PSDrive -Name $driveName -Force -ErrorAction SilentlyContinue }
+        if ($mounted) { cmd.exe /c "net use `"$shareRoot`" /delete /y" 2>&1 | Out-Null }
     }
 }
 catch {

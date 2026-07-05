@@ -335,6 +335,7 @@ fn distribute(
     source_smb_cred_alias: Option<&str>,
     cred: &CredentialArgs,
 ) -> VoloResult<()> {
+    let _ = source_smb_cred_alias;
     let db = ctx.require_db()?.clone();
 
     let routing = resolve_backend(&db, project_id, source_machine_id, backend_choice)?;
@@ -351,17 +352,12 @@ fn distribute(
                 ))
             })?;
 
-    // Source SMB now comes from the SecretStore (explicit alias or auto-derived
-    // from the source host's Mode B/A share) — the operator->target leg is SSH
-    // key auth and needs no forwarded credential. Dry-run resolves the same
-    // share/UNC and runs the same validation, but skips reading the secret
-    // (read_secret = false), so previews stay side-effect-free yet show the
-    // real source UNC.
+    // DDC.ddp is project-local — pull from the source admin share, not the fleet
+    // DDC SMB share. Dry-run skips the SecretStore read (read_secret = false).
     cred.preflight(&db)?;
-    let smb = pak_distribute::resolve_source_smb(
+    let (smb_user, smb_pass) = pak_distribute::resolve_admin_pull_smb(
         &db,
         source_machine_id,
-        source_smb_cred_alias,
         !dry_run,
     )?;
 
@@ -374,9 +370,9 @@ fn distribute(
         &source_location,
         target_ids,
         project_id,
-        smb.named_share_unc.as_deref(), // managed-share UNC paired with the SMB cred
-        smb.user,
-        smb.pass,
+        None,
+        smb_user,
+        smb_pass,
     )?;
 
     if plan.is_empty() {

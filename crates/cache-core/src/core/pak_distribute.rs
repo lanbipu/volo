@@ -335,6 +335,67 @@ pub fn resolve_source_smb(
     })
 }
 
+/// SMB credential for a target pulling **project-local** artifacts (DDC.ddp under
+/// `{project}/DerivedDataCache`, PSO files under `{project}/Saved/...`) from the
+/// source host's admin share (`\\host\D$\...`). The registered DDC SMB share
+/// points at the fleet shared-cache folder and does not contain per-project paks.
+///
+/// Uses the fleet `uecm-svc` password from SecretStore (same value as
+/// `UECM-Bootstrap.cmd`) qualified as `HOST\uecm-svc` for cross-machine admin-share
+/// auth — mirroring `modeb-svc-connect.ps1`.
+pub fn resolve_admin_pull_smb(
+    db: &Db,
+    source_machine_id: i64,
+    read_secret: bool,
+) -> VoloResult<(Option<String>, Option<String>)> {
+    let server = crate::core::shares::smb_server_name_for_machine(db, source_machine_id)?;
+    let qualified = qualify_smb_user(&server, "uecm-svc");
+    if !read_secret {
+        return Ok((Some(qualified), None));
+    }
+    let pass = find_fleet_uecm_svc_secret(db)?;
+    Ok((Some(qualified), Some(pass)))
+}
+
+fn qualify_smb_user(server: &str, username: &str) -> String {
+    if username.contains('\\') {
+        username.to_string()
+    } else {
+        format!(r"{server}\{username}")
+    }
+}
+
+fn find_fleet_uecm_svc_secret(db: &Db) -> VoloResult<String> {
+    let creds = crate::data::credentials::list_all(db)?;
+    let matches: Vec<_> = creds
+        .iter()
+        .filter(|c| {
+            c.username.eq_ignore_ascii_case("uecm-svc")
+                || c.username.to_ascii_lowercase().ends_with(r"\uecm-svc")
+        })
+        .collect();
+    match matches.len() {
+        0 => Err(VoloError::InvalidInput(
+            "no uecm-svc fleet transport password in SecretStore; register the same \
+             password used in UECM-Bootstrap.cmd via 凭据管理 (username uecm-svc)"
+                .into(),
+        )),
+        1 => {
+            let alias = &matches[0].alias;
+            crate::core::secrets::SecretStore::from_config()?
+                .get(alias)?
+                .ok_or_else(|| {
+                    VoloError::InvalidInput(format!(
+                        "credential alias '{alias}' has no secret in SecretStore"
+                    ))
+                })
+        }
+        n => Err(VoloError::InvalidInput(format!(
+            "found {n} uecm-svc credentials; keep exactly one fleet transport password"
+        ))),
+    }
+}
+
 /// stdin JSON for the node-pure distribute scripts. Operator→target auth is
 /// SSH key based and needs no forwarded credential; only the target→source
 /// SMB cred is forwarded.
@@ -731,5 +792,81 @@ mod tests {
         assert!(!unc_names_share("\\\\HOST\\OTHER", share));
         assert!(!unc_names_share("\\\\HOST\\DDCX", share));
         assert!(!unc_names_share("\\\\HOST", share));
+    }
+
+    #[test]
+    fn qualify_smb_user_adds_server_prefix() {
+        assert_eq!(qualify_smb_user("LANPC", "uecm-svc"), r"LANPC\uecm-svc");
+        assert_eq!(
+            qualify_smb_user("LANPC", r"OTHER\uecm-svc"),
+            r"OTHER\uecm-svc"
+        );
+    }
+
+    #[test]
+    fn resolve_admin_pull_smb_errors_without_fleet_password() {
+        let (db, source, _t, _p) = setup();
+        assert!(resolve_admin_pull_smb(&db, source, true).is_err());
+        let (user, pass) = resolve_admin_pull_smb(&db, source, false).unwrap();
+        assert_eq!(user.as_deref(), Some(r"SOURCE\uecm-svc"));
+        assert!(pass.is_none());
+    }
+
+    #[test]
+    fn resolve_admin_pull_smb_reads_fleet_uecm_svc_secret() {
+        use crate::core::secrets::SecretStore;
+        use crate::data::credentials::{self, CredentialKind, CredentialRecord};
+        let (db, source, _t, _p) = setup();
+        credentials::insert(
+            &db,
+            &CredentialRecord {
+                id: None,
+                alias: "UECM:transport".into(),
+                kind: CredentialKind::Winrm,
+                username: "uecm-svc".into(),
+            },
+        )
+        .unwrap();
+        SecretStore::from_config()
+            .unwrap()
+            .put("UECM:transport", "fleet-pass")
+            .unwrap();
+        let (user, pass) = resolve_admin_pull_smb(&db, source, true).unwrap();
+        assert_eq!(user.as_deref(), Some(r"SOURCE\uecm-svc"));
+        assert_eq!(pass.as_deref(), Some("fleet-pass"));
+    }
+
+    #[test]
+    fn plan_default_uses_admin_share_for_project_pak() {
+        let (db, source, target, project_id) = setup();
+        use crate::data::share_configs::{insert, ShareMode};
+        insert(&db, &share(source, "DDC", ShareMode::Managed, Some("share-SOURCE-DDC"))).unwrap();
+        project_locations::upsert(
+            &db,
+            &ProjectLocation {
+                id: None,
+                project_id,
+                machine_id: target,
+                abs_path: "E:\\Y".into(),
+                uproject_path: "E:\\Y\\X.uproject".into(),
+                discovery_status: crate::data::DiscoveryStatus::Auto,
+                discovered_at: None,
+            },
+        )
+        .unwrap();
+        let items = plan(
+            &DistributeProfile::ddc_pak(),
+            &db,
+            source,
+            "1.1.1.1",
+            &source_loc(project_id, source),
+            &[target],
+            project_id,
+            None,
+            Some(r"SOURCE\uecm-svc".into()),
+            Some("pw".into()),
+        )
+        .unwrap();
+        assert_eq!(items[0].source_unc, "\\\\1.1.1.1\\D$\\X\\DerivedDataCache");
     }
 }

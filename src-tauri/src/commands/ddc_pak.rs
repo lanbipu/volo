@@ -447,15 +447,13 @@ pub async fn distribute_ddc_pak(
             };
             (Some(unc.clone()), user, pass)
         }
-        // No explicit UNC: auto-derive the source share + cred from the SecretStore.
+        // No explicit UNC: DDC.ddp lives under the project directory — pull via the
+        // source admin share (D$/…/DerivedDataCache), not the fleet DDC SMB share.
         None => {
-            let smb = pak_distribute::resolve_source_smb(
-                &db,
-                source_machine_id,
-                source_smb_credential_alias.as_deref(),
-                true,
-            )?;
-            (smb.named_share_unc, smb.user, smb.pass)
+            let _ = &source_smb_credential_alias;
+            let (user, pass) =
+                pak_distribute::resolve_admin_pull_smb(&db, source_machine_id, true)?;
+            (None, user, pass)
         }
     };
 

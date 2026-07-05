@@ -282,6 +282,24 @@ pub fn unprepare_managed_share_client(
     Ok(result.message)
 }
 
+/// NetBIOS/computer name of a machine for `SERVER\uecm-svc` / `SERVER\ddc-svc` SMB auth.
+pub fn smb_server_name_for_machine(db: &Db, machine_id: i64) -> VoloResult<String> {
+    let machine = data_machines::find_by_id(db, machine_id)?.ok_or_else(|| {
+        VoloError::InvalidInput(format!("machine {} not found", machine_id))
+    })?;
+    if !looks_like_ipv4(&machine.hostname) {
+        return Ok(machine.hostname);
+    }
+    if !looks_like_ipv4(&machine.ip) {
+        return Ok(machine.ip);
+    }
+    Err(VoloError::OperationFailed(format!(
+        "machine {} hostname '{}' and ip '{}' are both IPs; set a NetBIOS hostname \
+         so remote nodes can authenticate as HOST\\uecm-svc",
+        machine_id, machine.hostname, machine.ip
+    )))
+}
+
 /// NetBIOS/computer name of the share host for `SERVER\ddc-svc` SMB auth.
 pub fn smb_server_name_for_share(db: &Db, share: &ShareConfig) -> VoloResult<String> {
     let unc_target = unc_host(&share.unc_path).ok_or_else(|| {
