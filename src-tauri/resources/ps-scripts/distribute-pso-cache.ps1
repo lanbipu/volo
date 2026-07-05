@@ -1,16 +1,11 @@
 # Robocopy a PSO cache file pattern from a source SMB share into a local dir.
 #
 # Node-pure: runs locally on the target (shipped + executed via SSH -File).
-# stdin: JSON { "SourceUnc","TargetLocal","FileName",["SourceSmbUser","SourceSmbPass"],["SourceSmbGuest":bool],["SourceShareRoots":[...]],["PreflightOnly":bool] }
+# stdin: JSON { "SourceUnc","TargetLocal","FileName",["SourceSmbUser","SourceSmbPass"],["PreflightOnly":bool] }
 #   FileName = robocopy file pattern, e.g. "*.upipelinecache" or "*.stablepc.csv"
 # Output: JSON { ok, exit_code, bytes_copied, stdout_tail, [message] }
 [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; chcp 65001 | Out-Null
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'distribute-smb-mount.ps1')
-
-function Test-UncReachable([string]$Path) {
-    return [bool](Test-Path -LiteralPath $Path -ErrorAction SilentlyContinue)
-}
 
 try {
     $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
@@ -19,12 +14,6 @@ try {
     $FileName = $p.FileName
     $SmbUser = $p.SourceSmbUser
     $SmbPass = $p.SourceSmbPass
-    $ShareRoots = @($p.SourceShareRoots | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    $UseGuest = if ($null -ne $p.SourceSmbGuest) {
-        [bool]$p.SourceSmbGuest
-    } else {
-        [string]::IsNullOrEmpty($SmbUser) -and [string]::IsNullOrEmpty($SmbPass)
-    }
     $PreflightOnly = [bool]$p.PreflightOnly
     if ([string]::IsNullOrWhiteSpace($SourceUnc) -or [string]::IsNullOrWhiteSpace($TargetLocal) -or
         [string]::IsNullOrWhiteSpace($FileName)) {
@@ -34,15 +23,16 @@ try {
     if (-not (Test-Path -LiteralPath $TargetLocal)) {
         New-Item -Path $TargetLocal -ItemType Directory -Force | Out-Null
     }
-    $shareRoot = if ($ShareRoots.Count -gt 0) { $ShareRoots[0] } else { $SourceUnc }
-    if ($SourceUnc -match '^(\\\\[^\\]+\\[^\\]+)') { $shareRoot = $Matches[1] }
+    $driveName = "uecmsrc$PID"
     $mounted = $false
-    $mountedRoot = $null
     try {
-        $mountedRoot = Mount-DistributeSourceShare -ShareRoot $shareRoot -ShareRoots $ShareRoots -SmbUser $SmbUser -SmbPass $SmbPass -UseGuest $UseGuest
-        $mounted = -not [string]::IsNullOrWhiteSpace($mountedRoot)
-        if ($mounted) { $shareRoot = $mountedRoot }
-        if (-not (Test-UncReachable $SourceUnc)) {
+        if (-not [string]::IsNullOrEmpty($SmbUser) -and -not [string]::IsNullOrEmpty($SmbPass)) {
+            $secure = ConvertTo-SecureString -String $SmbPass -AsPlainText -Force
+            $smbCred = New-Object System.Management.Automation.PSCredential($SmbUser, $secure)
+            New-PSDrive -Name $driveName -PSProvider FileSystem -Root $SourceUnc -Credential $smbCred -ErrorAction Stop | Out-Null
+            $mounted = $true
+        }
+        if (-not (Test-Path -LiteralPath $SourceUnc)) {
             throw "source UNC unreachable: $SourceUnc"
         }
         if ($PreflightOnly) {
@@ -66,7 +56,7 @@ try {
         @{ ok = ($code -lt 8); exit_code = "$code"; bytes_copied = "$bytesCopied"; stdout_tail = "$tail"; preflight = $false } | ConvertTo-Json -Compress
     }
     finally {
-        if ($mounted) { Unmount-DistributeSourceShare -ShareRoot $shareRoot }
+        if ($mounted) { Remove-PSDrive -Name $driveName -Force -ErrorAction SilentlyContinue }
     }
 }
 catch {

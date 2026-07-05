@@ -139,15 +139,6 @@ pub fn delete(db: &Db, id: i64) -> VoloResult<()> {
     Ok(())
 }
 
-pub fn update_unc_path(db: &Db, id: i64, unc_path: &str) -> VoloResult<()> {
-    let conn = db.lock().unwrap();
-    conn.execute(
-        "UPDATE share_configs SET unc_path = ? WHERE id = ?",
-        params![unc_path, id],
-    )?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,17 +215,6 @@ mod tests {
         let id = insert(&db, &sample(host_id, "DDC", ShareMode::Open)).unwrap();
         delete(&db, id).unwrap();
         assert!(find_by_id(&db, id).unwrap().is_none());
-    }
-
-    #[test]
-    fn update_unc_path_persists_recreated_share_address() {
-        let (db, host_id) = setup_with_host();
-        let id = insert(&db, &sample(host_id, "DDC", ShareMode::Open)).unwrap();
-        update_unc_path(&db, id, r"\\NEW-HOST\DDC").unwrap();
-        assert_eq!(
-            find_by_id(&db, id).unwrap().unwrap().unc_path,
-            r"\\NEW-HOST\DDC"
-        );
     }
 
     #[test]

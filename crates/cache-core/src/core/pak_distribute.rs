@@ -94,11 +94,6 @@ pub struct DistributePlanItem {
     pub source_smb_user: Option<String>,
     #[serde(skip_serializing)]
     pub source_smb_pass: Option<String>,
-    /// Mode A guest open-share: target script must `net use ... /user:HOST\Guest`.
-    pub source_smb_guest: bool,
-    /// `\\host\share` roots to try for `net use` (IP + hostname variants).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub share_mount_roots: Vec<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -122,17 +117,6 @@ pub fn plan(
         append_source_subdir_once(unc, &profile.source_subdir)
     } else {
         admin_share_unc(source_host, &source_location.abs_path, &profile.source_subdir)?
-    };
-    // Named-share pulls without a usable SMB password use Mode A guest `net use`.
-    let has_mount_cred = matches!(
-        (source_smb_user.as_deref(), source_smb_pass.as_deref()),
-        (Some(user), Some(pass)) if !user.trim().is_empty() && !pass.is_empty()
-    );
-    let source_smb_guest = named_share_unc.is_some() && !has_mount_cred;
-    let share_mount_roots = if let Some(unc) = named_share_unc {
-        crate::core::shares::share_mount_root_variants(db, source_machine_id, source_host, unc)?
-    } else {
-        Vec::new()
     };
 
     let mut out = Vec::new();
@@ -158,8 +142,6 @@ pub fn plan(
             file_name: None,
             source_smb_user: source_smb_user.clone(),
             source_smb_pass: source_smb_pass.clone(),
-            source_smb_guest,
-            share_mount_roots: share_mount_roots.clone(),
         });
     }
     Ok(out)
@@ -209,7 +191,31 @@ fn path_ends_with_segments(path: &str, suffix: &str) -> bool {
         .all(|(left, right)| left.eq_ignore_ascii_case(right))
 }
 
-pub use crate::core::shares::unc_names_share;
+/// True when `candidate` names the registered share `share_unc` — matched by
+/// leading path segments, case-insensitively, ignoring trailing separators and
+/// any appended source subdir. The distribute path appends the profile's source
+/// subdir to a share UNC, and operators may type a different case or a trailing
+/// slash, so an explicit `named_share_unc` must be matched to its share this way
+/// rather than by exact string compare (which would drop the credential for a
+/// valid Mode B share). Segment-wise matching also avoids a string-prefix false
+/// positive (e.g. `\\H\DDC` must not match the share `\\H\D`).
+pub fn unc_names_share(candidate: &str, share_unc: &str) -> bool {
+    let cand: Vec<_> = candidate
+        .split(['\\', '/'])
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let base: Vec<_> = share_unc
+        .split(['\\', '/'])
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    if base.is_empty() || base.len() > cand.len() {
+        return false;
+    }
+    cand[..base.len()]
+        .iter()
+        .zip(base.iter())
+        .all(|(left, right)| left.eq_ignore_ascii_case(right))
+}
 
 /// Source-share SMB access for a distribute run: the share UNC the target pulls
 /// from, plus the credential to mount it. An open (Mode A) share has a UNC but
@@ -308,14 +314,6 @@ pub fn resolve_source_smb(
                          re-run `share create --mode b`"
                     ))
                 })?;
-            let share = crate::data::share_configs::find_by_host(db, source_machine_id)?
-                .into_iter()
-                .find(|s| s.credential_alias.as_deref() == Some(alias.as_str()))
-                .ok_or_else(|| {
-                    VoloError::InvalidInput(format!(
-                        "source SMB alias '{alias}' matches no share on the source host"
-                    ))
-                })?;
             // Use the share's actual service account from its credential record
             // (the alias IS the credential alias) — a managed-share ACL only
             // grants that account, so a non-default svc_username must not be sent
@@ -326,9 +324,7 @@ pub fn resolve_source_smb(
                 .flatten()
                 .map(|c| c.username)
                 .unwrap_or_else(|| "ddc-svc".to_string());
-            let server = crate::core::shares::smb_server_name_for_share(db, &share)?;
-            let qualified = crate::core::shares::qualify_smb_user(&server, &user);
-            (Some(qualified), Some(pass))
+            (Some(user), Some(pass))
         }
         _ => (None, None),
     };
@@ -336,124 +332,6 @@ pub fn resolve_source_smb(
         named_share_unc,
         user,
         pass,
-    })
-}
-
-/// Resolved SMB source for pulling project-local artifacts (DDC.ddp, PSO files).
-/// Prefers a registered share covering the project path (like Explorer open-folder);
-/// otherwise plans a Mode A guest share on the project parent directory.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectPullSource {
-    pub named_share_unc: String,
-    pub user: Option<String>,
-    pub pass: Option<String>,
-}
-
-/// Parent directory to open as a guest share when no share covers the project
-/// (mirrors `shareDirFor` in `cacheDdc.tsx`).
-pub fn share_dir_for_project(abs_path: &str) -> String {
-    let norm = abs_path.replace('/', "\\").trim_end_matches('\\').to_string();
-    let parts: Vec<_> = norm.split('\\').filter(|s| !s.is_empty()).collect();
-    if parts.len() <= 2 {
-        norm
-    } else {
-        parts[..parts.len() - 1].join("\\")
-    }
-}
-
-/// Deterministic open-share name for a directory (mirrors `shareNameFor` in `cacheDdc.tsx`).
-pub fn share_name_for_dir(dir: &str) -> String {
-    let mut slug = format!(
-        "volo-dir-{}",
-        dir.to_lowercase().replace(':', "")
-    );
-    slug = slug
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || ('\u{4e00}'..='\u{9fff}').contains(&c) {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    let trimmed = slug.trim_matches('-');
-    if trimmed.len() > 60 {
-        trimmed[..60].to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-fn rel_under_share_root(share_root: &str, abs_path: &str) -> String {
-    if crate::core::shares::same_win_path(share_root, abs_path) {
-        return String::new();
-    }
-    let root = share_root.replace('/', "\\").trim_end_matches('\\').to_string();
-    let path = abs_path.replace('/', "\\").trim_end_matches('\\').to_string();
-    path[root.len()..]
-        .trim_start_matches('\\')
-        .to_string()
-}
-
-/// Resolve how targets pull project files over SMB — share-based, not admin D$.
-///
-/// When `ensure_share` is true (real run), creates a guest open share + client prep
-/// if no registered share covers the project yet. Dry-run passes `false` and only
-/// reports the UNC that would be used.
-pub fn resolve_project_pull_smb(
-    db: &Db,
-    source_machine_id: i64,
-    reach_host: &str,
-    project_abs_path: &str,
-    target_machine_ids: &[i64],
-    ensure_share: bool,
-) -> VoloResult<ProjectPullSource> {
-    let abs_norm = project_abs_path.replace('/', "\\");
-    if let Some(cover) =
-        crate::core::shares::share_covering_local_path(db, source_machine_id, &abs_norm)?
-    {
-        use crate::data::share_configs::ShareMode;
-        if ensure_share {
-            crate::core::shares::ensure_registered_share_live(db, &cover.share)?;
-        }
-        let unc = crate::core::shares::reachable_share_unc(
-            reach_host,
-            &cover.share.share_name,
-            &cover.rel,
-        );
-        let (user, pass) =
-            crate::core::shares::resolve_share_pull_cred(db, &cover.share, ensure_share)?;
-        if cover.share.mode == ShareMode::Open && ensure_share {
-            crate::core::shares::prep_open_share_clients_on_targets(
-                db,
-                source_machine_id,
-                target_machine_ids,
-            )?;
-        }
-        return Ok(ProjectPullSource {
-            named_share_unc: unc,
-            user,
-            pass,
-        });
-    }
-
-    let share_dir = share_dir_for_project(&abs_norm);
-    let share_name = share_name_for_dir(&share_dir);
-    if ensure_share {
-        crate::core::shares::ensure_open_dir_share(
-            db,
-            source_machine_id,
-            &share_name,
-            &share_dir,
-            target_machine_ids,
-        )?;
-    }
-    let rel = rel_under_share_root(&share_dir, &abs_norm);
-    Ok(ProjectPullSource {
-        named_share_unc: crate::core::shares::reachable_share_unc(reach_host, &share_name, &rel),
-        user: None,
-        pass: None,
     })
 }
 
@@ -475,21 +353,6 @@ fn build_distribute_payload(item: &DistributePlanItem, preflight: bool) -> serde
     {
         map.insert("SourceSmbUser".into(), user.into());
         map.insert("SourceSmbPass".into(), pass.into());
-    }
-    if item.source_smb_guest {
-        map.insert("SourceSmbGuest".into(), true.into());
-    }
-    if !item.share_mount_roots.is_empty() {
-        map.insert(
-            "SourceShareRoots".into(),
-            serde_json::Value::Array(
-                item.share_mount_roots
-                    .iter()
-                    .cloned()
-                    .map(serde_json::Value::String)
-                    .collect(),
-            ),
-        );
     }
     obj
 }
@@ -868,213 +731,5 @@ mod tests {
         assert!(!unc_names_share("\\\\HOST\\OTHER", share));
         assert!(!unc_names_share("\\\\HOST\\DDCX", share));
         assert!(!unc_names_share("\\\\HOST", share));
-    }
-
-    #[test]
-    fn qualify_smb_user_adds_server_prefix() {
-        assert_eq!(
-            crate::core::shares::qualify_smb_user("LANPC", "uecm-svc"),
-            r"LANPC\uecm-svc"
-        );
-        assert_eq!(
-            crate::core::shares::qualify_smb_user("LANPC", r"OTHER\uecm-svc"),
-            r"OTHER\uecm-svc"
-        );
-    }
-
-    #[test]
-    fn share_name_for_dir_matches_frontend_slug() {
-        assert_eq!(
-            share_name_for_dir("D:\\Unreal Projects"),
-            "volo-dir-d-unreal-projects"
-        );
-    }
-
-    #[test]
-    fn resolve_project_pull_uses_covering_open_share_unc() {
-        use crate::data::share_configs::{insert, ShareConfig, ShareMode};
-        let (db, source, target, project_id) = setup();
-        insert(
-            &db,
-            &ShareConfig {
-                id: None,
-                host_machine_id: source,
-                share_name: "volo-dir-d-projects".into(),
-                unc_path: r"\\SOURCE\volo-dir-d-projects".into(),
-                local_path: "D:\\Projects".into(),
-                mode: ShareMode::Open,
-                credential_alias: None,
-            },
-        )
-        .unwrap();
-        let mut loc = source_loc(project_id, source);
-        loc.abs_path = "D:\\Projects\\X".into();
-        project_locations::upsert(&db, &loc).unwrap();
-        project_locations::upsert(
-            &db,
-            &ProjectLocation {
-                id: None,
-                project_id,
-                machine_id: target,
-                abs_path: "E:\\Y".into(),
-                uproject_path: "E:\\Y\\X.uproject".into(),
-                discovery_status: crate::data::DiscoveryStatus::Auto,
-                discovered_at: None,
-            },
-        )
-        .unwrap();
-
-        let pull = resolve_project_pull_smb(
-            &db,
-            source,
-            "1.1.1.1",
-            "D:\\Projects\\X",
-            &[target],
-            false,
-        )
-        .unwrap();
-        assert_eq!(pull.named_share_unc, r"\\1.1.1.1\volo-dir-d-projects\X");
-        assert!(pull.user.is_none() && pull.pass.is_none());
-
-        let items = plan(
-            &DistributeProfile::ddc_pak(),
-            &db,
-            source,
-            "1.1.1.1",
-            &loc,
-            &[target],
-            project_id,
-            Some(&pull.named_share_unc),
-            pull.user,
-            pull.pass,
-        )
-        .unwrap();
-        assert_eq!(
-            items[0].source_unc,
-            r"\\1.1.1.1\volo-dir-d-projects\X\DerivedDataCache"
-        );
-    }
-
-    #[test]
-    fn resolve_project_pull_plans_guest_share_when_none_covers() {
-        let (db, source, target, project_id) = setup();
-        let loc = source_loc(project_id, source);
-        let pull = resolve_project_pull_smb(
-            &db,
-            source,
-            "192.168.10.20",
-            &loc.abs_path,
-            &[target],
-            false,
-        )
-        .unwrap();
-        assert_eq!(
-            pull.named_share_unc,
-            r"\\192.168.10.20\volo-dir-d-x"
-        );
-        assert!(pull.user.is_none());
-    }
-
-    #[test]
-    fn plan_sets_guest_for_named_share_without_cred() {
-        let (db, source, target, project_id) = setup();
-        project_locations::upsert(
-            &db,
-            &ProjectLocation {
-                id: None,
-                project_id,
-                machine_id: target,
-                abs_path: "E:\\Y".into(),
-                uproject_path: "E:\\Y\\X.uproject".into(),
-                discovery_status: crate::data::DiscoveryStatus::Auto,
-                discovered_at: None,
-            },
-        )
-        .unwrap();
-        let items = plan(
-            &DistributeProfile::ddc_pak(),
-            &db,
-            source,
-            "1.1.1.1",
-            &source_loc(project_id, source),
-            &[target],
-            project_id,
-            Some("\\\\HOST\\DDC"),
-            None,
-            None,
-        )
-        .unwrap();
-        assert!(items[0].source_smb_guest);
-        let payload = build_distribute_payload(&items[0], true);
-        assert_eq!(payload["SourceSmbGuest"], true);
-        assert!(payload.get("SourceSmbUser").is_none());
-        assert_eq!(payload["SourceShareRoots"][0], r"\\1.1.1.1\DDC");
-    }
-
-    #[test]
-    fn plan_no_guest_for_admin_dollar_share_fallback() {
-        let (db, source, target, project_id) = setup();
-        project_locations::upsert(
-            &db,
-            &ProjectLocation {
-                id: None,
-                project_id,
-                machine_id: target,
-                abs_path: "E:\\Y".into(),
-                uproject_path: "E:\\Y\\X.uproject".into(),
-                discovery_status: crate::data::DiscoveryStatus::Auto,
-                discovered_at: None,
-            },
-        )
-        .unwrap();
-        let items = plan(
-            &DistributeProfile::ddc_pak(),
-            &db,
-            source,
-            "1.1.1.1",
-            &source_loc(project_id, source),
-            &[target],
-            project_id,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-        assert!(!items[0].source_smb_guest);
-    }
-
-    #[test]
-    fn plan_no_guest_when_smb_cred_present() {
-        let (db, source, target, project_id) = setup();
-        project_locations::upsert(
-            &db,
-            &ProjectLocation {
-                id: None,
-                project_id,
-                machine_id: target,
-                abs_path: "E:\\Y".into(),
-                uproject_path: "E:\\Y\\X.uproject".into(),
-                discovery_status: crate::data::DiscoveryStatus::Auto,
-                discovered_at: None,
-            },
-        )
-        .unwrap();
-        let items = plan(
-            &DistributeProfile::ddc_pak(),
-            &db,
-            source,
-            "1.1.1.1",
-            &source_loc(project_id, source),
-            &[target],
-            project_id,
-            Some("\\\\HOST\\DDC"),
-            Some(r"LANPC\ddc-svc".into()),
-            Some("secret".into()),
-        )
-        .unwrap();
-        assert!(!items[0].source_smb_guest);
-        let payload = build_distribute_payload(&items[0], false);
-        assert!(payload.get("SourceSmbGuest").is_none());
-        assert_eq!(payload["SourceSmbUser"], r"LANPC\ddc-svc");
     }
 }

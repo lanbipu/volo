@@ -222,53 +222,20 @@ pub fn scp_push(
     Ok(())
 }
 
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
-fn node_script_manifest(files: &[PathBuf]) -> VoloResult<BTreeMap<String, String>> {
-    let mut dirs: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
-    for path in files {
-        let parent = path.parent().ok_or_else(|| {
-            VoloError::ScriptStaging(format!("script has no parent dir: {}", path.display()))
-        })?;
-        let name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
-            VoloError::ScriptStaging(format!("script has invalid file name: {}", path.display()))
-        })?;
-        dirs.entry(parent.to_path_buf())
-            .or_default()
-            .push(name.to_string());
-    }
-
-    let mut out = BTreeMap::new();
-    for (dir, names) in dirs {
-        let dir_manifest = compute_manifest(&dir)?;
-        for name in names {
-            let hash = dir_manifest.get(&name).ok_or_else(|| {
-                VoloError::ScriptStaging(format!(
-                    "script disappeared while staging: {}",
-                    dir.join(&name).display()
-                ))
-            })?;
-            out.insert(name, hash.clone());
-        }
-    }
-    Ok(out)
-}
-
-fn remote_manifest_script(staging_root: &str) -> String {
-    let root = staging_root.replace('\'', "''");
-    format!(
-        "$ErrorActionPreference='Stop'; \
-         [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; \
-         $root='{root}'; $m=[ordered]@{{}}; \
-         if (Test-Path -LiteralPath $root) {{ \
-           Get-ChildItem -LiteralPath $root -Filter '*.ps1' -File | Sort-Object Name | ForEach-Object {{ \
-             $m[$_.Name]=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() \
-           }} \
-         }}; $m | ConvertTo-Json -Compress"
-    )
+/// Hosts whose node scripts this process has already staged. Operator-side
+/// script changes only reach a node when we re-push them; onboarding
+/// (enable-ssh.ps1) stages an initial copy but never updates it. We bulk-push
+/// the current scripts once per host per process so every domain that runs
+/// `-File <staged>` by name executes the operator's current code.
+fn synced_hosts() -> &'static Mutex<HashSet<String>> {
+    static SYNCED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    SYNCED.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 /// Names of stageable `*.ps1` in one dir: everything except the node-local
@@ -337,51 +304,11 @@ impl SshExecutor {
         }
     }
 
-    fn remote_script_manifest(
-        &self,
-        host: &str,
-        user: &str,
-    ) -> VoloResult<BTreeMap<String, String>> {
-        let mut args = build_ssh_args(
-            &self.key_path.to_string_lossy(),
-            &self.known_hosts.to_string_lossy(),
-            user,
-            host,
-            "unused.ps1",
-            &self.staging_root,
-        );
-        *args.last_mut().expect("ssh args include remote command") =
-            "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command -".into();
-        let mut child = Command::new("ssh")
-            .args(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| VoloError::SshConnect(format!("spawn ssh for script manifest failed: {e}")))?;
-        child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| VoloError::SshConnect("open ssh manifest stdin failed".into()))?
-            .write_all(remote_manifest_script(&self.staging_root).as_bytes())
-            .map_err(|e| VoloError::SshConnect(format!("write ssh manifest stdin failed: {e}")))?;
-        let output = child
-            .wait_with_output()
-            .map_err(|e| VoloError::SshConnect(format!("wait ssh manifest failed: {e}")))?;
-        let stdout = Self::decode(&output.stdout);
-        let stderr = Self::decode(&output.stderr);
-        if !output.status.success() {
-            return Err(map_exit(
-                output.status.code().unwrap_or(-1),
-                &failure_detail(&stdout, &stderr),
-            ));
-        }
-        remote_manifest_from_json(stdout.trim())
-    }
-
-    /// Compare local and remote SHA256 manifests before every node-script run,
-    /// then push only changed/new scripts. This avoids process-lifetime caches
-    /// hiding local edits or bootstrap-restored stale copies on a node.
+    /// Push current node scripts to `host` once per process per login user
+    /// (see `synced_hosts`). Staged via the same `user` the script will run as,
+    /// so a node that only authorized a per-script account still gets its
+    /// scripts. scp wants a forward-slash remote path even on Windows targets;
+    /// the backslash `staging_root` is kept for the `-File` exec path.
     fn ensure_scripts_staged(&self, host: &str, user: &str) -> VoloResult<()> {
         // 并发防护：读路径命令 async 化（spawn_blocking）后，同一主机的多条读会并发
         // 首触发 staging；check-then-scp 不加锁时对同一远端路径并发 scp 同名脚本
@@ -389,6 +316,10 @@ impl SshExecutor {
         // 缓存早返回；顺带压平首次挂载的并发 SSH 连接峰值。
         static STAGE_LOCK: Mutex<()> = Mutex::new(());
         let _stage = STAGE_LOCK.lock().unwrap();
+        let cache_key = format!("{user}@{host}");
+        if synced_hosts().lock().unwrap().contains(&cache_key) {
+            return Ok(());
+        }
         let files = node_script_files();
         if files.is_empty() {
             // Finding zero local scripts means a broken install / bad UECM_PS_DIR,
@@ -398,36 +329,16 @@ impl SshExecutor {
                 "no local node scripts found to stage (check ps-scripts dir / UECM_PS_DIR)".into(),
             ));
         }
-        let local_manifest = node_script_manifest(&files)?;
-        let remote_manifest = self.remote_script_manifest(host, user)?;
-        let drifted = drifted_files(&local_manifest, &remote_manifest);
-        let files_by_name: BTreeMap<_, _> = files
-            .iter()
-            .filter_map(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .map(|name| (name.to_string(), path.clone()))
-            })
-            .collect();
-        let files_to_push: Vec<PathBuf> = drifted
-            .iter()
-            .map(|name| {
-                files_by_name.get(name).cloned().ok_or_else(|| {
-                    VoloError::ScriptStaging(format!(
-                        "manifest references missing local script: {name}"
-                    ))
-                })
-            })
-            .collect::<VoloResult<_>>()?;
         let remote_dir = self.staging_root.replace('\\', "/");
         scp_push(
             &self.key_path,
             &self.known_hosts,
             user,
             host,
-            &files_to_push,
+            &files,
             &remote_dir,
         )?;
+        synced_hosts().lock().unwrap().insert(cache_key);
         Ok(())
     }
 }
@@ -594,25 +505,6 @@ mod tests {
     }
 
     #[test]
-    fn node_script_manifest_only_includes_resolved_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = dir.path().join("a.ps1");
-        std::fs::write(&a, b"hello").unwrap();
-        std::fs::write(dir.path().join("not-selected.ps1"), b"world").unwrap();
-        let manifest = node_script_manifest(&[a]).unwrap();
-        assert_eq!(manifest.len(), 1);
-        assert!(manifest.contains_key("a.ps1"));
-    }
-
-    #[test]
-    fn remote_manifest_script_hashes_ps1_and_escapes_root() {
-        let script = remote_manifest_script(r"C:\ProgramData\Owner's\ps-scripts");
-        assert!(script.contains("$root='C:\\ProgramData\\Owner''s\\ps-scripts'"));
-        assert!(script.contains("Get-FileHash"));
-        assert!(script.contains("ToLowerInvariant"));
-    }
-
-    #[test]
     fn from_config_builds_executor_and_generates_keypair() {
         let _lock = crate::ENV_TEST_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
@@ -629,20 +521,6 @@ mod tests {
     // was dropped — a loopback target is now probed/run via real SSH-to-self as
     // uecm-svc, so admin-requiring node scripts execute elevated and probe never
     // falsely reports ok. Real-node loopback behavior is validated on lanPC.)
-
-    #[test]
-    fn node_script_manifest_changes_when_content_changes() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = dir.path().join("a.ps1");
-        let b = dir.path().join("b.ps1");
-        std::fs::write(&a, b"v1").unwrap();
-        std::fs::write(&b, b"same").unwrap();
-        let manifest1 = node_script_manifest(&[a.clone(), b.clone()]).unwrap();
-        std::fs::write(&a, b"v2").unwrap();
-        let manifest2 = node_script_manifest(&[a, b]).unwrap();
-        assert_ne!(manifest1["a.ps1"], manifest2["a.ps1"]);
-        assert_eq!(manifest1["b.ps1"], manifest2["b.ps1"]);
-    }
 
     #[test]
     fn remote_manifest_parses_node_json() {

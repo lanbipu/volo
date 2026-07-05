@@ -402,12 +402,6 @@ pub async fn distribute_ddc_pak(
         // behavior of letting a manual/override UNC through. Cred from the
         // SecretStore alias if given (Mode B svc = ddc-svc), else none (open share).
         Some(unc) => {
-            cache_core::core::shares::ensure_source_unc_share_live(
-                &db,
-                source_machine_id,
-                &source_machine.ip,
-                unc,
-            )?;
             // Resolve the SMB cred ALIAS for this explicit UNC: the caller's
             // explicit alias wins; otherwise match the UNC to a registered share
             // on the source host (an explicit UNC uniquely identifies the share,
@@ -420,7 +414,6 @@ pub async fn distribute_ddc_pak(
             // Mode A row may store an unrelated operator alias and is mounted
             // anonymously, so it must not be treated as an SMB cred.)
             let alias = source_smb_credential_alias.clone().or_else(|| {
-                let explicit_share_name = cache_core::core::shares::unc_share_name(unc)?;
                 cache_core::data::share_configs::find_by_host(&db, source_machine_id)
                     .ok()
                     .and_then(|shares| {
@@ -428,7 +421,7 @@ pub async fn distribute_ddc_pak(
                             .into_iter()
                             .find(|s| {
                                 s.mode == cache_core::data::ShareMode::Managed
-                                    && s.share_name.eq_ignore_ascii_case(&explicit_share_name)
+                                    && pak_distribute::unc_names_share(unc, &s.unc_path)
                             })
                             .and_then(|s| s.credential_alias)
                     })
@@ -448,29 +441,21 @@ pub async fn distribute_ddc_pak(
                     let user = cache_core::data::credentials::find_by_alias(&db, a)?
                         .map(|c| c.username)
                         .unwrap_or_else(|| "ddc-svc".to_string());
-                    let server =
-                        cache_core::core::shares::smb_server_name_for_machine(&db, source_machine_id)?;
-                    let qualified =
-                        cache_core::core::shares::qualify_smb_user(&server, &user);
-                    (Some(qualified), Some(pass))
+                    (Some(user), Some(pass))
                 }
                 None => (None, None),
             };
             (Some(unc.clone()), user, pass)
         }
-        // No explicit UNC: resolve share-based SMB pull (registered share or auto
-        // guest open-share on the project parent — same as Explorer open-folder).
+        // No explicit UNC: auto-derive the source share + cred from the SecretStore.
         None => {
-            let _ = &source_smb_credential_alias;
-            let pull = pak_distribute::resolve_project_pull_smb(
+            let smb = pak_distribute::resolve_source_smb(
                 &db,
                 source_machine_id,
-                &source_machine.ip,
-                &source_location.abs_path,
-                &target_machine_ids,
+                source_smb_credential_alias.as_deref(),
                 true,
             )?;
-            (Some(pull.named_share_unc), pull.user, pull.pass)
+            (smb.named_share_unc, smb.user, smb.pass)
         }
     };
 
@@ -495,14 +480,9 @@ pub async fn distribute_ddc_pak(
 
     for item in &plan {
         pak_distribute::preflight_one_with_profile(&distribute_profile, item).await.map_err(|e| {
-            let roots = if item.share_mount_roots.is_empty() {
-                item.source_unc.clone()
-            } else {
-                item.share_mount_roots.join(", ")
-            };
             VoloError::OperationFailed(format!(
-                "target {} cannot reach source UNC {}; attempted share roots [{}]: {}",
-                item.target_machine_id, item.source_unc, roots, e
+                "target {} cannot reach source UNC: {}",
+                item.target_machine_id, e
             ))
         })?;
     }

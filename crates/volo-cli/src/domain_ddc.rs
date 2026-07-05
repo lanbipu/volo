@@ -335,7 +335,6 @@ fn distribute(
     source_smb_cred_alias: Option<&str>,
     cred: &CredentialArgs,
 ) -> VoloResult<()> {
-    let _ = source_smb_cred_alias;
     let db = ctx.require_db()?.clone();
 
     let routing = resolve_backend(&db, project_id, source_machine_id, backend_choice)?;
@@ -352,14 +351,17 @@ fn distribute(
                 ))
             })?;
 
-    // Project-local pull over SMB share (registered or auto guest open-share).
+    // Source SMB now comes from the SecretStore (explicit alias or auto-derived
+    // from the source host's Mode B/A share) — the operator->target leg is SSH
+    // key auth and needs no forwarded credential. Dry-run resolves the same
+    // share/UNC and runs the same validation, but skips reading the secret
+    // (read_secret = false), so previews stay side-effect-free yet show the
+    // real source UNC.
     cred.preflight(&db)?;
-    let pull = pak_distribute::resolve_project_pull_smb(
+    let smb = pak_distribute::resolve_source_smb(
         &db,
         source_machine_id,
-        &source_machine.ip,
-        &source_location.abs_path,
-        target_ids,
+        source_smb_cred_alias,
         !dry_run,
     )?;
 
@@ -372,9 +374,9 @@ fn distribute(
         &source_location,
         target_ids,
         project_id,
-        Some(&pull.named_share_unc),
-        pull.user,
-        pull.pass,
+        smb.named_share_unc.as_deref(), // managed-share UNC paired with the SMB cred
+        smb.user,
+        smb.pass,
     )?;
 
     if plan.is_empty() {

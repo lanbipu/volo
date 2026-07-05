@@ -1,15 +1,10 @@
 # Robocopy a DDC pak set from a source SMB share into a local dir.
 #
 # Node-pure: runs locally on the target (shipped + executed via SSH -File).
-# stdin: JSON { "SourceUnc","TargetLocal",["SourceSmbUser","SourceSmbPass"],["SourceSmbGuest":bool],["SourceShareRoots":[...]],["PreflightOnly":bool] }
+# stdin: JSON { "SourceUnc","TargetLocal",["SourceSmbUser","SourceSmbPass"],["PreflightOnly":bool] }
 # Output: JSON { ok, exit_code, bytes_copied, stdout_tail, [message] }
 [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; chcp 65001 | Out-Null
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'distribute-smb-mount.ps1')
-
-function Test-UncReachable([string]$Path) {
-    return [bool](Test-Path -LiteralPath $Path -ErrorAction SilentlyContinue)
-}
 
 try {
     $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
@@ -17,12 +12,6 @@ try {
     $TargetLocal = $p.TargetLocal
     $SmbUser = $p.SourceSmbUser
     $SmbPass = $p.SourceSmbPass
-    $ShareRoots = @($p.SourceShareRoots | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    $UseGuest = if ($null -ne $p.SourceSmbGuest) {
-        [bool]$p.SourceSmbGuest
-    } else {
-        [string]::IsNullOrEmpty($SmbUser) -and [string]::IsNullOrEmpty($SmbPass)
-    }
     $PreflightOnly = [bool]$p.PreflightOnly
     if ([string]::IsNullOrWhiteSpace($SourceUnc) -or [string]::IsNullOrWhiteSpace($TargetLocal)) {
         throw "SourceUnc and TargetLocal are required"
@@ -31,23 +20,14 @@ try {
     if (-not (Test-Path -LiteralPath $TargetLocal)) {
         New-Item -Path $TargetLocal -ItemType Directory -Force | Out-Null
     }
-    $sourceShareRoot = $SourceUnc
-    if ($SourceUnc -match '^(\\\\[^\\]+\\[^\\]+)') { $sourceShareRoot = $Matches[1] }
-    $shareRoot = $sourceShareRoot
-    $effectiveSourceUnc = $SourceUnc
+    $driveName = "uecmsrc$PID"
     $mounted = $false
-    $mountedRoot = $null
     try {
-        $mountedRoot = Mount-DistributeSourceShare -ShareRoot $shareRoot -ShareRoots $ShareRoots -SmbUser $SmbUser -SmbPass $SmbPass -UseGuest $UseGuest
-        $mounted = -not [string]::IsNullOrWhiteSpace($mountedRoot)
-        if ($mounted) {
-            $shareRoot = $mountedRoot
-            $relativeSource = $SourceUnc.Substring($sourceShareRoot.Length).TrimStart('\')
-            $effectiveSourceUnc = if ($relativeSource) {
-                "$($mountedRoot.TrimEnd('\'))\$relativeSource"
-            } else {
-                $mountedRoot
-            }
+        if (-not [string]::IsNullOrEmpty($SmbUser) -and -not [string]::IsNullOrEmpty($SmbPass)) {
+            $secure = ConvertTo-SecureString -String $SmbPass -AsPlainText -Force
+            $smbCred = New-Object System.Management.Automation.PSCredential($SmbUser, $secure)
+            New-PSDrive -Name $driveName -PSProvider FileSystem -Root $SourceUnc -Credential $smbCred -ErrorAction Stop | Out-Null
+            $mounted = $true
         }
         # Exact-filename robocopy filter (see below) matches nothing and still
         # exits 0 if the source has no DDC.ddp — check the file directly (one
@@ -55,10 +35,10 @@ try {
         # of a silent "0 bytes copied" success; only re-probe the bare UNC on
         # failure to report the more specific "unreachable" cause.
         $FileName = 'DDC.ddp'
-        $sourceFile = Join-Path -Path $effectiveSourceUnc -ChildPath $FileName
-        if (-not (Test-UncReachable $sourceFile)) {
-            if (-not (Test-UncReachable $effectiveSourceUnc)) {
-                throw "source UNC unreachable after mount: $effectiveSourceUnc"
+        $sourceFile = Join-Path -Path $SourceUnc -ChildPath $FileName
+        if (-not (Test-Path -LiteralPath $sourceFile)) {
+            if (-not (Test-Path -LiteralPath $SourceUnc)) {
+                throw "source UNC unreachable: $SourceUnc"
             }
             throw "source has no $FileName to distribute: $sourceFile"
         }
@@ -68,7 +48,7 @@ try {
         }
         $stdoutPath = Join-Path -Path $env:TEMP -ChildPath "robocopy-stdout-$PID.log"
         $stderrPath = Join-Path -Path $env:TEMP -ChildPath "robocopy-stderr-$PID.log"
-        $roboArgs = @("$effectiveSourceUnc", "$TargetLocal", "$FileName", '/E', '/R:3', '/W:5', '/NP', '/NDL', '/NJH', '/NJS', '/BYTES')
+        $roboArgs = @("$SourceUnc", "$TargetLocal", "$FileName", '/E', '/R:3', '/W:5', '/NP', '/NDL', '/NJH', '/NJS', '/BYTES')
         $proc = Start-Process -FilePath 'robocopy.exe' -ArgumentList $roboArgs -PassThru -Wait -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
         $code = $proc.ExitCode
         $stdout = Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue
@@ -84,15 +64,10 @@ try {
         @{ ok = ($code -lt 8); exit_code = "$code"; bytes_copied = "$bytesCopied"; stdout_tail = "$tail"; preflight = $false } | ConvertTo-Json -Compress
     }
     finally {
-        if ($mounted) { Unmount-DistributeSourceShare -ShareRoot $shareRoot }
+        if ($mounted) { Remove-PSDrive -Name $driveName -Force -ErrorAction SilentlyContinue }
     }
 }
 catch {
-    $detail = $_.Exception.Message
-    if (-not [string]::IsNullOrWhiteSpace($SourceUnc)) {
-        $roots = if ($ShareRoots.Count) { ($ShareRoots -join ', ') } else { $shareRoot }
-        $detail = "SourceUnc=$SourceUnc; EffectiveSourceUnc=$effectiveSourceUnc; ShareRoots=[$roots]; $detail"
-    }
-    @{ ok = $false; exit_code = "-1"; bytes_copied = "0"; stdout_tail = ""; message = "$detail" } | ConvertTo-Json -Compress
+    @{ ok = $false; exit_code = "-1"; bytes_copied = "0"; stdout_tail = ""; message = "$($_.Exception.Message)" } | ConvertTo-Json -Compress
     exit 1
 }

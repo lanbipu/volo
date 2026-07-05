@@ -163,7 +163,6 @@ fn host_for(db: &Db, machine_id: i64) -> VoloResult<String> {
 /// share spec (not a DB share lookup), so a same-run open share that was never
 /// persisted to `share_configs` still distributes.
 fn deploy_source_smb(db: &Db, plan: &DeployPlan) -> VoloResult<(Option<String>, Option<String>)> {
-    use crate::core::shares::{qualify_smb_user, smb_server_name_for_machine};
     match plan.shared_cache.mode.as_str() {
         "b" | "B" => {
             let server_host = host_for(db, plan.shared_cache.server_machine_id)?;
@@ -176,10 +175,9 @@ fn deploy_source_smb(db: &Db, plan: &DeployPlan) -> VoloResult<(Option<String>, 
                          re-run the share-creation step"
                     ))
                 })?;
-            let server = smb_server_name_for_machine(db, plan.shared_cache.server_machine_id)?;
-            Ok((Some(qualify_smb_user(&server, "ddc-svc")), Some(pass)))
+            Ok((Some("ddc-svc".to_string()), Some(pass)))
         }
-        _ => Ok((None, None)), // Mode A (open) share — guest mount in distribute script
+        _ => Ok((None, None)), // Mode A (open) share — anonymous mount, no credential
     }
 }
 
