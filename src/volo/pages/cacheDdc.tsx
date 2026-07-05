@@ -186,8 +186,21 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
   const batchReduce = (ev, p, st) => {
     const e = p && p.event ? p.event : {};
     st.terminal = st.terminal || new Set();
+    st.frac = st.frac || {}; /* machine_id -> 0..1 字节进度（push 传输轮询事件 "bytes:cur/total"）*/
     const mid = e.machine_id;
-    if (e.status === 'running') return { log: { lv: 'info', msg: '分发中 · 机器 ' + mid } };
+    if (e.status === 'running') {
+      /* push 传输的字节进度：message = "bytes:<cur>/<total>"。整体 pct =
+         (终态机器数 + 传输中机器的字节占比之和) / 总机器数 → 右下角进度条真实推进。 */
+      const m = /^bytes:(\d+)\/(\d+)$/.exec(e.message || '');
+      if (m && st.total) {
+        const frac = Number(m[2]) > 0 ? Math.min(1, Number(m[1]) / Number(m[2])) : 0;
+        st.frac[mid] = Math.max(st.frac[mid] || 0, frac);
+        let sum = st.terminal.size;
+        Object.keys(st.frac).forEach((k) => { if (!st.terminal.has(Number(k))) sum += st.frac[k]; });
+        return { pct: sum / st.total * 100 };
+      }
+      return { log: { lv: 'info', msg: '分发中 · 机器 ' + mid } };
+    }
     if (e.status === 'ok' || e.status === 'err') {
       st.terminal.add(mid);
       if (e.status === 'err') st.anyErr = true;

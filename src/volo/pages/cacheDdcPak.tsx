@@ -439,16 +439,18 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
         confirmLabelFn: (n) => '分发到 ' + n + ' 台',
         doneTitle: '分发完成', doneMsg: (_r, picked) => dp.project.name + ' 已分发到 ' + ((picked && picked.length) || targetIds.length) + ' 台渲染机',
         steps: [
-          '把该 PAK 从源机 ' + srcHost + ' 增量分发到所选机器',
-          '已有的分块自动跳过，只传缺失部分',
-          '分发后回读校验各机 DDC.ddp 是否就位'],
+          '把该 PAK 从源机 ' + srcHost + ' 经 SSH 推送到所选机器',
+          '目标机已有相同大小的 PAK 时自动跳过，不重复传输',
+          '传输后校验大小并原子落位 DDC.ddp'],
         selectableScope: cand.map((n) => ({ id: n.machineId, host: n.host, ip: n.ip, msg: n.gpu })),
         run: (picked) => {
           const targets = (picked && picked.length) ? picked : targetIds;
+          /* resolveOnDone：invoke 返回只代表 preflight 过了、传输已开始——对话框要等
+             事件流数满全部目标的终态（真正分发完）才能翻「完成」，否则秒变绿误导。 */
           return s.runStreamingCmd(
             { domain: 'ddc', action: 'distribute', target: dp.project.name + ' · ' + targets.length + ' 台', chan: 'ssh', note: '分发 · ' + dp.project.name, quiet: true },
             () => distributeDdcPak(dp.source.machine_id, Number(dp.project.id), targets, null, null, null),
-            { mode: 'event', events: ['pak-distribute-progress'], jobIdOf: (r) => r.job_id, total: (r) => (r.plan || []).length, reduce: DDC.batchReduce, timeoutMs: 30 * 60 * 1000 })
+            { mode: 'event', events: ['pak-distribute-progress'], jobIdOf: (r) => r.job_id, total: (r) => (r.plan || []).length, reduce: DDC.batchReduce, timeoutMs: 30 * 60 * 1000, resolveOnDone: true })
             .then(() => loadDeployed(true));
         },
       });

@@ -26,14 +26,30 @@ use crate::error::{VoloError, VoloResult};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-/// Inbound staging root on target nodes (space-free so scp needs no remote
-/// quoting). Each job uses a `<root>/<job_id>` subdir; `receive-transfer.ps1`
-/// creates it in preflight and removes it after install.
-const TRANSFER_IN_ROOT_FWD: &str = "C:/ProgramData/UECM/transfer/in";
-const TRANSFER_IN_ROOT_WIN: &str = r"C:\ProgramData\UECM\transfer\in";
 /// Outbound staging root on remote source nodes (created by
 /// `stage-transfer-out.ps1`).
 const TRANSFER_OUT_ROOT_FWD: &str = "C:/ProgramData/UECM/transfer/out";
+
+/// Inbound staging dir on a target node, chosen on the SAME volume as the
+/// final path so `Move-Item` is a rename, not a second full copy of a
+/// multi-GB file (staging on `C:` while the target sits on `D:` doubled the
+/// write). Space-free so scp needs no remote quoting; per-job subdir;
+/// `receive-transfer.ps1` creates it in preflight and removes it after
+/// install. Falls back to `C:` when the target path isn't drive-rooted.
+fn staging_dir_win(target_local: &str, job_id: &str) -> String {
+    let drive = target_local
+        .as_bytes()
+        .first()
+        .copied()
+        .filter(|c| c.is_ascii_alphabetic() && target_local.as_bytes().get(1) == Some(&b':'))
+        .map(|c| c as char)
+        .unwrap_or('C');
+    format!("{drive}:\\VoloTransfer\\in\\{job_id}")
+}
+
+fn staging_dir_fwd(target_local: &str, job_id: &str) -> String {
+    staging_dir_win(target_local, job_id).replace('\\', "/")
+}
 
 /// The source file resolved onto the operator machine, ready to push.
 pub struct PushSource {
@@ -126,6 +142,9 @@ struct ReceiveRaw {
     stdout_tail: String,
     #[serde(default)]
     message: Option<String>,
+    /// Preflight only: size of the file already at the final path, -1 if none.
+    #[serde(default)]
+    existing_size: String,
 }
 
 /// Resolve the source file onto the operator. `source_file` is the full
@@ -188,7 +207,7 @@ pub fn acquire_source(source_host: &str, source_file: &str, job_id: &str) -> Vol
 
 fn receive_args(item: &DistributePlanItem, job_id: &str, staged_name: &str, expected_size: i64, preflight: bool) -> serde_json::Value {
     serde_json::json!({
-        "StagingDir": format!("{TRANSFER_IN_ROOT_WIN}\\{job_id}"),
+        "StagingDir": staging_dir_win(&item.target_local, job_id),
         "StagedName": staged_name,
         "TargetLocal": item.target_local,
         "FileName": item.file_name.as_deref().unwrap_or_default(),
@@ -199,8 +218,16 @@ fn receive_args(item: &DistributePlanItem, job_id: &str, staged_name: &str, expe
 
 /// Preflight one target: create the staging dir (so the scp that follows has
 /// a destination) and write-probe the final dir — a permission problem
-/// surfaces before the multi-GB transfer, not after it.
-pub fn preflight_push_one(item: &DistributePlanItem, job_id: &str, staged_name: &str) -> VoloResult<()> {
+/// surfaces before the multi-GB transfer, not after it. Returns the size of
+/// the file already at the final path (`None` if absent), so callers can skip
+/// the transfer when the target already holds an identical-size copy — the
+/// robocopy path's same-file skip semantics, and the reason repeat distributes
+/// used to complete in seconds.
+pub fn preflight_push_one(
+    item: &DistributePlanItem,
+    job_id: &str,
+    staged_name: &str,
+) -> VoloResult<Option<i64>> {
     if crate::core::loopback::is_loopback_target(&item.target_host) {
         std::fs::create_dir_all(&item.target_local).map_err(|e| {
             VoloError::OperationFailed(format!(
@@ -208,7 +235,9 @@ pub fn preflight_push_one(item: &DistributePlanItem, job_id: &str, staged_name: 
                 item.target_local
             ))
         })?;
-        return Ok(());
+        let final_path = Path::new(&item.target_local)
+            .join(item.file_name.as_deref().unwrap_or_default());
+        return Ok(std::fs::metadata(final_path).ok().map(|m| m.len() as i64));
     }
     let exec = SshExecutor::from_config()?;
     let raw: ReceiveRaw = run_json(
@@ -225,7 +254,34 @@ pub fn preflight_push_one(item: &DistributePlanItem, job_id: &str, staged_name: 
             raw.message.unwrap_or_else(|| "push preflight failed".into()),
         ));
     }
-    Ok(())
+    Ok(raw.existing_size.parse::<i64>().ok().filter(|s| *s >= 0))
+}
+
+/// Current byte count of the staged file on a target while scp is writing it
+/// (-1 → not created yet). One cheap SSH round-trip; progress pollers call
+/// this every few seconds and convert bytes into UI progress events.
+pub fn query_staged_size(item: &DistributePlanItem, job_id: &str, staged_name: &str) -> VoloResult<i64> {
+    #[derive(Deserialize)]
+    struct SizeRaw {
+        ok: bool,
+        #[serde(default)]
+        size: String,
+    }
+    let exec = SshExecutor::from_config()?;
+    let path = format!("{}\\{}", staging_dir_win(&item.target_local, job_id), staged_name);
+    let raw: SizeRaw = run_json(
+        &exec,
+        &item.target_host,
+        &NodeScript {
+            name: "probe-transfer-size.ps1",
+            args: serde_json::json!({ "Path": path }),
+            ssh_user: None,
+        },
+    )?;
+    if !raw.ok {
+        return Ok(-1);
+    }
+    Ok(raw.size.parse().unwrap_or(-1))
 }
 
 /// Push the source file to one target and install it at the final path.
@@ -260,7 +316,7 @@ pub fn push_one(item: &DistributePlanItem, source: &PushSource, job_id: &str) ->
         &exec.default_user,
         &item.target_host,
         &source.local_file,
-        &format!("{TRANSFER_IN_ROOT_FWD}/{job_id}"),
+        &staging_dir_fwd(&item.target_local, job_id),
     )?;
     let raw: ReceiveRaw = run_json(
         &exec,
@@ -379,7 +435,9 @@ mod tests {
             source_smb_pass: None,
         };
         let v = receive_args(&item, "job1", "DDC.ddp", 42, true);
-        assert_eq!(v["StagingDir"], "C:\\ProgramData\\UECM\\transfer\\in\\job1");
+        // Staging sits on the SAME volume as the final path (D:), so the
+        // install Move-Item is a rename, not a second full copy.
+        assert_eq!(v["StagingDir"], "D:\\VoloTransfer\\in\\job1");
         assert_eq!(v["StagedName"], "DDC.ddp");
         assert_eq!(v["FileName"], "DDC.ddp");
         assert_eq!(v["ExpectedSize"], 42);

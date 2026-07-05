@@ -39,7 +39,13 @@ try {
         $probe = Join-Path -Path $TargetLocal -ChildPath ".volo-write-probe-$PID"
         Set-Content -LiteralPath $probe -Value 'probe' -ErrorAction Stop
         Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
-        @{ ok = $true; exit_code = "0"; bytes_copied = "0"; stdout_tail = "preflight ok"; preflight = $true } | ConvertTo-Json -Compress
+        # Report the existing final file's size (if any) so the operator can
+        # skip the transfer entirely when the target already holds an
+        # identical-size copy — the robocopy path's same-file skip semantics.
+        $existing = "-1"
+        $final = Join-Path -Path $TargetLocal -ChildPath $FileName
+        if (Test-Path -LiteralPath $final) { $existing = "$((Get-Item -LiteralPath $final).Length)" }
+        @{ ok = $true; exit_code = "0"; bytes_copied = "0"; stdout_tail = "preflight ok"; preflight = $true; existing_size = $existing } | ConvertTo-Json -Compress
         return
     }
 

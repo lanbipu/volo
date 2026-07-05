@@ -801,6 +801,13 @@ function App() {
     }
 
     let jobId = null, finished = false, timer = null;
+    /* wiring.resolveOnDone：返回的 promise 推迟到事件流终态（finalize）才落定——
+       kickoff(invoke) 返回只代表任务已启动（如分发的 preflight 过了），真实完成要等
+       reducer 数满 st.total。Modal 等「真正分发完」用这个；不传保持旧语义（resolve=已启动）。 */
+    let doneResolve = null;
+    const donePromise = wiring.resolveOnDone
+      ? new Promise((res, rej) => { doneResolve = { res, rej }; })
+      : null;
     let cancelJobIds = null, cancelWanted = false; /* 用户取消：kickoff 前点了先记账，job_id 到手立即补发 */
     let uns = [];
     const buf = [];
@@ -826,6 +833,10 @@ function App() {
           : { lv: 'err', cat: domain, ch: chan, task: no, msg: `<b>${title} #${no}</b> 失败 · exit ${ex}`, detail });
       uns.forEach((u) => { try { u(); } catch (e) {} });
       if (wiring.onDone) { try { wiring.onDone(ok); } catch (e) {} } /* 完成回调（如收集后重载列表）*/
+      if (doneResolve) {
+        if (ok) doneResolve.res(payload);
+        else doneResolve.rej(new VoloInvokeError(title, errMsg || (canceled ? '已取消' : `失败 · exit ${ex}`)));
+      }
     };
     /* 可取消长任务（UE runner 后端有 UeJobRegistry）：注册取消入口。取消 = 对全部 job_id
        发 cancel_ue_job（预热 fan-out 是每台一个 job），真正的 canceled 终态由事件流回传
@@ -903,6 +914,7 @@ function App() {
     } else {
       finalize(true, 0, resp); /* 'await' 模式：kickoff 已是终态，resp 即真实返回值 */
     }
+    if (donePromise) { await donePromise; } /* resolveOnDone：等事件流真正收尾（失败则 throw）*/
     return resp;
   };
 

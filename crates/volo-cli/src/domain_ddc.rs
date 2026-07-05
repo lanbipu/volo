@@ -468,7 +468,19 @@ fn distribute(
                 Some(source) => {
                     let staged = cache_core::core::push_distribute::staged_name_of(source);
                     cache_core::core::push_distribute::preflight_push_one(&item, &job_id, &staged)
-                        .and_then(|()| {
+                        .and_then(|existing| {
+                            // Same-file skip: identical-size copy already at the
+                            // final path (robocopy-equivalent semantics).
+                            if existing == Some(source.expected_size) {
+                                return Ok(cache_core::core::pak_distribute::DistributeOutcome {
+                                    target_machine_id: item.target_machine_id,
+                                    ok: true,
+                                    exit_code: 0,
+                                    bytes_copied: 0,
+                                    stdout_tail: "target already up to date (size match), skipped".into(),
+                                    message: None,
+                                });
+                            }
                             cache_core::core::push_distribute::push_one(&item, source, &job_id)
                         })
                 }

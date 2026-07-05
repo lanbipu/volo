@@ -631,15 +631,20 @@ async fn distribute_ddc_pak_push(
 
     // Preflight before returning the job: staging dir created (scp needs the
     // destination), final dir write-probed (a permission problem surfaces
-    // before the multi-GB transfer). Placeholder staged name — preflight only
-    // validates/creates directories.
+    // before the multi-GB transfer). Also collects each target's existing
+    // final-file size so the task can skip identical-size copies (the robocopy
+    // path's same-file skip — repeat distributes complete in seconds).
+    let mut existing_sizes: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
     for item in &plan {
-        push_distribute::preflight_push_one(item, &job_id, file_name).map_err(|e| {
+        let existing = push_distribute::preflight_push_one(item, &job_id, file_name).map_err(|e| {
             VoloError::OperationFailed(format!(
                 "target {} push preflight failed: {}",
                 item.target_machine_id, e
             ))
         })?;
+        if let Some(size) = existing {
+            existing_sizes.insert(item.target_machine_id, size);
+        }
     }
 
     let mut operation_machines = Vec::with_capacity(target_machine_ids.len() + 1);
@@ -712,6 +717,8 @@ async fn distribute_ddc_pak_push(
         let plan_lookup = plan_for_task.clone();
         let source_for_batch = source.clone();
         let job_for_batch = job_id_for_task.clone();
+        let app_for_progress = app_for_task.clone();
+        let job_for_progress = job_id_for_task.clone();
         let mut rx = batch::run_batch(
             machine_ids,
             batch::DEFAULT_MAX_CONCURRENCY,
@@ -719,6 +726,9 @@ async fn distribute_ddc_pak_push(
                 let plan_lookup = plan_lookup.clone();
                 let source = source_for_batch.clone();
                 let job_id = job_for_batch.clone();
+                let existing_sizes = existing_sizes.clone();
+                let app_progress = app_for_progress.clone();
+                let job_progress = job_for_progress.clone();
                 async move {
                     let item = plan_lookup
                         .iter()
@@ -730,11 +740,72 @@ async fn distribute_ddc_pak_push(
                             ))
                         })?
                         .clone();
+                    // Same-file skip: the target already holds a file of the
+                    // exact source size at the final path — no transfer needed
+                    // (robocopy-equivalent semantics; a regenerated pak
+                    // virtually never keeps the same byte size).
+                    if existing_sizes.get(&machine_id) == Some(&source.expected_size) {
+                        return Ok::<_, VoloError>(pak_distribute::DistributeOutcome {
+                            target_machine_id: machine_id,
+                            ok: true,
+                            exit_code: 0,
+                            bytes_copied: 0,
+                            stdout_tail: "target already up to date (size match), skipped".into(),
+                            message: None,
+                        });
+                    }
+                    // Byte-progress poller: while scp writes into the staging
+                    // dir, poll its size and emit running events with
+                    // "bytes:<cur>/<total>" so the UI can show real progress.
+                    let staged_name = push_distribute::staged_name_of(&source);
+                    let poll_item = item.clone();
+                    let poll_job = job_progress.clone();
+                    let poll_total = source.expected_size;
+                    let poller = tokio::spawn(async move {
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                            let item = poll_item.clone();
+                            let job = poll_job.clone();
+                            let name = staged_name.clone();
+                            let size = tokio::task::spawn_blocking(move || {
+                                push_distribute::query_staged_size(&item, &job, &name)
+                            })
+                            .await
+                            .ok()
+                            .and_then(|r| r.ok())
+                            .unwrap_or(-1);
+                            if size >= 0 {
+                                #[derive(Clone, Serialize)]
+                                struct ProgressPayload<'a> {
+                                    job_id: &'a str,
+                                    project_id: i64,
+                                    source_machine_id: i64,
+                                    event: batch::BatchEvent,
+                                }
+                                let _ = app_progress.emit(
+                                    "pak-distribute-progress",
+                                    ProgressPayload {
+                                        job_id: &poll_job,
+                                        project_id,
+                                        source_machine_id,
+                                        event: batch::BatchEvent {
+                                            machine_id,
+                                            status: batch::BatchStatus::Running,
+                                            message: Some(format!("bytes:{}/{}", size, poll_total)),
+                                        },
+                                    },
+                                );
+                            }
+                        }
+                    });
                     let outcome = tokio::task::spawn_blocking(move || {
                         push_distribute::push_one(&item, &source, &job_id)
                     })
                     .await
-                    .map_err(|e| VoloError::OperationFailed(format!("push task failed: {e}")))??;
+                    .map_err(|e| VoloError::OperationFailed(format!("push task failed: {e}")))
+                    .and_then(|r| r);
+                    poller.abort();
+                    let outcome = outcome?;
                     if !outcome.ok {
                         return Err(VoloError::OperationFailed(format!(
                             "push install exit {}: {}",

@@ -742,10 +742,14 @@ fn distribute(
                 .ok();
 
             // Preflight guard — surface as a non-ok completion rather than panic.
+            let mut skip_up_to_date = false;
             let preflight = match push_source.as_ref() {
                 Some(source) => {
                     let staged = cache_core::core::push_distribute::staged_name_of(source);
                     cache_core::core::push_distribute::preflight_push_one(&item, &job_id, &staged)
+                        .map(|existing| {
+                            skip_up_to_date = existing == Some(source.expected_size);
+                        })
                 }
                 None => pso_distribute::preflight_one(&item).await,
             };
@@ -765,9 +769,15 @@ fn distribute(
             }
 
             let outcome = match push_source.as_ref() {
-                Some(source) => {
-                    cache_core::core::push_distribute::push_one(&item, source, &job_id)
-                }
+                Some(_) if skip_up_to_date => Ok(cache_core::core::pak_distribute::DistributeOutcome {
+                    target_machine_id: item.target_machine_id,
+                    ok: true,
+                    exit_code: 0,
+                    bytes_copied: 0,
+                    stdout_tail: "target already up to date (size match), skipped".into(),
+                    message: None,
+                }),
+                Some(source) => cache_core::core::push_distribute::push_one(&item, source, &job_id),
                 None => pso_distribute::run_one(item).await,
             };
 
