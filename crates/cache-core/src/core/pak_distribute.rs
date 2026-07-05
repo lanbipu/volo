@@ -869,4 +869,42 @@ mod tests {
         .unwrap();
         assert_eq!(items[0].source_unc, "\\\\1.1.1.1\\D$\\X\\DerivedDataCache");
     }
+
+    #[test]
+    fn resolve_admin_pull_smb_qualifies_with_ip_when_hostname_is_ip() {
+        let db = open_in_memory().unwrap();
+        {
+            let mut conn = db.lock().unwrap();
+            schema::migrate(&mut conn).unwrap();
+        }
+        let source = machines::insert(
+            &db,
+            &Machine::new("192.168.10.20", "192.168.10.20"),
+        )
+        .unwrap();
+        use crate::data::credentials::{self, CredentialKind, CredentialRecord};
+        use crate::core::secrets::SecretStore;
+        credentials::insert(
+            &db,
+            &CredentialRecord {
+                id: None,
+                alias: "UECM:transport".into(),
+                kind: CredentialKind::Winrm,
+                username: "uecm-svc".into(),
+            },
+        )
+        .unwrap();
+        SecretStore::from_config()
+            .unwrap()
+            .put("UECM:transport", "fleet-pass")
+            .unwrap();
+        let (user, pass) = resolve_admin_pull_smb(&db, source, true).unwrap();
+        assert!(
+            user.as_deref()
+                .is_some_and(|u| u.ends_with(r"\uecm-svc")),
+            "expected qualified uecm-svc user, got {:?}",
+            user
+        );
+        assert_eq!(pass.as_deref(), Some("fleet-pass"));
+    }
 }

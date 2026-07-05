@@ -287,17 +287,7 @@ pub fn smb_server_name_for_machine(db: &Db, machine_id: i64) -> VoloResult<Strin
     let machine = data_machines::find_by_id(db, machine_id)?.ok_or_else(|| {
         VoloError::InvalidInput(format!("machine {} not found", machine_id))
     })?;
-    if !looks_like_ipv4(&machine.hostname) {
-        return Ok(machine.hostname);
-    }
-    if !looks_like_ipv4(&machine.ip) {
-        return Ok(machine.ip);
-    }
-    Err(VoloError::OperationFailed(format!(
-        "machine {} hostname '{}' and ip '{}' are both IPs; set a NetBIOS hostname \
-         so remote nodes can authenticate as HOST\\uecm-svc",
-        machine_id, machine.hostname, machine.ip
-    )))
+    resolve_smb_server_name(&machine.hostname, &machine.ip, || probe_netbios_name_over_ssh(&machine.ip))
 }
 
 /// NetBIOS/computer name of the share host for `SERVER\ddc-svc` SMB auth.
@@ -308,18 +298,56 @@ pub fn smb_server_name_for_share(db: &Db, share: &ShareConfig) -> VoloResult<Str
             share.unc_path
         ))
     })?;
-    if !looks_like_ipv4(&unc_target) {
-        return Ok(unc_target);
-    }
     let hostname = host_hostname(db, share.host_machine_id)?;
-    if !looks_like_ipv4(&hostname) {
-        return Ok(hostname);
+    let ip = host_ip(db, share.host_machine_id).unwrap_or_else(|_| unc_target.clone());
+    resolve_smb_server_name(&unc_target, &hostname, || probe_netbios_name_over_ssh(&ip))
+}
+
+#[derive(Debug, Deserialize)]
+struct NetbiosProbeRaw {
+    ok: bool,
+    #[serde(default)]
+    name: String,
+}
+
+/// Best-effort SSH probe for `$env:COMPUTERNAME` when the DB only has an IP label.
+fn probe_netbios_name_over_ssh(host: &str) -> Option<String> {
+    let exec = SshExecutor::from_config().ok()?;
+    let result: NetbiosProbeRaw = run_json(
+        &exec,
+        host,
+        &NodeScript {
+            name: "probe-netbios-name.ps1",
+            args: serde_json::json!({}),
+            ssh_user: None,
+        },
+    )
+    .ok()?;
+    if result.ok && !result.name.is_empty() && !looks_like_ipv4(&result.name) {
+        Some(result.name)
+    } else {
+        None
     }
-    Err(VoloError::OperationFailed(format!(
-        "share unc_path host '{unc_target}' and machine hostname '{hostname}' are both IPs; \
-         set the share host machine's hostname to its NetBIOS name (e.g. LANPC) so Mode B \
-         clients can authenticate as SERVER\\ddc-svc"
-    )))
+}
+
+/// Pick the server prefix for `SERVER\account` SMB auth.
+fn resolve_smb_server_name(
+    primary: &str,
+    secondary: &str,
+    probe: impl FnOnce() -> Option<String>,
+) -> VoloResult<String> {
+    if !looks_like_ipv4(primary) {
+        return Ok(primary.to_string());
+    }
+    if !looks_like_ipv4(secondary) {
+        return Ok(secondary.to_string());
+    }
+    if let Some(name) = probe() {
+        return Ok(name);
+    }
+    // Last resort: qualify with the same IP the UNC uses (common when machines
+    // were onboarded by scan and never given a friendly hostname row).
+    Ok(primary.to_string())
 }
 
 fn looks_like_ipv4(host: &str) -> bool {
