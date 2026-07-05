@@ -17,7 +17,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
   prepareManagedShareClients, unprepareManagedShareClients,
   prepareOpenShareClients, unprepareOpenShareClients,
   setMachineBackendField, removeMachineBackendField,
-  revealPath, isLoopbackMachine, revealRemotePath } from "../api/commands";
+  revealPath, isLoopbackMachine, revealRemotePath, ensureOpenDirShare } from "../api/commands";
 
 (function () {
   const { Button } = window.Spectrum2DesignSystem_b6d1b3;
@@ -51,15 +51,59 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
      共享才回落管理员共享；按 Volo 运行时所在 OS 决定用 UNC（Windows）还是 smb:// URL
      （macOS/Linux，reveal_item_in_dir 的 canonicalize 在这些平台上不认 Windows UNC 字符串，
      永远失败，故不能不分平台一律拼 UNC 交给本机 revealPath）。管理共享回落在工作组环境
-     通常拒绝访问，会 reject，按失败态提示，不静默假装成功。 */
+     通常拒绝访问，会 reject——此时按需把工程父目录开成开放共享（ensure_open_dir_share，
+     与 Zen「设置缓存目录」同一套 volo-zen 机制）后重试一次，之后该目录下所有工程都
+     免凭据可达；开共享也失败才落到失败态提示，不静默假装成功。 */
+
+  /* 开放共享的目录取工程的父目录（一次覆盖同根下所有兄弟工程，对齐「搜索根目录」的
+     粒度），但工程直接躺在盘符根下时共享工程目录自身——绝不把整个盘开成 Guest 共享。 */
+  const shareDirFor = (path) => {
+    const norm = String(path).replace(/\//g, '\\').replace(/\\+$/, '');
+    const parts = norm.split('\\').filter(Boolean); /* ["D:","Unreal Projects","Hillside"] */
+    if (parts.length <= 2) return norm;
+    return parts.slice(0, -1).join('\\');
+  };
+  /* 共享名按目录路径确定（幂等：同目录恒同名，重复打开不重复建）；保留 CJK 字符避免
+     不同中文目录坍缩成同名共享互相顶掉（ensure_open_dir_share 对同名异路径是替换语义）。 */
+  const shareNameFor = (dir) => 'volo-dir-' + dir.toLowerCase().replace(/:/g, '')
+    .replace(/[^a-z0-9一-鿿]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+  /* Volo 自身所在机器的 machine_id（用作开共享后的客户端预连目标——放开本机 Guest 访问
+     限制，否则 Windows 默认拒绝匿名共享）。逐台问 is_loopback_machine，命中即止；结果
+     进程级缓存（机器身份不随会话变）。Volo 所在机不在集群里则返回 null，跳过客户端预连。 */
+  let selfIdPromise = null;
+  const selfMachineId = () => {
+    if (!selfIdPromise) selfIdPromise = (async () => {
+      for (const n of (RENDER_NODES || [])) {
+        try { if (await isLoopbackMachine(n.ip)) return Number(n.machineId); } catch (e) {}
+      }
+      return null;
+    })();
+    return selfIdPromise;
+  };
   const openFolder = (s, path, label, machine) => {
     const fail = (e) => s.pushLog({ lv: 'err', cat: 'ddc', ch: 'ssh',
       msg: '打开文件夹失败 · ' + label + ' · ' + (e && e.message ? e.message : e) });
     if (!machine) { fail(new Error('找不到该工程所在的机器')); return; }
     const logOk = () => s.pushLog({ lv: 'info', cat: 'ddc', ch: 'ssh',
       msg: '<b>explorer</b> · 在文件资源管理器中打开' + (label ? '（' + label + '）' : '') + ' ' + path });
+    const logInfo = (msg) => s.pushLog({ lv: 'info', cat: 'ddc', ch: 'ssh', msg });
     isLoopbackMachine(machine.ip).then(
-      (loopback) => (loopback ? revealPath(path) : revealRemotePath(machine.ip, path)).then(logOk, fail),
+      (loopback) => {
+        if (loopback) return revealPath(path).then(logOk, fail);
+        return revealRemotePath(machine.ip, path).then(logOk, () => {
+          /* 管理共享打不开（工作组两机本地账户互不信任的常态）→ 按需开放共享后重试 */
+          const dir = shareDirFor(path);
+          logInfo('<b>share</b> · 该路径不在任何共享内，正在把 ' + dir + ' 开放为共享…');
+          return selfMachineId()
+            .then((selfId) => ensureOpenDirShare(
+              Number(machine.machineId), shareNameFor(dir), dir,
+              selfId != null && selfId !== Number(machine.machineId) ? [selfId] : []))
+            .then((r) => {
+              logInfo('<b>share</b> · ' + (r.created ? '已开放共享 ' : '共享已存在 ') + r.unc_path + ' · 重试打开');
+              return revealRemotePath(machine.ip, path).then(logOk, fail);
+            }, fail);
+        });
+      },
       fail);
   };
 
