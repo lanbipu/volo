@@ -363,6 +363,7 @@ fn distribute(
         source_machine_id,
         source_smb_cred_alias,
         !dry_run,
+        &source_location.abs_path,
     )?;
 
     let profile = pak_distribute::DistributeProfile::ddc_pak();

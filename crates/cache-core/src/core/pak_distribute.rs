@@ -227,16 +227,56 @@ pub struct SourceSmb {
     pub pass: Option<String>,
 }
 
+/// Maps `abs_path` (a local path on the share's host) to its UNC under the
+/// share, when the share's `local_path` covers it: `\\H\S` + the remainder of
+/// `abs_path` beyond `local_path`. Segment-wise and case-insensitive, so
+/// `D:\X` covers `d:/x/sub` but not `D:\XY`. Returns `None` when the share
+/// does not cover the path (that share cannot serve this source directory).
+fn map_path_under_share(share_unc: &str, share_local: &str, abs_path: &str) -> Option<String> {
+    let local: Vec<&str> = share_local
+        .split(['\\', '/'])
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let abs: Vec<&str> = abs_path
+        .split(['\\', '/'])
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    if local.is_empty() || local.len() > abs.len() {
+        return None;
+    }
+    let covers = abs[..local.len()]
+        .iter()
+        .zip(local.iter())
+        .all(|(a, l)| a.eq_ignore_ascii_case(l));
+    if !covers {
+        return None;
+    }
+    let base = share_unc.trim_end_matches(['\\', '/']);
+    let rest = abs[local.len()..].join("\\");
+    if rest.is_empty() {
+        Some(base.to_string())
+    } else {
+        Some(format!("{}\\{}", base, rest))
+    }
+}
+
 /// DB-only source-share decision: which share UNC the target pulls from, and
 /// which SecretStore alias (if any) holds its credential. No secret read, so
 /// `--dry-run` and the real path share the exact same share/UNC selection and
 /// the same validation errors. The `ddc-svc` account only has rights to its
 /// managed share (not the admin `D$`), so under SSH key auth a source with no
 /// usable share is an error, never a silent `\\host\D$` fallback.
+///
+/// Selection is path-aware: only shares whose `local_path` covers
+/// `source_abs_path` (the project dir on the source host) are candidates, and
+/// the returned UNC is `source_abs_path` mapped under the chosen share — an
+/// unrelated open share (e.g. a Zen data share) neither blocks the pick nor
+/// gets a bogus subdir blindly appended to its root.
 fn resolve_source_share(
     db: &Db,
     source_machine_id: i64,
     explicit_alias: Option<&str>,
+    source_abs_path: &str,
 ) -> VoloResult<(Option<String>, Option<String>)> {
     use crate::data::share_configs::{self, ShareMode};
     let shares = share_configs::find_by_host(db, source_machine_id)?;
@@ -253,43 +293,75 @@ fn resolve_source_share(
                      register it with `share create --mode b` first"
                 ))
             })?;
-        return Ok((Some(share.unc_path.clone()), Some(alias.to_string())));
+        let unc = map_path_under_share(&share.unc_path, &share.local_path, source_abs_path)
+            .ok_or_else(|| {
+                VoloError::InvalidInput(format!(
+                    "share '{}' ({}) does not cover the source directory {}; \
+                     pick a share whose local path contains it",
+                    share.share_name, share.local_path, source_abs_path
+                ))
+            })?;
+        return Ok((Some(unc), Some(alias.to_string())));
     }
 
-    // Auto-derive: a single Mode B share, else a single Mode A share. Never
-    // guess between several — the CLI has no per-share selector.
-    let managed: Vec<&share_configs::ShareConfig> = shares
+    // Auto-derive among shares that actually cover the source directory:
+    // a single covering Mode B share, else the most specific covering Mode A
+    // share. Never guess between several Mode B creds — the CLI has no
+    // per-share selector beyond --source-smb-cred-alias.
+    let covering: Vec<(&share_configs::ShareConfig, String)> = shares
         .iter()
-        .filter(|s| s.mode == ShareMode::Managed && s.credential_alias.is_some())
+        .filter_map(|s| {
+            map_path_under_share(&s.unc_path, &s.local_path, source_abs_path)
+                .map(|unc| (s, unc))
+        })
+        .collect();
+
+    let managed: Vec<&(&share_configs::ShareConfig, String)> = covering
+        .iter()
+        .filter(|(s, _)| s.mode == ShareMode::Managed && s.credential_alias.is_some())
         .collect();
     if managed.len() > 1 {
         return Err(VoloError::InvalidInput(format!(
-            "source host has {} Mode B shares; pass --source-smb-cred-alias to choose one",
-            managed.len()
+            "source host has {} Mode B shares covering {}; pass \
+             --source-smb-cred-alias to choose one",
+            managed.len(),
+            source_abs_path
         )));
     }
-    if let Some(share) = managed.first() {
-        return Ok((Some(share.unc_path.clone()), share.credential_alias.clone()));
+    if let Some((share, unc)) = managed.first() {
+        return Ok((Some(unc.clone()), share.credential_alias.clone()));
     }
 
-    let open: Vec<&share_configs::ShareConfig> =
-        shares.iter().filter(|s| s.mode == ShareMode::Open).collect();
-    if open.len() > 1 {
-        return Err(VoloError::InvalidInput(format!(
-            "source host has {} Mode A shares; keep one open share, or use a Mode B \
-             share with --source-smb-cred-alias",
-            open.len()
-        )));
-    }
-    if let Some(share) = open.first() {
-        return Ok((Some(share.unc_path.clone()), None));
+    // Open shares: the deepest (most specific) covering local_path wins; an
+    // exact-depth duplicate maps to the same directory, so the first is fine.
+    let open = covering
+        .iter()
+        .filter(|(s, _)| s.mode == ShareMode::Open)
+        .max_by_key(|(s, _)| {
+            s.local_path
+                .split(['\\', '/'])
+                .filter(|segment| !segment.is_empty())
+                .count()
+        });
+    if let Some((_, unc)) = open {
+        return Ok((Some(unc.clone()), None));
     }
 
-    Err(VoloError::InvalidInput(
-        "source host has no registered share; create one with `share create` \
-         (Mode A open or Mode B managed) before distributing"
-            .to_string(),
-    ))
+    if shares.is_empty() {
+        return Err(VoloError::InvalidInput(
+            "source host has no registered share; create one with `share create` \
+             (Mode A open or Mode B managed) before distributing"
+                .to_string(),
+        ));
+    }
+    Err(VoloError::InvalidInput(format!(
+        "none of the {} registered share(s) on the source host covers the source \
+         directory {}; create a share on that directory (or a parent) with \
+         `share create`, or pass --source-smb-cred-alias for a Mode B share \
+         that covers it",
+        shares.len(),
+        source_abs_path
+    )))
 }
 
 /// Resolve how the target node reads the source share, including the SMB
@@ -302,9 +374,10 @@ pub fn resolve_source_smb(
     source_machine_id: i64,
     explicit_alias: Option<&str>,
     read_secret: bool,
+    source_abs_path: &str,
 ) -> VoloResult<SourceSmb> {
     let (named_share_unc, secret_alias) =
-        resolve_source_share(db, source_machine_id, explicit_alias)?;
+        resolve_source_share(db, source_machine_id, explicit_alias, source_abs_path)?;
     let (user, pass) = match (secret_alias, read_secret) {
         (Some(alias), true) => {
             let pass = crate::core::secrets::get_share_secret_migrating(&alias)?
@@ -502,13 +575,13 @@ mod tests {
         }
     }
 
-    fn share(host: i64, name: &str, mode: crate::data::share_configs::ShareMode, alias: Option<&str>) -> crate::data::share_configs::ShareConfig {
+    fn share_at(host: i64, name: &str, local: &str, mode: crate::data::share_configs::ShareMode, alias: Option<&str>) -> crate::data::share_configs::ShareConfig {
         crate::data::share_configs::ShareConfig {
             id: None,
             host_machine_id: host,
             share_name: name.into(),
             unc_path: format!("\\\\SOURCE\\{name}"),
-            local_path: format!("D:\\{name}"),
+            local_path: local.into(),
             mode,
             credential_alias: alias.map(str::to_string),
         }
@@ -519,40 +592,97 @@ mod tests {
         let (db, source, _t, _p) = setup();
         // No share on the source: the SSH target can't read admin D$ → error,
         // and dry-run (read_secret=false) catches it too.
-        assert!(resolve_source_smb(&db, source, None, false).is_err());
-        assert!(resolve_source_smb(&db, source, None, true).is_err());
+        assert!(resolve_source_smb(&db, source, None, false, "D:\\X").is_err());
+        assert!(resolve_source_smb(&db, source, None, true, "D:\\X").is_err());
     }
 
     #[test]
-    fn resolve_source_smb_uses_open_share_unc_without_cred() {
+    fn resolve_source_smb_uses_covering_open_share_unc_without_cred() {
         use crate::data::share_configs::{insert, ShareMode};
         let (db, source, _t, _p) = setup();
-        insert(&db, &share(source, "DDC", ShareMode::Open, None)).unwrap();
-        let smb = resolve_source_smb(&db, source, None, true).unwrap();
+        insert(&db, &share_at(source, "DDC", "D:\\X", ShareMode::Open, None)).unwrap();
+        let smb = resolve_source_smb(&db, source, None, true, "D:\\X").unwrap();
         assert_eq!(smb.named_share_unc.as_deref(), Some("\\\\SOURCE\\DDC"));
         assert_eq!(smb.user, None);
         assert_eq!(smb.pass, None);
     }
 
     #[test]
-    fn resolve_source_smb_errors_with_multiple_managed_or_open_shares() {
+    fn resolve_source_smb_maps_source_dir_under_parent_share() {
         use crate::data::share_configs::{insert, ShareMode};
         let (db, source, _t, _p) = setup();
-        insert(&db, &share(source, "DDC", ShareMode::Managed, Some("share-SOURCE-DDC"))).unwrap();
-        insert(&db, &share(source, "PSO", ShareMode::Managed, Some("share-SOURCE-PSO"))).unwrap();
-        assert!(resolve_source_smb(&db, source, None, false).is_err());
+        insert(&db, &share_at(source, "Projects", "E:\\Unreal Projects", ShareMode::Open, None)).unwrap();
+        let smb =
+            resolve_source_smb(&db, source, None, true, "E:\\Unreal Projects\\ICVFX").unwrap();
+        assert_eq!(smb.named_share_unc.as_deref(), Some("\\\\SOURCE\\Projects\\ICVFX"));
+    }
 
-        let (db2, src2, _t2, _p2) = setup();
-        insert(&db2, &share(src2, "A", ShareMode::Open, None)).unwrap();
-        insert(&db2, &share(src2, "B", ShareMode::Open, None)).unwrap();
-        assert!(resolve_source_smb(&db2, src2, None, false).is_err());
+    #[test]
+    fn resolve_source_smb_ignores_unrelated_open_shares() {
+        use crate::data::share_configs::{insert, ShareMode};
+        let (db, source, _t, _p) = setup();
+        // The 2-Mode-A regression: an unrelated Zen data share on the same host
+        // must neither block the pick nor be picked itself.
+        insert(&db, &share_at(source, "ZenData", "D:\\ZenData", ShareMode::Open, None)).unwrap();
+        insert(&db, &share_at(source, "Projects", "E:\\Unreal Projects", ShareMode::Open, None)).unwrap();
+        let smb =
+            resolve_source_smb(&db, source, None, true, "E:\\Unreal Projects\\ICVFX").unwrap();
+        assert_eq!(smb.named_share_unc.as_deref(), Some("\\\\SOURCE\\Projects\\ICVFX"));
+    }
+
+    #[test]
+    fn resolve_source_smb_picks_most_specific_covering_open_share() {
+        use crate::data::share_configs::{insert, ShareMode};
+        let (db, source, _t, _p) = setup();
+        insert(&db, &share_at(source, "Drive", "E:\\", ShareMode::Open, None)).unwrap();
+        insert(&db, &share_at(source, "Proj", "E:\\Unreal Projects\\ICVFX", ShareMode::Open, None)).unwrap();
+        let smb =
+            resolve_source_smb(&db, source, None, true, "E:\\Unreal Projects\\ICVFX").unwrap();
+        assert_eq!(smb.named_share_unc.as_deref(), Some("\\\\SOURCE\\Proj"));
+    }
+
+    #[test]
+    fn resolve_source_smb_errors_with_multiple_covering_managed_shares() {
+        use crate::data::share_configs::{insert, ShareMode};
+        let (db, source, _t, _p) = setup();
+        insert(&db, &share_at(source, "DDC", "D:\\X", ShareMode::Managed, Some("share-SOURCE-DDC"))).unwrap();
+        insert(&db, &share_at(source, "PSO", "D:\\", ShareMode::Managed, Some("share-SOURCE-PSO"))).unwrap();
+        assert!(resolve_source_smb(&db, source, None, false, "D:\\X").is_err());
+    }
+
+    #[test]
+    fn resolve_source_smb_errors_when_no_share_covers_source() {
+        use crate::data::share_configs::{insert, ShareMode};
+        let (db, source, _t, _p) = setup();
+        insert(&db, &share_at(source, "ZenData", "D:\\ZenData", ShareMode::Open, None)).unwrap();
+        assert!(resolve_source_smb(&db, source, None, false, "E:\\Unreal Projects\\ICVFX").is_err());
     }
 
     #[test]
     fn resolve_source_smb_explicit_alias_requires_matching_share() {
         let (db, source, _t, _p) = setup();
         // Alias given but no share row references it → error (no admin-D$ fallback).
-        assert!(resolve_source_smb(&db, source, Some("share-SOURCE-DDC"), false).is_err());
+        assert!(resolve_source_smb(&db, source, Some("share-SOURCE-DDC"), false, "D:\\X").is_err());
+    }
+
+    #[test]
+    fn resolve_source_smb_explicit_alias_requires_share_covering_source() {
+        use crate::data::share_configs::{insert, ShareMode};
+        let (db, source, _t, _p) = setup();
+        insert(&db, &share_at(source, "DDC", "D:\\Other", ShareMode::Managed, Some("share-SOURCE-DDC"))).unwrap();
+        assert!(resolve_source_smb(&db, source, Some("share-SOURCE-DDC"), false, "D:\\X").is_err());
+    }
+
+    #[test]
+    fn map_path_under_share_is_segment_wise_and_case_insensitive() {
+        assert_eq!(
+            map_path_under_share("\\\\H\\S", "D:\\X", "d:/x/Sub"),
+            Some("\\\\H\\S\\Sub".to_string())
+        );
+        assert_eq!(map_path_under_share("\\\\H\\S", "D:\\X", "D:\\X"), Some("\\\\H\\S".to_string()));
+        // string-prefix is not a segment prefix
+        assert_eq!(map_path_under_share("\\\\H\\S", "D:\\X", "D:\\XY"), None);
+        assert_eq!(map_path_under_share("\\\\H\\S", "D:\\ZenData", "E:\\X"), None);
     }
 
     #[test]

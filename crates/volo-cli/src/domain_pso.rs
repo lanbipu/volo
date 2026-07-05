@@ -632,11 +632,15 @@ fn distribute(
     // Dry-run resolves the same share/UNC + validation but skips the secret
     // read (see `domain_ddc::distribute`).
     cred.preflight(db)?;
+    let source_location =
+        project_locations::get_for_project_machine(db, project_id, source_machine_id)?
+            .ok_or_else(|| VoloError::InvalidInput("source project location missing".into()))?;
     let smb = cache_core::core::pak_distribute::resolve_source_smb(
         db,
         source_machine_id,
         source_smb_cred_alias,
         !dry_run,
+        &source_location.abs_path,
     )?;
 
     // Find the most recent PSO cache file for this project + source machine.

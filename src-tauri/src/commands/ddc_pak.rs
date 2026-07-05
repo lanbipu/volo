@@ -454,6 +454,7 @@ pub async fn distribute_ddc_pak(
                 source_machine_id,
                 source_smb_credential_alias.as_deref(),
                 true,
+                &source_location.abs_path,
             )?;
             (smb.named_share_unc, smb.user, smb.pass)
         }
