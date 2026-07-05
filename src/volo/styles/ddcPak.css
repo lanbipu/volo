@@ -324,12 +324,10 @@
    ========================================================================= */
 /* 列表工具条：左「全选」· 右「显示 / 排序 / 显示比例」 */
 .pak-list-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; row-gap: 8px; }
-/* flex:1 1 auto + min-width:0 + 自身 flex-wrap：窄窗口（原生 App 最小宽度 1100px，居中双栏对半后
-   右栏可用宽度明显小于设计稿浏览器视口）下，显示/排序/显示比例三组横向挤不下时纵向换行，
-   而不是把整条工具条撑出去导致横向溢出。 */
+/* margin-left:auto 把这一组连同其后的显示比例滑块一起推到最右；flex 不设 grow，
+   让展开态（.open）的背景块只贴合图标本身的尺寸，不随行内剩余空间被拉伸到最左侧。 */
 .pak-list-tools { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;
-  gap: 8px 14px; flex: 1 1 auto; min-width: 0; }
-.pak-list-tools .pak-zoom { margin-left: 0; }
+  gap: 8px 14px; flex: 0 1 auto; min-width: 0; }
 
 /* 合并的「显示 / 排序 / 筛选」图标组 —— 默认只显示一个入口图标，点击展开 */
 .pak-tools-toggle { all: unset; box-sizing: border-box; width: 30px; height: 30px; border-radius: 8px; position: relative;
@@ -396,10 +394,6 @@
 .ptm-group-h { display: flex; align-items: center; gap: 7px; font-size: 10.5px; font-weight: 700; color: var(--chrome-dim);
   padding: 6px 9px 4px; }
 .ptm-group-s { margin-left: auto; font-size: 10px; font-weight: 500; color: var(--chrome-faint); }
-.ptm-sub { border-top: 1px solid var(--chrome-line); margin-top: 4px; padding: 8px 9px 4px; }
-.ptm-sub-h { display: flex; align-items: center; gap: 7px; font-size: 10.5px; font-weight: 700; color: var(--chrome-dim); margin-bottom: 8px; }
-.ptm-sub .pak-zoom { margin-left: 0; display: flex; width: 100%; }
-.ptm-sub .pak-zoom-range { flex: 1; width: auto; }
 .pak-filter-menu { min-width: 236px; max-height: 380px; overflow-y: auto; }
 
 .pak-selall { all: unset; display: inline-flex; align-items: center; gap: 8px; padding: 5px 11px 5px 8px;
@@ -414,6 +408,7 @@
 .pak-selall-ct { font-size: 11px; color: var(--chrome-faint); font-variant-numeric: tabular-nums; }
 
 .pak-zoom { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.pak-zoom--bar { margin-left: 0; padding-left: 12px; border-left: 1px solid var(--chrome-line); }
 .pak-zoom-ic { display: inline-grid; place-items: center; color: var(--chrome-faint); flex: 0 0 auto; }
 .pak-zoom-range { -webkit-appearance: none; appearance: none; width: 104px; height: 4px; border-radius: 9999px;
   background: var(--wash-2); cursor: pointer; }

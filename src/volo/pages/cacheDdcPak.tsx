@@ -774,16 +774,7 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
       VIEW_OPTS.map((o) => h('button', { key: o.id, type: 'button', className: 'ptm-i' + (view === o.id ? ' on' : ''), onClick: () => setView(o.id) },
         h('span', { className: 'ptm-ic' }, h(Icon, { name: o.icon, size: 14 })),
         h('div', { className: 'ptm-mm' }, h('span', { className: 'ptm-l' }, o.label), h('span', { className: 'ptm-s' }, o.hint)),
-        view === o.id ? h(Icon, { name: 'check', size: 14, style: { marginLeft: 'auto', color: 'var(--volo-400)' } }) : null)),
-      view === 'flat'
-        ? h('div', { className: 'ptm-sub' },
-            h('div', { className: 'ptm-sub-h' }, h(Icon, { name: 'grid', size: 12 }), '模块大小'),
-            h('div', { className: 'pak-zoom' },
-              h('span', { className: 'pak-zoom-ic sm' }, h(Icon, { name: 'grid', size: 12 })),
-              h('input', { type: 'range', className: 'pak-zoom-range', min: 118, max: 220, step: 1,
-                value: tileScale, 'aria-label': '显示比例', onChange: (e) => setTileScale(+e.target.value) }),
-              h('span', { className: 'pak-zoom-ic lg' }, h(Icon, { name: 'grid', size: 17 }))))
-        : null);
+        view === o.id ? h(Icon, { name: 'check', size: 14, style: { marginLeft: 'auto', color: 'var(--volo-400)' } }) : null)));
     const sortMenu = h('div', { className: 'pak-tool-menu' },
       h('div', { className: 'ptm-h' }, '排序方式'),
       SORT_OPTS.map((o) => h('button', { key: o.id, type: 'button', className: 'ptm-i' + (sort === o.id ? ' on' : ''), onClick: () => setSort(o.id) },
@@ -836,7 +827,14 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
                 'data-tip': toolsOpen ? '收起' : '显示 · 排序 · 筛选', 'aria-label': toolsOpen ? '收起工具' : '显示 · 排序 · 筛选',
                 onClick: () => { setToolsOpen((v) => !v); setOpenMenu(null); } },
               h(Icon, { name: toolsOpen ? 'x' : 'sliders', size: 16 }),
-              !toolsOpen && activeFilterCount ? h('span', { className: 'pak-tools-badge' }, activeFilterCount) : null)));
+              !toolsOpen && activeFilterCount ? h('span', { className: 'pak-tools-badge' }, activeFilterCount) : null)),
+          view === 'flat'
+            ? h('div', { className: 'pak-zoom pak-zoom--bar' },
+                h('span', { className: 'pak-zoom-ic sm' }, h(Icon, { name: 'grid', size: 12 })),
+                h('input', { type: 'range', className: 'pak-zoom-range', min: 118, max: 220, step: 1,
+                  value: tileScale, 'aria-label': '显示比例', onChange: (e) => setTileScale(+e.target.value) }),
+                h('span', { className: 'pak-zoom-ic lg' }, h(Icon, { name: 'grid', size: 17 })))
+            : null);
 
     return h('div', { className: 'res ddc pak-page' },
       h('div', { className: 'canvas-head' },
