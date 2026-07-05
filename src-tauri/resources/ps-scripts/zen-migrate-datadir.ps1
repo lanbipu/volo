@@ -1,4 +1,4 @@
-# Move a Zen data directory's contents when the operator changes data_dir and
+﻿# Move a Zen data directory's contents when the operator changes data_dir and
 # opts into migration during a redeploy.
 #
 # Caller contract: the ZenServer Windows service must already be stopped
