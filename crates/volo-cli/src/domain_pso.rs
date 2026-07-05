@@ -629,15 +629,16 @@ fn distribute(
         VoloError::InvalidInput(format!("machine {} not found", source_machine_id))
     })?;
 
-    // Dry-run resolves the same share/UNC + validation but skips the secret
-    // read (see `domain_ddc::distribute`).
+    // Dry-run resolves the same share/UNC + validation but skips host-side share create.
     cred.preflight(db)?;
-    let smb = cache_core::core::pak_distribute::resolve_source_smb(
-        db,
-        source_machine_id,
-        source_smb_cred_alias,
-        !dry_run,
-    )?;
+    let source_location =
+        project_locations::get_for_project_machine(db, project_id, source_machine_id)?
+            .ok_or_else(|| {
+                VoloError::InvalidInput(format!(
+                    "project {} not located on machine {}",
+                    project_id, source_machine_id
+                ))
+            })?;
 
     // Find the most recent PSO cache file for this project + source machine.
     let files = pso_cache_files::list_by_project(db, project_id)?;
@@ -652,14 +653,23 @@ fn distribute(
             ))
         })?;
 
+    let pull = cache_core::core::pak_distribute::resolve_project_pull_smb(
+        db,
+        source_machine_id,
+        &source_machine.ip,
+        &source_location.abs_path,
+        target_ids,
+        !dry_run,
+    )?;
+
     let plan = pso_distribute::plan(
         db,
         &source_machine.ip,
         &file,
         target_ids,
-        smb.named_share_unc.as_deref(), // managed-share UNC paired with the SMB cred
-        smb.user,
-        smb.pass,
+        Some(&pull.named_share_unc),
+        pull.user,
+        pull.pass,
     )?;
 
     if plan.is_empty() {

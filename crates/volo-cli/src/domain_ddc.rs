@@ -352,12 +352,14 @@ fn distribute(
                 ))
             })?;
 
-    // DDC.ddp is project-local — pull from the source admin share, not the fleet
-    // DDC SMB share. Dry-run skips the SecretStore read (read_secret = false).
+    // Project-local pull over SMB share (registered or auto guest open-share).
     cred.preflight(&db)?;
-    let (smb_user, smb_pass) = pak_distribute::resolve_admin_pull_smb(
+    let pull = pak_distribute::resolve_project_pull_smb(
         &db,
         source_machine_id,
+        &source_machine.ip,
+        &source_location.abs_path,
+        target_ids,
         !dry_run,
     )?;
 
@@ -370,9 +372,9 @@ fn distribute(
         &source_location,
         target_ids,
         project_id,
-        None,
-        smb_user,
-        smb_pass,
+        Some(&pull.named_share_unc),
+        pull.user,
+        pull.pass,
     )?;
 
     if plan.is_empty() {

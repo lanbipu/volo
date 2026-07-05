@@ -447,13 +447,19 @@ pub async fn distribute_ddc_pak(
             };
             (Some(unc.clone()), user, pass)
         }
-        // No explicit UNC: DDC.ddp lives under the project directory — pull via the
-        // source admin share (D$/…/DerivedDataCache), not the fleet DDC SMB share.
+        // No explicit UNC: resolve share-based SMB pull (registered share or auto
+        // guest open-share on the project parent — same as Explorer open-folder).
         None => {
             let _ = &source_smb_credential_alias;
-            let (user, pass) =
-                pak_distribute::resolve_admin_pull_smb(&db, source_machine_id, true)?;
-            (None, user, pass)
+            let pull = pak_distribute::resolve_project_pull_smb(
+                &db,
+                source_machine_id,
+                &source_machine.ip,
+                &source_location.abs_path,
+                &target_machine_ids,
+                true,
+            )?;
+            (Some(pull.named_share_unc), pull.user, pull.pass)
         }
     };
 

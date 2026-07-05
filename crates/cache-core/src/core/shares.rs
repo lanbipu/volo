@@ -8,7 +8,11 @@
 //! returns success — see `commands::shares::create_share`.
 
 use crate::core::ssh::{run_json, NodeScript, SshExecutor};
-use crate::data::{machines as data_machines, share_configs::ShareConfig, Db};
+use crate::data::{
+    credentials as data_credentials, machines as data_machines,
+    share_configs::{self, ShareConfig, ShareMode},
+    Db,
+};
 use crate::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
 
@@ -401,6 +405,179 @@ fn host_hostname(db: &Db, machine_id: i64) -> VoloResult<String> {
     Ok(data_machines::find_by_id(db, machine_id)?
         .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?
         .hostname)
+}
+
+/// A registered share whose `local_path` prefix-covers an absolute path.
+#[derive(Debug, Clone)]
+pub struct SharePathCover {
+    pub share: ShareConfig,
+    /// Path from `share.local_path` to the covered absolute path (empty = exact).
+    pub rel: String,
+}
+
+fn norm_win_path(p: &str) -> String {
+    p.replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase()
+}
+
+/// Case-insensitive Windows path equality (separator- and trailing-slash-tolerant).
+pub fn same_win_path(a: &str, b: &str) -> bool {
+    norm_win_path(a) == norm_win_path(b)
+}
+
+/// Longest registered share on `host_machine_id` whose `local_path` covers `abs_path`.
+/// Mirrors `share_reveal_target` in `commands/bootstrap.rs`.
+pub fn share_covering_local_path(
+    db: &Db,
+    host_machine_id: i64,
+    abs_path: &str,
+) -> VoloResult<Option<SharePathCover>> {
+    let shares = share_configs::find_by_host(db, host_machine_id)?;
+    let path_norm = abs_path.replace('/', "\\");
+    let path_low = norm_win_path(abs_path);
+    let best = shares
+        .iter()
+        .filter_map(|share| {
+            let base_low = norm_win_path(&share.local_path);
+            if base_low.is_empty() {
+                return None;
+            }
+            if path_low == base_low {
+                Some((share, String::new()))
+            } else if path_low.starts_with(&base_low)
+                && path_low.as_bytes().get(base_low.len()) == Some(&b'\\')
+            {
+                let rel = path_norm[base_low.len() + 1..]
+                    .trim_end_matches('\\')
+                    .to_string();
+                Some((share, rel))
+            } else {
+                None
+            }
+        })
+        .max_by_key(|(share, _)| share.local_path.len());
+    Ok(best.map(|(share, rel)| SharePathCover {
+        share: share.clone(),
+        rel,
+    }))
+}
+
+/// Build `\\reach_host\share\rel` using the address targets actually dial (usually IP).
+pub fn reachable_share_unc(reach_host: &str, share_name: &str, rel: &str) -> String {
+    let rel = rel.trim_matches(['\\', '/']);
+    if rel.is_empty() {
+        format!(r"\\{reach_host}\{share_name}")
+    } else {
+        format!(r"\\{reach_host}\{share_name}\{rel}")
+    }
+}
+
+/// SMB credential for a target pulling from a registered share (Mode A = guest, Mode B = ddc-svc).
+pub fn resolve_share_pull_cred(
+    db: &Db,
+    share: &ShareConfig,
+    read_secret: bool,
+) -> VoloResult<(Option<String>, Option<String>)> {
+    match share.mode {
+        ShareMode::Open => Ok((None, None)),
+        ShareMode::Managed => {
+            let alias = share.credential_alias.as_ref().ok_or_else(|| {
+                VoloError::OperationFailed("managed share missing credential_alias".into())
+            })?;
+            let server = smb_server_name_for_share(db, share)?;
+            let user = data_credentials::find_by_alias(db, alias)?
+                .map(|c| c.username)
+                .unwrap_or_else(|| "ddc-svc".to_string());
+            let qualified = qualify_smb_user(&server, &user);
+            if !read_secret {
+                return Ok((Some(qualified), None));
+            }
+            let pass = crate::core::secrets::get_share_secret_migrating(alias)?
+                .ok_or_else(|| {
+                    VoloError::InvalidInput(format!(
+                        "Mode B share secret '{alias}' missing from SecretStore; \
+                         re-run `share create --mode b`"
+                    ))
+                })?;
+            Ok((Some(qualified), Some(pass)))
+        }
+    }
+}
+
+pub fn qualify_smb_user(server: &str, username: &str) -> String {
+    if username.contains('\\') {
+        username.to_string()
+    } else {
+        format!(r"{server}\{username}")
+    }
+}
+
+fn open_share_target_uncs_for_host(db: &Db, host_machine_id: i64) -> VoloResult<Vec<String>> {
+    let mut all = Vec::new();
+    for share in share_configs::find_by_host(db, host_machine_id)? {
+        if share.mode != ShareMode::Open {
+            continue;
+        }
+        for unc in unc_variants_for_share(db, &share)? {
+            if !all.iter().any(|u: &String| u.eq_ignore_ascii_case(&unc)) {
+                all.push(unc);
+            }
+        }
+    }
+    Ok(all)
+}
+
+/// Ensure a Mode A guest share exists for `local_path` and prep `client_machine_ids`
+/// for silent guest access. Idempotent — mirrors `commands/shares::ensure_open_dir_share`.
+pub fn ensure_open_dir_share(
+    db: &Db,
+    host_machine_id: i64,
+    share_name: &str,
+    local_path: &str,
+    client_machine_ids: &[i64],
+) -> VoloResult<()> {
+    let host_addr = host_ip(db, host_machine_id)?;
+    let existing = share_configs::find_by_host(db, host_machine_id)?
+        .into_iter()
+        .find(|s| {
+            s.mode == ShareMode::Open
+                && s.share_name.eq_ignore_ascii_case(share_name)
+                && same_win_path(&s.local_path, local_path)
+        });
+    if existing.is_none() {
+        let result = create_mode_a(&host_addr, share_name, local_path, None, None)?;
+        if let Some(prior) = share_configs::find_by_host(db, host_machine_id)?
+            .into_iter()
+            .find(|s| s.share_name.eq_ignore_ascii_case(share_name))
+        {
+            if let Some(id) = prior.id {
+                share_configs::delete(db, id)?;
+            }
+        }
+        share_configs::insert(
+            db,
+            &ShareConfig {
+                id: None,
+                host_machine_id,
+                share_name: share_name.to_string(),
+                unc_path: result.unc_path,
+                local_path: local_path.to_string(),
+                mode: ShareMode::Open,
+                credential_alias: None,
+            },
+        )?;
+    }
+    let target_uncs = open_share_target_uncs_for_host(db, host_machine_id)?;
+    for client_id in client_machine_ids {
+        let client_ip = host_ip(db, *client_id)?;
+        prepare_open_share_client(&client_ip, &target_uncs).map_err(|e| {
+            VoloError::OperationFailed(format!(
+                "open-share client prep failed on machine {client_id}: {e}"
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 /// Generate a 24-byte random password, base64url-encoded (no padding) so

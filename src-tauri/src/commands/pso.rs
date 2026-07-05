@@ -291,18 +291,39 @@ pub async fn distribute_pso_cache(
     })?;
     // SSH key auth: operator cred no longer used (param kept as shim, Vue compat).
     let _ = &request.operator_credential_alias;
-    // Source SMB access from the SecretStore: explicit alias, else auto-derived
-    // from a Mode B share on the source host.
-    // NOTE (sub-project B): the UI's share-credential dropdown must pass a
-    // SecretStore/share alias here, not a DPAPI cred alias; `None` now means
-    // "auto-derive", not "same as operator".
-    let smb = cache_core::core::pak_distribute::resolve_source_smb(
-        &db,
-        file.source_machine_id,
-        request.source_smb_credential_alias.as_deref(),
-        true,
-    )?;
-    let (source_smb_user, source_smb_pass) = (smb.user, smb.pass);
+    let source_location =
+        project_locations::get_for_project_machine(&db, file.project_id, file.source_machine_id)?
+            .ok_or_else(|| {
+                VoloError::InvalidInput(format!(
+                    "project {} not located on machine {}",
+                    file.project_id, file.source_machine_id
+                ))
+            })?;
+    let (named_unc, source_smb_user, source_smb_pass) = if let Some(unc) =
+        request.named_share_unc.clone()
+    {
+        let smb = cache_core::core::pak_distribute::resolve_source_smb(
+            &db,
+            file.source_machine_id,
+            request.source_smb_credential_alias.as_deref(),
+            true,
+        )?;
+        (Some(unc), smb.user, smb.pass)
+    } else {
+        let pull = cache_core::core::pak_distribute::resolve_project_pull_smb(
+            &db,
+            file.source_machine_id,
+            &source_machine.ip,
+            &source_location.abs_path,
+            &request.target_machine_ids,
+            true,
+        )?;
+        (
+            Some(pull.named_share_unc),
+            pull.user,
+            pull.pass,
+        )
+    };
 
     if !request.force_gpu_mismatch {
         let matrix = cache_core::core::gpu_consistency::build_matrix(&db)?;
@@ -327,12 +348,7 @@ pub async fn distribute_pso_cache(
         }
     }
 
-    // Explicit request UNC wins; else the auto-derived managed-share UNC paired
-    // with the SMB cred (so ddc-svc mounts the share it actually has rights to).
-    let named_unc = request
-        .named_share_unc
-        .clone()
-        .or(smb.named_share_unc.clone());
+    // Explicit request UNC wins; else share-based project pull (registered or guest).
     let plan = pso_distribute::plan(
         &db,
         &source_machine.ip,

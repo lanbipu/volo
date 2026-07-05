@@ -335,65 +335,111 @@ pub fn resolve_source_smb(
     })
 }
 
-/// SMB credential for a target pulling **project-local** artifacts (DDC.ddp under
-/// `{project}/DerivedDataCache`, PSO files under `{project}/Saved/...`) from the
-/// source host's admin share (`\\host\D$\...`). The registered DDC SMB share
-/// points at the fleet shared-cache folder and does not contain per-project paks.
-///
-/// Uses the fleet `uecm-svc` password from SecretStore (same value as
-/// `UECM-Bootstrap.cmd`) qualified as `HOST\uecm-svc` for cross-machine admin-share
-/// auth — mirroring `modeb-svc-connect.ps1`.
-pub fn resolve_admin_pull_smb(
-    db: &Db,
-    source_machine_id: i64,
-    read_secret: bool,
-) -> VoloResult<(Option<String>, Option<String>)> {
-    let server = crate::core::shares::smb_server_name_for_machine(db, source_machine_id)?;
-    let qualified = qualify_smb_user(&server, "uecm-svc");
-    if !read_secret {
-        return Ok((Some(qualified), None));
-    }
-    let pass = find_fleet_uecm_svc_secret(db)?;
-    Ok((Some(qualified), Some(pass)))
+/// Resolved SMB source for pulling project-local artifacts (DDC.ddp, PSO files).
+/// Prefers a registered share covering the project path (like Explorer open-folder);
+/// otherwise plans a Mode A guest share on the project parent directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectPullSource {
+    pub named_share_unc: String,
+    pub user: Option<String>,
+    pub pass: Option<String>,
 }
 
-fn qualify_smb_user(server: &str, username: &str) -> String {
-    if username.contains('\\') {
-        username.to_string()
+/// Parent directory to open as a guest share when no share covers the project
+/// (mirrors `shareDirFor` in `cacheDdc.tsx`).
+pub fn share_dir_for_project(abs_path: &str) -> String {
+    let norm = abs_path.replace('/', "\\").trim_end_matches('\\').to_string();
+    let parts: Vec<_> = norm.split('\\').filter(|s| !s.is_empty()).collect();
+    if parts.len() <= 2 {
+        norm
     } else {
-        format!(r"{server}\{username}")
+        parts[..parts.len() - 1].join("\\")
     }
 }
 
-fn find_fleet_uecm_svc_secret(db: &Db) -> VoloResult<String> {
-    let creds = crate::data::credentials::list_all(db)?;
-    let matches: Vec<_> = creds
-        .iter()
-        .filter(|c| {
-            c.username.eq_ignore_ascii_case("uecm-svc")
-                || c.username.to_ascii_lowercase().ends_with(r"\uecm-svc")
+/// Deterministic open-share name for a directory (mirrors `shareNameFor` in `cacheDdc.tsx`).
+pub fn share_name_for_dir(dir: &str) -> String {
+    let mut slug = format!(
+        "volo-dir-{}",
+        dir.to_lowercase().replace(':', "")
+    );
+    slug = slug
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || ('\u{4e00}'..='\u{9fff}').contains(&c) {
+                c
+            } else {
+                '-'
+            }
         })
         .collect();
-    match matches.len() {
-        0 => Err(VoloError::InvalidInput(
-            "no uecm-svc fleet transport password in SecretStore; register the same \
-             password used in UECM-Bootstrap.cmd via 凭据管理 (username uecm-svc)"
-                .into(),
-        )),
-        1 => {
-            let alias = &matches[0].alias;
-            crate::core::secrets::SecretStore::from_config()?
-                .get(alias)?
-                .ok_or_else(|| {
-                    VoloError::InvalidInput(format!(
-                        "credential alias '{alias}' has no secret in SecretStore"
-                    ))
-                })
-        }
-        n => Err(VoloError::InvalidInput(format!(
-            "found {n} uecm-svc credentials; keep exactly one fleet transport password"
-        ))),
+    let trimmed = slug.trim_matches('-');
+    if trimmed.len() > 60 {
+        trimmed[..60].to_string()
+    } else {
+        trimmed.to_string()
     }
+}
+
+fn rel_under_share_root(share_root: &str, abs_path: &str) -> String {
+    if crate::core::shares::same_win_path(share_root, abs_path) {
+        return String::new();
+    }
+    let root = share_root.replace('/', "\\").trim_end_matches('\\').to_string();
+    let path = abs_path.replace('/', "\\").trim_end_matches('\\').to_string();
+    path[root.len()..]
+        .trim_start_matches('\\')
+        .to_string()
+}
+
+/// Resolve how targets pull project files over SMB — share-based, not admin D$.
+///
+/// When `ensure_share` is true (real run), creates a guest open share + client prep
+/// if no registered share covers the project yet. Dry-run passes `false` and only
+/// reports the UNC that would be used.
+pub fn resolve_project_pull_smb(
+    db: &Db,
+    source_machine_id: i64,
+    reach_host: &str,
+    project_abs_path: &str,
+    target_machine_ids: &[i64],
+    ensure_share: bool,
+) -> VoloResult<ProjectPullSource> {
+    let abs_norm = project_abs_path.replace('/', "\\");
+    if let Some(cover) =
+        crate::core::shares::share_covering_local_path(db, source_machine_id, &abs_norm)?
+    {
+        let unc = crate::core::shares::reachable_share_unc(
+            reach_host,
+            &cover.share.share_name,
+            &cover.rel,
+        );
+        let (user, pass) =
+            crate::core::shares::resolve_share_pull_cred(db, &cover.share, ensure_share)?;
+        return Ok(ProjectPullSource {
+            named_share_unc: unc,
+            user,
+            pass,
+        });
+    }
+
+    let share_dir = share_dir_for_project(&abs_norm);
+    let share_name = share_name_for_dir(&share_dir);
+    if ensure_share {
+        crate::core::shares::ensure_open_dir_share(
+            db,
+            source_machine_id,
+            &share_name,
+            &share_dir,
+            target_machine_ids,
+        )?;
+    }
+    let rel = rel_under_share_root(&share_dir, &abs_norm);
+    Ok(ProjectPullSource {
+        named_share_unc: crate::core::shares::reachable_share_unc(reach_host, &share_name, &rel),
+        user: None,
+        pass: None,
+    })
 }
 
 /// stdin JSON for the node-pure distribute scripts. Operator→target auth is
@@ -796,51 +842,44 @@ mod tests {
 
     #[test]
     fn qualify_smb_user_adds_server_prefix() {
-        assert_eq!(qualify_smb_user("LANPC", "uecm-svc"), r"LANPC\uecm-svc");
         assert_eq!(
-            qualify_smb_user("LANPC", r"OTHER\uecm-svc"),
+            crate::core::shares::qualify_smb_user("LANPC", "uecm-svc"),
+            r"LANPC\uecm-svc"
+        );
+        assert_eq!(
+            crate::core::shares::qualify_smb_user("LANPC", r"OTHER\uecm-svc"),
             r"OTHER\uecm-svc"
         );
     }
 
     #[test]
-    fn resolve_admin_pull_smb_errors_without_fleet_password() {
-        let (db, source, _t, _p) = setup();
-        assert!(resolve_admin_pull_smb(&db, source, true).is_err());
-        let (user, pass) = resolve_admin_pull_smb(&db, source, false).unwrap();
-        assert_eq!(user.as_deref(), Some(r"SOURCE\uecm-svc"));
-        assert!(pass.is_none());
+    fn share_name_for_dir_matches_frontend_slug() {
+        assert_eq!(
+            share_name_for_dir("D:\\Unreal Projects"),
+            "volo-dir-d-unreal-projects"
+        );
     }
 
     #[test]
-    fn resolve_admin_pull_smb_reads_fleet_uecm_svc_secret() {
-        use crate::core::secrets::SecretStore;
-        use crate::data::credentials::{self, CredentialKind, CredentialRecord};
-        let (db, source, _t, _p) = setup();
-        credentials::insert(
+    fn resolve_project_pull_uses_covering_open_share_unc() {
+        use crate::data::share_configs::{insert, ShareConfig, ShareMode};
+        let (db, source, target, project_id) = setup();
+        insert(
             &db,
-            &CredentialRecord {
+            &ShareConfig {
                 id: None,
-                alias: "UECM:transport".into(),
-                kind: CredentialKind::Winrm,
-                username: "uecm-svc".into(),
+                host_machine_id: source,
+                share_name: "volo-dir-d-projects".into(),
+                unc_path: r"\\SOURCE\volo-dir-d-projects".into(),
+                local_path: "D:\\Projects".into(),
+                mode: ShareMode::Open,
+                credential_alias: None,
             },
         )
         .unwrap();
-        SecretStore::from_config()
-            .unwrap()
-            .put("UECM:transport", "fleet-pass")
-            .unwrap();
-        let (user, pass) = resolve_admin_pull_smb(&db, source, true).unwrap();
-        assert_eq!(user.as_deref(), Some(r"SOURCE\uecm-svc"));
-        assert_eq!(pass.as_deref(), Some("fleet-pass"));
-    }
-
-    #[test]
-    fn plan_default_uses_admin_share_for_project_pak() {
-        let (db, source, target, project_id) = setup();
-        use crate::data::share_configs::{insert, ShareMode};
-        insert(&db, &share(source, "DDC", ShareMode::Managed, Some("share-SOURCE-DDC"))).unwrap();
+        let mut loc = source_loc(project_id, source);
+        loc.abs_path = "D:\\Projects\\X".into();
+        project_locations::upsert(&db, &loc).unwrap();
         project_locations::upsert(
             &db,
             &ProjectLocation {
@@ -854,57 +893,55 @@ mod tests {
             },
         )
         .unwrap();
+
+        let pull = resolve_project_pull_smb(
+            &db,
+            source,
+            "1.1.1.1",
+            "D:\\Projects\\X",
+            &[target],
+            false,
+        )
+        .unwrap();
+        assert_eq!(pull.named_share_unc, r"\\1.1.1.1\volo-dir-d-projects\X");
+        assert!(pull.user.is_none() && pull.pass.is_none());
+
         let items = plan(
             &DistributeProfile::ddc_pak(),
             &db,
             source,
             "1.1.1.1",
-            &source_loc(project_id, source),
+            &loc,
             &[target],
             project_id,
-            None,
-            Some(r"SOURCE\uecm-svc".into()),
-            Some("pw".into()),
+            Some(&pull.named_share_unc),
+            pull.user,
+            pull.pass,
         )
         .unwrap();
-        assert_eq!(items[0].source_unc, "\\\\1.1.1.1\\D$\\X\\DerivedDataCache");
+        assert_eq!(
+            items[0].source_unc,
+            r"\\1.1.1.1\volo-dir-d-projects\X\DerivedDataCache"
+        );
     }
 
     #[test]
-    fn resolve_admin_pull_smb_qualifies_with_ip_when_hostname_is_ip() {
-        let db = open_in_memory().unwrap();
-        {
-            let mut conn = db.lock().unwrap();
-            schema::migrate(&mut conn).unwrap();
-        }
-        let source = machines::insert(
+    fn resolve_project_pull_plans_guest_share_when_none_covers() {
+        let (db, source, target, project_id) = setup();
+        let loc = source_loc(project_id, source);
+        let pull = resolve_project_pull_smb(
             &db,
-            &Machine::new("192.168.10.20", "192.168.10.20"),
+            source,
+            "192.168.10.20",
+            &loc.abs_path,
+            &[target],
+            false,
         )
         .unwrap();
-        use crate::data::credentials::{self, CredentialKind, CredentialRecord};
-        use crate::core::secrets::SecretStore;
-        credentials::insert(
-            &db,
-            &CredentialRecord {
-                id: None,
-                alias: "UECM:transport".into(),
-                kind: CredentialKind::Winrm,
-                username: "uecm-svc".into(),
-            },
-        )
-        .unwrap();
-        SecretStore::from_config()
-            .unwrap()
-            .put("UECM:transport", "fleet-pass")
-            .unwrap();
-        let (user, pass) = resolve_admin_pull_smb(&db, source, true).unwrap();
-        assert!(
-            user.as_deref()
-                .is_some_and(|u| u.ends_with(r"\uecm-svc")),
-            "expected qualified uecm-svc user, got {:?}",
-            user
+        assert_eq!(
+            pull.named_share_unc,
+            r"\\192.168.10.20\volo-dir-d-x"
         );
-        assert_eq!(pass.as_deref(), Some("fleet-pass"));
+        assert!(pull.user.is_none());
     }
 }
