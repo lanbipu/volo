@@ -69,10 +69,10 @@ use std::time::Duration;
 // tests — keep referring to them by their original unqualified names.
 pub(crate) use cache_core::core::zen::ops::{
     build_global_rules, copy_binary_if_needed, default_lifecycle_for, finalize_op,
-    parse_envelope, release_urlacl_best_effort, render_lua_for, require_endpoint,
-    require_machine, resolve_cluster_master, resolve_install_paths, resolve_service_paths,
-    resolve_upstream_info, restart_service, run_node, url_prefix_for, urlacl_needed_for,
-    validate_data_dir_safe, validate_dest_path, validate_service_account_pair,
+    is_stale_urlacl_conflict, parse_envelope, release_urlacl_best_effort, render_lua_for,
+    require_endpoint, require_machine, resolve_cluster_master, resolve_install_paths,
+    resolve_service_paths, resolve_upstream_info, restart_service, run_node, url_prefix_for,
+    urlacl_needed_for, validate_data_dir_safe, validate_dest_path, validate_service_account_pair,
     validate_service_data_dir, workstation_colocation_warning, write_and_verify_lua,
     DEFAULT_SERVICE_NAME,
 };
@@ -2129,13 +2129,48 @@ fn urlacl_add(
         "zen-urlacl-add.ps1 -UrlPrefix {url_prefix} -UserAccount {principal}"
     ));
     let op_id = operations::start(&db, "zen.urlacl_add", &[ep.machine_id])?;
-    let result = run_node(
+    let first_attempt = run_node(
         &machine.ip,
         "zen-urlacl-add.ps1",
         serde_json::json!({ "UrlPrefix": url_prefix, "UserAccount": principal }),
     )
     .and_then(|raw| parse_envelope(&raw, "zen-urlacl-add"));
-    finalize_op(&db, op_id, &result, &invocation);
+    finalize_op(&db, op_id, &first_attempt, &invocation);
+
+    // A stale reservation from an earlier deploy under a *different* service
+    // account survives `sc delete` — netsh's urlacl store is independent of
+    // the SCM. Mirrors the Tauri `zen_urlacl_add` command's self-recovery so
+    // `voloctl cache zen urlacl add` doesn't hit the same production dead-end
+    // (see `is_stale_urlacl_conflict`'s doc for the three ps1 wordings this
+    // covers): remove the stale reservation and retry once.
+    let result = match &first_attempt {
+        Err(e) if is_stale_urlacl_conflict(&e.to_string()) => {
+            let remove_invocation = redact(&format!(
+                "zen-urlacl-remove.ps1 -UrlPrefix {url_prefix} (auto-recovery: stale reservation from a different account)"
+            ));
+            let remove_op_id =
+                operations::start(&db, "zen.urlacl_add.auto_remove_stale", &[ep.machine_id])?;
+            let remove_result = run_node(
+                &machine.ip,
+                "zen-urlacl-remove.ps1",
+                serde_json::json!({ "UrlPrefix": url_prefix }),
+            )
+            .and_then(|raw| parse_envelope(&raw, "zen-urlacl-remove"));
+            finalize_op(&db, remove_op_id, &remove_result, &remove_invocation);
+            remove_result?;
+
+            let retry_op_id = operations::start(&db, "zen.urlacl_add", &[ep.machine_id])?;
+            let retry_result = run_node(
+                &machine.ip,
+                "zen-urlacl-add.ps1",
+                serde_json::json!({ "UrlPrefix": url_prefix, "UserAccount": principal }),
+            )
+            .and_then(|raw| parse_envelope(&raw, "zen-urlacl-add"));
+            finalize_op(&db, retry_op_id, &retry_result, &invocation);
+            retry_result
+        }
+        _ => first_attempt,
+    };
     let response = result?;
     let summary = serde_json::json!({
         "ok": true,

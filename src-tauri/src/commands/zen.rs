@@ -2335,14 +2335,19 @@ pub fn zen_urlacl_add(
     // account (e.g. a previous "创建专用账号" click, or a since-uninstalled
     // endpoint whose account was never persisted so change-detection couldn't
     // flag it) survives `sc delete` — netsh's urlacl store is independent of
-    // the SCM. `netsh http add urlacl` then refuses with this exact owner-
-    // mismatch wording (see zen-urlacl-add.ps1). Auto-recover the same way
-    // `zen_service_install` already does for its own idempotency refusal:
-    // remove the stale reservation (netsh doesn't care who owns it) and retry
-    // once, instead of leaving the operator stuck needing to SSH in and run
-    // `netsh http delete urlacl` by hand.
+    // the SCM. `netsh http add urlacl` then refuses with one of the three
+    // "already exists" wordings zen-urlacl-add.ps1 can emit: owner mismatch,
+    // owner undeterminable (localized `netsh show urlacl` output the ps1's
+    // English-only regex can't parse), or Listen=No. All three are the same
+    // class — an existing reservation that a plain `netsh delete` + retry
+    // resolves regardless of *why* the add refused — so match all of them,
+    // not just the exact wording this incident happened to reproduce.
+    // Auto-recover the same way `zen_service_install` already does for its
+    // own idempotency refusal: remove the stale reservation (netsh doesn't
+    // care who owns it) and retry once, instead of leaving the operator
+    // stuck needing to SSH in and run `netsh http delete urlacl` by hand.
     let result = match &first_attempt {
-        Err(e) if e.to_string().contains("already exists but is owned by") => {
+        Err(e) if zen_cli_shared::is_stale_urlacl_conflict(&e.to_string()) => {
             let remove_invocation = redact(&format!(
                 "zen-urlacl-remove.ps1 -UrlPrefix {url_prefix} (auto-recovery: stale reservation from a different account)"
             ));
