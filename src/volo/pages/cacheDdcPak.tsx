@@ -488,10 +488,13 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
     const toggleFav = (v) => { const val = normRoot(v); if (!val) return; setFavs((f) => f.includes(val) ? f.filter((x) => x !== val) : f.concat(val)); };
     const removeFav = (v) => setFavs((f) => f.filter((x) => x !== v));
 
-    /* ---------- 地址栏逐级路径提示：真实查询所选机器（scope 指定的机器；scope=全部时取
-       第一台在线机）的盘符 / 子目录，而不是猜的目录名 ---------- */
-    const acHostNode = scope !== 'all' ? CX.node(scope) : (RENDER_NODES.filter((n) => n.status !== 'offline')[0] || null);
-    const acMachineId = acHostNode ? acHostNode.machineId : null;
+    /* ---------- 地址栏逐级路径提示：真实查询所选机器的盘符 / 子目录，而不是猜的目录名。
+       scope 指定单台机器时只查那台；scope=全部在线机时对所有在线机并发查询后取并集去重——
+       "全部在线机"是给"扫描范围"用的选择，不能悄悄退化成只查其中一台。 */
+    const acNodes = scope !== 'all' ? [CX.node(scope)].filter(Boolean) : RENDER_NODES.filter((n) => n.status !== 'offline');
+    const acMachineIds = acNodes.map((n) => n.machineId);
+    const acMachineKey = acMachineIds.slice().sort((a, b) => a - b).join(',');
+    const acScopeLabel = scope !== 'all' ? (acNodes[0] ? acNodes[0].host : null) : (acNodes.length ? ('跨 ' + acNodes.length + ' 台在线机') : null);
     const acText = acField === 'add' ? rootDraft : ((roots.find((r) => r.id === acField) || {}).val || '');
     const { parentPath, typed } = splitRootPath(acText);
     const openAc = (field) => { setAcField(field); setAcOpen(true); setAcHi(0); };
@@ -499,13 +502,22 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
        "该进程在 D 盘的当前工作目录"而非盘符根——一个经典坑，SSH 起的全新进程虽通常仍落在
        根目录，但不该依赖这个不保证的隐式行为。 */
     const toSshPath = (p) => (/^[A-Za-z]:$/.test(p) ? p + '\\' : p);
-    const fetchDirs = (machineId, path) => {
+    /* 并发查询所有目标机器，取并集去重——只要有一台查到就展示；全军覆没才算失败
+       （partial success 不当失败处理，避免"全部在线机"里一台掉线就让整个提示报错）。 */
+    const fetchDirs = (machineIds, path) => {
       const normPath = path == null ? null : toSshPath(path);
-      const key = machineId + '|' + (normPath || '');
+      const idKey = machineIds.slice().sort((a, b) => a - b).join(',');
+      const key = idKey + '|' + (normPath || '');
       if (acCacheRef.current.has(key)) return Promise.resolve(acCacheRef.current.get(key));
-      return listRemoteDirectories(machineId, normPath).then((entries) => {
-        acCacheRef.current.set(key, entries);
-        return entries;
+      return Promise.allSettled(machineIds.map((id) => listRemoteDirectories(id, normPath))).then((results) => {
+        const ok = results.filter((r) => r.status === 'fulfilled');
+        if (!ok.length) throw new Error('all machines failed to list directories');
+        const merged = Array.from(new Set(ok.flatMap((r) => r.value))).sort((a, b) => a.localeCompare(b));
+        /* 只缓存"全员应答成功"的结果——若这次是部分失败（某台掉线/超时）拼出来的并集，
+           不写入缓存，下次同一 (机器集, 路径) 会重新全员查询，不会把这次的残缺并集
+           永久当作最终结果（那台机器哪怕之后恢复在线也不会再被查）。 */
+        if (ok.length === machineIds.length) acCacheRef.current.set(key, merged);
+        return merged;
       });
     };
     const [siblings, setSiblings] = useState([]);
@@ -514,15 +526,15 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
     /* 第一层：parentPath 下的子项（parentPath=null → 盘符）。只在跨目录边界时才变化，
        同一段内继续打字不会重新发起请求——过滤靠下面的本地 startsWith，不占网络往返。 */
     useEffect(() => {
-      if (!acOpen || acMachineId == null) return undefined;
+      if (!acOpen || !acMachineIds.length) return undefined;
       let cancelled = false;
       setSiblingsLoading(true); setSiblingsFailed(false);
-      fetchDirs(acMachineId, parentPath).then((entries) => {
+      fetchDirs(acMachineIds, parentPath).then((entries) => {
         if (cancelled) return;
         setSiblings(entries); setSiblingsLoading(false);
       }).catch(() => { if (!cancelled) { setSiblings([]); setSiblingsLoading(false); setSiblingsFailed(true); } });
       return () => { cancelled = true; };
-    }, [acOpen, acMachineId, parentPath]);
+    }, [acOpen, acMachineKey, parentPath]);
     /* 已输入到的最后一段若精确命中（大小写不敏感）某个真实子目录名，立即下钻显示它的
        子项——覆盖"已设好的路径行左键点击也会下钻"，含只有一级路径的情况。 */
     const exactName = typed ? (siblings.find((x) => x.toLowerCase() === typed.toLowerCase()) || null) : null;
@@ -531,15 +543,15 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
     const [deeperLoading, setDeeperLoading] = useState(false);
     const [deeperFailed, setDeeperFailed] = useState(false);
     useEffect(() => {
-      if (!acOpen || acMachineId == null || deeperPath == null) return undefined;
+      if (!acOpen || !acMachineIds.length || deeperPath == null) return undefined;
       let cancelled = false;
       setDeeperLoading(true); setDeeperFailed(false);
-      fetchDirs(acMachineId, deeperPath).then((entries) => {
+      fetchDirs(acMachineIds, deeperPath).then((entries) => {
         if (cancelled) return;
         setDeeperEntries(entries); setDeeperLoading(false);
       }).catch(() => { if (!cancelled) { setDeeperEntries([]); setDeeperLoading(false); setDeeperFailed(true); } });
       return () => { cancelled = true; };
-    }, [acOpen, acMachineId, deeperPath]);
+    }, [acOpen, acMachineKey, deeperPath]);
     const acDrilled = !!deeperPath;
     const acBase = acDrilled ? (deeperPath + '\\') : (parentPath == null ? '' : parentPath + '\\');
     const acLoading = acDrilled ? deeperLoading : siblingsLoading;
@@ -559,13 +571,13 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
       else if (e.key === 'Escape') { setAcOpen(false); }
     };
     const renderAc = () => h('div', { className: 'root-ac' },
-      h('div', { className: 'root-ac-h' }, acMachineId == null ? '选择根目录' : ('在 ' + acHostNode.host + (parentPath == null ? ' 选择盘符' : (' 的 ' + acBase + ' 下选择文件夹')))),
-      acMachineId == null
+      h('div', { className: 'root-ac-h' }, !acMachineIds.length ? '选择根目录' : ('在 ' + acScopeLabel + (parentPath == null ? ' 选择盘符' : (' 的 ' + acBase + ' 下选择文件夹')))),
+      !acMachineIds.length
         ? h('div', { className: 'root-ac-empty' }, '当前无在线机器可浏览 · 可直接输入完整路径')
         : acLoading
           ? h('div', { className: 'root-ac-empty' }, h(Icon, { name: 'sync', size: 12 }), ' 查询中…')
           : acFailed
-            ? h('div', { className: 'root-ac-empty' }, '无法连接 ' + acHostNode.host + ' · 可直接输入完整路径')
+            ? h('div', { className: 'root-ac-empty' }, '无法连接 ' + acScopeLabel + ' · 可直接输入完整路径')
             : acOpts.length
               ? h('div', { className: 'root-ac-list' }, acOpts.map((opt, i) => h('button', {
                   key: opt, type: 'button', className: 'root-ac-opt' + (i === acHi ? ' hi' : ''),
