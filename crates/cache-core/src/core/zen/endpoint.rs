@@ -142,6 +142,100 @@ pub fn register(db: &Db, input: &EndpointInput) -> VoloResult<RegisterOutcome> {
     Ok(RegisterOutcome { id, inserted })
 }
 
+/// Caller-supplied fields for [`update_deploy_config`] — the subset of
+/// [`EndpointInput`] that describes *how* an already-registered endpoint is
+/// deployed (as opposed to its cluster topology, which [`change_role`] owns,
+/// or its GC/service-account bookkeeping, which their own setters own).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeployConfigPatch {
+    pub scheme: String,
+    pub data_dir: String,
+    pub httpserverclass: String,
+    pub install_dir: Option<String>,
+    pub config_path_override: Option<String>,
+}
+
+/// Outcome of [`update_deploy_config`]: the persisted row after the write,
+/// plus which categories of change the caller needs to react to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeployConfigOutcome {
+    pub endpoint: ZenEndpoint,
+    /// `install_dir` changed — the service's zenserver.exe lives there, so
+    /// `zen-service-install.ps1`'s idempotency guard will refuse an in-place
+    /// ImagePath patch and the caller must uninstall the existing SCM
+    /// registration before reinstalling (see `zen_service_install`'s
+    /// auto-recovery in `commands/zen.rs`).
+    pub install_dir_changed: bool,
+    /// `data_dir` changed — the old cache contents are stranded under
+    /// `previous_data_dir` unless the caller migrates them.
+    pub data_dir_changed: bool,
+    pub previous_data_dir: String,
+}
+
+/// Persist new deployment-shape fields (`scheme` / `data_dir` /
+/// `httpserverclass` / `install_dir` / `config_path_override`) onto an
+/// EXISTING endpoint row.
+///
+/// Unlike [`register`] (insert-only, plan §7.2 idempotency contract — a
+/// duplicate register must never silently overwrite an existing row), this
+/// is an explicit update: callers use it once they already hold an
+/// `endpoint_id` and want a "change deploy config, then redeploy" flow to
+/// actually take effect. Role / upstream / GC settings / service account are
+/// carried over unchanged from the current row (struct-update, not caller
+/// input), so this can't drift those the way a full re-register with blank
+/// fields would.
+pub fn update_deploy_config(
+    db: &Db,
+    endpoint_id: i64,
+    patch: &DeployConfigPatch,
+) -> VoloResult<DeployConfigOutcome> {
+    validate_enum("scheme", &patch.scheme, ALLOWED_SCHEMES)?;
+    validate_enum(
+        "httpserverclass",
+        &patch.httpserverclass,
+        ALLOWED_HTTPSERVERCLASSES,
+    )?;
+    validate_data_dir(&patch.data_dir)?;
+
+    let conn = db.lock().unwrap();
+    let tx = conn.unchecked_transaction()?;
+    let current = zen_endpoints::get_tx(&tx, endpoint_id)?.ok_or_else(|| {
+        VoloError::InvalidInput(format!("zen endpoint {endpoint_id} does not exist"))
+    })?;
+
+    let install_dir_changed =
+        normalize_opt_path(&current.install_dir) != normalize_opt_path(&patch.install_dir);
+    let data_dir_changed = current.data_dir.trim() != patch.data_dir.trim();
+    let previous_data_dir = current.data_dir.clone();
+
+    let updated = ZenEndpoint {
+        scheme: patch.scheme.clone(),
+        data_dir: patch.data_dir.clone(),
+        httpserverclass: patch.httpserverclass.clone(),
+        install_dir: patch.install_dir.clone(),
+        config_path_override: patch.config_path_override.clone(),
+        updated_at: None,
+        ..current
+    };
+    zen_endpoints::upsert_tx(&tx, &updated)?;
+    tx.commit()?;
+
+    Ok(DeployConfigOutcome {
+        endpoint: updated,
+        install_dir_changed,
+        data_dir_changed,
+        previous_data_dir,
+    })
+}
+
+/// Case/trailing-slash-insensitive comparison for an optional Windows path
+/// field (`install_dir`) — `None` vs `None` is unchanged; `Some("C:\\Foo")` vs
+/// `Some("C:\\Foo\\")` is also unchanged.
+fn normalize_opt_path(p: &Option<String>) -> Option<String> {
+    p.as_ref()
+        .map(|s| s.trim().trim_end_matches(['\\', '/']).to_lowercase())
+}
+
 /// Delete `endpoint_id`. Fails if any other endpoint references it as their
 /// upstream — the operator must un-point dependents first. The DB has no
 /// ON DELETE CASCADE, so the alternative would be a dangling reference.
@@ -1091,6 +1185,112 @@ mod tests {
         assert!(!outcome.inserted);
         let got = get(&db, master).unwrap().unwrap();
         assert_eq!(got.role, ROLE_SHARED_UPSTREAM);
+    }
+
+    // -------- update_deploy_config --------
+
+    fn patch_from(ep: &EndpointInput) -> DeployConfigPatch {
+        DeployConfigPatch {
+            scheme: ep.scheme.clone(),
+            data_dir: ep.data_dir.clone(),
+            httpserverclass: ep.httpserverclass.clone(),
+            install_dir: ep.install_dir.clone(),
+            config_path_override: ep.config_path_override.clone(),
+        }
+    }
+
+    #[test]
+    fn update_deploy_config_persists_new_fields() {
+        let (db, m) = setup();
+        let id = register_id(&db, &valid_local(m, 8558)).unwrap();
+        let patch = DeployConfigPatch {
+            scheme: "http".into(),
+            data_dir: "D:\\NewData".into(),
+            httpserverclass: "httpsys".into(),
+            install_dir: Some("D:\\NewInstall".into()),
+            config_path_override: Some("D:\\NewInstall\\zen_config.lua".into()),
+        };
+        let outcome = update_deploy_config(&db, id, &patch).unwrap();
+        assert!(outcome.data_dir_changed);
+        assert!(outcome.install_dir_changed);
+        assert_eq!(outcome.previous_data_dir, "C:\\ZenData");
+        let got = get(&db, id).unwrap().unwrap();
+        assert_eq!(got.data_dir, "D:\\NewData");
+        assert_eq!(got.httpserverclass, "httpsys");
+        assert_eq!(got.install_dir.as_deref(), Some("D:\\NewInstall"));
+        assert_eq!(
+            got.config_path_override.as_deref(),
+            Some("D:\\NewInstall\\zen_config.lua")
+        );
+    }
+
+    #[test]
+    fn update_deploy_config_reports_unchanged_fields_as_unchanged() {
+        let (db, m) = setup();
+        let input = valid_local(m, 8558);
+        let id = register_id(&db, &input).unwrap();
+        let outcome = update_deploy_config(&db, id, &patch_from(&input)).unwrap();
+        assert!(!outcome.data_dir_changed);
+        assert!(!outcome.install_dir_changed);
+    }
+
+    #[test]
+    fn update_deploy_config_preserves_role_upstream_and_service_account() {
+        let (db, m) = setup();
+        let master = register_id(&db, &valid_master(m, 8559)).unwrap();
+        let mut input = valid_local(m, 8558);
+        input.upstream_endpoint_id = Some(master);
+        let id = register_id(&db, &input).unwrap();
+        update_service_account_for_test(&db, id);
+
+        let mut patch = patch_from(&input);
+        patch.data_dir = "D:\\NewData".into();
+        update_deploy_config(&db, id, &patch).unwrap();
+
+        let got = get(&db, id).unwrap().unwrap();
+        assert_eq!(got.role, ROLE_LOCAL);
+        assert_eq!(got.upstream_endpoint_id, Some(master));
+        assert_eq!(got.service_account_username.as_deref(), Some("zen-svc-test"));
+    }
+
+    fn update_service_account_for_test(db: &Db, endpoint_id: i64) {
+        zen_endpoints::update_service_account(
+            db,
+            endpoint_id,
+            Some("zen-svc-test"),
+            Some("zen-svc:1:zen-svc-test"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn update_deploy_config_rejects_unsafe_data_dir() {
+        let (db, m) = setup();
+        let input = valid_local(m, 8558);
+        let id = register_id(&db, &input).unwrap();
+        let mut patch = patch_from(&input);
+        patch.data_dir = r"C:\Windows\Zen".into();
+        let err = update_deploy_config(&db, id, &patch).unwrap_err();
+        assert_invalid_input(&err, "forbidden system location");
+    }
+
+    #[test]
+    fn update_deploy_config_rejects_invalid_httpserverclass() {
+        let (db, m) = setup();
+        let input = valid_local(m, 8558);
+        let id = register_id(&db, &input).unwrap();
+        let mut patch = patch_from(&input);
+        patch.httpserverclass = "kestrel".into();
+        let err = update_deploy_config(&db, id, &patch).unwrap_err();
+        assert_invalid_input(&err, "httpserverclass");
+    }
+
+    #[test]
+    fn update_deploy_config_rejects_unknown_endpoint() {
+        let (db, m) = setup();
+        let input = valid_local(m, 8558);
+        let err = update_deploy_config(&db, 9999, &patch_from(&input)).unwrap_err();
+        assert_invalid_input(&err, "does not exist");
     }
 
     #[test]

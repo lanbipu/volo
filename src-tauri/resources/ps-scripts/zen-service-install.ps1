@@ -452,6 +452,9 @@ try {
     #   a clear error pointing the operator at `service uninstall`. Telling
     #   the caller ok=true here would silently leave UECM thinking the
     #   desired config is live when actually the prior config is.
+    #   `commands::zen::zen_service_install` (Rust) string-matches this
+    #   refusal's "Refusing to re-install without --full" wording to
+    #   auto-uninstall + retry once — keep that phrase in sync if it changes.
     $existingSvc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
     if ($null -ne $existingSvc) {
         $existingPathName = $null
@@ -558,6 +561,31 @@ try {
         # stop+start.
         if ($exeMatches -and $userMatches -and ($argsDiff.Count -gt 0)) {
             try {
+                # DataDir may be exactly what drifted (a deploy-config change,
+                # not just GC settings) — unlike the fresh-install branch
+                # below, this in-place patch never creates the directory or
+                # grants a non-builtin account access to it. Do that here too,
+                # BEFORE the patched ImagePath goes live, so a dedicated-account
+                # service doesn't come back up unable to read/write its own
+                # data dir once the caller stops+starts it.
+                if (-not [string]::IsNullOrWhiteSpace($DataDir)) {
+                    if (-not (Test-Path -LiteralPath $DataDir -PathType Container)) {
+                        New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
+                    }
+                    $repairAccount = Normalize-Account $existingStartName
+                    $repairIsBuiltin = @('localsystem', 'localservice', 'networkservice') -contains $repairAccount
+                    if (-not $repairIsBuiltin -and -not [string]::IsNullOrWhiteSpace($existingStartName)) {
+                        $repairIcaclsOutput = (icacls $DataDir /grant "${existingStartName}:(OI)(CI)M" 2>&1 | Out-String)
+                        if ($LASTEXITCODE -ne 0) {
+                            @{
+                                ok = $false
+                                service_name = $ServiceName
+                                message = "icacls grant on DataDir failed while repairing ImagePath drift (exit $LASTEXITCODE): $repairIcaclsOutput"
+                            } | ConvertTo-Json -Compress -Depth 4
+                            exit 0
+                        }
+                    }
+                }
                 $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName"
                 $curBin = (Get-ItemProperty -LiteralPath $regPath -Name 'ImagePath' -ErrorAction Stop).ImagePath
                 $newBin = Build-ZenImagePath (Resolve-ServiceExe $curBin) $normalizedConfigPath $Port $DataDir $HttpServerClass `

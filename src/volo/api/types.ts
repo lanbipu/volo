@@ -678,6 +678,38 @@ export interface ZenRegisterOutcome {
   config_path_override: string | null;
 }
 
+export interface ZenUpdateDeployConfigInput {
+  endpoint_id: number;
+  scheme: string;
+  data_dir: string;
+  httpserverclass: string;
+  install_dir?: string | null;
+  config_path_override?: string | null;
+}
+
+export interface ZenUpdateDeployConfigOutcome {
+  endpoint_id: number;
+  scheme: string;
+  data_dir: string;
+  httpserverclass: string;
+  install_dir: string | null;
+  config_path_override: string | null;
+  install_dir_changed: boolean;
+  data_dir_changed: boolean;
+  previous_data_dir: string;
+}
+
+export interface ZenMigrateDataDirResult {
+  endpoint_id: number;
+  machine_id: number;
+  host: string;
+  dry_run: boolean;
+  migrated: boolean;
+  old_data_dir: string;
+  new_data_dir: string;
+  message: string;
+}
+
 export interface ZenUnregisterPlan {
   operation: string;
   endpoint_id: number;

@@ -743,6 +743,71 @@ pub fn zen_register(db: State<'_, Db>, input: ZenRegisterInput) -> VoloResult<Ze
 }
 
 // ---------------------------------------------------------------------------
+// update deploy config (redeploy an existing endpoint with changed params)
+// ---------------------------------------------------------------------------
+
+/// Inputs for `zen_update_deploy_config`. Deployment-shape fields only — role
+/// / upstream / GC / service-account bookkeeping have their own setters and
+/// are left untouched on the persisted row.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ZenUpdateDeployConfigInput {
+    pub endpoint_id: i64,
+    pub scheme: String,
+    pub data_dir: String,
+    pub httpserverclass: String,
+    #[serde(default)]
+    pub install_dir: Option<String>,
+    #[serde(default)]
+    pub config_path_override: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ZenUpdateDeployConfigOutcome {
+    pub endpoint_id: i64,
+    pub scheme: String,
+    pub data_dir: String,
+    pub httpserverclass: String,
+    pub install_dir: Option<String>,
+    pub config_path_override: Option<String>,
+    pub install_dir_changed: bool,
+    pub data_dir_changed: bool,
+    pub previous_data_dir: String,
+}
+
+/// `zen_register` is insert-only on `(machine_id, declared_port)` conflict
+/// (plan §7.2 idempotency contract) — re-registering an already-deployed
+/// endpoint with different `data_dir` / `install_dir` / etc. is a silent
+/// no-op. The "change deploy config, then redeploy" UI flow calls this
+/// command instead, once it already holds the `endpoint_id`, so the new
+/// values actually get persisted before `zen_apply_config` /
+/// `zen_service_install` render them into the live config / service.
+#[tauri::command]
+pub fn zen_update_deploy_config(
+    db: State<'_, Db>,
+    input: ZenUpdateDeployConfigInput,
+) -> VoloResult<ZenUpdateDeployConfigOutcome> {
+    let patch = zen_endpoint::DeployConfigPatch {
+        scheme: input.scheme,
+        data_dir: input.data_dir,
+        httpserverclass: input.httpserverclass,
+        install_dir: input.install_dir,
+        config_path_override: input.config_path_override,
+    };
+    let outcome = zen_endpoint::update_deploy_config(&db, input.endpoint_id, &patch)?;
+    Ok(ZenUpdateDeployConfigOutcome {
+        endpoint_id: input.endpoint_id,
+        scheme: outcome.endpoint.scheme,
+        data_dir: outcome.endpoint.data_dir,
+        httpserverclass: outcome.endpoint.httpserverclass,
+        install_dir: outcome.endpoint.install_dir,
+        config_path_override: outcome.endpoint.config_path_override,
+        install_dir_changed: outcome.install_dir_changed,
+        data_dir_changed: outcome.data_dir_changed,
+        previous_data_dir: outcome.previous_data_dir,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // unregister
 // ---------------------------------------------------------------------------
 
@@ -1782,10 +1847,53 @@ pub fn zen_service_install(
             obj.insert("ServicePassword".into(), serde_json::Value::String(p.to_string()));
         }
     }
-    let result = zen_cli_shared::run_node(&machine.ip, "zen-service-install.ps1", args)
+    let first_attempt = zen_cli_shared::run_node(&machine.ip, "zen-service-install.ps1", args.clone())
         .and_then(|raw| zen_cli_shared::parse_envelope(&raw, "zen-service-install"));
-    zen_cli_shared::finalize_op(&db, op_id, &result, &invocation);
+    zen_cli_shared::finalize_op(&db, op_id, &first_attempt, &invocation);
+
+    // Redeploying an already-installed endpoint whose install_dir (zenserver.exe's
+    // own path) or service account changed hits zen-service-install.ps1's own
+    // idempotency guard, which refuses an in-place reinstall rather than risk
+    // silently leaving the wrong binary/account live (see the ps1's "Plan 7 §12
+    // red line" comment). Auto-recover instead of surfacing that refusal as a
+    // failed step: uninstall the stale SCM registration (never touches data_dir)
+    // and retry once — this is exactly the "no manual 先卸载 click" behavior the
+    // deploy-config-change flow needs. Matched by the ps1's own wording; keep the
+    // two in sync if that message ever changes.
+    let result = match &first_attempt {
+        Err(e) if e.to_string().contains("Refusing to re-install without --full") => {
+            let uninstall_invocation = redact(&format!(
+                "zen-service-uninstall.ps1 -ZenExePath {zen_exe} -ServiceName {} (auto-recovery: deploy config changed)",
+                zen_cli_shared::DEFAULT_SERVICE_NAME
+            ));
+            let uninstall_op_id =
+                operations::start(&db, "zen.service_install.auto_uninstall", &[ep.machine_id])?;
+            let uninstall_result = zen_cli_shared::run_node(
+                &machine.ip,
+                "zen-service-uninstall.ps1",
+                serde_json::json!({ "ZenExePath": zen_exe, "ServiceName": zen_cli_shared::DEFAULT_SERVICE_NAME }),
+            )
+            .and_then(|raw| zen_cli_shared::parse_envelope(&raw, "zen-service-uninstall"));
+            zen_cli_shared::finalize_op(&db, uninstall_op_id, &uninstall_result, &uninstall_invocation);
+            uninstall_result?;
+
+            let retry_op_id = operations::start(&db, "zen.service_install", &[ep.machine_id])?;
+            let retry_result = zen_cli_shared::run_node(&machine.ip, "zen-service-install.ps1", args)
+                .and_then(|raw| zen_cli_shared::parse_envelope(&raw, "zen-service-install"));
+            zen_cli_shared::finalize_op(&db, retry_op_id, &retry_result, &invocation);
+            retry_result
+        }
+        _ => first_attempt,
+    };
     let response = result?;
+
+    // Pure config/data-dir/http-class/port drift (install_dir + account both
+    // still matched) got patched in place as a registry ImagePath rewrite —
+    // the running process keeps its old command line until stopped and
+    // started again, same as the GC-settings-update flow.
+    if response.get("repaired").and_then(|v| v.as_bool()) == Some(true) {
+        zen_cli_shared::restart_service(&db, ep.machine_id, &machine.ip)?;
+    }
 
     // Remember the tool-managed account (if any) so the UI shows "already
     // created" instead of prompting to create a new one next time. Manual
@@ -1875,6 +1983,103 @@ pub fn zen_service_uninstall(
         service_name: zen_cli_shared::DEFAULT_SERVICE_NAME,
         remote: response,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// migrate data dir (redeploy with changed data_dir, operator opted into migration)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ZenMigrateDataDirResult {
+    pub endpoint_id: i64,
+    pub machine_id: i64,
+    pub host: String,
+    pub dry_run: bool,
+    pub migrated: bool,
+    pub old_data_dir: String,
+    pub new_data_dir: String,
+    pub message: String,
+}
+
+/// Move an endpoint's cache data from `old_data_dir` to `new_data_dir` on its
+/// host. Stops the ZenServer service first (best-effort — a no-op if it was
+/// already uninstalled earlier in the same redeploy flow, or never
+/// installed) so `zen-migrate-datadir.ps1`'s robocopy never races an open
+/// file handle in the old data dir, then moves the tree.
+#[tauri::command]
+pub fn zen_migrate_data_dir(
+    db: State<'_, Db>,
+    endpoint_id: i64,
+    old_data_dir: String,
+    new_data_dir: String,
+    confirmed: bool,
+    dry_run: bool,
+) -> VoloResult<ZenMigrateDataDirResult> {
+    guard_destructive(confirmed, dry_run, "zen.migrate_data_dir")?;
+    let ep = zen_cli_shared::require_endpoint(&db, endpoint_id)?;
+    let machine = zen_cli_shared::require_machine(&db, ep.machine_id)?;
+
+    if dry_run {
+        return Ok(ZenMigrateDataDirResult {
+            endpoint_id,
+            machine_id: ep.machine_id,
+            host: machine.ip,
+            dry_run: true,
+            migrated: false,
+            old_data_dir,
+            new_data_dir,
+            message: "dry run — would stop the service, then robocopy /MOVE the old data dir into the new one".to_string(),
+        });
+    }
+
+    let stop_op_id = operations::start(&db, "zen.migrate_data_dir.stop", &[ep.machine_id])?;
+    let stop_result = zen_cli_shared::run_node(
+        &machine.ip,
+        "zen-down.ps1",
+        serde_json::json!({ "ServiceName": zen_cli_shared::DEFAULT_SERVICE_NAME }),
+    )
+    .and_then(|raw| zen_cli_shared::parse_envelope(&raw, "zen-down"));
+    zen_cli_shared::finalize_op(
+        &db,
+        stop_op_id,
+        &stop_result,
+        "zen-down.ps1 (auto: pre-migration stop)",
+    );
+    // Best-effort: proceed to migrate even if the stop failed (e.g. the
+    // service was never installed yet) — the real invariant we need is "no
+    // process has the old data dir open", not "the stop command succeeded".
+
+    let invocation = redact(&format!(
+        "zen-migrate-datadir.ps1 -OldDataDir {old_data_dir} -NewDataDir {new_data_dir}"
+    ));
+    let op_id = operations::start(&db, "zen.migrate_data_dir", &[ep.machine_id])?;
+    let result = zen_cli_shared::run_node(
+        &machine.ip,
+        "zen-migrate-datadir.ps1",
+        serde_json::json!({ "OldDataDir": old_data_dir, "NewDataDir": new_data_dir }),
+    )
+    .and_then(|raw| zen_cli_shared::parse_envelope(&raw, "zen-migrate-datadir"));
+    zen_cli_shared::finalize_op(&db, op_id, &result, &invocation);
+    let response = result?;
+    let migrated = response
+        .get("migrated")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let message = response
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    Ok(ZenMigrateDataDirResult {
+        endpoint_id,
+        machine_id: ep.machine_id,
+        host: machine.ip,
+        dry_run: false,
+        migrated,
+        old_data_dir,
+        new_data_dir,
+        message,
+    })
 }
 
 /// Start is **not** destructive: the CLI doesn't take `--yes` for it. UI calls

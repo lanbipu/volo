@@ -34,8 +34,8 @@ import * as React from "react";
 import "../ds";
 import "./cache";
 import {
-  zenRegister, zenDetectBinary, zenApplyConfig, zenUpdateGcSettings, zenCreateDedicatedAccount,
-  zenUrlaclAdd, zenServiceInstall, zenServiceStart, zenServiceStop, zenServiceUninstall,
+  zenRegister, zenUpdateDeployConfig, zenDetectBinary, zenApplyConfig, zenUpdateGcSettings, zenCreateDedicatedAccount,
+  zenUrlaclAdd, zenServiceInstall, zenServiceStart, zenServiceStop, zenServiceUninstall, zenMigrateDataDir,
   zenUnregister, zenProbe, zenStatus, zenListEndpoints, zenCacheStats, zenDiskSpace, setIniKey, readIniSection,
   refreshMachine, revealPath, zenEnableGlobal, zenReadLocalRuncontext, zenSetLocalDatapath, getMachineEnvVar,
   zenLocalPortSet, zenLocalPortClear, zenLocalPortStatus,
@@ -69,7 +69,6 @@ import {
     { id: 'probe',    label: '探活确认',               cli: 'zen_probe',
       desc: (f, host) => `GET ${f.protocol}://${host}:${f.port}/health → 期望 HTTP 200，读取版本号` },
   ];
-  const STEP_IDS = DEPLOY_STEPS.map((x) => x.id);
 
   const SVC_STATE = {
     running:     { vis: 'positive', icon: 'check', label: '运行中' },
@@ -385,12 +384,15 @@ import {
      响应用户操作。 */
   function DeployModal({ s, RN, deployed, deployedNode, status, close, onDeployed, zports, openPortModal, backToDeploy }) {
     const [srvId, setSrvId] = useState(null);
-    const [port, setPort] = useState('8558');
-    const [protocol, setProtocol] = useState('http');
-    const [installDir, setInstallDir] = useState('C:\\ZenServer');
-    const [dataDir, setDataDir] = useState('D:\\ZenData');
-    const [configOverride, setConfigOverride] = useState(null);
-    const [httpType, setHttpType] = useState('httpsys');
+    /* 重新部署已有服务器时必须从 status（真实持久化值）回填，不能用这几个新装默认值——
+       否则不改表单直接点「重新部署」，会把默认值当新配置写回 zen_update_deploy_config，
+       安装目录 / 数据目录 / http 类型全部被静默改回默认值。deployed===true 时 status 恒非空。 */
+    const [port, setPort] = useState(() => (status && status.port != null ? String(status.port) : '8558'));
+    const [protocol, setProtocol] = useState(() => (status && status.scheme) || 'http');
+    const [installDir, setInstallDir] = useState(() => (status && status.installDir) || 'C:\\ZenServer');
+    const [dataDir, setDataDir] = useState(() => (status && status.dataDir) || 'D:\\ZenData');
+    const [configOverride, setConfigOverride] = useState(() => (status && status.configPathOverride) || null);
+    const [httpType, setHttpType] = useState(() => (status && status.httpserverclass) || 'httpsys');
     const [acctKind, setAcctKind] = useState(() => (status && status.serviceAccountUsername ? 'dedicated' : 'dedicated'));
     const [dedManual, setDedManual] = useState(false);
     const [dedUser, setDedUser] = useState(() => (status && status.serviceAccountUsername) || '');
@@ -406,6 +408,11 @@ import {
     const [started, setStarted] = useState(false);
     const [run, setRun] = useState({});
     const [deploying, setDeploying] = useState(false);
+    const [confirming, setConfirming] = useState(false);
+    const [migrateData, setMigrateData] = useState(true);   /* 数据目录变更时是否迁移旧缓存（默认迁移）*/
+    const [plan, setPlan] = useState(DEPLOY_STEPS);
+    const planRef = useRef(DEPLOY_STEPS);
+    const setPlanBoth = (p) => { planRef.current = p; setPlan(p); };
     const epRef = useRef(null);
     const srvNode = CX.node(srvId) || deployedNode || RN.find((n) => n.roleKey !== 'shared') || RN[0];
 
@@ -454,6 +461,30 @@ import {
     const httpOpts = [{ id: 'httpsys', label: 'http.sys（默认）' }, { id: 'asio', label: 'asio' }];
     const cred = {};
 
+    /* —— 「部署形状」变更检测（仅编辑一台已部署的服务器时生效）——
+       安装目录 / 数据目录 / 配置文件路径 / HTTP 服务类型 / 服务运行账号 任一与当前持久化值
+       不同，重新部署会自动停止并按需重装服务；数据目录变更额外触发缓存数据迁移决策。基线
+       直接读 status（真实持久化值），deployed===true 时恒非空——不是本组件某次渲染的快照。
+       服务账号的基线只有「工具托管的专用账号用户名」这一项后端真的落库了
+       （zen_endpoints.service_account_username）；LocalSystem / 手动账号 / 域账号都不记录，
+       无法可靠判断是否变化，宁可漏报也不假报「变了」。*/
+    const httpLabel = (v) => (httpOpts.find((o) => o.id === v) || { label: v }).label;
+    const baseInstallDir = (status && status.installDir) || 'C:\\ZenServer';
+    const baseConfigPath = (status && status.configPathOverride) || (baseInstallDir.replace(/[\\/]+$/, '') + '\\zen_config.lua');
+    const baseDataDir = (status && status.dataDir) || 'D:\\ZenData';
+    const baseHttpType = (status && status.httpserverclass) || 'httpsys';
+    const baseAcctUser = (status && status.serviceAccountUsername) || null;
+    const SHAPE_FIELDS = [
+      { id: 'installDir', label: '安装目录', old: baseInstallDir, cur: installDir },
+      { id: 'dataDir', label: '数据目录', old: baseDataDir, cur: dataDir },
+      { id: 'configPath', label: '配置文件路径', old: baseConfigPath, cur: configPath },
+      { id: 'httpType', label: 'HTTP 服务类型', old: httpLabel(baseHttpType), cur: httpLabel(httpType) },
+    ].concat(baseAcctUser != null ? [{ id: 'acct', label: '服务运行账号', old: baseAcctUser, cur: effectiveServiceUser() || '（未设置）' }] : []);
+    const changedShape = deployed ? SHAPE_FIELDS.filter((f) => String(f.old) !== String(f.cur)) : [];
+    const dataDirChanged = changedShape.some((f) => f.id === 'dataDir');
+    const needsReinstall = changedShape.some((f) => f.id === 'installDir' || f.id === 'configPath' || f.id === 'httpType' || f.id === 'acct');
+    const willMigrate = dataDirChanged && migrateData;
+
     const setStep = (id, st, err) => setRun((r) => Object.assign({}, r, { [id]: { st, err: err || null } }));
 
     const runStep = async (id) => {
@@ -467,18 +498,14 @@ import {
         epRef.current = o && o.endpoint_id != null ? o.endpoint_id : epRef.current;
         if (epRef.current == null) throw new Error('登记未返回 endpoint_id');
         if (o && o.inserted === false) {
-          const wantInstallDir = installDir.trim();
-          const wantConfigOverride = configOverride == null ? null : configOverride.trim();
-          const gotInstallDir = o.install_dir || '';
-          const gotConfigOverride = o.config_path_override || null;
-          if (gotInstallDir !== wantInstallDir || gotConfigOverride !== wantConfigOverride) {
-            throw new Error(
-              '该服务器（机器 + 端口）此前已登记过，安装目录 / 配置文件落地路径的修改这次不会生效——' +
-              '当前实际生效值：安装目录 ' + (gotInstallDir || '（跟随探测）') +
-              (gotConfigOverride ? '，配置路径覆盖 ' + gotConfigOverride : '') +
-              '。如需变更，先「卸载」现有服务器再重新部署。'
-            );
-          }
+          /* 该服务器（机器 + 端口）此前已登记过 —— zen_register 对已存在的行是 insert-only
+             的幂等空操作，不会写入这次改过的字段。要让改配置后的「重新部署」真正生效，显式
+             调用 zen_update_deploy_config 覆盖部署形状字段；安装目录 / 服务账号真正变化时，
+             service 步骤（zen_service_install）会在后端自动卸载重装，不需要在这里拦截报错。 */
+          await zenUpdateDeployConfig({
+            endpoint_id: epRef.current, scheme: protocol, data_dir: dataDir,
+            httpserverclass: httpType, install_dir: installDir, config_path_override: configOverride,
+          });
         }
         return;
       }
@@ -490,6 +517,8 @@ import {
         return;
       }
       if (epRef.current == null) throw new Error('缺少 endpoint — 先成功完成「登记服务器」这一步');
+      if (id === 'auto-uninstall') { await zenServiceUninstall(epRef.current, true, false, cred); return; }
+      if (id === 'auto-migrate') { await zenMigrateDataDir(epRef.current, baseDataDir, dataDir, true, false); return; }
       if (id === 'config')  { await zenApplyConfig(epRef.current, true, false, cred); return; }
       if (id === 'urlacl')  { await zenUrlaclAdd(epRef.current, principal, true, false, cred); return; }
       if (id === 'service') {
@@ -505,11 +534,30 @@ import {
       }
     };
 
+    /* 组装实际执行计划：固定 7 步 + 按需的自动步骤（插在「登记」之后、「前置检查」之前，
+       让自动卸载 / 数据迁移在触碰目标机任何文件之前先跑完）。冻结在确认时刻（setPlanBoth）。*/
+    const buildPlan = () => {
+      const extras = [];
+      const reinstallChanged = changedShape.filter((f) => f.id === 'installDir' || f.id === 'configPath' || f.id === 'httpType' || f.id === 'acct');
+      const reLabels = reinstallChanged.map((f) => f.label).join(' / ');
+      if (needsReinstall) extras.push({
+        id: 'auto-uninstall', auto: true, label: '停止并卸载旧的 ZenServer 服务', cli: 'zen_service_uninstall',
+        desc: () => `检测到${reLabels}变更 → 自动停止并卸载现有服务（${srvNode.host}），随后按新配置重装`,
+      });
+      if (willMigrate) extras.push({
+        id: 'auto-migrate', auto: true, label: '迁移缓存数据', cli: 'zen_migrate_data_dir',
+        desc: () => `把 ${baseDataDir} 下的缓存数据迁移到 ${dataDir}（原目录清空）`,
+      });
+      const idx = DEPLOY_STEPS.findIndex((st) => st.id === 'register') + 1;
+      return DEPLOY_STEPS.slice(0, idx).concat(extras, DEPLOY_STEPS.slice(idx));
+    };
+
     const runFrom = async (startIdx) => {
+      const steps = planRef.current;
       setStarted(true); setDeploying(true);
-      setRun((r) => { const n = Object.assign({}, r); for (let k = startIdx; k < STEP_IDS.length; k++) n[STEP_IDS[k]] = { st: 'idle' }; return n; });
-      for (let i = startIdx; i < STEP_IDS.length; i++) {
-        const def = DEPLOY_STEPS[i];
+      setRun((r) => { const n = Object.assign({}, r); for (let k = startIdx; k < steps.length; k++) n[steps[k].id] = { st: 'idle' }; return n; });
+      for (let i = startIdx; i < steps.length; i++) {
+        const def = steps[i];
         setStep(def.id, 'running');
         try {
           /* eslint-disable-next-line no-await-in-loop */
@@ -533,23 +581,22 @@ import {
       s.runCmd({ domain: 'machine', action: 'refresh', target: srvNode.host, chan: 'winrm', note: '重探 UE / GPU / Zen 程序' },
         () => refreshMachine(srvNode.machineId).then((r) => { if (r && r.error) throw new Error(r.error); return r; }),
         { okMsg: () => srvNode.host + ' 已刷新 · 重试前置检查' })
-        .then(() => runFrom(STEP_IDS.indexOf('detect')), () => {});
+        .then(() => runFrom(Math.max(0, planRef.current.findIndex((st) => st.id === 'detect'))), () => {});
     };
 
-    const pickServer = (id) => { setSrvId(id); setStarted(false); setRun({}); setDeploying(false); epRef.current = null; };
+    const pickServer = (id) => {
+      setSrvId(id); setStarted(false); setRun({}); setDeploying(false); setConfirming(false); setPlanBoth(DEPLOY_STEPS); epRef.current = null;
+    };
 
-    /* 部署 → 居中二级对话框（modal）确认后执行；真实 7 步进度在这个弹层内的步骤器中逐步呈现
-       （liveProgress:false：确认对话框只做计划确认，确认后立即关闭，进度不在对话框内重复，
-       而是回落到本弹层的步骤器 —— 与确认对话框走同一个 s.modal 单槽，会替换掉本弹层，
-       确认后关闭对话框即回到空白，真实进度靠下方控制台 NDJSON 日志流可见）。 */
-    const modalDeploy = () => CX.openModalPreview(s, {
-      title: (deployed ? '重新部署' : '部署') + ' Zen 缓存服务器', icon: 'cube',
-      cli: 'zen_register → … → zen_probe', destructive: false, channel: 'ssh', confirmLabel: deployed ? '重新部署' : '开始部署',
-      liveProgress: false,
-      steps: DEPLOY_STEPS.map((st) => st.label + '（' + st.cli + '）'),
-      simpleScope: [{ host: srvNode.host, ip: srvNode.ip, msg: protocol + '://…:' + port + ' · ' + dataDir }],
-      run: () => { epRef.current = null; runFrom(0); },
-    });
+    /* 部署 → 二次确认内嵌在本弹层里（不走 CX.openModalPreview 的共享 s.modal 单槽）——
+       那条共享槽是全局唯一的，一旦确认对话框把它换成另一个组件，DeployModal 本身会被
+       React 整个卸载，表单值 / run / started / plan 这些内部 state 全部丢失；确认对话框
+       自己 close() 后槽位清空，回到空白，之后 runFrom 的真实步骤进度就没有地方可显示了，
+       只能从下面的控制台 NDJSON 日志流看。改成 confirming 这个局部布尔态，让确认面板和
+       之后的真实步骤器共用同一段 JSX（同一个 plan/run 状态），DeployModal 全程不被换出去。 */
+    const modalDeploy = () => { setPlanBoth(buildPlan()); setConfirming(true); };
+    const confirmDeploy = () => { setConfirming(false); epRef.current = null; runFrom(0); };
+    const cancelDeploy = () => setConfirming(false);
 
     const segProto = h('div', { className: 'zseg' },
       ['http'].map((p) => h('button', { key: p, className: protocol === p ? 'on' : '', onClick: () => setProtocol(p) }, p)));
@@ -661,11 +708,47 @@ import {
               h(Icon, { name: 'settings', size: 13 }), '调整本地端口')))
       : null;
 
+    /* 卡片一 ·「即将自动处理」—— 部署形状任一字段与生效值不同时出现（中性/提示色）*/
+    const redeployCard = (deployed && changedShape.length) ? h('div', { className: 'zredeploy' },
+      h('span', { className: 'zredeploy-ico' }, h(Icon, { name: 'info', size: 16 })),
+      h('div', { className: 'zredeploy-tx' },
+        h('div', { className: 'zredeploy-t' }, '检测到部署配置有变更'),
+        h('div', { className: 'zredeploy-s' }, '点击「重新部署」时会自动停止并按需重装 ZenServer 服务以应用新配置，不需要你手动卸载。'),
+        h('div', { className: 'zchg-list' }, changedShape.map((f) => h('div', { className: 'zchg-row', key: f.id },
+          h('span', { className: 'zchg-k' }, f.label),
+          h('span', { className: 'zchg-io mono' },
+            h('span', { className: 'zchg-old' }, f.old),
+            h('span', { className: 'zchg-arr' }, h(Icon, { name: 'arrowr', size: 12 })),
+            h('span', { className: 'zchg-new' }, f.cur))))))) : null;
+
+    /* 卡片二 ·「缓存数据迁移」—— 仅数据目录变更时出现（强调色，需用户主动决策，放在提交按钮上方）*/
+    const migrateCard = (deployed && dataDirChanged) ? h('div', { className: 'zmig' + (migrateData ? ' on' : '') },
+      h('div', { className: 'zmig-head' },
+        h('span', { className: 'zmig-ico' }, h(Icon, { name: 'download', size: 16 })),
+        h('div', { style: { minWidth: 0 } },
+          h('div', { className: 'zmig-t' }, '缓存数据迁移'),
+          h('div', { className: 'zmig-s' }, '数据目录发生变更——重新部署时可将现有缓存一并搬到新目录。'))),
+      h('div', { className: 'zmig-io' },
+        h('div', { className: 'zmig-io-row' }, h('span', { className: 'zmig-io-k' }, '从'), h('span', { className: 'zmig-io-v mono' }, baseDataDir)),
+        h('div', { className: 'zmig-io-row' }, h('span', { className: 'zmig-io-k' }, '到'), h('span', { className: 'zmig-io-v mono hl' }, dataDir))),
+      h('button', { type: 'button', className: 'zmig-check' + (migrateData ? ' on' : ''), onClick: () => setMigrateData((v) => !v) },
+        h('span', { className: 'zmig-ck' + (migrateData ? ' on' : '') }, migrateData ? h(Icon, { name: 'check', size: 13 }) : null),
+        h('span', { className: 'zmig-check-tx' }, '将旧路径下的缓存数据迁移到新路径')),
+      h('div', { className: 'zmig-note' + (migrateData ? '' : ' warn') }, h(Icon, { name: migrateData ? 'info' : 'alert', size: 12 }),
+        h('span', null, migrateData
+          ? '重新部署过程会自动把旧目录下的数据搬到新目录，原目录清空。'
+          : '旧数据会原样保留在旧路径，不会自动清理；新路径下将是一个全新的空缓存。'))) : null;
+
+    /* confirming/started 期间冻结表单——plan 是点「重新部署」那一刻算好的，之后再改表单
+       会让变更卡片跟已冻结的 plan 对不上（比如把 dataDir 改回去，auto-migrate 步骤却还在）。*/
+    const formLocked = confirming || started;
+    const lockStyle = formLocked ? { pointerEvents: 'none', opacity: 0.55 } : null;
+
     const deployForm = h('div', { className: 'deploy-panel' },
       h('div', { className: 'dp-h' }, h(Icon, { name: 'bolt', size: 15 }), '部署链路参数',
         h('span', { className: 'dp-h-note' }, '逐步真实执行 · 每步可单独重试')),
       coloWarn,
-      h('div', { className: 'zform-grid' },
+      h('div', { className: 'zform-grid', style: lockStyle },
         h('div', { className: 'dp-field grow' }, h('label', null, '服务器机器'),
           h(Selector, { kpre: '机器', value: srvNode.id, options: srvOpts, width: 280, onChange: pickServer })),
         h('div', { className: 'dp-field grow' }, h('label', null, '服务端点 · 协议 / 主机 / 端口'),
@@ -687,16 +770,27 @@ import {
           pathInput(configPath, (e) => setConfigOverride(e.target.value))),
         h('div', { className: 'dp-field grow zacct-field' }, h('label', null, '服务运行账号 · 用于开放网络访问 + 安装服务'),
           segAcct, acctBody)),
-      h('div', { className: 'zadv' },
+      h('div', { className: 'zadv', style: lockStyle },
         h('button', { className: 'zadv-tgl', onClick: () => setAdvOpen((v) => !v) },
           h(Icon, { name: 'chevr', size: 13, style: { transform: advOpen ? 'rotate(90deg)' : 'none' } }), '高级'),
         advOpen ? h('div', { className: 'zadv-body' },
           h('div', { className: 'dp-field' }, h('label', null, 'HTTP 服务类型'),
             h(Selector, { kpre: '类型', value: httpType, options: httpOpts, width: 200, onChange: setHttpType }))) : null),
+      formLocked ? null : redeployCard,
+      formLocked ? null : migrateCard,
       h('div', { className: 'zform-actions' },
-        !acctReady() ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }),
-          '请先完成服务运行账号设置（创建专用账号，或填写账号用户名）再部署，否则服务将回退到默认账号运行。') : null,
-        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'bolt', size: 14 }), isDisabled: deploying || !acctReady(), onPress: modalDeploy }, deploying ? '部署中…' : (deployed ? '重新部署' : '部署'))));
+        formLocked
+          ? (confirming && !started ? h('div', { className: 'zconfirm-bar' },
+              h('div', { className: 'zconfirm-scope mono' }, srvNode.host + ' · ' + protocol + '://' + srvNode.host + ':' + port + ' · ' + dataDir),
+              h('div', { className: 'zconfirm-acts' },
+                h('button', { className: 'mini-btn', onClick: cancelDeploy }, '取消'),
+                h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'bolt', size: 14 }), onPress: confirmDeploy },
+                  deployed ? '确认重新部署' : '确认部署'))) : null)
+          : h(React.Fragment, null,
+              !acctReady() ? h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }),
+                '请先完成服务运行账号设置（创建专用账号，或填写账号用户名）再部署，否则服务将回退到默认账号运行。') : null,
+              h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'bolt', size: 14 }), isDisabled: !acctReady(), onPress: modalDeploy },
+                deployed ? '重新部署' : '部署'))));
 
     const stepIco = (st, i) => {
       if (st === 'running') return h('span', { className: 'zstep-spin' });
@@ -704,15 +798,17 @@ import {
       if (st === 'fail') return h(Icon, { name: 'alert', size: 14 });
       return h('span', { className: 'zstep-n' }, i + 1);
     };
-    const stepper = started ? h('div', { className: 'zsteps' },
-      DEPLOY_STEPS.map((st, i) => {
+    /* confirming 阶段和 started 阶段共用同一段步骤列表渲染——确认前 run 是空对象，每行
+       自然落到 idle（序号）态；点确认后 runFrom 才开始逐步写 run，无缝过渡到真实进度。 */
+    const stepper = (confirming || started) ? h('div', { className: 'zsteps' },
+      plan.map((st, i) => {
         const r = run[st.id] || { st: 'idle' };
         const rm = RUN_STATE[r.st];
-        return h('div', { key: st.id, className: 'zstep is-' + r.st },
+        return h('div', { key: st.id, className: 'zstep is-' + r.st + (st.auto ? ' zstep--auto' : '') },
           h('span', { className: 'zstep-ico' }, stepIco(r.st, i)),
           h('div', { className: 'zstep-main' },
             h('div', { className: 'zstep-top' },
-              h('span', { className: 'zstep-label' }, st.label),
+              h('span', { className: 'zstep-label' }, st.label, st.auto ? h('span', { className: 'zstep-auto' }, '自动') : null),
               h('span', { className: 'zstep-cli mono' }, st.cli)),
             h('div', { className: 'zstep-desc' }, st.desc(formObj, srvNode.host)),
             r.st === 'fail' && r.err ? h('div', { className: 'zstep-err' }, h(Icon, { name: 'alert', size: 13 }), r.err) : null,
@@ -1316,6 +1412,7 @@ import {
           endpointId: ep.id, machineId: ep.machine_id,
           host: row ? row.hostname : '', ip: row ? row.ip : '',
           port: ep.declared_port, scheme: ep.scheme, dataDir: ep.data_dir,
+          installDir: ep.install_dir, configPathOverride: ep.config_path_override, httpserverclass: ep.httpserverclass,
           version: row && row.build_version ? row.build_version : '—', svc, providers: null, cacheDiskBytes: null, diskTotalBytes: null, diskFreeBytes: null,
           gcIntervalSeconds: ep.gc_interval_seconds, gcLightweightIntervalSeconds: ep.gc_lightweight_interval_seconds,
           cacheMaxDurationSeconds: ep.cache_max_duration_seconds,

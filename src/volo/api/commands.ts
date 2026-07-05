@@ -24,7 +24,7 @@ import type {
   StartPsoWarmupRequest, PsoWarmupJobResponse, PsoWarmupRun,
   RunHealthCheckRequest, HealthRunSummary, HealthCheckRow,
   ZenStatusRow, ZenProbeReport, ZenCacheStatsReport, ZenDiskSpaceResult, ZenDetectBinaryReport, ZenEndpoint,
-  ZenBinaryExpected, ZenRegisterInput, ZenRegisterOutcome, ZenUnregisterResult,
+  ZenBinaryExpected, ZenRegisterInput, ZenRegisterOutcome, ZenUpdateDeployConfigInput, ZenUpdateDeployConfigOutcome, ZenMigrateDataDirResult, ZenUnregisterResult,
   ZenChangeRoleResult, ZenLuaPreviewResult, ZenCredentialInput, ZenApplyConfigResult,
   ZenServiceResult, ZenServiceSummary, ZenServiceStatusResult,
   ZenUrlaclResult, ZenUrlaclListResult, ZenVerifyRunEditorInput, ZenVerifyRulesResult,
@@ -365,6 +365,14 @@ export const zenBaselineUnlock = (zenBuildVersion: string, binaryKind: string) =
   call<void>("zen_baseline_unlock", { zenBuildVersion, binaryKind });
 // ✅ wired: cacheZen 部署链路 step1 → zenRegister（endpoint_id 串后续步骤）
 export const zenRegister = (input: ZenRegisterInput) => call<ZenRegisterOutcome>("zen_register", { input });
+// ✅ wired: cacheZen 部署链路 step1（改配置重新部署）→ zenUpdateDeployConfig（zen_register 对已存在
+//    的 (machine_id, declared_port) 是 insert-only 空操作，改过的部署字段要靠这个命令显式写回）
+export const zenUpdateDeployConfig = (input: ZenUpdateDeployConfigInput) =>
+  call<ZenUpdateDeployConfigOutcome>("zen_update_deploy_config", { input });
+// ✅ wired: cacheZen 部署链路（数据目录变更 + 用户勾选迁移时的自动步骤）→ zenMigrateDataDir
+//    （先 stop 服务 best-effort，再 robocopy /MOVE 旧数据目录到新目录）
+export const zenMigrateDataDir = (endpointId: number, oldDataDir: string, newDataDir: string, confirmed: boolean, dryRun: boolean) =>
+  call<ZenMigrateDataDirResult>("zen_migrate_data_dir", { endpointId, oldDataDir, newDataDir, confirmed, dryRun });
 // ✅ wired: cacheZen「卸载」链路 → zenUnregister
 export const zenUnregister = (endpointId: number, confirmed: boolean, dryRun: boolean) =>
   call<ZenUnregisterResult>("zen_unregister", { endpointId, confirmed, dryRun });
