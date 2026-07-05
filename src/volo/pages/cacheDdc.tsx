@@ -537,6 +537,10 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
     saved_autosequence: 'Saved 回退缩略图（无同名图）',
   };
 
+  /* 缩略图跨挂载缓存：顶层切页卸载重挂后不重发全量 SSH 探测（同 cacheDdcPak.tsx
+     THUMB_CACHE 模式，两页 patch 形状不同故各存各的，不共享）。 */
+  const PSO_THUMB_CACHE = { thumbs: {}, tried: new Set() };
+
   /* =================== PSO 缓存 — master (center) · 选工程 + 节点就绪矩阵 =================== */
   function PsoMaster({ s }) {
     const selId = s.psoSel;
@@ -551,11 +555,10 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
     /* 工程缩略图（懒加载，对齐 DDC Pak 页面同款体验：有缩略图显示图片，无则回退 film 图标）——
        gate 早退必须放在全部 Hooks 之后，否则加载态/完成态两次渲染的 Hook 调用数不一致，
        React 会抛 "Rendered more hooks than during the previous render"（同 cacheDdcPak.tsx 注释）。 */
-    const [thumbs, setThumbs] = useState({});
-    const thumbTriedRef = useRef(new Set());
+    const [thumbs, setThumbs] = useState(() => PSO_THUMB_CACHE.thumbs);
     useEffect(() => {
       let alive = true;
-      const queue = UE_PROJECTS.filter((x) => !thumbTriedRef.current.has(x.id));
+      const queue = UE_PROJECTS.filter((x) => !PSO_THUMB_CACHE.tried.has(x.id));
       let next = 0;
       const pump = () => {
         if (!alive || next >= queue.length) return;
@@ -565,13 +568,17 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
         getProjectThumbnail(Number(x.id), src.machineId).then(
           (probe) => {
             if (!alive) return;
-            thumbTriedRef.current.add(x.id);
+            PSO_THUMB_CACHE.tried.add(x.id);
             const t = probe && probe.thumbnail;
-            if (t) setThumbs((m) => Object.assign({}, m, { [x.id]: {
-              thumb: 'data:image/png;base64,' + t.base64,
-              thumbSrc: t.path,
-              thumbFrom: PSO_THUMB_FROM_LABEL[t.from] || t.from,
-            } }));
+            if (t) setThumbs((m) => {
+              const nextMap = Object.assign({}, m, { [x.id]: {
+                thumb: 'data:image/png;base64,' + t.base64,
+                thumbSrc: t.path,
+                thumbFrom: PSO_THUMB_FROM_LABEL[t.from] || t.from,
+              } });
+              PSO_THUMB_CACHE.thumbs = nextMap;
+              return nextMap;
+            });
             pump();
           },
           () => { if (alive) pump(); });
