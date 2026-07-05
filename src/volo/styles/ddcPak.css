@@ -139,7 +139,7 @@
 .pak-controls .pak-ctl.scan { margin-left: 0; }
 .pak-controls .obj-sel { min-width: 0 !important; }
 
-/* 搜索根目录 · chip token 编辑器 + 预设快捷 */
+/* 搜索根目录 · chip token 编辑器 + 逐级路径下拉提示 + 常用地址 */
 .pak-roots { display: flex; flex-direction: column; gap: 9px; padding: 11px 12px; border-radius: 10px;
   background: var(--sunken); border: 1px solid var(--chrome-line); }
 .pak-roots-h { display: flex; align-items: baseline; gap: 8px; }
@@ -147,8 +147,9 @@
 .pak-roots-h .dim { font-size: 10.5px; color: var(--chrome-faint); }
 /* 可编辑根目录行 + 一次添加多个 */
 .pak-root-rows { display: flex; flex-direction: column; gap: 6px; }
-.root-row { display: flex; align-items: center; gap: 7px; padding: 3px 6px 3px 9px; border-radius: 7px;
+.root-row { position: relative; display: flex; align-items: center; gap: 7px; padding: 3px 6px 3px 9px; border-radius: 7px;
   background: var(--wash); border: 1px solid var(--chrome-line-2); }
+.root-row.ac-active { border-color: color-mix(in srgb, var(--volo-700) 45%, transparent); background: var(--sunken); z-index: 41; }
 .root-row:focus-within { border-color: color-mix(in srgb, var(--volo-700) 45%, transparent); background: var(--sunken); }
 .root-row-ic { display: inline-flex; color: var(--chrome-faint); flex: 0 0 auto; }
 .root-in { all: unset; flex: 1; min-width: 0; font-family: var(--font-code); font-size: 11.5px; color: var(--chrome-text); }
@@ -156,25 +157,61 @@
 .root-row-x { all: unset; display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 5px;
   color: var(--chrome-faint); cursor: pointer; flex: 0 0 auto; }
 .root-row-x:hover { background: color-mix(in srgb, var(--negative-visual) 16%, transparent); color: var(--negative-visual); }
+.root-row-fav { all: unset; display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 5px;
+  color: var(--chrome-faint); cursor: pointer; flex: 0 0 auto; transition: color .12s, background .12s; }
+.root-row-fav:hover { background: var(--wash-2); color: var(--chrome-text); }
+.root-row-fav.on { color: #e2a83b; }
+.root-row-fav.on svg { fill: #e2a83b; }
+.root-row-fav:disabled { opacity: .35; cursor: default; background: transparent; }
 .root-add-btn { all: unset; flex: 0 0 auto; font-size: 11px; font-weight: 700; color: var(--volo-400);
   padding: 4px 11px; border-radius: 6px; cursor: pointer; }
 .root-add-btn:hover { background: var(--highlight-selected); }
 .root-add-btn:disabled { opacity: .4; cursor: default; background: transparent; }
-.root-add { display: flex; align-items: center; gap: 7px;
+.root-add { position: relative; display: flex; align-items: center; gap: 7px;
   padding: 4px 6px 4px 9px; border-radius: 7px; background: var(--sunken); border: 1px dashed var(--chrome-line-2); }
+.root-add.open { border-style: solid; border-color: color-mix(in srgb, var(--volo-700) 45%, transparent); }
 .root-add svg { color: var(--chrome-faint); flex: 0 0 auto; }
 .root-add input { all: unset; flex: 1; min-width: 0; font-family: var(--font-code); font-size: 11.5px; color: var(--chrome-text); }
 .root-add input::placeholder { color: var(--chrome-faint); font-family: var(--font-sans); }
-.pak-presets { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding-top: 8px;
+/* 地址栏逐级提示下拉 */
+.root-ac { position: absolute; left: 0; right: 0; top: calc(100% + 5px); z-index: 40;
+  background: var(--chrome-panel-2); border: 1px solid var(--chrome-line-2); border-radius: 9px;
+  box-shadow: var(--shadow-dragged); padding: 5px; overflow: hidden; }
+.root-ac-h { font-size: 10px; font-weight: 700; letter-spacing: .02em;
+  color: var(--chrome-faint); padding: 4px 7px 6px; font-family: var(--font-sans);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.root-ac-list { display: flex; flex-direction: column; gap: 2px; max-height: 208px; overflow-y: auto; }
+.root-ac-opt { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 6px 8px; border-radius: 6px; font-size: 12px; color: var(--chrome-text); }
+.root-ac-opt .root-ac-ic { display: inline-flex; color: var(--chrome-faint); flex: 0 0 auto; }
+.root-ac-opt .root-ac-tx { flex: 1; min-width: 0; font-family: var(--font-code); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.root-ac-opt .root-ac-kbd { flex: 0 0 auto; font-size: 9.5px; font-weight: 700; letter-spacing: .02em;
+  color: var(--volo-400); font-family: var(--font-sans); }
+.root-ac-opt.hi { background: var(--highlight-selected); }
+.root-ac-opt.hi .root-ac-ic { color: var(--volo-400); }
+.root-ac-empty { display: flex; align-items: center; gap: 6px; justify-content: center; font-size: 11.5px; color: var(--chrome-faint); padding: 9px 8px; text-align: center; font-family: var(--font-sans); }
+.root-ac-foot { margin-top: 4px; padding: 6px 8px 3px; border-top: 1px solid var(--chrome-line);
+  font-size: 10px; color: var(--chrome-faint); font-family: var(--font-sans); }
+/* 常用地址列表（收藏的搜索根目录）*/
+.pak-favs { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; padding-top: 9px;
   border-top: 1px dashed var(--chrome-line); }
-.pak-presets .pp-label { font-size: 10.5px; font-weight: 700; color: var(--chrome-faint); flex: 0 0 auto; }
-.pp-chip { all: unset; display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 9999px;
-  background: var(--wash); border: 1px solid var(--chrome-line-2); font-size: 11px; font-weight: 600;
-  color: var(--chrome-dim); cursor: pointer; transition: background .12s, color .12s, border-color .12s; }
-.pp-chip:hover { background: var(--highlight-selected); color: var(--volo-400); border-color: color-mix(in srgb, var(--volo-700) 34%, transparent); }
-.pp-chip svg { flex: 0 0 auto; opacity: .8; }
-.pp-chip.added { opacity: .45; cursor: default; }
-.pp-chip.added:hover { background: var(--wash); color: var(--chrome-dim); border-color: var(--chrome-line-2); }
+.pak-favs .pf-label { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 700;
+  color: var(--chrome-faint); flex: 0 0 auto; padding-top: 4px; }
+.pak-favs .pf-label svg { color: #e2a83b; fill: #e2a83b; }
+.pf-chips { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; min-width: 0; }
+.pf-chip { display: inline-flex; align-items: stretch; border-radius: 9999px; overflow: hidden;
+  background: var(--wash); border: 1px solid var(--chrome-line-2); }
+.pf-chip.added { opacity: .5; }
+.pf-chip-use { all: unset; display: inline-flex; align-items: center; gap: 5px; padding: 3px 4px 3px 10px; cursor: pointer;
+  font-family: var(--font-code); font-size: 11px; color: var(--chrome-dim); white-space: nowrap; transition: background .12s, color .12s; }
+.pf-chip-use svg { color: var(--chrome-faint); flex: 0 0 auto; }
+.pf-chip-use:hover { background: var(--highlight-selected); color: var(--volo-400); }
+.pf-chip-use:hover svg { color: var(--volo-400); }
+.pf-chip-use:disabled { cursor: default; color: var(--chrome-dim); background: transparent; }
+.pf-chip-use:disabled svg { color: var(--positive-visual); }
+.pf-chip-x { all: unset; display: inline-grid; place-items: center; width: 22px; cursor: pointer;
+  color: var(--chrome-faint); border-left: 1px solid var(--chrome-line-2); transition: background .12s, color .12s; }
+.pf-chip-x:hover { background: color-mix(in srgb, var(--negative-visual) 16%, transparent); color: var(--negative-visual); }
 
 /* 上次扫描 meta */
 .pak-scan-meta { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--chrome-faint); }

@@ -264,6 +264,9 @@ export const createProjectManual = (uprojectName: string, displayName?: string |
 // 不再被 DDC Pak 生成流程调用（任意路由都可直接生成 Pak，见 generateDdcPak）
 export const setProjectCacheBackend = (projectId: number, machineId: number, backend: "zen" | "legacy_pak") =>
   call<void>("set_project_cache_backend", { projectId, machineId, backend });
+// ✅ wired: cacheDdcPak 搜索根目录地址栏逐级下拉提示 → 真实查询所选机器的盘符/子目录
+export const listRemoteDirectories = (machineId: number, path?: string | null) =>
+  call<string[]>("list_remote_directories", { machineId, path: path ?? null });
 
 /* ----------------------------- ddc pak ----------------------------- */
 // ✅ wired: cacheDdc genPak → generateDdcPak('remote') via runStreamingCmd（ue-runner-progress + pak-verified）

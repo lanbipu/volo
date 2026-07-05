@@ -760,6 +760,13 @@ pub enum ProjectAction {
         #[arg(long)]
         dry_run: bool,
     },
+    /// List subdirectories of a path on a remote machine (no path → fixed drives).
+    BrowseDir {
+        #[arg(long)]
+        machine_id: i64,
+        #[arg(long)]
+        path: Option<String>,
+    },
 }
 
 // ---------- health ----------

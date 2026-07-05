@@ -98,6 +98,20 @@ pub fn set_project_location(
     )
 }
 
+/// Lists immediate subdirectories of `path` on `machine_id` (empty/absent `path`
+/// → the machine's fixed local drives). Powers the DDC PAK 搜索根目录地址栏
+/// 逐级下拉提示——真实查询所选机器，不是猜的目录名。
+#[tauri::command]
+pub fn list_remote_directories(
+    db: State<'_, Db>,
+    machine_id: i64,
+    path: Option<String>,
+) -> VoloResult<Vec<String>> {
+    let machine = data_machines::find_by_id(&db, machine_id)?
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?;
+    cache_core::core::remote_fs::list_remote_dirs(&machine.ip, path.as_deref())
+}
+
 #[tauri::command]
 pub fn delete_project(db: State<'_, Db>, project_id: i64) -> VoloResult<()> {
     projects::delete(&db, project_id)

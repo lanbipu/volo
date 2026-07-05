@@ -35,6 +35,7 @@ pub mod pso_collect;
 pub mod pso_distribute;
 pub mod pso_warmup;
 pub mod psexec;
+pub mod remote_fs;
 pub mod renderstream_service;
 pub mod secrets;
 pub mod shares;

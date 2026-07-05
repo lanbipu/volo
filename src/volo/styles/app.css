@@ -2363,6 +2363,18 @@ html, body {
 .lrp-h svg { color: var(--volo-500); }
 .lrp-h .lrp-n { margin-left: auto; font-variant-numeric: tabular-nums; background: var(--wash-2); color: var(--chrome-dim);
   padding: 0 7px; border-radius: 8px; letter-spacing: 0; }
+/* 计数徽标 → 悬停平滑变为"清除"图标 */
+.lrp-h .lrp-n--clear { margin-left: auto; border: none; cursor: pointer; font: inherit; font-variant-numeric: tabular-nums;
+  display: inline-grid; place-items: center; min-width: 22px; height: 18px; padding: 0 6px; letter-spacing: 0;
+  background: var(--wash-2); color: var(--chrome-dim); border-radius: 8px;
+  transition: background .16s var(--ease-default), color .16s var(--ease-default); }
+.lrp-h .lrp-n--clear > * { grid-area: 1 / 1; display: inline-flex; align-items: center;
+  transition: opacity .16s var(--ease-default), transform .16s var(--ease-default); }
+.lrp-h .lrp-n--clear .lrp-n-num { opacity: 1; transform: none; }
+.lrp-h .lrp-n--clear .lrp-n-ico { opacity: 0; transform: scale(.55); }
+.lrp-h .lrp-n--clear:hover { background: color-mix(in srgb, var(--negative-visual) 16%, transparent); color: var(--negative-visual); }
+.lrp-h .lrp-n--clear:hover .lrp-n-num { opacity: 0; transform: scale(.55); }
+.lrp-h .lrp-n--clear:hover .lrp-n-ico { opacity: 1; transform: none; }
 .lrp-empty { font-size: 12px; color: var(--chrome-faint); padding: 12px 2px; text-align: center; font-family: var(--font-sans); }
 .lrp-list { display: flex; flex-direction: column; gap: 11px; font-family: var(--font-sans); }
 .lrp-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
@@ -2403,6 +2415,10 @@ html, body {
 .task-toast--fail .task-toast-ico { color: var(--negative-visual); background: color-mix(in srgb, var(--negative-visual) 16%, transparent); }
 .task-toast-tx { font-size: 12px; color: var(--chrome-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .task-toast-tx b { color: var(--chrome-text); font-weight: 700; }
+.task-toast-x { all: unset; box-sizing: border-box; flex: 0 0 auto; margin-left: 2px; width: 20px; height: 20px; border-radius: 6px;
+  display: grid; place-items: center; cursor: pointer; color: var(--chrome-faint);
+  transition: background .12s, color .12s; }
+.task-toast-x:hover { background: var(--wash); color: var(--chrome-text); }
 
 /* 控制台：历史任务标签 + 任务卡片网格 */
 .log-tab--hist { gap: 5px; }

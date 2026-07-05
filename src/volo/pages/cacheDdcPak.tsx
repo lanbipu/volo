@@ -17,7 +17,7 @@
 import * as React from "react";
 import "../ds";
 import "./cacheDdc";
-import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnail, deleteProject } from "../api/commands";
+import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnail, deleteProject, listRemoteDirectories } from "../api/commands";
 
 (function () {
   const { Button } = window.Spectrum2DesignSystem_b6d1b3;
@@ -33,7 +33,6 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
     { id: 'machine', label: '按机器', icon: 'server', hint: '按每台机器持有的工程分组' },
   ];
   const SORT_OPTS = [{ id: 'updated', label: '更新时间' }, { id: 'name', label: '名称' }, { id: 'path', label: '路径' }, { id: 'time', label: '发现时间' }];
-  const ROOT_PRESETS = ['D:\\Unreal Projects', 'D:\\UE_Projects', 'D:\\Projects', 'E:\\UEProjects'];
   /* get_project_thumbnail 只回传策略 key，人话文案留在前端（PROBE_DICT/PROBE_NARRATIVE 同款分工）。 */
   const THUMB_FROM_LABEL = {
     uproject_same_name: 'uproject 同名缩略图',
@@ -54,6 +53,17 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
     return p(d.getHours()) + ':' + p(d.getMinutes());
   };
   const hostOf = (machineId) => { const n = CX.node(String(machineId)); return n ? n.host : ('机器 ' + machineId); };
+
+  /* 逐级路径提示：把地址栏当前文本拆成"要列哪个目录的子项"（parentPath，null = 列盘符）
+     + "已输入到的最后一段"（typed，本地前缀过滤用，不触发新请求）。与 confirmSeg 配对：
+     确认某一级后文本变成 base + 该项 + '\\'，下一轮解析自然把 typed 清空、parentPath 落到刚选的目录。 */
+  const splitRootPath = (text) => {
+    const t = text || '';
+    if (t.indexOf('\\') === -1) return { parentPath: null, typed: t.trim() };
+    const segs = t.split('\\');
+    const typed = segs.pop();
+    return { parentPath: segs.join('\\'), typed: typed.trim() };
+  };
 
   /* =========================================================================
      生成 DDC PAK 进度对话框 —— 真实 runStreamingCmd 进度驱动
@@ -304,8 +314,21 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
     /* ---------- 右栏 · 工程扫描与生成 ---------- */
     const [scope, setScope] = useState('all');
     const ridRef = useRef(0);
-    const [roots, setRoots] = useState(() => [{ id: ++ridRef.current, val: 'D:\\Projects' }]);
+    const [roots, setRoots] = useState(() => [{ id: ++ridRef.current, val: 'D:\\Unreal Projects' }]);
     const [rootDraft, setRootDraft] = useState('');
+    /* 逐级路径提示：当前展开的字段（'add' 或某行 id）+ 高亮项 + 真实查询到的目录项（按
+       machineId+parentPath 缓存，避免同一目录反复发起 SSH 往返） */
+    const [acOpen, setAcOpen] = useState(false);
+    const [acHi, setAcHi] = useState(0);
+    const [acField, setAcField] = useState(null);
+    const acCacheRef = useRef(new Map()); /* `${machineId}|${path}` -> string[]（本会话内有效） */
+    /* 常用地址（收藏的搜索根目录）· 持久化到 localStorage */
+    const [favs, setFavs] = useState(() => {
+      try { return JSON.parse(localStorage.getItem('volo.pakFavRoots') || '[]'); } catch (e) { return []; }
+    });
+    useEffect(() => {
+      try { localStorage.setItem('volo.pakFavRoots', JSON.stringify(favs)); } catch (e) { /* ignore */ }
+    }, [favs]);
     const [query, setQuery] = useState('');
     const [view, setView] = useState('flat');
     const [sort, setSort] = useState('updated');
@@ -447,7 +470,7 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
         .then(() => loadDeployed(true), () => {});
     };
 
-    /* ---------- 搜索根目录：可编辑行 + 一次添加多个 + 常用预设 ---------- */
+    /* ---------- 搜索根目录：可编辑行 + 一次添加多个 + 常用地址 ---------- */
     const rootVals = roots.map((r) => r.val.trim()).filter(Boolean);
     const rootsStr = rootVals.join(';');
     const addRoots = (str) => {
@@ -455,9 +478,112 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
       if (!parts.length) return;
       setRoots((rs) => rs.concat(parts.filter((p) => !rs.some((r) => r.val === p)).map((p) => ({ id: ++ridRef.current, val: p }))));
     };
+    const addRoot = (v) => addRoots(v);
     const updateRoot = (id, v) => setRoots((rs) => rs.map((r) => r.id === id ? { id, val: v } : r));
     const removeRoot = (id) => setRoots((rs) => rs.filter((r) => r.id !== id));
-    const commitDraft = () => { addRoots(rootDraft); setRootDraft(''); };
+    const commitDraft = () => { addRoots(rootDraft.replace(/\\+$/, '')); setRootDraft(''); setAcOpen(false); };
+    /* 常用地址：设为 / 取消常用、移除、判断（与磁盘上是否真实存在无关，纯本地收藏） */
+    const normRoot = (v) => String(v || '').replace(/\\+$/, '').trim();
+    const isFav = (v) => favs.includes(normRoot(v));
+    const toggleFav = (v) => { const val = normRoot(v); if (!val) return; setFavs((f) => f.includes(val) ? f.filter((x) => x !== val) : f.concat(val)); };
+    const removeFav = (v) => setFavs((f) => f.filter((x) => x !== v));
+
+    /* ---------- 地址栏逐级路径提示：真实查询所选机器（scope 指定的机器；scope=全部时取
+       第一台在线机）的盘符 / 子目录，而不是猜的目录名 ---------- */
+    const acHostNode = scope !== 'all' ? CX.node(scope) : (RENDER_NODES.filter((n) => n.status !== 'offline')[0] || null);
+    const acMachineId = acHostNode ? acHostNode.machineId : null;
+    const acText = acField === 'add' ? rootDraft : ((roots.find((r) => r.id === acField) || {}).val || '');
+    const { parentPath, typed } = splitRootPath(acText);
+    const openAc = (field) => { setAcField(field); setAcOpen(true); setAcHi(0); };
+    /* 绝对根路径（如 "D:"）单独查询时须补回尾部反斜杠，否则 PowerShell 把 "D:" 解成
+       "该进程在 D 盘的当前工作目录"而非盘符根——一个经典坑，SSH 起的全新进程虽通常仍落在
+       根目录，但不该依赖这个不保证的隐式行为。 */
+    const toSshPath = (p) => (/^[A-Za-z]:$/.test(p) ? p + '\\' : p);
+    const fetchDirs = (machineId, path) => {
+      const normPath = path == null ? null : toSshPath(path);
+      const key = machineId + '|' + (normPath || '');
+      if (acCacheRef.current.has(key)) return Promise.resolve(acCacheRef.current.get(key));
+      return listRemoteDirectories(machineId, normPath).then((entries) => {
+        acCacheRef.current.set(key, entries);
+        return entries;
+      });
+    };
+    const [siblings, setSiblings] = useState([]);
+    const [siblingsLoading, setSiblingsLoading] = useState(false);
+    const [siblingsFailed, setSiblingsFailed] = useState(false);
+    /* 第一层：parentPath 下的子项（parentPath=null → 盘符）。只在跨目录边界时才变化，
+       同一段内继续打字不会重新发起请求——过滤靠下面的本地 startsWith，不占网络往返。 */
+    useEffect(() => {
+      if (!acOpen || acMachineId == null) return undefined;
+      let cancelled = false;
+      setSiblingsLoading(true); setSiblingsFailed(false);
+      fetchDirs(acMachineId, parentPath).then((entries) => {
+        if (cancelled) return;
+        setSiblings(entries); setSiblingsLoading(false);
+      }).catch(() => { if (!cancelled) { setSiblings([]); setSiblingsLoading(false); setSiblingsFailed(true); } });
+      return () => { cancelled = true; };
+    }, [acOpen, acMachineId, parentPath]);
+    /* 已输入到的最后一段若精确命中（大小写不敏感）某个真实子目录名，立即下钻显示它的
+       子项——覆盖"已设好的路径行左键点击也会下钻"，含只有一级路径的情况。 */
+    const exactName = typed ? (siblings.find((x) => x.toLowerCase() === typed.toLowerCase()) || null) : null;
+    const deeperPath = exactName ? (parentPath == null ? exactName : parentPath + '\\' + exactName) : null;
+    const [deeperEntries, setDeeperEntries] = useState([]);
+    const [deeperLoading, setDeeperLoading] = useState(false);
+    const [deeperFailed, setDeeperFailed] = useState(false);
+    useEffect(() => {
+      if (!acOpen || acMachineId == null || deeperPath == null) return undefined;
+      let cancelled = false;
+      setDeeperLoading(true); setDeeperFailed(false);
+      fetchDirs(acMachineId, deeperPath).then((entries) => {
+        if (cancelled) return;
+        setDeeperEntries(entries); setDeeperLoading(false);
+      }).catch(() => { if (!cancelled) { setDeeperEntries([]); setDeeperLoading(false); setDeeperFailed(true); } });
+      return () => { cancelled = true; };
+    }, [acOpen, acMachineId, deeperPath]);
+    const acDrilled = !!deeperPath;
+    const acBase = acDrilled ? (deeperPath + '\\') : (parentPath == null ? '' : parentPath + '\\');
+    const acLoading = acDrilled ? deeperLoading : siblingsLoading;
+    const acFailed = acDrilled ? deeperFailed : siblingsFailed;
+    const acOpts = acDrilled ? deeperEntries : siblings.filter((c) => !typed || c.toLowerCase().startsWith(typed.toLowerCase()));
+    /* 确认使用某一层（左键点击 / Tab）：拼上该项 + 反斜杠，自动弹出它的下一级 */
+    const confirmSeg = (opt) => {
+      const next = acBase + opt + '\\';
+      if (acField === 'add') setRootDraft(next); else updateRoot(acField, next);
+      setAcHi(0); setAcOpen(true);
+    };
+    const makeAcKey = (field) => (e) => {
+      if (e.key === 'ArrowDown') { e.preventDefault(); if (!acOpen) openAc(field); else setAcHi((hI) => acOpts.length ? (hI + 1) % acOpts.length : 0); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); if (!acOpen) openAc(field); else setAcHi((hI) => acOpts.length ? (hI - 1 + acOpts.length) % acOpts.length : 0); }
+      else if (e.key === 'Tab') { if (acOpen && acOpts.length) { e.preventDefault(); confirmSeg(acOpts[Math.max(0, acHi)]); } }
+      else if (e.key === 'Enter') { e.preventDefault(); if (field === 'add') commitDraft(); else setAcOpen(false); }
+      else if (e.key === 'Escape') { setAcOpen(false); }
+    };
+    const renderAc = () => h('div', { className: 'root-ac' },
+      h('div', { className: 'root-ac-h' }, acMachineId == null ? '选择根目录' : ('在 ' + acHostNode.host + (parentPath == null ? ' 选择盘符' : (' 的 ' + acBase + ' 下选择文件夹')))),
+      acMachineId == null
+        ? h('div', { className: 'root-ac-empty' }, '当前无在线机器可浏览 · 可直接输入完整路径')
+        : acLoading
+          ? h('div', { className: 'root-ac-empty' }, h(Icon, { name: 'sync', size: 12 }), ' 查询中…')
+          : acFailed
+            ? h('div', { className: 'root-ac-empty' }, '无法连接 ' + acHostNode.host + ' · 可直接输入完整路径')
+            : acOpts.length
+              ? h('div', { className: 'root-ac-list' }, acOpts.map((opt, i) => h('button', {
+                  key: opt, type: 'button', className: 'root-ac-opt' + (i === acHi ? ' hi' : ''),
+                  onMouseEnter: () => setAcHi(i),
+                  onMouseDown: (e) => e.preventDefault(),
+                  onClick: () => confirmSeg(opt) },
+                  h('span', { className: 'root-ac-ic' }, h(Icon, { name: parentPath == null ? 'server' : 'folder', size: 13 })),
+                  h('span', { className: 'root-ac-tx' }, opt),
+                  h('span', { className: 'root-ac-kbd' }, i === acHi ? 'Tab 使用' : ''))))
+              : h('div', { className: 'root-ac-empty' }, acText.replace(/\\+$/, '').trim() ? '已到末级 · 无更多子文件夹' : '无匹配项'),
+      h('div', { className: 'root-ac-foot' }, '↑↓ 选择 · Tab / 单击 确认使用 · 回车确认'));
+    /* 点击提示以外区域：收起下拉 */
+    useEffect(() => {
+      if (!acOpen) return undefined;
+      const onDown = (e) => { if (!e.target.closest('.root-add') && !e.target.closest('.root-row')) setAcOpen(false); };
+      document.addEventListener('mousedown', onDown);
+      return () => document.removeEventListener('mousedown', onDown);
+    }, [acOpen]);
     const doScan = () => {
       setCleared(false); setConfirmClear(false);
       const scanned = DDC.runDiscover(s, scope, rootsStr);
@@ -743,22 +869,38 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
                 h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'search', size: 14 }), onPress: doScan }, '扫描'))),
             h('div', { className: 'pak-roots' },
               h('div', { className: 'pak-roots-h' }, h('span', { className: 't' }, '搜索根目录'),
-                h('span', { className: 'dim' }, '可多个 · 可直接编辑路径 · 生成时以分号拼接')),
+                h('span', { className: 'dim' }, '可多个 · 点击地址栏逐级选择盘符 / 文件夹 · 生成时以分号拼接')),
               h('div', { className: 'pak-root-rows' },
-                roots.map((r) => h('div', { key: r.id, className: 'root-row' },
+                roots.map((r) => h('div', { key: r.id, className: 'root-row' + (acOpen && acField === r.id ? ' ac-active' : '') },
                   h('span', { className: 'root-row-ic' }, h(Icon, { name: 'folder', size: 13 })),
-                  h('input', { className: 'root-in', value: r.val, spellCheck: false, placeholder: '输入工程根目录…',
-                    onChange: (e) => updateRoot(r.id, e.target.value) }),
-                  h('button', { className: 'root-row-x', title: '移除', onClick: () => removeRoot(r.id) }, h(Icon, { name: 'x', size: 13 }))))),
-              h('div', { className: 'root-add' }, h(Icon, { name: 'plus', size: 13 }),
-                h('input', { value: rootDraft, placeholder: '添加根目录，多个用分号 ; 分隔，回车确认', spellCheck: false,
-                  onChange: (e) => setRootDraft(e.target.value), onKeyDown: (e) => { if (e.key === 'Enter') commitDraft(); } }),
-                h('button', { className: 'root-add-btn', disabled: !rootDraft.trim(), onClick: commitDraft }, '添加')),
-              h('div', { className: 'pak-presets' },
-                h('span', { className: 'pp-label' }, '常用预设'),
-                ROOT_PRESETS.map((r) => { const added = rootVals.includes(r);
-                  return h('button', { key: r, className: 'pp-chip' + (added ? ' added' : ''), disabled: added, onClick: () => addRoots(r) },
-                    added ? h(Icon, { name: 'check', size: 11 }) : h(Icon, { name: 'plus', size: 11 }), r); }))),
+                  h('input', { className: 'root-in', value: r.val, spellCheck: false, autoComplete: 'off', placeholder: '输入工程根目录…',
+                    onChange: (e) => { updateRoot(r.id, e.target.value); openAc(r.id); },
+                    onFocus: () => openAc(r.id),
+                    onClick: () => openAc(r.id),
+                    onKeyDown: makeAcKey(r.id) }),
+                  h('button', { className: 'root-row-fav' + (isFav(r.val) ? ' on' : ''), type: 'button',
+                    title: isFav(r.val) ? '已设为常用 · 点击取消' : '设为常用',
+                    disabled: !normRoot(r.val), onClick: () => toggleFav(r.val) }, h(Icon, { name: 'star', size: 13 })),
+                  h('button', { className: 'root-row-x', title: '移除', onClick: () => removeRoot(r.id) }, h(Icon, { name: 'x', size: 13 })),
+                  acOpen && acField === r.id ? renderAc() : null))),
+              h('div', { className: 'root-add' + (acOpen && acField === 'add' ? ' open' : '') },
+                h(Icon, { name: 'plus', size: 13 }),
+                h('input', { value: rootDraft, spellCheck: false, autoComplete: 'off',
+                  placeholder: '点击选择盘符，或直接输入根目录…',
+                  onChange: (e) => { setRootDraft(e.target.value); openAc('add'); },
+                  onFocus: () => openAc('add'),
+                  onClick: () => openAc('add'),
+                  onKeyDown: makeAcKey('add') }),
+                h('button', { className: 'root-add-btn', disabled: !rootDraft.trim(), onClick: commitDraft }, '添加'),
+                acOpen && acField === 'add' ? renderAc() : null),
+              favs.length ? h('div', { className: 'pak-favs' },
+                h('span', { className: 'pf-label' }, h(Icon, { name: 'star', size: 12 }), '常用地址'),
+                h('div', { className: 'pf-chips' }, favs.map((f) => h('div', { key: f, className: 'pf-chip' + (rootVals.includes(f) ? ' added' : '') },
+                  h('button', { className: 'pf-chip-use', type: 'button', disabled: rootVals.includes(f),
+                    title: rootVals.includes(f) ? '已在搜索根目录中' : '点击加入搜索根目录',
+                    onClick: () => addRoot(f) },
+                    h(Icon, { name: rootVals.includes(f) ? 'check' : 'folder', size: 11 }), f),
+                  h('button', { className: 'pf-chip-x', type: 'button', title: '从常用中移除', onClick: () => removeFav(f) }, h(Icon, { name: 'x', size: 11 })))))) : null),
             h('div', { className: 'pak-scan-meta' }, h(Icon, { name: 'check', size: 12 }), '已发现 ' + UE_PROJECTS.length + ' 个工程位置 · 远程扫 .uproject 只发现不写盘'),
             listBar,
             listBody),
