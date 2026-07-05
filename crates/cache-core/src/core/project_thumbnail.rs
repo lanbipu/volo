@@ -1,7 +1,8 @@
 //! Project thumbnail resolution: a same-name PNG next to the .uproject, or
-//! the Saved\autosequence_shot.png fallback. Read directly off disk for a
-//! loopback target, over SSH for a genuinely remote one — same split as
-//! `ddc_pak::verify_output`/`verify_output_local`.
+//! the Saved\AutoScreenshot.png / Saved\autosequence_shot.png fallbacks.
+//! The same probe also measures the project directory's total size. Read
+//! directly off disk for a loopback target, over SSH for a genuinely remote
+//! one — same split as `ddc_pak::verify_output`/`verify_output_local`.
 
 use crate::core::loopback;
 use crate::core::ssh::{run_json, NodeScript, SshExecutor};
@@ -26,15 +27,27 @@ struct ThumbnailRaw {
     #[serde(default)]
     mtime: Option<String>,
     #[serde(default)]
+    size_bytes: Option<u64>,
+    #[serde(default)]
     message: Option<String>,
+}
+
+/// Full probe result: thumbnail (if any) + project directory size (if
+/// measurable). Size is independent of the thumbnail — a project with no
+/// thumbnail still reports its size.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectProbe {
+    pub thumbnail: Option<ProjectThumbnail>,
+    pub size_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectThumbnail {
     pub path: String,
     pub base64: String,
-    /// "uproject_same_name" | "saved_autosequence" — the human-readable label
-    /// is a frontend concern (mirrors the PROBE_DICT/PROBE_NARRATIVE split).
+    /// "uproject_same_name" | "saved_auto_screenshot" | "saved_autosequence"
+    /// — the human-readable label is a frontend concern (mirrors the
+    /// PROBE_DICT/PROBE_NARRATIVE split).
     pub from: String,
     /// The thumbnail candidate's own last-write time (UTC RFC3339-ish) — a
     /// proxy for "recently worked on" (editor-exported thumbnails/autosequence
@@ -69,9 +82,12 @@ pub fn read_thumbnail(
     host: &str,
     project_dir: &str,
     uproject_stem: &str,
-) -> VoloResult<Option<ProjectThumbnail>> {
+) -> VoloResult<ProjectProbe> {
     if loopback::is_loopback_target(host) {
-        return Ok(read_thumbnail_local(project_dir, uproject_stem));
+        return Ok(ProjectProbe {
+            thumbnail: read_thumbnail_local(project_dir, uproject_stem),
+            size_bytes: dir_size_local(Path::new(project_dir)),
+        });
     }
     let exec = SshExecutor::from_config()?;
     let result: ThumbnailRaw = run_json(
@@ -88,15 +104,37 @@ pub fn read_thumbnail(
             result.message.unwrap_or_else(|| "read thumbnail failed".into()),
         ));
     }
-    if !result.found {
-        return Ok(None);
+    let thumbnail = if result.found {
+        Some(ProjectThumbnail {
+            path: result.path,
+            base64: result.base64,
+            from: result.from,
+            mtime: result.mtime,
+        })
+    } else {
+        None
+    };
+    Ok(ProjectProbe {
+        thumbnail,
+        size_bytes: result.size_bytes,
+    })
+}
+
+/// Recursive on-disk size; `None` when any subtree is unreadable (a partial
+/// total presented as truth is worse than "unknown" — matches the ps1 side).
+fn dir_size_local(dir: &Path) -> Option<u64> {
+    let mut total = 0u64;
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries {
+        let entry = entry.ok()?;
+        let meta = entry.metadata().ok()?;
+        if meta.is_dir() {
+            total += dir_size_local(&entry.path())?;
+        } else {
+            total += meta.len();
+        }
     }
-    Ok(Some(ProjectThumbnail {
-        path: result.path,
-        base64: result.base64,
-        from: result.from,
-        mtime: result.mtime,
-    }))
+    Some(total)
 }
 
 fn read_thumbnail_local(project_dir: &str, uproject_stem: &str) -> Option<ProjectThumbnail> {
@@ -105,6 +143,10 @@ fn read_thumbnail_local(project_dir: &str, uproject_stem: &str) -> Option<Projec
         (
             Path::new(project_dir).join(format!("{uproject_stem}.png")),
             "uproject_same_name",
+        ),
+        (
+            Path::new(project_dir).join("Saved").join("AutoScreenshot.png"),
+            "saved_auto_screenshot",
         ),
         (
             Path::new(project_dir).join("Saved").join("autosequence_shot.png"),
@@ -162,6 +204,26 @@ mod tests {
 
         let thumb = read_thumbnail_local(dir.path().to_str().unwrap(), "Aurora").unwrap();
         assert_eq!(thumb.from, "uproject_same_name");
+    }
+
+    #[test]
+    fn read_thumbnail_local_prefers_auto_screenshot_over_autosequence() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("Saved")).unwrap();
+        std::fs::write(dir.path().join("Saved").join("AutoScreenshot.png"), b"editor-shot").unwrap();
+        std::fs::write(dir.path().join("Saved").join("autosequence_shot.png"), b"fallback").unwrap();
+
+        let thumb = read_thumbnail_local(dir.path().to_str().unwrap(), "Aurora").unwrap();
+        assert_eq!(thumb.from, "saved_auto_screenshot");
+    }
+
+    #[test]
+    fn dir_size_local_sums_recursively() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.bin"), vec![0u8; 10]).unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub").join("b.bin"), vec![0u8; 5]).unwrap();
+        assert_eq!(dir_size_local(dir.path()), Some(15));
     }
 
     #[test]

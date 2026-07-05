@@ -476,6 +476,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
      不共享/不写回全局 UE_PROJECTS——PSO 页不需要 DDC Pak 那套按 mtime 排序的额外复杂度）。 */
   const PSO_THUMB_FROM_LABEL = {
     uproject_same_name: 'uproject 同名缩略图',
+    saved_auto_screenshot: 'Saved 编辑器自动截图（无同名图）',
     saved_autosequence: 'Saved 回退缩略图（无同名图）',
   };
 
@@ -505,9 +506,10 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
         const src = pickSrc(x);
         if (!src) { pump(); return; }
         getProjectThumbnail(Number(x.id), src.machineId).then(
-          (t) => {
+          (probe) => {
             if (!alive) return;
             thumbTriedRef.current.add(x.id);
+            const t = probe && probe.thumbnail;
             if (t) setThumbs((m) => Object.assign({}, m, { [x.id]: {
               thumb: 'data:image/png;base64,' + t.base64,
               thumbSrc: t.path,

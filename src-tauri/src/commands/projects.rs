@@ -2,7 +2,7 @@
 
 use cache_core::core::project_discovery::{self, DiscoveryResult};
 use cache_core::core::project_identity::stem_lower;
-use cache_core::core::project_thumbnail::{self, ProjectThumbnail};
+use cache_core::core::project_thumbnail::{self, ProjectProbe};
 use cache_core::data::{
     machines as data_machines, project_cache_backend, project_locations, projects, Db,
     DiscoveryStatus, Project, ProjectLocation, ProjectCacheBackend,
@@ -126,15 +126,16 @@ pub fn create_project_manual(
     )
 }
 
-/// Resolves the project's thumbnail on `machine_id`'s copy: a same-name PNG
-/// next to the .uproject, else `Saved\autosequence_shot.png`, else `None`
-/// (the frontend falls back to a generic icon — no thumbnail is not an error).
+/// Probes the project on `machine_id`'s copy: thumbnail (same-name PNG next
+/// to the .uproject, else `Saved\auto_screenshot.png`, else
+/// `Saved\autosequence_shot.png`, else null — the frontend falls back to a
+/// generic icon) + the project directory's total size, in one round-trip.
 #[tauri::command]
 pub async fn get_project_thumbnail(
     db: State<'_, Db>,
     project_id: i64,
     machine_id: i64,
-) -> VoloResult<Option<ProjectThumbnail>> {
+) -> VoloResult<ProjectProbe> {
     let machine = data_machines::find_by_id(&db, machine_id)?
         .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?;
     let location = project_locations::get_for_project_machine(&db, project_id, machine_id)?

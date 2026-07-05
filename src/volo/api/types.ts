@@ -410,9 +410,10 @@ export interface DeployedPakEntry {
   modified_at: string | null;
 }
 
-/** `get_project_thumbnail` result: a same-name PNG next to the .uproject, or
- *  the Saved\autosequence_shot.png fallback. `from` is a raw key
- *  ("uproject_same_name" | "saved_autosequence") — the frontend maps it to a
+/** Thumbnail half of `get_project_thumbnail`: a same-name PNG next to the
+ *  .uproject, or the Saved\auto_screenshot.png / Saved\autosequence_shot.png
+ *  fallbacks. `from` is a raw key ("uproject_same_name" |
+ *  "saved_auto_screenshot" | "saved_autosequence") — the frontend maps it to a
  *  human label, mirroring the PROBE_DICT/PROBE_NARRATIVE split in adapters.ts. */
 export interface ProjectThumbnail {
   path: string;
@@ -421,6 +422,13 @@ export interface ProjectThumbnail {
   /** Candidate file's last-write time (UTC RFC3339-ish) — proxy for "recently
    *  worked on", independent of `project_locations.discovered_at` (scan time). */
   mtime: string | null;
+}
+
+/** `get_project_thumbnail` result: thumbnail (if any) + project directory
+ *  total size (null when unmeasurable) probed in one SSH round-trip. */
+export interface ProjectProbe {
+  thumbnail: ProjectThumbnail | null;
+  size_bytes: number | null;
 }
 
 export type UeRunnerEvent =

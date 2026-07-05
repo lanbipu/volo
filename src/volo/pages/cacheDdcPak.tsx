@@ -33,6 +33,7 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
   /* get_project_thumbnail 只回传策略 key，人话文案留在前端（PROBE_DICT/PROBE_NARRATIVE 同款分工）。 */
   const THUMB_FROM_LABEL = {
     uproject_same_name: 'uproject 同名缩略图',
+    saved_auto_screenshot: 'Saved 编辑器自动截图（无同名图）',
     saved_autosequence: 'Saved 回退缩略图（无同名图）',
   };
 
@@ -330,15 +331,19 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
         const src = DDC.pickSrc(p);
         if (!src) { pump(); return; }
         getProjectThumbnail(Number(p.id), src.machineId).then(
-          (t) => {
+          (probe) => {
             if (!alive) return;
             thumbTriedRef.current.add(p.id);
-            if (t) setThumbs((m) => Object.assign({}, m, { [p.id]: {
+            const t = probe && probe.thumbnail;
+            const patch = {};
+            if (t) Object.assign(patch, {
               thumb: 'data:image/png;base64,' + t.base64,
               thumbSrc: t.path,
               thumbFrom: THUMB_FROM_LABEL[t.from] || t.from,
               mtime: t.mtime || '',
-            } }));
+            });
+            if (probe && probe.size_bytes != null) patch.size = DDC.humanBytes(probe.size_bytes);
+            if (Object.keys(patch).length) setThumbs((m) => Object.assign({}, m, { [p.id]: patch }));
             pump();
           },
           () => { if (alive) pump(); });

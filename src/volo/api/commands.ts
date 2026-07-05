@@ -19,7 +19,7 @@ import type {
   VerifyReport, DeployPlan, DeployStep, GpuMatrix, ConsistencyResult,
   ShareMode, CreateShareResponse, TeardownShareResult, InjectionResult, ShareConfig, EnsureOpenDirShareResponse,
   ProjectSummary, ProjectLocation, DiscoveryResult,
-  ExecutionLocation, GenerateJobResponse, PakOutput, DistributeJobResponse, DeployedPakEntry, ProjectThumbnail,
+  ExecutionLocation, GenerateJobResponse, PakOutput, DistributeJobResponse, DeployedPakEntry, ProjectProbe,
   PsoCollectJobResponse, PsoCacheFile, DistributePsoCacheRequest, PsoDistributeJobResponse,
   StartPsoWarmupRequest, PsoWarmupJobResponse, PsoWarmupRun,
   RunHealthCheckRequest, HealthRunSummary, HealthCheckRow,
@@ -295,9 +295,9 @@ export const listDeployedDdcPaks = () => call<DeployedPakEntry[]>("list_deployed
 // ✅ wired: cacheDdcPak 已部署卡片「删除 PAK」（红色确认门）→ deleteDdcPak + 重新扫描
 export const deleteDdcPak = (machineId: number, projectId: number) =>
   call<void>("delete_ddc_pak", { machineId, projectId });
-// ✅ wired: cacheDdcPak 工程行缩略图（懒加载）→ getProjectThumbnail；null = 无缩略图，回退 film 图标
+// ✅ wired: cacheDdcPak 工程卡缩略图+目录大小（懒加载）→ getProjectThumbnail；thumbnail null = 无缩略图，回退 film 图标
 export const getProjectThumbnail = (projectId: number, machineId: number) =>
-  call<ProjectThumbnail | null>("get_project_thumbnail", { projectId, machineId });
+  call<ProjectProbe>("get_project_thumbnail", { projectId, machineId });
 
 /* ----------------------------- pso ----------------------------- */
 // ✅ wired: cacheDdc collectPso → startPsoCollection via runStreamingCmd（ue-runner-progress + pso-collect-finalized）
