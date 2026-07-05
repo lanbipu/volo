@@ -25,12 +25,30 @@ try {
     }
     $driveName = "uecmsrc$PID"
     $mounted = $false
+    $guestMountedRoot = $null
     try {
         if (-not [string]::IsNullOrEmpty($SmbUser) -and -not [string]::IsNullOrEmpty($SmbPass)) {
             $secure = ConvertTo-SecureString -String $SmbPass -AsPlainText -Force
             $smbCred = New-Object System.Management.Automation.PSCredential($SmbUser, $secure)
             New-PSDrive -Name $driveName -PSProvider FileSystem -Root $SourceUnc -Credential $smbCred -ErrorAction Stop | Out-Null
             $mounted = $true
+        }
+        elseif (-not (Test-Path -LiteralPath $SourceUnc)) {
+            # Open (Mode A) share, no forwarded cred: under an SSH network
+            # logon the implicit NULL session is rejected (Access is denied) —
+            # an explicit guest mount of the share root works where anonymous
+            # does not. Mount failure is non-fatal; the checks below report
+            # the specific cause.
+            $rootMatch = [regex]::Match($SourceUnc, '^\\\\[^\\]+\\[^\\]+')
+            if ($rootMatch.Success) {
+                $shareRoot = $rootMatch.Value
+                # argv form (no cmd /c string interpolation); literal '""' is
+                # the empty guest password — a bare '' arg is dropped by 5.1.
+                # try/catch: under EAP=Stop, redirected native stderr can throw
+                # (NativeCommandError) and mount failure must stay non-fatal.
+                try { & net.exe use $shareRoot '""' /user:guest 2>&1 | Out-Null } catch {}
+                if ($LASTEXITCODE -eq 0) { $guestMountedRoot = $shareRoot }
+            }
         }
         if (-not (Test-Path -LiteralPath $SourceUnc)) {
             throw "source UNC unreachable: $SourceUnc"
@@ -57,6 +75,7 @@ try {
     }
     finally {
         if ($mounted) { Remove-PSDrive -Name $driveName -Force -ErrorAction SilentlyContinue }
+        if ($guestMountedRoot) { try { & net.exe use $guestMountedRoot /delete /y 2>&1 | Out-Null } catch {} }
     }
 }
 catch {
