@@ -120,12 +120,7 @@
 /* =========================================================================
    3 · 右栏 · 工程扫描与生成
    ========================================================================= */
-/* 搜索框 */
-.pak-search { display: flex; align-items: center; gap: 8px; padding: 7px 11px; border-radius: 9px;
-  background: var(--sunken); border: 1px solid var(--chrome-line-2); }
-.pak-search svg { flex: 0 0 auto; color: var(--chrome-faint); }
-.pak-search input { all: unset; flex: 1; min-width: 0; font-size: 12.5px; color: var(--chrome-text); }
-.pak-search input::placeholder { color: var(--chrome-faint); }
+/* 搜索：收进列表工具条的图标 + 弹出框（原顶部独立搜索框已移除，见第 6 节 .pak-search-* ） */
 .pak-search-ct { flex: 0 0 auto; font-size: 11px; font-weight: 700; color: var(--chrome-faint);
   font-variant-numeric: tabular-nums; }
 .pak-search-clear { all: unset; flex: 0 0 auto; display: inline-grid; place-items: center; width: 22px; height: 22px;
@@ -322,12 +317,33 @@
 /* =========================================================================
    6 · 工程列表 · 平铺矩形小模块（网格）+ 全选 + 显示比例滑块
    ========================================================================= */
-/* 列表工具条：左「全选」· 右「显示 / 排序 / 显示比例」 */
+/* 列表工具条：左「全选」· 右「搜索 · 显示 / 排序 / 筛选 · 显示比例」 */
 .pak-list-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; row-gap: 8px; }
-/* margin-left:auto 把这一组连同其后的显示比例滑块一起推到最右；flex 不设 grow，
-   让展开态（.open）的背景块只贴合图标本身的尺寸，不随行内剩余空间被拉伸到最左侧。 */
-.pak-list-tools { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;
+/* margin-left:auto 把搜索图标 + 工具组这一整组连同其后的显示比例滑块一起推到最右；
+   .pak-list-tools 自身不设 grow，让展开态（.open）的背景块只贴合图标本身的尺寸，
+   不随行内剩余空间被拉伸到最左侧。 */
+.pak-list-actions { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;
+  gap: 8px; min-width: 0; }
+.pak-list-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;
   gap: 8px 14px; flex: 0 1 auto; min-width: 0; }
+
+/* 搜索：折叠为图标 + 弹出框，放在显示/排序/筛选工具组左边 */
+.pak-search-wrap { position: relative; display: flex; }
+.pak-search-btn { all: unset; box-sizing: border-box; width: 30px; height: 30px; border-radius: 7px; position: relative;
+  display: grid; place-items: center; color: var(--chrome-dim); cursor: pointer; transition: background .12s, color .12s; }
+.pak-search-btn:hover { background: var(--wash-3); color: var(--chrome-text); }
+.pak-search-btn.has-query { color: var(--volo-400); }
+.pak-search-badge { position: absolute; top: -3px; right: -3px; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 7px;
+  background: var(--volo-500); color: #fff; font-size: 9px; font-weight: 800; line-height: 14px; text-align: center;
+  font-variant-numeric: tabular-nums; box-shadow: 0 0 0 2px var(--sunken); }
+.pak-search-pop { position: absolute; left: 0; top: calc(100% + 8px); z-index: 60; min-width: 240px;
+  display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 10px;
+  background: var(--chrome-panel-2); border: 1px solid var(--chrome-line-2);
+  box-shadow: var(--shadow-dragged, 0 12px 32px rgba(0,0,0,.4)); animation: pak-search-pop-in .12s ease; }
+.pak-search-pop svg { flex: 0 0 auto; color: var(--chrome-faint); }
+.pak-search-pop input { all: unset; flex: 1; min-width: 0; font-size: 12.5px; color: var(--chrome-text); }
+.pak-search-pop input::placeholder { color: var(--chrome-faint); }
+@keyframes pak-search-pop-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 
 /* 合并的「显示 / 排序 / 筛选」图标组 —— 默认只显示一个入口图标，点击展开 */
 .pak-tools-toggle { all: unset; box-sizing: border-box; width: 30px; height: 30px; border-radius: 8px; position: relative;
@@ -353,14 +369,15 @@
   font-variant-numeric: tabular-nums; box-shadow: 0 0 0 2px var(--sunken); }
 
 /* 快速自绘 tooltip —— 替代原生 title 的 ~1.5s 延迟，hover / focus 立刻显示按钮名称 */
-.pak-tool-ic[data-tip]::after, .pak-tools-toggle[data-tip]::after {
+.pak-tool-ic[data-tip]::after, .pak-tools-toggle[data-tip]::after, .pak-search-btn[data-tip]::after {
   content: attr(data-tip); position: absolute; top: calc(100% + 7px); left: 50%;
   transform: translateX(-50%) translateY(-3px); background: var(--chrome-panel-2); color: var(--chrome-text);
   border: 1px solid var(--chrome-line-2); font-size: 11px; font-weight: 600; white-space: nowrap;
   padding: 4px 9px; border-radius: 6px; pointer-events: none; opacity: 0; z-index: 90;
   box-shadow: 0 6px 18px rgba(0,0,0,.34); transition: opacity .1s ease, transform .1s ease; transition-delay: 0s; }
 .pak-tool-ic[data-tip]:hover::after, .pak-tool-ic[data-tip]:focus-visible::after,
-.pak-tools-toggle[data-tip]:hover::after, .pak-tools-toggle[data-tip]:focus-visible::after {
+.pak-tools-toggle[data-tip]:hover::after, .pak-tools-toggle[data-tip]:focus-visible::after,
+.pak-search-btn[data-tip]:hover::after, .pak-search-btn[data-tip]:focus-visible::after {
   opacity: 1; transform: translateX(-50%) translateY(0); transition-delay: 40ms; }
 /* 展开切换按钮在最右侧：tooltip 右对齐，避免溢出面板被裁切 */
 .pak-tools-toggle[data-tip]::after { left: auto; right: 0; transform: translateY(-3px); }
