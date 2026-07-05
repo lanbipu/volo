@@ -401,11 +401,6 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
     }, [UE_PROJECTS.length, thumbGen]);
     const withThumb = (p) => Object.assign({}, p, thumbs[p.id], { hasPak: deployedProjectIds.has(p.id) });
 
-    /* gate 必须在全部 Hooks 之后才能条件 return：否则加载态(仅走 gate 分支、零 Hook)
-       与加载完成态(走到这里、调用一串 useState/useEffect)之间 Hook 调用数量不一致，
-       React 会抛 "Rendered more hooks than during the previous render"。 */
-    const g = DDC.gate(s); if (g) return g;
-
     const openGenerate = (projs) => {
       if (!projs.length) return;
       s.setModal({ kind: 'pakgen', render: ({ s: st, close }) =>
@@ -584,6 +579,12 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
       document.addEventListener('mousedown', onDown);
       return () => document.removeEventListener('mousedown', onDown);
     }, [acOpen]);
+
+    /* gate 必须在【全部】Hooks 之后才能条件 return——这里是本组件最后一个 Hook 之后的
+       第一行。此前 gate 放在中段（地址栏自动补全的一串 useState/useEffect 之前），
+       reloadCache 让 s.cacheLoading 翻转时两次渲染的 Hook 数量不一致，React 抛
+       "Rendered fewer hooks than expected" 崩掉整个面板。 */
+    const g = DDC.gate(s); if (g) return g;
     const doScan = () => {
       setCleared(false); setConfirmClear(false);
       const scanned = DDC.runDiscover(s, scope, rootsStr);
