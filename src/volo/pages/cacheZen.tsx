@@ -153,9 +153,10 @@ import {
   const zportRecOf = (d, id) => d[id] || { configured: null, actual: null, running: null, loading: true, fail: false };
 
   /* 工程级指向的二级菜单：列出选中机器上已发现的 UE 工程，选择后再指向。
-     每台机器只写入其本机存在的所选工程的 DefaultEngine.ini。UE 版本/体积/版本不一致
-     标记（p.ue / p.size / p.warn）后端暂无源，随 ProjectVM 固定为 "—" / null（见
-     adapters.ts toProjectVM）——按现有诚实占位惯例照常显示，不在此处臆造。 */
+     每台机器只写入其本机存在的所选工程的 DefaultEngine.ini。p.size 后端暂无源，固定为 "—"。
+     p.warn（027_project_locations_ue_version 迁移后）是真实值，但粒度是"这个工程在它已知的
+     全部机器范围内版本是否一致"，不是"在这批被选中的机器范围内"——版本分歧发生在选区之外时，
+     这里仍会显示「版本不一致」，是已知的粗粒度限制，不是本次臆造的占位。 */
   function ProjPointModal({ machines, host, port, preselect, onConfirm, close }) {
     const projects = window.UE_PROJECTS || [];
     const relevant = projects.filter((p) => machines.some((m) => p.machines.includes(m.id)));

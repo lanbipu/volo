@@ -78,6 +78,10 @@ pub fn set_project_location(
     } else {
         DiscoveryStatus::ManualAlias
     };
+    // Manual path/alias correction carries no version info of its own — pass None and
+    // let `project_locations::upsert` decide atomically whether the previously-scanned
+    // version is still valid (same abs_path/uproject_path) or must reset to unknown
+    // (path actually changed, so the old version described a different location).
     project_locations::upsert(
         &db,
         &ProjectLocation {
@@ -88,6 +92,8 @@ pub fn set_project_location(
             uproject_path,
             discovery_status,
             discovered_at: None,
+            ue_version_major: None,
+            ue_version_minor: None,
         },
     )
 }

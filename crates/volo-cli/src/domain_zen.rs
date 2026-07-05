@@ -5009,6 +5009,8 @@ mod tests {
                 uproject_path: r"Demo.uproject".into(),
                 discovery_status: cache_core::data::DiscoveryStatus::ManualPath,
                 discovered_at: None,
+                ue_version_major: None,
+                ue_version_minor: None,
             },
         )
         .unwrap();
@@ -5112,6 +5114,8 @@ mod tests {
                 uproject_path: r"Demo.uproject".into(),
                 discovery_status: cache_core::data::DiscoveryStatus::ManualPath,
                 discovered_at: None,
+                ue_version_major: None,
+                ue_version_minor: None,
             },
         )
         .unwrap();

@@ -44,24 +44,51 @@ pub struct ProjectLocation {
     pub uproject_path: String,
     pub discovery_status: DiscoveryStatus,
     pub discovered_at: Option<String>,
+    /// UE version this location's own `.uproject` reported at discovery time (per-machine —
+    /// distinct from `projects.ue_version_*`, which is a single, last-writer-wins value for
+    /// the whole project). Lets the frontend flag cross-machine version drift.
+    pub ue_version_major: Option<i64>,
+    pub ue_version_minor: Option<i64>,
 }
 
+/// A caller passing `ue_version_major/minor: None` (manual path/alias correction — it has
+/// no scan data of its own) means "I have no new version info", NOT "clear the version".
+/// But whether the old version is still trustworthy depends on whether the path actually
+/// changed: if `abs_path`/`uproject_path` are unchanged, the old version still describes
+/// this exact location and is safe to keep; if the path changed, that old version was
+/// parsed for a *different* location and must NOT carry over (falls back to `excluded.*`,
+/// i.e. whatever the caller passed — None/unknown until a real re-scan runs). The
+/// comparison and the write happen in one statement so a concurrent `discover_projects`
+/// scan for the same (project_id, machine_id) can't be silently clobbered by a
+/// read-then-write race (see git history for the two-step version this replaced).
 pub fn upsert(db: &Db, loc: &ProjectLocation) -> VoloResult<i64> {
     let conn = db.lock().unwrap();
     conn.execute(
-        "INSERT INTO project_locations (project_id, machine_id, abs_path, uproject_path, discovery_status)
-         VALUES (?, ?, ?, ?, ?)
+        "INSERT INTO project_locations (project_id, machine_id, abs_path, uproject_path, discovery_status, ue_version_major, ue_version_minor)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(project_id, machine_id) DO UPDATE SET
             abs_path = excluded.abs_path,
             uproject_path = excluded.uproject_path,
             discovery_status = excluded.discovery_status,
-            discovered_at = CURRENT_TIMESTAMP",
+            discovered_at = CURRENT_TIMESTAMP,
+            ue_version_major = CASE
+                WHEN abs_path = excluded.abs_path AND uproject_path = excluded.uproject_path
+                    THEN COALESCE(excluded.ue_version_major, ue_version_major)
+                ELSE excluded.ue_version_major
+            END,
+            ue_version_minor = CASE
+                WHEN abs_path = excluded.abs_path AND uproject_path = excluded.uproject_path
+                    THEN COALESCE(excluded.ue_version_minor, ue_version_minor)
+                ELSE excluded.ue_version_minor
+            END",
         params![
             loc.project_id,
             loc.machine_id,
             loc.abs_path,
             loc.uproject_path,
             loc.discovery_status.as_str(),
+            loc.ue_version_major,
+            loc.ue_version_minor,
         ],
     )?;
     let id = conn.query_row(
@@ -87,7 +114,7 @@ pub fn get_for_project_machine(
 ) -> VoloResult<Option<ProjectLocation>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
-        "SELECT id, project_id, machine_id, abs_path, uproject_path, discovery_status, discovered_at
+        "SELECT id, project_id, machine_id, abs_path, uproject_path, discovery_status, discovered_at, ue_version_major, ue_version_minor
          FROM project_locations WHERE project_id = ? AND machine_id = ?",
     )?;
     let mut rows = stmt.query(params![project_id, machine_id])?;
@@ -115,7 +142,7 @@ fn list_where(
 ) -> VoloResult<Vec<ProjectLocation>> {
     let conn = db.lock().unwrap();
     let sql = format!(
-        "SELECT id, project_id, machine_id, abs_path, uproject_path, discovery_status, discovered_at
+        "SELECT id, project_id, machine_id, abs_path, uproject_path, discovery_status, discovered_at, ue_version_major, ue_version_minor
          FROM project_locations WHERE {} = ? ORDER BY {}",
         column, order_column
     );
@@ -145,6 +172,8 @@ fn location_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectLocatio
         uproject_path: row.get(4)?,
         discovery_status,
         discovered_at: row.get(6)?,
+        ue_version_major: row.get(7)?,
+        ue_version_minor: row.get(8)?,
     })
 }
 
@@ -187,6 +216,8 @@ mod tests {
             uproject_path: format!("{}\\Demo.uproject", root),
             discovery_status: DiscoveryStatus::Auto,
             discovered_at: None,
+            ue_version_major: None,
+            ue_version_minor: None,
         }
     }
 
@@ -219,5 +250,55 @@ mod tests {
         let rows = list_by_machine(&db, m1).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].machine_id, m1);
+    }
+
+    // Regression coverage for the manual-path-correction bug: a caller with no version
+    // info of its own (e.g. set_project_location) passes None, and must NOT silently
+    // wipe a previously-scanned version — but only when it's still describing the same
+    // physical location. See project_discovery.rs::persist_discovered for the real-scan
+    // writer, and src-tauri/commands/projects.rs::set_project_location /
+    // volo-cli/domain_project.rs::set_location for the manual-correction callers.
+
+    #[test]
+    fn upsert_preserves_version_when_path_unchanged_and_new_value_is_none() {
+        let (db, project_id, machine_id, _) = setup();
+        let mut scanned = loc(project_id, machine_id, "D:\\Demo");
+        scanned.ue_version_major = Some(5);
+        scanned.ue_version_minor = Some(4);
+        upsert(&db, &scanned).unwrap();
+
+        // A manual re-write of the *same* abs_path/uproject_path with no version info
+        // (e.g. re-confirming an alias) must not clear the version that was actually
+        // scanned for this exact location.
+        let manual_same_path = loc(project_id, machine_id, "D:\\Demo");
+        upsert(&db, &manual_same_path).unwrap();
+
+        let got = get_for_project_machine(&db, project_id, machine_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.ue_version_major, Some(5));
+        assert_eq!(got.ue_version_minor, Some(4));
+    }
+
+    #[test]
+    fn upsert_resets_version_when_path_changes_and_new_value_is_none() {
+        let (db, project_id, machine_id, _) = setup();
+        let mut scanned = loc(project_id, machine_id, "D:\\Old");
+        scanned.ue_version_major = Some(5);
+        scanned.ue_version_minor = Some(3);
+        upsert(&db, &scanned).unwrap();
+
+        // A manual correction pointing this location at a *different* path carries no
+        // version of its own — the old (5, 3) described the old path, not this one, so
+        // it must NOT be carried forward.
+        let manual_new_path = loc(project_id, machine_id, "E:\\New");
+        upsert(&db, &manual_new_path).unwrap();
+
+        let got = get_for_project_machine(&db, project_id, machine_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.abs_path, "E:\\New");
+        assert_eq!(got.ue_version_major, None);
+        assert_eq!(got.ue_version_minor, None);
     }
 }

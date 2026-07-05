@@ -360,6 +360,11 @@ export interface ProjectLocation {
   uproject_path: string;
   discovery_status: DiscoveryStatus;
   discovered_at: string | null;
+  /** Per-machine UE version this location's own .uproject reported at discovery
+   *  time — distinct from ProjectSummary.ue_version_*, which is a single,
+   *  last-writer-wins value for the whole project. */
+  ue_version_major: number | null;
+  ue_version_minor: number | null;
 }
 
 export interface DiscoveryResult {

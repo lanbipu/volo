@@ -292,9 +292,79 @@
    而不是把整条工具条撑出去导致横向溢出。 */
 .pak-list-tools { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;
   gap: 8px 14px; flex: 1 1 auto; min-width: 0; }
-.pak-list-tools .pak-ctl--row { flex-direction: row; align-items: center; gap: 7px; }
 .pak-list-tools .pak-zoom { margin-left: 0; }
-.pak-list-tools .obj-sel { min-width: 0 !important; }
+
+/* 合并的「显示 / 排序 / 筛选」图标组 —— 默认只显示一个入口图标，点击展开 */
+.pak-tools-toggle { all: unset; box-sizing: border-box; width: 30px; height: 30px; border-radius: 8px; position: relative;
+  display: grid; place-items: center; color: var(--chrome-dim); cursor: pointer; border: 1px solid var(--chrome-line-2);
+  background: var(--sunken); transition: background .12s, color .12s, border-color .12s; }
+.pak-tools-toggle:hover { background: var(--wash-3); color: var(--chrome-text); }
+.pak-tools-toggle.on { background: var(--wash-3); color: var(--chrome-text); border-color: var(--chrome-line); }
+.pak-tools-toggle.has-filter { border-color: color-mix(in srgb, var(--volo-500) 55%, var(--chrome-line-2)); color: var(--volo-400); }
+.pak-tools-badge { position: absolute; top: -5px; right: -5px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px;
+  background: var(--volo-500); color: #fff; font-size: 9.5px; font-weight: 800; line-height: 15px; text-align: center;
+  font-variant-numeric: tabular-nums; box-shadow: 0 0 0 2px var(--chrome-panel-2); }
+/* 展开后的图标项：纯图标、hover 出 title、点击弹二级菜单 */
+.pak-list-tools.open { padding: 3px; border-radius: 10px; background: var(--sunken); border: 1px solid var(--chrome-line-2); gap: 3px; }
+.pak-list-tools.open .pak-tools-toggle { border-color: transparent; background: transparent; }
+.pak-list-tools.open .pak-tools-toggle:hover { background: var(--wash-3); }
+.pak-tool { position: relative; display: flex; }
+.pak-tool-ic { all: unset; box-sizing: border-box; width: 30px; height: 30px; border-radius: 7px; position: relative;
+  display: grid; place-items: center; color: var(--chrome-dim); cursor: pointer; transition: background .12s, color .12s; }
+.pak-tool-ic:hover { background: var(--wash-3); color: var(--chrome-text); }
+.pak-tool-ic.on { background: var(--chrome-panel-2); color: var(--chrome-text); box-shadow: 0 1px 2px rgba(0,0,0,.22); }
+.pak-tool-badge { position: absolute; top: -3px; right: -3px; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 7px;
+  background: var(--volo-500); color: #fff; font-size: 9px; font-weight: 800; line-height: 14px; text-align: center;
+  font-variant-numeric: tabular-nums; box-shadow: 0 0 0 2px var(--sunken); }
+
+/* 快速自绘 tooltip —— 替代原生 title 的 ~1.5s 延迟，hover / focus 立刻显示按钮名称 */
+.pak-tool-ic[data-tip]::after, .pak-tools-toggle[data-tip]::after {
+  content: attr(data-tip); position: absolute; top: calc(100% + 7px); left: 50%;
+  transform: translateX(-50%) translateY(-3px); background: var(--chrome-panel-2); color: var(--chrome-text);
+  border: 1px solid var(--chrome-line-2); font-size: 11px; font-weight: 600; white-space: nowrap;
+  padding: 4px 9px; border-radius: 6px; pointer-events: none; opacity: 0; z-index: 90;
+  box-shadow: 0 6px 18px rgba(0,0,0,.34); transition: opacity .1s ease, transform .1s ease; transition-delay: 0s; }
+.pak-tool-ic[data-tip]:hover::after, .pak-tool-ic[data-tip]:focus-visible::after,
+.pak-tools-toggle[data-tip]:hover::after, .pak-tools-toggle[data-tip]:focus-visible::after {
+  opacity: 1; transform: translateX(-50%) translateY(0); transition-delay: 40ms; }
+/* 展开切换按钮在最右侧：tooltip 右对齐，避免溢出面板被裁切 */
+.pak-tools-toggle[data-tip]::after { left: auto; right: 0; transform: translateY(-3px); }
+.pak-tools-toggle[data-tip]:hover::after, .pak-tools-toggle[data-tip]:focus-visible::after { transform: translateY(0); }
+/* 二级菜单展开时不再显示该图标自身的 tooltip（避免与菜单重叠）*/
+.pak-tool-ic.on[data-tip]::after { display: none; }
+
+/* 二级下拉菜单 */
+.pak-tool-menu { position: absolute; bottom: calc(100% + 8px); right: 0; z-index: 60; min-width: 216px; max-width: 300px;
+  background: var(--chrome-panel-2); border: 1px solid var(--chrome-line-2); border-radius: 11px; padding: 6px;
+  box-shadow: var(--shadow-dragged, 0 12px 32px rgba(0,0,0,.4)); display: flex; flex-direction: column; gap: 2px;
+  animation: ptm-in .12s ease; }
+@keyframes ptm-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+.ptm-h { display: flex; align-items: center; gap: 8px; font-size: 10.5px; font-weight: 700; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--chrome-faint); padding: 5px 8px 6px; }
+.ptm-clear { all: unset; margin-left: auto; font-size: 10.5px; font-weight: 700; color: var(--volo-400); cursor: pointer;
+  padding: 2px 7px; border-radius: 5px; background: color-mix(in srgb, var(--volo-500) 14%, transparent); }
+.ptm-clear:hover { background: color-mix(in srgb, var(--volo-500) 24%, transparent); }
+.ptm-i { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 9px;
+  border-radius: 7px; cursor: pointer; color: var(--chrome-text); }
+.ptm-i:hover { background: var(--wash-3); }
+.ptm-i.on { background: var(--highlight-selected, color-mix(in srgb, var(--volo-500) 12%, transparent)); }
+.ptm-ic { display: inline-grid; place-items: center; color: var(--chrome-dim); flex: 0 0 auto; }
+.ptm-i.on .ptm-ic { color: var(--volo-400); }
+.ptm-mm { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
+.ptm-l { font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.ptm-s { font-size: 10.5px; color: var(--chrome-faint); white-space: nowrap; }
+.ptm-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+.ptm-group { border-top: 1px solid var(--chrome-line); margin-top: 4px; padding-top: 4px; }
+.pak-tool-menu > .ptm-group:first-of-type { border-top: none; margin-top: 0; padding-top: 0; }
+.ptm-group-h { display: flex; align-items: center; gap: 7px; font-size: 10.5px; font-weight: 700; color: var(--chrome-dim);
+  padding: 6px 9px 4px; }
+.ptm-group-s { margin-left: auto; font-size: 10px; font-weight: 500; color: var(--chrome-faint); }
+.ptm-sub { border-top: 1px solid var(--chrome-line); margin-top: 4px; padding: 8px 9px 4px; }
+.ptm-sub-h { display: flex; align-items: center; gap: 7px; font-size: 10.5px; font-weight: 700; color: var(--chrome-dim); margin-bottom: 8px; }
+.ptm-sub .pak-zoom { margin-left: 0; display: flex; width: 100%; }
+.ptm-sub .pak-zoom-range { flex: 1; width: auto; }
+.pak-filter-menu { min-width: 236px; max-height: 380px; overflow-y: auto; }
+
 .pak-selall { all: unset; display: inline-flex; align-items: center; gap: 8px; padding: 5px 11px 5px 8px;
   border-radius: 8px; border: 1px solid var(--chrome-line-2); background: var(--sunken); cursor: pointer;
   transition: background .12s, border-color .12s; }

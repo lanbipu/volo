@@ -169,8 +169,10 @@ export function toShareVM(s: ShareConfig, machines: Machine[] = []): ShareVM {
 /** Shape the DDC PAK / PSO views read (UE_PROJECTS element). The backend
  *  surfaces project identity (list_projects) + per-machine locations
  *  (list_project_locations). UE version comes from the parsed EngineAssociation
- *  (ue_version_major/minor；GUID 形关联无版本号 → "—"). size / pak-presence /
- *  warnings are not exposed by any command → "—" / false / null (TODO: 后端无源).
+ *  (ue_version_major/minor；GUID 形关联无版本号 → "—"). `warn` comes from comparing
+ *  each location's own per-machine ue_version_major/minor (see describeVersionDrift).
+ *  size / pak-presence are not exposed by any command → "—" / false (TODO: 后端无源;
+ *  DDC PAK 页面自己用 list_deployed_ddc_paks 反推准确的 hasPak，见 cacheDdcPak.tsx)。
  *  `machines` is String(machine_id)[] so it aligns with NodeVM.id (= String(id)). */
 export interface ProjectVM {
   id: number;
@@ -340,7 +342,24 @@ export function toProjectVM(p: ProjectSummary, locations: ProjectLocation[]): Pr
     machines,
     primary: machines[0] ?? null,
     hasPak: false,
-    warn: null,
+    warn: describeVersionDrift(locations),
     locByMachine,
   };
+}
+
+/** 同一工程在不同机器上的 .uproject 各自解析出的 UE 版本若不一致（跨机器各自 checkout 到
+ *  不同引擎版本），给出一条人话提示串；否则 null。只在 ≥2 种非空版本组合同时出现时才判定
+ *  为"不一致"——单机 / 全部为空（GUID 形关联、未曾扫描等）不算。 */
+function describeVersionDrift(locations: ProjectLocation[]): string | null {
+  const counts = new Map<string, number>();
+  locations.forEach((l) => {
+    if (l.ue_version_major == null || l.ue_version_minor == null) return;
+    const key = l.ue_version_major + "." + l.ue_version_minor;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  if (counts.size < 2) return null;
+  const parts = Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([ver, n]) => "UE " + ver + "（" + n + " 台）");
+  return "版本不一致：" + parts.join(" · ");
 }

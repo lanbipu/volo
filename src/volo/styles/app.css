@@ -537,8 +537,8 @@ html, body {
 .pop-i:hover { background: rgba(255,255,255,.06); }
 .pop-i.on { background: var(--highlight-selected); }
 .pop-pip { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
-.pop-l { font-size: 12.5px; font-weight: 600; color: var(--chrome-text); }
-.pop-s { font-size: 10.5px; color: var(--chrome-faint); }
+.pop-l { font-size: 12.5px; font-weight: 600; color: var(--chrome-text); white-space: nowrap; }
+.pop-s { font-size: 10.5px; color: var(--chrome-faint); white-space: nowrap; }
 
 /* self-contained meter */
 .vmeter { width: 100%; height: 6px; border-radius: 9999px; background: var(--track); overflow: hidden; }
@@ -799,6 +799,34 @@ html, body {
 .affrow .ip { font-family: var(--font-code); color: var(--chrome-dim); font-variant-numeric: tabular-nums; }
 .affrow .msg { color: var(--chrome-dim); text-align: right; }
 .affrow.skip { opacity: .55; }
+
+/* selectableScope · 可勾选目标设备（预览弹窗通用能力，见 PreviewPanel selCand） */
+.sel-all-row { all: unset; box-sizing: border-box; display: grid; grid-template-columns: 22px auto 1fr; gap: 10px; align-items: center;
+  padding: 9px 12px; margin-bottom: 9px; cursor: pointer; border: 1px solid var(--chrome-line-2); border-radius: 9px; background: var(--sunken);
+  transition: background .12s, border-color .12s; }
+.sel-all-row:hover { background: var(--wash-3); }
+.sel-all-tx { font-size: 12.5px; font-weight: 700; color: var(--chrome-text); }
+.sel-all-ct { font-size: 11px; color: var(--chrome-faint); text-align: right; }
+.sel-ck { width: 18px; height: 18px; border-radius: 5px; border: 1.5px solid var(--chrome-line-2); display: grid; place-items: center;
+  color: #fff; flex: 0 0 auto; transition: background .12s, border-color .12s; }
+.sel-all-row.on .sel-ck, .sel-all-row.part .sel-ck { background: var(--volo-500); border-color: var(--volo-500); }
+.sel-all-row.part .sel-ck { background: color-mix(in srgb, var(--volo-500) 78%, transparent); }
+.affrow.selectable { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 10px 14px; font-size: 12px; cursor: pointer; transition: background .12s; }
+.affrow.selectable:hover { background: var(--wash-3); }
+.affrow.selectable + .affrow.selectable { border-top: 1px solid var(--chrome-line); }
+.affrow.selectable.on { background: color-mix(in srgb, var(--volo-500) 15%, transparent); }
+.affrow.selectable.on + .affrow.selectable.on { border-top-color: color-mix(in srgb, var(--volo-500) 22%, transparent); }
+.affrow.selectable .sel-ck { width: 18px; height: 18px; }
+.affrow.selectable.on .sel-ck { background: var(--volo-500); border-color: var(--volo-500); }
+.aff-id { display: flex; flex-direction: column; gap: 2px; min-width: 0; line-height: 1.25; }
+.aff-id .host { font-family: var(--font-code); font-weight: 700; font-size: 12.5px; color: var(--chrome-text); }
+.aff-id .ip { font-family: var(--font-code); font-size: 11px; color: var(--chrome-faint); font-variant-numeric: tabular-nums; }
+.aff-gpu { margin-left: auto; flex: 0 0 auto; font-size: 11px; color: var(--chrome-dim); white-space: nowrap;
+  padding: 3px 9px; border-radius: 6px; background: var(--sunken); border: 1px solid var(--chrome-line); }
+.affrow.selectable.on .aff-gpu { color: var(--chrome-text); border-color: color-mix(in srgb, var(--volo-500) 40%, var(--chrome-line));
+  background: color-mix(in srgb, var(--volo-500) 10%, var(--sunken)); }
+
 .backup { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--chrome-dim); background: var(--wash-3); border: 1px dashed var(--chrome-line-2); border-radius: 9px; padding: 11px 13px; }
 .backup .path { font-family: var(--font-code); color: var(--chrome-text); font-size: 11.5px; word-break: break-all; }
 .drawer-f { padding: 13px 18px; border-top: 1px solid var(--chrome-line); display: flex; justify-content: flex-end; gap: 10px; background: var(--chrome-panel); }

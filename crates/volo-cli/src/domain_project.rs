@@ -139,6 +139,10 @@ fn set_location(
         DiscoveryStatus::ManualAlias
     };
     let db = ctx.require_db()?;
+    // Manual path/alias correction carries no version info of its own — pass None and
+    // let `project_locations::upsert` decide atomically whether the previously-scanned
+    // version is still valid (same abs_path/uproject_path) or must reset to unknown
+    // (path actually changed, so the old version described a different location).
     let location_id = data_locations::upsert(
         db,
         &ProjectLocation {
@@ -149,6 +153,8 @@ fn set_location(
             uproject_path: uproject_path.to_string(),
             discovery_status,
             discovered_at: None,
+            ue_version_major: None,
+            ue_version_minor: None,
         },
     )?;
     ctx.emitter

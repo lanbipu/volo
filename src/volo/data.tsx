@@ -70,6 +70,8 @@ const ICON_PATHS = {
   minus:    '<path d="M4.5 10h11"/>',
   pause:    '<path d="M7 4.5v11M13 4.5v11"/>',
   filter:   '<path d="M3 4.5h14l-5.4 6.4V16L8.4 14v-3.1Z"/>',
+  sort:     '<path d="M5 5.5h10M5 9h6.5M5 12.5h3.5M13.5 6.5v9M13.5 15.5 11 13M13.5 15.5 16 13"/>',
+  sliders:  '<path d="M3 6h7M14 6h3M3 14h3M10 14h7"/><circle cx="12" cy="6" r="1.9"/><circle cx="8" cy="14" r="1.9"/>',
   copy:     '<rect x="6.5" y="6.5" width="9" height="9" rx="1.4"/><path d="M4.5 11.5v-6A1 1 0 0 1 5.5 4.5h6"/>',
   arrowr:   '<path d="M4 10h11M11 6l4 4-4 4"/>',
   server:   '<rect x="3" y="4" width="14" height="5" rx="1.3"/><rect x="3" y="11" width="14" height="5" rx="1.3"/><circle cx="6" cy="6.5" r=".9" fill="currentColor" stroke="none"/><circle cx="6" cy="13.5" r=".9" fill="currentColor" stroke="none"/>',

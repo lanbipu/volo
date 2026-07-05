@@ -433,6 +433,13 @@ const MIGRATIONS: &[(&str, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_pso_warmup_runs_machine ON pso_warmup_runs(machine_id);
         "#,
     ),
+    (
+        "027_project_locations_ue_version",
+        r#"
+        ALTER TABLE project_locations ADD COLUMN ue_version_major INTEGER;
+        ALTER TABLE project_locations ADD COLUMN ue_version_minor INTEGER;
+        "#,
+    ),
 ];
 
 pub fn migrate(conn: &mut Connection) -> VoloResult<()> {
