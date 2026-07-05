@@ -511,6 +511,22 @@ pub fn release_urlacl_best_effort(db: &Db, ep: &ZenEndpoint, host: &str) {
     finalize_op(db, op_id, &result, &invocation);
 }
 
+/// Whether a `zen_urlacl_add`/CLI `urlacl_add` failure message describes one
+/// of `zen-urlacl-add.ps1`'s three "an existing reservation blocks this add"
+/// refusals — owner mismatch, owner undeterminable (localized `netsh show
+/// urlacl` output the ps1's English-only regex can't parse), or Listen=No.
+/// All three are the same class: a stale/wrong reservation that a plain
+/// `netsh http delete urlacl` + retry resolves regardless of which of the
+/// three wordings fired. Extracted as a pure predicate (rather than inlined
+/// in the caller's `match` guard) so it has a unit test independent of a real
+/// netsh/SSH round-trip — the ps1's wording is the only thing this depends
+/// on, and unlike the SSH plumbing around it, that's cheap to pin down here.
+pub fn is_stale_urlacl_conflict(msg: &str) -> bool {
+    msg.contains("already exists but is owned by")
+        || msg.contains("already exists but the owning principal could not be determined")
+        || msg.contains("but Listen=No")
+}
+
 /// Resolve the zen.exe Volo hands `zen service install` for `machine_id`
 /// (in-tree UE binary preferred over the user-private install copy — see
 /// [`pick_service_zen_exe`]). Shared by `zen_apply_config` and
@@ -1322,6 +1338,33 @@ mod urlacl_tests {
         }
         assert!(urlacl_needed_for(r"DOMAIN\zen-svc"));
         assert!(urlacl_needed_for("NT AUTHORITY\\LocalService"));
+    }
+
+    /// Pins the three exact `zen-urlacl-add.ps1` message wordings this
+    /// predicate depends on — if the ps1's phrasing ever drifts, this test
+    /// (not a silent match failure at 2am on someone's redeploy) is what
+    /// catches it.
+    #[test]
+    fn stale_urlacl_conflict_matches_all_three_ps1_wordings() {
+        assert!(is_stale_urlacl_conflict(
+            "URL reservation already exists but is owned by 'lanPC\\zen-svc-mdrevp', not \
+             'zen-svc-c3aopx'. Remove the existing reservation first or change the requested \
+             principal."
+        ));
+        assert!(is_stale_urlacl_conflict(
+            "URL reservation already exists but the owning principal could not be determined \
+             from `netsh http show urlacl` output (likely a localized Windows locale)."
+        ));
+        assert!(is_stale_urlacl_conflict(
+            "URL reservation exists for the requested user 'zen-svc-c3aopx' but Listen=No. \
+             zen will be unable to bind."
+        ));
+    }
+
+    #[test]
+    fn stale_urlacl_conflict_rejects_unrelated_errors() {
+        assert!(!is_stale_urlacl_conflict("netsh http add urlacl failed (exit 1)"));
+        assert!(!is_stale_urlacl_conflict("principal must not be empty or whitespace"));
     }
 }
 
