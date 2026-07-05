@@ -68,14 +68,16 @@ try {
             @{ ok = $true; exit_code = "0"; bytes_copied = "0"; stdout_tail = "preflight ok"; preflight = $true } | ConvertTo-Json -Compress
             return
         }
-        $stdoutPath = Join-Path -Path $env:TEMP -ChildPath "robocopy-stdout-$PID.log"
-        $stderrPath = Join-Path -Path $env:TEMP -ChildPath "robocopy-stderr-$PID.log"
-        $roboArgs = @("$SourceUnc", "$TargetLocal", "$FileName", '/E', '/R:3', '/W:5', '/NP', '/NDL', '/NJH', '/NJS', '/BYTES')
-        $proc = Start-Process -FilePath 'robocopy.exe' -ArgumentList $roboArgs -PassThru -Wait -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-        $code = $proc.ExitCode
-        $stdout = Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $stdoutPath -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $stderrPath -ErrorAction SilentlyContinue
+        # Direct argv invocation: Start-Process -ArgumentList joins args with
+        # spaces WITHOUT quoting, so a path like "D:\Unreal Projects\..." got
+        # split into two robocopy parameters (exit 16, Invalid Parameter). `&`
+        # passes each argument intact. EAP=Continue around it: robocopy's
+        # occasional stderr lines must not become terminating errors.
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        $stdout = (& robocopy.exe $SourceUnc $TargetLocal $FileName /E /R:3 /W:5 /NP /NDL /NJH /NJS /BYTES 2>&1 | Out-String)
+        $code = $LASTEXITCODE
+        $ErrorActionPreference = $prevEap
         $bytesCopied = 0
         try {
             $m = [regex]::Matches($stdout, 'Bytes\s*:\s*(\d+)')

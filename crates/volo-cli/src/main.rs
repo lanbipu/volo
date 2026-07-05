@@ -90,6 +90,23 @@ fn voloctl_command() -> clap::Command {
 }
 
 fn main() {
+    // The combined cache+lmt clap tree overflows the default 1 MiB main-thread
+    // stack on Windows debug builds (`--help` alone crashed with "thread 'main'
+    // has overflowed its stack"). Run the real CLI on a thread with an explicit
+    // 16 MiB stack; `cli_main` exits the process itself, so join() only returns
+    // if it panicked.
+    let handle = std::thread::Builder::new()
+        .name("voloctl-cli".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(cli_main)
+        .expect("failed to spawn voloctl cli thread");
+    match handle.join() {
+        Ok(()) => std::process::exit(0),
+        Err(_) => std::process::exit(101),
+    }
+}
+
+fn cli_main() {
     // Use args_os to tolerate non-UTF-8 paths (e.g. someone passes a binary
     // --db-path on Unix). `args()` would panic before clap can parse.
     let argv: Vec<OsString> = std::env::args_os().collect();
