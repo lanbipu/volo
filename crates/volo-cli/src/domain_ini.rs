@@ -1198,6 +1198,7 @@ mod tests {
             abs_path: root.clone(),
             uproject_path: format!("{}\\Demo.uproject", root),
             discovery_status: DiscoveryStatus::Auto, discovered_at: None,
+            ue_version_major: None, ue_version_minor: None,
         }).unwrap();
 
         let mut buf: Vec<u8> = Vec::new();
@@ -1256,6 +1257,7 @@ mod tests {
             abs_path: root.clone(),
             uproject_path: format!("{}\\Demo.uproject", root),
             discovery_status: DiscoveryStatus::Auto, discovered_at: None,
+            ue_version_major: None, ue_version_minor: None,
         })
         .unwrap();
 

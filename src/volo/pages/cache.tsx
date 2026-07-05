@@ -692,16 +692,22 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
     const [scope, setScope] = useState(d.scope || []);
     const [confirmCk, setConfirmCk] = useState(false);
     const simple = d.simpleScope || null;
-    const rows = simple ? [] : predict(scope, d.destructive);
-    const willApply = simple ? simple.length : rows.filter((r) => !r.skip).length;
-    const willSkip = simple ? 0 : rows.filter((r) => r.skip).length;
-    const count = simple ? simple.length : scope.length;
+    const selCand = d.selectableScope || null; /* 可选目标设备：{ id, host, ip, msg }，默认全选 */
+    const [picked, setPicked] = useState(() => (selCand ? selCand.map((r) => r.id) : []));
+    const rows = (simple || selCand) ? [] : predict(scope, d.destructive);
+    const willApply = selCand ? picked.length : simple ? simple.length : rows.filter((r) => !r.skip).length;
+    const willSkip = (simple || selCand) ? 0 : rows.filter((r) => r.skip).length;
+    const count = selCand ? picked.length : simple ? simple.length : scope.length;
+    const allPicked = !!selCand && picked.length === selCand.length && selCand.length > 0;
+    const somePicked = !!selCand && picked.length > 0 && !allPicked;
+    const togglePick = (id) => setPicked((v) => (v.includes(id) ? v.filter((x) => x !== id) : v.concat(id)));
+    const toggleAllPick = () => setPicked(allPicked ? [] : selCand.map((r) => r.id));
     const blocked = d.destructive && d.confirmInput && count > 1 && !confirmCk;
     const close = closeProp || (() => s.setDrawer(null));
-    const confirm = onConfirmProp || (() => {
+    const confirm = onConfirmProp || ((pickedIds) => {
       close();
       if (d.task) s.runTask(Object.assign({}, d.task, { chan: d.channel || d.task.chan }));
-      if (d.onConfirm) d.onConfirm(scope); /* 把编辑后的目标机选择传出（分发流要用） */
+      if (d.onConfirm) d.onConfirm(selCand ? pickedIds : scope); /* 把编辑后的目标机选择传出（分发流要用） */
     });
     return h('div', { className: 'drawer drawer--preview' + (d.destructive ? ' danger' : '') },
       h('div', { className: 'drawer-h' },
@@ -727,9 +733,26 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
             d.diff.map((ln, i) => h('div', { key: i, className: 'diff-line diff-' + ln[0] }, h('span', { className: 'sign' }, ln[0] === 'del' ? '−' : '+'), h('span', null, ln[1]))))) : null,
         /* ② affected scope */
         h('div', { className: 'dblock' },
-          h('div', { className: 'dblock-h' }, h('span', { className: 'no' }, d.diff ? '3' : '2'), simple ? '目标设备' : '影响范围 · 机器选择器',
-            h('span', { className: 'aff-sum' }, simple ? (simple.length + ' 台') : (willApply + ' 应用 / ' + willSkip + ' 跳过'))),
-          simple
+          h('div', { className: 'dblock-h' }, h('span', { className: 'no' }, d.diff ? '3' : '2'),
+            (simple || selCand) ? '目标设备' : '影响范围 · 机器选择器',
+            h('span', { className: 'aff-sum' }, selCand ? (picked.length + ' / ' + selCand.length + ' 台')
+              : simple ? (simple.length + ' 台') : (willApply + ' 应用 / ' + willSkip + ' 跳过'))),
+          selCand
+            ? h(React.Fragment, null,
+                h('button', { type: 'button', className: 'sel-all-row' + (allPicked ? ' on' : somePicked ? ' part' : ''), onClick: toggleAllPick },
+                  h('span', { className: 'sel-ck' }, allPicked ? h(Icon, { name: 'check', size: 12 }) : somePicked ? h(Icon, { name: 'minus', size: 12 }) : null),
+                  h('span', { className: 'sel-all-tx' }, allPicked ? '取消全选' : '全选'),
+                  h('span', { className: 'sel-all-ct' }, '共 ' + selCand.length + ' 台可选')),
+                h('div', { className: 'afflist' }, selCand.map((r) => {
+                  const on = picked.includes(r.id);
+                  return h('button', { key: r.id, type: 'button', className: 'affrow selectable' + (on ? ' on' : ''), onClick: () => togglePick(r.id) },
+                    h('span', { className: 'sel-ck' }, on ? h(Icon, { name: 'check', size: 12 }) : null),
+                    h('div', { className: 'aff-id' },
+                      h('span', { className: 'host' }, r.host),
+                      h('span', { className: 'ip' }, r.ip)),
+                    r.msg ? h('span', { className: 'aff-gpu' }, r.msg) : null);
+                })))
+            : simple
             ? h('div', { className: 'afflist' }, simple.map((r, i) => h('div', { key: i, className: 'affrow' },
                 h('span', { className: 'ai s-positive' }, h(Icon, { name: 'check', size: 15 })),
                 h('span', { className: 'host' }, r.host),
@@ -758,7 +781,8 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
       h('div', { className: 'drawer-f' },
         h(Button, { variant: 'secondary', size: 'M', onPress: close }, '取消'),
         h(Button, { variant: d.destructive ? 'negative' : 'accent', size: 'M', isDisabled: blocked || count === 0,
-          icon: h(Icon, { name: 'check', size: 15 }), onPress: confirm }, d.confirmLabel || '确认执行')));
+          icon: h(Icon, { name: 'check', size: 15 }), onPress: () => confirm(selCand ? picked.slice() : undefined) },
+          d.confirmLabelFn ? d.confirmLabelFn(count) : (d.confirmLabel || '确认执行'))));
   }
 
   /* =================== centered modal: preview → 实时进度 → 成功 / 失败 ===================
@@ -775,18 +799,20 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
     const [errMsg, setErrMsg] = useState(null);
     const timer = React.useRef(null);
     const started = React.useRef(false);
+    const pickedRef = React.useRef(null); /* 选中的目标设备（selectableScope 可选分发）*/
     const steps = d.steps || [];
     const total = Math.max(steps.length, 1);
 
-    const start = () => {
+    const start = (picked) => {
       if (started.current) return;
       started.current = true;
+      pickedRef.current = picked;
       setPhase('running'); setDone(0); setErrMsg(null);
       /* 视觉推进：随命令在跑逐步点亮，封顶在末步（total-1）；真实 promise 落定才翻成功 / 失败 */
       let i = 0;
       const tick = () => { if (i < total - 1) { i += 1; setDone(i); timer.current = setTimeout(tick, 520); } };
       timer.current = setTimeout(tick, 520);
-      Promise.resolve().then(() => (d.run ? d.run() : (d.onConfirm && d.onConfirm()))).then(
+      Promise.resolve().then(() => (d.run ? d.run(picked) : (d.onConfirm && d.onConfirm(picked)))).then(
         (r) => { if (timer.current) clearTimeout(timer.current); setDoneResult(r); setDone(total); setPhase('done'); },
         (e) => { if (timer.current) clearTimeout(timer.current); setErrMsg(e && e.message ? e.message : String(e)); setPhase('failed'); });
     };
@@ -798,7 +824,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
 
     if (phase === 'preview') {
       /* liveProgress:false → 确认即关闭对话框 + 后台执行（进度在页面别处）；否则进对话框内进度阶段 */
-      const plainConfirm = () => { close(); if (d.run) d.run(); else if (d.onConfirm) d.onConfirm(); };
+      const plainConfirm = (picked) => { pickedRef.current = picked; close(); if (d.run) d.run(picked); else if (d.onConfirm) d.onConfirm(picked); };
       return h(PreviewPanel, { s, d, close, onConfirm: d.liveProgress === false ? plainConfirm : start });
     }
 
@@ -806,8 +832,8 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
     /* running 阶段不可被遮罩点击关闭（无 X 按钮，命令仍在跑）；preview/done/failed 可关 */
     if (busyRef) busyRef.current = (phase === 'running');
     const pct = phase === 'done' ? 100 : Math.min(92, Math.round(((done + 0.6) / total) * 100));
-    /* doneMsg 可为 (runResult)=>string，据真实 ok/fail 结果显示（避免 partial-failure 误报全绿）*/
-    const okMsg = (typeof d.doneMsg === 'function' ? d.doneMsg(doneResult) : d.doneMsg) || '操作已完成';
+    /* doneMsg 可为 (runResult, picked)=>string，据真实 ok/fail 结果 + 实际勾选目标显示（避免 partial-failure 误报全绿）*/
+    const okMsg = (typeof d.doneMsg === 'function' ? d.doneMsg(doneResult, pickedRef.current) : d.doneMsg) || '操作已完成';
     const okTitle = d.doneTitle || (d.destructive ? '已完成' : '已成功部署');
     const failTitle = d.failTitle || '执行失败';
     return h('div', { className: 'drawer drawer--preview' + (d.destructive ? ' danger' : '') },

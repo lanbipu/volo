@@ -255,6 +255,7 @@ pub fn run() {
             commands::projects::create_project_manual,
             commands::projects::set_project_cache_backend,
             commands::projects::get_project_thumbnail,
+            commands::projects::list_remote_directories,
             commands::ddc_pak::generate_ddc_pak,
             commands::ddc_pak::cancel_ue_job,
             commands::ddc_pak::verify_pak_output,

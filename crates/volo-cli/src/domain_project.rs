@@ -27,6 +27,7 @@ pub fn handle(ctx: &mut Ctx<'_>, action: ProjectAction) -> VoloResult<()> {
         }
         ProjectAction::Delete { id, yes, dry_run } => delete(ctx, id, yes, dry_run),
         ProjectAction::DeleteLocation { id, yes, dry_run } => delete_location(ctx, id, yes, dry_run),
+        ProjectAction::BrowseDir { machine_id, path } => browse_dir(ctx, machine_id, path.as_deref()),
     }
 }
 
@@ -139,6 +140,10 @@ fn set_location(
         DiscoveryStatus::ManualAlias
     };
     let db = ctx.require_db()?;
+    // Manual path/alias correction carries no version info of its own — pass None and
+    // let `project_locations::upsert` decide atomically whether the previously-scanned
+    // version is still valid (same abs_path/uproject_path) or must reset to unknown
+    // (path actually changed, so the old version described a different location).
     let location_id = data_locations::upsert(
         db,
         &ProjectLocation {
@@ -149,6 +154,8 @@ fn set_location(
             uproject_path: uproject_path.to_string(),
             discovery_status,
             discovered_at: None,
+            ue_version_major: None,
+            ue_version_minor: None,
         },
     )?;
     ctx.emitter
@@ -159,6 +166,19 @@ fn set_location(
             }),
         })
         .ok();
+    Ok(())
+}
+
+fn browse_dir(ctx: &mut Ctx<'_>, machine_id: i64, path: Option<&str>) -> VoloResult<()> {
+    let host = {
+        let db = ctx.require_db()?;
+        let machine = data_machines::find_by_id(db, machine_id)?.ok_or_else(|| {
+            VoloError::InvalidInput(format!("machine id={} not found", machine_id))
+        })?;
+        machine.ip.clone()
+    };
+    let entries = cache_core::core::remote_fs::list_remote_dirs(&host, path)?;
+    ctx.emitter.emit_result(&entries).ok();
     Ok(())
 }
 

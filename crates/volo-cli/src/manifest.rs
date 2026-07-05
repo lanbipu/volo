@@ -70,6 +70,7 @@ pub fn operations() -> &'static [Operation] {
         Operation { operation_id: "project.set_location",      summary: "Add or update a location for an existing project",                cli_command: "voloctl cache project set-location",       side_effects: SideEffects{writes:true, external_calls:false,idempotent:true},  exit_codes: &[0,3] },
         Operation { operation_id: "project.delete",            summary: "Delete a project and cascade its locations",                      cli_command: "voloctl cache project delete",             side_effects: SideEffects{writes:true, external_calls:false,idempotent:true},  exit_codes: &[0,2,3] },
         Operation { operation_id: "project.delete_location",   summary: "Delete a single project_location row",                            cli_command: "voloctl cache project delete-location",    side_effects: SideEffects{writes:true, external_calls:false,idempotent:true},  exit_codes: &[0,2,3] },
+        Operation { operation_id: "project.browse_dir",        summary: "List subdirectories of a path on a remote machine",               cli_command: "voloctl cache project browse-dir",         side_effects: SideEffects{writes:false,external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
         Operation { operation_id: "ddc.generate",              summary: "Generate a DDC pak file via UE -DDC=CreatePak",                   cli_command: "voloctl cache ddc generate",               side_effects: SideEffects{writes:true, external_calls:true, idempotent:false}, exit_codes: &[0,1,2,3,4] },
         Operation { operation_id: "ddc.verify",                summary: "Verify a previously generated .ddp pak exists",                   cli_command: "voloctl cache ddc verify",                 side_effects: SideEffects{writes:false,external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
         Operation { operation_id: "ddc.distribute",            summary: "Distribute the DDC pak to target machines via Robocopy",          cli_command: "voloctl cache ddc distribute",             side_effects: SideEffects{writes:true, external_calls:true, idempotent:false}, exit_codes: &[0,1,2,3,4] },
@@ -192,6 +193,7 @@ pub fn operation_id_for(cmd: &Domain) -> &'static str {
             crate::args::ProjectAction::SetLocation { .. } => "project.set_location",
             crate::args::ProjectAction::Delete { .. } => "project.delete",
             crate::args::ProjectAction::DeleteLocation { .. } => "project.delete_location",
+            crate::args::ProjectAction::BrowseDir { .. } => "project.browse_dir",
         },
         Domain::Ddc { action } => match action {
             // NB: operation_id is `ddc.*` (domain prefix), NOT the `ddc_pak.*`
@@ -338,6 +340,7 @@ pub fn output_schema_for(operation_id: &str) -> serde_json::Value {
         "share.list"          => serde_json::to_value(schema_for!(Vec<cache_core::data::share_configs::ShareConfig>)).unwrap(),
         "project.list"        => serde_json::to_value(schema_for!(Vec<cache_core::data::Project>)).unwrap(),
         "project.locations"   => serde_json::to_value(schema_for!(Vec<cache_core::data::ProjectLocation>)).unwrap(),
+        "project.browse_dir"  => serde_json::to_value(schema_for!(Vec<String>)).unwrap(),
         "pso.list"            => serde_json::to_value(schema_for!(Vec<cache_core::data::pso_cache_files::PsoCacheFile>)).unwrap(),
         "health.runs" | "ini.runs"
                               => serde_json::to_value(schema_for!(Vec<cache_core::data::scan_runs::ScanRun>)).unwrap(),

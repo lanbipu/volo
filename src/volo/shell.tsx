@@ -344,10 +344,23 @@ function LogPanel({ s }) {
   }, [s.logOpen]);
   const stateLabel = { success: '完成', failed: '失败', canceled: '已取消' };
   const alertText = (t) => `[${t.title} #${t.no}] ${t.target || ''} · exit ${t.exit != null ? t.exit : 2}\n${t.err || t.note || '失败'}`;
+  /* 悬停即变「清除」的计数徽标：只清空 alert/idle 这两个列表（success/failed/canceled
+     任务），进行中任务不可清；记录仍完整留在控制台 NDJSON 流（pushLog 是独立状态），
+     可回查——清的只是任务卡片视图。 */
+  const clearList = (view) => {
+    if (view === 'alert') s.setTasks((prev) => prev.filter((t) => t.state !== 'failed'));
+    else s.setTasks((prev) => prev.filter((t) => !(t.state === 'success' || t.state === 'failed' || t.state === 'canceled')));
+    setRunOpen(false);
+  };
+  const clearableN = (n, view) => React.createElement('button', {
+    className: 'lrp-n lrp-n--clear', type: 'button', title: '清除此列表 · 记录仍可在控制台查看',
+    onClick: (e) => { e.stopPropagation(); clearList(view); } },
+    React.createElement('span', { className: 'lrp-n-num' }, n),
+    React.createElement('span', { className: 'lrp-n-ico' }, React.createElement(Icon, { name: 'broom', size: 13 })));
   const runHead = popView === 'alert'
-    ? React.createElement('div', { className: 'lrp-h lrp-h--alert' }, React.createElement(Icon, { name: 'alert', size: 13 }), '报警信息', React.createElement('span', { className: 'lrp-n' }, failedTasks.length))
+    ? React.createElement('div', { className: 'lrp-h lrp-h--alert' }, React.createElement(Icon, { name: 'alert', size: 13 }), '报警信息', clearableN(failedTasks.length, 'alert'))
     : popView === 'idle'
-      ? React.createElement('div', { className: 'lrp-h' }, React.createElement(Icon, { name: 'check', size: 13 }), '最近完成', React.createElement('span', { className: 'lrp-n' }, doneTasks.length))
+      ? React.createElement('div', { className: 'lrp-h' }, React.createElement(Icon, { name: 'check', size: 13 }), '最近完成', clearableN(doneTasks.length, 'idle'))
       : React.createElement('div', { className: 'lrp-h' }, React.createElement(Icon, { name: 'sync', size: 13 }), '进行中任务', React.createElement('span', { className: 'lrp-n' }, activeTasks.length));
   const runBody = popView === 'alert'
     ? (failedTasks.length === 0
@@ -396,7 +409,9 @@ function LogPanel({ s }) {
   return React.createElement('div', { className: 'logpanel' + (s.logOpen ? ' is-open' : '') },
     toast ? React.createElement('div', { className: 'task-toast task-toast--' + (toast.ok ? 'ok' : 'fail'), onClick: () => setToast(null), title: '点击关闭' },
       React.createElement('span', { className: 'task-toast-ico' }, React.createElement(Icon, { name: toast.ok ? 'check' : 'alert', size: 14 })),
-      React.createElement('span', { className: 'task-toast-tx' }, React.createElement('b', null, toast.title + ' #' + toast.no), toast.ok ? ' 已完成' : ' 执行失败')) : null,
+      React.createElement('span', { className: 'task-toast-tx' }, React.createElement('b', null, toast.title + ' #' + toast.no), toast.ok ? ' 已完成' : ' 执行失败'),
+      React.createElement('button', { className: 'task-toast-x', type: 'button', title: '关闭', onClick: (e) => { e.stopPropagation(); setToast(null); } },
+        React.createElement(Icon, { name: 'x', size: 12 }))) : null,
     React.createElement('div', { className: 'log-trigger-wrap' + (s.logOpen ? ' on' : '') },
       React.createElement('button', {
         className: 'log-trigger' + (s.logOpen ? ' on' : ''),

@@ -572,6 +572,8 @@ mod tests {
             uproject_path: "D:\\X\\X.uproject".into(),
             discovery_status: crate::data::DiscoveryStatus::Auto,
             discovered_at: None,
+            ue_version_major: None,
+            ue_version_minor: None,
         }
     }
 
@@ -716,6 +718,8 @@ mod tests {
                 uproject_path: "E:\\Y\\X.uproject".into(),
                 discovery_status: crate::data::DiscoveryStatus::Auto,
                 discovered_at: None,
+                ue_version_major: None,
+                ue_version_minor: None,
             },
         )
         .unwrap();
@@ -750,6 +754,8 @@ mod tests {
                 uproject_path: "E:\\Y\\X.uproject".into(),
                 discovery_status: crate::data::DiscoveryStatus::Auto,
                 discovered_at: None,
+                ue_version_major: None,
+                ue_version_minor: None,
             },
         )
         .unwrap();
@@ -782,6 +788,8 @@ mod tests {
                 uproject_path: "E:\\Y\\X.uproject".into(),
                 discovery_status: crate::data::DiscoveryStatus::Auto,
                 discovered_at: None,
+                ue_version_major: None,
+                ue_version_minor: None,
             },
         )
         .unwrap();

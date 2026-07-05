@@ -17,7 +17,7 @@
 import * as React from "react";
 import "../ds";
 import "./cacheDdc";
-import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnail, deleteProject } from "../api/commands";
+import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnail, deleteProject, listRemoteDirectories } from "../api/commands";
 
 (function () {
   const { Button } = window.Spectrum2DesignSystem_b6d1b3;
@@ -27,9 +27,12 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
   const Selector = window.Selector;
   const DDC = window.VOLO_CACHE_DDC;
 
-  const VIEW_OPTS = [{ id: 'flat', label: '列表', icon: 'list' }, { id: 'grouped', label: '文件夹', icon: 'folder' }];
+  const VIEW_OPTS = [
+    { id: 'flat', label: '列表', icon: 'list', hint: '平铺矩形模块' },
+    { id: 'grouped', label: '文件夹', icon: 'folder', hint: '按父目录分组' },
+    { id: 'machine', label: '按机器', icon: 'server', hint: '按每台机器持有的工程分组' },
+  ];
   const SORT_OPTS = [{ id: 'updated', label: '更新时间' }, { id: 'name', label: '名称' }, { id: 'path', label: '路径' }, { id: 'time', label: '发现时间' }];
-  const ROOT_PRESETS = ['D:\\Unreal Projects', 'D:\\UE_Projects', 'D:\\Projects', 'E:\\UEProjects'];
   /* get_project_thumbnail 只回传策略 key，人话文案留在前端（PROBE_DICT/PROBE_NARRATIVE 同款分工）。 */
   const THUMB_FROM_LABEL = {
     uproject_same_name: 'uproject 同名缩略图',
@@ -50,6 +53,17 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
     return p(d.getHours()) + ':' + p(d.getMinutes());
   };
   const hostOf = (machineId) => { const n = CX.node(String(machineId)); return n ? n.host : ('机器 ' + machineId); };
+
+  /* 逐级路径提示：把地址栏当前文本拆成"要列哪个目录的子项"（parentPath，null = 列盘符）
+     + "已输入到的最后一段"（typed，本地前缀过滤用，不触发新请求）。与 confirmSeg 配对：
+     确认某一级后文本变成 base + 该项 + '\\'，下一轮解析自然把 typed 清空、parentPath 落到刚选的目录。 */
+  const splitRootPath = (text) => {
+    const t = text || '';
+    if (t.indexOf('\\') === -1) return { parentPath: null, typed: t.trim() };
+    const segs = t.split('\\');
+    const typed = segs.pop();
+    return { parentPath: segs.join('\\'), typed: typed.trim() };
+  };
 
   /* =========================================================================
      生成 DDC PAK 进度对话框 —— 真实 runStreamingCmd 进度驱动
@@ -287,17 +301,51 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
         return { project: proj, source: src, distributedTo };
       }).filter(Boolean).sort((a, b) => a.project.name.localeCompare(b.project.name));
     })();
+    /* 「仅已生成/未生成 PAK」筛选与右栏 PAK 徽章的真实数据源：ProjectVM.hasPak 在共享 adapter 里
+       是全局 stub（恒 false，adapters.ts 明写 TODO 后端无源），但本页已经真实扫过
+       listDeployedDdcPaks 算出 `deployed`，用它反推准确的 hasPak，不用碰共享 adapter。 */
+    const deployedProjectIds = new Set(deployed.map((dp) => dp.project.id));
+    /* 工程级 hasPak 只回答"这个工程在哪台机器上都行有没有 PAK"；「按机器」视图需要更细的粒度——
+       同一工程可能只在源机生成、只分发到部分机器，不能让每台机器的分组行都套同一个工程级布尔值
+       （否则没拿到 PAK 的机器也会被打上"已有 PAK"绿标，误导用户跳过该机的分发）。 */
+    const deployedHoldersByProject = new Map(deployed.map((dp) =>
+      [dp.project.id, new Set([dp.source.machine_id].concat(dp.distributedTo).map(String))]));
 
     /* ---------- 右栏 · 工程扫描与生成 ---------- */
     const [scope, setScope] = useState('all');
     const ridRef = useRef(0);
-    const [roots, setRoots] = useState(() => [{ id: ++ridRef.current, val: 'D:\\Projects' }]);
+    const [roots, setRoots] = useState(() => [{ id: ++ridRef.current, val: 'D:\\Unreal Projects' }]);
     const [rootDraft, setRootDraft] = useState('');
+    /* 逐级路径提示：当前展开的字段（'add' 或某行 id）+ 高亮项 + 真实查询到的目录项（按
+       machineId+parentPath 缓存，避免同一目录反复发起 SSH 往返） */
+    const [acOpen, setAcOpen] = useState(false);
+    const [acHi, setAcHi] = useState(0);
+    const [acField, setAcField] = useState(null);
+    const acCacheRef = useRef(new Map()); /* `${machineId}|${path}` -> string[]（本会话内有效） */
+    /* 常用地址（收藏的搜索根目录）· 持久化到 localStorage */
+    const [favs, setFavs] = useState(() => {
+      try { return JSON.parse(localStorage.getItem('volo.pakFavRoots') || '[]'); } catch (e) { return []; }
+    });
+    useEffect(() => {
+      try { localStorage.setItem('volo.pakFavRoots', JSON.stringify(favs)); } catch (e) { /* ignore */ }
+    }, [favs]);
     const [query, setQuery] = useState('');
     const [view, setView] = useState('flat');
     const [sort, setSort] = useState('updated');
     const [sel, setSel] = useState([]);
     const [tileScale, setTileScale] = useState(150); /* 平铺矩形模块显示比例（列宽 px）*/
+    /* 列表工具条（显示 / 排序 / 筛选）合并进一个 sliders 图标按钮，默认收起 */
+    const [toolsOpen, setToolsOpen] = useState(false); /* 工具组是否展开 */
+    const [openMenu, setOpenMenu] = useState(null);    /* 当前展开的二级菜单：view | sort | filter | null */
+    const [filters, setFilters] = useState({ machine: null, pak: null, warnOnly: false }); /* 筛选策略 */
+    const toolsRef = useRef(null);
+    /* 点击工具组以外区域：收起工具组与二级菜单 */
+    useEffect(() => {
+      if (!toolsOpen && !openMenu) return;
+      const onDown = (e) => { if (toolsRef.current && !toolsRef.current.contains(e.target)) { setToolsOpen(false); setOpenMenu(null); } };
+      document.addEventListener('mousedown', onDown);
+      return () => document.removeEventListener('mousedown', onDown);
+    }, [toolsOpen, openMenu]);
     /* 清空已发现工程（真删除：delete_project 逐个移除 DB 记录，级联 project_locations；
        不动磁盘上的工程文件）+ 二次确认门。cleared 只做删除落地前的即时清屏。 */
     const [cleared, setCleared] = useState(false);
@@ -351,7 +399,7 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
       for (let i = 0; i < THUMB_CONCURRENCY; i++) pump();
       return () => { alive = false; };
     }, [UE_PROJECTS.length, thumbGen]);
-    const withThumb = (p) => { const t = thumbs[p.id]; return t ? Object.assign({}, p, t) : p; };
+    const withThumb = (p) => Object.assign({}, p, thumbs[p.id], { hasPak: deployedProjectIds.has(p.id) });
 
     /* gate 必须在全部 Hooks 之后才能条件 return：否则加载态(仅走 gate 分支、零 Hook)
        与加载完成态(走到这里、调用一串 useState/useEffect)之间 Hook 调用数量不一致，
@@ -389,20 +437,25 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
         return;
       }
       const targetIds = cand.map((n) => n.machineId);
+      /* 目标设备可选：默认全选，支持全选 / 逐台多选具体分发到哪几台（selectableScope，见 cache.tsx
+         PreviewPanel/ModalPreview）；只对勾选设备执行，日志与完成提示按实际勾选数量。 */
       CX.openModalPreview(s, {
         title: '分发 DDC PAK · ' + dp.project.name, icon: 'download', cli: 'ddc distribute', destructive: false, channel: 'ssh',
-        confirmLabel: '分发到 ' + cand.length + ' 台',
-        doneTitle: '分发完成', doneMsg: dp.project.name + ' 已分发到 ' + cand.length + ' 台渲染机',
+        confirmLabelFn: (n) => '分发到 ' + n + ' 台',
+        doneTitle: '分发完成', doneMsg: (_r, picked) => dp.project.name + ' 已分发到 ' + ((picked && picked.length) || targetIds.length) + ' 台渲染机',
         steps: [
-          '把该 PAK 从源机 ' + srcHost + ' 增量分发到下列机器',
+          '把该 PAK 从源机 ' + srcHost + ' 增量分发到所选机器',
           '已有的分块自动跳过，只传缺失部分',
           '分发后回读校验各机 DDC.ddp 是否就位'],
-        simpleScope: cand.map((n) => ({ host: n.host, ip: n.ip, msg: n.gpu })),
-        run: () => s.runStreamingCmd(
-          { domain: 'ddc', action: 'distribute', target: dp.project.name + ' · ' + cand.length + ' 台', chan: 'ssh', note: '分发 · ' + dp.project.name, quiet: true },
-          () => distributeDdcPak(dp.source.machine_id, Number(dp.project.id), targetIds, null, null, null),
-          { mode: 'event', events: ['pak-distribute-progress'], jobIdOf: (r) => r.job_id, total: (r) => (r.plan || []).length, reduce: DDC.batchReduce, timeoutMs: 30 * 60 * 1000 })
-          .then(() => loadDeployed(true)),
+        selectableScope: cand.map((n) => ({ id: n.machineId, host: n.host, ip: n.ip, msg: n.gpu })),
+        run: (picked) => {
+          const targets = (picked && picked.length) ? picked : targetIds;
+          return s.runStreamingCmd(
+            { domain: 'ddc', action: 'distribute', target: dp.project.name + ' · ' + targets.length + ' 台', chan: 'ssh', note: '分发 · ' + dp.project.name, quiet: true },
+            () => distributeDdcPak(dp.source.machine_id, Number(dp.project.id), targets, null, null, null),
+            { mode: 'event', events: ['pak-distribute-progress'], jobIdOf: (r) => r.job_id, total: (r) => (r.plan || []).length, reduce: DDC.batchReduce, timeoutMs: 30 * 60 * 1000 })
+            .then(() => loadDeployed(true));
+        },
       });
     };
 
@@ -417,7 +470,7 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
         .then(() => loadDeployed(true), () => {});
     };
 
-    /* ---------- 搜索根目录：可编辑行 + 一次添加多个 + 常用预设 ---------- */
+    /* ---------- 搜索根目录：可编辑行 + 一次添加多个 + 常用地址 ---------- */
     const rootVals = roots.map((r) => r.val.trim()).filter(Boolean);
     const rootsStr = rootVals.join(';');
     const addRoots = (str) => {
@@ -425,9 +478,112 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
       if (!parts.length) return;
       setRoots((rs) => rs.concat(parts.filter((p) => !rs.some((r) => r.val === p)).map((p) => ({ id: ++ridRef.current, val: p }))));
     };
+    const addRoot = (v) => addRoots(v);
     const updateRoot = (id, v) => setRoots((rs) => rs.map((r) => r.id === id ? { id, val: v } : r));
     const removeRoot = (id) => setRoots((rs) => rs.filter((r) => r.id !== id));
-    const commitDraft = () => { addRoots(rootDraft); setRootDraft(''); };
+    const commitDraft = () => { addRoots(rootDraft.replace(/\\+$/, '')); setRootDraft(''); setAcOpen(false); };
+    /* 常用地址：设为 / 取消常用、移除、判断（与磁盘上是否真实存在无关，纯本地收藏） */
+    const normRoot = (v) => String(v || '').replace(/\\+$/, '').trim();
+    const isFav = (v) => favs.includes(normRoot(v));
+    const toggleFav = (v) => { const val = normRoot(v); if (!val) return; setFavs((f) => f.includes(val) ? f.filter((x) => x !== val) : f.concat(val)); };
+    const removeFav = (v) => setFavs((f) => f.filter((x) => x !== v));
+
+    /* ---------- 地址栏逐级路径提示：真实查询所选机器（scope 指定的机器；scope=全部时取
+       第一台在线机）的盘符 / 子目录，而不是猜的目录名 ---------- */
+    const acHostNode = scope !== 'all' ? CX.node(scope) : (RENDER_NODES.filter((n) => n.status !== 'offline')[0] || null);
+    const acMachineId = acHostNode ? acHostNode.machineId : null;
+    const acText = acField === 'add' ? rootDraft : ((roots.find((r) => r.id === acField) || {}).val || '');
+    const { parentPath, typed } = splitRootPath(acText);
+    const openAc = (field) => { setAcField(field); setAcOpen(true); setAcHi(0); };
+    /* 绝对根路径（如 "D:"）单独查询时须补回尾部反斜杠，否则 PowerShell 把 "D:" 解成
+       "该进程在 D 盘的当前工作目录"而非盘符根——一个经典坑，SSH 起的全新进程虽通常仍落在
+       根目录，但不该依赖这个不保证的隐式行为。 */
+    const toSshPath = (p) => (/^[A-Za-z]:$/.test(p) ? p + '\\' : p);
+    const fetchDirs = (machineId, path) => {
+      const normPath = path == null ? null : toSshPath(path);
+      const key = machineId + '|' + (normPath || '');
+      if (acCacheRef.current.has(key)) return Promise.resolve(acCacheRef.current.get(key));
+      return listRemoteDirectories(machineId, normPath).then((entries) => {
+        acCacheRef.current.set(key, entries);
+        return entries;
+      });
+    };
+    const [siblings, setSiblings] = useState([]);
+    const [siblingsLoading, setSiblingsLoading] = useState(false);
+    const [siblingsFailed, setSiblingsFailed] = useState(false);
+    /* 第一层：parentPath 下的子项（parentPath=null → 盘符）。只在跨目录边界时才变化，
+       同一段内继续打字不会重新发起请求——过滤靠下面的本地 startsWith，不占网络往返。 */
+    useEffect(() => {
+      if (!acOpen || acMachineId == null) return undefined;
+      let cancelled = false;
+      setSiblingsLoading(true); setSiblingsFailed(false);
+      fetchDirs(acMachineId, parentPath).then((entries) => {
+        if (cancelled) return;
+        setSiblings(entries); setSiblingsLoading(false);
+      }).catch(() => { if (!cancelled) { setSiblings([]); setSiblingsLoading(false); setSiblingsFailed(true); } });
+      return () => { cancelled = true; };
+    }, [acOpen, acMachineId, parentPath]);
+    /* 已输入到的最后一段若精确命中（大小写不敏感）某个真实子目录名，立即下钻显示它的
+       子项——覆盖"已设好的路径行左键点击也会下钻"，含只有一级路径的情况。 */
+    const exactName = typed ? (siblings.find((x) => x.toLowerCase() === typed.toLowerCase()) || null) : null;
+    const deeperPath = exactName ? (parentPath == null ? exactName : parentPath + '\\' + exactName) : null;
+    const [deeperEntries, setDeeperEntries] = useState([]);
+    const [deeperLoading, setDeeperLoading] = useState(false);
+    const [deeperFailed, setDeeperFailed] = useState(false);
+    useEffect(() => {
+      if (!acOpen || acMachineId == null || deeperPath == null) return undefined;
+      let cancelled = false;
+      setDeeperLoading(true); setDeeperFailed(false);
+      fetchDirs(acMachineId, deeperPath).then((entries) => {
+        if (cancelled) return;
+        setDeeperEntries(entries); setDeeperLoading(false);
+      }).catch(() => { if (!cancelled) { setDeeperEntries([]); setDeeperLoading(false); setDeeperFailed(true); } });
+      return () => { cancelled = true; };
+    }, [acOpen, acMachineId, deeperPath]);
+    const acDrilled = !!deeperPath;
+    const acBase = acDrilled ? (deeperPath + '\\') : (parentPath == null ? '' : parentPath + '\\');
+    const acLoading = acDrilled ? deeperLoading : siblingsLoading;
+    const acFailed = acDrilled ? deeperFailed : siblingsFailed;
+    const acOpts = acDrilled ? deeperEntries : siblings.filter((c) => !typed || c.toLowerCase().startsWith(typed.toLowerCase()));
+    /* 确认使用某一层（左键点击 / Tab）：拼上该项 + 反斜杠，自动弹出它的下一级 */
+    const confirmSeg = (opt) => {
+      const next = acBase + opt + '\\';
+      if (acField === 'add') setRootDraft(next); else updateRoot(acField, next);
+      setAcHi(0); setAcOpen(true);
+    };
+    const makeAcKey = (field) => (e) => {
+      if (e.key === 'ArrowDown') { e.preventDefault(); if (!acOpen) openAc(field); else setAcHi((hI) => acOpts.length ? (hI + 1) % acOpts.length : 0); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); if (!acOpen) openAc(field); else setAcHi((hI) => acOpts.length ? (hI - 1 + acOpts.length) % acOpts.length : 0); }
+      else if (e.key === 'Tab') { if (acOpen && acOpts.length) { e.preventDefault(); confirmSeg(acOpts[Math.max(0, acHi)]); } }
+      else if (e.key === 'Enter') { e.preventDefault(); if (field === 'add') commitDraft(); else setAcOpen(false); }
+      else if (e.key === 'Escape') { setAcOpen(false); }
+    };
+    const renderAc = () => h('div', { className: 'root-ac' },
+      h('div', { className: 'root-ac-h' }, acMachineId == null ? '选择根目录' : ('在 ' + acHostNode.host + (parentPath == null ? ' 选择盘符' : (' 的 ' + acBase + ' 下选择文件夹')))),
+      acMachineId == null
+        ? h('div', { className: 'root-ac-empty' }, '当前无在线机器可浏览 · 可直接输入完整路径')
+        : acLoading
+          ? h('div', { className: 'root-ac-empty' }, h(Icon, { name: 'sync', size: 12 }), ' 查询中…')
+          : acFailed
+            ? h('div', { className: 'root-ac-empty' }, '无法连接 ' + acHostNode.host + ' · 可直接输入完整路径')
+            : acOpts.length
+              ? h('div', { className: 'root-ac-list' }, acOpts.map((opt, i) => h('button', {
+                  key: opt, type: 'button', className: 'root-ac-opt' + (i === acHi ? ' hi' : ''),
+                  onMouseEnter: () => setAcHi(i),
+                  onMouseDown: (e) => e.preventDefault(),
+                  onClick: () => confirmSeg(opt) },
+                  h('span', { className: 'root-ac-ic' }, h(Icon, { name: parentPath == null ? 'server' : 'folder', size: 13 })),
+                  h('span', { className: 'root-ac-tx' }, opt),
+                  h('span', { className: 'root-ac-kbd' }, i === acHi ? 'Tab 使用' : ''))))
+              : h('div', { className: 'root-ac-empty' }, acText.replace(/\\+$/, '').trim() ? '已到末级 · 无更多子文件夹' : '无匹配项'),
+      h('div', { className: 'root-ac-foot' }, '↑↓ 选择 · Tab / 单击 确认使用 · 回车确认'));
+    /* 点击提示以外区域：收起下拉 */
+    useEffect(() => {
+      if (!acOpen) return undefined;
+      const onDown = (e) => { if (!e.target.closest('.root-add') && !e.target.closest('.root-row')) setAcOpen(false); };
+      document.addEventListener('mousedown', onDown);
+      return () => document.removeEventListener('mousedown', onDown);
+    }, [acOpen]);
     const doScan = () => {
       setCleared(false); setConfirmClear(false);
       const scanned = DDC.runDiscover(s, scope, rootsStr);
@@ -454,8 +610,26 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
 
     /* ---------- 过滤 / 排序 / 分组 ---------- */
     const q = query.trim().toLowerCase();
-    const matched = cleared ? [] : UE_PROJECTS.filter((p) => !q
-      || p.name.toLowerCase().includes(q) || (p.root + '\\' + p.uproject).toLowerCase().includes(q));
+    /* 筛选策略：按机器 / PAK 状态（真实 deployedProjectIds）/ 版本不一致（真实 warn，见后端
+       027_project_locations_ue_version 迁移）—— 与搜索叠加生效 */
+    const activeFilterCount = (filters.machine ? 1 : 0) + (filters.pak ? 1 : 0) + (filters.warnOnly ? 1 : 0);
+    const passFilters = (p) => {
+      if (filters.machine && !p.machines.includes(filters.machine)) return false;
+      /* deployedRaw == null：已部署列表首次扫描还没回来，deployedProjectIds 此刻恒为空集——
+         这时候拿它筛选会把真正已有 PAK 的工程也误判成"无匹配"，等真扫完再让这条筛选生效。 */
+      if (deployedRaw != null) {
+        if (filters.pak === 'has' && !deployedProjectIds.has(p.id)) return false;
+        if (filters.pak === 'none' && deployedProjectIds.has(p.id)) return false;
+      }
+      if (filters.warnOnly && !p.warn) return false;
+      return true;
+    };
+    const clearFilters = () => setFilters({ machine: null, pak: null, warnOnly: false });
+    const matched = cleared ? [] : UE_PROJECTS.filter((p) => (!q
+      || p.name.toLowerCase().includes(q) || (p.root + '\\' + p.uproject).toLowerCase().includes(q)) && passFilters(p));
+    /* 有已发现工程的机器（供「按机器」显示 / 「按机器筛选」策略使用） */
+    const projMachines = RENDER_NODES.filter((n) => UE_PROJECTS.some((p) => p.machines.includes(n.id)));
+    const machineProjCount = (id) => (cleared ? [] : UE_PROJECTS).filter((p) => p.machines.includes(id)).length;
     /* 「按最近更新时间」用探测到的缩略图/autosequence 截图的文件 mtime 排序——它反映工程
        内容实际变动（编辑器里工作时才会更新截图），不是 discovered_at 那种"上次被 Volo
        扫描到"的时间（同一次扫描全部会让一批工程的 discovered_at 几乎相同，排序没有区分度）。
@@ -541,9 +715,24 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
         : h(React.Fragment, null, deployed.map(deployedCard));
 
     /* ---------- 右栏 · 工程列表 ---------- */
+    /* forMachineId 只在「按机器」视图传入：该分组行的 hasPak 徽章按这台机器实际是否持有 PAK
+       重算，而不是沿用 withThumb 给的工程级 hasPak（源机持有≠这台机器也持有）。「文件夹」
+       分组视图不传，沿用工程级语义（与「列表」平铺视图一致）。 */
+    const groupBlock = (key, icon, title, items, forMachineId) => h('div', { key, className: 'pak-group' },
+      h('div', { className: 'pak-group-h' }, h(Icon, { name: icon, size: 13 }),
+        h('span', { className: 'mono' }, title), h('span', { className: 'ct' }, items.length + ' 个')),
+      h('div', { className: 'proj-list' }, items.map((p) => {
+        const vm = withThumb(p);
+        const row = forMachineId
+          ? Object.assign({}, vm, { hasPak: (deployedHoldersByProject.get(p.id) || new Set()).has(forMachineId) })
+          : vm;
+        return DDC.projRow(row, sel.includes(p.id), toggleSel, s);
+      })));
     const listBody = sorted.length === 0
       ? h('div', { className: 'pak-list-empty' }, h(Icon, { name: 'search', size: 22 }),
-          h('span', null, q ? ('无匹配「' + query + '」的工程') : cleared ? '已清空列表 · 点上方「扫描」重新发现工程' : '尚未发现工程，点上方「扫描」'))
+          h('span', null, q ? ('无匹配「' + query + '」的工程')
+            : activeFilterCount ? '当前筛选无匹配工程 · 调整或清除筛选'
+            : cleared ? '已清空列表 · 点上方「扫描」重新发现工程' : '尚未发现工程，点上方「扫描」'))
       : view === 'grouped'
         ? (() => {
             const groups = [];
@@ -553,15 +742,70 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
               if (!grp) { grp = { dir, items: [] }; groups.push(grp); }
               grp.items.push(p);
             });
-            return h(React.Fragment, null, groups.map((grp) => h('div', { key: grp.dir, className: 'pak-group' },
-              h('div', { className: 'pak-group-h' }, h(Icon, { name: 'folder', size: 13 }),
-                h('span', { className: 'mono' }, grp.dir), h('span', { className: 'ct' }, grp.items.length + ' 个')),
-              h('div', { className: 'proj-list' }, grp.items.map((p) => DDC.projRow(withThumb(p), sel.includes(p.id), toggleSel, s))))));
+            return h(React.Fragment, null, groups.map((grp) => groupBlock(grp.dir, 'folder', grp.dir, grp.items)));
           })()
-        : h('div', { className: 'proj-grid', style: tileStyle }, sorted.map((p) => projTile(withThumb(p), sel.includes(p.id), toggleSel, s)));
+        : view === 'machine'
+          ? (() => {
+              /* 每台机器一组，列出它持有的工程（工程可跨多台机器出现） */
+              const rows = projMachines.map((n) => ({ n, items: sorted.filter((p) => p.machines.includes(n.id)) }))
+                .filter((g) => g.items.length);
+              return rows.length === 0
+                ? h('div', { className: 'pak-list-empty' }, h(Icon, { name: 'server', size: 22 }), h('span', null, '当前筛选下没有机器持有工程'))
+                : h(React.Fragment, null, rows.map((g) => groupBlock(g.n.id, 'server', g.n.host, g.items, g.n.id)));
+            })()
+          : h('div', { className: 'proj-grid', style: tileStyle }, sorted.map((p) => projTile(withThumb(p), sel.includes(p.id), toggleSel, s)));
 
-    /* 列表工具条 · 全选（左）+ 显示比例滑块（右上角，仅平铺视图） */
-    const listBar = sorted.length === 0 ? null
+    /* 列表工具条 · 全选（左）+ 合并的「显示 / 排序 / 筛选」图标组（右） */
+    /* 二级菜单：点击图标弹出，纯图标触发、菜单内做详细设置 */
+    const viewMenu = h('div', { className: 'pak-tool-menu' },
+      h('div', { className: 'ptm-h' }, '显示方式'),
+      VIEW_OPTS.map((o) => h('button', { key: o.id, type: 'button', className: 'ptm-i' + (view === o.id ? ' on' : ''), onClick: () => setView(o.id) },
+        h('span', { className: 'ptm-ic' }, h(Icon, { name: o.icon, size: 14 })),
+        h('div', { className: 'ptm-mm' }, h('span', { className: 'ptm-l' }, o.label), h('span', { className: 'ptm-s' }, o.hint)),
+        view === o.id ? h(Icon, { name: 'check', size: 14, style: { marginLeft: 'auto', color: 'var(--volo-400)' } }) : null)),
+      view === 'flat'
+        ? h('div', { className: 'ptm-sub' },
+            h('div', { className: 'ptm-sub-h' }, h(Icon, { name: 'grid', size: 12 }), '模块大小'),
+            h('div', { className: 'pak-zoom' },
+              h('span', { className: 'pak-zoom-ic sm' }, h(Icon, { name: 'grid', size: 12 })),
+              h('input', { type: 'range', className: 'pak-zoom-range', min: 118, max: 220, step: 1,
+                value: tileScale, 'aria-label': '显示比例', onChange: (e) => setTileScale(+e.target.value) }),
+              h('span', { className: 'pak-zoom-ic lg' }, h(Icon, { name: 'grid', size: 17 }))))
+        : null);
+    const sortMenu = h('div', { className: 'pak-tool-menu' },
+      h('div', { className: 'ptm-h' }, '排序方式'),
+      SORT_OPTS.map((o) => h('button', { key: o.id, type: 'button', className: 'ptm-i' + (sort === o.id ? ' on' : ''), onClick: () => setSort(o.id) },
+        h('span', { className: 'ptm-l' }, o.label),
+        sort === o.id ? h(Icon, { name: 'check', size: 14, style: { marginLeft: 'auto', color: 'var(--volo-400)' } }) : null)));
+    const setPak = (v) => setFilters((f) => Object.assign({}, f, { pak: f.pak === v ? null : v }));
+    const filterMenu = h('div', { className: 'pak-tool-menu pak-filter-menu' },
+      h('div', { className: 'ptm-h' }, '筛选策略',
+        activeFilterCount ? h('button', { type: 'button', className: 'ptm-clear', onClick: clearFilters }, '清除 ' + activeFilterCount) : null),
+      h('div', { className: 'ptm-group' },
+        h('div', { className: 'ptm-group-h' }, h(Icon, { name: 'server', size: 12 }), '按机器筛选',
+          h('span', { className: 'ptm-group-s' }, '只显示相关工程')),
+        projMachines.map((n) => h('button', { key: n.id, type: 'button', className: 'ptm-i' + (filters.machine === n.id ? ' on' : ''),
+            onClick: () => setFilters((f) => Object.assign({}, f, { machine: f.machine === n.id ? null : n.id })) },
+          h('span', { className: 'ptm-dot', style: { background: n.status === 'offline' ? 'var(--chrome-faint)' : 'var(--positive-visual)' } }),
+          h('div', { className: 'ptm-mm' }, h('span', { className: 'ptm-l mono' }, n.host), h('span', { className: 'ptm-s' }, machineProjCount(n.id) + ' 个工程')),
+          filters.machine === n.id ? h(Icon, { name: 'check', size: 14, style: { marginLeft: 'auto', color: 'var(--volo-400)' } }) : null))),
+      h('div', { className: 'ptm-group' },
+        h('div', { className: 'ptm-group-h' }, h(Icon, { name: 'filter', size: 12 }), '常用策略'),
+        h('button', { type: 'button', className: 'ptm-i' + (filters.pak === 'has' ? ' on' : ''), onClick: () => setPak('has') },
+          h('span', { className: 'ptm-l' }, '仅已生成 PAK'), filters.pak === 'has' ? h(Icon, { name: 'check', size: 14, style: { marginLeft: 'auto', color: 'var(--volo-400)' } }) : null),
+        h('button', { type: 'button', className: 'ptm-i' + (filters.pak === 'none' ? ' on' : ''), onClick: () => setPak('none') },
+          h('span', { className: 'ptm-l' }, '仅未生成 PAK'), filters.pak === 'none' ? h(Icon, { name: 'check', size: 14, style: { marginLeft: 'auto', color: 'var(--volo-400)' } }) : null),
+        h('button', { type: 'button', className: 'ptm-i' + (filters.warnOnly ? ' on' : ''), onClick: () => setFilters((f) => Object.assign({}, f, { warnOnly: !f.warnOnly })) },
+          h('span', { className: 'ptm-l' }, '仅版本不一致'), filters.warnOnly ? h(Icon, { name: 'check', size: 14, style: { marginLeft: 'auto', color: 'var(--volo-400)' } }) : null)));
+
+    const toolBtn = (id, label, iconName, menu, badge) => h('div', { className: 'pak-tool', key: id },
+      h('button', { type: 'button', className: 'pak-tool-ic' + (openMenu === id ? ' on' : ''), 'data-tip': label, 'aria-label': label,
+          onClick: () => setOpenMenu((m) => (m === id ? null : id)) },
+        h(Icon, { name: iconName, size: 15 }),
+        badge ? h('span', { className: 'pak-tool-badge' }, badge) : null),
+      openMenu === id ? menu : null);
+
+    const listBar = sorted.length === 0 && !activeFilterCount ? null
       : h('div', { className: 'pak-list-bar' },
           h('button', { type: 'button',
               className: 'pak-selall' + (allSelected ? ' on' : someSelected ? ' part' : ''),
@@ -571,18 +815,16 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
               allSelected ? h(Icon, { name: 'check', size: 12 }) : someSelected ? h(Icon, { name: 'minus', size: 12 }) : null),
             h('span', { className: 'pak-selall-tx' }, allSelected ? '取消全选' : '全选'),
             h('span', { className: 'pak-selall-ct' }, visibleSelectedCount ? (visibleSelectedCount + ' / ' + sorted.length) : (sorted.length + ' 个工程'))),
-          h('div', { className: 'pak-list-tools' },
-            h('div', { className: 'pak-ctl pak-ctl--row' }, h('label', null, '显示'),
-              h('div', { className: 'seg' }, VIEW_OPTS.map((o) => h('button', { key: o.id, className: view === o.id ? 'on' : '', onClick: () => setView(o.id) },
-                h(Icon, { name: o.icon, size: 13 }), o.label)))),
-            h('div', { className: 'pak-ctl pak-ctl--row' }, h('label', null, '排序'),
-              h(Selector, { kpre: '排序', value: sort, options: SORT_OPTS, width: 156, align: 'left', onChange: setSort })),
-            view === 'flat' ? h('div', { className: 'pak-zoom', title: '调节矩形模块的显示比例' },
-              h('span', { className: 'pak-zoom-ic sm' }, h(Icon, { name: 'grid', size: 12 })),
-              h('input', { type: 'range', className: 'pak-zoom-range', min: 118, max: 220, step: 1,
-                value: tileScale, 'aria-label': '显示比例',
-                onChange: (e) => setTileScale(+e.target.value) }),
-              h('span', { className: 'pak-zoom-ic lg' }, h(Icon, { name: 'grid', size: 17 }))) : null));
+          h('div', { className: 'pak-list-tools' + (toolsOpen ? ' open' : ''), ref: toolsRef },
+            toolsOpen ? h(React.Fragment, null,
+              toolBtn('view', '显示方式', VIEW_OPTS.find((o) => o.id === view).icon, viewMenu),
+              toolBtn('sort', '排序方式', 'sort', sortMenu),
+              toolBtn('filter', '筛选策略', 'filter', filterMenu, activeFilterCount || null)) : null,
+            h('button', { type: 'button', className: 'pak-tools-toggle' + (toolsOpen ? ' on' : '') + (activeFilterCount ? ' has-filter' : ''),
+                'data-tip': toolsOpen ? '收起' : '显示 · 排序 · 筛选', 'aria-label': toolsOpen ? '收起工具' : '显示 · 排序 · 筛选',
+                onClick: () => { setToolsOpen((v) => !v); setOpenMenu(null); } },
+              h(Icon, { name: toolsOpen ? 'x' : 'sliders', size: 16 }),
+              !toolsOpen && activeFilterCount ? h('span', { className: 'pak-tools-badge' }, activeFilterCount) : null)));
 
     return h('div', { className: 'res ddc pak-page' },
       h('div', { className: 'canvas-head' },
@@ -627,22 +869,38 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
                 h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'search', size: 14 }), onPress: doScan }, '扫描'))),
             h('div', { className: 'pak-roots' },
               h('div', { className: 'pak-roots-h' }, h('span', { className: 't' }, '搜索根目录'),
-                h('span', { className: 'dim' }, '可多个 · 可直接编辑路径 · 生成时以分号拼接')),
+                h('span', { className: 'dim' }, '可多个 · 点击地址栏逐级选择盘符 / 文件夹 · 生成时以分号拼接')),
               h('div', { className: 'pak-root-rows' },
-                roots.map((r) => h('div', { key: r.id, className: 'root-row' },
+                roots.map((r) => h('div', { key: r.id, className: 'root-row' + (acOpen && acField === r.id ? ' ac-active' : '') },
                   h('span', { className: 'root-row-ic' }, h(Icon, { name: 'folder', size: 13 })),
-                  h('input', { className: 'root-in', value: r.val, spellCheck: false, placeholder: '输入工程根目录…',
-                    onChange: (e) => updateRoot(r.id, e.target.value) }),
-                  h('button', { className: 'root-row-x', title: '移除', onClick: () => removeRoot(r.id) }, h(Icon, { name: 'x', size: 13 }))))),
-              h('div', { className: 'root-add' }, h(Icon, { name: 'plus', size: 13 }),
-                h('input', { value: rootDraft, placeholder: '添加根目录，多个用分号 ; 分隔，回车确认', spellCheck: false,
-                  onChange: (e) => setRootDraft(e.target.value), onKeyDown: (e) => { if (e.key === 'Enter') commitDraft(); } }),
-                h('button', { className: 'root-add-btn', disabled: !rootDraft.trim(), onClick: commitDraft }, '添加')),
-              h('div', { className: 'pak-presets' },
-                h('span', { className: 'pp-label' }, '常用预设'),
-                ROOT_PRESETS.map((r) => { const added = rootVals.includes(r);
-                  return h('button', { key: r, className: 'pp-chip' + (added ? ' added' : ''), disabled: added, onClick: () => addRoots(r) },
-                    added ? h(Icon, { name: 'check', size: 11 }) : h(Icon, { name: 'plus', size: 11 }), r); }))),
+                  h('input', { className: 'root-in', value: r.val, spellCheck: false, autoComplete: 'off', placeholder: '输入工程根目录…',
+                    onChange: (e) => { updateRoot(r.id, e.target.value); openAc(r.id); },
+                    onFocus: () => openAc(r.id),
+                    onClick: () => openAc(r.id),
+                    onKeyDown: makeAcKey(r.id) }),
+                  h('button', { className: 'root-row-fav' + (isFav(r.val) ? ' on' : ''), type: 'button',
+                    title: isFav(r.val) ? '已设为常用 · 点击取消' : '设为常用',
+                    disabled: !normRoot(r.val), onClick: () => toggleFav(r.val) }, h(Icon, { name: 'star', size: 13 })),
+                  h('button', { className: 'root-row-x', title: '移除', onClick: () => removeRoot(r.id) }, h(Icon, { name: 'x', size: 13 })),
+                  acOpen && acField === r.id ? renderAc() : null))),
+              h('div', { className: 'root-add' + (acOpen && acField === 'add' ? ' open' : '') },
+                h(Icon, { name: 'plus', size: 13 }),
+                h('input', { value: rootDraft, spellCheck: false, autoComplete: 'off',
+                  placeholder: '点击选择盘符，或直接输入根目录…',
+                  onChange: (e) => { setRootDraft(e.target.value); openAc('add'); },
+                  onFocus: () => openAc('add'),
+                  onClick: () => openAc('add'),
+                  onKeyDown: makeAcKey('add') }),
+                h('button', { className: 'root-add-btn', disabled: !rootDraft.trim(), onClick: commitDraft }, '添加'),
+                acOpen && acField === 'add' ? renderAc() : null),
+              favs.length ? h('div', { className: 'pak-favs' },
+                h('span', { className: 'pf-label' }, h(Icon, { name: 'star', size: 12 }), '常用地址'),
+                h('div', { className: 'pf-chips' }, favs.map((f) => h('div', { key: f, className: 'pf-chip' + (rootVals.includes(f) ? ' added' : '') },
+                  h('button', { className: 'pf-chip-use', type: 'button', disabled: rootVals.includes(f),
+                    title: rootVals.includes(f) ? '已在搜索根目录中' : '点击加入搜索根目录',
+                    onClick: () => addRoot(f) },
+                    h(Icon, { name: rootVals.includes(f) ? 'check' : 'folder', size: 11 }), f),
+                  h('button', { className: 'pf-chip-x', type: 'button', title: '从常用中移除', onClick: () => removeFav(f) }, h(Icon, { name: 'x', size: 11 })))))) : null),
             h('div', { className: 'pak-scan-meta' }, h(Icon, { name: 'check', size: 12 }), '已发现 ' + UE_PROJECTS.length + ' 个工程位置 · 远程扫 .uproject 只发现不写盘'),
             listBar,
             listBody),

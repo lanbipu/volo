@@ -173,6 +173,11 @@ fn persist_discovered(
                 uproject_path: item.uproject_path.clone(),
                 discovery_status: DiscoveryStatus::Auto,
                 discovered_at: None,
+                // Per-location version (distinct from the project-level value above,
+                // which is last-writer-wins across all machines) — lets the frontend
+                // detect the same project checked out against different UE versions.
+                ue_version_major: parsed.ue_version_major,
+                ue_version_minor: parsed.ue_version_minor,
             },
         )?;
         out.push(DiscoveryResult {
