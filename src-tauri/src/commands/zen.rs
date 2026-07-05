@@ -2323,13 +2323,52 @@ pub fn zen_urlacl_add(
         "zen-urlacl-add.ps1 -UrlPrefix {url_prefix} -UserAccount {principal}"
     ));
     let op_id = operations::start(&db, "zen.urlacl_add", &[ep.machine_id])?;
-    let result = zen_cli_shared::run_node(
+    let first_attempt = zen_cli_shared::run_node(
         &machine.ip,
         "zen-urlacl-add.ps1",
         serde_json::json!({ "UrlPrefix": url_prefix, "UserAccount": principal }),
     )
     .and_then(|raw| zen_cli_shared::parse_envelope(&raw, "zen-urlacl-add"));
-    zen_cli_shared::finalize_op(&db, op_id, &result, &invocation);
+    zen_cli_shared::finalize_op(&db, op_id, &first_attempt, &invocation);
+
+    // A stale reservation from an earlier deploy under a *different* service
+    // account (e.g. a previous "创建专用账号" click, or a since-uninstalled
+    // endpoint whose account was never persisted so change-detection couldn't
+    // flag it) survives `sc delete` — netsh's urlacl store is independent of
+    // the SCM. `netsh http add urlacl` then refuses with this exact owner-
+    // mismatch wording (see zen-urlacl-add.ps1). Auto-recover the same way
+    // `zen_service_install` already does for its own idempotency refusal:
+    // remove the stale reservation (netsh doesn't care who owns it) and retry
+    // once, instead of leaving the operator stuck needing to SSH in and run
+    // `netsh http delete urlacl` by hand.
+    let result = match &first_attempt {
+        Err(e) if e.to_string().contains("already exists but is owned by") => {
+            let remove_invocation = redact(&format!(
+                "zen-urlacl-remove.ps1 -UrlPrefix {url_prefix} (auto-recovery: stale reservation from a different account)"
+            ));
+            let remove_op_id =
+                operations::start(&db, "zen.urlacl_add.auto_remove_stale", &[ep.machine_id])?;
+            let remove_result = zen_cli_shared::run_node(
+                &machine.ip,
+                "zen-urlacl-remove.ps1",
+                serde_json::json!({ "UrlPrefix": url_prefix }),
+            )
+            .and_then(|raw| zen_cli_shared::parse_envelope(&raw, "zen-urlacl-remove"));
+            zen_cli_shared::finalize_op(&db, remove_op_id, &remove_result, &remove_invocation);
+            remove_result?;
+
+            let retry_op_id = operations::start(&db, "zen.urlacl_add", &[ep.machine_id])?;
+            let retry_result = zen_cli_shared::run_node(
+                &machine.ip,
+                "zen-urlacl-add.ps1",
+                serde_json::json!({ "UrlPrefix": url_prefix, "UserAccount": principal }),
+            )
+            .and_then(|raw| zen_cli_shared::parse_envelope(&raw, "zen-urlacl-add"));
+            zen_cli_shared::finalize_op(&db, retry_op_id, &retry_result, &invocation);
+            retry_result
+        }
+        _ => first_attempt,
+    };
     let response = result?;
     Ok(ZenUrlaclResult::Completed(ZenUrlaclSummary {
         endpoint_id,
