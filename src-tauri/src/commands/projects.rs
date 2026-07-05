@@ -17,6 +17,8 @@ pub struct ProjectSummary {
     pub uproject_name: String,
     pub display_name: Option<String>,
     pub uproject_guid: Option<String>,
+    pub ue_version_major: Option<i64>,
+    pub ue_version_minor: Option<i64>,
     pub location_count: i64,
 }
 
@@ -31,6 +33,8 @@ pub fn list_projects(db: State<'_, Db>) -> VoloResult<Vec<ProjectSummary>> {
             uproject_name: project.uproject_name,
             display_name: project.display_name,
             uproject_guid: project.uproject_guid,
+            ue_version_major: project.ue_version_major,
+            ue_version_minor: project.ue_version_minor,
             location_count: locations.len() as i64,
         });
     }

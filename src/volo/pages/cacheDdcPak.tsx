@@ -17,7 +17,7 @@
 import * as React from "react";
 import "../ds";
 import "./cacheDdc";
-import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnail } from "../api/commands";
+import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnail, deleteProject } from "../api/commands";
 
 (function () {
   const { Button } = window.Spectrum2DesignSystem_b6d1b3;
@@ -297,7 +297,8 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
     const [sort, setSort] = useState('updated');
     const [sel, setSel] = useState([]);
     const [tileScale, setTileScale] = useState(150); /* 平铺矩形模块显示比例（列宽 px）*/
-    /* 清空当前列表显示（只清屏，不动 UE_PROJECTS 原始工程；重新扫描即恢复）+ 二次确认门 */
+    /* 清空已发现工程（真删除：delete_project 逐个移除 DB 记录，级联 project_locations；
+       不动磁盘上的工程文件）+ 二次确认门。cleared 只做删除落地前的即时清屏。 */
     const [cleared, setCleared] = useState(false);
     const [confirmClear, setConfirmClear] = useState(false);
 
@@ -427,8 +428,24 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
       const scanned = DDC.runDiscover(s, scope, rootsStr);
       if (scanned) scanned.then(() => { thumbTriedRef.current = new Set(); setThumbGen((g) => g + 1); });
     };
-    /* 清空当前列表显示 —— 只清屏，不动原始工程；重新扫描（doScan）即恢复 */
-    const clearList = () => { setCleared(true); setSel([]); setConfirmClear(false); };
+    /* 清空已发现工程 —— 从 Volo 数据库删除全部工程记录（级联各机位置），不删磁盘文件。
+       此前只 setCleared 清屏不删库，重扫后旧记录（DB 里仍在）原样回来，等于没清 —— 现在
+       真删 + reloadCache，重扫只按当前搜索根目录重新发现。已部署列表引用这些 project_id，
+       删完顺带静默刷新，让左栏丢弃陈旧分组。 */
+    const clearList = () => {
+      setCleared(true); setSel([]); setConfirmClear(false);
+      const ids = UE_PROJECTS.map((p) => Number(p.id));
+      if (!ids.length) return;
+      s.runCmd(
+        { domain: 'project', action: 'clear', target: ids.length + ' 个工程', chan: 'local', note: '清空已发现工程记录', quiet: true },
+        () => Promise.allSettled(ids.map((id) => deleteProject(id))).then((rs) => {
+          const ok = rs.filter((r) => r.status === 'fulfilled').length;
+          if (!ok) throw new Error('全部删除失败');
+          return { ok, failed: ids.length - ok };
+        }),
+        { okMsg: (r) => '已清空 ' + r.ok + ' 个工程记录' + (r.failed ? ('（' + r.failed + ' 个失败）') : '') + ' · 磁盘文件未动' })
+        .then(() => { s.reloadCache(); loadDeployed(true); }, () => {});
+    };
 
     /* ---------- 过滤 / 排序 / 分组 ---------- */
     const q = query.trim().toLowerCase();
@@ -598,7 +615,9 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
               q ? h('button', { className: 'pak-search-clear', title: '清除搜索', onClick: () => setQuery('') }, h(Icon, { name: 'x', size: 13 })) : null),
             h('div', { className: 'pak-controls' },
               h('div', { className: 'pak-ctl scan' }, h('label', null, '扫描范围'),
-                h(Selector, { kpre: '范围', value: scope, options: DDC.scopeOpts(), width: 168, onChange: setScope })),
+                /* popover min-width(210) 比按钮(168)宽：默认右对齐会向左溢出栏边界，
+                   被 .pak2-col overflow:hidden 裁切 → 必须左对齐向栏内展开 */
+                h(Selector, { kpre: '范围', value: scope, options: DDC.scopeOpts(), width: 168, align: 'left', onChange: setScope })),
               h('div', { className: 'pak-ctl' }, h('label', { style: { visibility: 'hidden' } }, '扫描'),
                 h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'search', size: 14 }), onPress: doScan }, '扫描'))),
             h('div', { className: 'pak-roots' },
@@ -626,7 +645,7 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
             confirmClear
               ? h(React.Fragment, null,
                   h('span', { className: 'pak-genbar-info' }, h(Icon, { name: 'alert', size: 13 }),
-                    h('span', null, '确认清空当前列表？仅清除列表显示，不影响原始工程，扫描即可恢复。')),
+                    h('span', null, '确认清空已发现工程？将从 Volo 移除全部工程记录（不删除磁盘上的工程文件），之后可按新的搜索根目录重新扫描。')),
                   h('span', { className: 'pak-genbar-spacer' }),
                   h(Button, { variant: 'secondary', size: 'M', onPress: () => setConfirmClear(false) }, '取消'),
                   h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'x', size: 14 }), onPress: clearList }, '确认清空'))

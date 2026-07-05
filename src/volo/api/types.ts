@@ -347,6 +347,8 @@ export interface ProjectSummary {
   uproject_name: string;
   display_name: string | null;
   uproject_guid: string | null;
+  ue_version_major: number | null;
+  ue_version_minor: number | null;
   location_count: number;
 }
 

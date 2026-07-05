@@ -168,8 +168,9 @@ export function toShareVM(s: ShareConfig, machines: Machine[] = []): ShareVM {
 /* ----------------------------- project ----------------------------- */
 /** Shape the DDC PAK / PSO views read (UE_PROJECTS element). The backend
  *  surfaces project identity (list_projects) + per-machine locations
- *  (list_project_locations). UE version / size / pak-presence / warnings are
- *  not exposed by any command → "—" / false / null (TODO: 后端无源).
+ *  (list_project_locations). UE version comes from the parsed EngineAssociation
+ *  (ue_version_major/minor；GUID 形关联无版本号 → "—"). size / pak-presence /
+ *  warnings are not exposed by any command → "—" / false / null (TODO: 后端无源).
  *  `machines` is String(machine_id)[] so it aligns with NodeVM.id (= String(id)). */
 export interface ProjectVM {
   id: number;
@@ -328,7 +329,11 @@ export function toProjectVM(p: ProjectSummary, locations: ProjectLocation[]): Pr
     id: p.id,
     name: p.display_name || p.uproject_name,
     uproject: p.uproject_name,
-    ue: "—",
+    /* EngineAssociation 为版本形（"5.7"）时才有 major/minor；GUID 形（源码/自编引擎）
+     * 无法映射到发行版本号 → 保持 "—"。 */
+    ue: p.ue_version_major != null && p.ue_version_minor != null
+      ? p.ue_version_major + "." + p.ue_version_minor
+      : "—",
     size: "—",
     root: first ? first.abs_path : "—",
     last: first && first.discovered_at ? first.discovered_at : "—",
