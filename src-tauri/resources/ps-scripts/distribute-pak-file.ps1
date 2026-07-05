@@ -1,11 +1,15 @@
 # Robocopy a DDC pak set from a source SMB share into a local dir.
 #
 # Node-pure: runs locally on the target (shipped + executed via SSH -File).
-# stdin: JSON { "SourceUnc","TargetLocal",["SourceSmbUser","SourceSmbPass"],["SourceSmbGuest":bool],["PreflightOnly":bool] }
+# stdin: JSON { "SourceUnc","TargetLocal",["SourceSmbUser","SourceSmbPass"],["SourceSmbGuest":bool],["SourceShareRoots":[...]],["PreflightOnly":bool] }
 # Output: JSON { ok, exit_code, bytes_copied, stdout_tail, [message] }
 [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; chcp 65001 | Out-Null
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'distribute-smb-mount.ps1')
+
+function Test-UncReachable([string]$Path) {
+    return [bool](Test-Path -LiteralPath $Path -ErrorAction SilentlyContinue)
+}
 
 try {
     $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
@@ -13,7 +17,12 @@ try {
     $TargetLocal = $p.TargetLocal
     $SmbUser = $p.SourceSmbUser
     $SmbPass = $p.SourceSmbPass
-    $UseGuest = [bool]$p.SourceSmbGuest
+    $ShareRoots = @($p.SourceShareRoots | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $UseGuest = if ($null -ne $p.SourceSmbGuest) {
+        [bool]$p.SourceSmbGuest
+    } else {
+        [string]::IsNullOrEmpty($SmbUser) -and [string]::IsNullOrEmpty($SmbPass)
+    }
     $PreflightOnly = [bool]$p.PreflightOnly
     if ([string]::IsNullOrWhiteSpace($SourceUnc) -or [string]::IsNullOrWhiteSpace($TargetLocal)) {
         throw "SourceUnc and TargetLocal are required"
@@ -22,11 +31,14 @@ try {
     if (-not (Test-Path -LiteralPath $TargetLocal)) {
         New-Item -Path $TargetLocal -ItemType Directory -Force | Out-Null
     }
-    $shareRoot = $SourceUnc
+    $shareRoot = if ($ShareRoots.Count -gt 0) { $ShareRoots[0] } else { $SourceUnc }
     if ($SourceUnc -match '^(\\\\[^\\]+\\[^\\]+)') { $shareRoot = $Matches[1] }
     $mounted = $false
+    $mountedRoot = $null
     try {
-        $mounted = Mount-DistributeSourceShare -ShareRoot $shareRoot -SmbUser $SmbUser -SmbPass $SmbPass -UseGuest $UseGuest
+        $mountedRoot = Mount-DistributeSourceShare -ShareRoot $shareRoot -ShareRoots $ShareRoots -SmbUser $SmbUser -SmbPass $SmbPass -UseGuest $UseGuest
+        $mounted = -not [string]::IsNullOrWhiteSpace($mountedRoot)
+        if ($mounted) { $shareRoot = $mountedRoot }
         # Exact-filename robocopy filter (see below) matches nothing and still
         # exits 0 if the source has no DDC.ddp — check the file directly (one
         # round-trip on the common/success path) and fail explicitly instead
@@ -34,8 +46,8 @@ try {
         # failure to report the more specific "unreachable" cause.
         $FileName = 'DDC.ddp'
         $sourceFile = Join-Path -Path $SourceUnc -ChildPath $FileName
-        if (-not (Test-Path -LiteralPath $sourceFile)) {
-            if (-not (Test-Path -LiteralPath $SourceUnc)) {
+        if (-not (Test-UncReachable $sourceFile)) {
+            if (-not (Test-UncReachable $SourceUnc)) {
                 throw "source UNC unreachable: $SourceUnc"
             }
             throw "source has no $FileName to distribute: $sourceFile"

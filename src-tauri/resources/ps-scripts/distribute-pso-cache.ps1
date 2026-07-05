@@ -1,12 +1,16 @@
 # Robocopy a PSO cache file pattern from a source SMB share into a local dir.
 #
 # Node-pure: runs locally on the target (shipped + executed via SSH -File).
-# stdin: JSON { "SourceUnc","TargetLocal","FileName",["SourceSmbUser","SourceSmbPass"],["SourceSmbGuest":bool],["PreflightOnly":bool] }
+# stdin: JSON { "SourceUnc","TargetLocal","FileName",["SourceSmbUser","SourceSmbPass"],["SourceSmbGuest":bool],["SourceShareRoots":[...]],["PreflightOnly":bool] }
 #   FileName = robocopy file pattern, e.g. "*.upipelinecache" or "*.stablepc.csv"
 # Output: JSON { ok, exit_code, bytes_copied, stdout_tail, [message] }
 [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; chcp 65001 | Out-Null
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'distribute-smb-mount.ps1')
+
+function Test-UncReachable([string]$Path) {
+    return [bool](Test-Path -LiteralPath $Path -ErrorAction SilentlyContinue)
+}
 
 try {
     $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
@@ -15,7 +19,12 @@ try {
     $FileName = $p.FileName
     $SmbUser = $p.SourceSmbUser
     $SmbPass = $p.SourceSmbPass
-    $UseGuest = [bool]$p.SourceSmbGuest
+    $ShareRoots = @($p.SourceShareRoots | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $UseGuest = if ($null -ne $p.SourceSmbGuest) {
+        [bool]$p.SourceSmbGuest
+    } else {
+        [string]::IsNullOrEmpty($SmbUser) -and [string]::IsNullOrEmpty($SmbPass)
+    }
     $PreflightOnly = [bool]$p.PreflightOnly
     if ([string]::IsNullOrWhiteSpace($SourceUnc) -or [string]::IsNullOrWhiteSpace($TargetLocal) -or
         [string]::IsNullOrWhiteSpace($FileName)) {
@@ -25,12 +34,15 @@ try {
     if (-not (Test-Path -LiteralPath $TargetLocal)) {
         New-Item -Path $TargetLocal -ItemType Directory -Force | Out-Null
     }
-    $shareRoot = $SourceUnc
+    $shareRoot = if ($ShareRoots.Count -gt 0) { $ShareRoots[0] } else { $SourceUnc }
     if ($SourceUnc -match '^(\\\\[^\\]+\\[^\\]+)') { $shareRoot = $Matches[1] }
     $mounted = $false
+    $mountedRoot = $null
     try {
-        $mounted = Mount-DistributeSourceShare -ShareRoot $shareRoot -SmbUser $SmbUser -SmbPass $SmbPass -UseGuest $UseGuest
-        if (-not (Test-Path -LiteralPath $SourceUnc)) {
+        $mountedRoot = Mount-DistributeSourceShare -ShareRoot $shareRoot -ShareRoots $ShareRoots -SmbUser $SmbUser -SmbPass $SmbPass -UseGuest $UseGuest
+        $mounted = -not [string]::IsNullOrWhiteSpace($mountedRoot)
+        if ($mounted) { $shareRoot = $mountedRoot }
+        if (-not (Test-UncReachable $SourceUnc)) {
             throw "source UNC unreachable: $SourceUnc"
         }
         if ($PreflightOnly) {

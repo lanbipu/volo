@@ -463,6 +463,91 @@ pub fn share_covering_local_path(
     }))
 }
 
+/// Share name segment from `\\host\share\...` (second path component).
+pub fn unc_share_name(unc: &str) -> Option<String> {
+    let name = unc
+        .trim_start_matches('\\')
+        .split('\\')
+        .nth(1)?
+        .trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// `\\host\share` roots to try for distribute `net use` (IP + hostname variants).
+pub fn share_mount_root_variants(
+    db: &Db,
+    source_machine_id: i64,
+    reach_host: &str,
+    named_share_unc: &str,
+) -> VoloResult<Vec<String>> {
+    let shares = share_configs::find_by_host(db, source_machine_id)?;
+    if let Some(share) = shares
+        .iter()
+        .find(|s| unc_names_share(named_share_unc, &s.unc_path))
+    {
+        let primary = reachable_share_unc(reach_host, &share.share_name, "");
+        let mut roots = unc_variants_for_share(db, share)?;
+        if !roots
+            .iter()
+            .any(|r| r.eq_ignore_ascii_case(&primary))
+        {
+            roots.insert(0, primary);
+        }
+        return Ok(dedupe_uncs_case_insensitive(roots));
+    }
+
+    let share_name = unc_share_name(named_share_unc).ok_or_else(|| {
+        VoloError::InvalidInput(format!(
+            "cannot parse share name from distribute UNC '{named_share_unc}'"
+        ))
+    })?;
+    let mut roots = vec![reachable_share_unc(reach_host, &share_name, "")];
+    for candidate in [
+        host_hostname(db, source_machine_id).ok(),
+        host_ip(db, source_machine_id).ok(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let unc = reachable_share_unc(&candidate, &share_name, "");
+        if !roots.iter().any(|r| r.eq_ignore_ascii_case(&unc)) {
+            roots.push(unc);
+        }
+    }
+    Ok(roots)
+}
+
+fn dedupe_uncs_case_insensitive(uncs: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(uncs.len());
+    for unc in uncs {
+        if !out.iter().any(|u| u.eq_ignore_ascii_case(&unc)) {
+            out.push(unc);
+        }
+    }
+    out
+}
+
+/// True when `candidate` names the registered share `share_unc` — matched by
+/// leading path segments, case-insensitively, ignoring trailing separators and
+/// any appended source subdir.
+pub fn unc_names_share(candidate: &str, share_unc: &str) -> bool {
+    let cand: Vec<_> = candidate
+        .split(['\\', '/'])
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let base: Vec<_> = share_unc
+        .split(['\\', '/'])
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    if base.is_empty() || base.len() > cand.len() {
+        return false;
+    }
+    cand[..base.len()]
+        .iter()
+        .zip(base.iter())
+        .all(|(left, right)| left.eq_ignore_ascii_case(right))
+}
+
 /// Build `\\reach_host\share\rel` using the address targets actually dial (usually IP).
 pub fn reachable_share_unc(reach_host: &str, share_name: &str, rel: &str) -> String {
     let rel = rel.trim_matches(['\\', '/']);
@@ -638,5 +723,20 @@ mod tests {
         let a = generate_svc_password();
         let b = generate_svc_password();
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn unc_share_name_parses_second_segment() {
+        assert_eq!(
+            unc_share_name(r"\\192.168.0.1\volo-dir-d-projects\X"),
+            Some("volo-dir-d-projects".into())
+        );
+    }
+
+    #[test]
+    fn unc_names_share_matches_case_and_subdir() {
+        let share = r"\\HOST\DDC";
+        assert!(unc_names_share(r"\\host\ddc\DerivedDataCache", share));
+        assert!(!unc_names_share(r"\\HOST\DDCX", share));
     }
 }

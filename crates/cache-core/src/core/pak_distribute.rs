@@ -96,6 +96,9 @@ pub struct DistributePlanItem {
     pub source_smb_pass: Option<String>,
     /// Mode A guest open-share: target script must `net use ... /user:HOST\Guest`.
     pub source_smb_guest: bool,
+    /// `\\host\share` roots to try for `net use` (IP + hostname variants).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub share_mount_roots: Vec<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -120,10 +123,17 @@ pub fn plan(
     } else {
         admin_share_unc(source_host, &source_location.abs_path, &profile.source_subdir)?
     };
-    // Named-share pulls without SMB cred use Mode A guest `net use` on the target.
-    let source_smb_guest = named_share_unc.is_some()
-        && source_smb_user.is_none()
-        && source_smb_pass.is_none();
+    // Named-share pulls without a usable SMB password use Mode A guest `net use`.
+    let has_mount_cred = matches!(
+        (source_smb_user.as_deref(), source_smb_pass.as_deref()),
+        (Some(user), Some(pass)) if !user.trim().is_empty() && !pass.is_empty()
+    );
+    let source_smb_guest = named_share_unc.is_some() && !has_mount_cred;
+    let share_mount_roots = if let Some(unc) = named_share_unc {
+        crate::core::shares::share_mount_root_variants(db, source_machine_id, source_host, unc)?
+    } else {
+        Vec::new()
+    };
 
     let mut out = Vec::new();
     for target_id in target_machine_ids {
@@ -149,6 +159,7 @@ pub fn plan(
             source_smb_user: source_smb_user.clone(),
             source_smb_pass: source_smb_pass.clone(),
             source_smb_guest,
+            share_mount_roots: share_mount_roots.clone(),
         });
     }
     Ok(out)
@@ -198,31 +209,7 @@ fn path_ends_with_segments(path: &str, suffix: &str) -> bool {
         .all(|(left, right)| left.eq_ignore_ascii_case(right))
 }
 
-/// True when `candidate` names the registered share `share_unc` — matched by
-/// leading path segments, case-insensitively, ignoring trailing separators and
-/// any appended source subdir. The distribute path appends the profile's source
-/// subdir to a share UNC, and operators may type a different case or a trailing
-/// slash, so an explicit `named_share_unc` must be matched to its share this way
-/// rather than by exact string compare (which would drop the credential for a
-/// valid Mode B share). Segment-wise matching also avoids a string-prefix false
-/// positive (e.g. `\\H\DDC` must not match the share `\\H\D`).
-pub fn unc_names_share(candidate: &str, share_unc: &str) -> bool {
-    let cand: Vec<_> = candidate
-        .split(['\\', '/'])
-        .filter(|segment| !segment.is_empty())
-        .collect();
-    let base: Vec<_> = share_unc
-        .split(['\\', '/'])
-        .filter(|segment| !segment.is_empty())
-        .collect();
-    if base.is_empty() || base.len() > cand.len() {
-        return false;
-    }
-    cand[..base.len()]
-        .iter()
-        .zip(base.iter())
-        .all(|(left, right)| left.eq_ignore_ascii_case(right))
-}
+pub use crate::core::shares::unc_names_share;
 
 /// Source-share SMB access for a distribute run: the share UNC the target pulls
 /// from, plus the credential to mount it. An open (Mode A) share has a UNC but
@@ -488,6 +475,18 @@ fn build_distribute_payload(item: &DistributePlanItem, preflight: bool) -> serde
     }
     if item.source_smb_guest {
         map.insert("SourceSmbGuest".into(), true.into());
+    }
+    if !item.share_mount_roots.is_empty() {
+        map.insert(
+            "SourceShareRoots".into(),
+            serde_json::Value::Array(
+                item.share_mount_roots
+                    .iter()
+                    .cloned()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            ),
+        );
     }
     obj
 }
@@ -1006,6 +1005,7 @@ mod tests {
         let payload = build_distribute_payload(&items[0], true);
         assert_eq!(payload["SourceSmbGuest"], true);
         assert!(payload.get("SourceSmbUser").is_none());
+        assert_eq!(payload["SourceShareRoots"][0], r"\\1.1.1.1\DDC");
     }
 
     #[test]
