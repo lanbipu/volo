@@ -222,6 +222,72 @@ pub fn scp_push(
     Ok(())
 }
 
+/// Shared scp argv prefix (key / known_hosts / batch-mode / connect budget) —
+/// the same conventions as `scp_push`, factored for the single-file transfer
+/// helpers used by the SSH-push distribute flow.
+fn scp_base(key_path: &Path, known_hosts: &Path) -> Command {
+    let mut cmd = Command::new("scp");
+    cmd.arg("-i")
+        .arg(key_path)
+        .arg("-o")
+        .arg("IdentitiesOnly=yes")
+        .arg("-o")
+        .arg(format!("UserKnownHostsFile={}", known_hosts.to_string_lossy()))
+        .arg("-o")
+        .arg("StrictHostKeyChecking=accept-new")
+        .arg("-o")
+        .arg("BatchMode=yes")
+        .arg("-o")
+        .arg("ConnectTimeout=10");
+    cmd
+}
+
+fn run_scp(mut cmd: Command, what: &str) -> VoloResult<()> {
+    let out = cmd
+        .output()
+        .map_err(|e| VoloError::ScriptStaging(format!("spawn scp failed: {e}")))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if out.status.code() == Some(255) {
+            return Err(VoloError::SshConnect(stderr));
+        }
+        return Err(VoloError::ScriptStaging(format!("{what} failed: {stderr}")));
+    }
+    Ok(())
+}
+
+/// scp 拉取节点上的单个文件到本地路径。`remote_path` 必须是**无空格**的
+/// forward-slash 路径（传输暂存目录约定），避免远端 shell 二次解析的引号问题。
+pub fn scp_pull(
+    key_path: &Path,
+    known_hosts: &Path,
+    ssh_user: &str,
+    host: &str,
+    remote_path: &str,
+    local_path: &Path,
+) -> VoloResult<()> {
+    let mut cmd = scp_base(key_path, known_hosts);
+    cmd.arg(format!("{ssh_user}@{host}:{remote_path}"));
+    cmd.arg(local_path);
+    run_scp(cmd, "scp pull")
+}
+
+/// scp 推送本地单个文件到节点目录。`remote_dir` 同样必须是无空格的
+/// forward-slash 路径，且须已存在（receive-transfer preflight 负责创建）。
+pub fn scp_push_file(
+    key_path: &Path,
+    known_hosts: &Path,
+    ssh_user: &str,
+    host: &str,
+    local_file: &Path,
+    remote_dir: &str,
+) -> VoloResult<()> {
+    let mut cmd = scp_base(key_path, known_hosts);
+    cmd.arg(local_file);
+    cmd.arg(format!("{ssh_user}@{host}:{remote_dir}/"));
+    run_scp(cmd, "scp push")
+}
+
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::PathBuf;

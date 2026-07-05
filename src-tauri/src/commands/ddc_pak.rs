@@ -396,6 +396,24 @@ pub async fn distribute_ddc_pak(
     // SSH key auth: operator cred vestigial (param kept as shim). Source-SMB cred
     // from the SecretStore (Mode B share), not DPAPI.
     let _ = &operator_credential_alias;
+
+    // Default transport: SSH push (docs/changes/2026-07-05-ssh-push-distribute-plan.md).
+    // The data follows the same uecm-key trust channel as control — no source
+    // share, no share_configs row, no guest policy. The legacy SMB pull below
+    // remains as an explicit escape hatch (named_share_unc / cred alias).
+    if named_share_unc.is_none() && source_smb_credential_alias.is_none() {
+        return distribute_ddc_pak_push(
+            app,
+            db,
+            source_machine_id,
+            project_id,
+            target_machine_ids,
+            source_machine.ip,
+            source_location.abs_path,
+        )
+        .await;
+    }
+
     let (effective_unc, smb_user, smb_pass) = match &named_share_unc {
         // Explicit UNC wins and bypasses share auto-pick (which errors when the
         // source host has multiple registered shares) — preserve the old
@@ -567,6 +585,187 @@ pub async fn distribute_ddc_pak(
                 },
             );
         }
+        let status = if had_error { "err" } else { "ok" };
+        let _ = operations::finish(&db_for_task, operation_id, status, None);
+    });
+
+    Ok(DistributeJobResponse {
+        job_id,
+        project_id,
+        source_machine_id,
+        plan,
+    })
+}
+
+/// SSH-push transport for the DDC pak distribute (default path). Same job /
+/// event / response contract as the SMB path: `pak-distribute-progress`
+/// BatchEvents per target, `DistributeJobResponse` with the plan.
+async fn distribute_ddc_pak_push(
+    app: AppHandle,
+    db: State<'_, Db>,
+    source_machine_id: i64,
+    project_id: i64,
+    target_machine_ids: Vec<i64>,
+    source_host: String,
+    source_project_dir: String,
+) -> VoloResult<DistributeJobResponse> {
+    use cache_core::core::push_distribute;
+
+    let file_name = "DDC.ddp";
+    let plan = push_distribute::plan_push(
+        &db,
+        source_machine_id,
+        &source_host,
+        &target_machine_ids,
+        project_id,
+        "DerivedDataCache",
+        file_name,
+    )?;
+    if plan.is_empty() {
+        return Err(VoloError::InvalidInput(
+            "distribution plan has no non-source targets".into(),
+        ));
+    }
+
+    let job_id = format!("ddc-pak-dist-{}-{}", source_machine_id, now_millis());
+
+    // Preflight before returning the job: staging dir created (scp needs the
+    // destination), final dir write-probed (a permission problem surfaces
+    // before the multi-GB transfer). Placeholder staged name — preflight only
+    // validates/creates directories.
+    for item in &plan {
+        push_distribute::preflight_push_one(item, &job_id, file_name).map_err(|e| {
+            VoloError::OperationFailed(format!(
+                "target {} push preflight failed: {}",
+                item.target_machine_id, e
+            ))
+        })?;
+    }
+
+    let mut operation_machines = Vec::with_capacity(target_machine_ids.len() + 1);
+    operation_machines.push(source_machine_id);
+    for machine_id in target_machine_ids.iter().copied() {
+        if !operation_machines.contains(&machine_id) {
+            operation_machines.push(machine_id);
+        }
+    }
+    let operation_id = operations::start(&db, "ddc_pak.distribute", &operation_machines)?;
+    let plan_for_task = Arc::new(plan.clone());
+    let db_for_task: Db = (*db).clone();
+    let app_for_task = app.clone();
+    let job_id_for_task = job_id.clone();
+    let source_file = format!(
+        "{}\\DerivedDataCache\\{}",
+        source_project_dir.trim_end_matches(['\\', '/']),
+        file_name
+    );
+
+    tokio::spawn(async move {
+        #[derive(Clone, Serialize)]
+        struct Payload<'a> {
+            job_id: &'a str,
+            project_id: i64,
+            source_machine_id: i64,
+            event: batch::BatchEvent,
+        }
+
+        // Acquire the source file first (loopback: instant; remote source:
+        // stage + scp pull — can take minutes for multi-GB paks, hence inside
+        // the task, not the invoke).
+        let job_for_acquire = job_id_for_task.clone();
+        let src_file = source_file.clone();
+        let src_host = source_host.clone();
+        let acquired = tokio::task::spawn_blocking(move || {
+            push_distribute::acquire_source(&src_host, &src_file, &job_for_acquire)
+        })
+        .await
+        .map_err(|e| VoloError::OperationFailed(format!("acquire task failed: {e}")))
+        .and_then(|r| r);
+        let source = match acquired {
+            Ok(source) => Arc::new(source),
+            Err(err) => {
+                // Fail every target visibly so the UI job resolves.
+                for item in plan_for_task.iter() {
+                    let _ = app_for_task.emit(
+                        "pak-distribute-progress",
+                        Payload {
+                            job_id: &job_id_for_task,
+                            project_id,
+                            source_machine_id,
+                            event: batch::BatchEvent {
+                                machine_id: item.target_machine_id,
+                                status: batch::BatchStatus::Err,
+                                message: Some(format!("source acquire failed: {err}")),
+                            },
+                        },
+                    );
+                }
+                let _ = operations::finish(&db_for_task, operation_id, "err", None);
+                return;
+            }
+        };
+
+        let machine_ids: Vec<i64> = plan_for_task
+            .iter()
+            .map(|item| item.target_machine_id)
+            .collect();
+        let plan_lookup = plan_for_task.clone();
+        let source_for_batch = source.clone();
+        let job_for_batch = job_id_for_task.clone();
+        let mut rx = batch::run_batch(
+            machine_ids,
+            batch::DEFAULT_MAX_CONCURRENCY,
+            move |machine_id| {
+                let plan_lookup = plan_lookup.clone();
+                let source = source_for_batch.clone();
+                let job_id = job_for_batch.clone();
+                async move {
+                    let item = plan_lookup
+                        .iter()
+                        .find(|item| item.target_machine_id == machine_id)
+                        .ok_or_else(|| {
+                            VoloError::InvalidInput(format!(
+                                "distribution plan missing machine {}",
+                                machine_id
+                            ))
+                        })?
+                        .clone();
+                    let outcome = tokio::task::spawn_blocking(move || {
+                        push_distribute::push_one(&item, &source, &job_id)
+                    })
+                    .await
+                    .map_err(|e| VoloError::OperationFailed(format!("push task failed: {e}")))??;
+                    if !outcome.ok {
+                        return Err(VoloError::OperationFailed(format!(
+                            "push install exit {}: {}",
+                            outcome.exit_code,
+                            outcome
+                                .message
+                                .unwrap_or_else(|| outcome.stdout_tail.clone())
+                        )));
+                    }
+                    Ok::<_, VoloError>(outcome)
+                }
+            },
+        )
+        .await;
+
+        let mut had_error = false;
+        while let Some(event) = rx.recv().await {
+            if matches!(event.status, batch::BatchStatus::Err) {
+                had_error = true;
+            }
+            let _ = app_for_task.emit(
+                "pak-distribute-progress",
+                Payload {
+                    job_id: &job_id_for_task,
+                    project_id,
+                    source_machine_id,
+                    event,
+                },
+            );
+        }
+        source.cleanup();
         let status = if had_error { "err" } else { "ok" };
         let _ = operations::finish(&db_for_task, operation_id, status, None);
     });

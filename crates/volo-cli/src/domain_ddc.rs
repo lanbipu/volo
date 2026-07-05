@@ -351,34 +351,46 @@ fn distribute(
                 ))
             })?;
 
-    // Source SMB now comes from the SecretStore (explicit alias or auto-derived
-    // from the source host's Mode B/A share) — the operator->target leg is SSH
-    // key auth and needs no forwarded credential. Dry-run resolves the same
-    // share/UNC and runs the same validation, but skips reading the secret
-    // (read_secret = false), so previews stay side-effect-free yet show the
-    // real source UNC.
     cred.preflight(&db)?;
-    let smb = pak_distribute::resolve_source_smb(
-        &db,
-        source_machine_id,
-        source_smb_cred_alias,
-        !dry_run,
-        &source_location.abs_path,
-    )?;
-
+    // Default transport: SSH push — the data follows the same uecm-key channel
+    // as control, no source share involved. Passing --source-smb-cred-alias
+    // selects the legacy SMB pull path (explicit escape hatch); see
+    // docs/changes/2026-07-05-ssh-push-distribute-plan.md.
+    let push_mode = source_smb_cred_alias.is_none();
     let profile = pak_distribute::DistributeProfile::ddc_pak();
-    let plan = pak_distribute::plan(
-        &profile,
-        &db,
-        source_machine_id,
-        &source_machine.ip,
-        &source_location,
-        target_ids,
-        project_id,
-        smb.named_share_unc.as_deref(), // managed-share UNC paired with the SMB cred
-        smb.user,
-        smb.pass,
-    )?;
+    let plan = if push_mode {
+        cache_core::core::push_distribute::plan_push(
+            &db,
+            source_machine_id,
+            &source_machine.ip,
+            target_ids,
+            project_id,
+            "DerivedDataCache",
+            "DDC.ddp",
+        )?
+    } else {
+        // Legacy SMB pull: source share + cred from the SecretStore. Dry-run
+        // resolves the same share/UNC and validation but skips the secret read.
+        let smb = pak_distribute::resolve_source_smb(
+            &db,
+            source_machine_id,
+            source_smb_cred_alias,
+            !dry_run,
+            &source_location.abs_path,
+        )?;
+        pak_distribute::plan(
+            &profile,
+            &db,
+            source_machine_id,
+            &source_machine.ip,
+            &source_location,
+            target_ids,
+            project_id,
+            smb.named_share_unc.as_deref(), // managed-share UNC paired with the SMB cred
+            smb.user,
+            smb.pass,
+        )?
+    };
 
     if plan.is_empty() {
         return Err(VoloError::InvalidInput(
@@ -419,12 +431,28 @@ fn distribute(
 
     let total = plan.len() as i64;
 
+    // Push mode: resolve the source file onto the operator once, up front.
+    let job_id = format!("ddc-pak-dist-cli-{}", std::process::id());
+    let push_source = if push_mode {
+        let source_file = format!(
+            "{}\\DerivedDataCache\\DDC.ddp",
+            source_location.abs_path.trim_end_matches(['\\', '/'])
+        );
+        Some(cache_core::core::push_distribute::acquire_source(
+            &source_machine.ip,
+            &source_file,
+            &job_id,
+        )?)
+    } else {
+        None
+    };
+
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| VoloError::OperationFailed(format!("tokio runtime: {}", e)))?;
 
-    rt.block_on(async {
+    let result = rt.block_on(async {
         for (idx, item) in plan.into_iter().enumerate() {
             let item_id = format!("machine:{}", item.target_machine_id);
 
@@ -436,7 +464,16 @@ fn distribute(
                 })
                 .ok();
 
-            let outcome = pak_distribute::run_one_with_profile(&profile, item).await;
+            let outcome = match push_source.as_ref() {
+                Some(source) => {
+                    let staged = cache_core::core::push_distribute::staged_name_of(source);
+                    cache_core::core::push_distribute::preflight_push_one(&item, &job_id, &staged)
+                        .and_then(|()| {
+                            cache_core::core::push_distribute::push_one(&item, source, &job_id)
+                        })
+                }
+                None => pak_distribute::run_one_with_profile(&profile, item).await,
+            };
 
             match outcome {
                 Ok(out) => {
@@ -477,7 +514,11 @@ fn distribute(
             }
         }
         Ok::<_, VoloError>(())
-    })?;
+    });
+    if let Some(source) = &push_source {
+        source.cleanup();
+    }
+    result?;
 
     ctx.emitter
         .emit_event(&Event::Completed {

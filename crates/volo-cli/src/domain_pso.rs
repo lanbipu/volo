@@ -629,19 +629,10 @@ fn distribute(
         VoloError::InvalidInput(format!("machine {} not found", source_machine_id))
     })?;
 
-    // Dry-run resolves the same share/UNC + validation but skips the secret
-    // read (see `domain_ddc::distribute`).
     cred.preflight(db)?;
-    let source_location =
-        project_locations::get_for_project_machine(db, project_id, source_machine_id)?
-            .ok_or_else(|| VoloError::InvalidInput("source project location missing".into()))?;
-    let smb = cache_core::core::pak_distribute::resolve_source_smb(
-        db,
-        source_machine_id,
-        source_smb_cred_alias,
-        !dry_run,
-        &source_location.abs_path,
-    )?;
+    // Default transport: SSH push (no share/SMB); --source-smb-cred-alias
+    // selects the legacy SMB pull path. See domain_ddc::distribute.
+    let push_mode = source_smb_cred_alias.is_none();
 
     // Find the most recent PSO cache file for this project + source machine.
     let files = pso_cache_files::list_by_project(db, project_id)?;
@@ -656,15 +647,39 @@ fn distribute(
             ))
         })?;
 
-    let plan = pso_distribute::plan(
-        db,
-        &source_machine.ip,
-        &file,
-        target_ids,
-        smb.named_share_unc.as_deref(), // managed-share UNC paired with the SMB cred
-        smb.user,
-        smb.pass,
-    )?;
+    let plan = if push_mode {
+        cache_core::core::push_distribute::plan_push(
+            db,
+            source_machine_id,
+            &source_machine.ip,
+            target_ids,
+            project_id,
+            "Saved\\CollectedPSOs",
+            &file.file_name,
+        )?
+    } else {
+        // Legacy SMB pull: source share + cred from the SecretStore; dry-run
+        // resolves the same share/UNC + validation but skips the secret read.
+        let source_location =
+            project_locations::get_for_project_machine(db, project_id, source_machine_id)?
+                .ok_or_else(|| VoloError::InvalidInput("source project location missing".into()))?;
+        let smb = cache_core::core::pak_distribute::resolve_source_smb(
+            db,
+            source_machine_id,
+            source_smb_cred_alias,
+            !dry_run,
+            &source_location.abs_path,
+        )?;
+        pso_distribute::plan(
+            db,
+            &source_machine.ip,
+            &file,
+            target_ids,
+            smb.named_share_unc.as_deref(), // managed-share UNC paired with the SMB cred
+            smb.user,
+            smb.pass,
+        )?
+    };
 
     if plan.is_empty() {
         return Err(VoloError::InvalidInput(
@@ -697,12 +712,24 @@ fn distribute(
 
     let total = plan.len() as i64;
 
+    // Push mode: resolve the source file onto the operator once, up front.
+    let job_id = format!("pso-dist-cli-{}", std::process::id());
+    let push_source = if push_mode {
+        Some(cache_core::core::push_distribute::acquire_source(
+            &source_machine.ip,
+            &file.file_path,
+            &job_id,
+        )?)
+    } else {
+        None
+    };
+
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| VoloError::OperationFailed(format!("tokio runtime: {}", e)))?;
 
-    rt.block_on(async {
+    let result = rt.block_on(async {
         for (idx, item) in plan.into_iter().enumerate() {
             let item_id = format!("machine:{}", item.target_machine_id);
 
@@ -714,14 +741,21 @@ fn distribute(
                 })
                 .ok();
 
-            // GPU mismatch preflight guard — surface as a non-ok completion rather than panic.
-            if let Err(e) = pso_distribute::preflight_one(&item).await {
+            // Preflight guard — surface as a non-ok completion rather than panic.
+            let preflight = match push_source.as_ref() {
+                Some(source) => {
+                    let staged = cache_core::core::push_distribute::staged_name_of(source);
+                    cache_core::core::push_distribute::preflight_push_one(&item, &job_id, &staged)
+                }
+                None => pso_distribute::preflight_one(&item).await,
+            };
+            if let Err(e) = preflight {
                 ctx.emitter
                     .emit_event(&Event::ItemCompleted {
                         item_id,
                         index: idx as i64,
                         ok: false,
-                        message: Some(format!("gpu mismatch preflight: {}", e)),
+                        message: Some(format!("preflight: {}", e)),
                     })
                     .ok();
                 return Err(VoloError::OperationFailed(format!(
@@ -730,7 +764,12 @@ fn distribute(
                 )));
             }
 
-            let outcome = pso_distribute::run_one(item).await;
+            let outcome = match push_source.as_ref() {
+                Some(source) => {
+                    cache_core::core::push_distribute::push_one(&item, source, &job_id)
+                }
+                None => pso_distribute::run_one(item).await,
+            };
 
             match outcome {
                 Ok(out) => {
@@ -768,7 +807,11 @@ fn distribute(
             }
         }
         Ok::<_, VoloError>(())
-    })?;
+    });
+    if let Some(source) = &push_source {
+        source.cleanup();
+    }
+    result?;
 
     ctx.emitter
         .emit_event(&Event::Completed {

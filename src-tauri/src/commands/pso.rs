@@ -291,25 +291,11 @@ pub async fn distribute_pso_cache(
     })?;
     // SSH key auth: operator cred no longer used (param kept as shim, Vue compat).
     let _ = &request.operator_credential_alias;
-    // Source SMB access from the SecretStore: explicit alias, else auto-derived
-    // from a Mode B share on the source host.
-    // NOTE (sub-project B): the UI's share-credential dropdown must pass a
-    // SecretStore/share alias here, not a DPAPI cred alias; `None` now means
-    // "auto-derive", not "same as operator".
-    let source_location = cache_core::data::project_locations::get_for_project_machine(
-        &db,
-        file.project_id,
-        file.source_machine_id,
-    )?
-    .ok_or_else(|| VoloError::InvalidInput("source project location missing".into()))?;
-    let smb = cache_core::core::pak_distribute::resolve_source_smb(
-        &db,
-        file.source_machine_id,
-        request.source_smb_credential_alias.as_deref(),
-        true,
-        &source_location.abs_path,
-    )?;
-    let (source_smb_user, source_smb_pass) = (smb.user, smb.pass);
+    // Default transport: SSH push (no share/SMB involved). The legacy SMB pull
+    // path below stays as an explicit escape hatch (named_share_unc / alias) —
+    // see docs/changes/2026-07-05-ssh-push-distribute-plan.md.
+    let push_mode =
+        request.named_share_unc.is_none() && request.source_smb_credential_alias.is_none();
 
     if !request.force_gpu_mismatch {
         let matrix = cache_core::core::gpu_consistency::build_matrix(&db)?;
@@ -334,36 +320,80 @@ pub async fn distribute_pso_cache(
         }
     }
 
-    // Explicit request UNC wins; else the auto-derived managed-share UNC paired
-    // with the SMB cred (so ddc-svc mounts the share it actually has rights to).
-    let named_unc = request
-        .named_share_unc
-        .clone()
-        .or(smb.named_share_unc.clone());
-    let plan = pso_distribute::plan(
-        &db,
-        &source_machine.ip,
-        &file,
-        &request.target_machine_ids,
-        named_unc.as_deref(),
-        source_smb_user,
-        source_smb_pass,
-    )?;
+    let job_id = format!("pso-dist-{}-{}", request.file_id, now_millis());
+
+    let plan = if push_mode {
+        cache_core::core::push_distribute::plan_push(
+            &db,
+            file.source_machine_id,
+            &source_machine.ip,
+            &request.target_machine_ids,
+            file.project_id,
+            "Saved\\CollectedPSOs",
+            &file.file_name,
+        )?
+    } else {
+        // Legacy SMB pull: resolve the source share + cred from the SecretStore
+        // (explicit alias, else auto-derived from a share covering the source
+        // project dir).
+        let source_location = cache_core::data::project_locations::get_for_project_machine(
+            &db,
+            file.project_id,
+            file.source_machine_id,
+        )?
+        .ok_or_else(|| VoloError::InvalidInput("source project location missing".into()))?;
+        let smb = cache_core::core::pak_distribute::resolve_source_smb(
+            &db,
+            file.source_machine_id,
+            request.source_smb_credential_alias.as_deref(),
+            true,
+            &source_location.abs_path,
+        )?;
+        let named_unc = request.named_share_unc.clone().or(smb.named_share_unc.clone());
+        pso_distribute::plan(
+            &db,
+            &source_machine.ip,
+            &file,
+            &request.target_machine_ids,
+            named_unc.as_deref(),
+            smb.user,
+            smb.pass,
+        )?
+    };
     if plan.is_empty() {
         return Err(VoloError::InvalidInput(
             "distribution plan has no non-source targets".into(),
         ));
     }
     for item in &plan {
-        pso_distribute::preflight_one(item).await.map_err(|err| {
-            VoloError::OperationFailed(format!(
-                "target {} cannot reach source UNC: {}",
-                item.target_machine_id, err
-            ))
-        })?;
+        if push_mode {
+            let item_for_preflight = item.clone();
+            let job_for_preflight = job_id.clone();
+            let staged = file.file_name.clone();
+            tokio::task::spawn_blocking(move || {
+                cache_core::core::push_distribute::preflight_push_one(
+                    &item_for_preflight,
+                    &job_for_preflight,
+                    &staged,
+                )
+            })
+            .await
+            .map_err(|e| VoloError::OperationFailed(format!("preflight task failed: {e}")))?
+            .map_err(|err| {
+                VoloError::OperationFailed(format!(
+                    "target {} push preflight failed: {}",
+                    item.target_machine_id, err
+                ))
+            })?;
+        } else {
+            pso_distribute::preflight_one(item).await.map_err(|err| {
+                VoloError::OperationFailed(format!(
+                    "target {} cannot reach source UNC: {}",
+                    item.target_machine_id, err
+                ))
+            })?;
+        }
     }
-
-    let job_id = format!("pso-dist-{}-{}", request.file_id, now_millis());
     let plan_for_task = Arc::new(plan.clone());
     let app_for_task = app.clone();
     let db_for_task: Db = (*db).clone();
@@ -371,20 +401,79 @@ pub async fn distribute_pso_cache(
     let project_id = file.project_id;
     let source_machine_id = file.source_machine_id;
     let job_id_for_task = job_id.clone();
+    let source_host_for_task = source_machine.ip.clone();
+    let source_path_for_task = file.file_path.clone();
 
     tokio::spawn(async move {
+        #[derive(Clone, Serialize)]
+        struct Payload<'a> {
+            job_id: &'a str,
+            project_id: i64,
+            source_machine_id: i64,
+            event: batch::BatchEvent,
+        }
+
+        // Push mode: resolve the source file onto the operator before fanning
+        // out (loopback source: instant; remote source: stage + scp pull).
+        let push_source = if push_mode {
+            let job = job_id_for_task.clone();
+            let host = source_host_for_task.clone();
+            let path = source_path_for_task.clone();
+            let acquired = tokio::task::spawn_blocking(move || {
+                cache_core::core::push_distribute::acquire_source(&host, &path, &job)
+            })
+            .await
+            .map_err(|e| VoloError::OperationFailed(format!("acquire task failed: {e}")))
+            .and_then(|r| r);
+            match acquired {
+                Ok(source) => Some(Arc::new(source)),
+                Err(err) => {
+                    for item in plan_for_task.iter() {
+                        upsert_distribution(
+                            &db_for_task,
+                            file_id,
+                            item.target_machine_id,
+                            DistributionStatus::Err,
+                            0,
+                            Some(format!("source acquire failed: {err}")),
+                        );
+                        let _ = app_for_task.emit(
+                            "pso-distribute-progress",
+                            Payload {
+                                job_id: &job_id_for_task,
+                                project_id,
+                                source_machine_id,
+                                event: batch::BatchEvent {
+                                    machine_id: item.target_machine_id,
+                                    status: batch::BatchStatus::Err,
+                                    message: Some(format!("source acquire failed: {err}")),
+                                },
+                            },
+                        );
+                    }
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+
         let machine_ids: Vec<i64> = plan_for_task
             .iter()
             .map(|item| item.target_machine_id)
             .collect();
         let plan_lookup = plan_for_task.clone();
         let db_lookup = db_for_task.clone();
+        let source_for_batch = push_source.clone();
+        let job_for_batch = job_id_for_task.clone();
         let mut rx = batch::run_batch(
             machine_ids,
             batch::DEFAULT_MAX_CONCURRENCY,
             move |machine_id| {
                 let plan_lookup = plan_lookup.clone();
                 let db_for_op = db_lookup.clone();
+                let push_source = source_for_batch.clone();
+                let job_id = job_for_batch.clone();
                 async move {
                     upsert_distribution(
                         &db_for_op,
@@ -404,7 +493,18 @@ pub async fn distribute_pso_cache(
                             ))
                         })?
                         .clone();
-                    let outcome = pso_distribute::run_one(item).await?;
+                    let outcome = match push_source {
+                        Some(source) => {
+                            tokio::task::spawn_blocking(move || {
+                                cache_core::core::push_distribute::push_one(&item, &source, &job_id)
+                            })
+                            .await
+                            .map_err(|e| {
+                                VoloError::OperationFailed(format!("push task failed: {e}"))
+                            })??
+                        }
+                        None => pso_distribute::run_one(item).await?,
+                    };
                     if !outcome.ok {
                         let message = outcome
                             .message
@@ -438,13 +538,6 @@ pub async fn distribute_pso_cache(
         .await;
 
         while let Some(event) = rx.recv().await {
-            #[derive(Clone, Serialize)]
-            struct Payload<'a> {
-                job_id: &'a str,
-                project_id: i64,
-                source_machine_id: i64,
-                event: batch::BatchEvent,
-            }
             let _ = app_for_task.emit(
                 "pso-distribute-progress",
                 Payload {
@@ -454,6 +547,9 @@ pub async fn distribute_pso_cache(
                     event,
                 },
             );
+        }
+        if let Some(source) = push_source {
+            source.cleanup();
         }
     });
 
