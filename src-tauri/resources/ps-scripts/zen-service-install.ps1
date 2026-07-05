@@ -263,6 +263,89 @@ function Normalize-Account([string]$a) {
     }
 }
 
+# Grant a non-builtin service account the "Log on as a service" right
+# (SeServiceLogonRight) via LsaAddAccountRights before `sc create` runs.
+#
+# `sc create obj=/password=` does NOT reliably grant this right itself —
+# confirmed empirically 2026-07-06 on lanPC: `secedit /export /areas
+# USER_RIGHTS` showed SeServiceLogonRight locked to an explicit allow-list
+# (NT SERVICE\ALL SERVICES / Virtual Machines / All Restricted Services —
+# no ordinary local or domain account), a common hardening baseline. On such
+# a machine, `sc create` for a brand-new dedicated account fails with
+# ERROR_INVALID_SERVICE_ACCOUNT (1057) even though the account/password pair
+# is genuinely valid (independently verified via LogonUser). Explicitly
+# granting the right here makes service creation work regardless of how
+# restrictive that policy is; it's a no-op (LsaAddAccountRights just extends
+# an already-present grant) on hosts where the policy is permissive.
+if (-not ([System.Management.Automation.PSTypeName]'VoloLsaHelper').Type) {
+    Add-Type -ErrorAction Stop @'
+using System;
+using System.Runtime.InteropServices;
+
+public class VoloLsaHelper {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LSA_UNICODE_STRING {
+        public ushort Length;
+        public ushort MaximumLength;
+        public IntPtr Buffer;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LSA_OBJECT_ATTRIBUTES {
+        public int Length;
+        public IntPtr RootDirectory;
+        public IntPtr ObjectName;
+        public int Attributes;
+        public IntPtr SecurityDescriptor;
+        public IntPtr SecurityQualityOfService;
+    }
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint LsaOpenPolicy(ref LSA_UNICODE_STRING SystemName, ref LSA_OBJECT_ATTRIBUTES ObjectAttributes, int DesiredAccess, out IntPtr PolicyHandle);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint LsaAddAccountRights(IntPtr PolicyHandle, byte[] AccountSid, LSA_UNICODE_STRING[] UserRights, int CountOfRights);
+
+    [DllImport("advapi32.dll")]
+    private static extern int LsaClose(IntPtr ObjectHandle);
+
+    [DllImport("advapi32.dll")]
+    private static extern int LsaNtStatusToWinError(uint status);
+
+    public static void AddRight(byte[] sidBytes, string right) {
+        LSA_OBJECT_ATTRIBUTES oa = new LSA_OBJECT_ATTRIBUTES();
+        LSA_UNICODE_STRING system = new LSA_UNICODE_STRING();
+        IntPtr policyHandle;
+        uint openRes = LsaOpenPolicy(ref system, ref oa, 0x000F0FFF, out policyHandle);
+        if (openRes != 0) {
+            throw new InvalidOperationException("LsaOpenPolicy failed, win32=" + LsaNtStatusToWinError(openRes));
+        }
+        LSA_UNICODE_STRING rightStr = new LSA_UNICODE_STRING();
+        rightStr.Buffer = Marshal.StringToHGlobalUni(right);
+        rightStr.Length = (ushort)(right.Length * 2);
+        rightStr.MaximumLength = (ushort)((right.Length + 1) * 2);
+        uint addRes;
+        try {
+            addRes = LsaAddAccountRights(policyHandle, sidBytes, new LSA_UNICODE_STRING[] { rightStr }, 1);
+        } finally {
+            Marshal.FreeHGlobal(rightStr.Buffer);
+            LsaClose(policyHandle);
+        }
+        if (addRes != 0) {
+            throw new InvalidOperationException("LsaAddAccountRights failed, win32=" + LsaNtStatusToWinError(addRes));
+        }
+    }
+}
+'@
+}
+
+function Grant-ServiceLogonRight([string]$accountName) {
+    $sid = ([System.Security.Principal.NTAccount]$accountName).Translate([System.Security.Principal.SecurityIdentifier])
+    $sidBytes = New-Object byte[] ($sid.BinaryLength)
+    $sid.GetBinaryForm($sidBytes, 0)
+    [VoloLsaHelper]::AddRight($sidBytes, 'SeServiceLogonRight')
+}
+
 # Read a service's `StartName` (account it runs as) with CIM first and a
 # registry fallback. Hosts that have WMI/CIM disabled by policy still need
 # to be supported for both idempotency checks AND post-`sc.exe config`
@@ -670,7 +753,21 @@ try {
             'localsystem'     { 'LocalSystem' }
             'localservice'    { 'NT AUTHORITY\LocalService' }
             'networkservice'  { 'NT AUTHORITY\NetworkService' }
-            default           { $ServiceUser }
+            # `sc create obj=` refuses a bare, unqualified local account name
+            # with ERROR_INVALID_SERVICE_ACCOUNT (1057) — confirmed
+            # empirically 2026-07-06 on lanPC, reproduced with `New-Service`
+            # too, so it's not an sc.exe-specific quirk. But `icacls /grant`
+            # (used below for the ZenInstall/DataDir grants) takes the
+            # EXACT OPPOSITE stance: it fails on a `.\`-qualified name with
+            # "no mapping between account names and security IDs" and only
+            # accepts the bare name or `HOSTNAME\name` — also confirmed
+            # empirically. `HOSTNAME\name` is the one form both accept (SCM
+            # itself normalizes it back to `.\name` in `StartName`, so the
+            # later `Normalize-Account`-based verification is unaffected). A
+            # domain account (or gMSA) already carries its own qualifier
+            # (`DOMAIN\user`); only a bare local dedicated-account name needs
+            # this machine-name prefix.
+            default           { if ($ServiceUser.Contains('\')) { $ServiceUser } else { "$env:COMPUTERNAME\$ServiceUser" } }
         }
     }
     # gMSA accounts (trailing '$', e.g. "CONTOSO\zen-svc$") are AD-managed —
@@ -682,13 +779,29 @@ try {
     $isGmsa = $effectiveUser.TrimEnd().EndsWith('$')
 
     # Non-builtin accounts (dedicated local or domain, including gMSA) need
-    # explicit grants `sc create obj=` alone doesn't provide: read access to
-    # {ZenInstall} (this exe's directory) so the account can even launch the
-    # binary, and read+write access to {ZenData} so it can use the cache.
-    # `sc create obj=`/`password=` itself grants "log on as a service"
-    # automatically as a side effect of the Win32 CreateService call, so that
-    # right doesn't need a separate grant here.
+    # explicit grants `sc create obj=` alone doesn't reliably provide: the
+    # "Log on as a service" right (see Grant-ServiceLogonRight's doc — this
+    # is NOT always an automatic side effect of `sc create`, contrary to what
+    # this comment used to claim), read access to {ZenInstall} (this exe's
+    # directory) so the account can even launch the binary, and read+write
+    # access to {ZenData} so it can use the cache.
     if (-not $isBuiltin) {
+        try {
+            # SID lookup needs the account's own name form (bare local name or
+            # DOMAIN\user) — NTAccount.Translate doesn't resolve the `.\`-
+            # qualified form sc.exe itself requires for `obj=` (confirmed
+            # empirically: `.\name` throws "identity reference could not be
+            # translated" from .NET even though sc.exe accepts it fine).
+            Grant-ServiceLogonRight $ServiceUser
+        } catch {
+            @{
+                ok = $false
+                message = "granting 'Log on as a service' right to $effectiveUser failed: $($_.Exception.Message)"
+                service_name = $ServiceName
+            } | ConvertTo-Json -Compress -Depth 4
+            exit 0
+        }
+
         $zenInstallDir = [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($zenserverExe))
         $icaclsInstallOutput = (icacls $zenInstallDir /grant "${effectiveUser}:(OI)(CI)RX" 2>&1 | Out-String)
         if ($LASTEXITCODE -ne 0) {
