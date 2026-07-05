@@ -1976,6 +1976,10 @@ pub fn zen_service_uninstall(
     .and_then(|raw| zen_cli_shared::parse_envelope(&raw, "zen-service-uninstall"));
     zen_cli_shared::finalize_op(&db, op_id, &result, &invocation);
     let response = result?;
+    // Release any urlacl reservation this endpoint's service held — see the
+    // function doc for why a stale reservation from a since-replaced service
+    // account would otherwise permanently block the next install.
+    zen_cli_shared::release_urlacl_best_effort(&db, &ep, &machine.ip);
     Ok(ZenServiceResult::Completed(ZenServiceSummary {
         endpoint_id,
         machine_id: ep.machine_id,

@@ -69,11 +69,12 @@ use std::time::Duration;
 // tests — keep referring to them by their original unqualified names.
 pub(crate) use cache_core::core::zen::ops::{
     build_global_rules, copy_binary_if_needed, default_lifecycle_for, finalize_op,
-    parse_envelope, render_lua_for, require_endpoint, require_machine, resolve_cluster_master,
-    resolve_install_paths, resolve_service_paths, resolve_upstream_info, restart_service,
-    run_node, url_prefix_for, urlacl_needed_for, validate_data_dir_safe, validate_dest_path,
-    validate_service_account_pair, validate_service_data_dir, workstation_colocation_warning,
-    write_and_verify_lua, DEFAULT_SERVICE_NAME,
+    parse_envelope, release_urlacl_best_effort, render_lua_for, require_endpoint,
+    require_machine, resolve_cluster_master, resolve_install_paths, resolve_service_paths,
+    resolve_upstream_info, restart_service, run_node, url_prefix_for, urlacl_needed_for,
+    validate_data_dir_safe, validate_dest_path, validate_service_account_pair,
+    validate_service_data_dir, workstation_colocation_warning, write_and_verify_lua,
+    DEFAULT_SERVICE_NAME,
 };
 // Only the tests below reach for these directly (the prod path uses
 // `sha256_hex_of`/`verify_write_response` transitively via
@@ -1866,6 +1867,10 @@ fn service_uninstall(
     .and_then(|raw| parse_envelope(&raw, "zen-service-uninstall"));
     finalize_op(&db, op_id, &result, &invocation);
     let response = result?;
+    // Release any urlacl reservation this endpoint's service held — see the
+    // function doc for why a stale reservation from a since-replaced service
+    // account would otherwise permanently block the next install.
+    release_urlacl_best_effort(&db, &ep, &machine.ip);
     let summary = serde_json::json!({
         "ok": true,
         "endpoint_id": endpoint_id,

@@ -476,6 +476,41 @@ pub fn urlacl_needed_for(principal: &str) -> bool {
     )
 }
 
+/// Best-effort release of the http.sys URL ACL reservation for an endpoint
+/// whose service is being uninstalled. `sc delete` and `netsh http urlacl`
+/// are independent stores — uninstalling the SCM service leaves the
+/// reservation behind. If the endpoint is later reinstalled under a
+/// *different* principal (e.g. "创建专用账号" regenerates a fresh random
+/// `zen-svc-xxxxxx` local account each time it's clicked), `zen-urlacl-add`'s
+/// owner check then refuses with "already exists but is owned by
+/// '<old account>'" — a redeploy that can never succeed without an operator
+/// manually running `netsh http delete urlacl` on the target host. Releasing
+/// the reservation here — unconditionally, since a missing reservation is
+/// already a no-op (`was_present:false`) — closes that gap at the one place
+/// every uninstall path (CLI + Tauri, manual + redeploy's auto-uninstall)
+/// goes through, instead of requiring each call site to remember it.
+///
+/// Never fails the caller: a genuine unexpected `netsh` error here shouldn't
+/// mask the SCM uninstall that already succeeded, so this only logs to the
+/// `operations` table and swallows the result.
+pub fn release_urlacl_best_effort(db: &Db, ep: &ZenEndpoint, host: &str) {
+    let url_prefix = url_prefix_for(ep);
+    let invocation = redact(&format!(
+        "zen-urlacl-remove.ps1 -UrlPrefix {url_prefix} (auto: post-uninstall cleanup)"
+    ));
+    let Ok(op_id) = operations::start(db, "zen.service_uninstall.release_urlacl", &[ep.machine_id])
+    else {
+        return;
+    };
+    let result = run_node(
+        host,
+        "zen-urlacl-remove.ps1",
+        serde_json::json!({ "UrlPrefix": url_prefix }),
+    )
+    .and_then(|raw| parse_envelope(&raw, "zen-urlacl-remove"));
+    finalize_op(db, op_id, &result, &invocation);
+}
+
 /// Resolve the zen.exe Volo hands `zen service install` for `machine_id`
 /// (in-tree UE binary preferred over the user-private install copy — see
 /// [`pick_service_zen_exe`]). Shared by `zen_apply_config` and
