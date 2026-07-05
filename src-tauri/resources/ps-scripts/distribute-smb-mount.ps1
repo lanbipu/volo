@@ -22,6 +22,21 @@ function Test-ShareReachable([string]$ShareRoot) {
     return [bool](Test-Path -LiteralPath $ShareRoot -ErrorAction SilentlyContinue)
 }
 
+function Remove-SmbConnectionBestEffort([string]$ShareRoot) {
+    # `net use /delete` returns 2250 when no session exists. Under Windows
+    # PowerShell 5.1 its stderr can become a terminating ErrorRecord while the
+    # caller uses ErrorActionPreference=Stop, aborting before the real mount.
+    $oldPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = ((cmd.exe /c "net use `"$ShareRoot`" /delete /y" 2>&1) | Out-String).Trim()
+        return [ordered]@{ code = $LASTEXITCODE; output = $output }
+    }
+    finally {
+        $ErrorActionPreference = $oldPreference
+    }
+}
+
 function Mount-OneShareRoot {
     param(
         [Parameter(Mandatory)][string]$ShareRoot,
@@ -29,27 +44,28 @@ function Mount-OneShareRoot {
         [string]$SmbPass,
         [bool]$UseGuest
     )
-    cmd.exe /c "net use `"$ShareRoot`" /delete /y" 2>&1 | Out-Null
+    $deleteResult = Remove-SmbConnectionBestEffort $ShareRoot
     if (-not [string]::IsNullOrEmpty($SmbUser) -and -not [string]::IsNullOrEmpty($SmbPass)) {
         $netOut = ((cmd.exe /c "net use `"$ShareRoot`" `"$SmbPass`" /user:$SmbUser /persistent:no" 2>&1) | Out-String).Trim()
         if ($LASTEXITCODE -ne 0) {
-            throw "net use $ShareRoot failed: $netOut"
+            throw "net use $ShareRoot failed (exit $LASTEXITCODE; output: $netOut)"
         }
         if (-not (Test-ShareReachable $ShareRoot)) {
-            throw "net use $ShareRoot succeeded but share root is unreachable"
+            throw "net use $ShareRoot exited 0 but share root is unreachable (output: $netOut)"
         }
         return $ShareRoot
     }
     if ($UseGuest) {
-        Enable-GuestSmbAuth
+        try { Enable-GuestSmbAuth }
+        catch { throw "guest SMB client policy setup failed as $(whoami): $($_.Exception.Message)" }
         $h = Get-UncHost $ShareRoot
         if (-not $h) { throw "cannot parse host from share root '$ShareRoot'" }
         $netOut = ((cmd.exe /c "net use `"$ShareRoot`" `"`" /user:$h\Guest /persistent:no" 2>&1) | Out-String).Trim()
         if ($LASTEXITCODE -ne 0) {
-            throw "net use guest $ShareRoot failed: $netOut"
+            throw "net use guest $ShareRoot failed (exit $LASTEXITCODE; output: $netOut)"
         }
         if (-not (Test-ShareReachable $ShareRoot)) {
-            throw "net use guest $ShareRoot succeeded but share root is unreachable"
+            throw "net use guest $ShareRoot exited 0 but share root is unreachable (output: $netOut)"
         }
         return $ShareRoot
     }
@@ -90,12 +106,14 @@ function Mount-DistributeSourceShare {
         }
     }
     if ($UseGuest -or (-not [string]::IsNullOrEmpty($SmbUser) -and -not [string]::IsNullOrEmpty($SmbPass))) {
-        throw ($errors -join '; ')
+        $roots = ($ordered -join ', ')
+        $detail = if ($errors.Count) { ($errors -join '; ') } else { 'no mount attempts recorded' }
+        throw "SMB mount failed for share root(s) [$roots]: $detail"
     }
     return $null
 }
 
 function Unmount-DistributeSourceShare {
     param([Parameter(Mandatory)][string]$ShareRoot)
-    cmd.exe /c "net use `"$ShareRoot`" /delete /y" 2>&1 | Out-Null
+    $null = Remove-SmbConnectionBestEffort $ShareRoot
 }

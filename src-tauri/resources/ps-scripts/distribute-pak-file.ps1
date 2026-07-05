@@ -31,24 +31,34 @@ try {
     if (-not (Test-Path -LiteralPath $TargetLocal)) {
         New-Item -Path $TargetLocal -ItemType Directory -Force | Out-Null
     }
-    $shareRoot = if ($ShareRoots.Count -gt 0) { $ShareRoots[0] } else { $SourceUnc }
-    if ($SourceUnc -match '^(\\\\[^\\]+\\[^\\]+)') { $shareRoot = $Matches[1] }
+    $sourceShareRoot = $SourceUnc
+    if ($SourceUnc -match '^(\\\\[^\\]+\\[^\\]+)') { $sourceShareRoot = $Matches[1] }
+    $shareRoot = $sourceShareRoot
+    $effectiveSourceUnc = $SourceUnc
     $mounted = $false
     $mountedRoot = $null
     try {
         $mountedRoot = Mount-DistributeSourceShare -ShareRoot $shareRoot -ShareRoots $ShareRoots -SmbUser $SmbUser -SmbPass $SmbPass -UseGuest $UseGuest
         $mounted = -not [string]::IsNullOrWhiteSpace($mountedRoot)
-        if ($mounted) { $shareRoot = $mountedRoot }
+        if ($mounted) {
+            $shareRoot = $mountedRoot
+            $relativeSource = $SourceUnc.Substring($sourceShareRoot.Length).TrimStart('\')
+            $effectiveSourceUnc = if ($relativeSource) {
+                "$($mountedRoot.TrimEnd('\'))\$relativeSource"
+            } else {
+                $mountedRoot
+            }
+        }
         # Exact-filename robocopy filter (see below) matches nothing and still
         # exits 0 if the source has no DDC.ddp — check the file directly (one
         # round-trip on the common/success path) and fail explicitly instead
         # of a silent "0 bytes copied" success; only re-probe the bare UNC on
         # failure to report the more specific "unreachable" cause.
         $FileName = 'DDC.ddp'
-        $sourceFile = Join-Path -Path $SourceUnc -ChildPath $FileName
+        $sourceFile = Join-Path -Path $effectiveSourceUnc -ChildPath $FileName
         if (-not (Test-UncReachable $sourceFile)) {
-            if (-not (Test-UncReachable $SourceUnc)) {
-                throw "source UNC unreachable: $SourceUnc"
+            if (-not (Test-UncReachable $effectiveSourceUnc)) {
+                throw "source UNC unreachable after mount: $effectiveSourceUnc"
             }
             throw "source has no $FileName to distribute: $sourceFile"
         }
@@ -58,7 +68,7 @@ try {
         }
         $stdoutPath = Join-Path -Path $env:TEMP -ChildPath "robocopy-stdout-$PID.log"
         $stderrPath = Join-Path -Path $env:TEMP -ChildPath "robocopy-stderr-$PID.log"
-        $roboArgs = @("$SourceUnc", "$TargetLocal", "$FileName", '/E', '/R:3', '/W:5', '/NP', '/NDL', '/NJH', '/NJS', '/BYTES')
+        $roboArgs = @("$effectiveSourceUnc", "$TargetLocal", "$FileName", '/E', '/R:3', '/W:5', '/NP', '/NDL', '/NJH', '/NJS', '/BYTES')
         $proc = Start-Process -FilePath 'robocopy.exe' -ArgumentList $roboArgs -PassThru -Wait -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
         $code = $proc.ExitCode
         $stdout = Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue
@@ -78,6 +88,11 @@ try {
     }
 }
 catch {
-    @{ ok = $false; exit_code = "-1"; bytes_copied = "0"; stdout_tail = ""; message = "$($_.Exception.Message)" } | ConvertTo-Json -Compress
+    $detail = $_.Exception.Message
+    if (-not [string]::IsNullOrWhiteSpace($SourceUnc)) {
+        $roots = if ($ShareRoots.Count) { ($ShareRoots -join ', ') } else { $shareRoot }
+        $detail = "SourceUnc=$SourceUnc; EffectiveSourceUnc=$effectiveSourceUnc; ShareRoots=[$roots]; $detail"
+    }
+    @{ ok = $false; exit_code = "-1"; bytes_copied = "0"; stdout_tail = ""; message = "$detail" } | ConvertTo-Json -Compress
     exit 1
 }

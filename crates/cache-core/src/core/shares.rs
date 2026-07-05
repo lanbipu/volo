@@ -314,6 +314,111 @@ struct NetbiosProbeRaw {
     name: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct SmbShareProbeRaw {
+    ok: bool,
+    exists: bool,
+    #[serde(default)]
+    message: String,
+}
+
+/// SSH probe: does `share_name` exist as a local SMB share on `host`?
+pub fn smb_share_exists_on_host(host: &str, share_name: &str) -> VoloResult<bool> {
+    let exec = SshExecutor::from_config()?;
+    let result: SmbShareProbeRaw = run_json(
+        &exec,
+        host,
+        &NodeScript {
+            name: "probe-smb-share.ps1",
+            args: serde_json::json!({ "ShareName": share_name }),
+            ssh_user: None,
+        },
+    )?;
+    if !result.ok {
+        return Err(VoloError::OperationFailed(format!(
+            "SMB share probe failed on {host}: {}",
+            result.message
+        )));
+    }
+    Ok(result.exists)
+}
+
+/// Re-create a registered share when the DB row exists but the host SMB share was removed.
+pub fn ensure_registered_share_live(db: &Db, share: &ShareConfig) -> VoloResult<()> {
+    let host_addr = host_ip(db, share.host_machine_id)?;
+    if smb_share_exists_on_host(&host_addr, &share.share_name)? {
+        return Ok(());
+    }
+    let result = match share.mode {
+        ShareMode::Open => {
+            create_mode_a(
+                &host_addr,
+                &share.share_name,
+                &share.local_path,
+                None,
+                None,
+            )?
+        }
+        ShareMode::Managed => {
+            let alias = share.credential_alias.as_ref().ok_or_else(|| {
+                VoloError::OperationFailed("managed share missing credential_alias".into())
+            })?;
+            let pass = crate::core::secrets::get_share_secret_migrating(alias)?.ok_or_else(|| {
+                VoloError::InvalidInput(format!(
+                    "Mode B share secret '{alias}' missing from SecretStore"
+                ))
+            })?;
+            let user = data_credentials::find_by_alias(db, alias)?
+                .map(|c| c.username)
+                .unwrap_or_else(|| "ddc-svc".to_string());
+            let bare = user
+                .rsplit('\\')
+                .next()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(user.as_str());
+            create_mode_b(
+                &host_addr,
+                &share.share_name,
+                &share.local_path,
+                bare,
+                &pass,
+                None,
+                None,
+            )?
+        }
+    };
+    if let Some(id) = share.id {
+        share_configs::update_unc_path(db, id, &result.unc_path)?;
+    }
+    Ok(())
+}
+
+/// Verify an explicit distribute UNC before target preflight. Registered shares
+/// are self-healed from their DB definition; unregistered manual UNC values can
+/// only be probed and receive a precise error when the share is absent.
+pub fn ensure_source_unc_share_live(
+    db: &Db,
+    source_machine_id: i64,
+    source_host: &str,
+    unc: &str,
+) -> VoloResult<()> {
+    let share_name = unc_share_name(unc).ok_or_else(|| {
+        VoloError::InvalidInput(format!("cannot parse share name from source UNC '{unc}'"))
+    })?;
+    if let Some(share) = share_configs::find_by_host(db, source_machine_id)?
+        .into_iter()
+        .find(|share| share.share_name.eq_ignore_ascii_case(&share_name))
+    {
+        return ensure_registered_share_live(db, &share);
+    }
+    if smb_share_exists_on_host(source_host, &share_name)? {
+        return Ok(());
+    }
+    Err(VoloError::OperationFailed(format!(
+        "source SMB share '{share_name}' does not exist on {source_host} and has no DB record to recreate"
+    )))
+}
+
 /// Best-effort SSH probe for `$env:COMPUTERNAME` when the DB only has an IP label.
 fn probe_netbios_name_over_ssh(host: &str) -> Option<String> {
     let exec = SshExecutor::from_config().ok()?;
@@ -630,7 +735,9 @@ pub fn ensure_open_dir_share(
                 && s.share_name.eq_ignore_ascii_case(share_name)
                 && same_win_path(&s.local_path, local_path)
         });
-    if existing.is_none() {
+    if let Some(share) = existing {
+        ensure_registered_share_live(db, &share)?;
+    } else {
         let result = create_mode_a(&host_addr, share_name, local_path, None, None)?;
         if let Some(prior) = share_configs::find_by_host(db, host_machine_id)?
             .into_iter()

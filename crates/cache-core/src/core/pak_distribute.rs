@@ -414,6 +414,9 @@ pub fn resolve_project_pull_smb(
         crate::core::shares::share_covering_local_path(db, source_machine_id, &abs_norm)?
     {
         use crate::data::share_configs::ShareMode;
+        if ensure_share {
+            crate::core::shares::ensure_registered_share_live(db, &cover.share)?;
+        }
         let unc = crate::core::shares::reachable_share_unc(
             reach_host,
             &cover.share.share_name,
