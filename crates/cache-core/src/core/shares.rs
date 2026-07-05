@@ -569,15 +569,38 @@ pub fn ensure_open_dir_share(
         )?;
     }
     let target_uncs = open_share_target_uncs_for_host(db, host_machine_id)?;
+    prep_open_share_clients_for_targets(db, client_machine_ids, &target_uncs)
+}
+
+/// Mode A client prep on each target so Explorer/UE get guest sessions; also sets
+/// machine-wide AllowInsecureGuestAuth (needed when distribute runs as uecm-svc).
+pub fn prep_open_share_clients_for_targets(
+    db: &Db,
+    client_machine_ids: &[i64],
+    target_uncs: &[String],
+) -> VoloResult<()> {
+    if target_uncs.is_empty() {
+        return Ok(());
+    }
     for client_id in client_machine_ids {
         let client_ip = host_ip(db, *client_id)?;
-        prepare_open_share_client(&client_ip, &target_uncs).map_err(|e| {
+        prepare_open_share_client(&client_ip, target_uncs).map_err(|e| {
             VoloError::OperationFailed(format!(
                 "open-share client prep failed on machine {client_id}: {e}"
             ))
         })?;
     }
     Ok(())
+}
+
+/// Prep all open-share UNC variants on targets (convenience wrapper).
+pub fn prep_open_share_clients_on_targets(
+    db: &Db,
+    host_machine_id: i64,
+    client_machine_ids: &[i64],
+) -> VoloResult<()> {
+    let target_uncs = open_share_target_uncs_for_host(db, host_machine_id)?;
+    prep_open_share_clients_for_targets(db, client_machine_ids, &target_uncs)
 }
 
 /// Generate a 24-byte random password, base64url-encoded (no padding) so

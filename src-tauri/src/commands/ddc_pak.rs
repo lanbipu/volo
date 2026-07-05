@@ -441,7 +441,11 @@ pub async fn distribute_ddc_pak(
                     let user = cache_core::data::credentials::find_by_alias(&db, a)?
                         .map(|c| c.username)
                         .unwrap_or_else(|| "ddc-svc".to_string());
-                    (Some(user), Some(pass))
+                    let server =
+                        cache_core::core::shares::smb_server_name_for_machine(&db, source_machine_id)?;
+                    let qualified =
+                        cache_core::core::shares::qualify_smb_user(&server, &user);
+                    (Some(qualified), Some(pass))
                 }
                 None => (None, None),
             };

@@ -1,11 +1,12 @@
 # Robocopy a PSO cache file pattern from a source SMB share into a local dir.
 #
 # Node-pure: runs locally on the target (shipped + executed via SSH -File).
-# stdin: JSON { "SourceUnc","TargetLocal","FileName",["SourceSmbUser","SourceSmbPass"],["PreflightOnly":bool] }
+# stdin: JSON { "SourceUnc","TargetLocal","FileName",["SourceSmbUser","SourceSmbPass"],["SourceSmbGuest":bool],["PreflightOnly":bool] }
 #   FileName = robocopy file pattern, e.g. "*.upipelinecache" or "*.stablepc.csv"
 # Output: JSON { ok, exit_code, bytes_copied, stdout_tail, [message] }
 [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; chcp 65001 | Out-Null
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'distribute-smb-mount.ps1')
 
 try {
     $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
@@ -14,6 +15,7 @@ try {
     $FileName = $p.FileName
     $SmbUser = $p.SourceSmbUser
     $SmbPass = $p.SourceSmbPass
+    $UseGuest = [bool]$p.SourceSmbGuest
     $PreflightOnly = [bool]$p.PreflightOnly
     if ([string]::IsNullOrWhiteSpace($SourceUnc) -or [string]::IsNullOrWhiteSpace($TargetLocal) -or
         [string]::IsNullOrWhiteSpace($FileName)) {
@@ -27,14 +29,7 @@ try {
     if ($SourceUnc -match '^(\\\\[^\\]+\\[^\\]+)') { $shareRoot = $Matches[1] }
     $mounted = $false
     try {
-        if (-not [string]::IsNullOrEmpty($SmbUser) -and -not [string]::IsNullOrEmpty($SmbPass)) {
-            cmd.exe /c "net use `"$shareRoot`" /delete /y" 2>&1 | Out-Null
-            $netOut = ((cmd.exe /c "net use `"$shareRoot`" `"$SmbPass`" /user:$SmbUser /persistent:no" 2>&1) | Out-String).Trim()
-            if ($LASTEXITCODE -ne 0) {
-                throw "net use $shareRoot failed: $netOut"
-            }
-            $mounted = $true
-        }
+        $mounted = Mount-DistributeSourceShare -ShareRoot $shareRoot -SmbUser $SmbUser -SmbPass $SmbPass -UseGuest $UseGuest
         if (-not (Test-Path -LiteralPath $SourceUnc)) {
             throw "source UNC unreachable: $SourceUnc"
         }
@@ -59,7 +54,7 @@ try {
         @{ ok = ($code -lt 8); exit_code = "$code"; bytes_copied = "$bytesCopied"; stdout_tail = "$tail"; preflight = $false } | ConvertTo-Json -Compress
     }
     finally {
-        if ($mounted) { cmd.exe /c "net use `"$shareRoot`" /delete /y" 2>&1 | Out-Null }
+        if ($mounted) { Unmount-DistributeSourceShare -ShareRoot $shareRoot }
     }
 }
 catch {

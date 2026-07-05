@@ -94,6 +94,8 @@ pub struct DistributePlanItem {
     pub source_smb_user: Option<String>,
     #[serde(skip_serializing)]
     pub source_smb_pass: Option<String>,
+    /// Mode A guest open-share: target script must `net use ... /user:HOST\Guest`.
+    pub source_smb_guest: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -118,6 +120,10 @@ pub fn plan(
     } else {
         admin_share_unc(source_host, &source_location.abs_path, &profile.source_subdir)?
     };
+    // Named-share pulls without SMB cred use Mode A guest `net use` on the target.
+    let source_smb_guest = named_share_unc.is_some()
+        && source_smb_user.is_none()
+        && source_smb_pass.is_none();
 
     let mut out = Vec::new();
     for target_id in target_machine_ids {
@@ -142,6 +148,7 @@ pub fn plan(
             file_name: None,
             source_smb_user: source_smb_user.clone(),
             source_smb_pass: source_smb_pass.clone(),
+            source_smb_guest,
         });
     }
     Ok(out)
@@ -314,6 +321,14 @@ pub fn resolve_source_smb(
                          re-run `share create --mode b`"
                     ))
                 })?;
+            let share = crate::data::share_configs::find_by_host(db, source_machine_id)?
+                .into_iter()
+                .find(|s| s.credential_alias.as_deref() == Some(alias.as_str()))
+                .ok_or_else(|| {
+                    VoloError::InvalidInput(format!(
+                        "source SMB alias '{alias}' matches no share on the source host"
+                    ))
+                })?;
             // Use the share's actual service account from its credential record
             // (the alias IS the credential alias) — a managed-share ACL only
             // grants that account, so a non-default svc_username must not be sent
@@ -324,7 +339,9 @@ pub fn resolve_source_smb(
                 .flatten()
                 .map(|c| c.username)
                 .unwrap_or_else(|| "ddc-svc".to_string());
-            (Some(user), Some(pass))
+            let server = crate::core::shares::smb_server_name_for_share(db, &share)?;
+            let qualified = crate::core::shares::qualify_smb_user(&server, &user);
+            (Some(qualified), Some(pass))
         }
         _ => (None, None),
     };
@@ -409,6 +426,7 @@ pub fn resolve_project_pull_smb(
     if let Some(cover) =
         crate::core::shares::share_covering_local_path(db, source_machine_id, &abs_norm)?
     {
+        use crate::data::share_configs::ShareMode;
         let unc = crate::core::shares::reachable_share_unc(
             reach_host,
             &cover.share.share_name,
@@ -416,6 +434,13 @@ pub fn resolve_project_pull_smb(
         );
         let (user, pass) =
             crate::core::shares::resolve_share_pull_cred(db, &cover.share, ensure_share)?;
+        if cover.share.mode == ShareMode::Open && ensure_share {
+            crate::core::shares::prep_open_share_clients_on_targets(
+                db,
+                source_machine_id,
+                target_machine_ids,
+            )?;
+        }
         return Ok(ProjectPullSource {
             named_share_unc: unc,
             user,
@@ -460,6 +485,9 @@ fn build_distribute_payload(item: &DistributePlanItem, preflight: bool) -> serde
     {
         map.insert("SourceSmbUser".into(), user.into());
         map.insert("SourceSmbPass".into(), pass.into());
+    }
+    if item.source_smb_guest {
+        map.insert("SourceSmbGuest".into(), true.into());
     }
     obj
 }
@@ -943,5 +971,107 @@ mod tests {
             r"\\192.168.10.20\volo-dir-d-x"
         );
         assert!(pull.user.is_none());
+    }
+
+    #[test]
+    fn plan_sets_guest_for_named_share_without_cred() {
+        let (db, source, target, project_id) = setup();
+        project_locations::upsert(
+            &db,
+            &ProjectLocation {
+                id: None,
+                project_id,
+                machine_id: target,
+                abs_path: "E:\\Y".into(),
+                uproject_path: "E:\\Y\\X.uproject".into(),
+                discovery_status: crate::data::DiscoveryStatus::Auto,
+                discovered_at: None,
+            },
+        )
+        .unwrap();
+        let items = plan(
+            &DistributeProfile::ddc_pak(),
+            &db,
+            source,
+            "1.1.1.1",
+            &source_loc(project_id, source),
+            &[target],
+            project_id,
+            Some("\\\\HOST\\DDC"),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(items[0].source_smb_guest);
+        let payload = build_distribute_payload(&items[0], true);
+        assert_eq!(payload["SourceSmbGuest"], true);
+        assert!(payload.get("SourceSmbUser").is_none());
+    }
+
+    #[test]
+    fn plan_no_guest_for_admin_dollar_share_fallback() {
+        let (db, source, target, project_id) = setup();
+        project_locations::upsert(
+            &db,
+            &ProjectLocation {
+                id: None,
+                project_id,
+                machine_id: target,
+                abs_path: "E:\\Y".into(),
+                uproject_path: "E:\\Y\\X.uproject".into(),
+                discovery_status: crate::data::DiscoveryStatus::Auto,
+                discovered_at: None,
+            },
+        )
+        .unwrap();
+        let items = plan(
+            &DistributeProfile::ddc_pak(),
+            &db,
+            source,
+            "1.1.1.1",
+            &source_loc(project_id, source),
+            &[target],
+            project_id,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(!items[0].source_smb_guest);
+    }
+
+    #[test]
+    fn plan_no_guest_when_smb_cred_present() {
+        let (db, source, target, project_id) = setup();
+        project_locations::upsert(
+            &db,
+            &ProjectLocation {
+                id: None,
+                project_id,
+                machine_id: target,
+                abs_path: "E:\\Y".into(),
+                uproject_path: "E:\\Y\\X.uproject".into(),
+                discovery_status: crate::data::DiscoveryStatus::Auto,
+                discovered_at: None,
+            },
+        )
+        .unwrap();
+        let items = plan(
+            &DistributeProfile::ddc_pak(),
+            &db,
+            source,
+            "1.1.1.1",
+            &source_loc(project_id, source),
+            &[target],
+            project_id,
+            Some("\\\\HOST\\DDC"),
+            Some(r"LANPC\ddc-svc".into()),
+            Some("secret".into()),
+        )
+        .unwrap();
+        assert!(!items[0].source_smb_guest);
+        let payload = build_distribute_payload(&items[0], false);
+        assert!(payload.get("SourceSmbGuest").is_none());
+        assert_eq!(payload["SourceSmbUser"], r"LANPC\ddc-svc");
     }
 }

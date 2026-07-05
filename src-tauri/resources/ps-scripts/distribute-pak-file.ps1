@@ -1,10 +1,11 @@
 # Robocopy a DDC pak set from a source SMB share into a local dir.
 #
 # Node-pure: runs locally on the target (shipped + executed via SSH -File).
-# stdin: JSON { "SourceUnc","TargetLocal",["SourceSmbUser","SourceSmbPass"],["PreflightOnly":bool] }
+# stdin: JSON { "SourceUnc","TargetLocal",["SourceSmbUser","SourceSmbPass"],["SourceSmbGuest":bool],["PreflightOnly":bool] }
 # Output: JSON { ok, exit_code, bytes_copied, stdout_tail, [message] }
 [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; chcp 65001 | Out-Null
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'distribute-smb-mount.ps1')
 
 try {
     $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
@@ -12,6 +13,7 @@ try {
     $TargetLocal = $p.TargetLocal
     $SmbUser = $p.SourceSmbUser
     $SmbPass = $p.SourceSmbPass
+    $UseGuest = [bool]$p.SourceSmbGuest
     $PreflightOnly = [bool]$p.PreflightOnly
     if ([string]::IsNullOrWhiteSpace($SourceUnc) -or [string]::IsNullOrWhiteSpace($TargetLocal)) {
         throw "SourceUnc and TargetLocal are required"
@@ -24,16 +26,7 @@ try {
     if ($SourceUnc -match '^(\\\\[^\\]+\\[^\\]+)') { $shareRoot = $Matches[1] }
     $mounted = $false
     try {
-        if (-not [string]::IsNullOrEmpty($SmbUser) -and -not [string]::IsNullOrEmpty($SmbPass)) {
-            # net use with HOST\user (forwarded qualified by Rust) — New-PSDrive with a
-            # bare local account name fails remote SMB with "Access is denied".
-            cmd.exe /c "net use `"$shareRoot`" /delete /y" 2>&1 | Out-Null
-            $netOut = ((cmd.exe /c "net use `"$shareRoot`" `"$SmbPass`" /user:$SmbUser /persistent:no" 2>&1) | Out-String).Trim()
-            if ($LASTEXITCODE -ne 0) {
-                throw "net use $shareRoot failed: $netOut"
-            }
-            $mounted = $true
-        }
+        $mounted = Mount-DistributeSourceShare -ShareRoot $shareRoot -SmbUser $SmbUser -SmbPass $SmbPass -UseGuest $UseGuest
         # Exact-filename robocopy filter (see below) matches nothing and still
         # exits 0 if the source has no DDC.ddp — check the file directly (one
         # round-trip on the common/success path) and fail explicitly instead
@@ -69,7 +62,7 @@ try {
         @{ ok = ($code -lt 8); exit_code = "$code"; bytes_copied = "$bytesCopied"; stdout_tail = "$tail"; preflight = $false } | ConvertTo-Json -Compress
     }
     finally {
-        if ($mounted) { cmd.exe /c "net use `"$shareRoot`" /delete /y" 2>&1 | Out-Null }
+        if ($mounted) { Unmount-DistributeSourceShare -ShareRoot $shareRoot }
     }
 }
 catch {
