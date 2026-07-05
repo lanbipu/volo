@@ -346,6 +346,21 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
       document.addEventListener('mousedown', onDown);
       return () => document.removeEventListener('mousedown', onDown);
     }, [toolsOpen, openMenu]);
+    /* 搜索框折叠为图标 + 弹出框：默认只显示放大镜图标，点击后弹出输入框并自动聚焦 */
+    const [searchOpen, setSearchOpen] = useState(false);
+    const searchRef = useRef(null);
+    const searchInRef = useRef(null);
+    useEffect(() => { if (searchOpen && searchInRef.current) searchInRef.current.focus(); }, [searchOpen]);
+    /* 点击外部区域 / 按 Esc 收起——但有关键词时保持展开，便于看到当前过滤状态 */
+    useEffect(() => {
+      if (!searchOpen) return undefined;
+      const closeIfNoQuery = () => { if (!query.trim()) setSearchOpen(false); };
+      const onDown = (e) => { if (searchRef.current && !searchRef.current.contains(e.target)) closeIfNoQuery(); };
+      const onKey = (e) => { if (e.key === 'Escape') closeIfNoQuery(); };
+      document.addEventListener('mousedown', onDown);
+      document.addEventListener('keydown', onKey);
+      return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+    }, [searchOpen, query]);
     /* 清空已发现工程（真删除：delete_project 逐个移除 DB 记录，级联 project_locations；
        不动磁盘上的工程文件）+ 二次确认门。cleared 只做删除落地前的即时清屏。 */
     const [cleared, setCleared] = useState(false);
@@ -808,7 +823,9 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
         badge ? h('span', { className: 'pak-tool-badge' }, badge) : null),
       openMenu === id ? menu : null);
 
-    const listBar = sorted.length === 0 && !activeFilterCount ? null
+    /* 有搜索关键词或搜索弹层展开时，即便当前过滤结果为空也不能隐藏工具条——否则搜索图标
+       本身（现收纳在工具条里）会跟着消失，用户没法再清空关键词。 */
+    const listBar = sorted.length === 0 && !activeFilterCount && !q && !searchOpen ? null
       : h('div', { className: 'pak-list-bar' },
           h('button', { type: 'button',
               className: 'pak-selall' + (allSelected ? ' on' : someSelected ? ' part' : ''),
@@ -818,16 +835,30 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
               allSelected ? h(Icon, { name: 'check', size: 12 }) : someSelected ? h(Icon, { name: 'minus', size: 12 }) : null),
             h('span', { className: 'pak-selall-tx' }, allSelected ? '取消全选' : '全选'),
             h('span', { className: 'pak-selall-ct' }, visibleSelectedCount ? (visibleSelectedCount + ' / ' + sorted.length) : (sorted.length + ' 个工程'))),
-          h('div', { className: 'pak-list-tools' + (toolsOpen ? ' open' : ''), ref: toolsRef },
-            toolsOpen ? h(React.Fragment, null,
-              toolBtn('view', '显示方式', VIEW_OPTS.find((o) => o.id === view).icon, viewMenu),
-              toolBtn('sort', '排序方式', 'sort', sortMenu),
-              toolBtn('filter', '筛选策略', 'filter', filterMenu, activeFilterCount || null)) : null,
-            h('button', { type: 'button', className: 'pak-tools-toggle' + (toolsOpen ? ' on' : '') + (activeFilterCount ? ' has-filter' : ''),
-                'data-tip': toolsOpen ? '收起' : '显示 · 排序 · 筛选', 'aria-label': toolsOpen ? '收起工具' : '显示 · 排序 · 筛选',
-                onClick: () => { setToolsOpen((v) => !v); setOpenMenu(null); } },
-              h(Icon, { name: toolsOpen ? 'x' : 'sliders', size: 16 }),
-              !toolsOpen && activeFilterCount ? h('span', { className: 'pak-tools-badge' }, activeFilterCount) : null)),
+          h('div', { className: 'pak-list-actions' },
+            h('div', { className: 'pak-search-wrap', ref: searchRef },
+              h('button', { type: 'button', className: 'pak-search-btn' + (q ? ' has-query' : ''),
+                  'data-tip': '按工程名 / 路径过滤', 'aria-label': '搜索工程',
+                  onClick: () => setSearchOpen((v) => !v) },
+                h(Icon, { name: 'search', size: 15 }),
+                q ? h('span', { className: 'pak-search-badge' }, matched.length) : null),
+              searchOpen ? h('div', { className: 'pak-search-pop' },
+                h(Icon, { name: 'search', size: 14 }),
+                h('input', { ref: searchInRef, value: query, placeholder: '按工程名 / 路径过滤…', spellCheck: false,
+                    onChange: (e) => setQuery(e.target.value) }),
+                q ? h('span', { className: 'pak-search-ct' }, '匹配 ' + matched.length + ' / ' + UE_PROJECTS.length) : null,
+                q ? h('button', { className: 'pak-search-clear', title: '清除搜索', onClick: () => setQuery('') }, h(Icon, { name: 'x', size: 13 })) : null)
+                : null),
+            h('div', { className: 'pak-list-tools' + (toolsOpen ? ' open' : ''), ref: toolsRef },
+              toolsOpen ? h(React.Fragment, null,
+                toolBtn('view', '显示方式', VIEW_OPTS.find((o) => o.id === view).icon, viewMenu),
+                toolBtn('sort', '排序方式', 'sort', sortMenu),
+                toolBtn('filter', '筛选策略', 'filter', filterMenu, activeFilterCount || null)) : null,
+              h('button', { type: 'button', className: 'pak-tools-toggle' + (toolsOpen ? ' on' : '') + (activeFilterCount ? ' has-filter' : ''),
+                  'data-tip': toolsOpen ? '收起' : '显示 · 排序 · 筛选', 'aria-label': toolsOpen ? '收起工具' : '显示 · 排序 · 筛选',
+                  onClick: () => { setToolsOpen((v) => !v); setOpenMenu(null); } },
+                h(Icon, { name: toolsOpen ? 'x' : 'sliders', size: 16 }),
+                !toolsOpen && activeFilterCount ? h('span', { className: 'pak-tools-badge' }, activeFilterCount) : null))),
           view === 'flat'
             ? h('div', { className: 'pak-zoom pak-zoom--bar' },
                 h('span', { className: 'pak-zoom-ic sm' }, h(Icon, { name: 'grid', size: 12 })),
@@ -865,11 +896,6 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
             h('div', { className: 'right' },
               sel.length ? h('span', { className: 'toolchip' }, h(Icon, { name: 'check', size: 14 }), '已选 ' + sel.length) : null)),
           h('div', { className: 'pak2-b' },
-            h('div', { className: 'pak-search' },
-              h(Icon, { name: 'search', size: 14 }),
-              h('input', { value: query, placeholder: '按工程名 / 路径过滤…', spellCheck: false, onChange: (e) => setQuery(e.target.value) }),
-              q ? h('span', { className: 'pak-search-ct' }, '匹配 ' + matched.length + ' / ' + UE_PROJECTS.length) : null,
-              q ? h('button', { className: 'pak-search-clear', title: '清除搜索', onClick: () => setQuery('') }, h(Icon, { name: 'x', size: 13 })) : null),
             h('div', { className: 'pak-controls' },
               h('div', { className: 'pak-ctl scan' }, h('label', null, '扫描范围'),
                 /* popover min-width(210) 比按钮(168)宽：默认右对齐会向左溢出栏边界，
