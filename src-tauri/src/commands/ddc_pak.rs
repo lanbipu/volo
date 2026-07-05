@@ -402,6 +402,12 @@ pub async fn distribute_ddc_pak(
         // behavior of letting a manual/override UNC through. Cred from the
         // SecretStore alias if given (Mode B svc = ddc-svc), else none (open share).
         Some(unc) => {
+            cache_core::core::shares::ensure_source_unc_share_live(
+                &db,
+                source_machine_id,
+                &source_machine.ip,
+                unc,
+            )?;
             // Resolve the SMB cred ALIAS for this explicit UNC: the caller's
             // explicit alias wins; otherwise match the UNC to a registered share
             // on the source host (an explicit UNC uniquely identifies the share,
@@ -414,6 +420,7 @@ pub async fn distribute_ddc_pak(
             // Mode A row may store an unrelated operator alias and is mounted
             // anonymously, so it must not be treated as an SMB cred.)
             let alias = source_smb_credential_alias.clone().or_else(|| {
+                let explicit_share_name = cache_core::core::shares::unc_share_name(unc)?;
                 cache_core::data::share_configs::find_by_host(&db, source_machine_id)
                     .ok()
                     .and_then(|shares| {
@@ -421,7 +428,7 @@ pub async fn distribute_ddc_pak(
                             .into_iter()
                             .find(|s| {
                                 s.mode == cache_core::data::ShareMode::Managed
-                                    && pak_distribute::unc_names_share(unc, &s.unc_path)
+                                    && s.share_name.eq_ignore_ascii_case(&explicit_share_name)
                             })
                             .and_then(|s| s.credential_alias)
                     })
@@ -488,9 +495,14 @@ pub async fn distribute_ddc_pak(
 
     for item in &plan {
         pak_distribute::preflight_one_with_profile(&distribute_profile, item).await.map_err(|e| {
+            let roots = if item.share_mount_roots.is_empty() {
+                item.source_unc.clone()
+            } else {
+                item.share_mount_roots.join(", ")
+            };
             VoloError::OperationFailed(format!(
-                "target {} cannot reach source UNC: {}",
-                item.target_machine_id, e
+                "target {} cannot reach source UNC {}; attempted share roots [{}]: {}",
+                item.target_machine_id, item.source_unc, roots, e
             ))
         })?;
     }
