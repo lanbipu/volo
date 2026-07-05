@@ -393,6 +393,19 @@ pub fn ensure_registered_share_live(db: &Db, share: &ShareConfig) -> VoloResult<
     Ok(())
 }
 
+fn registered_share_for_unc(
+    db: &Db,
+    source_machine_id: i64,
+    unc: &str,
+) -> VoloResult<Option<ShareConfig>> {
+    let share_name = unc_share_name(unc).ok_or_else(|| {
+        VoloError::InvalidInput(format!("cannot parse share name from source UNC '{unc}'"))
+    })?;
+    Ok(share_configs::find_by_host(db, source_machine_id)?
+        .into_iter()
+        .find(|share| share.share_name.eq_ignore_ascii_case(&share_name)))
+}
+
 /// Verify an explicit distribute UNC before target preflight. Registered shares
 /// are self-healed from their DB definition; unregistered manual UNC values can
 /// only be probed and receive a precise error when the share is absent.
@@ -405,10 +418,7 @@ pub fn ensure_source_unc_share_live(
     let share_name = unc_share_name(unc).ok_or_else(|| {
         VoloError::InvalidInput(format!("cannot parse share name from source UNC '{unc}'"))
     })?;
-    if let Some(share) = share_configs::find_by_host(db, source_machine_id)?
-        .into_iter()
-        .find(|share| share.share_name.eq_ignore_ascii_case(&share_name))
-    {
+    if let Some(share) = registered_share_for_unc(db, source_machine_id, unc)? {
         return ensure_registered_share_live(db, &share);
     }
     if smb_share_exists_on_host(source_host, &share_name)? {
@@ -845,5 +855,41 @@ mod tests {
         let share = r"\\HOST\DDC";
         assert!(unc_names_share(r"\\host\ddc\DerivedDataCache", share));
         assert!(!unc_names_share(r"\\HOST\DDCX", share));
+    }
+
+    #[test]
+    fn registered_share_for_unc_matches_share_name_across_host_variants() {
+        let db = crate::data::open_in_memory().unwrap();
+        {
+            let mut conn = db.lock().unwrap();
+            crate::data::schema::migrate(&mut conn).unwrap();
+        }
+        let machine_id = crate::data::machines::insert(
+            &db,
+            &crate::data::Machine::new("SOURCE", "192.168.10.20"),
+        )
+        .unwrap();
+        share_configs::insert(
+            &db,
+            &ShareConfig {
+                id: None,
+                host_machine_id: machine_id,
+                share_name: "DDC".into(),
+                unc_path: r"\\SOURCE\DDC".into(),
+                local_path: r"D:\Projects".into(),
+                mode: ShareMode::Open,
+                credential_alias: None,
+            },
+        )
+        .unwrap();
+
+        let found = registered_share_for_unc(
+            &db,
+            machine_id,
+            r"\\192.168.10.20\ddc\Project\DerivedDataCache",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(found.share_name, "DDC");
     }
 }

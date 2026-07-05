@@ -631,16 +631,17 @@ mod tests {
     // falsely reports ok. Real-node loopback behavior is validated on lanPC.)
 
     #[test]
-    fn node_scripts_fingerprint_changes_when_content_changes() {
+    fn node_script_manifest_changes_when_content_changes() {
         let dir = tempfile::tempdir().unwrap();
         let a = dir.path().join("a.ps1");
         let b = dir.path().join("b.ps1");
         std::fs::write(&a, b"v1").unwrap();
         std::fs::write(&b, b"same").unwrap();
-        let fp1 = node_scripts_fingerprint(&[a.clone(), b.clone()]).unwrap();
+        let manifest1 = node_script_manifest(&[a.clone(), b.clone()]).unwrap();
         std::fs::write(&a, b"v2").unwrap();
-        let fp2 = node_scripts_fingerprint(&[a, b]).unwrap();
-        assert_ne!(fp1, fp2);
+        let manifest2 = node_script_manifest(&[a, b]).unwrap();
+        assert_ne!(manifest1["a.ps1"], manifest2["a.ps1"]);
+        assert_eq!(manifest1["b.ps1"], manifest2["b.ps1"]);
     }
 
     #[test]
