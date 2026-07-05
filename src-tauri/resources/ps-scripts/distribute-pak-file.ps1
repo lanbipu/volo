@@ -30,7 +30,11 @@ try {
             New-PSDrive -Name $driveName -PSProvider FileSystem -Root $SourceUnc -Credential $smbCred -ErrorAction Stop | Out-Null
             $mounted = $true
         }
-        elseif (-not (Test-Path -LiteralPath $SourceUnc)) {
+        # -ErrorAction SilentlyContinue on every UNC probe: under EAP=Stop an
+        # access-denied SMB response makes Test-Path THROW ("Access is denied")
+        # instead of returning $false, which would skip the guest mount / the
+        # specific throw messages below entirely.
+        elseif (-not (Test-Path -LiteralPath $SourceUnc -ErrorAction SilentlyContinue)) {
             # Open (Mode A) share, no forwarded cred: under an SSH network
             # logon the implicit NULL session is rejected (Access is denied) —
             # an explicit guest mount of the share root works where anonymous
@@ -54,8 +58,8 @@ try {
         # failure to report the more specific "unreachable" cause.
         $FileName = 'DDC.ddp'
         $sourceFile = Join-Path -Path $SourceUnc -ChildPath $FileName
-        if (-not (Test-Path -LiteralPath $sourceFile)) {
-            if (-not (Test-Path -LiteralPath $SourceUnc)) {
+        if (-not (Test-Path -LiteralPath $sourceFile -ErrorAction SilentlyContinue)) {
+            if (-not (Test-Path -LiteralPath $SourceUnc -ErrorAction SilentlyContinue)) {
                 throw "source UNC unreachable: $SourceUnc"
             }
             throw "source has no $FileName to distribute: $sourceFile"
