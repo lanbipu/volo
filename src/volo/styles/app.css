@@ -2341,6 +2341,11 @@ html, body {
   border-radius: 10px; padding: 13px 15px; text-wrap: pretty; }
 .mdone__ic { width: 26px; height: 26px; border-radius: 8px; flex: 0 0 auto; display: grid; place-items: center;
   background: color-mix(in srgb, var(--positive-visual) 18%, transparent); color: var(--positive-visual); }
+/* dispatchDone 完成态的进度指引提示条（分发已下发，真实进度看右下角任务条） */
+.dispatch-hint { display: flex; align-items: center; gap: 8px; margin-top: 10px;
+  font-size: 12px; color: var(--chrome-dim); background: var(--wash);
+  border: 1px solid var(--chrome-line); border-radius: 8px; padding: 9px 12px; text-wrap: pretty; }
+.dispatch-hint svg { flex: 0 0 auto; color: var(--chrome-dim); }
 .mfail { display: flex; align-items: center; gap: 11px; font-size: 13px; color: var(--chrome-text);
   background: color-mix(in srgb, var(--negative-visual) 9%, transparent);
   border: 1px solid color-mix(in srgb, var(--negative-visual) 30%, transparent);

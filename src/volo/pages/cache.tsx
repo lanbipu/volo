@@ -817,6 +817,19 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
         (e) => { if (timer.current) clearTimeout(timer.current); setErrMsg(e && e.message ? e.message : String(e)); setPhase('failed'); });
     };
 
+    /* dispatchDone：确认=下发命令；kickoff（invoke）落定即翻「OK · 已开始分发」完成态——
+       后台任务已启动，真实执行进度由右下角「运行中」任务进度条承担，对话框不再滞留等待。
+       kickoff 被拒（如 preflight 失败）仍走 failed 分支显示真实原因。 */
+    const dispatch = (picked) => {
+      if (started.current) return;
+      started.current = true;
+      pickedRef.current = picked;
+      setPhase('running'); setErrMsg(null);
+      Promise.resolve().then(() => (d.run ? d.run(picked) : (d.onConfirm && d.onConfirm(picked)))).then(
+        (r) => { setDoneResult(r); setDone(total); setPhase('done'); },
+        (e) => { setErrMsg(e && e.message ? e.message : String(e)); setPhase('failed'); });
+    };
+
     useEffect(() => {
       if (d.autostart) start();
       return () => { if (timer.current) clearTimeout(timer.current); };
@@ -825,7 +838,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
     if (phase === 'preview') {
       /* liveProgress:false → 确认即关闭对话框 + 后台执行（进度在页面别处）；否则进对话框内进度阶段 */
       const plainConfirm = (picked) => { pickedRef.current = picked; close(); if (d.run) d.run(picked); else if (d.onConfirm) d.onConfirm(picked); };
-      return h(PreviewPanel, { s, d, close, onConfirm: d.liveProgress === false ? plainConfirm : start });
+      return h(PreviewPanel, { s, d, close, onConfirm: d.dispatchDone ? dispatch : (d.liveProgress === false ? plainConfirm : start) });
     }
 
     const fail = phase === 'failed';
@@ -836,6 +849,29 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
     const okMsg = (typeof d.doneMsg === 'function' ? d.doneMsg(doneResult, pickedRef.current) : d.doneMsg) || '操作已完成';
     const okTitle = d.doneTitle || (d.destructive ? '已完成' : '已成功部署');
     const failTitle = d.failTitle || '执行失败';
+
+    /* dispatchDone 完成态：不展示进度/步骤——只报「已开始」+ 指引到右下角任务进度条 */
+    if (d.dispatchDone && phase === 'done') {
+      return h('div', { className: 'drawer drawer--preview' },
+        h('div', { className: 'drawer-h' },
+          h('span', { className: 'di ok' }, h(Icon, { name: 'check', size: 17 })),
+          h('div', { style: { minWidth: 0 } },
+            h('h2', null, okTitle),
+            h('div', { className: 'sub' },
+              h('span', { className: 'cli-pill' }, d.cli),
+              h('span', null, ' · 已下发'))),
+          h('button', { className: 'iconbtn x', onClick: close }, h(Icon, { name: 'x', size: 16 }))),
+        h('div', { className: 'drawer-b' },
+          h('div', { className: 'dblock' },
+            h('div', { className: 'mdone' },
+              h('span', { className: 'mdone__ic' }, h(Icon, { name: 'check', size: 16 })),
+              h('span', null, okMsg)),
+            h('div', { className: 'dispatch-hint' },
+              h(Icon, { name: 'info', size: 13 }),
+              h('span', null, '实际分发进度不在此对话框展示 —— 请到页面右下角「运行中」任务进度条查看')))),
+        h('div', { className: 'drawer-f' },
+          h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'check', size: 15 }), onPress: close }, 'OK')));
+    }
     return h('div', { className: 'drawer drawer--preview' + (d.destructive ? ' danger' : '') },
       h('div', { className: 'drawer-h' },
         h('span', { className: 'di' + (phase === 'done' ? ' ok' : fail ? ' err' : d.destructive ? '' : ' info') },

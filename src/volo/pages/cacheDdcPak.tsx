@@ -437,7 +437,12 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
       CX.openModalPreview(s, {
         title: '分发 DDC PAK · ' + dp.project.name, icon: 'download', cli: 'ddc distribute', destructive: false, channel: 'ssh',
         confirmLabelFn: (n) => '分发到 ' + n + ' 台',
-        doneTitle: '分发完成', doneMsg: (_r, picked) => dp.project.name + ' 已分发到 ' + ((picked && picked.length) || targetIds.length) + ' 台渲染机',
+        /* dispatchDone：对话框只负责下发——invoke 返回（preflight 通过、后台任务已启动）
+           即翻「OK · 已开始分发」，用户随即可关闭去做别的；真实执行进度由右下角
+           「运行中」任务进度条独家承担，两处不再重复显示。 */
+        dispatchDone: true,
+        doneTitle: 'OK · 已开始分发',
+        doneMsg: (_r, picked) => '已开始把 ' + dp.project.name + ' 的 DDC PAK 分发到 ' + ((picked && picked.length) || targetIds.length) + ' 台渲染机 —— 后台任务已启动',
         steps: [
           '把该 PAK 从源机 ' + srcHost + ' 经 SSH 推送到所选机器',
           '目标机已有相同大小的 PAK 时自动跳过，不重复传输',
@@ -445,13 +450,13 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
         selectableScope: cand.map((n) => ({ id: n.machineId, host: n.host, ip: n.ip, msg: n.gpu })),
         run: (picked) => {
           const targets = (picked && picked.length) ? picked : targetIds;
-          /* resolveOnDone：invoke 返回只代表 preflight 过了、传输已开始——对话框要等
-             事件流数满全部目标的终态（真正分发完）才能翻「完成」，否则秒变绿误导。 */
+          /* promise 在 invoke 返回（任务已启动）时落定 → dispatchDone 完成态；分发真正
+             跑完（事件流终态）后由 onDone 刷新已部署列表。 */
           return s.runStreamingCmd(
             { domain: 'ddc', action: 'distribute', target: dp.project.name + ' · ' + targets.length + ' 台', chan: 'ssh', note: '分发 · ' + dp.project.name, quiet: true },
             () => distributeDdcPak(dp.source.machine_id, Number(dp.project.id), targets, null, null, null),
-            { mode: 'event', events: ['pak-distribute-progress'], jobIdOf: (r) => r.job_id, total: (r) => (r.plan || []).length, reduce: DDC.batchReduce, timeoutMs: 30 * 60 * 1000, resolveOnDone: true })
-            .then(() => loadDeployed(true));
+            { mode: 'event', events: ['pak-distribute-progress'], jobIdOf: (r) => r.job_id, total: (r) => (r.plan || []).length, reduce: DDC.batchReduce, timeoutMs: 30 * 60 * 1000,
+              onDone: () => loadDeployed(true) });
         },
       });
     };
