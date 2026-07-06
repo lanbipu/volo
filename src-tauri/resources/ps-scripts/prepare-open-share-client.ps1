@@ -107,7 +107,7 @@ try {
             $steps.Add("interactive verify skipped: $($_.Exception.Message)") | Out-Null
         }
     } else {
-        $steps.Add('no console user logged on; applies at next logon') | Out-Null
+        $steps.Add('no console user logged on; deferred to next logon') | Out-Null
     }
 
     # 3) SYSTEM branch — UE running as a LocalSystem service (e.g. RenderStream).

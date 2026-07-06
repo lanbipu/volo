@@ -23,6 +23,10 @@ try {
     $targets = @(); $cmdkeyTargets = @(); $serverName = ''; $user = ''; $key = ''; $secretFile = ''
 }
 
+function Get-UncServer([string]$u) {
+    if ($u -match '^\\\\([^\\]+)\\') { return $Matches[1] } else { return $null }
+}
+
 function Connect-Managed([string]$unc) {
     $qualified = "$serverName\$user"
     $pass = (Get-Content -LiteralPath $secretFile -Raw -ErrorAction SilentlyContinue).Trim()
@@ -35,6 +39,24 @@ function Connect-Managed([string]$unc) {
     cmd.exe /c "net use `"$unc`" /delete /y" 2>&1 | Out-Null
     $out = ((cmd.exe /c "net use `"$unc`" `"$pass`" /user:$qualified /persistent:no" 2>&1) | Out-String).Trim()
     $code = $LASTEXITCODE
+    # Error 1219: another session to this server exists under a different
+    # identity (e.g. the Mode A worker's Guest connections to open shares on
+    # the same host). Windows allows only one username per server per logon
+    # session. Recovery: drop every mapping/session to this server, retry once.
+    # Open (Everyone) shares stay reachable through the authenticated svc
+    # session, so tearing down the Guest sessions does not strand Mode A.
+    if ($code -ne 0 -and $out -match '1219') {
+        $srv = Get-UncServer $unc
+        if ($srv) {
+            Get-SmbMapping -ErrorAction SilentlyContinue |
+                Where-Object { $_.RemotePath -like "\\$srv\*" } |
+                Remove-SmbMapping -Force -ErrorAction SilentlyContinue
+            cmd.exe /c "net use \\$srv\IPC`$ /delete /y" 2>&1 | Out-Null
+        }
+        $out = ((cmd.exe /c "net use `"$unc`" `"$pass`" /user:$qualified /persistent:no" 2>&1) | Out-String).Trim()
+        $code = $LASTEXITCODE
+        $out = "retried after 1219 (dropped existing sessions to $srv): $out"
+    }
     return [ordered]@{ unc = $unc; code = $code; testpath = [bool](Test-Path -LiteralPath $unc); netuse = $out }
 }
 

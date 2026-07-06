@@ -28,12 +28,27 @@ try {
         throw "share '$ShareName' still present after Remove-SmbShare"
     }
 
-    # Mode B: drop the dedicated svc local account that locked the share.
+    # Mode B: drop the dedicated svc local account that locked the share —
+    # but ONLY if no other share still grants it. The svc account name is a
+    # fixed default (ddc-svc) shared across Mode B shares on this host, so an
+    # unconditional Remove-LocalUser here orphans every other Mode B share's
+    # ACL (root cause of the "joined but access denied" incident, 2026-07-06).
     $removedUser = $false
+    $keptUserReason = $null
     if (-not [string]::IsNullOrWhiteSpace($SvcUsername)) {
         if (Get-LocalUser -Name $SvcUsername -ErrorAction SilentlyContinue) {
-            Remove-LocalUser -Name $SvcUsername
-            $removedUser = $true
+            $stillUsedBy = @(Get-SmbShare -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -ne $ShareName } |
+                Where-Object {
+                    @(Get-SmbShareAccess -Name $_.Name -ErrorAction SilentlyContinue |
+                      Where-Object { $_.AccountName.Split('\')[-1] -eq $SvcUsername }).Count -gt 0
+                } | ForEach-Object { $_.Name })
+            if ($stillUsedBy.Count -gt 0) {
+                $keptUserReason = "svc account '$SvcUsername' kept: still used by share(s) $($stillUsedBy -join ', ')"
+            } else {
+                Remove-LocalUser -Name $SvcUsername
+                $removedUser = $true
+            }
         }
     }
 
@@ -44,8 +59,10 @@ try {
         $removedFiles = $true
     }
 
+    $msg = "share '$ShareName' torn down (keep_files=$KeepFiles)"
+    if ($keptUserReason) { $msg = "$msg; $keptUserReason" }
     @{ ok = $true; removed_share = $removedShare; removed_user = $removedUser; removed_files = $removedFiles;
-       message = "share '$ShareName' torn down (keep_files=$KeepFiles)" } | ConvertTo-Json -Compress
+       message = $msg } | ConvertTo-Json -Compress
 }
 catch {
     @{ ok = $false; message = "$($_.Exception.Message)" } | ConvertTo-Json -Compress
