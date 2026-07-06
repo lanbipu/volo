@@ -36,7 +36,7 @@ pub async fn read_ini_section(
 }
 
 #[tauri::command]
-pub fn set_ini_key(
+pub async fn set_ini_key(
     db: State<'_, Db>,
     machine_id: i64,
     file_path: String,
@@ -44,9 +44,14 @@ pub fn set_ini_key(
     name: String,
     value: String,
 ) -> VoloResult<WriteIniResponse> {
-    let host = ip_for(&db, machine_id)?;
-    let backup_path = ini_editor::set_key(&host, &file_path, &section, &name, &value)?;
-    Ok(WriteIniResponse { backup_path })
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        let host = ip_for(&db, machine_id)?;
+        let backup_path = ini_editor::set_key(&host, &file_path, &section, &name, &value)?;
+        Ok(WriteIniResponse { backup_path })
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("ini write task join: {}", e)))?
 }
 
 /// Write one field of a DerivedDataBackendGraph backend node (e.g. the
@@ -56,7 +61,7 @@ pub fn set_ini_key(
 /// actually honors `UE-SharedDataCachePath` (the node needs
 /// `EnvPathOverride=UE-SharedDataCachePath`, else UE ignores the env var).
 #[tauri::command]
-pub fn set_machine_backend_field(
+pub async fn set_machine_backend_field(
     db: State<'_, Db>,
     machine_id: i64,
     file_path: String,
@@ -65,21 +70,26 @@ pub fn set_machine_backend_field(
     field: String,
     value: String,
 ) -> VoloResult<String> {
-    // Logged so the join's project-INI half (wiring [DerivedDataBackendGraph]
-    // Shared Path / EnvPathOverride) leaves an `operations` row on failure.
-    let invocation = format!(
-        "set backend field [{section}] {node_name}.{field}=\"{value}\" in {file_path} on machine {machine_id}"
-    );
-    crate::commands::oplog::logged(
-        &db,
-        "ini.set_backend_field",
-        &[machine_id],
-        &invocation,
-        || {
-            let host = ip_for(&db, machine_id)?;
-            ini_editor::set_backend_field(&host, &file_path, &section, &node_name, &field, &value)
-        },
-    )
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        // Logged so the join's project-INI half (wiring [DerivedDataBackendGraph]
+        // Shared Path / EnvPathOverride) leaves an `operations` row on failure.
+        let invocation = format!(
+            "set backend field [{section}] {node_name}.{field}=\"{value}\" in {file_path} on machine {machine_id}"
+        );
+        crate::commands::oplog::logged(
+            &db,
+            "ini.set_backend_field",
+            &[machine_id],
+            &invocation,
+            || {
+                let host = ip_for(&db, machine_id)?;
+                ini_editor::set_backend_field(&host, &file_path, &section, &node_name, &field, &value)
+            },
+        )
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("ini write task join: {}", e)))?
 }
 
 /// Inverse of [`set_machine_backend_field`]: drop one field of a backend node
@@ -87,7 +97,7 @@ pub fn set_machine_backend_field(
 /// the join's project-INI wiring so no dormant shared-DDC config lingers once the
 /// env var is cleared. Idempotent on the remote side (absent field = success).
 #[tauri::command]
-pub fn remove_machine_backend_field(
+pub async fn remove_machine_backend_field(
     db: State<'_, Db>,
     machine_id: i64,
     file_path: String,
@@ -95,19 +105,24 @@ pub fn remove_machine_backend_field(
     node_name: String,
     field: String,
 ) -> VoloResult<String> {
-    let invocation = format!(
-        "remove backend field [{section}] {node_name}.{field} in {file_path} on machine {machine_id}"
-    );
-    crate::commands::oplog::logged(
-        &db,
-        "ini.remove_backend_field",
-        &[machine_id],
-        &invocation,
-        || {
-            let host = ip_for(&db, machine_id)?;
-            ini_editor::remove_backend_field(&host, &file_path, &section, &node_name, &field)
-        },
-    )
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        let invocation = format!(
+            "remove backend field [{section}] {node_name}.{field} in {file_path} on machine {machine_id}"
+        );
+        crate::commands::oplog::logged(
+            &db,
+            "ini.remove_backend_field",
+            &[machine_id],
+            &invocation,
+            || {
+                let host = ip_for(&db, machine_id)?;
+                ini_editor::remove_backend_field(&host, &file_path, &section, &node_name, &field)
+            },
+        )
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("ini write task join: {}", e)))?
 }
 
 #[tauri::command]
@@ -130,7 +145,7 @@ pub async fn read_ini_section_with_credential(
 }
 
 #[tauri::command]
-pub fn set_ini_key_with_credential(
+pub async fn set_ini_key_with_credential(
     db: State<'_, Db>,
     machine_id: i64,
     file_path: String,
@@ -139,8 +154,13 @@ pub fn set_ini_key_with_credential(
     value: String,
     credential_alias: String,
 ) -> VoloResult<WriteIniResponse> {
-    let _ = credential_alias; // accepted-but-ignored shim (SSH key auth); Vue still sends it.
-    let host = ip_for(&db, machine_id)?;
-    let backup_path = ini_editor::set_key(&host, &file_path, &section, &name, &value)?;
-    Ok(WriteIniResponse { backup_path })
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        let _ = credential_alias; // accepted-but-ignored shim (SSH key auth); Vue still sends it.
+        let host = ip_for(&db, machine_id)?;
+        let backup_path = ini_editor::set_key(&host, &file_path, &section, &name, &value)?;
+        Ok(WriteIniResponse { backup_path })
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("ini write task join: {}", e)))?
 }

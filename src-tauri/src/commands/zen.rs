@@ -160,12 +160,15 @@ pub struct ZenProbeReport {
 // Tauri events instead of returning a single summary. The CLI keeps its
 // NDJSON ItemCompleted stream regardless.
 #[tauri::command]
-pub fn zen_probe(
+pub async fn zen_probe(
     db: State<'_, Db>,
     machine_id: Option<i64>,
     cred_alias: Option<String>,
     timeout_seconds: Option<u64>,
 ) -> VoloResult<ZenProbeReport> {
+    // Zen HTTP probes use blocking clients with multi-second timeouts.
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     if let Some(alias) = &cred_alias {
         // Match the CLI's preflight: a typo'd alias should fail fast rather
         // than silently fall through to anonymous probe. The probe itself
@@ -231,6 +234,9 @@ pub fn zen_probe(
         unreachable: unreachable_count,
         probes: records,
     })
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen probe task join: {}", e)))?
 }
 
 // ---------------------------------------------------------------------------
@@ -432,11 +438,13 @@ pub struct ZenDetectBinaryReport {
 // `batch-progress` events. For now sync; cluster sizes 5-20 keep wall time
 // under ~10 seconds.
 #[tauri::command]
-pub fn zen_detect_binary(
+pub async fn zen_detect_binary(
     db: State<'_, Db>,
     machine_id: Option<i64>,
     cred_alias: Option<String>,
 ) -> VoloResult<ZenDetectBinaryReport> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     // The transport is now SSH key auth (uecm-svc), so the operator password
     // is no longer loaded or forwarded — `cred_alias` is therefore optional,
     // matching the CLI's `CredentialArgs` (which accepts no credential). When
@@ -528,6 +536,9 @@ pub fn zen_detect_binary(
         failed,
         results,
     })
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen detect-binary task join: {}", e)))?
 }
 
 /// Run `zen-detect-binary.ps1` on `host` over SSH and parse the JSON payload.
@@ -1100,13 +1111,15 @@ pub struct ZenApplyConfigSummary {
 /// backslash/forward-slash rfind `zen_config_lua_path` uses — this describes
 /// a path on the remote host, not the local OS Volo runs on).
 #[tauri::command]
-pub fn zen_apply_config(
+pub async fn zen_apply_config(
     db: State<'_, Db>,
     endpoint_id: i64,
     confirmed: bool,
     dry_run: bool,
     cred: ZenCredentialInput,
 ) -> VoloResult<ZenApplyConfigResult> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     guard_destructive(confirmed, dry_run, "zen.apply-config")?;
     cred.preflight(&db)?;
     let (ep, lua) = zen_cli_shared::render_lua_for(&db, endpoint_id)?;
@@ -1170,6 +1183,9 @@ pub fn zen_apply_config(
         sha256: expected_sha,
         remote,
     }))
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen apply-config task join: {}", e)))?
 }
 
 // ---------------------------------------------------------------------------
@@ -1200,11 +1216,13 @@ pub struct ZenEnableGlobalResult {
 /// deliberately applies this scope without a confirm dialog (progress shows
 /// inline per-machine instead).
 #[tauri::command]
-pub fn zen_enable_global(
+pub async fn zen_enable_global(
     db: State<'_, Db>,
     machine_id: i64,
     upstream_endpoint_id: i64,
 ) -> VoloResult<ZenEnableGlobalResult> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     let machine = zen_cli_shared::require_machine(&db, machine_id)?;
     let ue_user = machines::get_ue_runtime_user(&db, machine_id)?.ok_or_else(|| {
         VoloError::InvalidInput(format!(
@@ -1225,6 +1243,9 @@ pub fn zen_enable_global(
         changed: out.changed,
         warnings: out.warnings,
     })
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen enable-global task join: {}", e)))?
 }
 
 // ---------------------------------------------------------------------------
@@ -1328,11 +1349,13 @@ pub struct ZenSetLocalDataPathResult {
 /// fallback tier. Requires `ue_runtime_user` (same precondition as
 /// `zen_read_local_runcontext`).
 #[tauri::command]
-pub fn zen_set_local_datapath(
+pub async fn zen_set_local_datapath(
     db: State<'_, Db>,
     machine_id: i64,
     data_path: String,
 ) -> VoloResult<ZenSetLocalDataPathResult> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     let machine = zen_cli_shared::require_machine(&db, machine_id)?;
     let ue_user = machines::get_ue_runtime_user(&db, machine_id)?.ok_or_else(|| {
         VoloError::InvalidInput(format!(
@@ -1375,6 +1398,9 @@ pub fn zen_set_local_datapath(
             .unwrap_or_default()
             .to_string(),
     })
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen local datapath task join: {}", e)))?
 }
 
 // ---------------------------------------------------------------------------
@@ -1490,7 +1516,7 @@ pub struct ZenGcSettingsSummary {
 /// because a real apply always causes a brief service interruption.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn zen_update_gc_settings(
+pub async fn zen_update_gc_settings(
     db: State<'_, Db>,
     endpoint_id: i64,
     gc_interval_seconds: i64,
@@ -1500,6 +1526,8 @@ pub fn zen_update_gc_settings(
     dry_run: bool,
     cred: ZenCredentialInput,
 ) -> VoloResult<ZenGcSettingsResult> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     guard_destructive(confirmed, dry_run, "zen.gc_settings.update")?;
     cred.preflight(&db)?;
     cache_core::core::zen::lua_config::validate_positive_seconds(
@@ -1607,6 +1635,9 @@ pub fn zen_update_gc_settings(
         restarted: true,
         remote: config_response,
     }))
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen gc-settings task join: {}", e)))?
 }
 
 // ---------------------------------------------------------------------------
@@ -1670,18 +1701,25 @@ pub struct ZenDedicatedAccountResult {
 /// any running ZenServer until `zen_service_install` is actually called with
 /// it, so there's nothing destructive to preview here.
 #[tauri::command]
-pub fn zen_create_dedicated_account(
+pub async fn zen_create_dedicated_account(
     db: State<'_, Db>,
     machine_id: i64,
 ) -> VoloResult<ZenDedicatedAccountResult> {
-    let machine = zen_cli_shared::require_machine(&db, machine_id)?;
-    let result =
-        cache_core::core::zen::service_account::create_dedicated_account(machine_id, &machine.ip)?;
-    Ok(ZenDedicatedAccountResult {
-        machine_id,
-        username: result.username,
-        cred_alias: result.cred_alias,
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        let machine = zen_cli_shared::require_machine(&db, machine_id)?;
+        let result = cache_core::core::zen::service_account::create_dedicated_account(
+            machine_id,
+            &machine.ip,
+        )?;
+        Ok(ZenDedicatedAccountResult {
+            machine_id,
+            username: result.username,
+            cred_alias: result.cred_alias,
+        })
     })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen account task join: {}", e)))?
 }
 
 /// Tauri service-install command.
@@ -1695,7 +1733,7 @@ pub fn zen_create_dedicated_account(
 /// returned).
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn zen_service_install(
+pub async fn zen_service_install(
     db: State<'_, Db>,
     endpoint_id: i64,
     service_user: Option<String>,
@@ -1705,6 +1743,8 @@ pub fn zen_service_install(
     dry_run: bool,
     cred: ZenCredentialInput,
 ) -> VoloResult<ZenServiceResult> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     guard_destructive(confirmed, dry_run, "zen.service.install")?;
     if service_pass.is_some() && service_cred_alias.is_some() {
         return Err(VoloError::InvalidInput(
@@ -1913,16 +1953,21 @@ pub fn zen_service_install(
         service_name: zen_cli_shared::DEFAULT_SERVICE_NAME,
         remote: response,
     }))
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen service install task join: {}", e)))?
 }
 
 #[tauri::command]
-pub fn zen_service_uninstall(
+pub async fn zen_service_uninstall(
     db: State<'_, Db>,
     endpoint_id: i64,
     confirmed: bool,
     dry_run: bool,
     cred: ZenCredentialInput,
 ) -> VoloResult<ZenServiceResult> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     guard_destructive(confirmed, dry_run, "zen.service.uninstall")?;
     cred.preflight(&db)?;
     let ep = zen_cli_shared::require_endpoint(&db, endpoint_id)?;
@@ -1987,6 +2032,9 @@ pub fn zen_service_uninstall(
         service_name: zen_cli_shared::DEFAULT_SERVICE_NAME,
         remote: response,
     }))
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen service uninstall task join: {}", e)))?
 }
 
 // ---------------------------------------------------------------------------
@@ -2011,7 +2059,7 @@ pub struct ZenMigrateDataDirResult {
 /// installed) so `zen-migrate-datadir.ps1`'s robocopy never races an open
 /// file handle in the old data dir, then moves the tree.
 #[tauri::command]
-pub fn zen_migrate_data_dir(
+pub async fn zen_migrate_data_dir(
     db: State<'_, Db>,
     endpoint_id: i64,
     old_data_dir: String,
@@ -2019,6 +2067,8 @@ pub fn zen_migrate_data_dir(
     confirmed: bool,
     dry_run: bool,
 ) -> VoloResult<ZenMigrateDataDirResult> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     guard_destructive(confirmed, dry_run, "zen.migrate_data_dir")?;
     let ep = zen_cli_shared::require_endpoint(&db, endpoint_id)?;
     let machine = zen_cli_shared::require_machine(&db, ep.machine_id)?;
@@ -2084,16 +2134,21 @@ pub fn zen_migrate_data_dir(
         new_data_dir,
         message,
     })
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen data migration task join: {}", e)))?
 }
 
 /// Start is **not** destructive: the CLI doesn't take `--yes` for it. UI calls
 /// with no `confirmed` / `dry_run` knobs — same lifecycle gate applies.
 #[tauri::command]
-pub fn zen_service_start(
+pub async fn zen_service_start(
     db: State<'_, Db>,
     endpoint_id: i64,
     cred: ZenCredentialInput,
 ) -> VoloResult<ZenServiceSummary> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     cred.preflight(&db)?;
     let ep = zen_cli_shared::require_endpoint(&db, endpoint_id)?;
     let machine = zen_cli_shared::require_machine(&db, ep.machine_id)?;
@@ -2129,16 +2184,21 @@ pub fn zen_service_start(
         service_name: zen_cli_shared::DEFAULT_SERVICE_NAME,
         remote: response,
     })
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen service start task join: {}", e)))?
 }
 
 #[tauri::command]
-pub fn zen_service_stop(
+pub async fn zen_service_stop(
     db: State<'_, Db>,
     endpoint_id: i64,
     confirmed: bool,
     dry_run: bool,
     cred: ZenCredentialInput,
 ) -> VoloResult<ZenServiceResult> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     guard_destructive(confirmed, dry_run, "zen.service.stop")?;
     cred.preflight(&db)?;
     let ep = zen_cli_shared::require_endpoint(&db, endpoint_id)?;
@@ -2189,6 +2249,9 @@ pub fn zen_service_stop(
         service_name: zen_cli_shared::DEFAULT_SERVICE_NAME,
         remote: response,
     }))
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen service stop task join: {}", e)))?
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2201,11 +2264,13 @@ pub struct ZenServiceStatusResult {
 }
 
 #[tauri::command]
-pub fn zen_service_status(
+pub async fn zen_service_status(
     db: State<'_, Db>,
     endpoint_id: i64,
     cred: ZenCredentialInput,
 ) -> VoloResult<ZenServiceStatusResult> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     cred.preflight(&db)?;
     let ep = zen_cli_shared::require_endpoint(&db, endpoint_id)?;
     let machine = zen_cli_shared::require_machine(&db, ep.machine_id)?;
@@ -2227,6 +2292,9 @@ pub fn zen_service_status(
         service_name: zen_cli_shared::DEFAULT_SERVICE_NAME,
         remote: response,
     })
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen service status task join: {}", e)))?
 }
 
 // ---------------------------------------------------------------------------
@@ -2263,7 +2331,7 @@ pub struct ZenUrlaclSummary {
 }
 
 #[tauri::command]
-pub fn zen_urlacl_add(
+pub async fn zen_urlacl_add(
     db: State<'_, Db>,
     endpoint_id: i64,
     principal: String,
@@ -2271,6 +2339,8 @@ pub fn zen_urlacl_add(
     dry_run: bool,
     cred: ZenCredentialInput,
 ) -> VoloResult<ZenUrlaclResult> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     guard_destructive(confirmed, dry_run, "zen.urlacl.add")?;
     if principal.trim().is_empty() {
         return Err(VoloError::InvalidInput(
@@ -2383,6 +2453,9 @@ pub fn zen_urlacl_add(
         principal: Some(principal),
         remote: response,
     }))
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen urlacl task join: {}", e)))?
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2394,12 +2467,14 @@ pub struct ZenUrlaclListResult {
 }
 
 #[tauri::command]
-pub fn zen_urlacl_list(
+pub async fn zen_urlacl_list(
     db: State<'_, Db>,
     machine_id: i64,
     port_filter: Option<String>,
     cred: ZenCredentialInput,
 ) -> VoloResult<ZenUrlaclListResult> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     cred.preflight(&db)?;
     let m = zen_cli_shared::require_machine(&db, machine_id)?;
     // SSH key auth (uecm-svc); operator creds/auth_method ignored. Keep the
@@ -2421,16 +2496,21 @@ pub fn zen_urlacl_list(
         port_filter,
         remote: response,
     })
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen urlacl task join: {}", e)))?
 }
 
 #[tauri::command]
-pub fn zen_urlacl_remove(
+pub async fn zen_urlacl_remove(
     db: State<'_, Db>,
     endpoint_id: i64,
     confirmed: bool,
     dry_run: bool,
     cred: ZenCredentialInput,
 ) -> VoloResult<ZenUrlaclResult> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     guard_destructive(confirmed, dry_run, "zen.urlacl.remove")?;
     cred.preflight(&db)?;
     let ep = zen_cli_shared::require_endpoint(&db, endpoint_id)?;
@@ -2470,6 +2550,9 @@ pub fn zen_urlacl_remove(
         principal: None,
         remote: response,
     }))
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen urlacl task join: {}", e)))?
 }
 
 // ---------------------------------------------------------------------------
@@ -2543,13 +2626,15 @@ pub struct ZenVerifyRulesResult {
 /// already open the DB at startup, and the run-editor branch needs machine
 /// lookup, so we keep the call shape identical to the rest of the surface.
 #[tauri::command]
-pub fn zen_verify_rules(
+pub async fn zen_verify_rules(
     db: State<'_, Db>,
     ue_version: String,
     ue_install: String,
     #[allow(non_snake_case)] write_verified: bool,
     run_editor: Option<ZenVerifyRunEditorInput>,
 ) -> VoloResult<ZenVerifyRulesResult> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     use cache_core::core::zen::rules_loader as zen_rules;
 
     let rules = zen_rules::load_default()?;
@@ -2651,6 +2736,9 @@ pub fn zen_verify_rules(
         message: None,
         verify_outcome,
     })
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen verify-rules task join: {}", e)))?
 }
 
 /// Mirror of `cli::domain_zen::verify_rules` write-verified leg. Returns

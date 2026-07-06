@@ -88,7 +88,7 @@ fn push_injection_results(
 }
 
 #[tauri::command]
-pub fn create_share(
+pub async fn create_share(
     db: State<'_, Db>,
     host_machine_id: i64,
     mode: ShareMode,
@@ -97,7 +97,32 @@ pub fn create_share(
     operator_credential_alias: Option<String>,
     svc_username: Option<String>,
 ) -> VoloResult<CreateShareResponse> {
-    let host_ip = host_ip(&db, host_machine_id)?;
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        create_share_blocking(
+            &db,
+            host_machine_id,
+            mode,
+            share_name,
+            local_path,
+            operator_credential_alias,
+            svc_username,
+        )
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("share create task join: {}", e)))?
+}
+
+fn create_share_blocking(
+    db: &Db,
+    host_machine_id: i64,
+    mode: ShareMode,
+    share_name: String,
+    local_path: String,
+    operator_credential_alias: Option<String>,
+    svc_username: Option<String>,
+) -> VoloResult<CreateShareResponse> {
+    let host_ip = host_ip(db, host_machine_id)?;
     // SSH key auth: operator cred vestigial (param kept as shim, Vue compat).
     let _ = &operator_credential_alias;
     let (op_user, op_pass): (Option<String>, Option<String>) = (None, None);
@@ -133,7 +158,7 @@ pub fn create_share(
             // `New-SmbShare` is up. Now persist the alias locally so the
             // operator host can transparently mount the share AND so future
             // injection calls can read the password back.
-            let host_hn = host_hostname(&db, host_machine_id)?;
+            let host_hn = host_hostname(db, host_machine_id)?;
             let alias = format!("UECM:share:{}:{}", host_hn, svc_user);
             // Persist the svc password to the cross-platform SecretStore (AES-GCM)
             // so inject_share_credential_to_clients reads it back from any operator
@@ -141,9 +166,9 @@ pub fn create_share(
             cache_core::core::secrets::SecretStore::from_config()?.put(&alias, &svc_pass)?;
             // SQLite credential record — idempotent (skip if alias somehow
             //    already exists from a prior partial run).
-            if data_creds::find_by_alias(&db, &alias)?.is_none() {
+            if data_creds::find_by_alias(db, &alias)?.is_none() {
                 data_creds::insert(
-                    &db,
+                    db,
                     &CredentialRecord {
                         id: None,
                         alias: alias.clone(),
@@ -168,16 +193,16 @@ pub fn create_share(
     // PS scripts replace existing host-side shares idempotently; mirror that
     // on the SQLite side so a Mode A -> Mode B re-creation doesn't trip the
     // (host_machine_id, share_name) UNIQUE constraint.
-    let existing = data_shares::find_by_host(&db, host_machine_id)?
+    let existing = data_shares::find_by_host(db, host_machine_id)?
         .into_iter()
         .find(|s| s.share_name == share_name);
     let share_config_id = if let Some(prior) = existing {
         if let Some(prior_id) = prior.id {
-            data_shares::delete(&db, prior_id)?;
+            data_shares::delete(db, prior_id)?;
         }
-        data_shares::insert(&db, &cfg)?
+        data_shares::insert(db, &cfg)?
     } else {
-        data_shares::insert(&db, &cfg)?
+        data_shares::insert(db, &cfg)?
     };
 
     Ok(CreateShareResponse {
@@ -189,12 +214,14 @@ pub fn create_share(
 }
 
 #[tauri::command]
-pub fn inject_share_credential_to_clients(
+pub async fn inject_share_credential_to_clients(
     db: State<'_, Db>,
     share_config_id: i64,
     client_machine_ids: Vec<i64>,
     operator_credential_alias: Option<String>,
 ) -> VoloResult<Vec<InjectionResult>> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     let share = data_shares::find_by_id(&db, share_config_id)?.ok_or_else(|| {
         VoloError::InvalidInput(format!("share_config {} not found", share_config_id))
     })?;
@@ -253,16 +280,21 @@ pub fn inject_share_credential_to_clients(
         );
     }
     Ok(results)
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("share credential task join: {}", e)))?
 }
 
 /// Prepare Mode B (managed) share clients: interactive-user scheduled tasks +
 /// SYSTEM cmdkey so Explorer and LocalSystem services reach the share.
 #[tauri::command]
-pub fn prepare_managed_share_clients(
+pub async fn prepare_managed_share_clients(
     db: State<'_, Db>,
     share_config_id: i64,
     client_machine_ids: Vec<i64>,
 ) -> VoloResult<Vec<InjectionResult>> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     let share = data_shares::find_by_id(&db, share_config_id)?.ok_or_else(|| {
         VoloError::InvalidInput(format!("share_config {} not found", share_config_id))
     })?;
@@ -325,15 +357,20 @@ pub fn prepare_managed_share_clients(
         }
     }
     Ok(results)
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("share client prep task join: {}", e)))?
 }
 
 /// Tear down Mode B (managed) client prep for ONE share.
 #[tauri::command]
-pub fn unprepare_managed_share_clients(
+pub async fn unprepare_managed_share_clients(
     db: State<'_, Db>,
     share_config_id: i64,
     client_machine_ids: Vec<i64>,
 ) -> VoloResult<Vec<InjectionResult>> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     let share = data_shares::find_by_id(&db, share_config_id)?.ok_or_else(|| {
         VoloError::InvalidInput(format!("share_config {} not found", share_config_id))
     })?;
@@ -372,15 +409,20 @@ pub fn unprepare_managed_share_clients(
         }
     }
     Ok(results)
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("share client unprep task join: {}", e)))?
 }
 
 /// Prepare Mode A (open) share clients: Guest cmdkey + net use for silent UNC access.
 #[tauri::command]
-pub fn prepare_open_share_clients(
+pub async fn prepare_open_share_clients(
     db: State<'_, Db>,
     share_config_id: i64,
     client_machine_ids: Vec<i64>,
 ) -> VoloResult<Vec<InjectionResult>> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     let share = data_shares::find_by_id(&db, share_config_id)?.ok_or_else(|| {
         VoloError::InvalidInput(format!("share_config {} not found", share_config_id))
     })?;
@@ -419,17 +461,22 @@ pub fn prepare_open_share_clients(
         }
     }
     Ok(results)
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("share client prep task join: {}", e)))?
 }
 
 /// Tear down Mode A (open) client prep for ONE share — remove the per-share
 /// scheduled tasks + targets file + live guest net use sessions on each client,
 /// so leaving/tearing down a share stops the client auto-reconnecting at logon.
 #[tauri::command]
-pub fn unprepare_open_share_clients(
+pub async fn unprepare_open_share_clients(
     db: State<'_, Db>,
     share_config_id: i64,
     client_machine_ids: Vec<i64>,
 ) -> VoloResult<Vec<InjectionResult>> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     let share = data_shares::find_by_id(&db, share_config_id)?.ok_or_else(|| {
         VoloError::InvalidInput(format!("share_config {} not found", share_config_id))
     })?;
@@ -466,6 +513,9 @@ pub fn unprepare_open_share_clients(
         }
     }
     Ok(results)
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("share client unprep task join: {}", e)))?
 }
 
 #[tauri::command]
@@ -502,16 +552,29 @@ pub struct TeardownShareResult {
 /// SQLite share row (and any Mode-B credential/secret) is dropped so the share
 /// leaves the managed list. Distinct from `delete_share`, which only unmanages.
 #[tauri::command]
-pub fn teardown_share(
+pub async fn teardown_share(
     db: State<'_, Db>,
     share_config_id: i64,
     keep_files: bool,
 ) -> VoloResult<TeardownShareResult> {
-    let share = data_shares::find_by_id(&db, share_config_id)?.ok_or_else(|| {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        teardown_share_blocking(&db, share_config_id, keep_files)
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("share teardown task join: {}", e)))?
+}
+
+fn teardown_share_blocking(
+    db: &Db,
+    share_config_id: i64,
+    keep_files: bool,
+) -> VoloResult<TeardownShareResult> {
+    let share = data_shares::find_by_id(db, share_config_id)?.ok_or_else(|| {
         VoloError::InvalidInput(format!("share_config {} not found", share_config_id))
     })?;
-    let host_ip = host_ip(&db, share.host_machine_id)?;
-    let host_hn = host_hostname(&db, share.host_machine_id)?;
+    let host_ip = host_ip(db, share.host_machine_id)?;
+    let host_hn = host_hostname(db, share.host_machine_id)?;
 
     // Mode B: the dedicated svc account (username on the credential row keyed by
     // the share alias) is removed together with the share.
@@ -519,7 +582,7 @@ pub fn teardown_share(
         ShareMode::Managed => share
             .credential_alias
             .as_deref()
-            .and_then(|alias| data_creds::find_by_alias(&db, alias).ok().flatten())
+            .and_then(|alias| data_creds::find_by_alias(db, alias).ok().flatten())
             .map(|c| c.username),
         ShareMode::Open => None,
     };
@@ -538,9 +601,9 @@ pub fn teardown_share(
         if let Ok(store) = cache_core::core::secrets::SecretStore::from_config() {
             let _ = store.delete(alias);
         }
-        let _ = data_creds::delete_by_alias(&db, alias);
+        let _ = data_creds::delete_by_alias(db, alias);
     }
-    data_shares::delete(&db, share_config_id)?;
+    data_shares::delete(db, share_config_id)?;
 
     Ok(TeardownShareResult {
         share_config_id,
@@ -599,13 +662,15 @@ fn open_share_target_uncs_for_host(db: &Db, host_machine_id: i64) -> VoloResult<
 /// script re-creates host-side idempotently, `create_share` replaces the row).
 /// Client prep failures are reported per machine, never fail the whole call.
 #[tauri::command]
-pub fn ensure_open_dir_share(
+pub async fn ensure_open_dir_share(
     db: State<'_, Db>,
     host_machine_id: i64,
     share_name: String,
     local_path: String,
     client_machine_ids: Vec<i64>,
 ) -> VoloResult<EnsureOpenDirShareResponse> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     let existing = data_shares::find_by_host(&db, host_machine_id)?
         .into_iter()
         .find(|s| {
@@ -616,8 +681,8 @@ pub fn ensure_open_dir_share(
     let (share_config_id, unc_path, created) = match existing {
         Some(share) => (share.id.unwrap_or_default(), share.unc_path, false),
         None => {
-            let resp = create_share(
-                db.clone(),
+            let resp = create_share_blocking(
+                &db,
                 host_machine_id,
                 ShareMode::Open,
                 share_name,
@@ -656,6 +721,9 @@ pub fn ensure_open_dir_share(
         created,
         client_results,
     })
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("open share ensure task join: {}", e)))?
 }
 
 /// Undo `ensure_open_dir_share` for one host. Order matters:
@@ -670,12 +738,14 @@ pub fn ensure_open_dir_share(
 /// self-healing: the next per-host prep re-registers with `-Force`.
 /// No-op success if no matching Mode A share is on record.
 #[tauri::command]
-pub fn remove_open_dir_share(
+pub async fn remove_open_dir_share(
     db: State<'_, Db>,
     host_machine_id: i64,
     share_name: String,
     client_machine_ids: Vec<i64>,
 ) -> VoloResult<Vec<InjectionResult>> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     let Some(share) = data_shares::find_by_host(&db, host_machine_id)?
         .into_iter()
         .find(|s| s.mode == ShareMode::Open && s.share_name.eq_ignore_ascii_case(&share_name))
@@ -684,7 +754,7 @@ pub fn remove_open_dir_share(
     };
     let share_id = share.id.unwrap_or_default();
     let removed_uncs = core_shares::unc_variants_for_share(&db, &share)?;
-    teardown_share(db.clone(), share_id, true)?;
+    teardown_share_blocking(&db, share_id, true)?;
     let remaining_uncs = open_share_target_uncs_for_host(&db, host_machine_id)?;
     let mut results = Vec::with_capacity(client_machine_ids.len());
     for client_id in client_machine_ids {
@@ -709,4 +779,7 @@ pub fn remove_open_dir_share(
         }
     }
     Ok(results)
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("open share removal task join: {}", e)))?
 }

@@ -12,19 +12,24 @@ fn ip_for(db: &Db, machine_id: i64) -> VoloResult<String> {
 }
 
 #[tauri::command]
-pub fn set_machine_env_var(
+pub async fn set_machine_env_var(
     db: State<'_, Db>,
     machine_id: i64,
     name: String,
     value: String,
 ) -> VoloResult<()> {
-    // Logged so a failed share join/leave (this is the join's env-var half) or
-    // local-DDC pointer write leaves an `operations` row with the exact error.
-    let invocation = format!("set env var {name}=\"{value}\" on machine {machine_id}");
-    crate::commands::oplog::logged(&db, "env.set_machine_var", &[machine_id], &invocation, || {
-        let host = ip_for(&db, machine_id)?;
-        env_vars::set(&host, &name, &value)
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        // Logged so a failed share join/leave (this is the join's env-var half) or
+        // local-DDC pointer write leaves an `operations` row with the exact error.
+        let invocation = format!("set env var {name}=\"{value}\" on machine {machine_id}");
+        crate::commands::oplog::logged(&db, "env.set_machine_var", &[machine_id], &invocation, || {
+            let host = ip_for(&db, machine_id)?;
+            env_vars::set(&host, &name, &value)
+        })
     })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("env var task join: {}", e)))?
 }
 
 #[tauri::command]
@@ -45,16 +50,21 @@ pub async fn get_machine_env_var(
 }
 
 #[tauri::command]
-pub fn set_machine_env_var_with_credential(
+pub async fn set_machine_env_var_with_credential(
     db: State<'_, Db>,
     machine_id: i64,
     name: String,
     value: String,
     credential_alias: String,
 ) -> VoloResult<()> {
-    let _ = credential_alias; // accepted-but-ignored shim (SSH key auth); Vue still sends it.
-    let host = ip_for(&db, machine_id)?;
-    env_vars::set(&host, &name, &value)
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        let _ = credential_alias; // accepted-but-ignored shim (SSH key auth); Vue still sends it.
+        let host = ip_for(&db, machine_id)?;
+        env_vars::set(&host, &name, &value)
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("env var task join: {}", e)))?
 }
 
 #[tauri::command]

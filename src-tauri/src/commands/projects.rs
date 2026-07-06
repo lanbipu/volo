@@ -50,18 +50,23 @@ pub fn list_project_locations(
 }
 
 #[tauri::command]
-pub fn discover_projects(
+pub async fn discover_projects(
     db: State<'_, Db>,
     machine_id: i64,
     search_roots: Vec<String>,
     operator_credential_alias: Option<String>,
 ) -> VoloResult<Vec<DiscoveryResult>> {
-    let machine = data_machines::find_by_id(&db, machine_id)?
-        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?;
-    // SSH key auth: operator cred no longer used; param kept as accepted-ignored
-    // shim (Vue compat). run_discovery ignores the user/pass under SSH.
-    let _ = operator_credential_alias;
-    project_discovery::run_discovery(&db, machine_id, &machine.ip, &search_roots, None, None)
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        let machine = data_machines::find_by_id(&db, machine_id)?
+            .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?;
+        // SSH key auth: operator cred no longer used; param kept as accepted-ignored
+        // shim (Vue compat). run_discovery ignores the user/pass under SSH.
+        let _ = operator_credential_alias;
+        project_discovery::run_discovery(&db, machine_id, &machine.ip, &search_roots, None, None)
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("project discovery task join: {}", e)))?
 }
 
 #[tauri::command]
@@ -102,14 +107,19 @@ pub fn set_project_location(
 /// → the machine's fixed local drives). Powers the DDC PAK 搜索根目录地址栏
 /// 逐级下拉提示——真实查询所选机器，不是猜的目录名。
 #[tauri::command]
-pub fn list_remote_directories(
+pub async fn list_remote_directories(
     db: State<'_, Db>,
     machine_id: i64,
     path: Option<String>,
 ) -> VoloResult<Vec<String>> {
-    let machine = data_machines::find_by_id(&db, machine_id)?
-        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?;
-    cache_core::core::remote_fs::list_remote_dirs(&machine.ip, path.as_deref())
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        let machine = data_machines::find_by_id(&db, machine_id)?
+            .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?;
+        cache_core::core::remote_fs::list_remote_dirs(&machine.ip, path.as_deref())
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("remote directory task join: {}", e)))?
 }
 
 #[tauri::command]

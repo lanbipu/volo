@@ -12,18 +12,23 @@ use cache_core::error::{VoloError, VoloResult};
 use tauri::State;
 
 #[tauri::command]
-pub fn create_local_cache(
+pub async fn create_local_cache(
     db: State<'_, Db>,
     machine_id: i64,
     local_path: String,
 ) -> VoloResult<String> {
-    // Logged so a failed local-DDC dir provision leaves an `operations` row.
-    let invocation = format!("create local DDC dir {local_path} on machine {machine_id}");
-    crate::commands::oplog::logged(&db, "local_cache.create", &[machine_id], &invocation, || {
-        let host_ip = data_machines::find_by_id(&db, machine_id)?
-            .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?
-            .ip;
-        // SSH key auth: no per-call operator credential (kept None like create_share).
-        local_cache::create(&host_ip, &local_path, None, None)
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        // Logged so a failed local-DDC dir provision leaves an `operations` row.
+        let invocation = format!("create local DDC dir {local_path} on machine {machine_id}");
+        crate::commands::oplog::logged(&db, "local_cache.create", &[machine_id], &invocation, || {
+            let host_ip = data_machines::find_by_id(&db, machine_id)?
+                .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?
+                .ip;
+            // SSH key auth: no per-call operator credential (kept None like create_share).
+            local_cache::create(&host_ip, &local_path, None, None)
+        })
     })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("local cache task join: {}", e)))?
 }

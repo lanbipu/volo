@@ -297,12 +297,14 @@ fn share_reveal_target(db: &Db, host: &str, abs_path: &str) -> Option<String> {
 /// which is a different credential story than the SSH automation account Volo
 /// otherwise uses.
 #[tauri::command]
-pub fn reveal_path(
+pub async fn reveal_path(
     app: tauri::AppHandle,
     db: State<'_, Db>,
     path: String,
     host: Option<String>,
 ) -> Result<(), String> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     use tauri_plugin_opener::OpenerExt;
     let Some(h) = host.filter(|h| !h.is_empty() && !cache_core::core::loopback::is_loopback_target(h))
     else {
@@ -352,6 +354,9 @@ pub fn reveal_path(
              设为 1 以放开本地账户的远程管理共享限制。"
         )
     })
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("reveal path task join: {}", e)).to_string())?
 }
 
 /// Whether `host` (IP or hostname) resolves to the machine Volo itself runs
@@ -380,12 +385,14 @@ pub fn is_loopback_machine(host: String) -> bool {
 /// workgroup machines can't reach each other's admin shares, but Volo-managed
 /// shares come with cmdkey / guest client prep that authenticates silently.
 #[tauri::command]
-pub fn reveal_remote_path(
+pub async fn reveal_remote_path(
     app: tauri::AppHandle,
     db: State<'_, Db>,
     host: String,
     path: String,
 ) -> Result<(), String> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     use tauri_plugin_opener::OpenerExt;
     // Always a directory (project/cache folder) — open it, don't reveal-in-parent.
     if let Some(target) = share_reveal_target(&db, &host, &path) {
@@ -419,6 +426,9 @@ pub fn reveal_remote_path(
             .open_url(smb_url(&host, &path), None::<&str>)
             .map_err(|e| e.to_string())
     }
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("remote reveal task join: {}", e)).to_string())?
 }
 
 /// `D:\Projects\Aurora` + `192.168.10.20` -> `\\192.168.10.20\D$\Projects\Aurora`.

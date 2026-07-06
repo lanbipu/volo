@@ -66,7 +66,9 @@ fn refresh_err(machine_id: i64, winrm_ok: bool, msg: impl Into<String>) -> Refre
 /// 2. UE detect + persist BEFORE GPU detect — if GPU detection blows up, the
 ///    UE list we already saved survives instead of being discarded.
 #[tauri::command]
-pub fn refresh_machine(db: State<'_, Db>, machine_id: i64) -> VoloResult<RefreshResult> {
+pub async fn refresh_machine(db: State<'_, Db>, machine_id: i64) -> VoloResult<RefreshResult> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
     let machine = data_machines::find_by_id(&db, machine_id)?
         .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?;
 
@@ -180,4 +182,7 @@ pub fn refresh_machine(db: State<'_, Db>, machine_id: i64) -> VoloResult<Refresh
         gpus: machine_gpus::list_for_machine(&db, machine_id)?,
         error: None,
     })
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("machine refresh task join: {}", e)))?
 }

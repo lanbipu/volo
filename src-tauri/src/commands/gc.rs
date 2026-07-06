@@ -15,38 +15,58 @@ fn ip_for(db: &Db, machine_id: i64) -> VoloResult<String> {
 
 /// Pause FileSystem Shared DDC GC (DeleteUnused=false) — cache persists for the project.
 #[tauri::command]
-pub fn gc_pause(db: State<'_, Db>, machine_id: i64, project_id: i64) -> VoloResult<String> {
-    let host = ip_for(&db, machine_id)?;
-    ddc_retention::pause_gc(&db, project_id, &host)
+pub async fn gc_pause(db: State<'_, Db>, machine_id: i64, project_id: i64) -> VoloResult<String> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        let host = ip_for(&db, machine_id)?;
+        ddc_retention::pause_gc(&db, project_id, &host)
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("gc task join: {}", e)))?
 }
 
 /// Resume FileSystem Shared DDC GC (DeleteUnused=true + UnusedFileAge in days).
 #[tauri::command]
-pub fn gc_resume(
+pub async fn gc_resume(
     db: State<'_, Db>,
     machine_id: i64,
     project_id: i64,
     unused_file_age: u32,
 ) -> VoloResult<String> {
-    let host = ip_for(&db, machine_id)?;
-    ddc_retention::resume_gc(&db, project_id, &host, unused_file_age)
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        let host = ip_for(&db, machine_id)?;
+        ddc_retention::resume_gc(&db, project_id, &host, unused_file_age)
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("gc task join: {}", e)))?
 }
 
 /// Pause Zen Server GC — set --gc-cache-duration-seconds to ~100 years.
 #[tauri::command]
-pub fn zen_gc_pause(db: State<'_, Db>, machine_id: i64, project_id: i64) -> VoloResult<String> {
-    let host = ip_for(&db, machine_id)?;
-    ddc_retention::set_zen_gc_duration(&db, project_id, &host, ddc_retention::ZEN_NEVER_EXPIRE_SECONDS)
+pub async fn zen_gc_pause(db: State<'_, Db>, machine_id: i64, project_id: i64) -> VoloResult<String> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        let host = ip_for(&db, machine_id)?;
+        ddc_retention::set_zen_gc_duration(&db, project_id, &host, ddc_retention::ZEN_NEVER_EXPIRE_SECONDS)
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen gc task join: {}", e)))?
 }
 
 /// Restore Zen Server GC retention window (seconds; default 1209600 = 14 days).
 #[tauri::command]
-pub fn zen_gc_resume(
+pub async fn zen_gc_resume(
     db: State<'_, Db>,
     machine_id: i64,
     project_id: i64,
     gc_seconds: u64,
 ) -> VoloResult<String> {
-    let host = ip_for(&db, machine_id)?;
-    ddc_retention::set_zen_gc_duration(&db, project_id, &host, gc_seconds)
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        let host = ip_for(&db, machine_id)?;
+        ddc_retention::set_zen_gc_duration(&db, project_id, &host, gc_seconds)
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("zen gc task join: {}", e)))?
 }
