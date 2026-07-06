@@ -1251,23 +1251,21 @@ import {
         'aria-label': '重新读取', onClick: () => rereadZenDir(n.id) },
         h(Icon, { name: 'sync', size: 13 }));
     };
-    /* 本地端口读出（配置 → 实际）+「已改端口」标签 + 行内持久结果 + 修改入口。
-       数据来自 zports（zen_local_port_status 真实回读，活在 ZenServer）；未设运行用户 /
-       离线机器读不到，如实显示「—」。修改走 ZenPortModal（替换本弹层，返回路径 backToClient）。 */
+    /* 本地端口读出（仅显示生效配置值，按 Claude Design 定稿去掉「→ 实际运行」half）
+       +「已改端口」标签 + 行内持久结果 + 修改入口。数据来自 zports（zen_local_port_status
+       真实回读，活在 ZenServer）；未设运行用户 / 离线机器读不到，如实显示「—」。
+       修改走 ZenPortModal（替换本弹层，返回路径 backToClient）。 */
     const portIO = (n) => {
       const rec = zportRecOf(zports, n.id);
       const off = n.status === 'offline';
       const blocked = off || !runtimeUser(n);
       const overridden = rec.configured != null;
       const configured = overridden ? rec.configured : ZEN_LOCAL_DEFAULT_PORT;
-      const running = !blocked && rec.running && rec.actual != null ? rec.actual : null;
       const pr = zpres[n.id];
       return h('div', { className: 'zcli-port' },
         h('span', { className: 'zcli-port-lbl' }, '本地端口'),
         h('span', { className: 'zcli-port-io mono' + (overridden ? ' ov' : '') },
-          blocked ? '—' : rec.loading ? '…' : String(configured),
-          h('span', { className: 'zcli-port-arr' }, '→'),
-          running != null ? String(running) : '—'),
+          blocked ? '—' : rec.loading ? '…' : String(configured)),
         overridden ? h('span', { className: 'zport-tag' }, '已改端口') : null,
         pr ? h('span', { className: 'zcli-port-res zb-' + (pr.st === 'ok' ? 'positive' : 'negative'), title: pr.msg || '' },
           h(Icon, { name: pr.st === 'ok' ? 'check' : 'alert', size: 11 }),
@@ -1965,18 +1963,16 @@ import {
                                 h('span', { className: 'zcl-meta-k' }, '本地缓存'),
                                 pathBtn(cacheDir, n.ip || n.host, '在文件资源管理器中打开该本地缓存目录')),
                               (function () {
-                                /* 配置端口（INI DesiredPort，无覆盖则默认 8558）→ 实测运行端口（runcontext
-                                   --port，仅本地 Zen 进程在跑时才有）；Editor 未开时右端「—」是正常态，
-                                   左端仍应显示配置值——否则 ZenServer 宿主机长期只见横杠。 */
+                                /* 仅显示生效配置端口（INI DesiredPort，无覆盖则默认 8558）——
+                                   按 Claude Design 定稿不再展示「→ 实际运行」half。 */
                                 const pRec = zportRecOf(zports, n.id);
                                 const pOv = pRec.configured != null;
                                 const pConf = pOv ? pRec.configured : ZEN_LOCAL_DEFAULT_PORT;
-                                const pRun = !zrBlocked && pRec.running && pRec.actual != null ? pRec.actual : null;
                                 return h('div', { className: 'zcl-meta-row' },
                                   h('span', { className: 'zcl-meta-k' }, '本地端口'),
                                   h('span', { className: 'zcl-meta-v mono' },
                                     zrBlocked ? '不可读' : pRec.loading ? '读取中…' : pRec.fail ? '读取失败'
-                                      : (pConf + ' → ' + (pRun != null ? pRun : '—'))),
+                                      : String(pConf)),
                                   pOv ? h('span', { className: 'zport-tag' }, '已改端口') : null);
                               })(),
                               h('div', { className: 'zcl-meta-row' },
