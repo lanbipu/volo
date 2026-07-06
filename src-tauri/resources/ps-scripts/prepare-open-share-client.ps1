@@ -62,9 +62,18 @@ try {
     $steps = New-Object System.Collections.Generic.List[string]
     $steps.Add('AllowInsecureGuestAuth=1; EnableLinkedConnections=1') | Out-Null
     $workerArg = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$worker`" -TargetsFile `"$targetsFile`""
+    # Task Scheduler starts console apps with a visible conhost BEFORE powershell
+    # can honor -WindowStyle Hidden -> a console window flashes in the interactive
+    # session (at logon AND on every "apply" from Volo). Route through a
+    # wscript.exe (GUI subsystem, never allocates a console) VBS shim that starts
+    # powershell with window mode 0.
+    $launcher = Join-Path $base ("modea-launch-$key.vbs")
+    $vbsCmd = ('powershell.exe ' + $workerArg) -replace '"', '""'
+    Set-Content -LiteralPath $launcher -Encoding ASCII -Value ('CreateObject("WScript.Shell").Run "' + $vbsCmd + '", 0, False')
+    $launchArg = "//B //Nologo `"$launcher`""
 
     # 1) persistent: any user at logon (BUILTIN\Users by SID = locale-proof).
-    $actL = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $workerArg
+    $actL = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument $launchArg
     $trgL = New-ScheduledTaskTrigger -AtLogOn
     $prnL = New-ScheduledTaskPrincipal -GroupId 'S-1-5-32-545' -RunLevel Limited
     Register-ScheduledTask -TaskName $taskOnLogon -Action $actL -Trigger $trgL -Principal $prnL -Force | Out-Null
@@ -83,7 +92,7 @@ try {
             $sid = (New-Object System.Security.Principal.NTAccount($consoleUser)).Translate([System.Security.Principal.SecurityIdentifier]).Value
             $statusFile = Join-Path $statusDir "modea-$sid-$key.json"
             Remove-Item -LiteralPath $statusFile -Force -ErrorAction SilentlyContinue
-            $actN = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $workerArg
+            $actN = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument $launchArg
             $prnN = New-ScheduledTaskPrincipal -UserId $consoleUser -LogonType Interactive -RunLevel Limited
             Register-ScheduledTask -TaskName $taskNow -Action $actN -Principal $prnN -Force | Out-Null
             Start-ScheduledTask -TaskName $taskNow

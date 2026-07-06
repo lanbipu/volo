@@ -73,8 +73,14 @@ try {
     $steps = New-Object System.Collections.Generic.List[string]
     $steps.Add('EnableLinkedConnections=1') | Out-Null
     $workerArg = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$worker`" -ConfigFile `"$configFile`""
+    # wscript VBS shim: Task Scheduler would otherwise flash a conhost window in
+    # the interactive session (see prepare-open-share-client.ps1 for details).
+    $launcher = Join-Path $base ("modeb-launch-$key.vbs")
+    $vbsCmd = ('powershell.exe ' + $workerArg) -replace '"', '""'
+    Set-Content -LiteralPath $launcher -Encoding ASCII -Value ('CreateObject("WScript.Shell").Run "' + $vbsCmd + '", 0, False')
+    $launchArg = "//B //Nologo `"$launcher`""
 
-    $actL = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $workerArg
+    $actL = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument $launchArg
     $trgL = New-ScheduledTaskTrigger -AtLogOn
     $prnL = New-ScheduledTaskPrincipal -GroupId 'S-1-5-32-545' -RunLevel Limited
     Register-ScheduledTask -TaskName $taskOnLogon -Action $actL -Trigger $trgL -Principal $prnL -Force | Out-Null
@@ -89,7 +95,7 @@ try {
             $sid = (New-Object System.Security.Principal.NTAccount($consoleUser)).Translate([System.Security.Principal.SecurityIdentifier]).Value
             $statusFile = Join-Path $statusDir "modeb-$sid-$key.json"
             Remove-Item -LiteralPath $statusFile -Force -ErrorAction SilentlyContinue
-            $actN = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $workerArg
+            $actN = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument $launchArg
             $prnN = New-ScheduledTaskPrincipal -UserId $consoleUser -LogonType Interactive -RunLevel Limited
             Register-ScheduledTask -TaskName $taskNow -Action $actN -Principal $prnN -Force | Out-Null
             Start-ScheduledTask -TaskName $taskNow
