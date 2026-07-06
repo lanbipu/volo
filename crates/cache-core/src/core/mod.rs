@@ -28,6 +28,7 @@ pub mod network;
 pub mod pak_distribute;
 pub mod powershell;
 pub mod probe_keys;
+pub mod proc;
 pub mod project_discovery;
 pub mod project_identity;
 pub mod project_thumbnail;

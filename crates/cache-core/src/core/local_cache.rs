@@ -19,9 +19,10 @@ fn provision_local_cache_dir(local_path: &str, service_account: Option<&str>) ->
     std::fs::create_dir_all(local_path)
         .map_err(|e| VoloError::OperationFailed(format!("mkdir {}: {}", local_path, e)))?;
     for grant in ["SYSTEM:(OI)(CI)F", "Administrators:(OI)(CI)F"] {
-        let status = Command::new("icacls")
-            .args([local_path, "/grant", grant, "/T", "/C"])
-            .status()
+        let status = crate::core::proc::hide_console(
+            Command::new("icacls").args([local_path, "/grant", grant, "/T", "/C"]),
+        )
+        .status()
             .map_err(|e| VoloError::OperationFailed(format!("icacls: {}", e)))?;
         if !status.success() {
             return Err(VoloError::OperationFailed(format!("icacls {} failed", grant)));
@@ -29,9 +30,10 @@ fn provision_local_cache_dir(local_path: &str, service_account: Option<&str>) ->
     }
     if let Some(svc) = service_account {
         let grant = format!("{}:(OI)(CI)F", svc);
-        let status = Command::new("icacls")
-            .args([local_path, "/grant", &grant, "/T", "/C"])
-            .status()
+        let status = crate::core::proc::hide_console(
+            Command::new("icacls").args([local_path, "/grant", &grant, "/T", "/C"]),
+        )
+        .status()
             .map_err(|e| VoloError::OperationFailed(format!("icacls: {}", e)))?;
         if !status.success() {
             return Err(VoloError::OperationFailed(format!("icacls {} failed", grant)));

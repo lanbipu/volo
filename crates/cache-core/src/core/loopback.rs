@@ -55,7 +55,9 @@ fn collect_local_facts() -> LocalFacts {
             insert_name_variants(&mut names, &value);
         }
     }
-    if let Ok(output) = std::process::Command::new("hostname").output() {
+    if let Ok(output) =
+        crate::core::proc::hide_console(&mut std::process::Command::new("hostname")).output()
+    {
         if output.status.success() {
             if let Ok(value) = String::from_utf8(output.stdout) {
                 insert_name_variants(&mut names, value.trim());
@@ -150,8 +152,9 @@ fn default_route_ips() -> Vec<IpAddr> {
 #[cfg(windows)]
 fn collect_windows_interface_ips(ips: &mut BTreeSet<IpAddr>) {
     let script = "[Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | ForEach-Object { $_.GetIPProperties().UnicastAddresses } | ForEach-Object { $_.Address.IPAddressToString }";
-    if let Ok(output) = std::process::Command::new("powershell.exe")
-        .arg("-NoProfile")
+    if let Ok(output) = crate::core::proc::hide_console(
+        std::process::Command::new("powershell.exe").arg("-NoProfile"),
+    )
         .arg("-Command")
         .arg(script)
         .output()

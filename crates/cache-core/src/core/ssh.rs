@@ -187,6 +187,7 @@ pub fn scp_push(
         return Ok(());
     }
     let mut cmd = Command::new("scp");
+    crate::core::proc::hide_console(&mut cmd);
     cmd.arg("-i")
         .arg(key_path)
         .arg("-o")
@@ -227,6 +228,7 @@ pub fn scp_push(
 /// helpers used by the SSH-push distribute flow.
 fn scp_base(key_path: &Path, known_hosts: &Path) -> Command {
     let mut cmd = Command::new("scp");
+    crate::core::proc::hide_console(&mut cmd);
     cmd.arg("-i")
         .arg(key_path)
         .arg("-o")
@@ -428,8 +430,7 @@ impl RemoteExecutor for SshExecutor {
             script.name,
             &self.staging_root,
         );
-        let mut child = Command::new("ssh")
-            .args(&args)
+        let mut child = crate::core::proc::hide_console(Command::new("ssh").args(&args))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -478,8 +479,7 @@ impl RemoteExecutor for SshExecutor {
         if let Some(last) = args.last_mut() {
             *last = "powershell.exe -NoProfile -Command exit 0".into();
         }
-        let out = Command::new("ssh")
-            .args(&args)
+        let out = crate::core::proc::hide_console(Command::new("ssh").args(&args))
             .output()
             .map_err(|e| VoloError::SshConnect(format!("spawn ssh failed: {e}")))?;
         let latency_ms = started.elapsed().as_millis() as i64;

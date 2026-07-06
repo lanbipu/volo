@@ -163,6 +163,7 @@ pub fn run_script(script_path: &Path, args: &[&str]) -> VoloResult<ScriptResult>
     #[cfg(windows)]
     {
         let mut cmd = Command::new("powershell.exe");
+        crate::core::proc::hide_console(&mut cmd);
         cmd.arg("-NoProfile")
             .arg("-ExecutionPolicy")
             .arg("Bypass")
@@ -197,8 +198,7 @@ pub fn run_script_stdin(script_path: &Path, stdin: &str) -> VoloResult<ScriptRes
     {
         use std::io::Write;
         use std::process::Stdio;
-        let mut child = Command::new("powershell.exe")
-            .arg("-NoProfile")
+        let mut child = crate::core::proc::hide_console(Command::new("powershell.exe").arg("-NoProfile"))
             .arg("-NonInteractive")
             .arg("-ExecutionPolicy")
             .arg("Bypass")

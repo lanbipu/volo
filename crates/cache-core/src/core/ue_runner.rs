@@ -607,8 +607,9 @@ async fn stop_process(
 fn stop_local_process(pid: i64) -> VoloResult<()> {
     #[cfg(windows)]
     {
-        std::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/F"])
+        crate::core::proc::hide_console(
+            std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]),
+        )
             .output()
             .map_err(VoloError::Io)?;
         Ok(())

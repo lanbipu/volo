@@ -50,8 +50,7 @@ impl KeyStore {
 
         // 私钥在、公钥缺：从私钥导出公钥（-y 走 stdout），不重建私钥。
         if key.exists() {
-            let out = Command::new("ssh-keygen")
-                .arg("-y")
+            let out = crate::core::proc::hide_console(Command::new("ssh-keygen").arg("-y"))
                 .arg("-f")
                 .arg(&key)
                 .output()
@@ -70,8 +69,7 @@ impl KeyStore {
 
         // 都缺（或只剩残留 .pub）：清掉半成品后全新生成一对。
         let _ = std::fs::remove_file(&pubkey);
-        let out = Command::new("ssh-keygen")
-            .arg("-t")
+        let out = crate::core::proc::hide_console(Command::new("ssh-keygen").arg("-t"))
             .arg("ed25519")
             .arg("-f")
             .arg(&key)
