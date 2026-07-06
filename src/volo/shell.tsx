@@ -603,19 +603,21 @@ function App() {
   const [conTab, setConTab] = useState('stream');
   const [logSearch, setLogSearch] = useState('');
   const [logPaused, setLogPaused] = useState(false);
-  /* calibrate */
-  const [calStep, setCalStep] = useState(CAL_STEPS.some((x) => x.id === persisted.calStep) ? persisted.calStep : 'design');
+  /* calibrate（重构 · 新 IA：概览 / 网格校正折叠组[屏幕与设计·测量导入·重建与预览·历史与导出] / 镜头校正）。
+     旧 calStep/calArStep/calArMap 随 AR 六步页 + 旧 step-based 布局一起移除；
+     「网格已重建」不再是独立持久 state —— 直接派生自 projStore 的 proj.reconstruction（真实数据），
+     避免出现一份可能与后端脱节的影子布尔值（旧 calMeshState 定义了但从未被任何页面读取，见此次重构前审计）。 */
+  const CAL_NAVS = ['overview', 'design', 'survey', 'preview', 'history', 'lens'];
+  const [calNav, setCalNav] = useState(CAL_NAVS.includes(persisted.calNav) ? persisted.calNav : 'overview');
   const [calScreen, setCalScreen] = useState(persisted.calScreen || 'main');
   const [calMethod, setCalMethod] = useState(persisted.calMethod || 'm1');
   /* calSel 不持久化：检查器初始必收起（见上方 rightCollapsed 注释），若挂载时恢复选中，
      详情会卡在 0 宽列里不可见，且重点同一对象不产生上升沿、弹不开。 */
   const [calSel, setCalSel] = useState(null);
-  /* Claude Design 增量：LED/AR 舞台分支、AR 六步、AR marker map、Lens 运行态、网格重建态 */
   const [calStageType, setCalStageType] = useState(persisted.calStageType === 'ar' ? 'ar' : 'led');
-  const [calArStep, setCalArStep] = useState(persisted.calArStep || 'markers');
-  const [calArMap, setCalArMap] = useState(persisted.calArMap || 'floor');
+  /* 左栏「网格校正」折叠组的展开状态 —— 纯 UI 偏好，与 ddcOpen 同类持久化模式 */
+  const [calGridOpen, setCalGridOpen] = useState(persisted.calGridOpen != null ? persisted.calGridOpen : true);
   const [calLensState, setCalLensState] = useState(persisted.calLensState || 'idle');
-  const [calMeshState, setCalMeshState] = useState(persisted.calMeshState || 'built');
   /* 集群总览：全新设置演示（无机器 → 引导扫描添加）+ 本会话已添加机器标记 */
   const [freshSetup, setFreshSetup] = useState(!!persisted.freshSetup);
   const [machinesAdded, setMachinesAdded] = useState(false);
@@ -657,10 +659,10 @@ function App() {
   useEffect(() => {
     clearTimeout(persistTimer.current);
     persistTimer.current = setTimeout(() => {
-      try { localStorage.setItem('volo2', JSON.stringify({ page, selNode, cacheNav, ddcOpen, calStep, calScreen, calMethod, calStageType, calArStep, calArMap, calLensState, calMeshState, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed })); } catch (e) {}
+      try { localStorage.setItem('volo2', JSON.stringify({ page, selNode, cacheNav, ddcOpen, calNav, calScreen, calMethod, calStageType, calGridOpen, calLensState, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed })); } catch (e) {}
     }, 150);
     return () => clearTimeout(persistTimer.current);
-  }, [page, selNode, cacheNav, ddcOpen, calStep, calScreen, calMethod, calStageType, calArStep, calArMap, calLensState, calMeshState, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed]);
+  }, [page, selNode, cacheNav, ddcOpen, calNav, calScreen, calMethod, calStageType, calGridOpen, calLensState, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed]);
 
   /* 禁掉桌面 WebView 的右键菜单（reload / 检查）；calibrate 画布另有本地 preventDefault */
   useEffect(() => {
@@ -966,9 +968,9 @@ function App() {
     freshSetup, setFreshSetup, machinesAdded, setMachinesAdded,
     enrolled, setEnrolled, creds, setCreds,
     tasks, setTasks, runTask, runCmd, runStreamingCmd, cancelTask, suppressRunPop, conTab, setConTab, logSearch, setLogSearch, logPaused, setLogPaused,
-    calStep, setCalStep, calScreen, setCalScreen, calMethod, setCalMethod, calSel, setCalSel,
-    calStageType, setCalStageType, calArStep, setCalArStep, calArMap, setCalArMap,
-    calLensState, setCalLensState, calMeshState, setCalMeshState,
+    calNav, setCalNav, calScreen, setCalScreen, calMethod, setCalMethod, calSel, setCalSel,
+    calStageType, setCalStageType, calGridOpen, setCalGridOpen,
+    calLensState, setCalLensState,
     leftCollapsed, setLeftCollapsed, rightCollapsed, setRightCollapsed, maximized,
     machines, setMachines, shares, setShares, projects, setProjects, gpuMatrix, cluster, cacheLoading, cacheError, reloadCache };
 
@@ -1015,6 +1017,13 @@ function App() {
       h(TweakRadio, { label: '区段导航', value: toolsNav,
         options: [{ value: 'top', label: '顶栏分类' }, { value: 'left', label: '左侧列表' }],
         onChange: setToolsNav }),
+      h(TweakSection, { label: '校正 · Calibrate' }),
+      /* 仅保留舞台类型这一项 Tweak——项目是否打开 / 网格是否已重建等其余设计稿 Tweak 项
+         在本仓都已是真实派生数据（projStore.reconstruction 等），没有可独立拨动的影子开关，
+         强行加一个不联动真实状态的开关只会显得能操作却什么都不做，故不搬。 */
+      h(TweakRadio, { label: '舞台类型', value: calStageType,
+        options: [{ value: 'led', label: 'LED' }, { value: 'ar', label: 'AR' }],
+        onChange: setCalStageType }),
       h(TweakSection, { label: '外观 · Appearance' }),
       h(TweakRadio, { label: '显示密度', value: density,
         options: [{ value: 'clean', label: '简洁' }, { value: 'rich', label: '丰富' }],
