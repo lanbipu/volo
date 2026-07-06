@@ -564,6 +564,7 @@ function App() {
   const [healthRunAt, setHealthRunAt] = useState(null);
   const [cacheLoading, setCacheLoading] = useState(true);
   const [cacheError, setCacheError] = useState(null);
+  const cacheFirstLoaded = useRef(false);
   const CACHE_NAVS = ['home', 'ddc_zen', 'ddc_legacy', 'ddc_pak', 'ddc_pso',
     'diag_net', 'diag_sync', 'diag_thm', 'diag_term'];
   const initCacheNav = CACHE_NAVS.includes(persisted.cacheNav) ? persisted.cacheNav : 'home';
@@ -629,7 +630,8 @@ function App() {
   /* Load the Cache read-path resources (machines / creds / shares) from the
      backend. Drives the three-channel loading/error gate on the Cache page. */
   const reloadCache = React.useCallback(() => {
-    setCacheLoading(true);
+    /* 首次成功后改为 background refresh，不翻转 loading，避免 gate 替换整页造成黑屏闪烁。 */
+    if (!cacheFirstLoaded.current) setCacheLoading(true);
     setCacheError(null);
     loadCacheResources().then((r) => {
       setMachines(r.machines);
@@ -640,6 +642,7 @@ function App() {
       setHealthChecks(r.health);
       setIniFindings(r.ini);
       setHealthRunAt(r.healthRunAt);
+      cacheFirstLoaded.current = true;
       setCacheLoading(false);
     }).catch((e) => {
       setCacheError(e && e.message ? e.message : String(e));

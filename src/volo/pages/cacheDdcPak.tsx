@@ -201,6 +201,83 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
      ErrBoundary key 带 page），若缓存放组件内，每次切回都对全部工程重发 SSH 探测，
      列表闪烁 1-2 秒。thumbs 为已取回的缩略图 patch，tried 为已出确定结果的工程 id。 */
   const THUMB_CACHE = { thumbs: {}, tried: new Set() };
+  const THUMB_DB_NAME = 'volo-ddc-pak';
+  const THUMB_STORE_NAME = 'thumbs';
+  const THUMB_RECORD_KEY = 'cache';
+  let thumbPersistTimer = null;
+  let thumbPersistMerged = false;
+
+  /* base64 PNG 可能达到 MB 级，必须放 IndexedDB；任何不可用/失败都降级为空缓存，不能阻断页面。 */
+  const emptyThumbPersist = () => ({ thumbs: {}, tried: [] });
+  const openThumbDb = () => new Promise((resolve) => {
+    if (typeof indexedDB === 'undefined') { resolve(null); return; }
+    let settled = false;
+    const finish = (db) => {
+      if (settled) { if (db) db.close(); return; }
+      settled = true;
+      resolve(db);
+    };
+    try {
+      const req = indexedDB.open(THUMB_DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(THUMB_STORE_NAME)) db.createObjectStore(THUMB_STORE_NAME);
+      };
+      req.onsuccess = () => finish(req.result);
+      req.onerror = () => finish(null);
+      req.onblocked = () => finish(null);
+    } catch (e) { finish(null); }
+  });
+  const readThumbPersist = () => openThumbDb().then((db) => new Promise((resolve) => {
+    if (!db) { resolve(emptyThumbPersist()); return; }
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      db.close();
+      resolve(value);
+    };
+    try {
+      const tx = db.transaction(THUMB_STORE_NAME, 'readonly');
+      const req = tx.objectStore(THUMB_STORE_NAME).get(THUMB_RECORD_KEY);
+      req.onsuccess = () => {
+        const value = req.result || {};
+        finish({
+          thumbs: value.thumbs && typeof value.thumbs === 'object' ? value.thumbs : {},
+          tried: Array.isArray(value.tried) ? value.tried : [],
+        });
+      };
+      req.onerror = () => finish(emptyThumbPersist());
+      tx.onabort = () => finish(emptyThumbPersist());
+    } catch (e) { finish(emptyThumbPersist()); }
+  })).catch(() => emptyThumbPersist());
+  const writeThumbPersist = (value) => openThumbDb().then((db) => new Promise((resolve) => {
+    if (!db) { resolve(); return; }
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      db.close();
+      resolve();
+    };
+    try {
+      const tx = db.transaction(THUMB_STORE_NAME, 'readwrite');
+      tx.objectStore(THUMB_STORE_NAME).put(value, THUMB_RECORD_KEY);
+      tx.oncomplete = finish;
+      tx.onerror = finish;
+      tx.onabort = finish;
+    } catch (e) { finish(); }
+  })).catch(() => {});
+  const persistThumbCache = () => writeThumbPersist({
+    thumbs: THUMB_CACHE.thumbs,
+    tried: Array.from(THUMB_CACHE.tried),
+  });
+  const scheduleThumbPersist = () => {
+    clearTimeout(thumbPersistTimer);
+    thumbPersistTimer = setTimeout(persistThumbCache, 800);
+  };
+  /* 模块加载即开始 hydrate，页面 effect 复用同一 Promise，避免每次 mount 重读。 */
+  const THUMB_PERSIST_READY = readThumbPersist();
 
   /* 完整路径悬浮提示 —— 自绘浮层（挂到 body，避开卡片 overflow:hidden 裁剪），
      近乎即时显示（120ms），替代原生 title 的 ~2s 延迟 */
@@ -390,36 +467,49 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
     const [thumbGen, setThumbGen] = useState(0);
     useEffect(() => {
       let alive = true;
-      const queue = UE_PROJECTS.filter((p) => !THUMB_CACHE.tried.has(p.id));
-      let next = 0;
-      const pump = () => {
-        if (!alive || next >= queue.length) return;
-        const p = queue[next++];
-        const src = DDC.pickSrc(p);
-        if (!src) { pump(); return; }
-        getProjectThumbnail(Number(p.id), src.machineId).then(
-          (probe) => {
-            if (!alive) return;
-            THUMB_CACHE.tried.add(p.id);
-            const t = probe && probe.thumbnail;
-            const patch = {};
-            if (t) Object.assign(patch, {
-              thumb: 'data:image/png;base64,' + t.base64,
-              thumbSrc: t.path,
-              thumbFrom: THUMB_FROM_LABEL[t.from] || t.from,
-              mtime: t.mtime || '',
-            });
-            if (probe && probe.size_bytes != null) patch.size = DDC.humanBytes(probe.size_bytes);
-            if (Object.keys(patch).length) setThumbs((m) => {
-              const nextMap = Object.assign({}, m, { [p.id]: patch });
-              THUMB_CACHE.thumbs = nextMap;
-              return nextMap;
-            });
-            pump();
-          },
-          () => { if (alive) pump(); });
-      };
-      for (let i = 0; i < THUMB_CONCURRENCY; i++) pump();
+      THUMB_PERSIST_READY.then((persisted) => {
+        /* memory cache 更新更近：只用 persisted 补缺，再一次性显示，避免缩略图逐张 refresh-in。 */
+        if (!thumbPersistMerged) {
+          THUMB_CACHE.thumbs = Object.assign({}, persisted.thumbs, THUMB_CACHE.thumbs);
+          THUMB_CACHE.tried = new Set(persisted.tried.concat(Array.from(THUMB_CACHE.tried)));
+          thumbPersistMerged = true;
+          scheduleThumbPersist();
+        }
+        if (!alive) return;
+        setThumbs(THUMB_CACHE.thumbs);
+        const queue = UE_PROJECTS.filter((p) => !THUMB_CACHE.tried.has(p.id));
+        let next = 0;
+        const pump = () => {
+          if (!alive || next >= queue.length) return;
+          const p = queue[next++];
+          const src = DDC.pickSrc(p);
+          if (!src) { pump(); return; }
+          getProjectThumbnail(Number(p.id), src.machineId).then(
+            (probe) => {
+              if (!alive) return;
+              THUMB_CACHE.tried.add(p.id);
+              scheduleThumbPersist();
+              const t = probe && probe.thumbnail;
+              const patch = {};
+              if (t) Object.assign(patch, {
+                thumb: 'data:image/png;base64,' + t.base64,
+                thumbSrc: t.path,
+                thumbFrom: THUMB_FROM_LABEL[t.from] || t.from,
+                mtime: t.mtime || '',
+              });
+              if (probe && probe.size_bytes != null) patch.size = DDC.humanBytes(probe.size_bytes);
+              if (Object.keys(patch).length) setThumbs((m) => {
+                const nextMap = Object.assign({}, m, { [p.id]: patch });
+                THUMB_CACHE.thumbs = nextMap;
+                scheduleThumbPersist();
+                return nextMap;
+              });
+              pump();
+            },
+            () => { if (alive) pump(); });
+        };
+        for (let i = 0; i < THUMB_CONCURRENCY; i++) pump();
+      });
       return () => { alive = false; };
     }, [UE_PROJECTS.length, thumbGen]);
     const withThumb = (p) => Object.assign({}, p, thumbs[p.id], { hasPak: deployedProjectIds.has(p.id) });
@@ -630,7 +720,12 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
     const doScan = () => {
       setCleared(false); setConfirmClear(false);
       const scanned = DDC.runDiscover(s, scope, rootsStr);
-      if (scanned) scanned.then(() => { THUMB_CACHE.tried = new Set(); setThumbGen((g) => g + 1); });
+      if (scanned) scanned.then(() => {
+        THUMB_CACHE.tried = new Set();
+        /* 立即落盘 cleared tried，避免 debounce 前退出 App 后重启复用旧探测结果。 */
+        persistThumbCache();
+        setThumbGen((g) => g + 1);
+      });
     };
     /* 清空已发现工程 —— 从 Volo 数据库删除全部工程记录（级联各机位置），不删磁盘文件。
        此前只 setCleared 清屏不删库，重扫后旧记录（DB 里仍在）原样回来，等于没清 —— 现在
