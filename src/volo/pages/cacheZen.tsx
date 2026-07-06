@@ -1965,14 +1965,18 @@ import {
                                 h('span', { className: 'zcl-meta-k' }, '本地缓存'),
                                 pathBtn(cacheDir, n.ip || n.host, '在文件资源管理器中打开该本地缓存目录')),
                               (function () {
-                                /* 只显示实际运行端口（与箭头指向一致）；不可读时如实「—」，不再展示配置端口 */
+                                /* 配置端口（INI DesiredPort，无覆盖则默认 8558）→ 实测运行端口（runcontext
+                                   --port，仅本地 Zen 进程在跑时才有）；Editor 未开时右端「—」是正常态，
+                                   左端仍应显示配置值——否则 ZenServer 宿主机长期只见横杠。 */
                                 const pRec = zportRecOf(zports, n.id);
                                 const pOv = pRec.configured != null;
+                                const pConf = pOv ? pRec.configured : ZEN_LOCAL_DEFAULT_PORT;
                                 const pRun = !zrBlocked && pRec.running && pRec.actual != null ? pRec.actual : null;
                                 return h('div', { className: 'zcl-meta-row' },
                                   h('span', { className: 'zcl-meta-k' }, '本地端口'),
                                   h('span', { className: 'zcl-meta-v mono' },
-                                    zrBlocked ? '不可读' : pRec.loading ? '读取中…' : (pRun != null ? String(pRun) : '—')),
+                                    zrBlocked ? '不可读' : pRec.loading ? '读取中…' : pRec.fail ? '读取失败'
+                                      : (pConf + ' → ' + (pRun != null ? pRun : '—'))),
                                   pOv ? h('span', { className: 'zport-tag' }, '已改端口') : null);
                               })(),
                               h('div', { className: 'zcl-meta-row' },

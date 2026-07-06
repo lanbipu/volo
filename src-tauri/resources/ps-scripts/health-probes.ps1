@@ -8,7 +8,7 @@
 $ErrorActionPreference = 'Stop'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $ShareUnc                    = if ($p.ShareUnc) { "$($p.ShareUnc)" } else { "" }
     $SvcUsername                 = if ($p.SvcUsername) { "$($p.SvcUsername)" } else { "" }
     $ExpectedSharedDataCachePath = if ($p.ExpectedSharedDataCachePath) { "$($p.ExpectedSharedDataCachePath)" } else { "" }

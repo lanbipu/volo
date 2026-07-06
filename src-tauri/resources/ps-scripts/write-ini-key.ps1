@@ -4,7 +4,7 @@
 [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; chcp 65001 | Out-Null
 $ErrorActionPreference = 'Stop'
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $FilePath = $p.FilePath; $Section = $p.Section; $Name = $p.Name
     $Value = if ($null -ne $p.Value) { "$($p.Value)" } else { "" }
     $Remove = [bool]$p.Remove

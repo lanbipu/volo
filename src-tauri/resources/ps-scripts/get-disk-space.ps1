@@ -7,7 +7,7 @@
 $ErrorActionPreference = 'Continue'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $path = $p.Path
     if ([string]::IsNullOrEmpty($path)) { throw "empty Path" }
     $drive = [System.IO.Path]::GetPathRoot($path).TrimEnd('\')

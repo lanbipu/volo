@@ -7,7 +7,7 @@
 $ErrorActionPreference = 'Stop'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $value = [System.Environment]::GetEnvironmentVariable($p.Name, 'Machine')
     if ($null -eq $value) {
         @{ ok = $true; value = $null; message = "not set" } | ConvertTo-Json -Compress

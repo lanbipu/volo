@@ -9,7 +9,7 @@
 $ErrorActionPreference = 'Stop'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $Path = $p.Path
     if ([string]::IsNullOrWhiteSpace($Path)) { throw "Path is required" }
     $size = "-1"

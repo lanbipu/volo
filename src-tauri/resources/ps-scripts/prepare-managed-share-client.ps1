@@ -25,7 +25,7 @@ function Get-UncHost([string]$u) {
 $base = 'C:\ProgramData\UECM'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $targets = @($p.TargetUncs | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     $cmdkeyTargets = @($p.CmdkeyTargets | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     $serverName = [string]$p.SvcServerName

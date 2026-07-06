@@ -9,7 +9,7 @@
 $ErrorActionPreference = 'Stop'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $EditorExe = $p.EditorExe
     $ProjectPath = $p.ProjectPath
     $TimeoutSeconds = if ($null -ne $p.TimeoutSeconds) { [int]$p.TimeoutSeconds } else { 180 }

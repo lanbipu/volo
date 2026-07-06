@@ -14,7 +14,7 @@
 $ErrorActionPreference = 'Stop'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $StagingDir = $p.StagingDir
     $StagedName = $p.StagedName
     $TargetLocal = $p.TargetLocal

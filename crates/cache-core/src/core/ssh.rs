@@ -436,13 +436,17 @@ impl RemoteExecutor for SshExecutor {
             .spawn()
             .map_err(|e| VoloError::SshConnect(format!("spawn ssh failed: {e}")))?;
         // 参数 JSON 经 stdin 喂入（不上命令行，secret 不暴露在节点进程列表里）。
+        // 单行紧凑 JSON + '\n' 收尾：节点脚本用 ReadLine() 取参，不等 stdin EOF——
+        // Windows 宿主的 ssh.exe 不会把重定向管道的关闭转发成远端 EOF，靠 EOF
+        // （ReadToEnd）会让每一次 run 无限挂死。
         {
             let stdin = child
                 .stdin
                 .as_mut()
                 .ok_or_else(|| VoloError::SshConnect("open ssh stdin failed".into()))?;
-            let payload = serde_json::to_vec(&script.args)
+            let mut payload = serde_json::to_vec(&script.args)
                 .map_err(|e| VoloError::InvalidInput(format!("encode args: {e}")))?;
+            payload.push(b'\n');
             stdin.write_all(&payload)?;
         }
         // 进程跑完（任何退出码）都返回完整输出，成败判断交给 run_json。

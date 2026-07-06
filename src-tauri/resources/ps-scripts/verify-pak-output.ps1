@@ -7,7 +7,7 @@
 $ErrorActionPreference = 'Continue'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $ProjectDir = $p.ProjectDir
 
     $found = $false; $path = ""; $size = "0"; $lastWrite = $null

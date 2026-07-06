@@ -7,7 +7,7 @@
 $ErrorActionPreference = 'Stop'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $ProjectDir = $p.ProjectDir
     if ([string]::IsNullOrWhiteSpace($ProjectDir)) { throw "ProjectDir is required" }
 

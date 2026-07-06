@@ -32,7 +32,7 @@ chcp 65001 | Out-Null
 $ErrorActionPreference = 'Stop'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $ServiceName = if ($p.ServiceName) { $p.ServiceName } else { 'ZenServer' }
     if ([string]::IsNullOrWhiteSpace($ServiceName)) {
         throw "ServiceName must be non-empty"

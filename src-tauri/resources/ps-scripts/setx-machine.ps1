@@ -8,7 +8,7 @@
 $ErrorActionPreference = 'Stop'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     [System.Environment]::SetEnvironmentVariable($p.Name, $p.Value, 'Machine')
     $readback = [System.Environment]::GetEnvironmentVariable($p.Name, 'Machine')
     # Clearing a Machine var (Value="") deletes it, so readback comes back $null.

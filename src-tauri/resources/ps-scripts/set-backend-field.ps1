@@ -4,7 +4,7 @@
 [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; chcp 65001 | Out-Null
 $ErrorActionPreference = 'Stop'
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $FilePath = $p.FilePath; $SectionName = $p.SectionName; $NodeName = $p.NodeName
     $FieldName = $p.FieldName; $FieldValue = $p.FieldValue
     if (-not (Test-Path -LiteralPath $FilePath)) { throw "file not found: $FilePath" }

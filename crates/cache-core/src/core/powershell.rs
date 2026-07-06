@@ -190,7 +190,7 @@ pub fn run_script(script_path: &Path, args: &[&str]) -> VoloResult<ScriptResult>
 }
 
 /// Run a .ps1 script feeding `stdin` to its standard input. The node-pure
-/// scripts read their JSON args via `[Console]::In.ReadToEnd()`, so this lets the
+/// scripts read their JSON args via `[Console]::In.ReadLine()`, so this lets the
 /// loopback distribute path run the SAME script locally as the remote SSH path.
 pub fn run_script_stdin(script_path: &Path, stdin: &str) -> VoloResult<ScriptResult> {
     #[cfg(windows)]

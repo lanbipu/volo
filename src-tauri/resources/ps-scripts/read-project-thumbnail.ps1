@@ -16,7 +16,7 @@ $ErrorActionPreference = 'Continue'
 $MaxBytes = 8MB
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $ProjectDir = $p.ProjectDir
     $UprojectStem = $p.UprojectStem
 

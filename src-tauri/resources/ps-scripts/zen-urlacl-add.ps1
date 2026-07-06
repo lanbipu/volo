@@ -39,7 +39,7 @@ chcp 65001 | Out-Null
 $ErrorActionPreference = 'Stop'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     if ([string]::IsNullOrWhiteSpace($p.UrlPrefix)) { throw "UrlPrefix is required" }
     if ([string]::IsNullOrWhiteSpace($p.UserAccount)) { throw "UserAccount is required" }
     $UrlPrefix = $p.UrlPrefix

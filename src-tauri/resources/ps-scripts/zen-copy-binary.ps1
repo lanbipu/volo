@@ -28,7 +28,7 @@ chcp 65001 | Out-Null
 $ErrorActionPreference = 'Stop'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $SourceDir = $p.SourceDir
     $TargetDir = $p.TargetDir
     if ([string]::IsNullOrWhiteSpace($SourceDir)) {

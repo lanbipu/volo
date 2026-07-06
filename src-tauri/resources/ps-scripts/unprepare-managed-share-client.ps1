@@ -20,7 +20,7 @@ function Get-UncHost([string]$u) {
 }
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $targets = @($p.TargetUncs | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     if (-not $targets.Count) { throw 'TargetUncs is required (at least one \\HOST\Share UNC)' }
     $cmdkeyTargets = @($p.CmdkeyTargets | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })

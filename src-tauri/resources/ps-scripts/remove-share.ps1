@@ -11,7 +11,7 @@
 $ErrorActionPreference = 'Stop'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $ShareName = $p.ShareName
     $SvcUsername = $p.SvcUsername
     $LocalPath = $p.LocalPath

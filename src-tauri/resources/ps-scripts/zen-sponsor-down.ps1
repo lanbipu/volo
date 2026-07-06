@@ -17,7 +17,7 @@ chcp 65001 | Out-Null
 $ErrorActionPreference = 'Stop'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     if ([string]::IsNullOrWhiteSpace($p.ZenExePath)) { @{ ok=$false; message="ZenExePath is required" } | ConvertTo-Json -Compress; exit 0 }
     if ([string]::IsNullOrWhiteSpace($p.Port))       { @{ ok=$false; message="Port is required" } | ConvertTo-Json -Compress; exit 0 }
     $ZenExePath  = $p.ZenExePath

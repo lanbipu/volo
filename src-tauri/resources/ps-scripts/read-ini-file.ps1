@@ -7,7 +7,7 @@
 $ErrorActionPreference = 'Continue'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $FilePath = $p.FilePath
 
     if (-not (Test-Path $FilePath)) {

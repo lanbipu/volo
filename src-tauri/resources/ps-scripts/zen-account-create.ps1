@@ -25,7 +25,7 @@ chcp 65001 | Out-Null
 $ErrorActionPreference = 'Stop'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $Username = $p.Username
     $Password = $p.Password
     if ([string]::IsNullOrWhiteSpace($Username)) {

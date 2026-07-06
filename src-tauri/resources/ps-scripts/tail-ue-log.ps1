@@ -7,7 +7,7 @@
 $ErrorActionPreference = 'Stop'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $LogPath = $p.LogPath
     $LastReadOffset = [long]$p.LastReadOffset
     $MaxBytes = if ($null -ne $p.MaxBytes) { [int]$p.MaxBytes } else { 65536 }

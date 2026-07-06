@@ -39,7 +39,7 @@ chcp 65001 | Out-Null
 $ErrorActionPreference = 'Stop'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $RuntimeUser = if ($p.RuntimeUser) { "$($p.RuntimeUser)" } else { '' }
     $DataPath    = if ($p.DataPath)    { "$($p.DataPath)".Trim() } else { '' }
 

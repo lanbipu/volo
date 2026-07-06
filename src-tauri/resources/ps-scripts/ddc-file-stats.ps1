@@ -21,7 +21,7 @@ function StatPath($pth) {
 }
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     @{
         ok     = $true
         local  = (StatPath $p.LocalPath)

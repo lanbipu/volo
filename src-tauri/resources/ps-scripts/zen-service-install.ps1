@@ -200,7 +200,7 @@ if ($env:UECM_PS_DEFINE_ONLY -eq '1') { return }
 # its old default; ServiceUser / ServicePassword default to empty string
 # (zen keeps its hardcoded NT AUTHORITY\LocalService when both are empty).
 # ServicePassword is a SECRET — never interpolate it into any error / log line.
-$p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$p = [Console]::In.ReadLine() | ConvertFrom-Json
 if ([string]::IsNullOrWhiteSpace($p.ZenExePath)) {
     @{ ok = $false; message = "ZenExePath is required" } | ConvertTo-Json -Compress
     exit 0

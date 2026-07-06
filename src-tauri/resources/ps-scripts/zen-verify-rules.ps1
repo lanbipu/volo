@@ -229,7 +229,7 @@ $proc = $null
 $startTime = Get-Date
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     if ([string]::IsNullOrWhiteSpace($p.UeRoot)) { throw "UeRoot is required" }
     if ([string]::IsNullOrWhiteSpace($p.UprojectPath)) { throw "UprojectPath is required" }
     $UeRoot = $p.UeRoot

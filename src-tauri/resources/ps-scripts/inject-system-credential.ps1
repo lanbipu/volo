@@ -18,7 +18,7 @@
 $ErrorActionPreference = 'Stop'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $TargetHost  = $p.TargetHost
     $SvcServerName = if ($p.SvcServerName) { [string]$p.SvcServerName } else { '' }
     $SvcUsername = $p.SvcUsername

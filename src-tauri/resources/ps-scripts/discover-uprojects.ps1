@@ -7,7 +7,7 @@
 $ErrorActionPreference = 'Continue'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $Roots = $p.Roots
     $MaxDepth = if ($null -ne $p.MaxDepth) { [int]$p.MaxDepth } else { 6 }
 

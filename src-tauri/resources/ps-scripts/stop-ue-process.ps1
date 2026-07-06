@@ -7,7 +7,7 @@
 $ErrorActionPreference = 'Stop'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $TargetPid = [int]$p.TargetPid
     try {
         Stop-Process -Id $TargetPid -Force -ErrorAction Stop

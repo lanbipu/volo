@@ -43,7 +43,7 @@ chcp 65001 | Out-Null
 $ErrorActionPreference = 'Stop'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     if ($null -eq $p.LuaText) { throw "LuaText is required" }
     if ([string]::IsNullOrWhiteSpace($p.DestPath)) { throw "DestPath is required" }
     $LuaText = $p.LuaText

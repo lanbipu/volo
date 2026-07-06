@@ -8,7 +8,7 @@
 $ErrorActionPreference = 'Stop'
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     $SourceUnc = $p.SourceUnc
     $TargetLocal = $p.TargetLocal
     $FileName = $p.FileName

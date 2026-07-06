@@ -60,7 +60,7 @@ function Normalize-Scope {
 }
 
 try {
-    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $p = [Console]::In.ReadLine() | ConvertFrom-Json
     if ([string]::IsNullOrWhiteSpace($p.Name)) { throw "Name is required" }
     $Name = $p.Name
     $Scopes = if ($null -ne $p.Scopes) { $p.Scopes } else { @('machine', 'user') }

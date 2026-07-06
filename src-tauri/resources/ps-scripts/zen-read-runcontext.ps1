@@ -41,7 +41,7 @@ chcp 65001 | Out-Null
 
 $ErrorActionPreference = 'Stop'
 
-$p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$p = [Console]::In.ReadLine() | ConvertFrom-Json
 $RuntimeUser = if ($p.RuntimeUser) { "$($p.RuntimeUser)" } else { '' }
 
 try {
