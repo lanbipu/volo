@@ -59,6 +59,11 @@ import { DEFAULTS, KNOBS } from "../keyer/params";
       setParam(key, value) {
         applyParams({ ...params, [key]: value });
       },
+      syncFromEngine() {
+        if (!engine) return;
+        params = engine.getParams();
+        emit();
+      },
       async sampleAt(u, v) {
         if (!engine) return null;
         await engine.sampleKeyColor(u, v);
@@ -161,6 +166,31 @@ import { DEFAULTS, KNOBS } from "../keyer/params";
       else { v.pause(); setPlaying(false); if (v.cancelVideoFrameCallback && vfcRef.current) v.cancelVideoFrameCallback(vfcRef.current); }
     };
     const setViewMode = (mode) => keyerStore.setParam("viewMode", mode);
+    const plateFileRef = useRef(null);
+    const [plateState, setPlateState] = useState(0); // 0 无 / 1 已加载 / 2 已估计
+    const openPlate = () => { if (plateFileRef.current) plateFileRef.current.click(); };
+    const onPlateFile = async (ev) => {
+      const file = ev.target.files && ev.target.files[0];
+      ev.target.value = "";
+      if (!file || !engineRef.current) return;
+      const bmp = await createImageBitmap(file);
+      engineRef.current.loadPlate(bmp);
+      keyerStore.syncFromEngine();
+      setPlateState(1);
+      if (bmp.close) bmp.close();
+    };
+    const estimatePlate = () => {
+      if (!engineRef.current) return;
+      engineRef.current.estimatePlate();
+      keyerStore.syncFromEngine();
+      setPlateState(2);
+    };
+    const clearPlate = () => {
+      if (!engineRef.current) return;
+      engineRef.current.clearPlate();
+      keyerStore.syncFromEngine();
+      setPlateState(0);
+    };
     const onCanvasClick = async (ev) => {
       const canvas = canvasRef.current;
       const engine = engineRef.current;
@@ -174,6 +204,7 @@ import { DEFAULTS, KNOBS } from "../keyer/params";
     };
     return h(React.Fragment, null,
       h("input", { ref: fileRef, type: "file", accept: "image/png,image/jpeg,video/mp4,video/quicktime", style: { display: "none" }, onChange: onFile }),
+      h("input", { ref: plateFileRef, type: "file", accept: "image/png,image/jpeg", style: { display: "none" }, onChange: onPlateFile }),
       h("video", { ref: videoRef, muted: true, loop: true, playsInline: true, style: { display: "none" } }),
       h("div", { className: "canvas-head" },
         h("span", { className: "t" }, "抠像实验台"),
@@ -185,6 +216,12 @@ import { DEFAULTS, KNOBS } from "../keyer/params";
             onClick: () => setViewMode(v.mode),
           }, v.label))),
         h("div", { className: "right" },
+          plateState > 0 ? h(Tag, null, plateState === 1 ? "plate · 已加载" : "plate · 已估计") : null,
+          h(Button, { variant: "secondary", size: "S", isDisabled: !probe || !probe.ok,
+            onPress: openPlate }, "加载 plate"),
+          h(Button, { variant: "secondary", size: "S", isDisabled: !probe || !probe.ok,
+            onPress: estimatePlate }, "估计 plate"),
+          plateState > 0 ? h(Button, { variant: "secondary", size: "S", onPress: clearPlate }, "清除") : null,
           hasVideo ? h(Button, { variant: "secondary", size: "S",
             icon: h(Icon, { name: playing ? "pause" : "play", size: 14 }), onPress: togglePlay }, playing ? "暂停" : "播放") : null,
           h(Button, { variant: "secondary", size: "S", isDisabled: !probe || !probe.ok,

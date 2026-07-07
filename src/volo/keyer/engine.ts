@@ -1,6 +1,8 @@
 import fullscreenWgsl from "./shaders/fullscreen.wgsl?raw";
 import keyWgsl from "./shaders/key.wgsl?raw";
 import compositeWgsl from "./shaders/composite.wgsl?raw";
+import plateMaskWgsl from "./shaders/plate_mask.wgsl?raw";
+import plateFillWgsl from "./shaders/plate_fill.wgsl?raw";
 import type { GpuProbeOk } from "./gpu";
 import { DEFAULTS, packParams, type KeyerParams } from "./params";
 
@@ -38,7 +40,8 @@ export class KeyerEngine {
   private samp: GPUSampler;
   private srcTex: GPUTexture | null = null;
   private matteTex: GPUTexture | null = null;
-  private plateTex: GPUTexture;
+  private plateTex: GPUTexture;                 // 1×1 占位（plateMode=0 时绑定）
+  private plateFull: GPUTexture | null = null;  // 加载 / 估计出的全幅 plate
   private paramBuf: GPUBuffer;
   private params: KeyerParams = cloneParams(DEFAULTS);
   private w = 0;
@@ -143,15 +146,7 @@ export class KeyerEngine {
     this.keyPass = {
       pipeline: keyPipeline,
       target: this.matteTex,
-      bindGroup: this.d.createBindGroup({
-        layout: keyPipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: this.samp },
-          { binding: 1, resource: srcView },
-          { binding: 2, resource: this.plateTex.createView() },
-          { binding: 3, resource: { buffer: this.paramBuf } },
-        ],
-      }),
+      bindGroup: this.makeKeyBind(keyPipeline, srcView),
     };
     this.compositePass = {
       pipeline: compositePipeline,
@@ -169,6 +164,142 @@ export class KeyerEngine {
     };
     (this.ctx.canvas as HTMLCanvasElement).width = this.w;
     (this.ctx.canvas as HTMLCanvasElement).height = this.h;
+  }
+
+  private makeKeyBind(pipeline: GPURenderPipeline, srcView: GPUTextureView): GPUBindGroup {
+    return this.d.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: this.samp },
+        { binding: 1, resource: srcView },
+        { binding: 2, resource: (this.plateFull ?? this.plateTex).createView() },
+        { binding: 3, resource: { buffer: this.paramBuf } },
+      ],
+    });
+  }
+
+  private rebindPlate(): void {
+    if (this.keyPass && this.srcTex) {
+      this.keyPass.bindGroup = this.makeKeyBind(this.keyPass.pipeline, this.srcTex.createView());
+    }
+  }
+
+  private setPlateMode(mode: number): void {
+    const next = cloneParams(this.params);
+    next.plateMode = mode;
+    this.setParams(next);
+  }
+
+  loadPlate(src: ImageBitmap): void {
+    const tex = this.d.createTexture({
+      label: "keyer plate (loaded)",
+      size: [src.width, src.height],
+      format: "rgba8unorm-srgb",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    this.d.queue.copyExternalImageToTexture({ source: src }, { texture: tex }, [src.width, src.height]);
+    this.plateFull?.destroy();
+    this.plateFull = tex;
+    this.rebindPlate();
+    this.setPlateMode(1);
+    this.renderOnce();
+  }
+
+  clearPlate(): void {
+    this.plateFull?.destroy();
+    this.plateFull = null;
+    this.rebindPlate();
+    this.setPlateMode(0);
+    this.renderOnce();
+  }
+
+  hasPlate(): boolean {
+    return !!this.plateFull;
+  }
+
+  /* pull-push：mask → 6 级 down（premult 双线性均值）→ 6 级 up 补洞 → 全幅 plate */
+  estimatePlate(): void {
+    if (!this.srcTex || this.w <= 0 || this.h <= 0) return;
+    const LEVELS = 6;
+    const maskPipeline = this.makePipeline("plate_mask", plateMaskWgsl, "rgba16float");
+    const fillPipeline = this.makePipeline("plate_fill", plateFillWgsl, "rgba16float");
+    const levelTex = (level: number, label: string) =>
+      this.d.createTexture({
+        label,
+        size: [Math.max(1, this.w >> level), Math.max(1, this.h >> level)],
+        format: "rgba16float",
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+    const pyr: GPUTexture[] = [];
+    const fill: GPUTexture[] = [];
+    for (let i = 0; i <= LEVELS; i++) {
+      pyr.push(levelTex(i, "plate pyr " + i));
+      fill.push(levelTex(i, "plate fill " + i));
+    }
+    const modeBuf = (x: number) => {
+      const b = this.d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      this.d.queue.writeBuffer(b, 0, new Float32Array([x, 0, 0, 0]));
+      return b;
+    };
+    const downMode = modeBuf(0);
+    const upMode = modeBuf(1);
+    const enc = this.d.createCommandEncoder();
+    const runPass = (
+      pipeline: GPURenderPipeline,
+      target: GPUTexture,
+      entries: GPUBindGroupEntry[],
+    ) => {
+      const rp = enc.beginRenderPass({
+        colorAttachments: [{ view: target.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+      });
+      rp.setPipeline(pipeline);
+      rp.setBindGroup(0, this.d.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries }));
+      rp.draw(3);
+      rp.end();
+    };
+    // mask → pyr[0]
+    runPass(maskPipeline, pyr[0], [
+      { binding: 0, resource: this.samp },
+      { binding: 1, resource: this.srcTex.createView() },
+      { binding: 2, resource: { buffer: this.paramBuf } },
+    ]);
+    // down: pyr[i-1] → pyr[i]
+    for (let i = 1; i <= LEVELS; i++) {
+      runPass(fillPipeline, pyr[i], [
+        { binding: 0, resource: this.samp },
+        { binding: 1, resource: pyr[i - 1].createView() },
+        { binding: 2, resource: pyr[i - 1].createView() },
+        { binding: 3, resource: { buffer: downMode } },
+      ]);
+    }
+    // 最粗一级补洞：fine = coarse = pyr[LEVELS]
+    runPass(fillPipeline, fill[LEVELS], [
+      { binding: 0, resource: this.samp },
+      { binding: 1, resource: pyr[LEVELS].createView() },
+      { binding: 2, resource: pyr[LEVELS].createView() },
+      { binding: 3, resource: { buffer: upMode } },
+    ]);
+    // up: fill[i+1] + pyr[i] → fill[i]
+    for (let i = LEVELS - 1; i >= 0; i--) {
+      runPass(fillPipeline, fill[i], [
+        { binding: 0, resource: this.samp },
+        { binding: 1, resource: fill[i + 1].createView() },
+        { binding: 2, resource: pyr[i].createView() },
+        { binding: 3, resource: { buffer: upMode } },
+      ]);
+    }
+    this.d.queue.submit([enc.finish()]);
+    for (let i = 0; i <= LEVELS; i++) {
+      pyr[i].destroy();
+      if (i > 0) fill[i].destroy();
+    }
+    downMode.destroy();
+    upMode.destroy();
+    this.plateFull?.destroy();
+    this.plateFull = fill[0];
+    this.rebindPlate();
+    this.setPlateMode(1);
+    this.renderOnce();
   }
 
   setParams(p: KeyerParams): void {
