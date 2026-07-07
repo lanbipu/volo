@@ -105,6 +105,35 @@ pub fn build_ssh_args(
     ]
 }
 
+/// SSH argv for one-line PowerShell sent over stdin via `-Command -`.
+pub fn build_ssh_inline_powershell_args(
+    key_path: &str,
+    known_hosts: &str,
+    ssh_user: &str,
+    host: &str,
+) -> Vec<String> {
+    vec![
+        "-i".into(),
+        key_path.into(),
+        "-o".into(),
+        "IdentitiesOnly=yes".into(),
+        "-o".into(),
+        format!("UserKnownHostsFile={known_hosts}"),
+        "-o".into(),
+        "StrictHostKeyChecking=accept-new".into(),
+        "-o".into(),
+        "BatchMode=yes".into(),
+        "-o".into(),
+        "ConnectTimeout=10".into(),
+        "-o".into(),
+        "ServerAliveInterval=30".into(),
+        "-o".into(),
+        "ServerAliveCountMax=10".into(),
+        format!("{ssh_user}@{host}"),
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command -".into(),
+    ]
+}
+
 /// ssh 进程退出码 → 错误分类。255 = ssh 自身（连接/认证/host-key）；其余 = 节点脚本失败。
 pub fn map_exit(code: i32, stderr: &str) -> VoloError {
     if code == 255 {
@@ -449,6 +478,37 @@ impl SshExecutor {
         }
         Ok(child)
     }
+
+    /// Run one single-line PowerShell command over SSH stdin.
+    pub fn run_inline_powershell(&self, host: &str, command: &str) -> VoloResult<ScriptOutput> {
+        let user = &self.default_user;
+        let args = build_ssh_inline_powershell_args(
+            &self.key_path.to_string_lossy(),
+            &self.known_hosts.to_string_lossy(),
+            user,
+            host,
+        );
+        let mut child = crate::core::proc::hide_console(Command::new("ssh").args(&args))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| VoloError::SshConnect(format!("spawn ssh failed: {e}")))?;
+        {
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| VoloError::SshConnect("open ssh stdin failed".into()))?;
+            stdin.write_all(command.as_bytes())?;
+            stdin.write_all(b"\n")?;
+        }
+        let out = child.wait_with_output()?;
+        Ok(ScriptOutput {
+            stdout: Self::decode(&out.stdout),
+            stderr: Self::decode(&out.stderr),
+            exit_code: out.status.code().unwrap_or(-1),
+        })
+    }
 }
 
 impl RemoteExecutor for SshExecutor {
@@ -563,6 +623,28 @@ mod tests {
         assert!(remote.contains(r"-File C:\ProgramData\UECM\ps-scripts\health-probes.ps1"));
         assert!(remote.contains("powershell.exe -NoProfile -ExecutionPolicy Bypass"));
         assert!(!remote.contains("-EncodedCommand"));
+    }
+
+    #[test]
+    fn build_ssh_inline_powershell_args_uses_command_stdin() {
+        let args = build_ssh_inline_powershell_args(
+            "/cfg/uecm_ed25519",
+            "/cfg/known_hosts",
+            "uecm-svc",
+            "RENDER-01",
+        );
+        assert!(args.contains(&"-i".to_string()));
+        assert!(args.contains(&"/cfg/uecm_ed25519".to_string()));
+        assert!(args.iter().any(|a| a == "UserKnownHostsFile=/cfg/known_hosts"));
+        assert!(args.iter().any(|a| a == "StrictHostKeyChecking=accept-new"));
+        assert!(args.iter().any(|a| a == "BatchMode=yes"));
+        assert!(args.iter().any(|a| a == "ServerAliveInterval=30"));
+        assert!(args.iter().any(|a| a == "ServerAliveCountMax=10"));
+        assert!(args.contains(&"uecm-svc@RENDER-01".to_string()));
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("powershell.exe -NoProfile -ExecutionPolicy Bypass -Command -")
+        );
     }
 
     #[test]

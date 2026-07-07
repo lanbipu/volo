@@ -2,16 +2,16 @@
 
 use crate::commands::ddc_pak::UeJobRegistry;
 use cache_core::core::{
-    batch, ini_editor,
+    batch, driver_cache_probe, ini_editor,
     pso_collect::{self, PsoCollectSpec},
     pso_distribute::{self, PsoDistributePlanItem},
     pso_warmup::{self, PsoWarmupSpec},
     ue_runner::{UeRunnerBackend, UeRunnerEvent},
 };
 use cache_core::data::{
-    machine_ue_installs, machines as data_machines, project_locations, pso_cache_files,
-    pso_distributions, pso_warmup_runs, Db, DistributionStatus, PsoCacheFile, PsoDistribution,
-    PsoWarmupRun, WarmupStatus,
+    driver_cache_snapshots, machine_ue_installs, machines as data_machines, project_locations,
+    pso_cache_files, pso_distributions, pso_warmup_runs, Db, DistributionStatus,
+    DriverCacheSnapshot, PsoCacheFile, PsoDistribution, PsoWarmupRun, WarmupStatus,
 };
 use cache_core::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
@@ -868,6 +868,65 @@ pub fn list_pso_warmup_runs(
     // supervising process died — reap on read so they never look in-flight.
     let _ = pso_warmup_runs::reap_overdue(&db);
     pso_warmup_runs::list_by_project(&db, project_id, machine_id)
+}
+
+#[tauri::command]
+pub async fn probe_driver_cache(
+    db: State<'_, Db>,
+    machine_id: i64,
+) -> VoloResult<DriverCacheSnapshot> {
+    let machine = data_machines::find_by_id(&db, machine_id)?
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?;
+    let host = machine.ip.clone();
+    let probe = tokio::task::spawn_blocking(move || driver_cache_probe::probe(&host))
+        .await
+        .map_err(|err| VoloError::OperationFailed(format!("driver cache probe join: {err}")))??;
+    let input = driver_cache_snapshot_input(machine_id, probe)?;
+    driver_cache_snapshots::insert(&db, &input)
+}
+
+fn driver_cache_snapshot_input(
+    machine_id: i64,
+    probe: driver_cache_probe::DriverCacheProbe,
+) -> VoloResult<driver_cache_snapshots::DriverCacheSnapshotInput> {
+    let local = probe
+        .directories
+        .iter()
+        .find(|dir| dir.kind == driver_cache_probe::local_dxcache_kind())
+        .ok_or_else(|| {
+            VoloError::OperationFailed("driver cache probe missing local DXCache".into())
+        })?;
+    let low = probe
+        .directories
+        .iter()
+        .find(|dir| dir.kind == driver_cache_probe::low_dxcache_kind())
+        .ok_or_else(|| {
+            VoloError::OperationFailed("driver cache probe missing LocalLow DXCache".into())
+        })?;
+    Ok(driver_cache_snapshots::DriverCacheSnapshotInput {
+        machine_id,
+        gpu_model: probe.gpu_model,
+        gpu_driver_version: probe.gpu_driver_version,
+        interactive_user: probe.interactive_user,
+        local_appdata_dxcache: driver_cache_dir_to_data(local),
+        locallow_per_driver_dxcache: driver_cache_dir_to_data(low),
+        total_file_count: probe.total_file_count,
+        total_bytes: probe.total_bytes,
+        newest_mtime: probe.newest_mtime,
+    })
+}
+
+fn driver_cache_dir_to_data(
+    dir: &driver_cache_probe::DriverCacheDirectorySnapshot,
+) -> driver_cache_snapshots::DriverCacheDirectorySnapshot {
+    driver_cache_snapshots::DriverCacheDirectorySnapshot {
+        kind: dir.kind.clone(),
+        path: dir.path.clone(),
+        exists: dir.exists,
+        file_count: dir.file_count,
+        total_bytes: dir.total_bytes,
+        newest_mtime: dir.newest_mtime.clone(),
+    }
 }
 
 /// PSO precache CVars applied by "one-click fix" (same set as the deploy

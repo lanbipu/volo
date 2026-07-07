@@ -8,6 +8,7 @@ pub mod ddc_pak;
 pub mod ddc_retention;
 pub mod ddc_symptom_recognizer;
 pub mod deploy_workflow;
+pub mod driver_cache_probe;
 pub mod discovery;
 pub mod editor_preferences;
 pub mod env_vars;

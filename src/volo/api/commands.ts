@@ -1,5 +1,5 @@
 /* Volo — Cache typed command bindings.
-   One wrapper per registered `#[tauri::command]` (88 total). Arg keys are
+   One wrapper per registered `#[tauri::command]` (92 total). Arg keys are
    camelCase (Rust snake_case → JS camelCase); a struct/request input is passed
    whole under one camelCase key, its inner fields staying snake_case. Optional
    Rust params (`Option<T>`) are passed as explicit `null` when omitted.
@@ -10,7 +10,7 @@
      🔌 ui-sim —— 前端有对应 UI 入口（按钮/面板/流程），当前 runTask 模拟或读 mock，
                   待接真实 invoke（wire-target）
      📝 no-ui  —— 当前设计无对应 UI 承载点（后端-only 能力）；附原因，不强造 UI
-   现状汇总：✅ 52 · 🔌 0 · 📝 39 = 91。 */
+   现状汇总：✅ 52 · 🔌 0 · 📝 40 = 92。 */
 import { call } from "./invoke";
 import type {
   Machine, MachineDetail, UeRuntimeUserRow, WinrmBootstrapResult, PackageBootstrapResult, EchoResult,
@@ -21,7 +21,7 @@ import type {
   ProjectSummary, ProjectLocation, DiscoveryResult,
   ExecutionLocation, GenerateJobResponse, PakOutput, DistributeJobResponse, DeployedPakEntry, ProjectProbe,
   PsoCollectJobResponse, PsoCacheFile, DistributePsoCacheRequest, PsoDistributeJobResponse,
-  StartPsoWarmupRequest, PsoWarmupJobResponse, PsoWarmupRun,
+  StartPsoWarmupRequest, PsoWarmupJobResponse, PsoWarmupRun, DriverCacheSnapshot,
   RunHealthCheckRequest, HealthRunSummary, HealthCheckRow,
   ZenStatusRow, ZenProbeReport, ZenCacheStatsReport, ZenDiskSpaceResult, ZenDetectBinaryReport, ZenEndpoint,
   ZenBinaryExpected, ZenRegisterInput, ZenRegisterOutcome, ZenUpdateDeployConfigInput, ZenUpdateDeployConfigOutcome, ZenMigrateDataDirResult, ZenUnregisterResult,
@@ -334,6 +334,9 @@ export const startPsoWarmup = (request: StartPsoWarmupRequest) =>
 // 📝 no-ui: 等 Claude Design handoff（节点就绪矩阵 + 运行历史数据源）
 export const listPsoWarmupRuns = (projectId: number, machineId?: number | null) =>
   call<PsoWarmupRun[]>("list_pso_warmup_runs", { projectId, machineId: machineId ?? null });
+// 📝 no-ui: 等 PSO 就绪矩阵重设计消费；探测节点 GPU driver cache 目录状态并落库
+export const probeDriverCache = (machineId: number) =>
+  call<DriverCacheSnapshot>("probe_driver_cache", { machineId });
 // 📝 no-ui: 等 Claude Design handoff（配置合规卡「一键修复」；写 4 个 PSO CVar 到 ConsoleVariables.ini）
 export const fixPsoCvars = (projectId: number, machineId: number) =>
   call<string[]>("fix_pso_cvars", { projectId, machineId });

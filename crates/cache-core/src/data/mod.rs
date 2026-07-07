@@ -1,5 +1,6 @@
 pub mod connection;
 pub mod credentials;
+pub mod driver_cache_snapshots;
 pub mod health_check_runs;
 pub mod ini_config_snapshots;
 pub mod ini_findings;
@@ -25,6 +26,7 @@ pub mod zen_probes;
 
 pub use connection::{open, open_in_memory, Db};
 pub use credentials::{CredentialKind, CredentialRecord};
+pub use driver_cache_snapshots::DriverCacheSnapshot;
 pub use health_check_runs::HealthCheckRow;
 pub use ini_findings::{IniFinding, SeverityCounts};
 pub use machine_gpus::{GpuInfo, GpuVendor};

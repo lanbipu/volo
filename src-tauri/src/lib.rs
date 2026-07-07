@@ -268,6 +268,7 @@ pub fn run() {
             commands::pso::distribute_pso_cache,
             commands::pso::start_pso_warmup,
             commands::pso::list_pso_warmup_runs,
+            commands::pso::probe_driver_cache,
             commands::pso::fix_pso_cvars,
             commands::gpu_consistency::get_gpu_consistency_matrix,
             commands::ini_scanner::verify_pso_precaching,

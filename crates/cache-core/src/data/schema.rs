@@ -448,6 +448,35 @@ const MIGRATIONS: &[(&str, &str)] = &[
         ALTER TABLE pso_warmup_runs ADD COLUMN driver_cache_growth_bytes INTEGER;
         "#,
     ),
+    (
+        "029_driver_cache_snapshots_table",
+        r#"
+        CREATE TABLE IF NOT EXISTS driver_cache_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            machine_id INTEGER NOT NULL,
+            gpu_model TEXT,
+            gpu_driver_version TEXT,
+            interactive_user TEXT,
+            local_appdata_dxcache_path TEXT NOT NULL,
+            local_appdata_dxcache_exists INTEGER NOT NULL,
+            local_appdata_dxcache_file_count INTEGER NOT NULL,
+            local_appdata_dxcache_total_bytes INTEGER NOT NULL,
+            local_appdata_dxcache_newest_mtime TEXT,
+            locallow_per_driver_dxcache_path TEXT NOT NULL,
+            locallow_per_driver_dxcache_exists INTEGER NOT NULL,
+            locallow_per_driver_dxcache_file_count INTEGER NOT NULL,
+            locallow_per_driver_dxcache_total_bytes INTEGER NOT NULL,
+            locallow_per_driver_dxcache_newest_mtime TEXT,
+            total_file_count INTEGER NOT NULL,
+            total_bytes INTEGER NOT NULL,
+            newest_mtime TEXT,
+            captured_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (machine_id) REFERENCES machines(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_driver_cache_snapshots_machine
+            ON driver_cache_snapshots(machine_id, captured_at DESC);
+        "#,
+    ),
 ];
 
 pub fn migrate(conn: &mut Connection) -> VoloResult<()> {
@@ -805,6 +834,39 @@ mod tests {
                 ("provider_path", "TEXT", true),
                 ("raw_cb", "BLOB", true),
                 ("schema_version", "INTEGER", true),
+            ],
+        );
+    }
+
+    #[test]
+    fn migrate_creates_driver_cache_snapshots_table_with_expected_columns() {
+        let db = open_in_memory().unwrap();
+        let mut conn = db.lock().unwrap();
+        migrate(&mut conn).unwrap();
+        assert!(table_exists(&conn, "driver_cache_snapshots"));
+        assert_has_columns(
+            &conn,
+            "driver_cache_snapshots",
+            &[
+                ("id", "INTEGER", false),
+                ("machine_id", "INTEGER", true),
+                ("gpu_model", "TEXT", false),
+                ("gpu_driver_version", "TEXT", false),
+                ("interactive_user", "TEXT", false),
+                ("local_appdata_dxcache_path", "TEXT", true),
+                ("local_appdata_dxcache_exists", "INTEGER", true),
+                ("local_appdata_dxcache_file_count", "INTEGER", true),
+                ("local_appdata_dxcache_total_bytes", "INTEGER", true),
+                ("local_appdata_dxcache_newest_mtime", "TEXT", false),
+                ("locallow_per_driver_dxcache_path", "TEXT", true),
+                ("locallow_per_driver_dxcache_exists", "INTEGER", true),
+                ("locallow_per_driver_dxcache_file_count", "INTEGER", true),
+                ("locallow_per_driver_dxcache_total_bytes", "INTEGER", true),
+                ("locallow_per_driver_dxcache_newest_mtime", "TEXT", false),
+                ("total_file_count", "INTEGER", true),
+                ("total_bytes", "INTEGER", true),
+                ("newest_mtime", "TEXT", false),
+                ("captured_at", "TEXT", true),
             ],
         );
     }

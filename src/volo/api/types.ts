@@ -536,6 +536,29 @@ export interface PsoWarmupRun {
   duration_secs: number | null;
 }
 
+export interface DriverCacheDirectorySnapshot {
+  kind: string;
+  path: string;
+  exists: boolean;
+  file_count: number;
+  total_bytes: number;
+  newest_mtime: string | null;
+}
+
+export interface DriverCacheSnapshot {
+  id: number | null;
+  machine_id: number;
+  gpu_model: string | null;
+  gpu_driver_version: string | null;
+  interactive_user: string | null;
+  local_appdata_dxcache: DriverCacheDirectorySnapshot;
+  locallow_per_driver_dxcache: DriverCacheDirectorySnapshot;
+  total_file_count: number;
+  total_bytes: number;
+  newest_mtime: string | null;
+  captured_at: string | null;
+}
+
 /* ============================ health check ============================ */
 export interface RunHealthCheckRequest {
   machine_ids: number[];
