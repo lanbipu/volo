@@ -8,6 +8,7 @@ import { KeyerEngine } from "../keyer/engine";
 import { DEFAULTS, KNOBS } from "../keyer/params";
 
 (function () {
+  window.KEYER_SKIP = {}; // 全管线
   const { Button, InlineAlert, StatusLight, Tag } = window.Spectrum2DesignSystem_b6d1b3;
   const h = React.createElement;
   const { useState, useEffect, useRef } = React;
@@ -125,12 +126,15 @@ import { DEFAULTS, KNOBS } from "../keyer/params";
     const pumpFrames = () => {
       const v = videoRef.current, e = engineRef.current;
       if (!v || !e) return;
+      let n = 0;
       const cb = () => {
         if (!videoRef.current || !engineRef.current) return;
         engineRef.current.loadImage(videoRef.current);
         engineRef.current.renderOnce();
-        const st = engineRef.current.stats();
-        setHud(st.fps.toFixed(1) + " fps · " + st.frameMs.toFixed(2) + " ms");
+        if (++n % 10 === 0) {  // HUD 节流：React setState 每 10 帧一次
+          const st = engineRef.current.stats();
+          setHud(st.fps.toFixed(1) + " fps · " + st.frameMs.toFixed(2) + " ms");
+        }
         vfcRef.current = videoRef.current.requestVideoFrameCallback(cb);
       };
       vfcRef.current = v.requestVideoFrameCallback(cb);

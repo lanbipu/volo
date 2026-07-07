@@ -3,7 +3,10 @@ import keyWgsl from "./shaders/key.wgsl?raw";
 import compositeWgsl from "./shaders/composite.wgsl?raw";
 import plateMaskWgsl from "./shaders/plate_mask.wgsl?raw";
 import plateFillWgsl from "./shaders/plate_fill.wgsl?raw";
-import premultWgsl from "./shaders/premult.wgsl?raw";
+import edgePreWgsl from "./shaders/edge_pre.wgsl?raw";
+import denoiseTemporalWgsl from "./shaders/denoise_temporal.wgsl?raw";
+import denoiseSpatialWgsl from "./shaders/denoise_spatial.wgsl?raw";
+import mattePostWgsl from "./shaders/matte_post.wgsl?raw";
 import edgeExtendWgsl from "./shaders/edge_extend.wgsl?raw";
 import despillWgsl from "./shaders/despill.wgsl?raw";
 import type { GpuProbeOk } from "./gpu";
@@ -51,7 +54,6 @@ export class KeyerEngine {
   private h = 0;
   private keyPass: Pass | null = null;
   private compositePass: Pass | null = null;
-  private premultPass: Pass | null = null;   // → qTexA（1/4 分辨率 premult）
   private edgeHPass: Pass | null = null;     // qTexA → qTexB
   private edgeVPass: Pass | null = null;     // qTexB → qTexA（= coreTex）
   private despillPass: Pass | null = null;   // → fgTex（全分辨率 premult）
@@ -60,6 +62,17 @@ export class KeyerEngine {
   private qTexB: GPUTexture | null = null;
   private dirHBuf: GPUBuffer | null = null;
   private dirVBuf: GPUBuffer | null = null;
+  private spatialPipeline: GPURenderPipeline | null = null;
+  private spatialBinds: GPUBindGroup[] = []; // [p] 读 hist[p]
+  private hist: GPUTexture[] = [];           // 时域历史 ping-pong
+  private mHist: GPUTexture[] = [];          // matte 历史 ping-pong
+  private temporalPipeline: GPURenderPipeline | null = null;
+  private temporalBinds: GPUBindGroup[] = []; // [p] 读 hist[1-p]
+  private mattePostPipeline: GPURenderPipeline | null = null;
+  private mattePostBinds: GPUBindGroup[] = [];
+  private parity = 0;
+  private dn: GPUTexture | null = null;
+  private matteRaw: GPUTexture | null = null;
   private frameMs = 0;
   private lastT = 0;
 
@@ -107,6 +120,20 @@ export class KeyerEngine {
     });
   }
 
+  makePipelineMRT(label: string, fragWgsl: string, fmts: GPUTextureFormat[]): GPURenderPipeline {
+    return this.d.createRenderPipeline({
+      label,
+      layout: "auto",
+      vertex: { module: this.d.createShaderModule({ code: fullscreenWgsl }), entryPoint: "vs" },
+      fragment: {
+        module: this.d.createShaderModule({ code: fragWgsl }),
+        entryPoint: "fs",
+        targets: fmts.map((format) => ({ format })),
+      },
+      primitive: { topology: "triangle-list" },
+    });
+  }
+
   makeTex(fmt: GPUTextureFormat, scale = 1): GPUTexture {
     return this.d.createTexture({
       size: [Math.max(1, (this.w * scale) | 0), Math.max(1, (this.h * scale) | 0)],
@@ -149,18 +176,54 @@ export class KeyerEngine {
         GPUTextureUsage.RENDER_ATTACHMENT,
     });
     this.matteTex = this.makeTex("r16float");
+    this.matteRaw = this.makeTex("r16float");
+    this.mHist = [this.makeTex("r16float"), this.makeTex("r16float")];
+    this.hist = [this.makeTex("rgba16float"), this.makeTex("rgba16float")];
+    this.dn = this.makeTex("rgba16float");
+    this.parity = 0;
 
     const keyPipeline = this.makePipeline("key", keyWgsl, "r16float");
     const compositePipeline = this.makePipeline("composite", compositeWgsl, this.fmt);
-    const srcView = this.srcTex.createView();
+    const srcView = this.dn.createView();   // 下游一律吃降噪后的 dn
     const matteView = this.matteTex.createView();
+
+    this.temporalPipeline = this.makePipeline("denoise_temporal", denoiseTemporalWgsl, "rgba16float");
+    this.temporalBinds = [0, 1].map((par) => this.d.createBindGroup({
+      layout: this.temporalPipeline!.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: this.samp },
+        { binding: 1, resource: this.srcTex!.createView() },
+        { binding: 2, resource: this.hist[1 - par].createView() },
+        { binding: 3, resource: { buffer: this.paramBuf } },
+      ],
+    }));
+    this.spatialPipeline = this.makePipeline("denoise_spatial", denoiseSpatialWgsl, "rgba16float");
+    this.spatialBinds = [0, 1].map((par) => this.d.createBindGroup({
+      layout: this.spatialPipeline!.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: this.samp },
+        { binding: 1, resource: this.hist[par].createView() },
+        { binding: 2, resource: { buffer: this.paramBuf } },
+      ],
+    }));
+    this.mattePostPipeline = this.makePipelineMRT("matte_post", mattePostWgsl, ["r16float", "r16float"]);
+    this.mattePostBinds = [0, 1].map((par) => this.d.createBindGroup({
+      layout: this.mattePostPipeline!.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: this.samp },
+        { binding: 1, resource: this.matteRaw!.createView() },
+        { binding: 2, resource: this.mHist[1 - par].createView() },
+        { binding: 3, resource: this.dn!.createView() },
+        { binding: 4, resource: { buffer: this.paramBuf } },
+      ],
+    }));
 
     this.keyPass = {
       pipeline: keyPipeline,
-      target: this.matteTex,
+      target: this.matteRaw,
       bindGroup: this.makeKeyBind(keyPipeline, srcView),
     };
-    // Despill 链：premult(1/4) → edge H → edge V(coreTex) → despill(全分辨率 fgTex)
+    // Despill 链：edge_pre(内联 premult, 1/4 H) → edge V(coreTex=qTexB) → despill(全分辨率 fgTex)
     this.fgTex = this.makeTex("rgba16float");
     this.qTexA = this.makeTex("rgba16float", 0.25);
     this.qTexB = this.makeTex("rgba16float", 0.25);
@@ -175,30 +238,33 @@ export class KeyerEngine {
     this.dirHBuf = dirBuf(1 / qw, 0);
     this.dirVBuf = dirBuf(0, 1 / qh);
 
-    const premultPipeline = this.makePipeline("premult", premultWgsl, "rgba16float");
-    this.premultPass = {
-      pipeline: premultPipeline,
+    const edgePrePipeline = this.makePipeline("edge_pre", edgePreWgsl, "rgba16float");
+    this.edgeHPass = {
+      pipeline: edgePrePipeline,
       target: this.qTexA,
       bindGroup: this.d.createBindGroup({
-        layout: premultPipeline.getBindGroupLayout(0),
+        layout: edgePrePipeline.getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: this.samp },
           { binding: 1, resource: srcView },
           { binding: 2, resource: matteView },
+          { binding: 3, resource: { buffer: this.dirHBuf } },
         ],
       }),
     };
     const edgePipeline = this.makePipeline("edge_extend", edgeExtendWgsl, "rgba16float");
-    const edgeBind = (src: GPUTexture, dir: GPUBuffer) => this.d.createBindGroup({
-      layout: edgePipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: this.samp },
-        { binding: 1, resource: src.createView() },
-        { binding: 2, resource: { buffer: dir } },
-      ],
-    });
-    this.edgeHPass = { pipeline: edgePipeline, target: this.qTexB, bindGroup: edgeBind(this.qTexA, this.dirHBuf) };
-    this.edgeVPass = { pipeline: edgePipeline, target: this.qTexA, bindGroup: edgeBind(this.qTexB, this.dirVBuf) };
+    this.edgeVPass = {
+      pipeline: edgePipeline,
+      target: this.qTexB,
+      bindGroup: this.d.createBindGroup({
+        layout: edgePipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: this.samp },
+          { binding: 1, resource: this.qTexA.createView() },
+          { binding: 2, resource: { buffer: this.dirVBuf } },
+        ],
+      }),
+    };
     const despillPipeline = this.makePipeline("despill", despillWgsl, "rgba16float");
     this.despillPass = {
       pipeline: despillPipeline,
@@ -209,7 +275,7 @@ export class KeyerEngine {
           { binding: 0, resource: this.samp },
           { binding: 1, resource: srcView },
           { binding: 2, resource: matteView },
-          { binding: 3, resource: this.qTexA.createView() },
+          { binding: 3, resource: this.qTexB!.createView() },
           { binding: 4, resource: { buffer: this.paramBuf } },
         ],
       }),
@@ -246,8 +312,8 @@ export class KeyerEngine {
   }
 
   private rebindPlate(): void {
-    if (this.keyPass && this.srcTex) {
-      this.keyPass.bindGroup = this.makeKeyBind(this.keyPass.pipeline, this.srcTex.createView());
+    if (this.keyPass && this.dn) {
+      this.keyPass.bindGroup = this.makeKeyBind(this.keyPass.pipeline, this.dn.createView());
     }
   }
 
@@ -324,10 +390,10 @@ export class KeyerEngine {
       rp.draw(3);
       rp.end();
     };
-    // mask → pyr[0]
+    // mask → pyr[0]（吃降噪后 dn，与 key 同源）
     runPass(maskPipeline, pyr[0], [
       { binding: 0, resource: this.samp },
-      { binding: 1, resource: this.srcTex.createView() },
+      { binding: 1, resource: (this.dn ?? this.srcTex).createView() },
       { binding: 2, resource: { buffer: this.paramBuf } },
     ]);
     // down: pyr[i-1] → pyr[i]
@@ -391,21 +457,6 @@ export class KeyerEngine {
     }
     this.lastT = now;
     const enc = this.d.createCommandEncoder();
-    const keyRp = enc.beginRenderPass({
-      colorAttachments: [
-        {
-          view: this.matteTex.createView(),
-          loadOp: "clear",
-          storeOp: "store",
-          clearValue: { r: 0, g: 0, b: 0, a: 1 },
-        },
-      ],
-    });
-    keyRp.setPipeline(this.keyPass.pipeline);
-    keyRp.setBindGroup(0, this.keyPass.bindGroup);
-    keyRp.draw(3);
-    keyRp.end();
-
     const run = (p: Pass) => {
       const rp = enc.beginRenderPass({
         colorAttachments: [{ view: p.target!.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
@@ -415,8 +466,30 @@ export class KeyerEngine {
       rp.draw(3);
       rp.end();
     };
-    if (this.premultPass && this.edgeHPass && this.edgeVPass && this.despillPass) {
-      run(this.premultPass);
+    const runMRT = (pipeline: GPURenderPipeline, bind: GPUBindGroup, targets: GPUTexture[]) => {
+      const rp = enc.beginRenderPass({
+        colorAttachments: targets.map((t) => ({
+          view: t.createView(), loadOp: "clear" as GPULoadOp, storeOp: "store" as GPUStoreOp,
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        })),
+      });
+      rp.setPipeline(pipeline);
+      rp.setBindGroup(0, bind);
+      rp.draw(3);
+      rp.end();
+    };
+    const SKIP = (globalThis as unknown as { KEYER_SKIP?: { dn?: boolean; post?: boolean; edge?: boolean } }).KEYER_SKIP ?? {};
+    const par = this.parity;
+    this.parity = 1 - this.parity;
+    if (!SKIP.dn && this.temporalPipeline && this.spatialPipeline) {
+      runMRT(this.temporalPipeline, this.temporalBinds[par], [this.hist[par]]);
+      runMRT(this.spatialPipeline, this.spatialBinds[par], [this.dn!]);
+    }
+    run(this.keyPass);
+    if (!SKIP.post && this.mattePostPipeline) {
+      runMRT(this.mattePostPipeline, this.mattePostBinds[par], [this.matteTex!, this.mHist[par]]);
+    }
+    if (!SKIP.edge && this.edgeHPass && this.edgeVPass && this.despillPass) {
       run(this.edgeHPass);
       run(this.edgeVPass);
       run(this.despillPass);
