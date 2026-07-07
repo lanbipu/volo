@@ -92,3 +92,88 @@ pub fn list_ar_runs(runs_root: String) -> VoloResult<Vec<ArRunSummary>> {
     runs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     Ok(runs)
 }
+
+/// Lens capture session summary — scanned from `session.json` written by
+/// `vpcal capture session` (`CaptureSessionRunner._assemble`,
+/// sidecars/vpcal/src/vpcal/core/capture_session.py). Same directory-scan
+/// approach as `list_ar_runs`: no separate session registry exists, we read
+/// what the capture pipeline already writes to disk.
+#[derive(Debug, Clone, Serialize)]
+pub struct LensSessionSummary {
+    /// Session identifier — the containing directory name.
+    pub id: String,
+    /// Absolute path to the session directory.
+    pub session_dir: String,
+    /// Absolute path to the session's `session.json`.
+    pub session_json_path: String,
+    /// True when `session.json` carries an inline `lens` profile (a session
+    /// captured without one still solves via `quick run`, just without a
+    /// known lens to disambiguate QLE from).
+    pub lens_ready: bool,
+    /// Captured pose count — counted from `tracking/poses.jsonl` lines (one
+    /// JSON line per pose). Not persisted anywhere else in the session, so
+    /// this is the only honest source; `None` if the file is missing/unreadable.
+    pub poses_captured: Option<u64>,
+    /// `session.json` mtime, RFC3339 (best-effort; `None` if unreadable).
+    pub modified_at: Option<String>,
+}
+
+fn summarize_session(session_json: &Path) -> Option<LensSessionSummary> {
+    let txt = fs::read_to_string(session_json).ok()?;
+    let v: Value = serde_json::from_str(&txt).ok()?;
+    let session_dir = session_json.parent()?;
+    let id = session_dir
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "session".to_string());
+    let lens_ready = v.get("lens").is_some();
+    let poses_captured = fs::read_to_string(session_dir.join("tracking").join("poses.jsonl"))
+        .ok()
+        .map(|txt| txt.lines().filter(|l| !l.trim().is_empty()).count() as u64);
+    let modified_at = fs::metadata(session_json)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
+    Some(LensSessionSummary {
+        id,
+        session_dir: session_dir.to_string_lossy().into_owned(),
+        session_json_path: session_json.to_string_lossy().into_owned(),
+        lens_ready,
+        poses_captured,
+        modified_at,
+    })
+}
+
+/// List lens capture sessions under `sessions_root` by scanning for
+/// `session.json` files (the root itself and its immediate child
+/// directories, matching `list_ar_runs`'s convention). Newest-first.
+#[tauri::command]
+pub fn list_lens_sessions(sessions_root: String) -> VoloResult<Vec<LensSessionSummary>> {
+    let root = Path::new(&sessions_root);
+    if !root.is_dir() {
+        return Err(VoloError::InvalidInput(format!(
+            "sessions_root is not a directory: {sessions_root}"
+        )));
+    }
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    let root_session = root.join("session.json");
+    if root_session.is_file() {
+        candidates.push(root_session);
+    }
+    for entry in fs::read_dir(root)?.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            let sj = p.join("session.json");
+            if sj.is_file() {
+                candidates.push(sj);
+            }
+        }
+    }
+
+    let mut sessions: Vec<LensSessionSummary> =
+        candidates.iter().filter_map(|p| summarize_session(p)).collect();
+    // Newest first; entries without a readable mtime sort last.
+    sessions.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+    Ok(sessions)
+}

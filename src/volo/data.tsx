@@ -151,224 +151,49 @@ const PAGES = [
    ============================================================ */
 /* CAL_SCREENS / CAL_POINTS / SURVEY_REPORT / CAL_RUNS / MESH_METRICS removed
    (W2: Calibrate M1 接线) — 屏幕/测量点/导入报告/重建历史/网格质量指标均已
-   接真实 Tauri command（见 pages/calibrate.tsx 的 projStore + api/meshCommands），
-   不再需要 mock。CAL_STEPS（还被 shell.tsx 的 calStep 默认值读取）与 LENS_STAGES
-   （LensPanel 的 4 阶段进度条仍读它）保留。 */
+   接真实 Tauri command（见 pages/calibrate.tsx 的 projStore + api/meshCommands）。
 
-/* mesh-reconstruct steps + lens（capture 步为 Claude Design 新增：实时采集） */
-const CAL_STEPS = [
-  { id: 'design',  n: 1, label: 'Design',  cn: '网格设计', icon: 'grid',   group: 'mesh', status: 'done' },
-  { id: 'method',  n: 2, label: 'Method',  cn: '重建方法', icon: 'tools',  group: 'mesh', status: 'done' },
-  { id: 'survey',  n: 3, label: 'Survey',  cn: '测量导入', icon: 'pin',    group: 'mesh', status: 'done' },
-  { id: 'capture', n: 4, label: 'Capture', cn: '实时采集', icon: 'live',   group: 'mesh', status: 'ready' },
-  { id: 'preview', n: 5, label: 'Preview', cn: '网格预览', icon: 'cube',   group: 'mesh', status: 'active' },
-  { id: 'runs',    n: 6, label: 'Runs',    cn: '重建历史', icon: 'list',   group: 'mesh', status: 'ready' },
-  { id: 'lens',    n: 7, label: 'Lens',    cn: '镜头校正', icon: 'camera', group: 'lens', status: 'pending' },
-];
+   本轮（新 IA 重构）额外移除：CAL_STEPS / LENS_STAGES（旧 step-based 布局专用，
+   新 calNav 用字面量数组，见 shell.tsx）、CAP_ 前缀 / AR_ 前缀 / LENS_RESULT ·
+   LENS_HISTORY · LENS_SESSION（分别是旧实时采集页 / AR 六步页 / 旧 Lens 完整报告页
+   的专属演示数据，三者随对应 page 一起删除，唯一消费者一并消失，非本次臆断裁剪）、
+   CAL_PROJECTS（重构前就已是零消费的死 mock，见 W2 审计）。
 
-/* lens solve stages */
-const LENS_STAGES = [
-  { id: 'validate', n: 1, label: 'Validate', cn: '校验',  status: 'done' },
-  { id: 'detect',   n: 2, label: 'Detect',   cn: '检测',  status: 'done' },
-  { id: 'solve',    n: 3, label: 'Solve',    cn: '求解',  status: 'pending' },
-  { id: 'report',   n: 4, label: 'Report',   cn: '报告',  status: 'pending' },
-];
+   新增 CAL_NAV_STATUS/CAL_GRID_STATUS/CAL_LENS_STATUS/CAL_CONF：纯状态徽标的
+   色 / 图标 / 文案映射表，不含任何工程数据，可以放心照抄设计稿。
+   CAL_OVERVIEW（镜头概要占位数据）随占位 Lens 组件一起移除——真实实现见
+   pages/calLens.tsx，唯一消费者已不存在。
+   CAL_LED_PROJECTS（项目概览多项目表）与「切换项目」用的项目列表，本仓改为
+   运行时从真实 list_recent_projects + 逐项目 load_project_yaml/list_runs 聚合
+   （见 pages/calOverview.tsx），不作为静态 mock 常量搬运。 */
 
-/* ============================================================
-   CALIBRATE 增量常量（Claude Design handoff）—— 实时采集 / AR 分支 /
-   LED 增量（Lens 报告 / Survey M2 / 融合）。这些是 1:1 移植的视图初值 / 演示
-   数据；接真后端的段（Player / M2 / Fuse / vpcal Lens·AR）在渲染时由各模块用
-   真实结果覆盖，纯展示段（如 report diff / session 构建器）保留为设计初值。
-   字段名对齐后端 DTO（snake_case），供 pages/calCapture·calAr·calLedExt 以裸全局取用。
-   ============================================================ */
-
-/* ---- 实时采集（Capture） ---- */
-const CAP_VIDEO_BACKENDS = [
-  { id: 'uvc',       label: 'UVC 摄像头',   avail: true,  note: '即插即用 · /dev/video 或 DirectShow' },
-  { id: 'ndi',       label: 'NDI',          avail: false, note: '需本地 NDI 运行时，查看指引' },
-  { id: 'decklink',  label: 'DeckLink SDI', avail: false, note: '需本地 DeckLink SDK，查看指引' },
-  { id: 'synthetic', label: '合成测试源',   avail: true,  note: '内置图案发生器 · 无需硬件' },
-];
-const CAP_TRACK_LINK = {
-  connected: { label: '已连接', tone: 'positive', icon: 'check' },
-  waiting:   { label: '等待数据', tone: 'notice',  icon: 'sync' },
-  lost:      { label: '信号丢失', tone: 'negative', icon: 'x' },
+/* 导航项状态三通道：done 已完成 / ready 可进行 / blocked 未就绪 */
+const CAL_NAV_STATUS = {
+  done:    { label: '已完成', tone: 'positive',    icon: 'check' },
+  ready:   { label: '可进行', tone: 'informative', icon: 'arrowr' },
+  blocked: { label: '未就绪', tone: 'neutral',     icon: 'minus' },
 };
-const CAP_TRACK_PROTOCOLS = [
-  { id: 'freed',       label: 'FreeD' },
-  { id: 'opentrackio', label: 'OpenTrackIO' },
-];
-const CAP_STATES = [
-  { id: 'wait_tracking', label: '等待追踪信号…',      tone: 'notice',      icon: 'sync',   sub: '检查追踪设备与 UDP 端口' },
-  { id: 'moving',        label: '移动到下一机位',     tone: 'informative', icon: 'arrowr', sub: '把相机对准 LED 墙，缓慢就位', dir: true },
-  { id: 'settling',      label: '保持静止…',          tone: 'notice',      icon: 'target', sub: '静止约 0.3 秒即触发采集', settle: true },
-  { id: 'capturing',     label: '采集中，别动',       tone: 'negative',    icon: 'camera', sub: '连拍中 · 反相双帧', pulse: true },
-  { id: 'wait_move',     label: '本机位完成 · 请移动', tone: 'positive',    icon: 'check',  sub: '差分成功，可移动到下一机位' },
-];
-const CAP_POSES = [
-  { pose_index: 1, marker_hits: 15, mean_confidence: 0.94, differenced: true,  inverted_captured: true,  position_mm: [-1820, 1420, 3160] },
-  { pose_index: 2, marker_hits: 14, mean_confidence: 0.91, differenced: true,  inverted_captured: true,  position_mm: [-640,  1460, 3020] },
-  { pose_index: 3, marker_hits: 12, mean_confidence: 0.86, differenced: true,  inverted_captured: true,  position_mm: [520,   1440, 3080] },
-  { pose_index: 4, marker_hits: 0,  mean_confidence: null, differenced: false, inverted_captured: false, position_mm: [1680,  1400, 3210] },
-  { pose_index: 5, marker_hits: 13, mean_confidence: 0.88, differenced: true,  inverted_captured: true,  position_mm: [1720,  240,  3040] },
-];
-const CAP_COVERAGE = {
-  poses_captured: 5,
-  sensor_coverage_pct: 78,
-  sensor_missing_regions: ['左上', '右下'],
-  sensor_grid: [
-    [false, true,  true],
-    [true,  true,  true],
-    [true,  true,  false],
-  ],
-  screen_markers_seen: 14,
-  screen_markers_total: 16,
-  screen_coverage_pct: 87,
-  pose_spatial_spread_mm: 3540,
-  suggestions: [
-    { tone: 'notice',   msg: '画面左上 / 右下未覆盖，建议补两个机位' },
-    { tone: 'positive', msg: '屏幕 marker 覆盖达标（≥85%）' },
-  ],
+/* 交付物状态徽标 —— 网格 4 档 / 镜头 4 档（项目概览表格用） */
+const CAL_GRID_STATUS = {
+  none:     { label: '未开始',     tone: 'neutral',     icon: 'minus' },
+  measured: { label: '测量已导入', tone: 'informative', icon: 'download' },
+  rebuilt:  { label: '已重建',     tone: 'positive',    icon: 'cube' },
+  exported: { label: '已导出',     tone: 'positive',    icon: 'check' },
 };
-const CAP_WARNINGS = [
-  { t: '14:22:31', msg: 'pose 4 无追踪配对，已丢弃' },
-  { t: '14:22:08', msg: '追踪流短暂丢失（0.4s），已恢复' },
-];
-const CAP_RESULT = {
-  poses_captured: 8,
-  session_dir: 'D:\\Volo\\sessions\\2026-07-03_1422_capture',
-  lens_ready: true,
-  marker_total_hits: 112,
-  rms: 0.47,
+const CAL_LENS_STATUS = {
+  none:     { label: '未开始',    tone: 'neutral',     icon: 'minus' },
+  session:  { label: '有 session', tone: 'informative', icon: 'camera' },
+  solved:   { label: '已求解',    tone: 'positive',    icon: 'target' },
+  exported: { label: '已导出',    tone: 'positive',    icon: 'check' },
+  unknown:  { label: '未跟踪',    tone: 'neutral',     icon: 'minus' },
 };
-const CAP_PLAYER = {
-  monitors: [
-    { index: 1, name: 'DELL U2723QE', width: 3840, height: 2160, is_primary: true },
-    { index: 2, name: 'LED-PROC HDMI', width: 1920, height: 1080, is_primary: false },
-  ],
-  pattern_width: 1920, pattern_height: 1080,
-  window_width: 3840, window_height: 2160,
-  resolution_mismatch: true,
-  graycode_confirmed: true,
+/* 置信度四档三通道（供镜头交付物用） */
+const CAL_CONF = {
+  high:     { label: 'high',     tone: 'positive' },
+  medium:   { label: 'medium',   tone: 'notice' },
+  low:      { label: 'low',      tone: 'notice' },
+  very_low: { label: 'very_low', tone: 'negative' },
 };
-const CAP_OUTPUT_STATES = {
-  black:    { label: '黑场',     tone: 'neutral' },
-  normal:   { label: 'normal',   tone: 'informative' },
-  inverted: { label: 'inverted', tone: 'notice' },
-};
-
-/* ---- AR 分支（stage_type = "ar"） ---- */
-const AR_MARKER_MAPS = [
-  { id: 'floor', name: 'StageFloor · Vicon', markers: 42, grade: 'millimetre', source: '全站仪实测', uncertainty_mm: 0.8 },
-  { id: 'cubeA', name: '标定立方体 · Origin-A', markers: 5, grade: 'coarse', source: '制造公差', uncertainty_mm: 3.5 },
-];
-const AR_GRADE = {
-  millimetre: { label: 'millimetre', tone: 'positive', icon: 'check' },
-  centimetre: { label: 'centimetre', tone: 'notice',   icon: 'alert' },
-  coarse:     { label: 'coarse',     tone: 'notice',   icon: 'alert' },
-  'n/a':      { label: 'n/a',        tone: 'neutral',  icon: 'minus' },
-};
-const AR_STEPS = [
-  { id: 'markers', n: 1, label: 'Markers', cn: '真值导入', icon: 'pin',    group: 'space',  status: 'done' },
-  { id: 'lens',    n: 2, label: 'Lens',    cn: '镜头校正', icon: 'camera', group: 'space',  status: 'done' },
-  { id: 'spatial', n: 3, label: 'Spatial', cn: '空间求解', icon: 'cube',   group: 'space',  status: 'active' },
-  { id: 'delay',   n: 4, label: 'Delay',   cn: '延迟校准', icon: 'pulse',  group: 'ready',  status: 'ready' },
-  { id: 'verify',  n: 5, label: 'Verify',  cn: '验证叠加', icon: 'eye',    group: 'ready',  status: 'ready' },
-  { id: 'runs',    n: 6, label: 'Runs',    cn: '历史与导出', icon: 'list',  group: 'ready',  status: 'ready' },
-];
-const AR_OVERVIEW = { spatial_rms_px: 0.58, delay_ms: 39.6, delay_sigma: 1.2, verify_rms_px: 0.71, status: 'healthy' };
-const AR_SPATIAL = {
-  reprojection_rms_px: 0.58, validation_rms_px: 0.71, confidence: 'high',
-  observations: 1840, poses: 32, inliers: 1788, outliers: 52,
-  detected_markers: 40, unknown_markers: 1, map_markers_never_detected: [7, 19],
-  marker_coverage: { percentage: 88, missing: ['id 7', 'id 19'] },
-  handeye: { closed_form_applied: true, axis_spread: 0.42, prior_diff_mm: 6.2, prior_diff_deg: 0.9, warn: false },
-};
-const AR_MARKERS = {
-  total: 42, detectable: 40, on_ground: 12, warnings: 1,
-  span_mm: 8420, collinearity_ratio: 0.06, grade: 'millimetre',
-  ground: { residual_rms_mm: 1.8, tilt_from_z_deg: 0.28, offset_from_z0_mm: 2.1, over: true },
-  list: [
-    { id: 0,  dict: 'AprilTag 36h11', on_ground: true,  uncertainty_mm: 0.7, survey_source: 'total_station', corners: [[-4020, 0, 3110], [-3820, 0, 3110], [-3820, 0, 2910], [-4020, 0, 2910]] },
-    { id: 3,  dict: 'AprilTag 36h11', on_ground: true,  uncertainty_mm: 0.8, survey_source: 'total_station', corners: [[-1810, 0, 3120], [-1610, 0, 3120], [-1610, 0, 2920], [-1810, 0, 2920]] },
-    { id: 7,  dict: 'AprilTag 36h11', on_ground: false, uncertainty_mm: 1.4, survey_source: 'cube_fab',      corners: [[240, 1420, 3080], [440, 1420, 3080], [440, 1420, 2880], [240, 1420, 2880]] },
-    { id: 12, dict: 'AprilTag 36h11', on_ground: true,  uncertainty_mm: 0.9, survey_source: 'total_station', corners: [[1680, 0, 3060], [1880, 0, 3060], [1880, 0, 2860], [1680, 0, 2860]] },
-    { id: 19, dict: 'AprilTag 36h11', on_ground: false, uncertainty_mm: 2.9, survey_source: 'cube_fab',      corners: [[1720, 240, 3040], [1920, 240, 3040], [1920, 240, 2840], [1720, 240, 2840]] },
-  ],
-};
-const AR_LENS = { reprojection_rms_px: 0.42, validation_rms_px: 0.55, quick_estimate: true };
-const AR_LENS_STAGES = [
-  { id: 'validate', n: 1, label: 'Validate', cn: '校验', status: 'done' },
-  { id: 'detect',   n: 2, label: 'Detect',   cn: '检测', status: 'done' },
-  { id: 'solve',    n: 3, label: 'Solve',    cn: '求解', status: 'done' },
-  { id: 'report',   n: 4, label: 'Report',   cn: '报告', status: 'done' },
-];
-const AR_CONF = {
-  high:      { label: 'high',      tone: 'positive',    pct: 92 },
-  medium:    { label: 'medium',    tone: 'notice',      pct: 66 },
-  low:       { label: 'low',       tone: 'notice',      pct: 40 },
-  very_low:  { label: 'very_low',  tone: 'negative',    pct: 16 },
-};
-const AR_DELAY = {
-  delay_ms: 39.6, sigma_ms: 1.2, confidence: 0.94, num_markers: 38, num_frames: 210,
-  suggestion: '在合成引擎设置 tracking delay = +39.6 ms',
-};
-const AR_VERIFY = {
-  global_rms_px: 0.71, global_max_px: 2.4, frames: 24, points: 1520,
-  markers: [
-    { marker_id: 7,  count: 40, mean_px: 1.94, max_px: 3.42 },
-    { marker_id: 19, count: 32, mean_px: 1.38, max_px: 2.61 },
-    { marker_id: 12, count: 96, mean_px: 0.62, max_px: 1.81 },
-    { marker_id: 3,  count: 88, mean_px: 0.54, max_px: 1.44 },
-    { marker_id: 0,  count: 84, mean_px: 0.49, max_px: 1.22 },
-  ],
-};
-const AR_RUNS = [
-  { id: 'ar3', time: '今天 13:40', map: 'StageFloor', rms: 0.58, val_rms: 0.71, confidence: 'high',     delay: 39.6 },
-  { id: 'ar2', time: '昨天 18:20', map: 'StageFloor', rms: 0.74, val_rms: 0.92, confidence: 'medium',   delay: 38.9 },
-  { id: 'ar1', time: '昨天 09:12', map: 'Origin-A',   rms: null, val_rms: null, confidence: 'very_low', delay: null },
-];
-const AR_TRACKER_BACKFILL = {
-  world_frame: 'vicon', rotation_convention: 'XYZ intrinsic · deg',
-  camera: { x: 12.4, y: -3.1, z: 88.7, pan: 0.42, tilt: -1.08, roll: 0.03 },
-  world:  { x: -1840.2, y: 2.4, z: 1420.9, pan: 179.62, tilt: 0.08, roll: -0.22 },
-};
-
-/* ---- LED 增量：Lens 完整报告 / Session 构建器 ---- */
-const LENS_RESULT = {
-  tracker_to_stage: {
-    translation: [0.284, -1.902, 3.418],
-    rotation: [0.99863, 0.01230, -0.04810, 0.01772],
-    matrix_4x4: [
-      [0.99507, -0.03620, 0.09201, 0.284],
-      [0.03498, 0.99927, 0.01490, -1.902],
-      [-0.09248, -0.01161, 0.99565, 3.418],
-      [0, 0, 0, 1],
-    ],
-    euler_deg: [0.61, -5.28, 2.07],
-  },
-  quality: {
-    reprojection_rms_px: 0.62, total_observations: 2040, inlier_observations: 1974,
-    outlier_ratio: 0.032, num_poses: 34, confidence: 'high',
-    validation_rms_px: 0.78, validation_observations: 408,
-  },
-  qa: { reprojection: { global_mean_px: 0.59 } },
-  handeye: { closed_form_mm: [12.4, -3.1, 88.7], prior_input_mm: [10.0, 0.0, 90.0], diff_mm: 6.2, diff_deg: 0.9, degenerate: false },
-  coverage: { percentage: 82, suggest_regions: ['右上', '左下'] },
-  qle: true,
-};
-const LENS_HISTORY = [
-  { id: 'l3', time: '今天 13:40', trans: [0.284, -1.902, 3.418], rot_deg: [0.61, -5.28, 2.07], rms: 0.62, val: 0.78 },
-  { id: 'l2', time: '昨天 18:10', trans: [0.281, -1.898, 3.421], rot_deg: [0.52, -5.19, 1.98], rms: 0.71, val: 0.90 },
-  { id: 'l1', time: '昨天 09:32', trans: [0.276, -1.910, 3.402], rot_deg: [0.70, -5.44, 2.21], rms: 0.94, val: 1.30 },
-];
-const LENS_SESSION = {
-  camera:   { ready: true,  label: '内参来源', value: 'ChArUco 自标定 · rms 0.34px' },
-  tracking: { ready: true,  label: '追踪', value: 'FreeD · UDP 6301' },
-  screen:   { ready: true,  label: '屏幕', value: '引用 Design · 主屏 · 前墙' },
-  lens:     { ready: false, label: '镜头先验', value: '未提供（可后补）' },
-};
-
 /* ---- LED 增量：Survey M2 视觉 ---- */
 const M2_PATTERN = {
   method: 'charuco', screen_id_code: 'A1', full_preview: true,
@@ -421,12 +246,7 @@ const FUSE_SOURCE = {
   fused: { label: 'M1+M2 · 融合', tone: 'positive' },
 };
 
-/* ---- 项目上下文 chip + Preview 顶点来源图例 ---- */
-const CAL_PROJECTS = [
-  { id: 'helios', name: 'Helios — Ep.204', path: 'D:\\Projects\\Helios\\project.yaml', last: '今天 13:32' },
-  { id: 'aurora', name: 'Aurora_Trailer',  path: 'D:\\Projects\\Aurora\\project.yaml', last: '昨天 20:14' },
-  { id: 'nomad',  name: 'Nomad_Test',      path: 'E:\\UEProjects\\Nomad\\project.yaml', last: '昨天 18:52' },
-];
+/* ---- Preview 顶点来源图例 ---- */
 const PROVENANCE = {
   measured:     { label: 'measured 实测',     tone: 'positive',    dot: 'rgba(70,200,130,.9)' },
   interpolated: { label: 'interpolated 插值', tone: 'informative', dot: 'rgba(120,180,255,.85)' },
@@ -440,16 +260,10 @@ Object.assign(window, {
      presentation maps (NODE_STATUS/…/DDC_BACKENDS) live in api/uiConfig；
      health/ini/cluster 经 shell 镜像 window.{HEALTH_CHECKS,INI_FINDINGS,CLUSTER}。
      Cache 域已无 mock；Calibrate 域 LED-M1 主路径已接真实数据（CAL_SCREENS 等已删）。 */
-  CAL_STEPS, LENS_STAGES,
-  /* Claude Design 增量常量（实时采集 / AR / LED 增量）—— 供 calCapture / calAr /
-     calLedExt 以裸全局取用；接真后端的段在渲染时由各模块覆盖为真实结果。 */
-  CAP_VIDEO_BACKENDS, CAP_TRACK_LINK, CAP_TRACK_PROTOCOLS, CAP_STATES, CAP_POSES,
-  CAP_COVERAGE, CAP_WARNINGS, CAP_RESULT, CAP_PLAYER, CAP_OUTPUT_STATES,
-  AR_MARKER_MAPS, AR_GRADE, AR_STEPS, AR_OVERVIEW, AR_SPATIAL, AR_MARKERS, AR_LENS,
-  AR_LENS_STAGES, AR_CONF, AR_DELAY, AR_VERIFY, AR_RUNS, AR_TRACKER_BACKFILL,
-  LENS_RESULT, LENS_HISTORY, LENS_SESSION,
+  /* 校正板块（新 IA）：三通道状态映射表 */
+  CAL_NAV_STATUS, CAL_GRID_STATUS, CAL_LENS_STATUS, CAL_CONF,
   M2_PATTERN, M2_MANIFEST, M2_INTRINSICS, M2_RECONSTRUCT, M2_QUALITY,
-  FUSE_RESULT, FUSE_SOURCE, CAL_PROJECTS, PROVENANCE,
+  FUSE_RESULT, FUSE_SOURCE, PROVENANCE,
 });
 
 export { Icon, STAGES, PAGES };
