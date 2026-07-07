@@ -9,8 +9,8 @@
      project.yaml），如实显示「未跟踪」，不编造。
    - 设计稿 cal2_overview.jsx 里的 ProjectBar / DeliverCard / ProjectHeader / ProjectCard
      四个函数定义了但 Overview() 实际渲染路径从未调用（失效代码），故不搬。
-   - 镜头校正 leaf 本批仍是概要占位页：「运行求解」按钮沿用设计稿的本地 setTimeout
-     演示态（真实 vpcal quick-run 接线见后续批次），与设计稿自己标注的 WIP 一致。 */
+   - 镜头校正 leaf 真实实现见 pages/calLens.tsx（真接 vpcal capture/quick run/export
+     opentrackio）；本文件不再定义占位 Lens 组件。 */
 import * as React from "react";
 import { loadProjectYaml, listRuns } from "../api/meshCommands";
 
@@ -169,56 +169,5 @@ import { loadProjectYaml, listRuns } from "../api/meshCommands";
       h(ProjectSummary, { s, proj }));
   }
 
-  /* ---------- 镜头校正（本批 leaf 概要页；完整 validate→detect→solve→report 后续批次接真 vpcal） ---------- */
-  function Lens({ s }) {
-    const l = CAL_OVERVIEW.lens;
-    const done = s.calLensState === 'done';
-    const running = s.calLensState === 'running';
-    const runSolve = () => {
-      s.setCalLensState('running');
-      s.pushLog({ lv: 'info', cat: 'lens', msg: '镜头求解 · validate → detect → solve → report' });
-      setTimeout(() => { s.setCalLensState('done'); s.pushLog({ lv: 'ok', cat: 'lens', msg: `镜头求解完成 · validation RMS <b>${l.validation_rms_px} px</b> · confidence ${l.confidence}` }); }, 1400);
-    };
-    const stages = [['validate', '校验'], ['detect', '检测'], ['solve', '求解'], ['report', '报告']];
-    return h('div', { className: 'cal2-page' },
-      h('div', { className: 'canvas-head' },
-        h('span', { className: 't' }, '镜头校正'),
-        h('span', { className: 'toolchip' }, h(Icon, { name: 'camera', size: 14 }), '刚体 6-DOF · OpenTrackIO'),
-        h('div', { className: 'right' },
-          done ? CX.rmsBadge(l.validation_rms_px, 'px') : null,
-          h(Button, { variant: 'accent', size: 'S', isDisabled: running, icon: h(Icon, { name: 'target', size: 14 }), onPress: runSolve }, done ? '重新求解' : running ? '求解中…' : '运行求解'))),
-      h('div', { className: 'dash', style: { paddingTop: 14 } },
-        h('div', { className: 'cal2-lens-stages' }, stages.map(([id, cn], i) => h('div', { key: id, className: 'cal2-lstage' + (done ? ' done' : running && i === 0 ? ' active' : '') },
-          h('span', { className: 'cal2-lstage-n' }, done ? h(Icon, { name: 'check', size: 13 }) : (i + 1)),
-          h('span', { className: 'cal2-lstage-t' }, id), h('span', { className: 'cal2-lstage-c' }, cn)))),
-        done
-          ? h(React.Fragment, null,
-              h('div', { className: 'cal2-deliver-grid' },
-                h('div', { className: 'dash-card' },
-                  h('div', { className: 'dc-h' }, h('span', { className: 't' }, h(Icon, { name: 'pulse', size: 14 }), '求解质量')),
-                  h('div', { className: 'cal2-qbar' },
-                    ['validation_rms_px', 'confidence', 'session'].map((k) => h('div', { className: 'cal2-q', key: k },
-                      h('div', { className: 'cal2-q-k' }, k),
-                      h('div', { className: 'cal2-q-v', style: { fontSize: 15 } },
-                        k === 'validation_rms_px' ? CX.rmsBadge(l.validation_rms_px, 'px')
-                          : k === 'confidence' ? CX.confBadge(l.confidence)
-                          : h('span', { className: 'mono', style: { fontSize: 12 } }, l.session_file)))))),
-                h('div', { className: 'dash-card' },
-                  h('div', { className: 'dc-h' }, h('span', { className: 't' }, h(Icon, { name: 'download', size: 14 }), '产物 · OpenTrackIO')),
-                  h('div', { className: 'cal2-prod', style: { margin: 0 } },
-                    h('span', { className: 'cal2-prod-ic' }, h(Icon, { name: 'doc', size: 14 })),
-                    h('div', { className: 'cal2-prod-m' }, h('div', { className: 'cal2-prod-f' }, l.export_file), h('div', { className: 'cal2-prod-d' }, l.export_dir)),
-                    h('button', { className: 'cal2-folderbtn', onClick: () => s.pushLog({ lv: 'info', cat: 'lens', msg: `打开文件夹 <b>${l.export_dir}</b>` }) }, h(Icon, { name: 'external', size: 13 }), '打开文件夹')))),
-              h('div', { className: 'cal2-wip' },
-                h('span', { className: 'cal2-wip-ic' }, h(Icon, { name: 'sliders', size: 15 })),
-                h('div', { className: 'cal2-wip-m' }, h('div', { className: 'cal2-wip-t' }, '完整镜头报告（hand-eye / 变换矩阵 / report diff）'), h('div', { className: 'cal2-wip-d' }, '本批为概要页，接真实 vpcal quick-run 的 7-DOF 报告与 Session 构建器在后续批次展开')),
-                h('span', { className: 'nav-tag' }, 'WIP')))
-          : h('div', { className: 'cluster-empty', style: { marginTop: 4 } },
-              h('div', { className: 'ce-ico' }, h(Icon, { name: 'camera', size: 34, stroke: 1.3 })),
-              h('div', { className: 'ce-t', style: { fontSize: 17 } }, running ? '正在求解…' : '镜头校正未运行'),
-              h('div', { className: 'ce-d' }, '运行后生成 6-DOF 变换、拟合 / 验证 RMS 与 OpenTrackIO 导出。'),
-              !running ? h('div', { className: 'ce-acts' }, h(Button, { variant: 'accent', size: 'L', icon: h(Icon, { name: 'target', size: 16 }), onPress: runSolve }, '运行求解')) : null)));
-  }
-
-  window.VOLO_CAL2 = Object.assign(window.VOLO_CAL2 || {}, { Overview, Lens });
+  window.VOLO_CAL2 = Object.assign(window.VOLO_CAL2 || {}, { Overview });
 })();

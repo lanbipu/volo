@@ -178,5 +178,5 @@ import * as React from "react";
     s.setModal({ xwide: true, render: ({ s: st, close }) => h(CaptureModal, { s: st, close }) });
   }
 
-  window.VOLO_CAL2 = Object.assign(window.VOLO_CAL2 || {}, { openCaptureModal, CaptureModal });
+  window.VOLO_CAL2 = Object.assign(window.VOLO_CAL2 || {}, { openCaptureModal, CaptureModal, loadProfiles });
 })();

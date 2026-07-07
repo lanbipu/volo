@@ -161,9 +161,8 @@ const PAGES = [
 
    新增 CAL_NAV_STATUS/CAL_GRID_STATUS/CAL_LENS_STATUS/CAL_CONF：纯状态徽标的
    色 / 图标 / 文案映射表，不含任何工程数据，可以放心照抄设计稿。
-   CAL_OVERVIEW 只保留设计稿的 .lens 半边——.grid 半边（DeliverCard/ProjectHeader/
-   ProjectCard 一整套「两张交付物卡」布局）在设计稿 cal2_overview.jsx 里定义了但
-   Overview() 实际渲染路径从未调用，是设计稿自己的失效代码，不必照抄。
+   CAL_OVERVIEW（镜头概要占位数据）随占位 Lens 组件一起移除——真实实现见
+   pages/calLens.tsx，唯一消费者已不存在。
    CAL_LED_PROJECTS（项目概览多项目表）与「切换项目」用的项目列表，本仓改为
    运行时从真实 list_recent_projects + 逐项目 load_project_yaml/list_runs 聚合
    （见 pages/calOverview.tsx），不作为静态 mock 常量搬运。 */
@@ -195,19 +194,6 @@ const CAL_CONF = {
   low:      { label: 'low',      tone: 'notice' },
   very_low: { label: 'very_low', tone: 'negative' },
 };
-/* 镜头校正本批仍是概要占位页（真实 vpcal quick-run 报告见后续批次），
-   「运行求解」按钮沿用设计稿的本地 setTimeout 演示态，结果字段保留设计稿数值。 */
-const CAL_OVERVIEW = {
-  lens: {
-    status: 'solved',
-    validation_rms_px: 0.78,
-    confidence: 'high',
-    session_file: 'session_2026-07-06_1340.json',
-    export_file: 'opentrackio_lens_v3.json',
-    export_dir: 'D:\\Projects\\Helios\\calib\\lens',
-  },
-};
-
 /* ---- LED 增量：Survey M2 视觉 ---- */
 const M2_PATTERN = {
   method: 'charuco', screen_id_code: 'A1', full_preview: true,
@@ -274,8 +260,8 @@ Object.assign(window, {
      presentation maps (NODE_STATUS/…/DDC_BACKENDS) live in api/uiConfig；
      health/ini/cluster 经 shell 镜像 window.{HEALTH_CHECKS,INI_FINDINGS,CLUSTER}。
      Cache 域已无 mock；Calibrate 域 LED-M1 主路径已接真实数据（CAL_SCREENS 等已删）。 */
-  /* 校正板块（新 IA）：三通道状态映射表 + 概览 Lens 概要页占位数据 */
-  CAL_NAV_STATUS, CAL_GRID_STATUS, CAL_LENS_STATUS, CAL_CONF, CAL_OVERVIEW,
+  /* 校正板块（新 IA）：三通道状态映射表 */
+  CAL_NAV_STATUS, CAL_GRID_STATUS, CAL_LENS_STATUS, CAL_CONF,
   M2_PATTERN, M2_MANIFEST, M2_INTRINSICS, M2_RECONSTRUCT, M2_QUALITY,
   FUSE_RESULT, FUSE_SOURCE, PROVENANCE,
 });

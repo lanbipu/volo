@@ -316,11 +316,17 @@ import {
   function inspector(s) {
     const CAL2 = window.VOLO_CAL2 || {};
     const proj = useProj();
+    /* 无条件调用（同 useProj）：lensInspector 是纯函数，不在内部调用 hook —— Lens
+       画面（calLens.tsx）与这里是外壳里两棵独立 Slot fiber，互不共享 hooks，实时数据
+       靠这个模块级 store 快照跨 fiber 传递。放在 calNav 分支判断之前，任何 render
+       都固定调用一次，Rules of Hooks 意义上等价于上面的 useProj()。 */
+    const lensLive = CAL2.useLensLive();
     if (s.calStageType === 'ar') return inspEmpty('AR 校正建设中');
     if (!proj.path) return inspEmpty('打开项目后可查看细节');
     if (s.calNav === 'design' && CAL2.designInspector) return CAL2.designInspector(s);
     if (s.calNav === 'survey' && CAL2.surveyInspector) return CAL2.surveyInspector(s, proj);
     if (s.calNav === 'history' && CAL2.historyInspector) return CAL2.historyInspector(s, proj);
+    if (s.calNav === 'lens' && CAL2.lensInspector) return CAL2.lensInspector(s, lensLive);
     return inspEmpty('选择对象查看细节');
   }
 
