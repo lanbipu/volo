@@ -708,7 +708,7 @@ fn generate_pak_sync(
 /// Run a PSO collection end-to-end synchronously: launch via ue_runner, drain
 /// events until Completed/Cancelled/Error, then enumerate_remote +
 /// finalize_persist. Returns the number of files collected. Mirrors
-/// the removed `start_pso_collection` command's wait loop minus Tauri events.
+/// the removed Tauri collection command's wait loop minus Tauri events.
 #[allow(clippy::too_many_arguments)]
 fn collect_pso_sync(
     db: &Db,
