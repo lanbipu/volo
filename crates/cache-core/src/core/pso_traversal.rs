@@ -239,7 +239,14 @@ impl RcWsClient {
                 .map_err(|_| VoloError::OperationFailed("rc ws response timeout".into()))?
                 .ok_or_else(|| VoloError::OperationFailed("rc ws closed".into()))?
                 .map_err(|e| VoloError::OperationFailed(format!("rc ws recv: {e}")))?;
-            if let Message::Text(text) = frame {
+            // UE 侧 WebSocketServer.Send 发的是 UTF-8 字节 → tungstenite 收到的
+            // 是 Binary 帧（真机实锤：只收 Text 会一直超时），两种都解析。
+            let text = match frame {
+                Message::Text(text) => Some(text),
+                Message::Binary(bytes) => String::from_utf8(bytes).ok(),
+                _ => None,
+            };
+            if let Some(text) = text {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
                     return Ok(v);
                 }

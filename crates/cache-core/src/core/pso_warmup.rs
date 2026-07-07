@@ -1,9 +1,15 @@
 //! PSO warm-up & verification runs.
 //!
-//! Runs UE `-game` ON each render node itself (held SSH session) so the
-//! node's own GPU driver cache gets filled, while counting PSO creation hitches
-//! from `-LogCmds="LogPSOHitching Verbose"`. First run absorbs hitches, a re-run
+//! Runs UE `-game` ON each render node itself so the node's own GPU driver
+//! cache gets filled, while counting PSO creation hitches from
+//! `-LogCmds="LogPSOHitching Verbose"`. First run absorbs hitches, a re-run
 //! with hitch_count == 0 is the "ready for show" green light.
+//!
+//! 启动形态 = **交互式计划任务**（start-ue-interactive.ps1）：驱动缓存按
+//! Windows 账户隔离，warmup 必须以与生产（Switchboard 交互用户）相同的账户
+//! 跑 UE。SSH 直启（held session）虽然渲染正常，但 UE 会以 SSH 服务账户
+//! （uecm-svc）运行、把缓存填进错误账户的 profile——2026-07-08 真机 E2E 实锤
+//! （uecm-svc 33MB 独立增长、lanPC 36MB 纹丝不动）。
 //! (Replaces the falsified collect→distribute file pipeline: distributed
 //! `.upipelinecache` files are never consumed by uncooked `-game` builds.)
 
@@ -230,8 +236,9 @@ pub fn launch_warmup(
         extra_args: build_warmup_args(spec),
         credential_user: None,
         credential_pass: None,
-        interactive: false,
-        hold_ssh_session: true,
+        // 交互式计划任务：与生产同账户（驱动缓存按账户隔离，见模块头注释）。
+        interactive: true,
+        hold_ssh_session: false,
     }))
 }
 

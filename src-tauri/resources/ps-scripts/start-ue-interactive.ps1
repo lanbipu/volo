@@ -40,7 +40,17 @@ try {
 
     $projDir = [System.IO.Path]::GetDirectoryName($ProjectPath)
     $projName = [System.IO.Path]::GetFileNameWithoutExtension($ProjectPath)
-    $logPath = Join-Path -Path $projDir -ChildPath ("Saved\Logs\$projName.log")
+    # Honor an explicit Log=<name> in ExtraArgs (warmup uses per-run log names);
+    # last match wins, relative names resolve under Saved\Logs.
+    $logName = "$projName.log"
+    foreach ($a in $ExtraArgs) {
+        if ($a -match '^-?[Ll][Oo][Gg]=(.+)$') { $logName = $Matches[1].Trim('"') }
+    }
+    if ([System.IO.Path]::IsPathRooted($logName)) {
+        $logPath = $logName
+    } else {
+        $logPath = Join-Path -Path $projDir -ChildPath ("Saved\Logs\" + $logName)
+    }
     # A leftover log from the previous run would be tailed from offset 0 as if
     # it were this run's output (stale hitch lines / instant exit markers).
     Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue

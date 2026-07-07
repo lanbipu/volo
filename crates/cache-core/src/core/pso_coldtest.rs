@@ -57,8 +57,8 @@ pub fn launch_coldtest_run(
         extra_args: pso_warmup::build_warmup_args(spec),
         credential_user: None,
         credential_pass: None,
-        interactive: false,
-        hold_ssh_session: true,
+        interactive: true,
+        hold_ssh_session: false,
     }))
 }
 
