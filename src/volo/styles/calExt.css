@@ -322,6 +322,103 @@
 .ar-bf-foot { font-size: 11px; color: var(--chrome-faint); margin-top: 12px; line-height: 1.5; }
 
 /* ============================================================
+   AR 新 IA 追加（Claude Design cal_ar2.css）—— 概览工作区卡 / 状态卡 / 建议条 /
+   生成工具 / 后端待接徽标 / 退化告警 / 覆盖环 / 不确定进度条 / 验证浮层 / 历史导出。
+   ============================================================ */
+.ar-ws { display: flex; flex-direction: column; gap: 8px; }
+.ar-ws-row { display: flex; align-items: center; gap: 11px; background: var(--wash-3); border: 1px solid var(--chrome-line); border-radius: 10px; padding: 10px 12px; }
+.ar-ws-ic { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; flex: 0 0 auto; background: var(--highlight-selected); color: var(--volo-500); }
+.ar-ws-m { flex: 1; min-width: 0; }
+.ar-ws-lbl { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; color: var(--chrome-text); }
+.ar-ws-kind { font-size: 10px; font-weight: 700; letter-spacing: .03em; color: var(--chrome-faint); background: var(--wash); border: 1px solid var(--chrome-line); padding: 1px 6px; border-radius: 5px; font-family: var(--font-code); }
+.ar-ws-file { display: flex; align-items: baseline; gap: 8px; margin-top: 3px; min-width: 0; }
+.ar-ws-file b { font-size: 12px; font-weight: 700; color: var(--chrome-text); font-family: var(--font-code); flex: 0 0 auto; }
+.ar-ws-path { font-size: 10.5px; color: var(--chrome-faint); font-family: var(--font-code); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ar-ws-st { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; font-size: 11px; color: var(--chrome-dim); font-weight: 600; }
+.ar-ws-dot { width: 14px; height: 14px; border-radius: 50%; flex: 0 0 auto; display: grid; place-items: center; color: #fff; }
+.ar-ws-dot--positive { background: var(--positive-visual); }
+.ar-ws-dot--informative { background: transparent; border: 2px solid var(--informative-visual); }
+.ar-ws-dot--neutral { background: transparent; border: 2px solid var(--chrome-faint); }
+.ar-ws-swap { all: unset; display: inline-flex; align-items: center; cursor: pointer; flex: 0 0 auto; font-size: 11px; font-weight: 700; color: var(--volo-400); border: 1px solid color-mix(in srgb, var(--volo-700) 30%, transparent); padding: 5px 11px; border-radius: 7px; }
+.ar-ws-swap:hover { background: var(--highlight-selected); }
+
+.ar-ovcards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.ar-ovcard { all: unset; cursor: pointer; box-sizing: border-box; display: flex; flex-direction: column; gap: 10px; background: var(--chrome-card); border: 1px solid var(--chrome-line); border-radius: 12px; padding: 13px 14px; transition: border-color .12s, background .12s; }
+.ar-ovcard:hover { border-color: var(--chrome-line-2); background: var(--chrome-card-hover); }
+.ar-ovcard-h { display: flex; align-items: center; gap: 8px; }
+.ar-ovcard-ic { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; flex: 0 0 auto; background: var(--highlight-selected); color: var(--volo-500); }
+.ar-ovcard-t { font-size: 12.5px; font-weight: 700; color: var(--chrome-text); }
+.ar-ovcard-go { margin-left: auto; color: var(--chrome-faint); display: flex; }
+.ar-ovcard-b { display: flex; flex-direction: column; gap: 7px; }
+.ar-ovcard-num { font-size: 24px; font-weight: 800; color: var(--chrome-text); font-variant-numeric: tabular-nums; line-height: 1; }
+.ar-ovcard-num span { font-size: 13px; color: var(--chrome-faint); font-weight: 600; }
+.ar-ovcard-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; color: var(--chrome-faint); font-family: var(--font-code); }
+.ar-ovcard-empty { font-size: 12.5px; font-weight: 700; color: var(--chrome-faint); }
+
+.ar-next { display: flex; align-items: center; gap: 13px; background: color-mix(in srgb, var(--volo-700) 10%, var(--chrome-card)); border: 1px solid color-mix(in srgb, var(--volo-700) 30%, transparent); border-radius: 12px; padding: 13px 16px; }
+.ar-next-ic { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; flex: 0 0 auto; background: var(--volo-700); color: #fff; }
+.ar-next-m { flex: 1; min-width: 0; }
+.ar-next-t { font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--volo-400); font-weight: 700; }
+.ar-next-d { font-size: 13px; color: var(--chrome-text); margin-top: 3px; text-wrap: pretty; }
+
+@media (max-width: 1180px) { .ar-ovcards { grid-template-columns: repeat(2, 1fr); } }
+
+.ar-warnlist { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.ar-warn-i { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--notice-visual); }
+.ar-warn-i svg { flex: 0 0 auto; }
+.ar-level-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+.ar-genfiles { display: flex; flex-direction: column; gap: 5px; }
+.ar-genfile { display: flex; align-items: center; gap: 8px; background: var(--wash-3); border: 1px solid var(--chrome-line); border-radius: 7px; padding: 6px 10px; }
+.ar-genfile svg { color: var(--chrome-dim); flex: 0 0 auto; }
+.ar-genfile-n { font-size: 11.5px; font-family: var(--font-code); color: var(--chrome-text); }
+.ar-lvl-done { display: flex; flex-direction: column; }
+
+.ar-wip-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 800; letter-spacing: .03em; color: var(--notice-visual); background: color-mix(in srgb, var(--notice-visual) 15%, transparent); border: 1px solid color-mix(in srgb, var(--notice-visual) 32%, transparent); padding: 3px 9px; border-radius: 7px; }
+.ar-degen { display: flex; align-items: flex-start; gap: 10px; border-radius: 11px; padding: 12px 14px; margin-bottom: 2px; }
+.ar-degen svg { flex: 0 0 auto; margin-top: 1px; }
+.ar-degen b { font-size: 13px; font-weight: 700; }
+.ar-degen-d { font-size: 11.5px; line-height: 1.5; margin-top: 3px; color: var(--chrome-dim); }
+.ar-degen--negative { color: var(--negative-visual); background: color-mix(in srgb, var(--negative-visual) 11%, transparent); border: 1px solid color-mix(in srgb, var(--negative-visual) 30%, transparent); }
+.ar-degen--notice { color: var(--notice-visual); background: color-mix(in srgb, var(--notice-visual) 11%, transparent); border: 1px solid color-mix(in srgb, var(--notice-visual) 30%, transparent); }
+.ar-notes { display: flex; flex-wrap: wrap; gap: 10px 20px; padding: 2px 2px; }
+.ar-note-i { display: inline-flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--chrome-faint); }
+.ar-note-i svg { color: var(--chrome-dim); flex: 0 0 auto; }
+
+.ar-cov { display: flex; align-items: center; gap: 14px; }
+.ar-cov-m { flex: 1; min-width: 0; }
+.ar-cov-k { font-size: 10.5px; color: var(--chrome-faint); font-family: var(--font-code); }
+
+.ar-indeterminate { position: relative; overflow: hidden; }
+.ar-indeterminate .vmeter__fill { position: absolute; width: 38% !important; animation: arIndet 1.2s ease-in-out infinite; }
+@keyframes arIndet { 0% { left: -40%; } 100% { left: 100%; } }
+@media (prefers-reduced-motion: reduce) { .ar-indeterminate .vmeter__fill { animation: none; width: 60% !important; left: 0; } }
+
+.ar-vmetric { position: absolute; right: 12px; top: 12px; min-width: 172px; background: rgba(16,16,20,.82); border: 1px solid rgba(255,255,255,.12); border-radius: 11px; padding: 11px 13px; backdrop-filter: blur(8px); display: flex; flex-direction: column; gap: 7px; }
+.ar-vm-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 11px; color: #b7bcc4; font-family: var(--font-code); }
+.ar-vm-row b { font-size: 14px; font-weight: 800; color: #e9e9ec; font-variant-numeric: tabular-nums; }
+.ar-mt-hint { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--chrome-faint); margin-top: 4px; }
+.ar-mt-hint svg { flex: 0 0 auto; }
+.ar-mt-row { cursor: pointer; }
+.ar-mt-row:hover { background: var(--chrome-card-hover); }
+.ar-mt-row.sel { background: var(--highlight-selected); box-shadow: inset 2px 0 0 var(--volo-700); }
+.ar-mt-row.bad.sel { box-shadow: inset 2px 0 0 var(--negative-visual); }
+.ar-reqcheck { display: flex; flex-direction: column; gap: 7px; width: 100%; max-width: 460px; margin: 20px auto 0; }
+.ar-req { display: flex; align-items: center; gap: 9px; background: var(--wash-3); border: 1px solid var(--chrome-line); border-radius: 9px; padding: 9px 12px; text-align: left; }
+.ar-req-ic { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; flex: 0 0 auto; color: #fff; background: var(--chrome-faint); }
+.ar-req.ok .ar-req-ic { background: var(--positive-visual); }
+.ar-req-l { font-size: 12px; font-weight: 700; color: var(--chrome-text); flex: 0 0 auto; }
+.ar-req code { font-size: 11px; font-family: var(--font-code); color: var(--chrome-faint); margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ar-req-limit { display: inline-flex; align-items: center; font-size: 11px; font-weight: 700; color: var(--chrome-faint); font-family: var(--font-code); background: var(--wash); border: 1px solid var(--chrome-line-2); padding: 5px 10px; border-radius: 7px; }
+
+.ar-select { flex: 1; min-width: 0; background: var(--wash); border: 1px solid var(--chrome-line-2); border-radius: 7px; padding: 6px 10px; color: var(--chrome-text); font-size: 12.5px; font-family: var(--font-code); }
+.ar-select:focus { outline: 2px solid var(--volo-600); outline-offset: 1px; }
+.ar-fixed-chip { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 700; color: var(--chrome-text); font-family: var(--font-code); background: var(--wash-3); border: 1px solid var(--chrome-line); border-radius: 7px; padding: 5px 11px; }
+.ar-fixed-chip > svg:first-child { color: var(--volo-500); }
+.ar-fixed-lock { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 700; color: var(--positive-visual); font-family: var(--font-sans); }
+.ar-exp-note { display: flex; align-items: flex-start; gap: 8px; font-size: 11.5px; line-height: 1.5; color: var(--chrome-dim); background: var(--wash-3); border: 1px solid var(--chrome-line); border-radius: 9px; padding: 9px 12px; margin-top: 12px; }
+.ar-exp-note svg { flex: 0 0 auto; margin-top: 1px; color: var(--positive-visual); }
+
+/* ============================================================
    块1 · Preview 顶点来源 provenance
    ============================================================ */
 .prev-prov { flex-direction: column; align-items: flex-start; gap: 4px; background: rgba(0,0,0,.5); border: 1px solid rgba(255,255,255,.1); border-radius: 8px; padding: 7px 9px; }

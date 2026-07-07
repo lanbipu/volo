@@ -13,7 +13,7 @@ import "./styles/clean.css";
 import "./styles/zen.css";       // ZenServer 重做版样式（zen-status / zbadge / zsteps / zcli …）
 import "./styles/pso.css";       // PSO 上场就绪保障样式（nm-矩阵 / wv-预热 / hist-历史 / cvar-合规 / lrp-cancel）
 import "./styles/ddcPak.css";    // DDC PAK 双栏重设计样式（已部署卡片 / 根目录编辑器 / 生成对话框 / 控制台指针统一）
-import "./styles/calExt.css";    // Calibrate 增量样式（采集设置模态基础 cap-* 原子；AR/Lens 完整报告等专属规则随旧页删除后不再被引用，未清理）
+import "./styles/calExt.css";    // Calibrate 增量样式（采集设置模态基础 cap-* 原子；AR 分支 ar-* 主体规则 + 本轮新 IA 追加的 ar-ws-*/ar-ovcard*/ar-degen* 等）
 import "./styles/cal2.css";      // Calibrate 新 IA 样式（概览 / 网格校正折叠组 / 镜头校正）
 import "./styles/calLens.css";   // 镜头校正单页 + 二级对话框样式（相机画面区 / 五态横幅 / 覆盖度环等）
 
@@ -37,5 +37,8 @@ import "./pages/calPreview";    // window.VOLO_CAL2.Preview
 import "./pages/calHistory";    // window.VOLO_CAL2.{History,historyInspector}
 import "./pages/calLens";        // window.VOLO_CAL2.{Lens,lensInspector,useLensLive,lensStore,useLensSolve,...}（镜头校正单页，真接 vpcal）
 import "./pages/calLensDialogs"; // window.VOLO_CAL2.{openSolveFromSession,openReport,openExport,openPlayerCheck}
+import "./pages/calAr";          // window.VOLO_CAL_AR 基座（arStore/atoms/useVpcalRun + left/center/inspector 路由 + Overview）
+import "./pages/calArTools";     // window.VOLO_CAL_AR.{Markers,Lens,Spatial,Delay}
+import "./pages/calArVerify";    // window.VOLO_CAL_AR.{Verify,verifyInspector,Runs}
 
 export { App };

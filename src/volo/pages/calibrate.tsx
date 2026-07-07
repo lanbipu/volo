@@ -237,7 +237,10 @@ import {
   /* =================== 左栏 · 新 IA =================== */
   function left(s) {
     const proj = useProj();
-    if (s.calStageType === 'ar') return arLeft(s);
+    /* 同 inspector(s) 里的 arWs 写法：window.VOLO_CAL_AR.left 是纯函数（不在内部
+       调用 hook），arWs 必须在分支判断之前无条件调用一次拿到快照再传下去。 */
+    const arWs = window.VOLO_CAL_AR.useArWorkspace();
+    if (s.calStageType === 'ar') return arLeft(s, arWs);
     const blocked = navBlocked(proj);
     const leaf = (id, icon, label, sub) => h('div', {
       key: id, className: 'nav-i nav-mod cal2-nav' + (s.calNav === id ? ' on' : '') + (blocked[id] ? ' is-blocked' : ''),
@@ -275,21 +278,16 @@ import {
           h('div', { className: 'vmeter vmeter--' + (s.calLensState === 'done' ? 'positive' : 'neutral') }, h('div', { className: 'vmeter__fill', style: { width: s.calLensState === 'done' ? '100%' : s.calLensState === 'running' ? '50%' : '0%' } })))) : null);
   }
 
-  /* AR 分支左栏 —— 本批仅占位（见 arCenter 说明） */
-  function arLeft(s) {
-    return h('div', { className: 'sect' },
-      h('div', { className: 'sect-h' }, h('span', { className: 't' }, 'AR · 舞台校正')),
-      h('div', { className: 'nav-i nav-mod is-blocked' },
-        h('span', { className: 'nav-ico' }, h(Icon, { name: 'cube', size: 17 })),
-        h('span', { className: 'nav-lbl' }, '空间校正'),
-        h('span', { className: 'nav-tag' }, 'WIP')));
+  /* AR 分支左栏 —— 委托 window.VOLO_CAL_AR（真实接线，见 pages/calAr.tsx） */
+  function arLeft(s, ws) {
+    return (window.VOLO_CAL_AR && window.VOLO_CAL_AR.left) ? window.VOLO_CAL_AR.left(s, ws) : null;
   }
 
   /* =================== center 路由 =================== */
   function center(s) {
     const CAL2 = window.VOLO_CAL2 || {};
     const proj = useProj();
-    if (s.calStageType === 'ar') return h(React.Fragment, null, h(CalController, { s }), arCenter());
+    if (s.calStageType === 'ar') return h(React.Fragment, null, h(CalController, { s }), arCenter(s));
     if (!proj.path) return h(React.Fragment, null, h(CalController, { s }), CAL2.Overview ? h(CAL2.Overview, { s }) : null);
     let body;
     switch (s.calNav) {
@@ -302,14 +300,9 @@ import {
     }
     return h(React.Fragment, null, h(CalController, { s }), body);
   }
-  function arCenter() {
-    return h('div', { className: 'dash' },
-      h('div', { className: 'cluster-empty' },
-        h('div', { className: 'ce-ico' }, h(Icon, { name: 'cube', size: 36, stroke: 1.3 })),
-        h('div', { className: 'ce-t' }, 'AR 舞台校正 · 建设中'),
-        h('div', { className: 'ce-d' }, '本批仅交付 LED 网格重建 → 镜头校正流程。AR（无 LED 屏、实景叠加）的空间求解 / 延迟校准 / 验证叠加将在后续批次展开。'),
-        h('div', { className: 'ce-acts' },
-          h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'arrowr', size: 15 }), isDisabled: true }, '敬请期待'))));
+  /* AR 分支 center —— 委托 window.VOLO_CAL_AR（真实接线，见 pages/calAr.tsx） */
+  function arCenter(s) {
+    return (window.VOLO_CAL_AR && window.VOLO_CAL_AR.center) ? window.VOLO_CAL_AR.center(s) : null;
   }
 
   /* =================== inspector 路由 =================== */
@@ -321,7 +314,11 @@ import {
        靠这个模块级 store 快照跨 fiber 传递。放在 calNav 分支判断之前，任何 render
        都固定调用一次，Rules of Hooks 意义上等价于上面的 useProj()。 */
     const lensLive = CAL2.useLensLive();
-    if (s.calStageType === 'ar') return inspEmpty('AR 校正建设中');
+    /* 同上：window.VOLO_CAL_AR.inspector 内部把 verify 详情委托给纯函数 verifyInspector，
+       它自己不调用 hook —— arWs 必须在分支判断之前无条件调用一次拿到快照再传下去，
+       否则 useArWorkspace() 只在 AR 态渲染时执行，切 LED/AR 会改变 Slot 的 hook 调用次序。 */
+    const arWs = window.VOLO_CAL_AR.useArWorkspace();
+    if (s.calStageType === 'ar') return window.VOLO_CAL_AR.inspector(s, arWs);
     if (!proj.path) return inspEmpty('打开项目后可查看细节');
     if (s.calNav === 'design' && CAL2.designInspector) return CAL2.designInspector(s);
     if (s.calNav === 'survey' && CAL2.surveyInspector) return CAL2.surveyInspector(s, proj);

@@ -11,6 +11,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use base64::Engine as _;
 use serde::Serialize;
 use serde_json::Value;
 use volo_shared::error::{VoloError, VoloResult};
@@ -176,4 +177,67 @@ pub fn list_lens_sessions(sessions_root: String) -> VoloResult<Vec<LensSessionSu
     // Newest first; entries without a readable mtime sort last.
     sessions.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
     Ok(sessions)
+}
+
+/// Read a local image file and return it as a `data:` URL, so the frontend
+/// can display arbitrary on-disk images (e.g. `verify overlay`'s
+/// `annotated_images[]` PNGs) without a Tauri asset-protocol scope — these
+/// live under whatever runs/output directory the operator points the AR
+/// workspace at, which isn't known at build time, so a static capability
+/// scope pattern wouldn't cover them.
+///
+/// `base_dir` scopes the read: `path` must canonicalize to a descendant of
+/// `base_dir` (symlink targets included), and only recognized image
+/// extensions under a size cap are served — this command must never become a
+/// generic "read any file on disk" primitive (code review finding: the
+/// unscoped first version did exactly that). Callers pass the same output
+/// directory `verify overlay --out` just wrote to, so `path`/`base_dir` are
+/// both derived from that one real backend response rather than hand-typed.
+#[tauri::command]
+pub fn read_image_as_data_url(path: String, base_dir: String) -> VoloResult<String> {
+    const MAX_IMAGE_BYTES: u64 = 50 * 1024 * 1024;
+
+    let mime = match Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        other => {
+            return Err(VoloError::InvalidInput(format!(
+                "unsupported image extension: {other:?}"
+            )));
+        }
+    };
+
+    let canon_base = Path::new(&base_dir)
+        .canonicalize()
+        .map_err(|e| VoloError::Io(format!("failed to resolve base_dir {base_dir}: {e}")))?;
+    let canon_path = Path::new(&path)
+        .canonicalize()
+        .map_err(|e| VoloError::Io(format!("failed to resolve image path {path}: {e}")))?;
+    if !canon_path.starts_with(&canon_base) {
+        return Err(VoloError::InvalidInput(format!(
+            "{path} is outside the approved output directory {base_dir}"
+        )));
+    }
+
+    let meta = fs::metadata(&canon_path)
+        .map_err(|e| VoloError::Io(format!("failed to stat image {path}: {e}")))?;
+    if meta.len() > MAX_IMAGE_BYTES {
+        return Err(VoloError::InvalidInput(format!(
+            "{path} is {} bytes, exceeds the {MAX_IMAGE_BYTES}-byte cap",
+            meta.len()
+        )));
+    }
+
+    let bytes = fs::read(&canon_path)
+        .map_err(|e| VoloError::Io(format!("failed to read image {path}: {e}")))?;
+    Ok(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
 }
