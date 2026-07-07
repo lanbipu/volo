@@ -558,6 +558,48 @@ export class KeyerEngine {
     return Math.max(0, Math.min(1, Number.isFinite(v) ? v : 0));
   }
 
+  /* 导出 straight-alpha PNG：fgTex(premult 线性) + matte 回读 → un-premultiply → sRGB 编码 */
+  async exportPng(): Promise<Blob | null> {
+    if (!this.fgTex || !this.matteTex || this.w <= 0 || this.h <= 0) return null;
+    const align = (n: number) => Math.ceil(n / 256) * 256;
+    const fgRow = align(this.w * 8);   // rgba16float
+    const mRow = align(this.w * 2);    // r16float
+    const fgBuf = this.d.createBuffer({ size: fgRow * this.h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const mBuf = this.d.createBuffer({ size: mRow * this.h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const enc = this.d.createCommandEncoder();
+    enc.copyTextureToBuffer({ texture: this.fgTex }, { buffer: fgBuf, bytesPerRow: fgRow }, [this.w, this.h]);
+    enc.copyTextureToBuffer({ texture: this.matteTex }, { buffer: mBuf, bytesPerRow: mRow }, [this.w, this.h]);
+    this.d.queue.submit([enc.finish()]);
+    await Promise.all([fgBuf.mapAsync(GPUMapMode.READ), mBuf.mapAsync(GPUMapMode.READ)]);
+    const fg16 = new Uint16Array(fgBuf.getMappedRange());
+    const m16 = new Uint16Array(mBuf.getMappedRange());
+    const out = new Uint8ClampedArray(this.w * this.h * 4);
+    const linToSrgb = (x: number) => {
+      const v = Math.max(0, Math.min(1, x));
+      return Math.round((v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055) * 255);
+    };
+    for (let y = 0; y < this.h; y++) {
+      const fr = (y * fgRow) / 2;
+      const mr = (y * mRow) / 2;
+      for (let x = 0; x < this.w; x++) {
+        const a = Math.max(0, Math.min(1, halfToFloat(m16[mr + x])));
+        const inv = a > 1e-4 ? 1 / a : 0;
+        const o = (y * this.w + x) * 4;
+        out[o] = linToSrgb(halfToFloat(fg16[fr + x * 4]) * inv);
+        out[o + 1] = linToSrgb(halfToFloat(fg16[fr + x * 4 + 1]) * inv);
+        out[o + 2] = linToSrgb(halfToFloat(fg16[fr + x * 4 + 2]) * inv);
+        out[o + 3] = Math.round(a * 255);
+      }
+    }
+    fgBuf.unmap(); fgBuf.destroy();
+    mBuf.unmap(); mBuf.destroy();
+    const cnv = document.createElement("canvas");
+    cnv.width = this.w; cnv.height = this.h;
+    const c2d = cnv.getContext("2d")!;
+    c2d.putImageData(new ImageData(out, this.w, this.h), 0, 0);
+    return new Promise((resolve) => cnv.toBlob(resolve, "image/png"));
+  }
+
   async sampleKeyColor(u: number, v: number): Promise<void> {
     if (!this.srcTex || this.w <= 0 || this.h <= 0) return;
     const regionW = Math.min(3, this.w);

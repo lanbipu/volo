@@ -60,6 +60,12 @@ import { DEFAULTS, KNOBS } from "../keyer/params";
       setParam(key, value) {
         applyParams({ ...params, [key]: value });
       },
+      resetDefaults() {
+        applyParams(cloneParams(DEFAULTS));
+      },
+      applyPreset(p) {
+        applyParams(cloneParams({ ...DEFAULTS, ...p }));
+      },
       syncFromEngine() {
         if (!engine) return;
         params = engine.getParams();
@@ -195,6 +201,25 @@ import { DEFAULTS, KNOBS } from "../keyer/params";
       keyerStore.syncFromEngine();
       setPlateState(0);
     };
+    const doExport = async () => {
+      const engine = engineRef.current;
+      if (!engine) return;
+      const blob = await engine.exportPng();
+      if (!blob) return;
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "keyer-export-" + Date.now() + ".png";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    };
+    const stageRef = useRef(null);
+    const onWipeDrag = (ev) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const u = clamp01((ev.clientX - rect.left) / rect.width);
+      keyerStore.setParam("wipe", u);
+    };
     const onCanvasClick = async (ev) => {
       const canvas = canvasRef.current;
       const engine = engineRef.current;
@@ -230,11 +255,24 @@ import { DEFAULTS, KNOBS } from "../keyer/params";
             icon: h(Icon, { name: playing ? "pause" : "play", size: 14 }), onPress: togglePlay }, playing ? "暂停" : "播放") : null,
           h(Button, { variant: "secondary", size: "S", isDisabled: !probe || !probe.ok,
             icon: h(Icon, { name: "folder", size: 14 }), onPress: openMedia }, "打开素材"),
+          h(Button, { variant: "secondary", size: "S", isDisabled: !probe || !probe.ok,
+            icon: h(Icon, { name: "download", size: 14 }), onPress: doExport }, "导出"),
           probe && probe.ok
             ? h(StatusLight, { variant: "positive" }, "WebGPU · " + probe.adapterInfo.vendor)
             : probe ? h(StatusLight, { variant: "negative" }, "WebGPU 不可用") : null)),
-      h("div", { className: "canvas-stage kl-stage" },
+      h("div", { className: "canvas-stage kl-stage", ref: stageRef },
         h("canvas", { ref: canvasRef, className: "kl-canvas", width: 1280, height: 720, onClick: onCanvasClick }),
+        keyer.params.viewMode === 3 ? h("div", {
+          className: "kl-wipe",
+          style: { left: "calc(" + (keyer.params.wipe * 100) + "% )" },
+          onPointerDown: (ev) => {
+            ev.currentTarget.setPointerCapture(ev.pointerId);
+            const move = (e) => onWipeDrag(e);
+            const up = (e) => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
+            window.addEventListener("pointermove", move);
+            window.addEventListener("pointerup", up);
+          },
+        }) : null,
         hud ? h("div", { className: "kl-hud" }, hud) : null,
         probe && probe.ok ? h("div", { className: "kl-probe" },
           pixelText || (probe.adapterInfo.vendor + " · " + probe.adapterInfo.architecture + " · " + probe.format)) : null,
@@ -279,8 +317,8 @@ import { DEFAULTS, KNOBS } from "../keyer/params";
           h("span", { className: "kl-keyhint" }, "点击画面取样"),
           h("span", { className: "kl-keyvalue" }, params.keyColor.map((v) => v.toFixed(3)).join(" ")))),
       h("div", { className: "insp-sect" },
-        h("div", { className: "lh" }, "Primary Matte"),
-        KNOBS.slice(0, 6).map((k) => h("label", { key: k.key, className: "kl-knob" },
+        h("div", { className: "lh" }, "Knobs"),
+        KNOBS.map((k) => h("label", { key: k.key, className: "kl-knob" },
           h("span", { className: "kl-knob-label" }, k.label),
           h("input", {
             type: "range",
@@ -290,7 +328,48 @@ import { DEFAULTS, KNOBS } from "../keyer/params";
             value: params[k.key],
             onChange: (ev) => keyerStore.setParam(k.key, Number(ev.currentTarget.value)),
           }),
-          h("span", { className: "kl-knob-value" }, knobValue(params[k.key], k.step))))));
+          h("span", { className: "kl-knob-value" }, knobValue(params[k.key], k.step))))),
+      h("div", { className: "insp-sect" },
+        h("div", { className: "lh" }, "Key Color · Hex"),
+        h("div", { className: "kl-hexrow" },
+          h("input", {
+            className: "kl-hex", type: "text", placeholder: "#26a626", spellCheck: false,
+            onKeyDown: (ev) => {
+              if (ev.key !== "Enter") return;
+              const m = /^#?([0-9a-f]{6})$/i.exec(ev.currentTarget.value.trim());
+              if (!m) return;
+              const n = parseInt(m[1], 16);
+              const s2l = (b) => Math.pow(((b / 255) + 0.055) / 1.055, 2.4);
+              keyerStore.setParam("keyColor", [s2l(n >> 16 & 255), s2l(n >> 8 & 255), s2l(n & 255)]);
+            },
+          }),
+          h(Button, { variant: "secondary", size: "S", onPress: () => keyerStore.resetDefaults() }, "重置默认"))),
+      h(PresetSection, null));
+  }
+
+  const PRESET_KEY = "volo-keyer-presets";
+  function loadPresets() {
+    try { return JSON.parse(localStorage.getItem(PRESET_KEY) || "{}"); } catch { return {}; }
+  }
+  function PresetSection() {
+    const [presets, setPresets] = useState(loadPresets);
+    const [name, setName] = useState("");
+    const persist = (next) => { localStorage.setItem(PRESET_KEY, JSON.stringify(next)); setPresets(next); };
+    return h("div", { className: "insp-sect" },
+      h("div", { className: "lh" }, "Presets"),
+      h("div", { className: "kl-hexrow" },
+        h("input", { className: "kl-hex", type: "text", placeholder: "预设名", value: name, spellCheck: false,
+          onChange: (ev) => setName(ev.currentTarget.value) }),
+        h(Button, { variant: "secondary", size: "S", isDisabled: !name.trim(), onPress: () => {
+          const next = { ...presets, [name.trim()]: keyerStore.snapshot().params };
+          persist(next); setName("");
+        } }, "保存")),
+      Object.keys(presets).map((k) => h("div", { key: k, className: "kl-preset" },
+        h("span", { className: "n" }, k),
+        h("button", { className: "act", onClick: () => keyerStore.applyPreset(presets[k]) }, "加载"),
+        h("button", { className: "act del", onClick: () => {
+          const next = { ...presets }; delete next[k]; persist(next);
+        } }, "删除"))));
   }
   function inspector() {
     return h(InspectorPanel, null);
