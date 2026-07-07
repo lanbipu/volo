@@ -554,8 +554,9 @@ pub enum IniAction {
         #[arg(long)]
         domain: Option<String>,
     },
-    /// Verify PSO precaching CVars (R008-R010) in a project's ConsoleVariables.ini.
-    /// Runs a real INI scan scoped to the project (same path as `ini scan --project-id`).
+    /// Scan the project's INIs for PSO-related findings (the official
+    /// precaching CVar assertions R008-R010 were removed — inert in uncooked
+    /// `-game`; R024 is a config-noted info line only).
     VerifyPsoPrecaching {
         #[arg(long)]
         project_id: i64,
@@ -952,6 +953,10 @@ pub enum PsoAction {
         resolution: String,
         #[arg(long, default_value_t = 20)]
         max_minutes: u32,
+        /// Verify-phase window (minutes): after the prerun window a second run
+        /// with the same spec counts hitches; 0 hitches there = green light.
+        #[arg(long, default_value_t = 2)]
+        verify_minutes: u32,
         /// nDisplay config path on the render node.
         #[arg(long, alias = "dc-cfg")]
         dc_cfg_path: Option<String>,
@@ -978,6 +983,46 @@ pub enum PsoAction {
         /// Filter to one machine.
         #[arg(long)]
         machine: Option<i64>,
+    },
+    /// Green-light matrix (project × node) with degradation reasons.
+    Status {
+        #[arg(long)]
+        project_id: i64,
+        /// Limit to specific machine ids, comma-separated. Omit = all nodes
+        /// that have warmup history for the project.
+        #[arg(long, value_name = "M1,M2,...", value_delimiter = ',')]
+        machines: Vec<i64>,
+    },
+    /// Cold-start check: clear the GPU driver cache, run the nDisplay spec
+    /// once and count hitches (diagnostic, not a green-light path).
+    Coldtest {
+        #[arg(long)]
+        project_id: i64,
+        /// Target render-node machine ids, comma-separated.
+        #[arg(long, value_name = "M1,M2,...", value_delimiter = ',')]
+        targets: Vec<i64>,
+        #[arg(long, value_name = "WxH", default_value = "1920x1080")]
+        resolution: String,
+        #[arg(long, default_value_t = 5)]
+        max_minutes: u32,
+        /// nDisplay config path on the render node.
+        #[arg(long, alias = "dc-cfg")]
+        dc_cfg_path: Option<String>,
+        /// nDisplay node id, e.g. Node_0.
+        #[arg(long)]
+        dc_node: Option<String>,
+        /// Use -fullscreen instead of the default -RenderOffscreen.
+        #[arg(long = "fullscreen", action = clap::ArgAction::SetFalse)]
+        offscreen: bool,
+        /// Additional Unreal command-line argument. Repeat for multiple args.
+        #[arg(long = "extra-arg", value_name = "ARG")]
+        extra_args: Vec<String>,
+        /// Pin the UE version on every node (e.g. 5.8). Omit = each node's
+        /// primary install — risky if it differs from the project version.
+        #[arg(long)]
+        ue_version: Option<String>,
+        #[command(flatten)]
+        cred: crate::credential_args::CredentialArgs,
     },
 }
 

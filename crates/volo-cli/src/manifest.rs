@@ -77,6 +77,8 @@ pub fn operations() -> &'static [Operation] {
         Operation { operation_id: "pso.verify",                summary: "Verify PSO precaching CVars (R008-R010) for a project",           cli_command: "voloctl cache pso verify",                 side_effects: SideEffects{writes:true, external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
         Operation { operation_id: "pso.warmup",                summary: "Warm up & verify PSO readiness on render nodes (hitch count)",    cli_command: "voloctl cache pso warmup",                 side_effects: SideEffects{writes:true, external_calls:true, idempotent:false}, exit_codes: &[0,1,2,3,4] },
         Operation { operation_id: "pso.runs",                  summary: "List PSO warm-up/verification runs for a project",                cli_command: "voloctl cache pso runs",                   side_effects: SideEffects{writes:false,external_calls:false,idempotent:true},  exit_codes: &[0,3] },
+        Operation { operation_id: "pso.status",                summary: "Green-light matrix (project × node) with degradation reasons",    cli_command: "voloctl cache pso status",                 side_effects: SideEffects{writes:true, external_calls:false,idempotent:true},  exit_codes: &[0,3] },
+        Operation { operation_id: "pso.coldtest",              summary: "Clear driver cache, cold-run the nDisplay spec and count hitches",cli_command: "voloctl cache pso coldtest",               side_effects: SideEffects{writes:true, external_calls:true, idempotent:false}, exit_codes: &[0,1,2,3,4] },
         Operation { operation_id: "health.run",                summary: "Run L1/L2/L3 health probes with remediation hints",               cli_command: "voloctl cache health run",                 side_effects: SideEffects{writes:true, external_calls:true, idempotent:true},  exit_codes: &[0,2,3,4] },
         Operation { operation_id: "health.runs",               summary: "List recent health scan runs",                                    cli_command: "voloctl cache health runs",                side_effects: SideEffects{writes:false,external_calls:false,idempotent:true},  exit_codes: &[0,3] },
         Operation { operation_id: "health.results",            summary: "List per-row health results for a scan run",                      cli_command: "voloctl cache health results",             side_effects: SideEffects{writes:false,external_calls:false,idempotent:true},  exit_codes: &[0,3] },
@@ -203,6 +205,8 @@ pub fn operation_id_for(cmd: &Domain) -> &'static str {
             crate::args::PsoAction::Verify { .. } => "pso.verify",
             crate::args::PsoAction::Warmup { .. } => "pso.warmup",
             crate::args::PsoAction::Runs { .. } => "pso.runs",
+            crate::args::PsoAction::Status { .. } => "pso.status",
+            crate::args::PsoAction::Coldtest { .. } => "pso.coldtest",
         },
         Domain::Health { action } => match action {
             crate::args::HealthAction::Run { .. } => "health.run",
