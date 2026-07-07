@@ -6,6 +6,7 @@ import "../ds";
 import { probeWebGpu } from "../keyer/gpu";
 import { KeyerEngine } from "../keyer/engine";
 import { DEFAULTS, KNOBS } from "../keyer/params";
+import { mad, gradErr } from "../keyer/metrics";
 
 (function () {
   window.KEYER_SKIP = {}; // 全管线
@@ -296,10 +297,123 @@ import { DEFAULTS, KNOBS } from "../keyer/params";
       }, h("span", { className: "nav-ico" }, h(Icon, { name: n.icon, size: 16 })),
          h("span", null, n.label))));
   }
+  /* ---------- 基准测试（keyer_bench）---------- */
+  async function decodeAlpha(file) {   // gt.png → Float32Array(0..1)
+    const bmp = await createImageBitmap(file);
+    const cnv = document.createElement("canvas");
+    cnv.width = bmp.width; cnv.height = bmp.height;
+    const c = cnv.getContext("2d");
+    c.drawImage(bmp, 0, 0);
+    const d = c.getImageData(0, 0, bmp.width, bmp.height).data;
+    const out = new Float32Array(bmp.width * bmp.height);
+    for (let i = 0; i < out.length; i++) out[i] = d[i * 4] / 255;  // 灰度图取 R
+    bmp.close && bmp.close();
+    return { data: out, w: cnv.width, h: cnv.height };
+  }
+
+  function BenchCenter() {
+    const canvasRef = useRef(null);
+    const engineRef = useRef(null);
+    const fileRef = useRef(null);
+    const [probe, setProbe] = useState(null);
+    const [rows, setRows] = useState([]);
+    const [running, setRunning] = useState(false);
+    const [report, setReport] = useState(null);
+    useEffect(() => {
+      let dead = false;
+      probeWebGpu(canvasRef.current).then((r) => {
+        if (dead) return;
+        setProbe(r);
+        if (r.ok) engineRef.current = new KeyerEngine(r);
+      });
+      return () => { dead = true; engineRef.current = null; };
+    }, []);
+    const runBench = async (files) => {
+      const engine = engineRef.current;
+      if (!engine || !files.length) return;
+      setRunning(true); setRows([]); setReport(null);
+      const byCase = {};
+      for (const f of files) {
+        const m = /^(case\d+_[a-z]+)(?:_f(\d+))?\.(input|gt|plate)\.png$/.exec(f.name);
+        if (!m) continue;
+        const c = (byCase[m[1]] = byCase[m[1]] || { inputs: [], gt: null, plate: null });
+        if (m[3] === "gt") c.gt = f;
+        else if (m[3] === "plate") c.plate = f;
+        else c.inputs.push({ f, idx: m[2] ? parseInt(m[2], 10) : 0 });
+      }
+      const out = [];
+      for (const id of Object.keys(byCase).sort()) {
+        const c = byCase[id];
+        if (!c.gt || !c.inputs.length) continue;
+        c.inputs.sort((a, b) => a.idx - b.idx);
+        const t0 = performance.now();
+        engine.setParams(DEFAULTS);                     // 每 case 复位默认参数
+        engine.clearPlate();
+        const first = await createImageBitmap(c.inputs[0].f);
+        engine.loadImage(first);                        // 先定尺寸
+        if (c.plate) {
+          const pb = await createImageBitmap(c.plate);
+          engine.loadPlate(pb);
+          pb.close && pb.close();
+        }
+        // 自动取样主色：左上角 (10,10) 处 3×3（全部 case 幕布覆盖该角）
+        await engine.sampleKeyColor(10 / first.width, 10 / first.height);
+        const frames = [first];
+        for (let i = 1; i < c.inputs.length; i++) frames.push(await createImageBitmap(c.inputs[i].f));
+        // 单帧 case 重复渲染 8 次让时域项收敛；多帧 case 顺序喂满（检验时域轨）
+        const N = Math.max(8, frames.length);
+        for (let i = 0; i < N; i++) {
+          engine.loadImage(frames[Math.min(i, frames.length - 1)]);
+          engine.renderOnce();
+        }
+        frames.forEach((b) => b.close && b.close());
+        const matte = await engine.readbackMatteFull();
+        const gt = await decodeAlpha(c.gt);
+        const ms = performance.now() - t0;
+        if (!matte || matte.w !== gt.w || matte.h !== gt.h) continue;
+        const row = { id, mad: mad(matte.data, gt.data), grad: gradErr(matte.data, gt.data, gt.w, gt.h), ms };
+        out.push(row);
+        setRows([...out]);
+      }
+      const agg = {
+        mad: out.reduce((s, r) => s + r.mad, 0) / Math.max(1, out.length),
+        grad: out.reduce((s, r) => s + r.grad, 0) / Math.max(1, out.length),
+      };
+      setReport({ cases: out.map(({ id, mad: m2, grad: g2 }) => ({ id, mad: m2, grad: g2 })), aggregate: agg });
+      setRunning(false);
+    };
+    const exportReport = () => {
+      if (!report) return;
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }));
+      a.download = "keyer-report.json";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    };
+    return h(React.Fragment, null,
+      h("input", { ref: fileRef, type: "file", multiple: true, accept: "image/png", style: { display: "none" },
+        onChange: (ev) => { const fs = Array.from(ev.target.files || []); ev.target.value = ""; runBench(fs); } }),
+      h("div", { className: "canvas-head" },
+        h("span", { className: "t" }, "基准测试"),
+        h("div", { className: "right" },
+          h(Button, { variant: "secondary", size: "S", isDisabled: !probe || !probe.ok || running,
+            onPress: () => fileRef.current && fileRef.current.click() }, running ? "运行中…" : "加载测试集"),
+          h(Button, { variant: "secondary", size: "S", isDisabled: !report, onPress: exportReport }, "导出报告"))),
+      h("div", { className: "canvas-stage kl-stage kl-bench" },
+        h("canvas", { ref: canvasRef, className: "kl-canvas kl-bench-canvas", width: 1280, height: 720 }),
+        h("div", { className: "kl-bench-table" },
+          h("div", { className: "kl-bench-row kl-bench-head" },
+            h("span", null, "case"), h("span", null, "MAD"), h("span", null, "grad"), h("span", null, "耗时")),
+          rows.map((r) => h("div", { key: r.id, className: "kl-bench-row" },
+            h("span", null, r.id), h("span", null, r.mad.toFixed(4)),
+            h("span", null, r.grad.toFixed(4)), h("span", null, r.ms.toFixed(0) + " ms"))),
+          report ? h("div", { className: "kl-bench-row kl-bench-agg" },
+            h("span", null, "aggregate"), h("span", null, report.aggregate.mad.toFixed(4)),
+            h("span", null, report.aggregate.grad.toFixed(4)), h("span", null, "—")) : null)));
+  }
+
   function center(s) {
-    if (s.cacheNav === "keyer_bench") return h("div", { className: "canvas-stage skl-stage" },
-      h("div", { className: "skl-ph" }, h("div", { className: "skl-title" }, "基准测试"),
-        h("div", { className: "skl-intent" }, "GT 测试集指标回归 — Task 9 建设")));
+    if (s.cacheNav === "keyer_bench") return h(BenchCenter, { key: "bench" });
     return h(KeyerCenter, { s });
   }
   function InspectorPanel() {

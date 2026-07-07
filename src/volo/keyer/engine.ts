@@ -558,6 +558,28 @@ export class KeyerEngine {
     return Math.max(0, Math.min(1, Number.isFinite(v) ? v : 0));
   }
 
+  /* 全幅 matte 回读（基准测试用）：r16float → Float32Array(0..1) */
+  async readbackMatteFull(): Promise<{ data: Float32Array; w: number; h: number } | null> {
+    if (!this.matteTex || this.w <= 0 || this.h <= 0) return null;
+    const row = Math.ceil((this.w * 2) / 256) * 256;
+    const buf = this.d.createBuffer({ size: row * this.h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const enc = this.d.createCommandEncoder();
+    enc.copyTextureToBuffer({ texture: this.matteTex }, { buffer: buf, bytesPerRow: row }, [this.w, this.h]);
+    this.d.queue.submit([enc.finish()]);
+    await buf.mapAsync(GPUMapMode.READ);
+    const u16 = new Uint16Array(buf.getMappedRange());
+    const out = new Float32Array(this.w * this.h);
+    for (let y = 0; y < this.h; y++) {
+      const r = (y * row) / 2;
+      for (let x = 0; x < this.w; x++) {
+        const v = halfToFloat(u16[r + x]);
+        out[y * this.w + x] = Math.max(0, Math.min(1, Number.isFinite(v) ? v : 0));
+      }
+    }
+    buf.unmap(); buf.destroy();
+    return { data: out, w: this.w, h: this.h };
+  }
+
   /* 导出 straight-alpha PNG：fgTex(premult 线性) + matte 回读 → un-premultiply → sRGB 编码 */
   async exportPng(): Promise<Blob | null> {
     if (!this.fgTex || !this.matteTex || this.w <= 0 || this.h <= 0) return null;
