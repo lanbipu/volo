@@ -12,6 +12,7 @@ import "./styles/app.css";
 import "./styles/clean.css";
 import "./styles/zen.css";       // ZenServer 重做版样式（zen-status / zbadge / zsteps / zcli …）
 import "./styles/pso.css";       // PSO 上场就绪保障样式（nm-矩阵 / wv-预热 / hist-历史 / cvar-合规 / lrp-cancel）
+import "./styles/keyer.css";     // Keyer Lab（kl-）— Tools · 键控
 import "./styles/ddcPak.css";    // DDC PAK 双栏重设计样式（已部署卡片 / 根目录编辑器 / 生成对话框 / 控制台指针统一）
 import "./styles/calExt.css";    // Calibrate 增量样式（采集设置模态基础 cap-* 原子；AR 分支 ar-* 主体规则 + 本轮新 IA 追加的 ar-ws-*/ar-ovcard*/ar-degen* 等）
 import "./styles/cal2.css";      // Calibrate 新 IA 样式（概览 / 网格校正折叠组 / 镜头校正）
@@ -27,6 +28,7 @@ import "./pages/cacheMachines"; // window.VOLO_CACHE_MACHINES
 import "./pages/cacheZen";      // window.VOLO_CACHE_ZEN（ZenServer 重做版，须在 cacheDdc 前）
 import "./pages/cacheDdc";      // window.VOLO_CACHE_DDC
 import "./pages/cacheDdcPak";   // window.VOLO_CACHE_DDC_PAK（DDC PAK 双栏重设计，须在 cacheDdc 后）
+import "./pages/toolsKeyer";    // window.VOLO_KEYER（键控 · Keyer Lab，须在 skeletons 前）
 import "./pages/skeletons";     // window.VOLO_PAGES.{previz,color,live,tools}
 import "./pages/calibrate";     // window.VOLO_CAL2 基座 + window.VOLO_PAGES.calibrate 骨架（须在下面几个 leaf 之前，供其 Object.assign 扩展）
 import "./pages/calOverview";   // window.VOLO_CAL2.Overview

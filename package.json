@@ -22,6 +22,7 @@
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "@webgpu/types": "^0.1.71",
     "lightningcss": "^1.32.0",
     "typescript": "~5.8.3",
     "unplugin-parcel-macros": "^0.2.0",

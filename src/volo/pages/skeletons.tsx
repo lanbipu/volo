@@ -5,6 +5,7 @@
 import * as React from "react";
 import "../ds";
 import "./cache";
+import "./toolsKeyer";
 
 (function () {
   const { Button, InlineAlert } = window.Spectrum2DesignSystem_b6d1b3;
@@ -100,10 +101,12 @@ import "./cache";
   /* top-level categories — shown in the context bar */
   const CATS = [
     { id: 'cache', label: '缓存', icon: 'cache' },
+    { id: 'keyer', label: '键控', icon: 'key' },
     { id: 'diag',  label: '诊断', icon: 'tools' },
   ];
-  const catOf = (nav) => isCacheSeg(nav) ? 'cache' : 'diag';
-  const FIRST = { cache: 'home', diag: 'diag_net' };
+  const isKeyerSeg = (nav) => nav === 'keyer_lab' || nav === 'keyer_bench';
+  const catOf = (nav) => isCacheSeg(nav) ? 'cache' : (isKeyerSeg(nav) ? 'keyer' : 'diag');
+  const FIRST = { cache: 'home', keyer: 'keyer_lab', diag: 'diag_net' };
 
   function toolsCtx(s) {
     /* top mode: context bar carries only the two top-level categories */
@@ -126,6 +129,7 @@ import "./cache";
     }
     /* left mode: per-section context title + actions */
     if (isCacheSeg(s.cacheNav)) return window.VOLO_CACHE.ctx(s);
+    if (isKeyerSeg(s.cacheNav)) return window.VOLO_KEYER.ctx(s);
     const t = curDiag(s.cacheNav);
     return h(React.Fragment, null,
       h(CtxTitle, { icon: t.icon, title: t.label, sub: '工具 · 诊断' }),
@@ -151,11 +155,13 @@ import "./cache";
     /* top mode: left column lists the sub-items of the selected category */
     if (s.toolsNav === 'top') {
       const cat = catOf(s.cacheNav);
+      if (cat === 'keyer') return window.VOLO_KEYER.left(s);
       return cat === 'cache' ? window.VOLO_CACHE.left(s) : diagSection(s);
     }
-    /* left mode: cache dual-layer nav + diagnostics list stacked */
+    /* left mode: cache dual-layer nav + keyer + diagnostics list stacked */
     return h(React.Fragment, null,
       window.VOLO_CACHE.left(s),
+      window.VOLO_KEYER.left(s),
       diagSection(s));
   }
 
@@ -179,11 +185,13 @@ import "./cache";
   }
 
   function toolsCenter(s) {
+    if (isKeyerSeg(s.cacheNav)) return window.VOLO_KEYER.center(s);
     return isCacheSeg(s.cacheNav) ? window.VOLO_CACHE.center(s) : diagCenter(curDiag(s.cacheNav));
   }
 
   function toolsInspector(s) {
     if (isCacheSeg(s.cacheNav)) return window.VOLO_CACHE.inspector(s);
+    if (isKeyerSeg(s.cacheNav)) return window.VOLO_KEYER.inspector(s);
     const t = curDiag(s.cacheNav);
     return h('div', { className: 'insp-empty' },
       h('div', { className: 'ph' }, h(Icon, { name: t.icon, size: 30 })),
