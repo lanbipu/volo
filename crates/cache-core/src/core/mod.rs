@@ -36,6 +36,7 @@ pub mod project_thumbnail;
 pub mod push_distribute;
 pub mod pso_collect;
 pub mod pso_distribute;
+pub mod pso_status;
 pub mod pso_warmup;
 pub mod psexec;
 pub mod remote_fs;

@@ -551,12 +551,44 @@ export interface DriverCacheSnapshot {
   gpu_model: string | null;
   gpu_driver_version: string | null;
   interactive_user: string | null;
+  node_last_boot_time: string | null;
   local_appdata_dxcache: DriverCacheDirectorySnapshot;
   locallow_per_driver_dxcache: DriverCacheDirectorySnapshot;
   total_file_count: number;
   total_bytes: number;
   newest_mtime: string | null;
   captured_at: string | null;
+}
+
+export type PsoGreenlightStatus = "ok" | "degraded" | "none";
+
+export type PsoInvalidationReason =
+  | "gpu_driver_changed"
+  | "cache_shrunk"
+  | "cache_directory_missing"
+  | "interactive_user_changed"
+  | "node_rebooted";
+
+export interface PsoInvalidationEvent {
+  id: number | null;
+  project_id: number;
+  machine_id: number;
+  warmup_run_id: number;
+  driver_cache_snapshot_id: number;
+  reason: PsoInvalidationReason;
+  detail: string;
+  detected_at: string | null;
+}
+
+export interface PsoStatusCell {
+  project_id: number;
+  machine_id: number;
+  status: PsoGreenlightStatus;
+  green_run_id: number | null;
+  green_verified_at: string | null;
+  baseline_snapshot_id: number | null;
+  latest_snapshot_id: number | null;
+  invalidation_reasons: PsoInvalidationEvent[];
 }
 
 /* ============================ health check ============================ */

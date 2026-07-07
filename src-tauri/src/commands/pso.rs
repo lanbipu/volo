@@ -5,6 +5,7 @@ use cache_core::core::{
     batch, driver_cache_probe, ini_editor,
     pso_collect::{self, PsoCollectSpec},
     pso_distribute::{self, PsoDistributePlanItem},
+    pso_status::{self, PsoStatusCell},
     pso_warmup::{self, PsoWarmupSpec},
     ue_runner::{UeRunnerBackend, UeRunnerEvent},
 };
@@ -871,6 +872,15 @@ pub fn list_pso_warmup_runs(
 }
 
 #[tauri::command]
+pub fn list_pso_status(
+    db: State<'_, Db>,
+    project_id: i64,
+    machine_ids: Option<Vec<i64>>,
+) -> VoloResult<Vec<PsoStatusCell>> {
+    pso_status::list_pso_status(&db, project_id, machine_ids)
+}
+
+#[tauri::command]
 pub async fn probe_driver_cache(
     db: State<'_, Db>,
     machine_id: i64,
@@ -908,6 +918,7 @@ fn driver_cache_snapshot_input(
         gpu_model: probe.gpu_model,
         gpu_driver_version: probe.gpu_driver_version,
         interactive_user: probe.interactive_user,
+        node_last_boot_time: probe.node_last_boot_time,
         local_appdata_dxcache: driver_cache_dir_to_data(local),
         locallow_per_driver_dxcache: driver_cache_dir_to_data(low),
         total_file_count: probe.total_file_count,

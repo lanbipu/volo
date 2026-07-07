@@ -477,6 +477,32 @@ const MIGRATIONS: &[(&str, &str)] = &[
             ON driver_cache_snapshots(machine_id, captured_at DESC);
         "#,
     ),
+    (
+        "030_pso_invalidation_events_table",
+        r#"
+        ALTER TABLE driver_cache_snapshots ADD COLUMN node_last_boot_time TEXT;
+
+        CREATE TABLE IF NOT EXISTS pso_invalidation_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            machine_id INTEGER NOT NULL,
+            warmup_run_id INTEGER NOT NULL,
+            driver_cache_snapshot_id INTEGER NOT NULL,
+            reason TEXT NOT NULL,
+            detail TEXT NOT NULL,
+            detected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (machine_id) REFERENCES machines(id) ON DELETE CASCADE,
+            FOREIGN KEY (warmup_run_id) REFERENCES pso_warmup_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY (driver_cache_snapshot_id) REFERENCES driver_cache_snapshots(id) ON DELETE CASCADE,
+            UNIQUE(project_id, machine_id, warmup_run_id, driver_cache_snapshot_id, reason)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pso_invalidation_events_project_machine
+            ON pso_invalidation_events(project_id, machine_id, detected_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_pso_invalidation_events_warmup
+            ON pso_invalidation_events(warmup_run_id, detected_at DESC);
+        "#,
+    ),
 ];
 
 pub fn migrate(conn: &mut Connection) -> VoloResult<()> {
@@ -853,6 +879,7 @@ mod tests {
                 ("gpu_model", "TEXT", false),
                 ("gpu_driver_version", "TEXT", false),
                 ("interactive_user", "TEXT", false),
+                ("node_last_boot_time", "TEXT", false),
                 ("local_appdata_dxcache_path", "TEXT", true),
                 ("local_appdata_dxcache_exists", "INTEGER", true),
                 ("local_appdata_dxcache_file_count", "INTEGER", true),
@@ -867,6 +894,28 @@ mod tests {
                 ("total_bytes", "INTEGER", true),
                 ("newest_mtime", "TEXT", false),
                 ("captured_at", "TEXT", true),
+            ],
+        );
+    }
+
+    #[test]
+    fn migrate_creates_pso_invalidation_events_table_with_expected_columns() {
+        let db = open_in_memory().unwrap();
+        let mut conn = db.lock().unwrap();
+        migrate(&mut conn).unwrap();
+        assert!(table_exists(&conn, "pso_invalidation_events"));
+        assert_has_columns(
+            &conn,
+            "pso_invalidation_events",
+            &[
+                ("id", "INTEGER", false),
+                ("project_id", "INTEGER", true),
+                ("machine_id", "INTEGER", true),
+                ("warmup_run_id", "INTEGER", true),
+                ("driver_cache_snapshot_id", "INTEGER", true),
+                ("reason", "TEXT", true),
+                ("detail", "TEXT", true),
+                ("detected_at", "TEXT", true),
             ],
         );
     }
