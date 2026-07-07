@@ -357,8 +357,6 @@ export const clearDriverCache = (machineId: number) =>
 export const probeDriverCache = (machineId: number) =>
   call<DriverCacheSnapshot>("probe_driver_cache", { machineId });
 // 📝 no-ui: 等 Claude Design handoff（配置合规卡「一键修复」；写 4 个 PSO CVar 到 ConsoleVariables.ini）
-export const fixPsoCvars = (projectId: number, machineId: number) =>
-  call<string[]>("fix_pso_cvars", { projectId, machineId });
 
 /* ----------------------------- health check ----------------------------- */
 // ✅ wired: Overview「立即巡检」refreshScan → runHealthCheck（后端改 async 不冻 UI）+ 诊断面板真实数据

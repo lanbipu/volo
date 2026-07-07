@@ -12,7 +12,7 @@ import "../ds";
 import "./cache";
 import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createShare,
   generateDdcPak, getProjectThumbnail,
-  startPsoWarmup, listPsoWarmupRuns, fixPsoCvars, verifyPsoPrecaching,
+  startPsoWarmup, listPsoWarmupRuns,
   setMachineEnvVar, getMachineEnvVar, createLocalCache,
   prepareManagedShareClients, unprepareManagedShareClients,
   prepareOpenShareClients, unprepareOpenShareClients,
@@ -646,15 +646,6 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
   }
 
   /* =================== PSO 缓存 — detail (inspector) · 扫描 / 预热验证 / 运行历史 / 配置合规 =================== */
-  /* 合规卡规则展示元数据（真实规则语义：R008–R010 运行时预缓存 / R024 缓存加载；
-     文件落点 DefaultEngine.ini [ConsoleVariables]，与后端 fix_pso_cvars / 巡检规则一致）。 */
-  const PSO_RULES = [
-    { id: 'R008', cvar: 'r.PSOPrecaching', expect: '1', label: '启用运行时 PSO 预缓存' },
-    { id: 'R009', cvar: 'r.PSOPrecache.Mode', expect: '0', label: 'Full PSO 预缓存模式' },
-    { id: 'R010', cvar: 'r.PSOPrecache.GlobalShaders', expect: '1', label: '预缓存全局 shader' },
-    { id: 'R024', cvar: 'r.ShaderPipelineCache.Enabled', expect: '1', label: '启用 PSO 缓存加载' },
-  ];
-  const PSO_RULE_IDS = PSO_RULES.map((r) => r.id);
 
   function PsoDetail({ s }) {
     const [scope, setScope] = useState('all');
@@ -662,14 +653,11 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
     const [targets, setTargets] = useState(null); /* null = 默认全选在线 render 机（机器列表异步加载，不能在挂载时定死） */
     const [res, setRes] = useState('1920×1080');
     const [max, setMax] = useState('20');
-    const [cvarOpen, setCvarOpen] = useState(false);
-    const [cvar, setCvar] = useState(null);       /* null=未校验 | { findings:[], at } */
-    const [cvarBusy, setCvarBusy] = useState(false);
     const projId = s.psoSel;
     psoSelLive = projId; /* 长任务回填读活值（见 loadWarmupRuns 上方注释） */
     const p = UE_PROJECTS.find((x) => x.id === projId) || null;
-    /* 切工程：重载运行记录 + 清空合规结果（合规按工程 INI 扫）。 */
-    useEffect(() => { loadWarmupRuns(s, projId); setCvar(null); /* eslint-disable-line */ }, [projId]);
+    /* 切工程：重载运行记录。 */
+    useEffect(() => { loadWarmupRuns(s, projId); /* eslint-disable-line */ }, [projId]);
 
     const online = RENDER_NODES.filter((n) => n.roleKey === 'render' && n.status !== 'offline');
     /* 有效选择 = 用户点过就用点过的（剪掉已离线的），没点过默认全选在线 render 机。 */
@@ -697,6 +685,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       const failed = r.status === 'err';
       const canceled = r.status === 'cancelled';
       const running = r.status === 'running';
+      const notReady = r.status === 'not_ready';
       /* 绿灯依据 = 验证段 hitch；旧单段行回落预跑段计数 */
       const hitches = r.verify_hitch_count != null ? r.verify_hitch_count : r.hitch_count;
       return h('div', { key: r.id, className: 'hist-run' },
@@ -705,59 +694,11 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
         h('span', { className: 'du' }, running ? '进行中' : fmtDur(r.duration_secs)),
         h('span', { className: 'hh' + ((failed || canceled || running || hitches == null) ? ' dim' : hitches > 0 ? ' warn' : '') },
           hitches == null ? 'hitch —' : ('hitch ' + hitches)),
-        h('span', { className: 'hist-state s-' + (failed ? 'negative' : canceled ? 'neutral' : running ? 'informative' : 'positive'), title: r.error_message || undefined },
-          running ? h('span', { className: 'spin', style: { display: 'flex' } }, h(Icon, { name: 'sync', size: 11 })) : h(Icon, { name: failed ? 'x' : canceled ? 'minus' : 'check', size: 11 }),
-          failed ? '失败' : canceled ? '已取消' : running ? '验证中' : '成功'));
+        h('span', { className: 'hist-state s-' + (failed ? 'negative' : canceled ? 'neutral' : running ? 'informative' : notReady ? 'notice' : 'positive'), title: r.error_message || undefined },
+          running ? h('span', { className: 'spin', style: { display: 'flex' } }, h(Icon, { name: 'sync', size: 11 })) : h(Icon, { name: failed ? 'x' : canceled ? 'minus' : notReady ? 'alert' : 'check', size: 11 }),
+          failed ? '失败' : canceled ? '已取消' : running ? '验证中' : notReady ? '未达标' : '成功'));
     };
 
-    /* ---- 配置合规（verify_pso_precaching → R008/R009/R010/R024 findings）---- */
-    const findings = cvar ? cvar.findings : null;
-    const openFindings = (rid) => (findings || []).filter((f) => f.rule_id === rid && !f.fixed_at && !f.skipped_at);
-    const issues = findings == null ? null : PSO_RULE_IDS.reduce((a, rid) => a + openFindings(rid).length, 0);
-    const hostOfMid = (mid) => { const n = RENDER_NODES.find((x) => x.machineId === mid); return n ? n.host : ('机器 ' + mid); };
-    const cvarMachines = () => (p ? RENDER_NODES.filter((n) => (p.machines || []).includes(n.id) && n.status !== 'offline') : []);
-    const recheckCvars = () => {
-      const ms = cvarMachines();
-      if (!p || !ms.length || cvarBusy) return;
-      setCvarBusy(true);
-      s.runCmd({ domain: 'pso', action: 'verify', target: p.name, chan: 'ssh', note: '校验 PSO CVar 合规（R008–R010 / R024）' },
-        () => verifyPsoPrecaching({ machine_ids: ms.map((n) => n.machineId), credential_alias: '', project_paths: [p.root], user_profile_path: null }),
-        { okMsg: (r) => {
-            const open = (r.findings || []).filter((f) => PSO_RULE_IDS.includes(f.rule_id) && !f.fixed_at && !f.skipped_at);
-            return open.length ? (open.length + ' 项 PSO CVar 不合规') : 'PSO CVar 全部合规';
-          } })
-        .then(
-          (r) => { setCvar({ findings: (r.findings || []).filter((f) => PSO_RULE_IDS.includes(f.rule_id)), at: Date.now() }); setCvarBusy(false); },
-          () => setCvarBusy(false));
-    };
-    const fixCvars = () => {
-      if (!p || !issues || cvarBusy) return;
-      const mids = Array.from(new Set(PSO_RULE_IDS.flatMap((rid) => openFindings(rid).map((f) => f.machine_id))));
-      if (!mids.length) return;
-      setCvarBusy(true);
-      s.runCmd({ domain: 'pso', action: 'fix-cvars', target: mids.length + ' 台机器', chan: 'ssh',
-        note: '一键修复 PSO CVar（写 DefaultEngine.ini [ConsoleVariables]，写后重新校验）' },
-        () => Promise.allSettled(mids.map((mid) => fixPsoCvars(Number(p.id), mid))).then((rs) => {
-          const failed = rs.filter((r) => r.status === 'rejected').length;
-          if (failed === rs.length) throw new Error('全部机器修复失败');
-          return { fixed: rs.length - failed, failed };
-        }),
-        { okMsg: (r) => '已写入 ' + r.fixed + ' 台' + (r.failed ? ('（' + r.failed + ' 台失败）') : '') })
-        .then(() => { setCvarBusy(false); recheckCvars(); }, () => setCvarBusy(false));
-    };
-    const cvarRule = (r) => {
-      const bad = openFindings(r.id);
-      return h('div', { key: r.id, className: 'cvar-rule' },
-        h('span', { className: 'rid' }, r.id),
-        h('div', { className: 'cvar-main' },
-          h('div', { className: 'cv mono' }, r.cvar + '=' + r.expect),
-          h('div', { className: 'cvar-lb' }, r.label + (bad.length
-            ? (' · ' + bad.map((f) => hostOfMid(f.machine_id) + '（当前 ' + (f.snippet_before || '未设置') + '）').join('、'))
-            : ''))),
-        h('span', { className: 'spill spill--' + (findings == null ? 'neutral' : bad.length ? 'notice' : 'positive'), style: { flex: '0 0 auto' } },
-          findings == null ? h('span', { style: { fontWeight: 700 } }, '—') : h(Icon, { name: bad.length ? 'alert' : 'check', size: 12 }),
-          findings == null ? '未校验' : bad.length ? (bad.length + ' 台不合规') : '合规'));
-    };
 
     return h('div', { className: 'insp-detail' },
       h('div', { className: 'insp-head' },
@@ -812,25 +753,11 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
                   h('span', { className: 'ct' }, g.list.length + ' 次')),
                 h('div', { className: 'hist-runs' }, g.list.map(histRun)))))) : null,
 
-        /* 配置合规 —— 低视觉权重折叠卡，固定在检查器底部 */
-        p ? h('div', { className: 'cvar-card' + (cvarOpen ? ' open' : '') },
-          h('button', { className: 'cvar-h', onClick: () => setCvarOpen((v) => !v) },
-            h(Icon, { name: 'chevr', size: 12, style: { transform: cvarOpen ? 'rotate(90deg)' : 'none', transition: 'transform .13s' } }),
-            h('span', { className: 't' }, '配置合规 · CVar 巡检（R008–R010 / R024）'),
-            cvarBusy
-              ? h('span', { className: 'cvar-ct dim' }, h('span', { className: 'spin', style: { display: 'flex' } }, h(Icon, { name: 'sync', size: 10 })), '校验中')
-              : issues == null
-                ? h('span', { className: 'cvar-ct dim' }, '未校验')
-                : issues
-                  ? h('span', { className: 'cvar-ct warn' }, h(Icon, { name: 'alert', size: 10 }), issues + ' 项不合规')
-                  : h('span', { className: 'cvar-ct ok' }, h(Icon, { name: 'check', size: 10 }), '全部合规')),
-          cvarOpen ? h('div', { className: 'cvar-b' },
-            PSO_RULES.map(cvarRule),
-            h('div', { className: 'cvar-acts' },
-              h('button', { className: 'mini-btn', disabled: cvarBusy, onClick: recheckCvars }, h(Icon, { name: 'sync', size: 12 }), findings == null ? '立即校验' : '重新校验'),
-              h('button', { className: 'mini-btn accent', disabled: !issues || cvarBusy, onClick: fixCvars }, h(Icon, { name: 'bolt', size: 12 }), '一键修复'))) : null,
-          h('div', { className: 'cvar-note' }, h(Icon, { name: 'info', size: 12 }),
-            h('span', null, '仅打包模式下生效；当前 Editor 运行方式的防卡顿依赖 DDC 预热与本机预热验证。'))) : null));
+        /* 官方 CVar 合规面板已移除（R008-R010 断言删除、fix_pso_cvars 下线）——
+           官方 PSO Precaching 在未 cook -game 生产形态下被 WITH_EDITOR 编译期禁用，
+           断言这些 CVar 没有意义；防卡顿依赖预跑 + 验证跑（上方就绪矩阵）。 */
+        p ? h('div', { className: 'cvar-note' }, h(Icon, { name: 'info', size: 12 }),
+          h('span', null, '官方 PSO 预缓存 CVar 在当前生产形态（未打包 -game 直启）下不生效，无需配置；上场防卡顿以预跑 + 验证跑的绿灯为准。')) : null));
   }
 
   /* =================== 文件系统 DDC（本地 + 共享）— 双列视图，接真实后端 ===================

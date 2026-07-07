@@ -119,23 +119,10 @@ pub fn run_rules(file: &ParsedFile, env: &EnvVarState) -> Vec<Finding> {
     out.extend(rule_r005(file));
     out.extend(rule_r006(file, env));
     out.extend(rule_r007(file, env));
-    out.extend(pso_cvar_rule(
-        file,
-        "R008",
-        "r.PSOPrecaching",
-        Severity::Critical,
-        "着色器（PSO）预缓存被关闭或没配置。",
-        "要先打开运行时 PSO 预缓存，之后收集和分发的 PSO 缓存文件才有意义。",
-    ));
-    out.extend(rule_r009_pso_precache_mode(file));
-    out.extend(pso_cvar_rule(
-        file,
-        "R010",
-        "r.PSOPrecache.GlobalShaders",
-        Severity::Warning,
-        "全局着色器 PSO 预缓存被关闭或没配置。",
-        "打开全局着色器预缓存，有助于集群内各机器运行时 PSO 行为一致。",
-    ));
+    // R008/R009/R010（官方 PSO Precaching CVar 健康断言）已删除：源码核实
+    // `IsPSOPrecachingEnabled()` 在编辑器二进制下被 `WITH_EDITOR` 编译期禁用，
+    // 生产形态（未 cook -game）这些 CVar 全部无效，断言健康与否没有意义；
+    // 防卡顿唯一有效机制 = 预跑填充 GPU 驱动缓存（见 docs/cache/pso-p0-report.md）。
     // 引擎出厂 BaseEngine.ini 是只读基线：它的 [DerivedDataBackendGraph] Shared 节点是 Epic 工厂默认
     // （`Path=?EpicDDC`、`DeleteUnused` 等），不是团队可操作的共享 DDC 策略，Volo 也从不改它。整族
     // 「Shared 节点策略 + 留存提醒」规则（R011–R023 / R027 / R028）只在工程 / 用户层评估，否则每台装了
@@ -149,9 +136,7 @@ pub fn run_rules(file: &ParsedFile, env: &EnvVarState) -> Vec<Finding> {
         out.extend(rule_r027(file));
         out.extend(rule_r028(file));
     }
-    out.extend(pso_cvar_rule(file, "R024", "r.ShaderPipelineCache.Enabled", Severity::Critical,
-        "PSO 缓存文件的加载被关闭或没配置。",
-        "没有这个控制台变量，收集来的 PSO 缓存文件在运行时不会被加载。"));
+    out.extend(rule_r024_shader_pipeline_cache_info(file));
     out.extend(rule_r025(file, env));
     out
 }
@@ -325,72 +310,13 @@ fn rule_r007(file: &ParsedFile, env: &EnvVarState) -> Vec<Finding> {
     }]
 }
 
-fn pso_cvar_rule(
-    file: &ParsedFile,
-    rule_id: &str,
-    key_name: &str,
-    severity: Severity,
-    symptom: &str,
-    rationale: &str,
-) -> Vec<Finding> {
-    // UE 5.8 源码核实（ConfigCacheIni.cpp::LoadConsoleVariablesFromINI）：
-    // 工程级 [ConsoleVariables] 段只在 GEngineIni 层级（DefaultEngine.ini）生效；
-    // 工程目录下的 ConsoleVariables.ini 引擎根本不读。规则据此扫 DefaultEngine.ini。
-    if !file
-        .path
-        .to_ascii_lowercase()
-        .ends_with("defaultengine.ini")
-    {
-        return vec![];
-    }
-
-    let Some(section) = file
-        .sections
-        .iter()
-        .find(|section| section.name.eq_ignore_ascii_case("ConsoleVariables"))
-    else {
-        return vec![pso_missing_finding(
-            file, rule_id, key_name, severity, symptom, rationale, None,
-        )];
-    };
-
-    match key(section, key_name) {
-        Some(entry) if entry.value.trim() == "1" => vec![],
-        Some(entry) => vec![Finding {
-            rule_id: rule_id.into(),
-            severity,
-            category: file.category,
-            file_path: file.path.clone(),
-            section: Some(section.name.clone()),
-            key_name: Some(entry.name.clone()),
-            line_number: Some(entry.line_number as i64),
-            snippet_before: format!("{}={}", entry.name, entry.value),
-            snippet_after: Some(format!("{}=1", key_name)),
-            recommended_action: RecommendedAction::Set,
-            recommended_value: Some("1".into()),
-            symptom: symptom.into(),
-            rationale: rationale.into(),
-        }],
-        None => vec![pso_missing_finding(
-            file,
-            rule_id,
-            key_name,
-            severity,
-            symptom,
-            rationale,
-            Some(section.name.clone()),
-        )],
-    }
-}
-
-/// R009: `r.PSOPrecache.Mode`(整数枚举，非 `pso_cvar_rule` 的 "==1 才健康" 通用判定能覆盖)。
-/// 依据 UE 5.8 引擎源码核实：`EPSOPrecacheMode{PSO=0, PreloadShader=1}`
-/// (`PSOPrecache.h:221-224`)，默认值 0 = Full PSO(`PSOPrecache.cpp:110-117`)。
-/// 未设置时引擎按 0 处理，不应报警；只有显式设为 1（仅预载 shader，PSO 未完整编译）才报 Warning；
-/// 其它整数值运行时同样按 0 处理（`GetPSOPrecacheMode()` 的 switch 落到 default），
-/// 归为健康但用 Info 级别记录下来，方便未来发现新的官方取值语义时能第一时间注意到。
-fn rule_r009_pso_precache_mode(file: &ParsedFile) -> Vec<Finding> {
-    // 同 pso_cvar_rule：生效文件是 DefaultEngine.ini 的 [ConsoleVariables] 段。
+/// R024（信息级）：`r.ShaderPipelineCache.Enabled` 只对 cook 后的包生效——
+/// 本仓生产形态（未 cook `-game`）根本不会加载任何 `.upipelinecache`，健康断言
+/// 没有意义。规则降级为：仅当有人**显式配置了**该 CVar 时给一条 Info 说明
+/// （让配置者知道它在当前形态下不起作用）；未配置 = 常态，保持沉默。
+/// 生效文件同旧判定：DefaultEngine.ini 的 [ConsoleVariables] 段
+/// （ConfigCacheIni.cpp::LoadConsoleVariablesFromINI，工程 ConsoleVariables.ini 引擎不读）。
+fn rule_r024_shader_pipeline_cache_info(file: &ParsedFile) -> Vec<Finding> {
     if !file
         .path
         .to_ascii_lowercase()
@@ -405,74 +331,24 @@ fn rule_r009_pso_precache_mode(file: &ParsedFile) -> Vec<Finding> {
     else {
         return vec![];
     };
-    let Some(entry) = key(section, "r.PSOPrecache.Mode") else {
+    let Some(entry) = key(section, "r.ShaderPipelineCache.Enabled") else {
         return vec![];
     };
-    match entry.value.trim().parse::<i64>() {
-        Ok(0) => vec![],
-        Ok(1) => vec![Finding {
-            rule_id: "R009".into(),
-            severity: Severity::Warning,
-            category: file.category,
-            file_path: file.path.clone(),
-            section: Some(section.name.clone()),
-            key_name: Some(entry.name.clone()),
-            line_number: Some(entry.line_number as i64),
-            snippet_before: format!("{}={}", entry.name, entry.value),
-            snippet_after: Some("r.PSOPrecache.Mode=0".into()),
-            recommended_action: RecommendedAction::Set,
-            recommended_value: Some("0".into()),
-            symptom: "PSO 预缓存被设成仅预载 shader（Preload shaders 模式），未完整编译 PSO。".into(),
-            rationale: "r.PSOPrecache.Mode=1 时引擎只做 shader 预载，不做完整 PSO 编译；设为 0（Full PSO，默认）才会真正预编译 PSO，减少运行时首次创建卡顿。".into(),
-        }],
-        parsed => {
-            let display = match parsed {
-                Ok(n) => n.to_string(),
-                Err(_) => entry.value.trim().to_string(),
-            };
-            vec![Finding {
-                rule_id: "R009".into(),
-                severity: Severity::Info,
-                category: file.category,
-                file_path: file.path.clone(),
-                section: Some(section.name.clone()),
-                key_name: Some(entry.name.clone()),
-                line_number: Some(entry.line_number as i64),
-                snippet_before: format!("{}={}", entry.name, entry.value),
-                snippet_after: None,
-                recommended_action: RecommendedAction::Manual,
-                recommended_value: None,
-                symptom: format!("r.PSOPrecache.Mode 被设成了非标准值 {}（UE 5.8 只文档化 0/1）。", display),
-                rationale: "运行时行为等同于 0（Full PSO）——GetPSOPrecacheMode() 对非 1 的值一律落到 default 分支。仅作记录，避免以后出现新官方取值时被忽略。".into(),
-            }]
-        }
-    }
-}
-
-fn pso_missing_finding(
-    file: &ParsedFile,
-    rule_id: &str,
-    key_name: &str,
-    severity: Severity,
-    symptom: &str,
-    rationale: &str,
-    section: Option<String>,
-) -> Finding {
-    Finding {
-        rule_id: rule_id.into(),
-        severity,
+    vec![Finding {
+        rule_id: "R024".into(),
+        severity: Severity::Info,
         category: file.category,
         file_path: file.path.clone(),
-        section: section.or_else(|| Some("ConsoleVariables".into())),
-        key_name: Some(key_name.into()),
-        line_number: None,
-        snippet_before: "（未设置）".into(),
-        snippet_after: Some(format!("{}=1", key_name)),
-        recommended_action: RecommendedAction::Set,
-        recommended_value: Some("1".into()),
-        symptom: symptom.into(),
-        rationale: rationale.into(),
-    }
+        section: Some(section.name.clone()),
+        key_name: Some(entry.name.clone()),
+        line_number: Some(entry.line_number as i64),
+        snippet_before: format!("{}={}", entry.name, entry.value),
+        snippet_after: None,
+        recommended_action: RecommendedAction::Manual,
+        recommended_value: None,
+        symptom: "配置了 r.ShaderPipelineCache.Enabled，但它在当前生产形态下不起作用。".into(),
+        rationale: "捆绑 PSO 缓存文件（.upipelinecache）仅在 cook 后的打包版本里被加载；本团队生产形态是未 cook 的 -game 直启，该 CVar 无效。防卡顿依赖预跑填充 GPU 驱动缓存 + 验证跑（见 PSO 就绪板块）。".into(),
+    }]
 }
 
 // ── BackendGraph helpers ─────────────────────────────────────────────────────
@@ -909,72 +785,13 @@ mod tests {
     }
 
     #[test]
-    fn r008_reports_critical_when_pso_precaching_is_missing() {
+    fn official_precaching_rules_are_gone() {
+        // R008/R009/R010 已删除：官方 PSO Precaching 在未 cook -game 下被
+        // WITH_EDITOR 编译期禁用，这些 CVar 无效，健康断言没有意义。
         let file = console_variables(&[
-            ("r.PSOPrecache.Mode", "0"),
-            ("r.PSOPrecache.GlobalShaders", "1"),
-        ]);
-        let findings = run_rules(&file, &EnvVarState::default());
-        assert!(findings
-            .iter()
-            .any(|f| f.rule_id == "R008" && f.severity == Severity::Critical));
-    }
-
-    #[test]
-    fn r009_reports_warning_when_mode_is_preload_shaders_only() {
-        let file = console_variables(&[
-            ("r.PSOPrecaching", "1"),
+            ("r.PSOPrecaching", "0"),
             ("r.PSOPrecache.Mode", "1"),
-            ("r.PSOPrecache.GlobalShaders", "1"),
-        ]);
-        let findings = run_rules(&file, &EnvVarState::default());
-        assert!(findings
-            .iter()
-            .any(|f| f.rule_id == "R009" && f.severity == Severity::Warning));
-    }
-
-    #[test]
-    fn r009_silent_when_mode_missing_or_full_pso() {
-        // 未设置 = 引擎默认 0（Full PSO），不应报警。
-        let missing = console_variables(&[("r.PSOPrecaching", "1")]);
-        assert_silent("R009", &missing);
-        // 显式设为 0 同样健康。
-        let explicit_zero = console_variables(&[("r.PSOPrecaching", "1"), ("r.PSOPrecache.Mode", "0")]);
-        assert_silent("R009", &explicit_zero);
-    }
-
-    #[test]
-    fn r009_info_when_mode_is_unrecognized_value() {
-        // 非 0/1 的值：UE 源码里 GetPSOPrecacheMode() 的 switch 对非 1 值一律落到
-        // default（等同 0/Full PSO），所以不算 Critical/Warning，但要留痕记录。
-        let file = console_variables(&[("r.PSOPrecaching", "1"), ("r.PSOPrecache.Mode", "2")]);
-        let findings = run_rules(&file, &EnvVarState::default());
-        assert!(findings
-            .iter()
-            .any(|f| f.rule_id == "R009" && f.severity == Severity::Info));
-        assert!(!findings
-            .iter()
-            .any(|f| f.rule_id == "R009" && matches!(f.severity, Severity::Critical | Severity::Warning)));
-    }
-
-    #[test]
-    fn r010_reports_warning_when_global_shader_pso_is_missing() {
-        let file = console_variables(&[
-            ("r.PSOPrecaching", "1"),
-            ("r.PSOPrecache.Mode", "0"),
-        ]);
-        let findings = run_rules(&file, &EnvVarState::default());
-        assert!(findings
-            .iter()
-            .any(|f| f.rule_id == "R010" && f.recommended_value.as_deref() == Some("1")));
-    }
-
-    #[test]
-    fn pso_rules_are_clean_when_all_required_cvars_are_enabled() {
-        let file = console_variables(&[
-            ("r.PSOPrecaching", "1"),
-            ("r.PSOPrecache.Mode", "0"),
-            ("r.PSOPrecache.GlobalShaders", "1"),
+            ("r.PSOPrecache.GlobalShaders", "0"),
         ]);
         let findings = run_rules(&file, &EnvVarState::default());
         assert!(!findings
@@ -982,46 +799,42 @@ mod tests {
             .any(|f| matches!(f.rule_id.as_str(), "R008" | "R009" | "R010")));
     }
 
-    // ── R024: ShaderPipelineCache.Enabled ────────────────────────────────────
+    // ── R024: ShaderPipelineCache.Enabled（信息级，仅显式配置时说明其无效）──
 
     #[test]
-    fn r024_fires_when_shader_pipeline_cache_missing() {
+    fn r024_silent_when_shader_pipeline_cache_not_configured() {
+        // 未配置 = 常态：捆绑缓存本来就不参与生产形态，不该有任何输出。
         let f = console_variables(&[]);
-        assert_fires("R024", &f);
-    }
-
-    #[test]
-    fn r024_fires_when_shader_pipeline_cache_disabled() {
-        let f = console_variables(&[("r.ShaderPipelineCache.Enabled", "0")]);
-        assert_fires("R024", &f);
-    }
-
-    #[test]
-    fn r024_silent_when_shader_pipeline_cache_enabled() {
-        let f = console_variables(&[("r.ShaderPipelineCache.Enabled", "1")]);
         assert_silent("R024", &f);
+        let no_section = ParsedFile {
+            path: r"C:\Project\Config\DefaultEngine.ini".into(),
+            category: Category::Project,
+            sections: vec![],
+        };
+        assert_silent("R024", &no_section);
+    }
+
+    #[test]
+    fn r024_info_when_shader_pipeline_cache_explicitly_configured() {
+        for value in ["0", "1"] {
+            let f = console_variables(&[("r.ShaderPipelineCache.Enabled", value)]);
+            let findings = run_rules(&f, &EnvVarState::default());
+            let hit = findings.iter().find(|x| x.rule_id == "R024").unwrap();
+            assert_eq!(hit.severity, Severity::Info);
+            assert_eq!(hit.recommended_action, RecommendedAction::Manual);
+            assert!(hit.recommended_value.is_none());
+        }
     }
 
     #[test]
     fn r024_silent_for_project_consolevariables_file() {
-        // 引擎不读工程目录的 ConsoleVariables.ini（源码核实），PSO CVar 规则
-        // 对它必须沉默——生效文件是 DefaultEngine.ini。
+        // 引擎不读工程目录的 ConsoleVariables.ini（源码核实），规则只看 DefaultEngine.ini。
         let f = ParsedFile {
             path: r"C:\Project\Config\ConsoleVariables.ini".into(),
             category: Category::Project,
             sections: vec![],
         };
         assert_silent("R024", &f);
-    }
-
-    #[test]
-    fn r024_reports_missing_on_defaultengine_without_section() {
-        let f = ParsedFile {
-            path: r"C:\Project\Config\DefaultEngine.ini".into(),
-            category: Category::Project,
-            sections: vec![],
-        };
-        assert_fires("R024", &f);
     }
 
     // ── BackendGraph rule helpers ─────────────────────────────────────────────

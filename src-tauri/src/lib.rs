@@ -272,7 +272,6 @@ pub fn run() {
             commands::pso::list_pso_status,
             commands::pso::clear_driver_cache,
             commands::pso::probe_driver_cache,
-            commands::pso::fix_pso_cvars,
             commands::gpu_consistency::get_gpu_consistency_matrix,
             commands::ini_scanner::verify_pso_precaching,
             commands::system::test_powershell_bridge,

@@ -175,6 +175,20 @@ pub fn is_hitch_line(line: &str) -> bool {
     line.contains("LogPSOHitching: ") && line.contains("PSO creation hitch")
 }
 
+/// Preflight for the "nDisplay config 已配置且存在" rule: the path lives on the
+/// render node, so existence can only be checked over SSH. UE does not fail
+/// fast on a missing `-dc_cfg` — the run would silently degrade to a
+/// non-cluster shape and warm the wrong PSO set.
+pub fn check_dc_cfg_exists(host: &str, dc_cfg_path: &str) -> VoloResult<bool> {
+    let exec = crate::core::ssh::SshExecutor::from_config()?;
+    let ps = format!(
+        "if (Test-Path -LiteralPath '{}' -PathType Leaf) {{ 'DC_CFG_EXISTS' }} else {{ 'DC_CFG_MISSING' }}",
+        dc_cfg_path.replace('\'', "''")
+    );
+    let out = exec.run_inline_powershell(host, &ps)?;
+    Ok(out.stdout.contains("DC_CFG_EXISTS"))
+}
+
 pub fn launch_warmup(
     backend: UeRunnerBackend,
     host: &str,

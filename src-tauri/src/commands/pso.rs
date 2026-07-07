@@ -2,7 +2,7 @@
 
 use crate::commands::ddc_pak::UeJobRegistry;
 use cache_core::core::{
-    batch, driver_cache_clear, driver_cache_probe, ini_editor, pso_coldtest,
+    batch, driver_cache_clear, driver_cache_probe, pso_coldtest,
     pso_collect::{self, PsoCollectSpec},
     pso_distribute::{self, PsoDistributePlanItem},
     pso_status::{self, PsoStatusCell},
@@ -649,6 +649,30 @@ pub struct PsoColdtestJobResponse {
     pub runs: Vec<PsoColdtestLaunched>,
 }
 
+/// dc_cfg 存在性预检（巡检规则「nDisplay config 已配置且存在」的执行点）：
+/// UE 对缺失的 -dc_cfg 不会 fail fast，预跑会静默跑成非集群形态、暖错 PSO 集，
+/// 因此任何节点缺文件都整单拒绝（与 target 校验同一 fail-fast 语义）。
+async fn preflight_dc_cfg(checks: Vec<(i64, String)>, dc_cfg_path: String) -> VoloResult<()> {
+    let missing = tokio::task::spawn_blocking(move || -> VoloResult<Vec<i64>> {
+        let mut missing = Vec::new();
+        for (machine_id, ip) in checks {
+            if !pso_warmup::check_dc_cfg_exists(&ip, &dc_cfg_path)? {
+                missing.push(machine_id);
+            }
+        }
+        Ok(missing)
+    })
+    .await
+    .map_err(|err| VoloError::OperationFailed(format!("dc_cfg preflight join: {err}")))??;
+    if !missing.is_empty() {
+        return Err(VoloError::InvalidInput(format!(
+            "nDisplay config (dc_cfg_path) not found on machine(s) {:?} — export it from Switchboard or fix the path",
+            missing
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Serialize)]
 struct WarmupProgressPayload<'a> {
     job_id: &'a str,
@@ -820,6 +844,14 @@ pub async fn start_pso_warmup(
     for spec in &specs {
         pso_warmup::validate_warmup_spec(spec)?;
     }
+    preflight_dc_cfg(
+        targets
+            .iter()
+            .map(|t| (t.machine_id, t.ip.clone()))
+            .collect(),
+        dc_cfg_path.clone().unwrap_or_default(),
+    )
+    .await?;
 
     // Persist ALL run rows before launching anything: a mid-loop DB failure
     // must never leave already-launched nodes running untracked.
@@ -1075,6 +1107,14 @@ pub async fn start_pso_coldtest(
     for spec in &specs {
         pso_warmup::validate_warmup_spec(spec)?;
     }
+    preflight_dc_cfg(
+        targets
+            .iter()
+            .map(|t| (t.machine_id, t.ip.clone()))
+            .collect(),
+        dc_cfg_path.clone().unwrap_or_default(),
+    )
+    .await?;
 
     let mut run_ids = Vec::with_capacity(targets.len());
     for (target, spec) in targets.iter().zip(&specs) {
@@ -1446,53 +1486,6 @@ fn driver_cache_dir_to_data(
         total_bytes: dir.total_bytes,
         newest_mtime: dir.newest_mtime.clone(),
     }
-}
-
-/// PSO precache CVars applied by "one-click fix" (same set as the deploy
-/// workflow's SetPsoCvars step; R009 healthy value is Mode=0 / Full PSO).
-const PSO_FIX_CVARS: [(&str, &str); 4] = [
-    ("r.ShaderPipelineCache.Enabled", "1"),
-    ("r.PSOPrecaching", "1"),
-    ("r.PSOPrecache.GlobalShaders", "1"),
-    ("r.PSOPrecache.Mode", "0"),
-];
-
-#[tauri::command]
-pub async fn fix_pso_cvars(
-    db: State<'_, Db>,
-    project_id: i64,
-    machine_id: i64,
-) -> VoloResult<Vec<String>> {
-    let machine = data_machines::find_by_id(&db, machine_id)?
-        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?;
-    let location = project_locations::get_for_project_machine(&db, project_id, machine_id)?
-        .ok_or_else(|| {
-            VoloError::InvalidInput(format!(
-                "project {} not located on machine {}",
-                project_id, machine_id
-            ))
-        })?;
-    // UE 5.8 source-verified (ConfigCacheIni.cpp::LoadConsoleVariablesFromINI):
-    // the project-level file the engine actually loads CVars from is the
-    // [ConsoleVariables] section of the GEngineIni hierarchy — i.e.
-    // <Project>\Config\DefaultEngine.ini. A project ConsoleVariables.ini is
-    // never read (only Engine/Config/ConsoleVariables.ini [Startup] is).
-    let ini = format!(
-        "{}\\Config\\DefaultEngine.ini",
-        location.abs_path.trim_end_matches('\\')
-    );
-    // set_key_create is blocking SSH — keep it off the async runtime thread.
-    let host = machine.ip;
-    tokio::task::spawn_blocking(move || {
-        let mut applied = Vec::with_capacity(PSO_FIX_CVARS.len());
-        for (key, value) in PSO_FIX_CVARS {
-            ini_editor::set_key_create(&host, &ini, "ConsoleVariables", key, value)?;
-            applied.push(format!("{}={}", key, value));
-        }
-        Ok(applied)
-    })
-    .await
-    .map_err(|err| VoloError::OperationFailed(format!("fix_pso_cvars task join: {err}")))?
 }
 
 fn upsert_distribution(
