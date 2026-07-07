@@ -144,8 +144,8 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
     : ueProgressReduce(p, false);
   /* pso warmup（fan-out）：kickoff 返回 {job_id(父), runs:[{machine_id,run_id,job_id}]}；
      事件 pso-warmup-progress 是各机 UeRunnerEvent 信封（带 machine_id / parent_job_id），
-     真终态是每机一条 pso-warmup-finalized{status:'ok'|'cancelled'|'err', hitch_count}——
-     数到 st.total 台终态即收尾；任一 err → 整体失败；无 err 但有 cancelled → 整体 canceled。
+     真终态是每机一条 pso-warmup-finalized{status:'ok'|'not_ready'|'cancelled'|'err', hitch_count(预跑段), verify_hitch_count(验证段=绿灯依据)}——
+     数到 st.total 台终态即收尾；任一 err → 整体失败；not_ready = 跑完但验证未达标（整体不算 ok）；无 err 但有 cancelled → 整体 canceled。
      log_line 只转发有 parsed_kind 的行（N 台机全量 UE 日志会淹没控制台流）。 */
   const warmupReduce = (hostOf, onNodeDone) => (ev, p, st) => {
     st.done = st.done || new Set();
@@ -154,19 +154,22 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       st.done.add(p.machine_id);
       if (p.status === 'err') st.anyErr = true;
       if (p.status === 'cancelled') st.anyCancel = true;
+      if (p.status === 'not_ready') st.anyNotReady = true;
       if (onNodeDone) { try { onNodeDone(); } catch (e) {} } /* 每台落定即刷新就绪矩阵 */
       const done = st.total != null && st.done.size >= st.total;
       return {
         pct: st.total ? (st.done.size / st.total * 100) : null,
         done,
-        ok: done ? (!st.anyErr && !st.anyCancel) : undefined,
-        canceled: done && !st.anyErr && !!st.anyCancel,
+        ok: done ? (!st.anyErr && !st.anyCancel && !st.anyNotReady) : undefined,
+        canceled: done && !st.anyErr && !st.anyNotReady && !!st.anyCancel,
         exit: done && st.anyErr ? 2 : 0,
         log: p.status === 'ok'
-          ? { lv: 'ok', msg: host + ' 预热验证完成 · hitch ' + (p.hitch_count == null ? '—' : p.hitch_count) }
-          : p.status === 'cancelled'
-            ? { lv: 'warn', msg: host + ' 已取消（未验证）' }
-            : { lv: 'err', msg: host + ' 运行失败 · ' + (p.error_message || '') },
+          ? { lv: 'ok', msg: host + ' 预热验证完成 · 预跑吸收 ' + (p.hitch_count == null ? '—' : p.hitch_count) + ' · 验证段 hitch 0' }
+          : p.status === 'not_ready'
+            ? { lv: 'warn', msg: host + ' 验证未达标 · 验证段 hitch ' + (p.verify_hitch_count == null ? '—' : p.verify_hitch_count) + '（可再跑一轮预热）' }
+            : p.status === 'cancelled'
+              ? { lv: 'warn', msg: host + ' 已取消（未验证）' }
+              : { lv: 'err', msg: host + ' 运行失败 · ' + (p.error_message || '') },
       };
     }
     const e = p && p.event ? p.event : {};
@@ -271,8 +274,9 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
     const last = mine.find((r) => r.status !== 'cancelled'); /* list 按 started_at 倒序 */
     if (!last) return { state: 'never' };
     if (last.status === 'err') return { state: 'failed', verified: fmtRunTime(last.started_at), err: last.error_message };
-    const hitches = last.hitch_count == null ? 0 : last.hitch_count;
-    return hitches > 0
+    /* 两段式后绿灯依据 = 验证段 hitch；旧单段行 verify_hitch_count 为 null 时回落 hitch_count。 */
+    const hitches = (last.verify_hitch_count != null ? last.verify_hitch_count : last.hitch_count) || 0;
+    return (last.status === 'not_ready' || hitches > 0)
       ? { state: 'hitch', verified: fmtRunTime(last.started_at), hitches }
       : { state: 'ready', verified: fmtRunTime(last.started_at), hitches: 0 };
   };
@@ -693,7 +697,8 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       const failed = r.status === 'err';
       const canceled = r.status === 'cancelled';
       const running = r.status === 'running';
-      const hitches = r.hitch_count;
+      /* 绿灯依据 = 验证段 hitch；旧单段行回落预跑段计数 */
+      const hitches = r.verify_hitch_count != null ? r.verify_hitch_count : r.hitch_count;
       return h('div', { key: r.id, className: 'hist-run' },
         h('span', { className: 'tm' }, fmtRunTime(r.started_at)),
         h('span', { className: 'rs mono' }, r.resolution_w + '×' + r.resolution_h),

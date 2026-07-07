@@ -503,6 +503,16 @@ const MIGRATIONS: &[(&str, &str)] = &[
             ON pso_invalidation_events(warmup_run_id, detected_at DESC);
         "#,
     ),
+    (
+        // Two-phase warmup: the prerun phase absorbs hitches (hitch_count),
+        // the verify phase re-runs the same spec and its hitch count is the
+        // green-light basis (0 = ok, >0 = not_ready).
+        "031_pso_warmup_runs_verify_phase",
+        r#"
+        ALTER TABLE pso_warmup_runs ADD COLUMN verify_hitch_count INTEGER;
+        ALTER TABLE pso_warmup_runs ADD COLUMN verify_duration_secs INTEGER;
+        "#,
+    ),
 ];
 
 pub fn migrate(conn: &mut Connection) -> VoloResult<()> {

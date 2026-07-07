@@ -153,6 +153,22 @@ fn safe_log_fragment(value: &str) -> String {
         .collect()
 }
 
+/// Default verify-phase window. P0 measured: a warm baseline shows 0 hitches
+/// within 90s; 2 minutes gives comfortable margin without stretching the job.
+pub const DEFAULT_VERIFY_MINUTES: u32 = 2;
+
+/// Green-light judgement for a verify phase that ran to planned completion:
+/// zero hitches = ready, anything else = the run finished but the node is
+/// NOT ready (distinct from a broken run, which stays Err).
+pub fn verify_outcome(verify_hitch_count: i64) -> crate::data::pso_warmup_runs::WarmupStatus {
+    use crate::data::pso_warmup_runs::WarmupStatus;
+    if verify_hitch_count == 0 {
+        WarmupStatus::Ok
+    } else {
+        WarmupStatus::NotReady
+    }
+}
+
 /// A line counts as a hitch only on the LogPSOHitching channel itself —
 /// command-line echoes and the LogHAL verbosity notice must not match.
 pub fn is_hitch_line(line: &str) -> bool {
@@ -245,6 +261,14 @@ mod tests {
             .iter()
             .any(|a| a == "Log=VoloPsoWarmup_p0_m0_Node_0.log"));
         assert!(args.ends_with(&["/Game/Maps/Main".into(), "-Foo=Bar".into()]));
+    }
+
+    #[test]
+    fn verify_outcome_zero_is_green_anything_else_not_ready() {
+        use crate::data::pso_warmup_runs::WarmupStatus;
+        assert_eq!(verify_outcome(0), WarmupStatus::Ok);
+        assert_eq!(verify_outcome(1), WarmupStatus::NotReady);
+        assert_eq!(verify_outcome(119), WarmupStatus::NotReady);
     }
 
     #[test]

@@ -485,8 +485,8 @@ export interface PsoDistributeJobResponse {
 }
 
 /* ------------- pso warm-up & readiness (per-node -game runs) ------------- */
-/** ok = 跑满计划时长或引擎正常退出（唯一可给绿灯的状态）；cancelled = 操作员手动取消（未验证）。 */
-export type WarmupStatus = "running" | "ok" | "err" | "cancelled";
+/** ok = 两段都跑完且验证段 hitch=0（唯一可给绿灯的状态）；not_ready = 跑完但验证段仍有 hitch（未达标，区别于 err=跑挂）；cancelled = 操作员手动取消（未验证）。 */
+export type WarmupStatus = "running" | "ok" | "err" | "cancelled" | "not_ready";
 
 export interface StartPsoWarmupRequest {
   project_id: number;
@@ -503,6 +503,8 @@ export interface StartPsoWarmupRequest {
   offscreen?: boolean;
   /** Additional Unreal command-line args; empty strings are ignored by backend. */
   extra_args?: string[];
+  /** 验证段时长（分钟），默认 2；预跑段跑满 max_minutes 后同参数再跑一段计 hitch。 */
+  verify_minutes?: number;
   /** 钉死各节点用的 UE 版本；省略 = 各节点 primary 安装（与工程版本不符时有风险）。 */
   ue_version?: string | null;
 }
@@ -528,8 +530,11 @@ export interface PsoWarmupRun {
   mode: string;
   dc_node: string | null;
   driver_cache_growth_bytes: number | null;
-  /** null while running; 0 once finished = green light. */
+  /** 预跑段 hitch 数（吸收量，信息性）；null = 仍在跑。 */
   hitch_count: number | null;
+  /** 验证段 hitch 数——绿灯依据（0 = ready）；null = 未跑到验证段。 */
+  verify_hitch_count: number | null;
+  verify_duration_secs: number | null;
   status: WarmupStatus;
   error_message: string | null;
   started_at: string | null;

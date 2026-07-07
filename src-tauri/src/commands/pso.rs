@@ -7,7 +7,7 @@ use cache_core::core::{
     pso_distribute::{self, PsoDistributePlanItem},
     pso_status::{self, PsoStatusCell},
     pso_warmup::{self, PsoWarmupSpec},
-    ue_runner::{UeRunnerBackend, UeRunnerEvent},
+    ue_runner::{RunnerCancel, UeRunnerBackend, UeRunnerEvent},
 };
 use cache_core::data::{
     driver_cache_snapshots, machine_ue_installs, machines as data_machines, project_locations,
@@ -585,6 +585,10 @@ pub struct StartPsoWarmupRequest {
     pub offscreen: bool,
     #[serde(default)]
     pub extra_args: Vec<String>,
+    /// Verify-phase window (minutes). After the prerun window a second run
+    /// with the same spec counts hitches; 0 hitches there = green light.
+    #[serde(default = "default_pso_verify_minutes")]
+    pub verify_minutes: u32,
     /// Pin the UE version used on every node; None = each node's primary
     /// install (risky when a node's primary differs from the project version).
     #[serde(default)]
@@ -593,6 +597,10 @@ pub struct StartPsoWarmupRequest {
 
 fn default_pso_offscreen() -> bool {
     true
+}
+
+fn default_pso_verify_minutes() -> u32 {
+    pso_warmup::DEFAULT_VERIFY_MINUTES
 }
 
 fn normalize_optional(value: Option<&str>) -> Option<String> {
@@ -641,6 +649,106 @@ pub struct PsoColdtestJobResponse {
     pub runs: Vec<PsoColdtestLaunched>,
 }
 
+#[derive(Clone, Serialize)]
+struct WarmupProgressPayload<'a> {
+    job_id: &'a str,
+    parent_job_id: &'a str,
+    machine_id: i64,
+    project_id: i64,
+    run_id: i64,
+    phase: &'a str,
+    hitch_count: i64,
+    event: &'a UeRunnerEvent,
+}
+
+#[derive(Clone, Serialize)]
+struct WarmupFinalizedPayload<'a> {
+    job_id: &'a str,
+    parent_job_id: &'a str,
+    machine_id: i64,
+    project_id: i64,
+    run_id: i64,
+    /// Phase the run ended in ("prerun" never reached verify).
+    phase: &'a str,
+    /// Prerun-phase hitches (absorption count, informational).
+    hitch_count: Option<i64>,
+    /// Verify-phase hitches — the green-light basis (0 = ok).
+    verify_hitch_count: Option<i64>,
+    status: &'a str,
+    error_message: Option<String>,
+}
+
+enum WarmupPhaseEnd {
+    /// Planned completion: engine exit 0 or the max-minutes watchdog.
+    Completed,
+    /// Operator cancel — the node was NOT verified.
+    Cancelled,
+    Error(String),
+}
+
+/// Drives one warmup phase to its terminal event, counting hitches and
+/// re-emitting progress. Shared by the prerun and verify phases.
+#[allow(clippy::too_many_arguments)]
+async fn drive_warmup_phase(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<UeRunnerEvent>,
+    cancel: &Arc<tokio::sync::Mutex<RunnerCancel>>,
+    app: &AppHandle,
+    job_id: &str,
+    parent_job_id: &str,
+    machine_id: i64,
+    project_id: i64,
+    run_id: i64,
+    phase: &'static str,
+    hitch_count: &mut i64,
+) -> WarmupPhaseEnd {
+    while let Some(event) = events.recv().await {
+        if let UeRunnerEvent::LogLine { text, .. } = &event {
+            if pso_warmup::is_hitch_line(text) {
+                *hitch_count += 1;
+            }
+        }
+        let _ = app.emit(
+            "pso-warmup-progress",
+            WarmupProgressPayload {
+                job_id,
+                parent_job_id,
+                machine_id,
+                project_id,
+                run_id,
+                phase,
+                hitch_count: *hitch_count,
+                event: &event,
+            },
+        );
+
+        match &event {
+            UeRunnerEvent::Completed { exit_code, .. } => {
+                // exit_critical parses to Completed{1}: a crashed UE never
+                // warmed the node — must not read as green.
+                return if *exit_code == 0 {
+                    WarmupPhaseEnd::Completed
+                } else {
+                    WarmupPhaseEnd::Error(format!("UE exited with code {}", exit_code))
+                };
+            }
+            UeRunnerEvent::Cancelled => {
+                // Watchdog = planned phase window reached (a completion);
+                // an operator cancel = the node was NOT verified.
+                return if cancel.lock().await.watchdog {
+                    WarmupPhaseEnd::Completed
+                } else {
+                    WarmupPhaseEnd::Cancelled
+                };
+            }
+            UeRunnerEvent::Error { message } => {
+                return WarmupPhaseEnd::Error(message.clone());
+            }
+            _ => {}
+        }
+    }
+    WarmupPhaseEnd::Error("runner event stream ended without a terminal event".into())
+}
+
 #[tauri::command]
 pub async fn start_pso_warmup(
     app: AppHandle,
@@ -657,6 +765,9 @@ pub async fn start_pso_warmup(
     if request.max_minutes == 0 {
         // 0 disarms the watchdog — the only mechanism that ever ends a -game run.
         return Err(VoloError::InvalidInput("max_minutes must be >= 1".into()));
+    }
+    if request.verify_minutes == 0 {
+        return Err(VoloError::InvalidInput("verify_minutes must be >= 1".into()));
     }
 
     // Validate ALL targets up front — reject the whole request on any gap so a
@@ -725,6 +836,7 @@ pub async fn start_pso_warmup(
         )?);
     }
 
+    let verify_minutes = request.verify_minutes;
     let mut launched = Vec::with_capacity(targets.len());
     for ((target, run_id), spec) in targets.into_iter().zip(run_ids).zip(specs) {
         let handle = pso_warmup::launch_warmup(
@@ -739,7 +851,7 @@ pub async fn start_pso_warmup(
         registry.insert(&job_id, handle.cancel.clone()).await;
         pso_warmup::spawn_watchdog(handle.cancel.clone(), request.max_minutes, job_id.clone());
 
-        let cancel_for_task = handle.cancel.clone();
+        let prerun_cancel = handle.cancel.clone();
         let mut events = handle.events;
         let app_for_task = app.clone();
         let db_for_task: Db = (*db).clone();
@@ -747,120 +859,142 @@ pub async fn start_pso_warmup(
         let job_id_for_task = job_id.clone();
         let machine_id = target.machine_id;
         let project_id = request.project_id;
+        let ip_for_task = target.ip.clone();
+        let engine_for_task = target.engine_path.clone();
+        let uproject_for_task = target.uproject_path.clone();
+        let spec_for_task = spec.clone();
 
         tokio::spawn(async move {
             let started = std::time::Instant::now();
-            let mut hitch_count: i64 = 0;
+            let mut prerun_hitches: i64 = 0;
+            let mut verify_hitches: i64 = 0;
 
-            #[derive(Clone, Serialize)]
-            struct ProgressPayload<'a> {
-                job_id: &'a str,
-                parent_job_id: &'a str,
-                machine_id: i64,
-                project_id: i64,
-                run_id: i64,
-                hitch_count: i64,
-                event: &'a UeRunnerEvent,
-            }
-            #[derive(Clone, Serialize)]
-            struct FinalizedPayload<'a> {
-                job_id: &'a str,
-                parent_job_id: &'a str,
-                machine_id: i64,
-                project_id: i64,
-                run_id: i64,
-                hitch_count: Option<i64>,
-                status: &'a str,
-                error_message: Option<String>,
-            }
+            let prerun_end = drive_warmup_phase(
+                &mut events,
+                &prerun_cancel,
+                &app_for_task,
+                &job_id_for_task,
+                &parent_for_task,
+                machine_id,
+                project_id,
+                run_id,
+                "prerun",
+                &mut prerun_hitches,
+            )
+            .await;
 
-            while let Some(event) = events.recv().await {
-                if let UeRunnerEvent::LogLine { text, .. } = &event {
-                    if pso_warmup::is_hitch_line(text) {
-                        hitch_count += 1;
-                    }
-                }
-                let _ = app_for_task.emit(
-                    "pso-warmup-progress",
-                    ProgressPayload {
-                        job_id: &job_id_for_task,
-                        parent_job_id: &parent_for_task,
-                        machine_id,
-                        project_id,
-                        run_id,
-                        hitch_count,
-                        event: &event,
-                    },
-                );
-
-                let (done, status, error_message) = match &event {
-                    UeRunnerEvent::Completed { exit_code, .. } => {
-                        // exit_critical parses to Completed{1}: a crashed UE
-                        // never warmed the node — must not read as green.
-                        if *exit_code == 0 {
-                            (true, WarmupStatus::Ok, None)
-                        } else {
-                            (
-                                true,
-                                WarmupStatus::Err,
-                                Some(format!("UE exited with code {}", exit_code)),
+            // Phase 2: the prerun window completing hands over to a verify run
+            // with the same spec — its hitch count is the green-light basis.
+            let (ended_phase, status, error_message, verify_ran) = match prerun_end {
+                WarmupPhaseEnd::Cancelled => ("prerun", WarmupStatus::Cancelled, None, false),
+                WarmupPhaseEnd::Error(msg) => ("prerun", WarmupStatus::Err, Some(msg), false),
+                WarmupPhaseEnd::Completed => {
+                    match pso_warmup::launch_warmup(
+                        UeRunnerBackend::Remote,
+                        &ip_for_task,
+                        &engine_for_task,
+                        &uproject_for_task,
+                        &spec_for_task,
+                    ) {
+                        Err(err) => (
+                            "prerun",
+                            WarmupStatus::Err,
+                            Some(format!("verify phase launch failed: {err}")),
+                            false,
+                        ),
+                        Ok(verify_handle) => {
+                            // Same job_id: an operator cancel keeps working
+                            // across the phase handover.
+                            app_for_task
+                                .state::<UeJobRegistry>()
+                                .insert(&job_id_for_task, verify_handle.cancel.clone())
+                                .await;
+                            pso_warmup::spawn_watchdog(
+                                verify_handle.cancel.clone(),
+                                verify_minutes,
+                                job_id_for_task.clone(),
+                            );
+                            let verify_started = std::time::Instant::now();
+                            let verify_cancel = verify_handle.cancel.clone();
+                            let mut verify_events = verify_handle.events;
+                            let verify_end = drive_warmup_phase(
+                                &mut verify_events,
+                                &verify_cancel,
+                                &app_for_task,
+                                &job_id_for_task,
+                                &parent_for_task,
+                                machine_id,
+                                project_id,
+                                run_id,
+                                "verify",
+                                &mut verify_hitches,
                             )
+                            .await;
+                            if let Err(err) = pso_warmup_runs::record_verify_phase(
+                                &db_for_task,
+                                run_id,
+                                verify_hitches,
+                                verify_started.elapsed().as_secs() as i64,
+                            ) {
+                                tracing::error!(?err, run_id, "pso warmup verify persist failed");
+                            }
+                            match verify_end {
+                                WarmupPhaseEnd::Cancelled => {
+                                    ("verify", WarmupStatus::Cancelled, None, true)
+                                }
+                                WarmupPhaseEnd::Error(msg) => {
+                                    ("verify", WarmupStatus::Err, Some(msg), true)
+                                }
+                                WarmupPhaseEnd::Completed => (
+                                    "verify",
+                                    pso_warmup::verify_outcome(verify_hitches),
+                                    None,
+                                    true,
+                                ),
+                            }
                         }
                     }
-                    UeRunnerEvent::Cancelled => {
-                        // Watchdog = planned duration reached (a completion);
-                        // an operator cancel = the node was NOT verified.
-                        if cancel_for_task.lock().await.watchdog {
-                            (true, WarmupStatus::Ok, None)
-                        } else {
-                            (true, WarmupStatus::Cancelled, None)
-                        }
-                    }
-                    UeRunnerEvent::Error { message } => {
-                        (true, WarmupStatus::Err, Some(message.clone()))
-                    }
-                    _ => (false, WarmupStatus::Running, None),
-                };
-                if !done {
-                    continue;
                 }
+            };
 
-                let duration_secs = started.elapsed().as_secs() as i64;
-                // Cancelled keeps the (partial-window) hitch count as info;
-                // green-light eligibility lives in the status alone.
-                let persisted_hitches =
-                    matches!(status, WarmupStatus::Ok | WarmupStatus::Cancelled)
-                        .then_some(hitch_count);
-                if let Err(err) = pso_warmup_runs::finish(
-                    &db_for_task,
-                    run_id,
-                    status,
-                    persisted_hitches,
-                    error_message.as_deref(),
-                    duration_secs,
-                    None,
-                ) {
-                    tracing::error!(?err, run_id, "pso warmup finish persist failed");
-                }
-                let _ = app_for_task.emit(
-                    "pso-warmup-finalized",
-                    FinalizedPayload {
-                        job_id: &job_id_for_task,
-                        parent_job_id: &parent_for_task,
-                        machine_id,
-                        project_id,
-                        run_id,
-                        hitch_count: persisted_hitches,
-                        status: status.as_str(),
-                        error_message,
-                    },
-                );
-                app_for_task
-                    .state::<UeJobRegistry>()
-                    .remove(&job_id_for_task)
-                    .await;
-                break;
+            let duration_secs = started.elapsed().as_secs() as i64;
+            // Cancelled/NotReady keep the (partial-window) hitch count as
+            // info; green-light eligibility lives in the status alone.
+            let persisted_hitches = matches!(
+                status,
+                WarmupStatus::Ok | WarmupStatus::Cancelled | WarmupStatus::NotReady
+            )
+            .then_some(prerun_hitches);
+            if let Err(err) = pso_warmup_runs::finish(
+                &db_for_task,
+                run_id,
+                status,
+                persisted_hitches,
+                error_message.as_deref(),
+                duration_secs,
+                None,
+            ) {
+                tracing::error!(?err, run_id, "pso warmup finish persist failed");
             }
+            let _ = app_for_task.emit(
+                "pso-warmup-finalized",
+                WarmupFinalizedPayload {
+                    job_id: &job_id_for_task,
+                    parent_job_id: &parent_for_task,
+                    machine_id,
+                    project_id,
+                    run_id,
+                    phase: ended_phase,
+                    hitch_count: persisted_hitches,
+                    verify_hitch_count: verify_ran.then_some(verify_hitches),
+                    status: status.as_str(),
+                    error_message,
+                },
+            );
+            app_for_task
+                .state::<UeJobRegistry>()
+                .remove(&job_id_for_task)
+                .await;
         });
 
         launched.push(PsoWarmupLaunched {
