@@ -4,9 +4,10 @@
 import * as React from "react";
 import "../ds";
 import { probeWebGpu } from "../keyer/gpu";
+import { KeyerEngine } from "../keyer/engine";
 
 (function () {
-  const { InlineAlert, StatusLight, Tag } = window.Spectrum2DesignSystem_b6d1b3;
+  const { Button, InlineAlert, StatusLight, Tag } = window.Spectrum2DesignSystem_b6d1b3;
   const h = React.createElement;
   const { useState, useEffect, useRef } = React;
 
@@ -17,19 +18,45 @@ import { probeWebGpu } from "../keyer/gpu";
 
   function KeyerCenter() {
     const canvasRef = useRef(null);
+    const fileRef = useRef(null);
+    const engineRef = useRef(null);
     const [probe, setProbe] = useState(null);
-    useEffect(() => { probeWebGpu(canvasRef.current).then(setProbe); }, []);
+    const [pixelText, setPixelText] = useState(null);
+    useEffect(() => {
+      let dead = false;
+      probeWebGpu(canvasRef.current).then((result) => {
+        if (dead) return;
+        setProbe(result);
+        if (result.ok) engineRef.current = new KeyerEngine(result);
+      });
+      return () => { dead = true; engineRef.current = null; };
+    }, []);
+    const openMedia = () => { if (fileRef.current) fileRef.current.click(); };
+    const onFile = async (ev) => {
+      const file = ev.target.files && ev.target.files[0];
+      ev.target.value = "";
+      if (!file || !engineRef.current) return;
+      const bmp = await createImageBitmap(file);
+      engineRef.current.loadImage(bmp);
+      engineRef.current.renderOnce();
+      const [r, g, b] = await engineRef.current.readbackPixel(10, 10);
+      setPixelText("src(10,10)=" + r + "," + g + "," + b);
+      if (bmp.close) bmp.close();
+    };
     return h(React.Fragment, null,
+      h("input", { ref: fileRef, type: "file", accept: "image/png,image/jpeg", style: { display: "none" }, onChange: onFile }),
       h("div", { className: "canvas-head" },
         h("span", { className: "t" }, "抠像实验台"),
         h("div", { className: "right" },
+          h(Button, { variant: "secondary", size: "S", isDisabled: !probe || !probe.ok,
+            icon: h(Icon, { name: "folder", size: 14 }), onPress: openMedia }, "打开素材"),
           probe && probe.ok
             ? h(StatusLight, { variant: "positive" }, "WebGPU · " + probe.adapterInfo.vendor)
             : probe ? h(StatusLight, { variant: "negative" }, "WebGPU 不可用") : null)),
       h("div", { className: "canvas-stage kl-stage" },
         h("canvas", { ref: canvasRef, className: "kl-canvas", width: 1280, height: 720 }),
         probe && probe.ok ? h("div", { className: "kl-probe" },
-          probe.adapterInfo.vendor + " · " + probe.adapterInfo.architecture + " · " + probe.format) : null,
+          pixelText || (probe.adapterInfo.vendor + " · " + probe.adapterInfo.architecture + " · " + probe.format)) : null,
         probe && !probe.ok ? h("div", { className: "kl-fail" },
           h(InlineAlert, { variant: "negative", title: "WebGPU 探测失败" }, probe.reason)) : null));
   }
