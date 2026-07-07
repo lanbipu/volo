@@ -16,7 +16,7 @@ import { loadProjectYaml, listRuns } from "../api/meshCommands";
 
 (function () {
   const { Button } = window.Spectrum2DesignSystem_b6d1b3;
-  const { useState, useRef, useEffect } = React;
+  const { useState, useRef, useEffect, useMemo } = React;
   const h = React.createElement;
   const CX = window.VOLO_CAL2;
 
@@ -35,30 +35,40 @@ import { loadProjectYaml, listRuns } from "../api/meshCommands";
       open ? h('div', { className: 'popover', style: Object.assign({ minWidth: width || 260 }, align === 'left' ? { left: 0, right: 'auto' } : null) }, children(() => setOpen(false))) : null);
   }
 
+  /* 「last_opened_at」是后端 chrono::Utc::now().to_rfc3339()，自带时区 —— 不需要
+     shell.tsx formatRunTime() 那套补 'Z' 的 SQLite-timestamp hack，直接 new Date() 解析。 */
+  function timeAgo(iso) {
+    const d = new Date(iso);
+    if (!iso || isNaN(d.getTime())) return '';
+    const diff = Math.max(0, Math.round((Date.now() - d.getTime()) / 60000));
+    return diff < 1 ? '刚刚' : diff < 60 ? diff + ' 分钟前' : diff < 1440 ? Math.round(diff / 60) + ' 小时前' : Math.round(diff / 1440) + ' 天前';
+  }
+
   /* ---------- 整页空态（未打开任何项目 / 无最近项目） ---------- */
   function Empty({ s, proj }) {
-    const step = (n, icon, title, desc) => h('div', { className: 'ce-step' },
-      h('span', { className: 'ce-step-n' }, n),
-      h('span', { className: 'ce-step-ico' }, h(Icon, { name: icon, size: 18 })),
-      h('div', { className: 'ce-step-txt' }, h('div', { className: 'ce-step-t' }, title), h('div', { className: 'ce-step-d' }, desc)));
+    const openProject = (absPath) => CX.openProjectPath(absPath, s).catch((e) => CX.projStore.patch({ error: e && e.message ? e.message : String(e) }));
+    /* useMemo 稳定引用：useProjectSummaries 的 useEffect 按数组引用做依赖对比，
+       每次渲染都新建 slice() 数组会导致依赖永远"变化"，重新触发全部 loadProjectYaml/listRuns。 */
+    const recentTop5 = useMemo(() => (proj.recent || []).slice(0, 5), [proj.recent]);
+    const { rows } = useProjectSummaries(recentTop5);
     return h('div', { className: 'dash' },
       h('div', { className: 'cluster-empty' },
         h('div', { className: 'ce-ico' }, h(Icon, { name: 'calibrate', size: 36, stroke: 1.3 })),
         h('div', { className: 'ce-t' }, proj.error ? '加载项目失败' : '尚未打开校正项目'),
-        h('div', { className: 'ce-d' }, proj.error || '校正数据都归属某个项目（project.yaml）。打开或新建一个项目，导入测量后即可重建 LED 网格并做镜头校正。'),
+        h('div', { className: 'ce-d' }, proj.error || '校正数据都归属某个项目（project.yaml）。打开或新建一个项目即可开始。'),
         h('div', { className: 'ce-acts' },
           h(Button, { variant: 'accent', size: 'L', icon: h(Icon, { name: 'folder', size: 16 }), onPress: () => CX.pickAndOpenProject(s) }, '打开项目'),
-          h(Button, { variant: 'secondary', size: 'L', icon: h(Icon, { name: 'plus', size: 16 }), onPress: () => CX.pickAndSeedExample(s, 'curved-flat') }, '从示例开始')),
-        proj.recent && proj.recent.length ? h('div', { style: { marginTop: 18, width: '100%', maxWidth: 440 } },
-          h('div', { className: 'surv-sub', style: { marginTop: 0 } }, '最近项目'),
-          proj.recent.slice(0, 5).map((r) => h('div', { key: r.id, className: 'out-item', onClick: () =>
-            CX.openProjectPath(r.abs_path, s).catch((e) => CX.projStore.patch({ error: e && e.message ? e.message : String(e) })) },
-            h('span', { className: 'out-ico' }, h(Icon, { name: 'doc', size: 15 })),
-            h('div', { className: 'out-main' }, h('div', { className: 'out-t' }, r.display_name), h('div', { className: 'out-s' }, r.abs_path))))) : null,
-        h('div', { className: 'ce-steps' },
-          step(1, 'folder', '打开或新建项目', '选择 project.yaml，或从示例一键 seed'),
-          step(2, 'pin', '导入测量', '全站仪 CSV 或视觉 ChArUco 采集'),
-          step(3, 'cube', '重建', '生成 LED 网格并评估质量偏差'))));
+          h(Button, { variant: 'secondary', size: 'L', icon: h(Icon, { name: 'plus', size: 16 }), onPress: () => CX.pickAndSeedExample(s, 'curved-flat') }, '新建项目')),
+        proj.recent && proj.recent.length ? h('div', { className: 'ce-recent' },
+          h('div', { className: 'ce-recent-h' }, h(Icon, { name: 'folder', size: 13 }), '最近的项目'),
+          h('div', { className: 'ce-recent-list' },
+            rows.map((p) => h('div', { key: p.id, className: 'ce-recent-i', onClick: () => openProject(p.path) },
+              h('span', { className: 'ce-recent-ico' + (p.done ? ' done' : '') }, h(Icon, { name: p.done ? 'check' : 'folder', size: 16 })),
+              h('div', { className: 'ce-recent-main' },
+                h('div', { className: 'ce-recent-name' }, p.name),
+                h('div', { className: 'ce-recent-path' }, p.path)),
+              h('span', { className: 'ce-recent-meta' }, timeAgo(p.last_opened_at)),
+              h('span', { className: 'ce-recent-go' }, h(Icon, { name: 'arrowr', size: 15 })))))) : null));
   }
 
   /* ---------- 模块 1 · 项目切换（下拉 + 应用，原地提示，不跳转） ---------- */
@@ -121,12 +131,12 @@ import { loadProjectYaml, listRuns } from "../api/meshCommands";
           const gridStatus = best ? (best.run.output_obj_path ? 'exported' : 'rebuilt') : 'none';
           return {
             id: r.id, name: (config.project && config.project.name) || r.display_name, path: r.abs_path,
-            screenId: best ? best.screenId : (screenIds[0] || null),
+            screenId: best ? best.screenId : (screenIds[0] || null), last_opened_at: r.last_opened_at,
             gridStatus, rms: best ? best.run.estimated_rms_mm : null, vertices: best ? best.run.vertex_count : null,
             done: gridStatus === 'rebuilt' || gridStatus === 'exported',
           };
         } catch (e) {
-          return { id: r.id, name: r.display_name, path: r.abs_path, screenId: null, gridStatus: 'none', rms: null, vertices: null, done: false, loadError: true };
+          return { id: r.id, name: r.display_name, path: r.abs_path, screenId: null, last_opened_at: r.last_opened_at, gridStatus: 'none', rms: null, vertices: null, done: false, loadError: true };
         }
       })).then((next) => { if (!cancelled) { setRows(next); setLoading(false); } });
       return () => { cancelled = true; };
