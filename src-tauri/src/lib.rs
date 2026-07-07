@@ -128,6 +128,7 @@ pub fn run() {
             app.manage(db);
             app.manage(commands::ddc_pak::UeJobRegistry::default());
             app.manage(commands::sidecar_stream::SidecarStreamRegistry::default());
+            app.manage(commands::sidecar_stream::ApprovedImagePaths::default());
             app.manage(commands::mesh_visual::MeshVisualJobRegistry::default());
             tracing::info!("volo started, cache database at {}", db_path.display());
 

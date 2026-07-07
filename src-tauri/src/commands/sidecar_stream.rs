@@ -94,7 +94,47 @@ struct TauriEventSink {
 
 impl SidecarEventSink for TauriEventSink {
     fn emit(&self, event: SidecarStreamEvent) {
+        if let SidecarStreamEvent::Line {
+            parsed: Some(v), ..
+        } = &event
+        {
+            register_approved_images(&self.app, v);
+        }
         let _ = self.app.emit(&self.channel, event);
+    }
+}
+
+/// `read_image_as_data_url` (vpcal_runs.rs) must never become a generic
+/// "read any file on disk" primitive reachable from the webview. A
+/// caller-supplied "base directory" doesn't help — the caller controls both
+/// the path and the claimed base, so it can always pick one that contains
+/// the other. The only signal a compromised renderer can't forge is content
+/// Rust itself observed in a real subprocess's stdout, so every streamed
+/// line that parses as `{..., data: {annotated_images: [...]}}` — today only
+/// `verify overlay`, but this stays intentionally protocol-name-agnostic —
+/// has its image paths canonicalized and added to this session's allowlist.
+/// `read_image_as_data_url` then only serves paths present in this set.
+#[derive(Default)]
+pub struct ApprovedImagePaths(pub(crate) StdMutex<std::collections::HashSet<std::path::PathBuf>>);
+
+fn register_approved_images(app: &AppHandle, envelope: &serde_json::Value) {
+    let Some(images) = envelope
+        .get("data")
+        .and_then(|d| d.get("annotated_images"))
+        .and_then(|a| a.as_array())
+    else {
+        return;
+    };
+    let registry = app.state::<ApprovedImagePaths>();
+    let Ok(mut approved) = registry.0.lock() else {
+        return;
+    };
+    for image in images {
+        if let Some(raw) = image.as_str() {
+            if let Ok(canon) = std::path::Path::new(raw).canonicalize() {
+                approved.insert(canon);
+            }
+        }
     }
 }
 

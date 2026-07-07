@@ -6,9 +6,11 @@
    docs/design/CALIBRATE-UX.md §4.7/§4.8）。
 
    标注帧真图（不是设计稿里的假 SVG）：verify overlay 的 data.annotated_images[] 是
-   本地绝对 PNG 路径，用新增的 readImageAsDataUrl(path, baseDir) 命令（本会话补的
-   唯一后端能力，见 vpcal_runs.rs）读成 data URL 再 <img> 展示。baseDir 传本次输出
-   目录，后端会校验 path 确实落在其中，不是任意路径读取。 */
+   本地绝对 PNG 路径，用新增的 readImageAsDataUrl(path) 命令（本会话补的唯一后端
+   能力，见 vpcal_runs.rs）读成 data URL 再 <img> 展示。后端只服务 Rust 自己从这次
+   verify overlay 真实子进程 stdout 里解析出的路径白名单（sidecar_stream.rs 的
+   ApprovedImagePaths），不是任意路径读取——调用方声明的"安全目录"这条路已经被
+   review 否决过一次（同时摆布 path 和它自己声称的 base 等于没校验）。 */
 import * as React from "react";
 import "../ds";
 import { pickFile, pickDirectory, revealPath, listArRuns } from "../api/commands";
@@ -53,18 +55,15 @@ import { readImageAsDataUrl } from "../api/lensCommands";
        key，同一组路径不重复触发网络/IPC 读图）。 */
     const annotatedKey = V && V.annotated_images ? V.annotated_images.join('|') : '';
     useEffect(() => {
-      const AR = window.VOLO_CAL_AR;
       const imgs = (V && V.annotated_images) || [];
       setFrame(0);
       if (!imgs.length) { setFrameUrls([]); return undefined; }
-      /* verify overlay 把所有标注帧平铺写进同一个 --out 目录（verify.py 的
-         overlay_session 不分子目录），第一张图的父目录即为该次输出目录——传给
-         read_image_as_data_url 做「路径必须落在这个目录下」的服务端校验，不能让
-         这条命令变成任意本地路径读取（code review 发现）。 */
-      const baseDir = AR.dirName(imgs[0]);
+      /* read_image_as_data_url 只服务 Rust 自己从这次 verify overlay 真实子进程
+         stdout 里解析出的 annotated_images 白名单（sidecar_stream.rs 的
+         ApprovedImagePaths），不接受调用方声明"这是安全目录"——那能被绕过。 */
       let cancelled = false;
       setLoadingImgs(true);
-      Promise.all(imgs.map((p) => readImageAsDataUrl(p, baseDir).catch(() => null)))
+      Promise.all(imgs.map((p) => readImageAsDataUrl(p).catch(() => null)))
         .then((urls) => { if (!cancelled) { setFrameUrls(urls); setLoadingImgs(false); } });
       return () => { cancelled = true; };
     }, [annotatedKey]);

@@ -180,21 +180,25 @@ pub fn list_lens_sessions(sessions_root: String) -> VoloResult<Vec<LensSessionSu
 }
 
 /// Read a local image file and return it as a `data:` URL, so the frontend
-/// can display arbitrary on-disk images (e.g. `verify overlay`'s
-/// `annotated_images[]` PNGs) without a Tauri asset-protocol scope — these
-/// live under whatever runs/output directory the operator points the AR
-/// workspace at, which isn't known at build time, so a static capability
-/// scope pattern wouldn't cover them.
+/// can display on-disk images (`verify overlay`'s `annotated_images[]` PNGs)
+/// without a Tauri asset-protocol scope — these live under whatever
+/// runs/output directory the operator points the AR workspace at, which
+/// isn't known at build time, so a static capability scope pattern wouldn't
+/// cover them.
 ///
-/// `base_dir` scopes the read: `path` must canonicalize to a descendant of
-/// `base_dir` (symlink targets included), and only recognized image
-/// extensions under a size cap are served — this command must never become a
-/// generic "read any file on disk" primitive (code review finding: the
-/// unscoped first version did exactly that). Callers pass the same output
-/// directory `verify overlay --out` just wrote to, so `path`/`base_dir` are
-/// both derived from that one real backend response rather than hand-typed.
+/// `path` must be one Rust itself already saw in a real subprocess's parsed
+/// stdout (`sidecar_stream::ApprovedImagePaths`, populated as
+/// `data.annotated_images[]` entries stream past `TauriEventSink::emit`).
+/// A caller-supplied "base directory" was tried first and rejected in
+/// review: the caller controls both the path and the claimed base, so it
+/// could always pick a base that contains whatever path it wanted — that
+/// check constrained nothing. Membership in a Rust-populated allowlist is
+/// the only check a compromised renderer can't route around by construction.
 #[tauri::command]
-pub fn read_image_as_data_url(path: String, base_dir: String) -> VoloResult<String> {
+pub fn read_image_as_data_url(
+    approved: tauri::State<'_, crate::commands::sidecar_stream::ApprovedImagePaths>,
+    path: String,
+) -> VoloResult<String> {
     const MAX_IMAGE_BYTES: u64 = 50 * 1024 * 1024;
 
     let mime = match Path::new(&path)
@@ -213,16 +217,19 @@ pub fn read_image_as_data_url(path: String, base_dir: String) -> VoloResult<Stri
         }
     };
 
-    let canon_base = Path::new(&base_dir)
-        .canonicalize()
-        .map_err(|e| VoloError::Io(format!("failed to resolve base_dir {base_dir}: {e}")))?;
     let canon_path = Path::new(&path)
         .canonicalize()
         .map_err(|e| VoloError::Io(format!("failed to resolve image path {path}: {e}")))?;
-    if !canon_path.starts_with(&canon_base) {
-        return Err(VoloError::InvalidInput(format!(
-            "{path} is outside the approved output directory {base_dir}"
-        )));
+    {
+        let allowed = approved
+            .0
+            .lock()
+            .map_err(|e| VoloError::Io(format!("approved-image registry poisoned: {e}")))?;
+        if !allowed.contains(&canon_path) {
+            return Err(VoloError::InvalidInput(format!(
+                "{path} was not reported by a real vpcal invocation this session"
+            )));
+        }
     }
 
     let meta = fs::metadata(&canon_path)
