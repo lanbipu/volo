@@ -2,4 +2,5 @@
 .kl-stage { display: flex; align-items: center; justify-content: center; position: relative; background: var(--sunken); }
 .kl-canvas { max-width: 100%; max-height: 100%; object-fit: contain; background: #000; border-radius: 6px; }
 .kl-fail { position: absolute; inset: auto 16px 16px 16px; max-width: 480px; }
+.kl-hud { position: absolute; left: 16px; top: 12px; font-size: 12px; color: var(--chrome-dim); font-family: var(--font-mono, monospace); background: rgba(0,0,0,.45); padding: 2px 8px; border-radius: 4px; }
 .kl-probe { position: absolute; left: 16px; bottom: 12px; font-size: 11px; color: var(--chrome-dim); font-family: var(--font-mono, monospace); }

@@ -17,6 +17,8 @@ export class KeyerEngine {
   private w = 0;
   private h = 0;
   private blit: Pass | null = null;
+  private frameMs = 0;
+  private lastT = 0;
 
   constructor(gpu: GpuProbeOk) {
     this.d = gpu.device;
@@ -101,8 +103,18 @@ export class KeyerEngine {
     (this.ctx.canvas as HTMLCanvasElement).height = this.h;
   }
 
+  stats(): { fps: number; frameMs: number } {
+    return { fps: this.frameMs > 0 ? 1000 / this.frameMs : 0, frameMs: this.frameMs };
+  }
+
   renderOnce(): void {
     if (!this.blit) return;
+    const now = performance.now();
+    if (this.lastT > 0) {
+      const dt = now - this.lastT;
+      this.frameMs = this.frameMs === 0 ? dt : this.frameMs + 0.1 * (dt - this.frameMs); // EMA α=0.1
+    }
+    this.lastT = now;
     const enc = this.d.createCommandEncoder();
     const rp = enc.beginRenderPass({
       colorAttachments: [

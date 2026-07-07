@@ -20,8 +20,13 @@ import { KeyerEngine } from "../keyer/engine";
     const canvasRef = useRef(null);
     const fileRef = useRef(null);
     const engineRef = useRef(null);
+    const videoRef = useRef(null);   // 隐藏 <video>，视频素材源
+    const vfcRef = useRef(0);        // requestVideoFrameCallback 句柄
     const [probe, setProbe] = useState(null);
     const [pixelText, setPixelText] = useState(null);
+    const [hud, setHud] = useState(null);
+    const [playing, setPlaying] = useState(false);
+    const [hasVideo, setHasVideo] = useState(false);
     useEffect(() => {
       let dead = false;
       probeWebGpu(canvasRef.current).then((result) => {
@@ -29,13 +34,41 @@ import { KeyerEngine } from "../keyer/engine";
         setProbe(result);
         if (result.ok) engineRef.current = new KeyerEngine(result);
       });
-      return () => { dead = true; engineRef.current = null; };
+      return () => {
+        dead = true; engineRef.current = null;
+        const v = videoRef.current;
+        if (v) { v.pause(); if (v.src) URL.revokeObjectURL(v.src); }
+      };
     }, []);
+    const pumpFrames = () => {
+      const v = videoRef.current, e = engineRef.current;
+      if (!v || !e) return;
+      const cb = () => {
+        if (!videoRef.current || !engineRef.current) return;
+        engineRef.current.loadImage(videoRef.current);
+        engineRef.current.renderOnce();
+        const st = engineRef.current.stats();
+        setHud(st.fps.toFixed(1) + " fps · " + st.frameMs.toFixed(2) + " ms");
+        vfcRef.current = videoRef.current.requestVideoFrameCallback(cb);
+      };
+      vfcRef.current = v.requestVideoFrameCallback(cb);
+    };
     const openMedia = () => { if (fileRef.current) fileRef.current.click(); };
     const onFile = async (ev) => {
       const file = ev.target.files && ev.target.files[0];
       ev.target.value = "";
       if (!file || !engineRef.current) return;
+      const v = videoRef.current;
+      if (v) { v.pause(); if (v.cancelVideoFrameCallback && vfcRef.current) v.cancelVideoFrameCallback(vfcRef.current); }
+      if (/^video\//.test(file.type) || /\.(mp4|mov)$/i.test(file.name)) {
+        if (v.src) URL.revokeObjectURL(v.src);
+        v.src = URL.createObjectURL(file);
+        setHasVideo(true); setPixelText(null);
+        try { await v.play(); setPlaying(true); pumpFrames(); }
+        catch (err) { setPixelText("视频解码失败: " + (err && err.message)); setHasVideo(false); }
+        return;
+      }
+      setHasVideo(false); setPlaying(false);
       const bmp = await createImageBitmap(file);
       engineRef.current.loadImage(bmp);
       engineRef.current.renderOnce();
@@ -43,11 +76,20 @@ import { KeyerEngine } from "../keyer/engine";
       setPixelText("src(10,10)=" + r + "," + g + "," + b);
       if (bmp.close) bmp.close();
     };
+    const togglePlay = () => {
+      const v = videoRef.current;
+      if (!v || !hasVideo) return;
+      if (v.paused) { v.play(); setPlaying(true); pumpFrames(); }
+      else { v.pause(); setPlaying(false); if (v.cancelVideoFrameCallback && vfcRef.current) v.cancelVideoFrameCallback(vfcRef.current); }
+    };
     return h(React.Fragment, null,
-      h("input", { ref: fileRef, type: "file", accept: "image/png,image/jpeg", style: { display: "none" }, onChange: onFile }),
+      h("input", { ref: fileRef, type: "file", accept: "image/png,image/jpeg,video/mp4,video/quicktime", style: { display: "none" }, onChange: onFile }),
+      h("video", { ref: videoRef, muted: true, loop: true, playsInline: true, style: { display: "none" } }),
       h("div", { className: "canvas-head" },
         h("span", { className: "t" }, "抠像实验台"),
         h("div", { className: "right" },
+          hasVideo ? h(Button, { variant: "secondary", size: "S",
+            icon: h(Icon, { name: playing ? "pause" : "play", size: 14 }), onPress: togglePlay }, playing ? "暂停" : "播放") : null,
           h(Button, { variant: "secondary", size: "S", isDisabled: !probe || !probe.ok,
             icon: h(Icon, { name: "folder", size: 14 }), onPress: openMedia }, "打开素材"),
           probe && probe.ok
@@ -55,6 +97,7 @@ import { KeyerEngine } from "../keyer/engine";
             : probe ? h(StatusLight, { variant: "negative" }, "WebGPU 不可用") : null)),
       h("div", { className: "canvas-stage kl-stage" },
         h("canvas", { ref: canvasRef, className: "kl-canvas", width: 1280, height: 720 }),
+        hud ? h("div", { className: "kl-hud" }, hud) : null,
         probe && probe.ok ? h("div", { className: "kl-probe" },
           pixelText || (probe.adapterInfo.vendor + " · " + probe.adapterInfo.architecture + " · " + probe.format)) : null,
         probe && !probe.ok ? h("div", { className: "kl-fail" },
