@@ -513,6 +513,16 @@ const MIGRATIONS: &[(&str, &str)] = &[
         ALTER TABLE pso_warmup_runs ADD COLUMN verify_duration_secs INTEGER;
         "#,
     ),
+    (
+        // Traversal engine: whether the run drove the stage via Remote Control
+        // (traversal=1) and whether the prerun phase ended by convergence
+        // (hitch + cache-growth curves flat) instead of the max-minutes cap.
+        "032_pso_warmup_runs_traversal",
+        r#"
+        ALTER TABLE pso_warmup_runs ADD COLUMN traversal INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE pso_warmup_runs ADD COLUMN converged INTEGER;
+        "#,
+    ),
 ];
 
 pub fn migrate(conn: &mut Connection) -> VoloResult<()> {

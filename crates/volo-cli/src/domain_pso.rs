@@ -19,7 +19,7 @@ use crate::credential_args::CredentialArgs;
 use crate::output::{EmitSerialize, Event};
 use crate::run::Ctx;
 use cache_core::core::{
-    driver_cache_probe, loopback, pso_coldtest, pso_status,
+    driver_cache_probe, loopback, pso_coldtest, pso_status, pso_traversal,
     pso_warmup::{self, PsoWarmupSpec},
     ue_runner::{RunnerCancel, UeRunnerBackend, UeRunnerEvent},
 };
@@ -28,6 +28,7 @@ use cache_core::data::{
 };
 use cache_core::error::{VoloError, VoloResult};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 pub fn handle(ctx: &mut Ctx<'_>, action: PsoAction) -> VoloResult<()> {
     match action {
@@ -40,6 +41,7 @@ pub fn handle(ctx: &mut Ctx<'_>, action: PsoAction) -> VoloResult<()> {
             resolution,
             max_minutes,
             verify_minutes,
+            traverse_map,
             dc_cfg_path,
             dc_node,
             offscreen,
@@ -53,6 +55,7 @@ pub fn handle(ctx: &mut Ctx<'_>, action: PsoAction) -> VoloResult<()> {
             &resolution,
             max_minutes,
             verify_minutes,
+            traverse_map.as_deref(),
             dc_cfg_path.as_deref(),
             dc_node.as_deref(),
             offscreen,
@@ -105,6 +108,7 @@ fn warmup(
     resolution: &str,
     max_minutes: u32,
     verify_minutes: u32,
+    traverse_map: Option<&str>,
     dc_cfg_path: Option<&str>,
     dc_node: Option<&str>,
     offscreen: bool,
@@ -164,6 +168,24 @@ fn warmup(
         for spec in specs.values() {
             pso_warmup::validate_warmup_spec(spec)?;
         }
+        let traversal_spec_for = |host: &str| -> Option<pso_traversal::TraversalSpec> {
+            traverse_map.map(|map| pso_traversal::TraversalSpec {
+                host: host.into(),
+                ws_port: 30020,
+                map_path: map.into(),
+                dwell_ms: 2000,
+                yaw_step_deg: 30.0,
+                pitch_levels_deg: vec![-15.0, 0.0, 15.0],
+                probe_interval_secs: 30,
+            })
+        };
+        if traverse_map.is_some() {
+            for target in &targets {
+                pso_traversal::validate_traversal_spec(
+                    &traversal_spec_for(&target.ip).expect("traverse_map is Some"),
+                )?;
+            }
+        }
 
         // Persist ALL run rows before launching anything: a mid-loop DB failure
         // must never leave already-launched nodes running untracked.
@@ -177,12 +199,22 @@ fn warmup(
                 max_minutes,
                 spec.mode(),
                 spec.dc_node.as_deref(),
+                traverse_map.is_some(),
             )?;
             run_ids.insert(target.machine_id, run_id);
         }
 
         let targets_by_id: HashMap<i64, &WarmupTarget> =
             targets.iter().map(|t| (t.machine_id, t)).collect();
+        // 遍历任务与其 hitch 共享计数器（按机，跨段替换）。
+        let mut traversals: HashMap<
+            i64,
+            (
+                std::sync::Arc<std::sync::atomic::AtomicBool>,
+                tokio::task::JoinHandle<pso_traversal::TraversalOutcome>,
+            ),
+        > = HashMap::new();
+        let mut active_counters: HashMap<i64, std::sync::Arc<AtomicI64>> = HashMap::new();
 
         for (idx, target) in targets.iter().enumerate() {
             started_at.insert(target.machine_id, std::time::Instant::now());
@@ -201,6 +233,17 @@ fn warmup(
                 max_minutes,
                 format!("pso-warmup-{}", target.machine_id),
             );
+            if let Some(tspec) = traversal_spec_for(&target.ip) {
+                let counter = std::sync::Arc::new(AtomicI64::new(0));
+                let th = pso_traversal::spawn_traversal(
+                    tspec,
+                    counter.clone(),
+                    handle.cancel.clone(),
+                );
+                spawn_traversal_logger(th.events, target.machine_id);
+                active_counters.insert(target.machine_id, counter);
+                traversals.insert(target.machine_id, (th.stop, th.join));
+            }
             spawn_event_forwarder(handle, target.machine_id, agg_tx.clone());
             ctx.emitter
                 .emit_event(&Event::ItemStarted {
@@ -267,7 +310,11 @@ fn warmup(
                         } else {
                             &mut prerun_hitches
                         };
-                        *bucket.entry(machine_id).or_insert(0) += 1;
+                        let entry = bucket.entry(machine_id).or_insert(0);
+                        *entry += 1;
+                        if let Some(counter) = active_counters.get(&machine_id) {
+                            counter.store(*entry, Ordering::Relaxed);
+                        }
                     }
                     ctx.emitter
                         .emit_event(&Event::LogLine {
@@ -289,6 +336,29 @@ fn warmup(
                 UeRunnerEvent::Completed { .. }
                 | UeRunnerEvent::Cancelled
                 | UeRunnerEvent::Error { .. } => {
+                    // 当前段的遍历任务先停（收敛结论只在预跑段落库）。
+                    let traversal_outcome = match traversals.remove(&machine_id) {
+                        Some((stop, join)) => {
+                            stop.store(true, Ordering::Relaxed);
+                            join.await.ok()
+                        }
+                        None => None,
+                    };
+                    active_counters.remove(&machine_id);
+                    if phase == "prerun" {
+                        if let Some(outcome) = &traversal_outcome {
+                            if let Err(err) = pso_warmup_runs::record_convergence(
+                                &db_clone,
+                                run_id,
+                                outcome.converged,
+                            ) {
+                                eprintln!(
+                                    "warning: persisting convergence for run {} failed: {}",
+                                    run_id, err
+                                );
+                            }
+                        }
+                    }
                     // Planned completion = engine exit 0 or the phase watchdog;
                     // an operator Ctrl-C = the node was NOT verified.
                     enum PhaseEnd {
@@ -336,6 +406,19 @@ fn warmup(
                                     verify_minutes,
                                     format!("pso-warmup-verify-{}", machine_id),
                                 );
+                                if let Some(tspec) =
+                                    traversal_spec_for(&targets_by_id[&machine_id].ip)
+                                {
+                                    let counter = std::sync::Arc::new(AtomicI64::new(0));
+                                    let th = pso_traversal::spawn_traversal(
+                                        tspec,
+                                        counter.clone(),
+                                        handle.cancel.clone(),
+                                    );
+                                    spawn_traversal_logger(th.events, machine_id);
+                                    active_counters.insert(machine_id, counter);
+                                    traversals.insert(machine_id, (th.stop, th.join));
+                                }
                                 verify_started.insert(machine_id, std::time::Instant::now());
                                 phases.insert(machine_id, "verify");
                                 spawn_event_forwarder(handle, machine_id, agg_tx.clone());
@@ -501,6 +584,40 @@ fn resolve_targets(
         });
     }
     Ok(targets)
+}
+
+/// 遍历事件走 stderr（信息性），保持 stdout 的 NDJSON 纯净。
+fn spawn_traversal_logger(
+    mut events: tokio::sync::mpsc::UnboundedReceiver<pso_traversal::TraversalEvent>,
+    machine_id: i64,
+) {
+    tokio::spawn(async move {
+        while let Some(ev) = events.recv().await {
+            match ev {
+                pso_traversal::TraversalEvent::Info(msg) => {
+                    eprintln!("[m{} traversal] {}", machine_id, msg)
+                }
+                pso_traversal::TraversalEvent::Sample {
+                    hitch_count,
+                    cache_bytes,
+                    cycles_completed,
+                } => eprintln!(
+                    "[m{} traversal] sample: hitches={} cache={}B cycles={}",
+                    machine_id, hitch_count, cache_bytes, cycles_completed
+                ),
+                pso_traversal::TraversalEvent::Converged {
+                    cycles_completed,
+                    poses_sent,
+                } => eprintln!(
+                    "[m{} traversal] CONVERGED after {} cycles / {} poses — ending prerun early",
+                    machine_id, cycles_completed, poses_sent
+                ),
+                pso_traversal::TraversalEvent::Error(msg) => {
+                    eprintln!("[m{} traversal] error: {}", machine_id, msg)
+                }
+            }
+        }
+    });
 }
 
 fn spawn_event_forwarder(
@@ -745,6 +862,7 @@ fn coldtest(
                 max_minutes,
                 pso_coldtest::COLDTEST_MODE,
                 spec.dc_node.as_deref(),
+                false,
             )?;
             run_ids.insert(target.machine_id, run_id);
         }

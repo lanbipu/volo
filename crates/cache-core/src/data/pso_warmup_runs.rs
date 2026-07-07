@@ -61,12 +61,17 @@ pub struct PsoWarmupRun {
     /// None while running or when the run never reached the verify phase.
     pub verify_hitch_count: Option<i64>,
     pub verify_duration_secs: Option<i64>,
+    /// 是否启用了 RC 遍历（驱动舞台扫场）。
+    pub traversal: bool,
+    /// 预跑段是否以收敛提前完成（None = 未启用遍历或无采样结论）。
+    pub converged: Option<bool>,
     pub status: WarmupStatus,
     pub error_message: Option<String>,
     pub started_at: Option<String>,
     pub duration_secs: Option<i64>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn insert_started(
     db: &Db,
     project_id: i64,
@@ -75,12 +80,13 @@ pub fn insert_started(
     max_minutes: u32,
     mode: &str,
     dc_node: Option<&str>,
+    traversal: bool,
 ) -> VoloResult<i64> {
     let conn = db.lock().unwrap();
     conn.execute(
         "INSERT INTO pso_warmup_runs
-         (project_id, machine_id, resolution_w, resolution_h, max_minutes, mode, dc_node, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'running')",
+         (project_id, machine_id, resolution_w, resolution_h, max_minutes, mode, dc_node, traversal, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running')",
         rusqlite::params![
             project_id,
             machine_id,
@@ -89,9 +95,20 @@ pub fn insert_started(
             max_minutes as i64,
             mode,
             dc_node,
+            traversal as i64,
         ],
     )?;
     Ok(conn.last_insert_rowid())
+}
+
+/// 遍历收敛结论（预跑段结束后写入；未启用遍历的 run 保持 NULL）。
+pub fn record_convergence(db: &Db, run_id: i64, converged: bool) -> VoloResult<()> {
+    let conn = db.lock().unwrap();
+    conn.execute(
+        "UPDATE pso_warmup_runs SET converged = ? WHERE id = ?",
+        rusqlite::params![converged as i64, run_id],
+    )?;
+    Ok(())
 }
 
 pub fn finish(
@@ -166,7 +183,7 @@ pub fn list_by_project(
         "SELECT id, project_id, machine_id, resolution_w, resolution_h, max_minutes,
                 mode, dc_node, driver_cache_growth_bytes,
                 hitch_count, status, error_message, started_at, duration_secs,
-                verify_hitch_count, verify_duration_secs
+                verify_hitch_count, verify_duration_secs, traversal, converged
          FROM pso_warmup_runs
          WHERE project_id = ? AND (?2 IS NULL OR machine_id = ?2)
          ORDER BY started_at DESC, id DESC",
@@ -194,6 +211,8 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<PsoWarmupRun> {
         hitch_count: row.get(9)?,
         verify_hitch_count: row.get(14)?,
         verify_duration_secs: row.get(15)?,
+        traversal: row.get::<_, i64>(16)? != 0,
+        converged: row.get::<_, Option<i64>>(17)?.map(|v| v != 0),
         status: WarmupStatus::from_str(&status_raw),
         error_message: row.get(11)?,
         started_at: row.get(12)?,
@@ -215,6 +234,7 @@ mod tests {
             20,
             "ndisplay_offscreen",
             Some("Node_0"),
+            false,
         )
         .unwrap()
     }

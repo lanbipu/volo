@@ -463,8 +463,20 @@ export interface StartPsoWarmupRequest {
   extra_args?: string[];
   /** 验证段时长（分钟），默认 2；预跑段跑满 max_minutes 后同参数再跑一段计 hitch。 */
   verify_minutes?: number;
+  /** 启用 RC 遍历（两段都驱动舞台扫场）；省略/null = 固定机位。 */
+  traversal?: TraversalRequest | null;
   /** 钉死各节点用的 UE 版本；省略 = 各节点 primary 安装（与工程版本不符时有风险）。 */
   ue_version?: string | null;
+}
+
+/** RC 遍历参数（host 由后端按目标机填充；省略字段走后端默认）。 */
+export interface TraversalRequest {
+  /** 已加载地图包路径，如 /Game/InCamVFXBP/Maps/LED_CurvedStage。 */
+  map_path: string;
+  ws_port?: number | null;
+  dwell_ms?: number | null;
+  yaw_step_deg?: number | null;
+  pitch_levels_deg?: number[] | null;
 }
 
 export interface PsoWarmupLaunched {
@@ -493,6 +505,10 @@ export interface PsoWarmupRun {
   /** 验证段 hitch 数——绿灯依据（0 = ready）；null = 未跑到验证段。 */
   verify_hitch_count: number | null;
   verify_duration_secs: number | null;
+  /** 是否启用了 RC 遍历扫场。 */
+  traversal: boolean;
+  /** 预跑段是否以收敛提前完成（null = 未启用遍历或无结论）。 */
+  converged: boolean | null;
   status: WarmupStatus;
   error_message: string | null;
   started_at: string | null;

@@ -4,6 +4,7 @@ use crate::commands::ddc_pak::UeJobRegistry;
 use cache_core::core::{
     driver_cache_clear, driver_cache_probe, pso_coldtest,
     pso_status::{self, PsoStatusCell},
+    pso_traversal::{self, TraversalSpec},
     pso_warmup::{self, PsoWarmupSpec},
     ue_runner::{RunnerCancel, UeRunnerBackend, UeRunnerEvent},
 };
@@ -13,6 +14,7 @@ use cache_core::data::{
 };
 use cache_core::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -77,6 +79,9 @@ pub struct StartPsoWarmupRequest {
     /// with the same spec counts hitches; 0 hitches there = green light.
     #[serde(default = "default_pso_verify_minutes")]
     pub verify_minutes: u32,
+    /// 启用 RC 遍历（预跑/验证两段都驱动舞台扫场）；None = 固定机位。
+    #[serde(default)]
+    pub traversal: Option<TraversalRequest>,
     /// Pin the UE version used on every node; None = each node's primary
     /// install (risky when a node's primary differs from the project version).
     #[serde(default)]
@@ -89,6 +94,44 @@ fn default_pso_offscreen() -> bool {
 
 fn default_pso_verify_minutes() -> u32 {
     pso_warmup::DEFAULT_VERIFY_MINUTES
+}
+
+/// 遍历参数（host 由各目标机自动填充；其余省略走 TraversalSpec 默认值）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct TraversalRequest {
+    pub map_path: String,
+    #[serde(default)]
+    pub ws_port: Option<u16>,
+    #[serde(default)]
+    pub dwell_ms: Option<u64>,
+    #[serde(default)]
+    pub yaw_step_deg: Option<f64>,
+    #[serde(default)]
+    pub pitch_levels_deg: Option<Vec<f64>>,
+}
+
+impl TraversalRequest {
+    fn to_spec(&self, host: &str) -> TraversalSpec {
+        let base = TraversalSpec {
+            host: host.into(),
+            ws_port: 30020,
+            map_path: self.map_path.clone(),
+            dwell_ms: 2000,
+            yaw_step_deg: 30.0,
+            pitch_levels_deg: vec![-15.0, 0.0, 15.0],
+            probe_interval_secs: 30,
+        };
+        TraversalSpec {
+            ws_port: self.ws_port.unwrap_or(base.ws_port),
+            dwell_ms: self.dwell_ms.unwrap_or(base.dwell_ms),
+            yaw_step_deg: self.yaw_step_deg.unwrap_or(base.yaw_step_deg),
+            pitch_levels_deg: self
+                .pitch_levels_deg
+                .clone()
+                .unwrap_or(base.pitch_levels_deg.clone()),
+            ..base
+        }
+    }
 }
 
 fn normalize_optional(value: Option<&str>) -> Option<String> {
@@ -198,6 +241,42 @@ enum WarmupPhaseEnd {
     Error(String),
 }
 
+/// 遍历事件转发：TraversalEvent → 前端事件 pso-traversal-progress。
+fn spawn_traversal_emitter(
+    mut events: tokio::sync::mpsc::UnboundedReceiver<pso_traversal::TraversalEvent>,
+    app: AppHandle,
+    machine_id: i64,
+    run_id: i64,
+    phase: &'static str,
+    parent_job_id: String,
+    job_id: String,
+) {
+    #[derive(Clone, Serialize)]
+    struct TraversalProgressPayload<'a> {
+        job_id: &'a str,
+        parent_job_id: &'a str,
+        machine_id: i64,
+        run_id: i64,
+        phase: &'a str,
+        event: &'a pso_traversal::TraversalEvent,
+    }
+    tokio::spawn(async move {
+        while let Some(ev) = events.recv().await {
+            let _ = app.emit(
+                "pso-traversal-progress",
+                TraversalProgressPayload {
+                    job_id: &job_id,
+                    parent_job_id: &parent_job_id,
+                    machine_id,
+                    run_id,
+                    phase,
+                    event: &ev,
+                },
+            );
+        }
+    });
+}
+
 /// Drives one warmup phase to its terminal event, counting hitches and
 /// re-emitting progress. Shared by the prerun and verify phases.
 #[allow(clippy::too_many_arguments)]
@@ -212,11 +291,15 @@ async fn drive_warmup_phase(
     run_id: i64,
     phase: &'static str,
     hitch_count: &mut i64,
+    shared_hitches: Option<&Arc<AtomicI64>>,
 ) -> WarmupPhaseEnd {
     while let Some(event) = events.recv().await {
         if let UeRunnerEvent::LogLine { text, .. } = &event {
             if pso_warmup::is_hitch_line(text) {
                 *hitch_count += 1;
+                if let Some(shared) = shared_hitches {
+                    shared.store(*hitch_count, Ordering::Relaxed);
+                }
             }
         }
         let _ = app.emit(
@@ -332,6 +415,11 @@ pub async fn start_pso_warmup(
     for spec in &specs {
         pso_warmup::validate_warmup_spec(spec)?;
     }
+    if let Some(traversal) = &request.traversal {
+        for target in &targets {
+            pso_traversal::validate_traversal_spec(&traversal.to_spec(&target.ip))?;
+        }
+    }
     preflight_dc_cfg(
         targets
             .iter()
@@ -353,6 +441,7 @@ pub async fn start_pso_warmup(
             request.max_minutes,
             spec.mode(),
             spec.dc_node.as_deref(),
+            request.traversal.is_some(),
         )?);
     }
 
@@ -383,11 +472,36 @@ pub async fn start_pso_warmup(
         let engine_for_task = target.engine_path.clone();
         let uproject_for_task = target.uproject_path.clone();
         let spec_for_task = spec.clone();
+        let traversal_for_task = request.traversal.clone();
 
         tokio::spawn(async move {
             let started = std::time::Instant::now();
             let mut prerun_hitches: i64 = 0;
             let mut verify_hitches: i64 = 0;
+
+            // 遍历（可选）：与预跑段并行驱动舞台；收敛会置 watchdog 位提前
+            // 结束预跑段（读作计划内完成）。
+            let mut prerun_shared: Option<Arc<AtomicI64>> = None;
+            let mut prerun_traversal = None;
+            if let Some(req) = &traversal_for_task {
+                let counter = Arc::new(AtomicI64::new(0));
+                let handle = pso_traversal::spawn_traversal(
+                    req.to_spec(&ip_for_task),
+                    counter.clone(),
+                    prerun_cancel.clone(),
+                );
+                spawn_traversal_emitter(
+                    handle.events,
+                    app_for_task.clone(),
+                    machine_id,
+                    run_id,
+                    "prerun",
+                    parent_for_task.clone(),
+                    job_id_for_task.clone(),
+                );
+                prerun_shared = Some(counter);
+                prerun_traversal = Some((handle.stop, handle.join));
+            }
 
             let prerun_end = drive_warmup_phase(
                 &mut events,
@@ -400,8 +514,25 @@ pub async fn start_pso_warmup(
                 run_id,
                 "prerun",
                 &mut prerun_hitches,
+                prerun_shared.as_ref(),
             )
             .await;
+
+            if let Some((stop, join)) = prerun_traversal {
+                stop.store(true, Ordering::Relaxed);
+                match join.await {
+                    Ok(outcome) => {
+                        if let Err(err) = pso_warmup_runs::record_convergence(
+                            &db_for_task,
+                            run_id,
+                            outcome.converged,
+                        ) {
+                            tracing::error!(?err, run_id, "pso traversal convergence persist failed");
+                        }
+                    }
+                    Err(err) => tracing::error!(?err, run_id, "pso traversal task join failed"),
+                }
+            }
 
             // Phase 2: the prerun window completing hands over to a verify run
             // with the same spec — its hitch count is the green-light basis.
@@ -437,6 +568,29 @@ pub async fn start_pso_warmup(
                             let verify_started = std::time::Instant::now();
                             let verify_cancel = verify_handle.cancel.clone();
                             let mut verify_events = verify_handle.events;
+                            // 验证段同样遍历：hitch=0 的绿灯必须在覆盖扫场
+                            // 条件下成立，而不是只盯固定机位。
+                            let mut verify_shared: Option<Arc<AtomicI64>> = None;
+                            let mut verify_traversal = None;
+                            if let Some(req) = &traversal_for_task {
+                                let counter = Arc::new(AtomicI64::new(0));
+                                let handle = pso_traversal::spawn_traversal(
+                                    req.to_spec(&ip_for_task),
+                                    counter.clone(),
+                                    verify_cancel.clone(),
+                                );
+                                spawn_traversal_emitter(
+                                    handle.events,
+                                    app_for_task.clone(),
+                                    machine_id,
+                                    run_id,
+                                    "verify",
+                                    parent_for_task.clone(),
+                                    job_id_for_task.clone(),
+                                );
+                                verify_shared = Some(counter);
+                                verify_traversal = Some((handle.stop, handle.join));
+                            }
                             let verify_end = drive_warmup_phase(
                                 &mut verify_events,
                                 &verify_cancel,
@@ -448,8 +602,13 @@ pub async fn start_pso_warmup(
                                 run_id,
                                 "verify",
                                 &mut verify_hitches,
+                                verify_shared.as_ref(),
                             )
                             .await;
+                            if let Some((stop, join)) = verify_traversal {
+                                stop.store(true, Ordering::Relaxed);
+                                let _ = join.await;
+                            }
                             if let Err(err) = pso_warmup_runs::record_verify_phase(
                                 &db_for_task,
                                 run_id,
@@ -595,6 +754,11 @@ pub async fn start_pso_coldtest(
     for spec in &specs {
         pso_warmup::validate_warmup_spec(spec)?;
     }
+    if let Some(traversal) = &request.traversal {
+        for target in &targets {
+            pso_traversal::validate_traversal_spec(&traversal.to_spec(&target.ip))?;
+        }
+    }
     preflight_dc_cfg(
         targets
             .iter()
@@ -614,6 +778,7 @@ pub async fn start_pso_coldtest(
             request.max_minutes,
             pso_coldtest::COLDTEST_MODE,
             spec.dc_node.as_deref(),
+            false,
         )?);
     }
 

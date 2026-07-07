@@ -336,6 +336,7 @@ mod tests {
             1,
             "ndisplay_offscreen",
             Some("Node_0"),
+            false,
         )
         .unwrap();
         pso_warmup_runs::finish(&db, run_id, WarmupStatus::Ok, Some(0), None, 60, None).unwrap();

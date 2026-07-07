@@ -957,6 +957,11 @@ pub enum PsoAction {
         /// with the same spec counts hitches; 0 hitches there = green light.
         #[arg(long, default_value_t = 2)]
         verify_minutes: u32,
+        /// Enable RC stage traversal during both phases: loaded map package
+        /// path (e.g. /Game/Maps/LED_CurvedStage). Requires the RC websocket
+        /// (auto-enabled by warmup's -RCWebControlEnable).
+        #[arg(long, value_name = "MAP")]
+        traverse_map: Option<String>,
         /// nDisplay config path on the render node.
         #[arg(long, alias = "dc-cfg")]
         dc_cfg_path: Option<String>,
