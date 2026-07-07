@@ -1977,6 +1977,29 @@ html, body {
 .ce-step-t { font-size: 12.5px; font-weight: 700; color: var(--chrome-text); }
 .ce-step-d { font-size: 11px; line-height: 1.45; color: var(--chrome-faint); margin-top: 3px; text-wrap: pretty; }
 
+/* ---- 最近的项目列表（空态） ---- */
+.ce-recent { width: 100%; max-width: 720px; margin-top: 30px; text-align: left; }
+.ce-recent-h { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700;
+  letter-spacing: .04em; text-transform: uppercase; color: var(--chrome-faint); margin-bottom: 10px; }
+.ce-recent-h svg { color: var(--chrome-faint); }
+.ce-recent-list { display: flex; flex-direction: column; gap: 6px; }
+.ce-recent-i { display: flex; align-items: center; gap: 12px; padding: 11px 13px; border-radius: 10px;
+  background: var(--sunken); border: 1px solid var(--chrome-line); cursor: pointer;
+  transition: background .12s, border-color .12s; }
+.ce-recent-i:hover { background: color-mix(in srgb, var(--volo-700) 8%, var(--chrome-card));
+  border-color: color-mix(in srgb, var(--volo-700) 32%, var(--chrome-line)); }
+.ce-recent-ico { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center;
+  color: var(--chrome-dim); background: var(--wash); border: 1px solid var(--chrome-line); }
+.ce-recent-ico.done { color: var(--positive-visual); background: color-mix(in srgb, var(--positive-visual) 12%, var(--sunken));
+  border-color: color-mix(in srgb, var(--positive-visual) 28%, var(--chrome-line)); }
+.ce-recent-main { min-width: 0; flex: 1; }
+.ce-recent-name { font-size: 13px; font-weight: 700; color: var(--chrome-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ce-recent-path { font-family: var(--font-code); font-size: 10.5px; color: var(--chrome-faint); margin-top: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ce-recent-meta { flex: 0 0 auto; font-size: 11px; color: var(--chrome-dim); }
+.ce-recent-go { flex: 0 0 auto; display: flex; color: var(--chrome-faint); }
+.ce-recent-i:hover .ce-recent-go { color: var(--volo-400); }
+
 @media (max-width: 1180px) {
   .ce-steps { grid-template-columns: 1fr; }
 }
