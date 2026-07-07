@@ -2,13 +2,12 @@
 //! never opens DB itself.
 
 use crate::core::{
-    ddc_pak, env_vars, ini_editor, local_cache, pak_distribute, pso_collect, pso_distribute,
-    pso_warmup, shares, ue_log_verify,
+    ddc_pak, env_vars, ini_editor, local_cache, pak_distribute, shares, ue_log_verify,
     ue_runner::{UeRunnerBackend, UeRunnerEvent},
 };
 use crate::data::{
     credentials as data_creds, machine_ue_installs, machines as data_machines, project_locations,
-    pso_cache_files, share_configs, CredentialKind, CredentialRecord, Db, ShareConfig, ShareMode,
+    share_configs, CredentialKind, CredentialRecord, Db, ShareConfig, ShareMode,
 };
 use crate::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
@@ -21,7 +20,6 @@ pub struct DeployPlan {
     pub local_cache: LocalCacheSpec,
     pub shared_cache: SharedCacheSpec,
     pub ddc_pak: PakSpec,
-    pub pso: PsoSpec,
     pub verify: VerifySpec,
 }
 
@@ -34,11 +32,6 @@ impl DeployPlan {
     /// enabled-but-incomplete plan fails with a clear error instead of running
     /// with an empty resolution / editor path.
     pub fn validate(&self) -> VoloResult<()> {
-        if self.pso.enabled && self.pso.resolution.trim().is_empty() {
-            return Err(VoloError::InvalidInput(
-                "pso.resolution is required when pso.enabled is true".into(),
-            ));
-        }
         if self.verify.run_log_verify && self.verify.editor_exe.trim().is_empty() {
             return Err(VoloError::InvalidInput(
                 "verify.editor_exe is required when verify.run_log_verify is true".into(),
@@ -67,19 +60,6 @@ pub struct SharedCacheSpec {
 pub struct PakSpec { pub enabled: bool }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PsoSpec {
-    pub enabled: bool,
-    // DESIGN-2: only consumed when `enabled` (parse_resolution + the PSO steps in
-    // plan_steps). Optional in JSON so a `"pso": { "enabled": false }` plan
-    // doesn't have to carry dummy values; `DeployPlan::validate` enforces them
-    // when the feature IS enabled.
-    #[serde(default)]
-    pub resolution: String,
-    #[serde(default)]
-    pub max_minutes: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifySpec {
     pub run_log_verify: bool,
     // DESIGN-2: only consumed when `run_log_verify` (VerifyStartupLogs step).
@@ -100,9 +80,6 @@ pub enum DeployStep {
     WriteBackendGraph,
     GenerateDdcPak,
     DistributeDdcPak,
-    SetPsoCvars,
-    CollectPso,
-    DistributePso,
     VerifyStartupLogs,
 }
 
@@ -128,11 +105,6 @@ pub fn plan_steps(plan: &DeployPlan) -> Vec<DeployStep> {
     if plan.ddc_pak.enabled {
         s.push(GenerateDdcPak);
         s.push(DistributeDdcPak);
-    }
-    if plan.pso.enabled {
-        s.push(SetPsoCvars);
-        s.push(CollectPso);
-        s.push(DistributePso);
     }
     if plan.verify.run_log_verify {
         s.push(VerifyStartupLogs);
@@ -221,26 +193,14 @@ fn resolve_primary_engine_path(db: &Db, machine_id: i64) -> VoloResult<String> {
     Ok(install.install_path)
 }
 
-fn parse_resolution(text: &str) -> VoloResult<(u32, u32)> {
-    let mut parts = text.split(|c| c == 'x' || c == 'X');
-    let w = parts
-        .next()
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .ok_or_else(|| VoloError::InvalidInput(format!("bad resolution: {}", text)))?;
-    let h = parts
-        .next()
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .ok_or_else(|| VoloError::InvalidInput(format!("bad resolution: {}", text)))?;
-    Ok((w, h))
-}
 
 fn step_machine_ids(plan: &DeployPlan, step: DeployStep) -> Vec<i64> {
     use DeployStep::*;
     match step {
-        ProvisionLocalDir | SetLocalEnv | SetSharedEnv | WriteBackendGraph | SetPsoCvars
-        | DistributeDdcPak | DistributePso | VerifyStartupLogs => plan.target_machine_ids.clone(),
+        ProvisionLocalDir | SetLocalEnv | SetSharedEnv | WriteBackendGraph
+        | DistributeDdcPak | VerifyStartupLogs => plan.target_machine_ids.clone(),
         CreateSmbShare => vec![plan.shared_cache.server_machine_id],
-        GenerateDdcPak | CollectPso => vec![plan.source_machine_id],
+        GenerateDdcPak => vec![plan.source_machine_id],
     }
 }
 
@@ -474,103 +434,6 @@ fn execute_one(
             }
             Ok(Some(format!("{} bytes copied", outcome.bytes_copied)))
         }
-        SetPsoCvars => {
-            let project_root = project_root_for(db, plan.project_id, machine_id)?;
-            // UE 5.8 源码核实（ConfigCacheIni.cpp::LoadConsoleVariablesFromINI）：
-            // 工程级 CVar 生效位置是 GEngineIni 层级（DefaultEngine.ini）的
-            // [ConsoleVariables] 段；工程目录下的 ConsoleVariables.ini 引擎不读
-            // （只读引擎目录那份的 [Startup]）。原先写错了文件。
-            let ini = format!(
-                "{}\\Config\\DefaultEngine.ini",
-                project_root.trim_end_matches('\\')
-            );
-            for key in [
-                "r.ShaderPipelineCache.Enabled",
-                "r.PSOPrecaching",
-                "r.PSOPrecache.GlobalShaders",
-            ] {
-                ini_editor::set_key_create(host, &ini, "ConsoleVariables", key, "1")?;
-            }
-            // r.PSOPrecache.Compile 不是真实存在的 CVar（UE 5.8 源码核实过），已从这里删除；
-            // R009 巡检的是 r.PSOPrecache.Mode，健康值是 0（Full PSO），不是 1。
-            ini_editor::set_key_create(host, &ini, "ConsoleVariables", "r.PSOPrecache.Mode", "0")?;
-            Ok(Some("4 CVars set".into()))
-        }
-        CollectPso => {
-            let loc = project_location_for(db, plan.project_id, machine_id)?;
-            let engine_path = resolve_primary_engine_path(db, machine_id)?;
-            let count = collect_pso_sync(
-                db,
-                plan.project_id,
-                machine_id,
-                host,
-                &engine_path,
-                &loc.uproject_path,
-                &loc.abs_path,
-                &plan.pso,
-                creds,
-            )?;
-            Ok(Some(format!("{} PSO files", count)))
-        }
-        DistributePso => {
-            let source_machine = data_machines::find_by_id(db, plan.source_machine_id)?
-                .ok_or_else(|| {
-                    VoloError::InvalidInput(format!(
-                        "machine {} not found",
-                        plan.source_machine_id
-                    ))
-                })?;
-            let files = pso_cache_files::list_by_project(db, plan.project_id)?
-                .into_iter()
-                .filter(|f| f.source_machine_id == plan.source_machine_id)
-                .collect::<Vec<_>>();
-            if files.is_empty() {
-                return Err(VoloError::OperationFailed(
-                    "no PSO cache files collected on source".into(),
-                ));
-            }
-            // SSH key auth: source SMB credential for the shared-cache share (Mode
-            // B svc password from the SecretStore, or none for open Mode A). See
-            // deploy_source_smb / DistributeDdcPak.
-            let (smb_user, smb_pass) = deploy_source_smb(db, plan)?;
-            let mut total_bytes: i64 = 0;
-            for file in &files {
-                let items = pso_distribute::plan(
-                    db,
-                    &source_machine.ip,
-                    file,
-                    &[machine_id],
-                    plan.shared_cache.unc_path.as_deref(),
-                    smb_user.clone(),
-                    smb_pass.clone(),
-                )?;
-                let item = items
-                    .into_iter()
-                    .find(|i| i.target_machine_id == machine_id)
-                    .ok_or_else(|| {
-                        VoloError::InvalidInput(
-                            "no pso plan item for target".into(),
-                        )
-                    })?;
-                let outcome = block_on_async(pso_distribute::run_one(item))?;
-                if !outcome.ok {
-                    return Err(VoloError::OperationFailed(format!(
-                        "robocopy exit {} ({}): {}",
-                        outcome.exit_code,
-                        file.file_name,
-                        outcome
-                            .message
-                            .unwrap_or_else(|| outcome.stdout_tail.clone())
-                    )));
-                }
-                total_bytes += outcome.bytes_copied;
-            }
-            Ok(Some(format!(
-                "{} files, {} bytes",
-                files.len(),
-                total_bytes
-            )))
-        }
         VerifyStartupLogs => {
             let uproject = project_location_for(db, plan.project_id, machine_id)?
                 .uproject_path;
@@ -705,94 +568,6 @@ fn generate_pak_sync(
     }
 }
 
-/// Run a PSO collection end-to-end synchronously: launch via ue_runner, drain
-/// events until Completed/Cancelled/Error, then enumerate_remote +
-/// finalize_persist. Returns the number of files collected. Mirrors
-/// the removed Tauri collection command's wait loop minus Tauri events.
-#[allow(clippy::too_many_arguments)]
-fn collect_pso_sync(
-    db: &Db,
-    project_id: i64,
-    source_machine_id: i64,
-    host: &str,
-    engine_path: &str,
-    uproject_path: &str,
-    project_dir: &str,
-    spec: &PsoSpec,
-    creds: Option<(&str, &str)>,
-) -> VoloResult<usize> {
-    let (user, pass) = match creds {
-        Some((u, p)) => (Some(u), Some(p)),
-        None => (None, None),
-    };
-    let resolution = parse_resolution(&spec.resolution)?;
-    let collect_spec = pso_collect::PsoCollectSpec {
-        project_id,
-        source_machine_id,
-        ue_version: None,
-        resolution,
-        windowed: true,
-        max_minutes: spec.max_minutes,
-    };
-
-    let backend = if crate::core::loopback::is_loopback_target(host) {
-        UeRunnerBackend::Local
-    } else {
-        UeRunnerBackend::Remote
-    };
-
-    let handle = pso_collect::launch_collection(
-        backend,
-        host,
-        engine_path,
-        uproject_path,
-        &collect_spec,
-        user,
-        pass,
-    );
-    pso_warmup::spawn_watchdog(
-        handle.cancel.clone(),
-        spec.max_minutes,
-        format!("deploy-pso-{}-{}", project_id, source_machine_id),
-    );
-    let mut events = handle.events;
-
-    enum PsoOutcome {
-        Done,
-        Error(String),
-        StreamEnded,
-    }
-
-    let outcome = block_on_async(async move {
-        while let Some(event) = events.recv().await {
-            match event {
-                // Treat both Completed and Cancelled as "process exited; try to
-                // collect whatever files landed" - matches commands/pso.rs.
-                UeRunnerEvent::Completed { .. } | UeRunnerEvent::Cancelled => {
-                    return Ok(PsoOutcome::Done);
-                }
-                UeRunnerEvent::Error { message } => return Ok(PsoOutcome::Error(message)),
-                _ => {}
-            }
-        }
-        Ok::<PsoOutcome, VoloError>(PsoOutcome::StreamEnded)
-    })?;
-
-    match outcome {
-        PsoOutcome::Done => {}
-        PsoOutcome::Error(msg) => return Err(VoloError::OperationFailed(msg)),
-        PsoOutcome::StreamEnded => {
-            return Err(VoloError::OperationFailed(
-                "pso runner event stream ended without completion".into(),
-            ));
-        }
-    }
-
-    let files = pso_collect::enumerate_remote(host, project_dir, user, pass)?;
-    pso_collect::finalize_persist(db, project_id, source_machine_id, None, &files)?;
-    Ok(files.len())
-}
-
 pub fn run_plan(
     db: &Db,
     plan: &mut DeployPlan,
@@ -850,7 +625,6 @@ mod tests {
                 unc_path: None,
             },
             ddc_pak: PakSpec { enabled: true },
-            pso: PsoSpec { enabled: true, resolution: "1920x1080".into(), max_minutes: 10 },
             verify: VerifySpec {
                 run_log_verify: true,
                 editor_exe: "C:\\UE\\UnrealEditor.exe".into(),
@@ -860,15 +634,15 @@ mod tests {
     }
 
     #[test]
-    fn full_plan_has_11_steps() {
-        assert_eq!(plan_steps(&baseline_plan()).len(), 11);
+    fn full_plan_has_8_steps() {
+        // PSO 三步（SetPsoCvars/CollectPso/DistributePso）已随证伪链路剔除。
+        assert_eq!(plan_steps(&baseline_plan()).len(), 8);
     }
 
     #[test]
     fn minimal_plan_skips_optional_phases() {
         let mut p = baseline_plan();
         p.ddc_pak.enabled = false;
-        p.pso.enabled = false;
         p.verify.run_log_verify = false;
         let steps = plan_steps(&p);
         assert_eq!(steps.len(), 5);
@@ -891,32 +665,18 @@ mod tests {
 
     #[test]
     fn minimal_json_plan_deserializes_and_validates_with_disabled_features() {
+        // 注意 MINIMAL_JSON 仍带遗留 "pso" 键：旧 plan 文件必须继续可反序列化
+        // （serde 默认容忍未知字段），PSO 三步剔除不做破坏性 schema 变更。
         let plan: DeployPlan =
             serde_json::from_str(MINIMAL_JSON).expect("minimal disabled-feature plan must deserialize");
         // Omitted fields take their defaults.
-        assert_eq!(plan.pso.resolution, "");
-        assert_eq!(plan.pso.max_minutes, 0);
         assert_eq!(plan.verify.editor_exe, "");
         // Disabled features need no values → validation passes.
-        plan.validate().expect("disabled features must not require resolution/editor_exe");
+        plan.validate().expect("disabled features must not require editor_exe");
         let steps = plan_steps(&plan);
-        assert!(!steps.contains(&DeployStep::CollectPso));
         assert!(!steps.contains(&DeployStep::VerifyStartupLogs));
     }
 
-    #[test]
-    fn validate_requires_resolution_when_pso_enabled() {
-        let json = MINIMAL_JSON.replace(
-            "\"pso\": { \"enabled\": false }",
-            "\"pso\": { \"enabled\": true }",
-        );
-        let plan: DeployPlan = serde_json::from_str(&json).unwrap();
-        let err = plan.validate().expect_err("pso.enabled=true with empty resolution must fail");
-        match err {
-            VoloError::InvalidInput(m) => assert!(m.contains("pso.resolution"), "msg={m}"),
-            other => panic!("expected InvalidInput, got {other:?}"),
-        }
-    }
 
     #[test]
     fn validate_requires_editor_exe_when_log_verify_enabled() {
@@ -935,7 +695,6 @@ mod tests {
     #[test]
     fn pak_only_plan_has_7_steps() {
         let mut p = baseline_plan();
-        p.pso.enabled = false;
         p.verify.run_log_verify = false;
         assert_eq!(plan_steps(&p).len(), 7);
     }
@@ -960,12 +719,6 @@ mod tests {
         assert_eq!(on_source, vec![100]);
     }
 
-    #[test]
-    fn parse_resolution_accepts_x_separator() {
-        assert_eq!(parse_resolution("1920x1080").unwrap(), (1920, 1080));
-        assert_eq!(parse_resolution("640X480").unwrap(), (640, 480));
-        assert!(parse_resolution("bad").is_err());
-    }
 
     #[test]
     fn run_plan_emits_plan_completed_on_empty_target_set() {
@@ -975,7 +728,6 @@ mod tests {
         let mut plan = baseline_plan();
         plan.target_machine_ids.clear();
         plan.ddc_pak.enabled = false;
-        plan.pso.enabled = false;
         plan.verify.run_log_verify = false;
 
         let mut events: Vec<DeployEvent> = Vec::new();

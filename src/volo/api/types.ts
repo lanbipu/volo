@@ -22,9 +22,6 @@ export type DeployStep =
   | "write_backend_graph"
   | "generate_ddc_pak"
   | "distribute_ddc_pak"
-  | "set_pso_cvars"
-  | "collect_pso"
-  | "distribute_pso"
   | "verify_startup_logs";
 
 /* ============================ machines ============================ */
@@ -221,12 +218,6 @@ export interface PakSpec {
   enabled: boolean;
 }
 
-export interface PsoSpec {
-  enabled: boolean;
-  resolution: string;
-  max_minutes: number;
-}
-
 export interface VerifySpec {
   run_log_verify: boolean;
   editor_exe: string;
@@ -240,7 +231,6 @@ export interface DeployPlan {
   local_cache: LocalCacheSpec;
   shared_cache: SharedCacheSpec;
   ddc_pak: PakSpec;
-  pso: PsoSpec;
   verify: VerifySpec;
 }
 
