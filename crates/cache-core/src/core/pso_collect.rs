@@ -91,6 +91,7 @@ pub fn launch_collection(
         credential_user: user.map(str::to_string),
         credential_pass: pass.map(str::to_string),
         interactive: false,
+        hold_ssh_session: false,
     })
 }
 
@@ -117,7 +118,9 @@ pub fn enumerate_remote(
     )?;
     if !result.ok {
         return Err(VoloError::OperationFailed(
-            result.message.unwrap_or_else(|| "PSO file enumeration failed".into()),
+            result
+                .message
+                .unwrap_or_else(|| "PSO file enumeration failed".into()),
         ));
     }
     Ok(result
@@ -143,7 +146,9 @@ fn enumerate_local(project_dir: &str) -> VoloResult<Vec<EnumeratedFile>> {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let lower = name.to_lowercase();
         let is_target = lower.ends_with(".upipelinecache") || lower.ends_with(".stablepc.csv");
-        if !is_target { continue; }
+        if !is_target {
+            continue;
+        }
         let metadata = entry.metadata().map_err(VoloError::Io)?;
         files.push(EnumeratedFile {
             file_path: path.to_string_lossy().to_string(),
@@ -156,9 +161,9 @@ fn enumerate_local(project_dir: &str) -> VoloResult<Vec<EnumeratedFile>> {
 
 pub fn gpu_signature_for_machine(db: &Db, machine_id: i64) -> VoloResult<String> {
     let rows = machine_gpus::list_for_machine(db, machine_id)?;
-    let gpu = rows
-        .first()
-        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} has no GPU rows", machine_id)))?;
+    let gpu = rows.first().ok_or_else(|| {
+        VoloError::InvalidInput(format!("machine {} has no GPU rows", machine_id))
+    })?;
     Ok(gpu_consistency::signature_from_gpu(gpu).as_string())
 }
 
@@ -214,7 +219,9 @@ pub fn spawn_watchdog(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::{machine_gpus, machines, open_in_memory, schema, GpuInfo, GpuVendor, Machine};
+    use crate::data::{
+        machine_gpus, machines, open_in_memory, schema, GpuInfo, GpuVendor, Machine,
+    };
 
     #[test]
     fn build_ue_args_includes_resolution_and_exec_cmds() {
@@ -225,7 +232,9 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "-resx=1920"));
         assert!(args.iter().any(|arg| arg == "-resy=1080"));
         assert_eq!(
-            args.iter().filter(|arg| arg.starts_with("-ExecCmds=")).count(),
+            args.iter()
+                .filter(|arg| arg.starts_with("-ExecCmds="))
+                .count(),
             1
         );
     }

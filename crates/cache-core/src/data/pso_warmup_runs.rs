@@ -44,6 +44,9 @@ pub struct PsoWarmupRun {
     pub resolution_w: i64,
     pub resolution_h: i64,
     pub max_minutes: i64,
+    pub mode: String,
+    pub dc_node: Option<String>,
+    pub driver_cache_growth_bytes: Option<i64>,
     /// None while running; Some(n) once finished (0 = green light).
     pub hitch_count: Option<i64>,
     pub status: WarmupStatus,
@@ -58,18 +61,22 @@ pub fn insert_started(
     machine_id: i64,
     resolution: (u32, u32),
     max_minutes: u32,
+    mode: &str,
+    dc_node: Option<&str>,
 ) -> VoloResult<i64> {
     let conn = db.lock().unwrap();
     conn.execute(
         "INSERT INTO pso_warmup_runs
-         (project_id, machine_id, resolution_w, resolution_h, max_minutes, status)
-         VALUES (?, ?, ?, ?, ?, 'running')",
+         (project_id, machine_id, resolution_w, resolution_h, max_minutes, mode, dc_node, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'running')",
         rusqlite::params![
             project_id,
             machine_id,
             resolution.0 as i64,
             resolution.1 as i64,
             max_minutes as i64,
+            mode,
+            dc_node,
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -82,13 +89,22 @@ pub fn finish(
     hitch_count: Option<i64>,
     error_message: Option<&str>,
     duration_secs: i64,
+    driver_cache_growth_bytes: Option<i64>,
 ) -> VoloResult<()> {
     let conn = db.lock().unwrap();
     conn.execute(
         "UPDATE pso_warmup_runs
-         SET status = ?, hitch_count = ?, error_message = ?, duration_secs = ?
+         SET status = ?, hitch_count = ?, error_message = ?, duration_secs = ?,
+             driver_cache_growth_bytes = ?
          WHERE id = ?",
-        rusqlite::params![status.as_str(), hitch_count, error_message, duration_secs, run_id],
+        rusqlite::params![
+            status.as_str(),
+            hitch_count,
+            error_message,
+            duration_secs,
+            driver_cache_growth_bytes,
+            run_id,
+        ],
     )?;
     Ok(())
 }
@@ -118,6 +134,7 @@ pub fn list_by_project(
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, project_id, machine_id, resolution_w, resolution_h, max_minutes,
+                mode, dc_node, driver_cache_growth_bytes,
                 hitch_count, status, error_message, started_at, duration_secs
          FROM pso_warmup_runs
          WHERE project_id = ? AND (?2 IS NULL OR machine_id = ?2)
@@ -132,7 +149,7 @@ pub fn list_by_project(
 }
 
 fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<PsoWarmupRun> {
-    let status_raw: String = row.get(7)?;
+    let status_raw: String = row.get(10)?;
     Ok(PsoWarmupRun {
         id: Some(row.get(0)?),
         project_id: row.get(1)?,
@@ -140,11 +157,14 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<PsoWarmupRun> {
         resolution_w: row.get(3)?,
         resolution_h: row.get(4)?,
         max_minutes: row.get(5)?,
-        hitch_count: row.get(6)?,
+        mode: row.get(6)?,
+        dc_node: row.get(7)?,
+        driver_cache_growth_bytes: row.get(8)?,
+        hitch_count: row.get(9)?,
         status: WarmupStatus::from_str(&status_raw),
-        error_message: row.get(8)?,
-        started_at: row.get(9)?,
-        duration_secs: row.get(10)?,
+        error_message: row.get(11)?,
+        started_at: row.get(12)?,
+        duration_secs: row.get(13)?,
     })
 }
 
@@ -153,13 +173,27 @@ mod tests {
     use super::*;
     use crate::data::{machines, open_in_memory, projects, schema, Machine, Project};
 
+    fn insert_started_test(db: &Db, project_id: i64, machine_id: i64) -> i64 {
+        insert_started(
+            db,
+            project_id,
+            machine_id,
+            (1920, 1080),
+            20,
+            "ndisplay_offscreen",
+            Some("Node_0"),
+        )
+        .unwrap()
+    }
+
     fn setup() -> (Db, i64, i64) {
         let db = open_in_memory().unwrap();
         {
             let mut conn = db.lock().unwrap();
             schema::migrate(&mut conn).unwrap();
         }
-        let machine_id = machines::insert(&db, &Machine::new("RENDER-01", "192.168.10.21")).unwrap();
+        let machine_id =
+            machines::insert(&db, &Machine::new("RENDER-01", "192.168.10.21")).unwrap();
         let project_id = projects::upsert(
             &db,
             &Project {
@@ -183,23 +217,35 @@ mod tests {
     #[test]
     fn insert_then_finish_roundtrip() {
         let (db, machine_id, project_id) = setup();
-        let run_id = insert_started(&db, project_id, machine_id, (1920, 1080), 20).unwrap();
+        let run_id = insert_started_test(&db, project_id, machine_id);
         let running = list_by_project(&db, project_id, None).unwrap();
         assert_eq!(running.len(), 1);
         assert_eq!(running[0].status, WarmupStatus::Running);
+        assert_eq!(running[0].mode, "ndisplay_offscreen");
+        assert_eq!(running[0].dc_node.as_deref(), Some("Node_0"));
         assert_eq!(running[0].hitch_count, None);
 
-        finish(&db, run_id, WarmupStatus::Ok, Some(0), None, 300).unwrap();
+        finish(
+            &db,
+            run_id,
+            WarmupStatus::Ok,
+            Some(0),
+            None,
+            300,
+            Some(1234),
+        )
+        .unwrap();
         let done = list_by_project(&db, project_id, Some(machine_id)).unwrap();
         assert_eq!(done[0].status, WarmupStatus::Ok);
         assert_eq!(done[0].hitch_count, Some(0));
         assert_eq!(done[0].duration_secs, Some(300));
+        assert_eq!(done[0].driver_cache_growth_bytes, Some(1234));
     }
 
     #[test]
     fn machine_filter_excludes_other_machines() {
         let (db, machine_id, project_id) = setup();
-        insert_started(&db, project_id, machine_id, (1920, 1080), 20).unwrap();
+        insert_started_test(&db, project_id, machine_id);
         let other = list_by_project(&db, project_id, Some(machine_id + 999)).unwrap();
         assert!(other.is_empty());
     }
@@ -207,8 +253,17 @@ mod tests {
     #[test]
     fn cancelled_status_roundtrip() {
         let (db, machine_id, project_id) = setup();
-        let run_id = insert_started(&db, project_id, machine_id, (1920, 1080), 20).unwrap();
-        finish(&db, run_id, WarmupStatus::Cancelled, Some(3), None, 12).unwrap();
+        let run_id = insert_started_test(&db, project_id, machine_id);
+        finish(
+            &db,
+            run_id,
+            WarmupStatus::Cancelled,
+            Some(3),
+            None,
+            12,
+            None,
+        )
+        .unwrap();
         let rows = list_by_project(&db, project_id, None).unwrap();
         assert_eq!(rows[0].status, WarmupStatus::Cancelled);
         assert_eq!(rows[0].hitch_count, Some(3));
@@ -217,8 +272,8 @@ mod tests {
     #[test]
     fn reap_overdue_only_hits_expired_running_rows() {
         let (db, machine_id, project_id) = setup();
-        let fresh = insert_started(&db, project_id, machine_id, (1920, 1080), 20).unwrap();
-        let stale = insert_started(&db, project_id, machine_id, (1920, 1080), 20).unwrap();
+        let fresh = insert_started_test(&db, project_id, machine_id);
+        let stale = insert_started_test(&db, project_id, machine_id);
         {
             let conn = db.lock().unwrap();
             conn.execute(

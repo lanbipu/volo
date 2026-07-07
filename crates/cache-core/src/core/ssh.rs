@@ -193,7 +193,10 @@ pub fn scp_push(
         .arg("-o")
         .arg("IdentitiesOnly=yes")
         .arg("-o")
-        .arg(format!("UserKnownHostsFile={}", known_hosts.to_string_lossy()))
+        .arg(format!(
+            "UserKnownHostsFile={}",
+            known_hosts.to_string_lossy()
+        ))
         .arg("-o")
         .arg("StrictHostKeyChecking=accept-new")
         .arg("-o")
@@ -234,7 +237,10 @@ fn scp_base(key_path: &Path, known_hosts: &Path) -> Command {
         .arg("-o")
         .arg("IdentitiesOnly=yes")
         .arg("-o")
-        .arg(format!("UserKnownHostsFile={}", known_hosts.to_string_lossy()))
+        .arg(format!(
+            "UserKnownHostsFile={}",
+            known_hosts.to_string_lossy()
+        ))
         .arg("-o")
         .arg("StrictHostKeyChecking=accept-new")
         .arg("-o")
@@ -410,6 +416,39 @@ impl SshExecutor {
         synced_hosts().lock().unwrap().insert(cache_key);
         Ok(())
     }
+
+    /// Spawn a node script and leave the SSH process running. Used by UE
+    /// warm-up, where the SSH session lifetime intentionally keeps the remote
+    /// UnrealEditor process alive.
+    pub fn spawn_script(&self, host: &str, script: &NodeScript) -> VoloResult<std::process::Child> {
+        let user = script.ssh_user.as_deref().unwrap_or(&self.default_user);
+        self.ensure_scripts_staged(host, user)?;
+        let args = build_ssh_args(
+            &self.key_path.to_string_lossy(),
+            &self.known_hosts.to_string_lossy(),
+            user,
+            host,
+            script.name,
+            &self.staging_root,
+        );
+        let mut child = crate::core::proc::hide_console(Command::new("ssh").args(&args))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| VoloError::SshConnect(format!("spawn ssh failed: {e}")))?;
+        {
+            let stdin = child
+                .stdin
+                .as_mut()
+                .ok_or_else(|| VoloError::SshConnect("open ssh stdin failed".into()))?;
+            let mut payload = serde_json::to_vec(&script.args)
+                .map_err(|e| VoloError::InvalidInput(format!("encode args: {e}")))?;
+            payload.push(b'\n');
+            stdin.write_all(&payload)?;
+        }
+        Ok(child)
+    }
 }
 
 impl RemoteExecutor for SshExecutor {
@@ -512,7 +551,9 @@ mod tests {
         );
         assert!(args.contains(&"-i".to_string()));
         assert!(args.contains(&"/cfg/uecm_ed25519".to_string()));
-        assert!(args.iter().any(|a| a == "UserKnownHostsFile=/cfg/known_hosts"));
+        assert!(args
+            .iter()
+            .any(|a| a == "UserKnownHostsFile=/cfg/known_hosts"));
         assert!(args.iter().any(|a| a == "StrictHostKeyChecking=accept-new"));
         assert!(args.iter().any(|a| a == "BatchMode=yes"));
         assert!(args.iter().any(|a| a == "ServerAliveInterval=30"));
@@ -547,7 +588,10 @@ mod tests {
 
     #[test]
     fn map_exit_distinguishes_connect_from_script_failure() {
-        match map_exit(255, "ssh: connect to host RENDER-01 port 22: Connection refused") {
+        match map_exit(
+            255,
+            "ssh: connect to host RENDER-01 port 22: Connection refused",
+        ) {
             VoloError::SshConnect(m) => assert!(m.contains("Connection refused")),
             other => panic!("expected SshConnect, got {other:?}"),
         }
@@ -584,7 +628,10 @@ mod tests {
         std::env::remove_var("VOLO_DB_PATH");
         assert_eq!(exec.default_user, "uecm-svc");
         assert_eq!(exec.staging_root, STAGING_ROOT);
-        assert!(exec.key_path.exists(), "ensure_keypair should have generated the key");
+        assert!(
+            exec.key_path.exists(),
+            "ensure_keypair should have generated the key"
+        );
         assert!(exec.key_path.ends_with("uecm_ed25519"));
     }
 
@@ -651,16 +698,24 @@ mod tests {
 
     #[test]
     fn run_json_parses_node_stdout() {
-        let d: Demo =
-            run_json(&fake(r#"{"ok":true,"value":42}"#, "", 0), "RENDER-01", &demo_script()).unwrap();
+        let d: Demo = run_json(
+            &fake(r#"{"ok":true,"value":42}"#, "", 0),
+            "RENDER-01",
+            &demo_script(),
+        )
+        .unwrap();
         assert!(d.ok && d.value == 42);
     }
 
     #[test]
     fn run_json_returns_envelope_even_on_nonzero_exit() {
         // 脚本写 {ok:false} 到 stdout 后 exit 1：调用方仍应拿到 typed envelope。
-        let d: Demo =
-            run_json(&fake(r#"{"ok":false,"value":7}"#, "", 1), "RENDER-01", &demo_script()).unwrap();
+        let d: Demo = run_json(
+            &fake(r#"{"ok":false,"value":7}"#, "", 1),
+            "RENDER-01",
+            &demo_script(),
+        )
+        .unwrap();
         assert!(!d.ok && d.value == 7);
     }
 
@@ -678,21 +733,26 @@ mod tests {
 
     #[test]
     fn run_json_surfaces_bad_json_as_node_script_error() {
-        let err = run_json::<Demo>(&fake("not json", "", 0), "RENDER-01", &demo_script()).unwrap_err();
+        let err =
+            run_json::<Demo>(&fake("not json", "", 0), "RENDER-01", &demo_script()).unwrap_err();
         assert!(matches!(err, VoloError::NodeScript { .. }));
     }
 
     #[test]
     fn run_json_nonzero_empty_stdout_is_script_error() {
-        let err =
-            run_json::<Demo>(&fake("", "remote crash", 1), "RENDER-01", &demo_script()).unwrap_err();
+        let err = run_json::<Demo>(&fake("", "remote crash", 1), "RENDER-01", &demo_script())
+            .unwrap_err();
         assert!(matches!(err, VoloError::NodeScript { .. }));
     }
 
     #[test]
     fn run_json_exit_255_is_ssh_connect_error() {
-        let err = run_json::<Demo>(&fake("", "Connection refused", 255), "RENDER-01", &demo_script())
-            .unwrap_err();
+        let err = run_json::<Demo>(
+            &fake("", "Connection refused", 255),
+            "RENDER-01",
+            &demo_script(),
+        )
+        .unwrap_err();
         assert!(matches!(err, VoloError::SshConnect(_)));
     }
 

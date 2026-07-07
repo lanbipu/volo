@@ -440,6 +440,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         ALTER TABLE project_locations ADD COLUMN ue_version_minor INTEGER;
         "#,
     ),
+    (
+        "028_pso_warmup_runs_ndisplay_fields",
+        r#"
+        ALTER TABLE pso_warmup_runs ADD COLUMN mode TEXT NOT NULL DEFAULT 'legacy_game';
+        ALTER TABLE pso_warmup_runs ADD COLUMN dc_node TEXT;
+        ALTER TABLE pso_warmup_runs ADD COLUMN driver_cache_growth_bytes INTEGER;
+        "#,
+    ),
 ];
 
 pub fn migrate(conn: &mut Connection) -> VoloResult<()> {
@@ -467,10 +475,7 @@ pub fn migrate(conn: &mut Connection) -> VoloResult<()> {
 
         let tx = conn.transaction()?;
         tx.execute_batch(sql)?;
-        tx.execute(
-            "INSERT INTO schema_migrations (name) VALUES (?)",
-            [name],
-        )?;
+        tx.execute("INSERT INTO schema_migrations (name) VALUES (?)", [name])?;
         tx.commit()?;
         tracing::info!("applied migration: {}", name);
     }
@@ -486,7 +491,9 @@ pub fn migrate(conn: &mut Connection) -> VoloResult<()> {
             "ALTER TABLE zen_endpoints ADD COLUMN config_path_override TEXT",
             [],
         )?;
-        tracing::info!("backfilled zen_endpoints.config_path_override (migration 025 drift repair)");
+        tracing::info!(
+            "backfilled zen_endpoints.config_path_override (migration 025 drift repair)"
+        );
     }
 
     Ok(())
@@ -531,7 +538,7 @@ mod tests {
         let mut conn = db.lock().unwrap();
         migrate(&mut conn).unwrap();
         migrate(&mut conn).unwrap(); // run twice
-        // Should not error.
+                                     // Should not error.
     }
 
     #[test]
@@ -541,11 +548,7 @@ mod tests {
         migrate(&mut conn).unwrap();
 
         let count: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM schema_migrations",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT count(*) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
         assert!(count >= 1);
     }
@@ -702,11 +705,7 @@ mod tests {
         count == 1
     }
 
-    fn assert_has_columns(
-        conn: &Connection,
-        table: &str,
-        expected: &[(&str, &str, bool)],
-    ) {
+    fn assert_has_columns(conn: &Connection, table: &str, expected: &[(&str, &str, bool)]) {
         let cols = table_columns(conn, table);
         for (name, ty, notnull) in expected {
             let found = cols
@@ -937,7 +936,10 @@ mod tests {
              VALUES (1, 8558, 'local', '/tmp/zen2', 'editor_owned')",
             [],
         );
-        assert!(dup.is_err(), "expected UNIQUE constraint to reject duplicate");
+        assert!(
+            dup.is_err(),
+            "expected UNIQUE constraint to reject duplicate"
+        );
     }
 
     #[test]
@@ -957,7 +959,9 @@ mod tests {
         )
         .unwrap();
         let machine_id: i64 = conn
-            .query_row("SELECT id FROM machines WHERE hostname = 'h1'", [], |r| r.get(0))
+            .query_row("SELECT id FROM machines WHERE hostname = 'h1'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
 
         conn.execute(
@@ -1048,7 +1052,8 @@ mod tests {
         )
         .unwrap();
 
-        conn.execute("DELETE FROM zen_endpoints WHERE id = 1", []).unwrap();
+        conn.execute("DELETE FROM zen_endpoints WHERE id = 1", [])
+            .unwrap();
 
         let endpoint_ref: Option<i64> = conn
             .query_row(
@@ -1057,7 +1062,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(endpoint_ref.is_none(), "zen_endpoint_id should be NULL after endpoint deletion");
+        assert!(
+            endpoint_ref.is_none(),
+            "zen_endpoint_id should be NULL after endpoint deletion"
+        );
     }
 
     #[test]

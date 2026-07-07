@@ -63,7 +63,11 @@ pub fn effective_log_level(base: &str, verbose: u8, quiet: bool) -> String {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "cache", version, about = "Volo cache/fleet command-line interface")]
+#[command(
+    name = "cache",
+    version,
+    about = "Volo cache/fleet command-line interface"
+)]
 pub struct Cli {
     /// DEPRECATED 别名：等价 `--output json`。保留以兼容现有 docs/scripts。
     #[arg(long, global = true)]
@@ -312,7 +316,12 @@ pub enum MachineAction {
     /// SSH-unreachable machines are skipped (re-onboard via UECM-Bootstrap.cmd) and the
     /// batch continues.
     DeepScan {
-        #[arg(long, value_name = "M1,M2,...", value_delimiter = ',', conflicts_with = "all")]
+        #[arg(
+            long,
+            value_name = "M1,M2,...",
+            value_delimiter = ',',
+            conflicts_with = "all"
+        )]
         machine_ids: Vec<i64>,
         /// Deep-scan every machine in inventory.
         #[arg(long, conflicts_with = "machine_ids")]
@@ -325,7 +334,12 @@ pub enum MachineAction {
     /// UECM-Bootstrap.cmd on each node. `--save-as` / credential flags are accepted
     /// but ignored (kept for back-compat).
     Authorize {
-        #[arg(long, value_name = "M1,M2,...", value_delimiter = ',', conflicts_with = "all")]
+        #[arg(
+            long,
+            value_name = "M1,M2,...",
+            value_delimiter = ',',
+            conflicts_with = "all"
+        )]
         machine_ids: Vec<i64>,
         /// Authorize every machine in inventory.
         #[arg(long, conflicts_with = "machine_ids")]
@@ -925,7 +939,7 @@ pub enum PsoAction {
         cred: crate::credential_args::CredentialArgs,
     },
     /// Warm up & verify PSO readiness: run UE `-game` ON each target render node
-    /// (interactive session, Session 0 evasion) and count PSO creation hitches via
+    /// via held SSH session and count PSO creation hitches via
     /// LogPSOHitching. First run absorbs hitches into the node's driver cache; a
     /// re-run with hitch_count 0 is the "ready for show" green light. NDJSON stream.
     Warmup {
@@ -938,6 +952,18 @@ pub enum PsoAction {
         resolution: String,
         #[arg(long, default_value_t = 20)]
         max_minutes: u32,
+        /// nDisplay config path on the render node.
+        #[arg(long, alias = "dc-cfg")]
+        dc_cfg_path: Option<String>,
+        /// nDisplay node id, e.g. Node_0.
+        #[arg(long)]
+        dc_node: Option<String>,
+        /// Use -fullscreen instead of the default -RenderOffscreen.
+        #[arg(long = "fullscreen", action = clap::ArgAction::SetFalse)]
+        offscreen: bool,
+        /// Additional Unreal command-line argument. Repeat for multiple args.
+        #[arg(long = "extra-arg", value_name = "ARG")]
+        extra_args: Vec<String>,
         /// Pin the UE version on every node (e.g. 5.8). Omit = each node's
         /// primary install — risky if it differs from the project version.
         #[arg(long)]
@@ -1128,7 +1154,12 @@ pub enum ZenAction {
         #[arg(long, value_name = "ID")]
         machine: i64,
         /// Absolute Windows path (e.g. D:\UE_DDC\Zen).
-        #[arg(long, value_name = "PATH", conflicts_with = "clear", required_unless_present = "clear")]
+        #[arg(
+            long,
+            value_name = "PATH",
+            conflicts_with = "clear",
+            required_unless_present = "clear"
+        )]
         data_path: Option<String>,
         /// Clear the override (registry value + env var) — back to UE defaults.
         #[arg(long)]
@@ -1719,7 +1750,9 @@ mod tests {
             input_format: None,
             db_path: None,
             log_level: "warn".into(),
-            command: Domain::System { action: SystemAction::Version },
+            command: Domain::System {
+                action: SystemAction::Version,
+            },
         }
     }
 
@@ -1747,17 +1780,22 @@ mod tests {
         // 无显式 output、无 --json，但 AI_AGENT=1 -> Json
         assert_eq!(super::resolve_output(None, false, true), OutputFormat::Json);
         // 显式 --output text 压过 AI_AGENT
-        assert_eq!(super::resolve_output(Some(OutputFormat::Text), false, true), OutputFormat::Text);
+        assert_eq!(
+            super::resolve_output(Some(OutputFormat::Text), false, true),
+            OutputFormat::Text
+        );
         // 无任何信号 -> Text
-        assert_eq!(super::resolve_output(None, false, false), OutputFormat::Text);
+        assert_eq!(
+            super::resolve_output(None, false, false),
+            OutputFormat::Text
+        );
         // --json 别名仍 -> Json
         assert_eq!(super::resolve_output(None, true, false), OutputFormat::Json);
     }
 
     #[test]
     fn output_flag_round_trips_through_clap() {
-        let cli =
-            Cli::try_parse_from(["cache", "system", "version", "--output", "json"]).unwrap();
+        let cli = Cli::try_parse_from(["cache", "system", "version", "--output", "json"]).unwrap();
         assert_eq!(cli.output, Some(OutputFormat::Json));
 
         let cli = Cli::try_parse_from(["cache", "system", "version", "-o", "ndjson"]).unwrap();
@@ -1765,8 +1803,7 @@ mod tests {
 
         // `stream-json` is a clap alias for `ndjson` (spec §3.5).
         let cli =
-            Cli::try_parse_from(["cache", "system", "version", "--output", "stream-json"])
-                .unwrap();
+            Cli::try_parse_from(["cache", "system", "version", "--output", "stream-json"]).unwrap();
         assert_eq!(cli.output, Some(OutputFormat::Ndjson));
     }
 
@@ -1774,7 +1811,9 @@ mod tests {
     fn parses_machine_scan() {
         let cli = Cli::try_parse_from(["cache", "machine", "scan", "192.168.10.0/24"]).unwrap();
         match cli.command {
-            Domain::Machine { action: MachineAction::Scan { cidr, timeout_ms } } => {
+            Domain::Machine {
+                action: MachineAction::Scan { cidr, timeout_ms },
+            } => {
                 assert_eq!(cidr, "192.168.10.0/24");
                 assert_eq!(timeout_ms, 1000);
             }
@@ -1786,11 +1825,22 @@ mod tests {
     #[test]
     fn parses_machine_deep_scan() {
         let cli = Cli::try_parse_from([
-            "cache", "machine", "deep-scan", "--machine-ids", "3,4,5", "--cred-alias", "prod",
+            "cache",
+            "machine",
+            "deep-scan",
+            "--machine-ids",
+            "3,4,5",
+            "--cred-alias",
+            "prod",
         ])
         .unwrap();
         match cli.command {
-            Domain::Machine { action: MachineAction::DeepScan { machine_ids, all, .. } } => {
+            Domain::Machine {
+                action:
+                    MachineAction::DeepScan {
+                        machine_ids, all, ..
+                    },
+            } => {
                 assert_eq!(machine_ids, vec![3, 4, 5]);
                 assert!(!all);
             }
@@ -1801,12 +1851,21 @@ mod tests {
     #[test]
     fn parses_machine_authorize_with_save_as() {
         let cli = Cli::try_parse_from([
-            "cache", "machine", "authorize", "--all", "--user", "Administrator", "--pass-stdin",
-            "--save-as", "prod",
+            "cache",
+            "machine",
+            "authorize",
+            "--all",
+            "--user",
+            "Administrator",
+            "--pass-stdin",
+            "--save-as",
+            "prod",
         ])
         .unwrap();
         match cli.command {
-            Domain::Machine { action: MachineAction::Authorize { all, save_as, .. } } => {
+            Domain::Machine {
+                action: MachineAction::Authorize { all, save_as, .. },
+            } => {
                 assert!(all);
                 assert_eq!(save_as.as_deref(), Some("prod"));
             }
@@ -1824,7 +1883,9 @@ mod tests {
     fn parses_machine_refresh_by_id() {
         let cli = Cli::try_parse_from(["cache", "machine", "refresh", "3"]).unwrap();
         match cli.command {
-            Domain::Machine { action: MachineAction::Refresh { id, cred } } => {
+            Domain::Machine {
+                action: MachineAction::Refresh { id, cred },
+            } => {
                 assert_eq!(id, 3);
                 assert!(cred.cred_alias.is_none());
             }
@@ -1834,20 +1895,26 @@ mod tests {
 
     #[test]
     fn refresh_rejects_unknown_flag() {
-        let res = Cli::try_parse_from([
-            "cache", "machine", "refresh", "3", "--bogus-flag", "value",
-        ]);
+        let res =
+            Cli::try_parse_from(["cache", "machine", "refresh", "3", "--bogus-flag", "value"]);
         assert!(res.is_err());
     }
 
     #[test]
     fn parses_machine_refresh_with_cred_alias() {
         let cli = Cli::try_parse_from([
-            "cache", "machine", "refresh", "3", "--cred-alias", "winrm-admin",
+            "cache",
+            "machine",
+            "refresh",
+            "3",
+            "--cred-alias",
+            "winrm-admin",
         ])
         .unwrap();
         match cli.command {
-            Domain::Machine { action: MachineAction::Refresh { id, cred } } => {
+            Domain::Machine {
+                action: MachineAction::Refresh { id, cred },
+            } => {
                 assert_eq!(id, 3);
                 assert_eq!(cred.cred_alias.as_deref(), Some("winrm-admin"));
             }
@@ -1858,13 +1925,27 @@ mod tests {
     #[test]
     fn parses_cred_save_with_alias_and_user() {
         let cli = Cli::try_parse_from([
-            "cache", "cred", "save",
-            "--alias", "winrm-admin",
-            "--user", "Administrator",
+            "cache",
+            "cred",
+            "save",
+            "--alias",
+            "winrm-admin",
+            "--user",
+            "Administrator",
             "--pass-stdin",
-        ]).unwrap();
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Cred { action: CredAction::Save { alias, user, pass, pass_stdin, .. } } => {
+            Domain::Cred {
+                action:
+                    CredAction::Save {
+                        alias,
+                        user,
+                        pass,
+                        pass_stdin,
+                        ..
+                    },
+            } => {
                 assert_eq!(alias, "winrm-admin");
                 assert_eq!(user, "Administrator");
                 assert_eq!(pass, None);
@@ -1877,9 +1958,16 @@ mod tests {
     #[test]
     fn cred_save_rejects_both_pass_and_pass_stdin() {
         let r = Cli::try_parse_from([
-            "cache", "cred", "save",
-            "--alias", "a", "--user", "u",
-            "--pass", "p", "--pass-stdin",
+            "cache",
+            "cred",
+            "save",
+            "--alias",
+            "a",
+            "--user",
+            "u",
+            "--pass",
+            "p",
+            "--pass-stdin",
         ]);
         assert!(r.is_err());
     }
@@ -1887,9 +1975,7 @@ mod tests {
     #[test]
     fn env_set_rejects_both_host_and_hosts() {
         let r = Cli::try_parse_from([
-            "cache", "env", "set",
-            "--host", "a", "--hosts", "b,c",
-            "--name", "X", "--value", "Y",
+            "cache", "env", "set", "--host", "a", "--hosts", "b,c", "--name", "X", "--value", "Y",
         ]);
         assert!(r.is_err());
     }
@@ -1897,12 +1983,19 @@ mod tests {
     #[test]
     fn env_set_accepts_hosts_list() {
         let cli = Cli::try_parse_from([
-            "cache", "env", "set",
-            "--hosts", "a,b,c",
-            "--name", "X", "--value", "Y",
-        ]).unwrap();
+            "cache", "env", "set", "--hosts", "a,b,c", "--name", "X", "--value", "Y",
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Env { action: EnvAction::Set { target, name, value, .. } } => {
+            Domain::Env {
+                action:
+                    EnvAction::Set {
+                        target,
+                        name,
+                        value,
+                        ..
+                    },
+            } => {
                 assert_eq!(target.hosts, Some(vec!["a".into(), "b".into(), "c".into()]));
                 assert_eq!(name, "X");
                 assert_eq!(value, "Y");
@@ -1914,13 +2007,35 @@ mod tests {
     #[test]
     fn parses_ini_backend_graph_set() {
         let cli = Cli::try_parse_from([
-            "cache", "ini", "backend-graph", "set",
-            "--hosts", "R01,R02", "--file-path", r"D:\Proj\Config\DefaultEngine.ini",
-            "--node", "Shared", "--field", "ReadOnly", "--value", "false",
-            "--cred-alias", "admin", "--yes",
-        ]).unwrap();
+            "cache",
+            "ini",
+            "backend-graph",
+            "set",
+            "--hosts",
+            "R01,R02",
+            "--file-path",
+            r"D:\Proj\Config\DefaultEngine.ini",
+            "--node",
+            "Shared",
+            "--field",
+            "ReadOnly",
+            "--value",
+            "false",
+            "--cred-alias",
+            "admin",
+            "--yes",
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Ini { action: IniAction::BackendGraph { action: BackendGraphAction::Set { node, field, value, .. } } } => {
+            Domain::Ini {
+                action:
+                    IniAction::BackendGraph {
+                        action:
+                            BackendGraphAction::Set {
+                                node, field, value, ..
+                            },
+                    },
+            } => {
                 assert_eq!(node, "Shared");
                 assert_eq!(field, "ReadOnly");
                 assert_eq!(value, "false");
@@ -1932,14 +2047,22 @@ mod tests {
     #[test]
     fn parses_local_cache_create_batch() {
         let cli = Cli::try_parse_from([
-            "cache", "local-cache", "create",
-            "--hosts", "RENDER-01,RENDER-02",
-            "--path", r"D:\UE-DDC-Local",
-            "--cred-alias", "admin",
+            "cache",
+            "local-cache",
+            "create",
+            "--hosts",
+            "RENDER-01,RENDER-02",
+            "--path",
+            r"D:\UE-DDC-Local",
+            "--cred-alias",
+            "admin",
             "--yes",
-        ]).unwrap();
+        ])
+        .unwrap();
         match cli.command {
-            Domain::LocalCache { action: LocalCacheAction::Create { path, yes, .. } } => {
+            Domain::LocalCache {
+                action: LocalCacheAction::Create { path, yes, .. },
+            } => {
                 assert_eq!(path, r"D:\UE-DDC-Local");
                 assert!(yes);
             }
@@ -1950,14 +2073,30 @@ mod tests {
     #[test]
     fn parses_log_verify_startup() {
         let cli = Cli::try_parse_from([
-            "cache", "log", "verify-startup",
-            "--host", "RENDER-01",
-            "--editor-exe", r"C:\UE\Engine\Binaries\Win64\UnrealEditor.exe",
-            "--project", r"D:\Projects\MyVP\MyVP.uproject",
-            "--timeout", "180",
-        ]).unwrap();
+            "cache",
+            "log",
+            "verify-startup",
+            "--host",
+            "RENDER-01",
+            "--editor-exe",
+            r"C:\UE\Engine\Binaries\Win64\UnrealEditor.exe",
+            "--project",
+            r"D:\Projects\MyVP\MyVP.uproject",
+            "--timeout",
+            "180",
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Log { action: LogAction::VerifyStartup { host, editor_exe, project, timeout, .. } } => {
+            Domain::Log {
+                action:
+                    LogAction::VerifyStartup {
+                        host,
+                        editor_exe,
+                        project,
+                        timeout,
+                        ..
+                    },
+            } => {
                 assert_eq!(host, "RENDER-01");
                 assert!(editor_exe.ends_with("UnrealEditor.exe"));
                 assert!(project.ends_with(".uproject"));
@@ -1970,14 +2109,27 @@ mod tests {
     #[test]
     fn parses_deploy_ddc() {
         let cli = Cli::try_parse_from([
-            "cache", "deploy", "ddc",
-            "--plan", "/tmp/plan.json",
+            "cache",
+            "deploy",
+            "ddc",
+            "--plan",
+            "/tmp/plan.json",
             "--stop-on-failure",
-            "--cred-alias", "admin",
+            "--cred-alias",
+            "admin",
             "--yes",
-        ]).unwrap();
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Deploy { action: DeployAction::Ddc { plan, stop_on_failure, yes, .. } } => {
+            Domain::Deploy {
+                action:
+                    DeployAction::Ddc {
+                        plan,
+                        stop_on_failure,
+                        yes,
+                        ..
+                    },
+            } => {
                 assert_eq!(plan.to_string_lossy(), "/tmp/plan.json");
                 assert!(stop_on_failure);
                 assert!(yes);
@@ -1989,13 +2141,25 @@ mod tests {
     #[test]
     fn parses_ini_gc_pause() {
         let cli = Cli::try_parse_from([
-            "cache", "ini", "gc-pause",
-            "--hosts", "R01,R02",
-            "--project-id", "1",
-            "--cred-alias", "admin", "--yes",
-        ]).unwrap();
+            "cache",
+            "ini",
+            "gc-pause",
+            "--hosts",
+            "R01,R02",
+            "--project-id",
+            "1",
+            "--cred-alias",
+            "admin",
+            "--yes",
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Ini { action: IniAction::GcPause { project_id, yes, .. } } => {
+            Domain::Ini {
+                action:
+                    IniAction::GcPause {
+                        project_id, yes, ..
+                    },
+            } => {
                 assert_eq!(project_id, 1);
                 assert!(yes);
             }
@@ -2006,14 +2170,27 @@ mod tests {
     #[test]
     fn parses_ini_gc_resume_with_age() {
         let cli = Cli::try_parse_from([
-            "cache", "ini", "gc-resume",
-            "--hosts", "R01",
-            "--project-id", "1",
-            "--unused-file-age", "30",
-            "--cred-alias", "admin", "--yes",
-        ]).unwrap();
+            "cache",
+            "ini",
+            "gc-resume",
+            "--hosts",
+            "R01",
+            "--project-id",
+            "1",
+            "--unused-file-age",
+            "30",
+            "--cred-alias",
+            "admin",
+            "--yes",
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Ini { action: IniAction::GcResume { unused_file_age, .. } } => {
+            Domain::Ini {
+                action:
+                    IniAction::GcResume {
+                        unused_file_age, ..
+                    },
+            } => {
                 assert_eq!(unused_file_age, 30);
             }
             _ => panic!("wrong variant"),
@@ -2023,13 +2200,25 @@ mod tests {
     #[test]
     fn parses_ini_zen_gc_pause() {
         let cli = Cli::try_parse_from([
-            "cache", "ini", "zen-gc-pause",
-            "--hosts", "R01",
-            "--project-id", "7",
-            "--cred-alias", "admin", "--yes",
-        ]).unwrap();
+            "cache",
+            "ini",
+            "zen-gc-pause",
+            "--hosts",
+            "R01",
+            "--project-id",
+            "7",
+            "--cred-alias",
+            "admin",
+            "--yes",
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Ini { action: IniAction::ZenGcPause { project_id, yes, .. } } => {
+            Domain::Ini {
+                action:
+                    IniAction::ZenGcPause {
+                        project_id, yes, ..
+                    },
+            } => {
                 assert_eq!(project_id, 7);
                 assert!(yes);
             }
@@ -2041,12 +2230,22 @@ mod tests {
     fn parses_ini_zen_gc_resume_default_and_override() {
         // default gc_seconds = 14-day engine default
         let cli = Cli::try_parse_from([
-            "cache", "ini", "zen-gc-resume",
-            "--hosts", "R01", "--project-id", "1",
-            "--cred-alias", "admin", "--yes",
-        ]).unwrap();
+            "cache",
+            "ini",
+            "zen-gc-resume",
+            "--hosts",
+            "R01",
+            "--project-id",
+            "1",
+            "--cred-alias",
+            "admin",
+            "--yes",
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Ini { action: IniAction::ZenGcResume { gc_seconds, .. } } => {
+            Domain::Ini {
+                action: IniAction::ZenGcResume { gc_seconds, .. },
+            } => {
                 assert_eq!(gc_seconds, 1_209_600);
             }
             _ => panic!("wrong variant"),
@@ -2056,16 +2255,27 @@ mod tests {
     #[test]
     fn parses_health_run_with_expected_paths() {
         let cli = Cli::try_parse_from([
-            "cache", "health", "run",
-            "--machine-ids", "1,2",
-            "--expected-local-path", r"D:\UE-DDC-Local",
-            "--expected-shared-path", r"\\NAS\DDC",
-            "--cred-alias", "admin",
+            "cache",
+            "health",
+            "run",
+            "--machine-ids",
+            "1,2",
+            "--expected-local-path",
+            r"D:\UE-DDC-Local",
+            "--expected-shared-path",
+            r"\\NAS\DDC",
+            "--cred-alias",
+            "admin",
         ])
         .unwrap();
         match cli.command {
             Domain::Health {
-                action: HealthAction::Run { expected_local_path, expected_shared_path, .. },
+                action:
+                    HealthAction::Run {
+                        expected_local_path,
+                        expected_shared_path,
+                        ..
+                    },
             } => {
                 assert_eq!(expected_local_path, r"D:\UE-DDC-Local");
                 assert_eq!(expected_shared_path, r"\\NAS\DDC");
@@ -2076,14 +2286,15 @@ mod tests {
 
     #[test]
     fn parses_health_run_without_expected_paths_defaults_to_empty() {
-        let cli = Cli::try_parse_from([
-            "cache", "health", "run",
-            "--machine-ids", "1",
-        ])
-        .unwrap();
+        let cli = Cli::try_parse_from(["cache", "health", "run", "--machine-ids", "1"]).unwrap();
         match cli.command {
             Domain::Health {
-                action: HealthAction::Run { expected_local_path, expected_shared_path, .. },
+                action:
+                    HealthAction::Run {
+                        expected_local_path,
+                        expected_shared_path,
+                        ..
+                    },
             } => {
                 assert_eq!(expected_local_path, "");
                 assert_eq!(expected_shared_path, "");
@@ -2095,12 +2306,19 @@ mod tests {
     #[test]
     fn parses_health_scan_command_line() {
         let cli = Cli::try_parse_from([
-            "cache", "health", "scan-command-line",
-            "--host", "RENDER-01",
-            "--cred-alias", "admin",
-        ]).unwrap();
+            "cache",
+            "health",
+            "scan-command-line",
+            "--host",
+            "RENDER-01",
+            "--cred-alias",
+            "admin",
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Health { action: HealthAction::ScanCommandLine { host, .. } } => {
+            Domain::Health {
+                action: HealthAction::ScanCommandLine { host, .. },
+            } => {
                 assert_eq!(host, "RENDER-01");
             }
             _ => panic!("wrong variant"),
@@ -2110,14 +2328,23 @@ mod tests {
     #[test]
     fn parses_health_file_stats() {
         let cli = Cli::try_parse_from([
-            "cache", "health", "file-stats",
-            "--host", "RENDER-01",
-            "--local-path", r"D:\UE-DDC-Local",
-            "--shared-path", r"\\NAS\DDC",
-            "--cred-alias", "admin",
-        ]).unwrap();
+            "cache",
+            "health",
+            "file-stats",
+            "--host",
+            "RENDER-01",
+            "--local-path",
+            r"D:\UE-DDC-Local",
+            "--shared-path",
+            r"\\NAS\DDC",
+            "--cred-alias",
+            "admin",
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Health { action: HealthAction::FileStats { host, .. } } => {
+            Domain::Health {
+                action: HealthAction::FileStats { host, .. },
+            } => {
                 assert_eq!(host, "RENDER-01");
             }
             _ => panic!("wrong variant"),
@@ -2127,16 +2354,27 @@ mod tests {
     #[test]
     fn parses_health_analyze_advisories() {
         let cli = Cli::try_parse_from([
-            "cache", "health", "analyze-advisories",
-            "--host", "RENDER-01",
-            "--editor-exe", r"C:\UE\UnrealEditor.exe",
-            "--project", r"D:\Proj\Foo.uproject",
-            "--local-path", r"D:\UE-DDC-Local",
-            "--shared-path", r"\\NAS\DDC",
-            "--cred-alias", "admin",
-        ]).unwrap();
+            "cache",
+            "health",
+            "analyze-advisories",
+            "--host",
+            "RENDER-01",
+            "--editor-exe",
+            r"C:\UE\UnrealEditor.exe",
+            "--project",
+            r"D:\Proj\Foo.uproject",
+            "--local-path",
+            r"D:\UE-DDC-Local",
+            "--shared-path",
+            r"\\NAS\DDC",
+            "--cred-alias",
+            "admin",
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Health { action: HealthAction::AnalyzeAdvisories { host, .. } } => {
+            Domain::Health {
+                action: HealthAction::AnalyzeAdvisories { host, .. },
+            } => {
                 assert_eq!(host, "RENDER-01");
             }
             _ => panic!("wrong variant"),
@@ -2145,9 +2383,18 @@ mod tests {
 
     #[test]
     fn parses_health_run_with_machine_ids() {
-        let cli = Cli::try_parse_from(["cache", "health", "run", "--machine-ids", "1,2,3"]).unwrap();
+        let cli =
+            Cli::try_parse_from(["cache", "health", "run", "--machine-ids", "1,2,3"]).unwrap();
         match cli.command {
-            Domain::Health { action: HealthAction::Run { machine_ids, cidr, all, .. } } => {
+            Domain::Health {
+                action:
+                    HealthAction::Run {
+                        machine_ids,
+                        cidr,
+                        all,
+                        ..
+                    },
+            } => {
                 assert_eq!(machine_ids, vec![1, 2, 3]);
                 assert_eq!(cidr, None);
                 assert_eq!(all, false);
@@ -2158,9 +2405,12 @@ mod tests {
 
     #[test]
     fn parses_health_run_with_cidr() {
-        let cli = Cli::try_parse_from(["cache", "health", "run", "--cidr", "192.168.10.0/24"]).unwrap();
+        let cli =
+            Cli::try_parse_from(["cache", "health", "run", "--cidr", "192.168.10.0/24"]).unwrap();
         match cli.command {
-            Domain::Health { action: HealthAction::Run { cidr, .. } } => {
+            Domain::Health {
+                action: HealthAction::Run { cidr, .. },
+            } => {
                 assert_eq!(cidr.as_deref(), Some("192.168.10.0/24"));
             }
             _ => panic!("expected Health::Run"),
@@ -2171,7 +2421,9 @@ mod tests {
     fn parses_health_run_with_all_flag() {
         let cli = Cli::try_parse_from(["cache", "health", "run", "--all"]).unwrap();
         match cli.command {
-            Domain::Health { action: HealthAction::Run { all, .. } } => assert!(all),
+            Domain::Health {
+                action: HealthAction::Run { all, .. },
+            } => assert!(all),
             _ => panic!("expected Health::Run"),
         }
     }
@@ -2180,7 +2432,15 @@ mod tests {
     fn parses_health_run_with_no_target_mode() {
         let cli = Cli::try_parse_from(["cache", "health", "run"]).unwrap();
         match cli.command {
-            Domain::Health { action: HealthAction::Run { machine_ids, cidr, all, .. } } => {
+            Domain::Health {
+                action:
+                    HealthAction::Run {
+                        machine_ids,
+                        cidr,
+                        all,
+                        ..
+                    },
+            } => {
                 assert!(machine_ids.is_empty());
                 assert_eq!(cidr, None);
                 assert_eq!(all, false);
@@ -2191,7 +2451,15 @@ mod tests {
 
     #[test]
     fn rejects_cidr_and_machine_ids_together() {
-        let r = Cli::try_parse_from(["cache", "health", "run", "--cidr", "10.0.0.0/24", "--machine-ids", "1"]);
+        let r = Cli::try_parse_from([
+            "cache",
+            "health",
+            "run",
+            "--cidr",
+            "10.0.0.0/24",
+            "--machine-ids",
+            "1",
+        ]);
         assert!(r.is_err(), "should reject --cidr + --machine-ids");
     }
 
@@ -2206,12 +2474,19 @@ mod tests {
     #[test]
     fn ddc_generate_backend_defaults_to_auto() {
         let cli = Cli::try_parse_from([
-            "cache", "ddc", "generate",
-            "--project-id", "1",
-            "--source-machine", "1",
-        ]).unwrap();
+            "cache",
+            "ddc",
+            "generate",
+            "--project-id",
+            "1",
+            "--source-machine",
+            "1",
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Ddc { action: DdcAction::Generate { backend, .. } } => {
+            Domain::Ddc {
+                action: DdcAction::Generate { backend, .. },
+            } => {
                 assert_eq!(backend, CacheBackendChoice::Auto);
             }
             _ => panic!("expected Ddc::Generate"),
@@ -2221,13 +2496,21 @@ mod tests {
     #[test]
     fn ddc_generate_accepts_backend_zen() {
         let cli = Cli::try_parse_from([
-            "cache", "ddc", "generate",
-            "--project-id", "1",
-            "--source-machine", "1",
-            "--backend", "zen",
-        ]).unwrap();
+            "cache",
+            "ddc",
+            "generate",
+            "--project-id",
+            "1",
+            "--source-machine",
+            "1",
+            "--backend",
+            "zen",
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Ddc { action: DdcAction::Generate { backend, .. } } => {
+            Domain::Ddc {
+                action: DdcAction::Generate { backend, .. },
+            } => {
                 assert_eq!(backend, CacheBackendChoice::Zen);
             }
             _ => panic!("expected Ddc::Generate"),
@@ -2237,13 +2520,21 @@ mod tests {
     #[test]
     fn ddc_verify_accepts_backend_legacy() {
         let cli = Cli::try_parse_from([
-            "cache", "ddc", "verify",
-            "--project-id", "1",
-            "--source-machine", "1",
-            "--backend", "legacy",
-        ]).unwrap();
+            "cache",
+            "ddc",
+            "verify",
+            "--project-id",
+            "1",
+            "--source-machine",
+            "1",
+            "--backend",
+            "legacy",
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Ddc { action: DdcAction::Verify { backend, .. } } => {
+            Domain::Ddc {
+                action: DdcAction::Verify { backend, .. },
+            } => {
                 assert_eq!(backend, CacheBackendChoice::Legacy);
             }
             _ => panic!("expected Ddc::Verify"),
@@ -2253,15 +2544,24 @@ mod tests {
     #[test]
     fn ddc_distribute_accepts_backend_zen() {
         let cli = Cli::try_parse_from([
-            "cache", "ddc", "distribute",
-            "--project-id", "1",
-            "--source-machine", "1",
-            "--targets", "2,3",
-            "--backend", "zen",
+            "cache",
+            "ddc",
+            "distribute",
+            "--project-id",
+            "1",
+            "--source-machine",
+            "1",
+            "--targets",
+            "2,3",
+            "--backend",
+            "zen",
             "--yes",
-        ]).unwrap();
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Ddc { action: DdcAction::Distribute { backend, .. } } => {
+            Domain::Ddc {
+                action: DdcAction::Distribute { backend, .. },
+            } => {
                 assert_eq!(backend, CacheBackendChoice::Zen);
             }
             _ => panic!("expected Ddc::Distribute"),
@@ -2273,17 +2573,34 @@ mod tests {
     #[test]
     fn zen_enable_parses_required_flags() {
         let cli = Cli::try_parse_from([
-            "cache", "zen", "enable",
-            "--project-id", "7",
-            "--machines", "1,2,3",
-            "--upstream-endpoint-id", "9",
-            "--cred-alias", "winrm-admin",
+            "cache",
+            "zen",
+            "enable",
+            "--project-id",
+            "7",
+            "--machines",
+            "1,2,3",
+            "--upstream-endpoint-id",
+            "9",
+            "--cred-alias",
+            "winrm-admin",
             "--yes",
-        ]).unwrap();
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Zen { action: ZenAction::Enable {
-                project_id, machines, upstream_endpoint_id, namespace, yes, dry_run, cred, global: _,
-            } } => {
+            Domain::Zen {
+                action:
+                    ZenAction::Enable {
+                        project_id,
+                        machines,
+                        upstream_endpoint_id,
+                        namespace,
+                        yes,
+                        dry_run,
+                        cred,
+                        global: _,
+                    },
+            } => {
                 assert_eq!(project_id, Some(7));
                 assert_eq!(machines, vec![1, 2, 3]);
                 assert_eq!(upstream_endpoint_id, 9);
@@ -2299,15 +2616,31 @@ mod tests {
     #[test]
     fn zen_enable_accepts_custom_namespace_and_dry_run() {
         let cli = Cli::try_parse_from([
-            "cache", "zen", "enable",
-            "--project-id", "1",
-            "--machines", "5",
-            "--upstream-endpoint-id", "2",
-            "--namespace", "ue.shared",
+            "cache",
+            "zen",
+            "enable",
+            "--project-id",
+            "1",
+            "--machines",
+            "5",
+            "--upstream-endpoint-id",
+            "2",
+            "--namespace",
+            "ue.shared",
             "--dry-run",
-        ]).unwrap();
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Zen { action: ZenAction::Enable { namespace, dry_run, yes, machines, .. } } => {
+            Domain::Zen {
+                action:
+                    ZenAction::Enable {
+                        namespace,
+                        dry_run,
+                        yes,
+                        machines,
+                        ..
+                    },
+            } => {
                 assert_eq!(namespace, "ue.shared");
                 assert!(dry_run);
                 assert!(!yes);
@@ -2320,15 +2653,27 @@ mod tests {
     #[test]
     fn zen_disable_parses_required_flags() {
         let cli = Cli::try_parse_from([
-            "cache", "zen", "disable",
-            "--project-id", "1",
-            "--machines", "1,2",
+            "cache",
+            "zen",
+            "disable",
+            "--project-id",
+            "1",
+            "--machines",
+            "1,2",
             "--yes",
-        ]).unwrap();
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Zen { action: ZenAction::Disable {
-                project_id, machines, yes, dry_run, ..
-            } } => {
+            Domain::Zen {
+                action:
+                    ZenAction::Disable {
+                        project_id,
+                        machines,
+                        yes,
+                        dry_run,
+                        ..
+                    },
+            } => {
                 assert_eq!(project_id, Some(1));
                 assert_eq!(machines, vec![1, 2]);
                 assert!(yes);
@@ -2343,15 +2688,29 @@ mod tests {
     #[test]
     fn zen_verify_rules_parses_required_flags() {
         let cli = Cli::try_parse_from([
-            "cache", "zen", "verify-rules",
-            "--ue-version", "5.7",
-            "--ue-install", "C:\\UE\\5.7",
-        ]).unwrap();
+            "cache",
+            "zen",
+            "verify-rules",
+            "--ue-version",
+            "5.7",
+            "--ue-install",
+            "C:\\UE\\5.7",
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Zen { action: ZenAction::VerifyRules {
-                ue_version, ue_install, write_verified, run_editor,
-                machine, uproject_path, timeout_seconds, ..
-            } } => {
+            Domain::Zen {
+                action:
+                    ZenAction::VerifyRules {
+                        ue_version,
+                        ue_install,
+                        write_verified,
+                        run_editor,
+                        machine,
+                        uproject_path,
+                        timeout_seconds,
+                        ..
+                    },
+            } => {
                 assert_eq!(ue_version, "5.7");
                 assert_eq!(ue_install, "C:\\UE\\5.7");
                 assert!(!write_verified);
@@ -2369,13 +2728,25 @@ mod tests {
     #[test]
     fn zen_verify_rules_accepts_write_verified() {
         let cli = Cli::try_parse_from([
-            "cache", "zen", "verify-rules",
-            "--ue-version", "5.8.0",
-            "--ue-install", "/Users/lan/UE",
+            "cache",
+            "zen",
+            "verify-rules",
+            "--ue-version",
+            "5.8.0",
+            "--ue-install",
+            "/Users/lan/UE",
             "--write-verified",
-        ]).unwrap();
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Zen { action: ZenAction::VerifyRules { write_verified, ue_version, .. } } => {
+            Domain::Zen {
+                action:
+                    ZenAction::VerifyRules {
+                        write_verified,
+                        ue_version,
+                        ..
+                    },
+            } => {
                 assert!(write_verified);
                 assert_eq!(ue_version, "5.8.0");
             }
@@ -2389,23 +2760,45 @@ mod tests {
     #[test]
     fn zen_verify_rules_accepts_run_editor_flags() {
         let cli = Cli::try_parse_from([
-            "cache", "zen", "verify-rules",
-            "--ue-version", "5.7",
-            "--ue-install", "D:\\UE_5.7",
+            "cache",
+            "zen",
+            "verify-rules",
+            "--ue-version",
+            "5.7",
+            "--ue-install",
+            "D:\\UE_5.7",
             "--run-editor",
-            "--machine", "5",
-            "--uproject-path", "E:\\proj\\p.uproject",
-            "--timeout-seconds", "120",
-            "--expected-host", "127.0.0.1",
-            "--expected-port", "8558",
-            "--expected-namespace", "ue.ddc",
-            "--cred-alias", "render-svc",
-        ]).unwrap();
+            "--machine",
+            "5",
+            "--uproject-path",
+            "E:\\proj\\p.uproject",
+            "--timeout-seconds",
+            "120",
+            "--expected-host",
+            "127.0.0.1",
+            "--expected-port",
+            "8558",
+            "--expected-namespace",
+            "ue.ddc",
+            "--cred-alias",
+            "render-svc",
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Zen { action: ZenAction::VerifyRules {
-                run_editor, machine, uproject_path, timeout_seconds,
-                expected_host, expected_port, expected_namespace, cred, ..
-            } } => {
+            Domain::Zen {
+                action:
+                    ZenAction::VerifyRules {
+                        run_editor,
+                        machine,
+                        uproject_path,
+                        timeout_seconds,
+                        expected_host,
+                        expected_port,
+                        expected_namespace,
+                        cred,
+                        ..
+                    },
+            } => {
                 assert!(run_editor);
                 assert_eq!(machine, Some(5));
                 assert_eq!(uproject_path.as_deref(), Some("E:\\proj\\p.uproject"));
@@ -2422,8 +2815,11 @@ mod tests {
     #[test]
     fn zen_verify_rules_rejects_missing_ue_version() {
         let r = Cli::try_parse_from([
-            "cache", "zen", "verify-rules",
-            "--ue-install", "C:\\UE\\5.7",
+            "cache",
+            "zen",
+            "verify-rules",
+            "--ue-install",
+            "C:\\UE\\5.7",
         ]);
         assert!(r.is_err());
     }
@@ -2431,21 +2827,30 @@ mod tests {
     #[test]
     fn ddc_generate_rejects_unknown_backend_value() {
         let r = Cli::try_parse_from([
-            "cache", "ddc", "generate",
-            "--project-id", "1",
-            "--source-machine", "1",
-            "--backend", "garbage",
+            "cache",
+            "ddc",
+            "generate",
+            "--project-id",
+            "1",
+            "--source-machine",
+            "1",
+            "--backend",
+            "garbage",
         ]);
         assert!(r.is_err(), "clap must reject unknown --backend values");
     }
 
     #[test]
     fn parses_ini_config_with_domain() {
-        let cli = Cli::try_parse_from([
-            "cache", "ini", "config", "37", "--domain", "ddc",
-        ]).unwrap();
+        let cli = Cli::try_parse_from(["cache", "ini", "config", "37", "--domain", "ddc"]).unwrap();
         match cli.command {
-            Domain::Ini { action: IniAction::Config { scan_run_id, domain } } => {
+            Domain::Ini {
+                action:
+                    IniAction::Config {
+                        scan_run_id,
+                        domain,
+                    },
+            } => {
                 assert_eq!(scan_run_id, 37);
                 assert_eq!(domain.as_deref(), Some("ddc"));
             }
@@ -2456,10 +2861,25 @@ mod tests {
     #[test]
     fn parses_ini_scan_project_id() {
         let cli = Cli::try_parse_from([
-            "cache", "ini", "scan", "--project-id", "5", "--machine-id", "11",
-        ]).unwrap();
+            "cache",
+            "ini",
+            "scan",
+            "--project-id",
+            "5",
+            "--machine-id",
+            "11",
+        ])
+        .unwrap();
         match cli.command {
-            Domain::Ini { action: IniAction::Scan { project_id, machine_id, machine_ids, .. } } => {
+            Domain::Ini {
+                action:
+                    IniAction::Scan {
+                        project_id,
+                        machine_id,
+                        machine_ids,
+                        ..
+                    },
+            } => {
                 assert_eq!(project_id, Some(5));
                 assert_eq!(machine_id, Some(11));
                 assert!(machine_ids.is_empty());
@@ -2471,7 +2891,13 @@ mod tests {
     #[test]
     fn ini_scan_project_id_conflicts_with_machine_ids() {
         let res = Cli::try_parse_from([
-            "cache", "ini", "scan", "--project-id", "5", "--machine-ids", "1,2",
+            "cache",
+            "ini",
+            "scan",
+            "--project-id",
+            "5",
+            "--machine-ids",
+            "1,2",
         ]);
         assert!(res.is_err(), "project-id and machine-ids must conflict");
     }
@@ -2512,7 +2938,9 @@ mod tests {
     fn completion_command_parses_shell() {
         let cli = Cli::try_parse_from(["cache", "system", "completion", "bash"]).unwrap();
         match cli.command {
-            Domain::System { action: SystemAction::Completion { shell } } => {
+            Domain::System {
+                action: SystemAction::Completion { shell },
+            } => {
                 assert_eq!(shell, clap_complete::Shell::Bash);
             }
             _ => panic!("expected system completion bash"),
@@ -2522,11 +2950,24 @@ mod tests {
     #[test]
     fn parses_zen_sponsor_down() {
         let cli = Cli::try_parse_from([
-            "cache", "zen", "sponsor-down", "--endpoint-id", "1", "--dry-run",
+            "cache",
+            "zen",
+            "sponsor-down",
+            "--endpoint-id",
+            "1",
+            "--dry-run",
         ])
         .expect("sponsor-down should parse");
         match cli.command {
-            Domain::Zen { action: ZenAction::SponsorDown { endpoint_id, dry_run, yes, .. } } => {
+            Domain::Zen {
+                action:
+                    ZenAction::SponsorDown {
+                        endpoint_id,
+                        dry_run,
+                        yes,
+                        ..
+                    },
+            } => {
                 assert_eq!(endpoint_id, 1);
                 assert!(dry_run);
                 assert!(!yes);

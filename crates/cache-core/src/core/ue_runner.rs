@@ -2,6 +2,7 @@
 
 use crate::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
+use std::io::{BufRead, BufReader};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{sleep, Duration};
@@ -20,12 +21,26 @@ pub enum UeRunnerBackend {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UeRunnerEvent {
-    Spawned { pid: i64, log_path: String },
-    LogLine { text: String, parsed_kind: Option<String> },
-    Progress { pct: Option<f32>, label: String },
-    Completed { exit_code: i32, log_tail: Vec<String> },
+    Spawned {
+        pid: i64,
+        log_path: String,
+    },
+    LogLine {
+        text: String,
+        parsed_kind: Option<String>,
+    },
+    Progress {
+        pct: Option<f32>,
+        label: String,
+    },
+    Completed {
+        exit_code: i32,
+        log_tail: Vec<String>,
+    },
     Cancelled,
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -37,11 +52,14 @@ pub struct UeRunSpec {
     pub extra_args: Vec<String>,
     pub credential_user: Option<String>,
     pub credential_pass: Option<String>,
-    /// Launch in the target's interactive console session via a scheduled task
-    /// (Session 0 evasion). Required when the run must actually render (`-game`
-    /// warm-up); plain SSH spawn renders nothing on a real node. Local backend
-    /// ignores this — a local spawn already lives in the user session.
+    /// Launch in the target's interactive console session via a scheduled task.
+    /// Kept for legacy editor runs; PSO warm-up now uses `hold_ssh_session`.
+    /// Local backend ignores this — a local spawn already lives in the user session.
     pub interactive: bool,
+    /// Keep the remote SSH session alive for the lifetime of the UE child.
+    /// Windows sshd tears down the spawned process tree when the channel ends;
+    /// PSO warm-up depends on this held session as the watchdog.
+    pub hold_ssh_session: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,6 +91,22 @@ struct StopScriptResult {
     message: String,
 }
 
+struct StartedProcess {
+    result: StartScriptResult,
+    held_session: Option<HeldSshSession>,
+}
+
+struct HeldSshSession {
+    child: std::process::Child,
+}
+
+impl Drop for HeldSshSession {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 pub struct RunnerHandle {
     pub events: mpsc::UnboundedReceiver<UeRunnerEvent>,
     pub cancel: Arc<Mutex<RunnerCancel>>,
@@ -97,7 +131,7 @@ pub fn run(spec: UeRunSpec) -> RunnerHandle {
     let cancel_handle = cancel.clone();
 
     tokio::spawn(async move {
-        let start = match start_process(&spec).await {
+        let started = match start_process(&spec).await {
             Ok(value) => value,
             Err(err) => {
                 let _ = tx.send(UeRunnerEvent::Error {
@@ -106,6 +140,8 @@ pub fn run(spec: UeRunSpec) -> RunnerHandle {
                 return;
             }
         };
+        let start = started.result;
+        let _held_session = started.held_session;
 
         let pid = match parse_pid(&start.pid) {
             Ok(pid) => pid,
@@ -321,7 +357,8 @@ fn parse_line(line: &str) -> ParsedLine {
     } else if line.contains("LogPSOHitching: ") && line.contains("PSO creation hitch") {
         // e.g. `LogPSOHitching: Verbose: Runtime graphics PSO creation hitch (29.86 msec) ...`
         parsed.kind = Some("pso_hitch");
-    } else if line.contains("LogInit: Engine exit requested") || line.contains("LogExit: Exiting.") {
+    } else if line.contains("LogInit: Engine exit requested") || line.contains("LogExit: Exiting.")
+    {
         parsed.kind = Some("exit_clean");
         parsed.completed_exit = Some(0);
     } else if line.contains("LogCore: Error: Critical fail")
@@ -335,7 +372,10 @@ fn parse_line(line: &str) -> ParsedLine {
 
 fn parse_pid(raw: &str) -> VoloResult<i64> {
     let pid = raw.trim().parse::<i64>().map_err(|_| {
-        VoloError::OperationFailed(format!("invalid process id returned by UE launcher: {:?}", raw))
+        VoloError::OperationFailed(format!(
+            "invalid process id returned by UE launcher: {:?}",
+            raw
+        ))
     })?;
     if pid <= 0 {
         return Err(VoloError::OperationFailed(format!(
@@ -379,7 +419,7 @@ async fn best_effort_stop(spec: &UeRunSpec, pid: i64, reason: &str) {
     }
 }
 
-async fn start_process(spec: &UeRunSpec) -> VoloResult<StartScriptResult> {
+async fn start_process(spec: &UeRunSpec) -> VoloResult<StartedProcess> {
     match spec.backend {
         UeRunnerBackend::Remote if crate::core::loopback::is_loopback_target(&spec.host) => {
             tracing::debug!(
@@ -400,8 +440,11 @@ async fn start_process(spec: &UeRunSpec) -> VoloResult<StartScriptResult> {
     }
 }
 
-fn start_remote_process(spec: &UeRunSpec) -> VoloResult<StartScriptResult> {
+fn start_remote_process(spec: &UeRunSpec) -> VoloResult<StartedProcess> {
     // SSH key auth; per-call WinRM cred ignored (kept on spec until A5).
+    if spec.hold_ssh_session {
+        return start_remote_held_process(spec);
+    }
     let exec = crate::core::ssh::SshExecutor::from_config()?;
     let script_name = if spec.interactive {
         "start-ue-interactive.ps1"
@@ -426,10 +469,67 @@ fn start_remote_process(spec: &UeRunSpec) -> VoloResult<StartScriptResult> {
             result.message.unwrap_or_else(|| "spawn failed".into()),
         ));
     }
-    Ok(result)
+    Ok(StartedProcess {
+        result,
+        held_session: None,
+    })
 }
 
-async fn start_local_process(spec: &UeRunSpec) -> VoloResult<StartScriptResult> {
+fn start_remote_held_process(spec: &UeRunSpec) -> VoloResult<StartedProcess> {
+    let exec = crate::core::ssh::SshExecutor::from_config()?;
+    let mut child = exec.spawn_script(
+        &spec.host,
+        &crate::core::ssh::NodeScript {
+            name: "start-ue-held.ps1",
+            args: serde_json::json!({
+                "EnginePath": spec.engine_path,
+                "ProjectPath": spec.project_path,
+                "ExtraArgs": spec.extra_args,
+            }),
+            ssh_user: None,
+        },
+    )?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| VoloError::SshConnect("open held ssh stdout failed".into()))?;
+    let mut reader = BufReader::new(stdout);
+    let mut first_line = String::new();
+    let read = reader.read_line(&mut first_line).map_err(VoloError::Io)?;
+    drop(reader);
+    if read == 0 {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(VoloError::NodeScript {
+            exit: -1,
+            stderr: "held UE start script exited before reporting spawn result".into(),
+        });
+    }
+    let result: StartScriptResult =
+        serde_json::from_str(first_line.trim()).map_err(|err| VoloError::NodeScript {
+            exit: 0,
+            stderr: format!(
+                "bad JSON from held UE start script: {} (stdout: {})",
+                err,
+                first_line.trim()
+            ),
+        })?;
+    if !result.ok {
+        let message = result
+            .message
+            .clone()
+            .unwrap_or_else(|| "spawn failed".into());
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(VoloError::OperationFailed(message));
+    }
+    Ok(StartedProcess {
+        result,
+        held_session: Some(HeldSshSession { child }),
+    })
+}
+
+async fn start_local_process(spec: &UeRunSpec) -> VoloResult<StartedProcess> {
     #[cfg(windows)]
     {
         let exe = std::path::Path::new(&spec.engine_path)
@@ -464,16 +564,14 @@ async fn start_local_process(spec: &UeRunSpec) -> VoloResult<StartScriptResult> 
             .file_stem()
             .ok_or_else(|| VoloError::InvalidInput("project stem missing".into()))?
             .to_string_lossy();
-        Ok(StartScriptResult {
-            ok: true,
-            pid: pid.to_string(),
-            log_path: project_dir
-                .join("Saved")
-                .join("Logs")
-                .join(format!("{}.log", project_name))
-                .to_string_lossy()
-                .to_string(),
-            message: None,
+        Ok(StartedProcess {
+            result: StartScriptResult {
+                ok: true,
+                pid: pid.to_string(),
+                log_path: ue_log_path(project_dir, &project_name, &spec.extra_args),
+                message: None,
+            },
+            held_session: None,
         })
     }
     #[cfg(not(windows))]
@@ -483,6 +581,33 @@ async fn start_local_process(spec: &UeRunSpec) -> VoloResult<StartScriptResult> 
             "local UE backend requires Windows".into(),
         ))
     }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn ue_log_path(project_dir: &std::path::Path, project_name: &str, extra_args: &[String]) -> String {
+    let logs_dir = project_dir.join("Saved").join("Logs");
+    if let Some(log_value) = extra_args.iter().rev().find_map(|arg| parse_log_arg(arg)) {
+        let path = std::path::Path::new(&log_value);
+        if path.is_absolute() {
+            return log_value;
+        }
+        return logs_dir.join(path).to_string_lossy().to_string();
+    }
+    logs_dir
+        .join(format!("{}.log", project_name))
+        .to_string_lossy()
+        .to_string()
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn parse_log_arg(arg: &str) -> Option<String> {
+    let (key, value) = arg.split_once('=')?;
+    let key = key.trim_start_matches('-');
+    if !key.eq_ignore_ascii_case("log") {
+        return None;
+    }
+    let value = value.trim().trim_matches('"');
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 async fn read_tail(
@@ -607,17 +732,21 @@ async fn stop_process(
 fn stop_local_process(pid: i64) -> VoloResult<()> {
     #[cfg(windows)]
     {
-        crate::core::proc::hide_console(
-            std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]),
-        )
-            .output()
-            .map_err(VoloError::Io)?;
+        crate::core::proc::hide_console(std::process::Command::new("taskkill").args([
+            "/PID",
+            &pid.to_string(),
+            "/F",
+        ]))
+        .output()
+        .map_err(VoloError::Io)?;
         Ok(())
     }
     #[cfg(not(windows))]
     {
         let _ = pid;
-        Err(VoloError::OperationFailed("local stop requires Windows".into()))
+        Err(VoloError::OperationFailed(
+            "local stop requires Windows".into(),
+        ))
     }
 }
 
@@ -627,9 +756,8 @@ mod tests {
 
     #[test]
     fn parse_line_recognises_filling_progress() {
-        let parsed = parse_line(
-            "LogDerivedDataCache: Display: Filling derived data cache for /Game/Foo",
-        );
+        let parsed =
+            parse_line("LogDerivedDataCache: Display: Filling derived data cache for /Game/Foo");
         assert_eq!(parsed.kind, Some("ddc_fill"));
         assert!(parsed.progress.is_some());
     }
@@ -657,7 +785,8 @@ mod tests {
             "LogShaderPipelineCache: Display: PSO snapshot saved to D:/X/Saved/CollectedPSOs/X.upipelinecache",
         );
         assert_eq!(snapshot.kind, Some("pso_snapshot_saved"));
-        let stopped = parse_line("LogShaderPipelineCache: Display: PSO logging stopped. Wrote 128 PSOs.");
+        let stopped =
+            parse_line("LogShaderPipelineCache: Display: PSO logging stopped. Wrote 128 PSOs.");
         assert_eq!(stopped.kind, Some("pso_logging_stopped"));
         assert_eq!(stopped.progress.unwrap().pct, Some(1.0));
     }
@@ -670,7 +799,8 @@ mod tests {
         assert_eq!(parsed.kind, Some("pso_hitch"));
         assert!(parsed.completed_exit.is_none());
         // mentions of the log category on other channels must NOT count
-        let raised = parse_line("LogHAL: Log category LogPSOHitching verbosity has been raised to Verbose.");
+        let raised =
+            parse_line("LogHAL: Log category LogPSOHitching verbosity has been raised to Verbose.");
         assert_ne!(raised.kind, Some("pso_hitch"));
     }
 
@@ -699,10 +829,19 @@ mod tests {
     fn take_complete_lines_reassembles_split_marker() {
         let mut pending = String::new();
         // hitch line split across a chunk boundary must not surface as fragments
-        assert_eq!(take_complete_lines(&mut pending, "[t]LogPSOHitching: "), None);
-        let out = take_complete_lines(&mut pending, "Verbose: Runtime graphics PSO creation hitch (29.86 msec)\n[t]Log").unwrap();
+        assert_eq!(
+            take_complete_lines(&mut pending, "[t]LogPSOHitching: "),
+            None
+        );
+        let out = take_complete_lines(
+            &mut pending,
+            "Verbose: Runtime graphics PSO creation hitch (29.86 msec)\n[t]Log",
+        )
+        .unwrap();
         assert_eq!(out.lines().count(), 1);
-        assert!(super::super::pso_warmup::is_hitch_line(out.lines().next().unwrap()));
+        assert!(super::super::pso_warmup::is_hitch_line(
+            out.lines().next().unwrap()
+        ));
         assert_eq!(pending, "[t]Log");
     }
 
@@ -734,5 +873,23 @@ mod tests {
     #[test]
     fn remote_host_does_not_short_circuit() {
         assert!(!crate::core::loopback::is_loopback_target("203.0.113.10"));
+    }
+
+    #[test]
+    fn ue_log_path_honours_log_arg() {
+        let project_dir = std::path::Path::new("/Project");
+        let args = vec!["-game".into(), "Log=VoloPsoWarmup_Node_0.log".into()];
+        let path = ue_log_path(project_dir, "Demo", &args);
+        assert!(path.ends_with("Saved/Logs/VoloPsoWarmup_Node_0.log"));
+    }
+
+    #[test]
+    fn parse_log_arg_accepts_dashless_and_dashed_forms() {
+        assert_eq!(parse_log_arg("Log=Node.log").as_deref(), Some("Node.log"));
+        assert_eq!(
+            parse_log_arg("-LOG=\"Node 0.log\"").as_deref(),
+            Some("Node 0.log")
+        );
+        assert_eq!(parse_log_arg("-LogCmds=Foo").as_deref(), None);
     }
 }

@@ -321,7 +321,16 @@ export const distributePsoCache = (request: DistributePsoCacheRequest) =>
 /* -------------------- pso warm-up & readiness -------------------- */
 // 📝 no-ui: 等 Claude Design handoff（PSO 就绪重设计）；事件流 pso-warmup-progress + pso-warmup-finalized
 export const startPsoWarmup = (request: StartPsoWarmupRequest) =>
-  call<PsoWarmupJobResponse>("start_pso_warmup", { request });
+  call<PsoWarmupJobResponse>("start_pso_warmup", {
+    request: {
+      offscreen: true,
+      extra_args: [],
+      ...request,
+      dc_cfg_path: request.dc_cfg_path ?? null,
+      dc_node: request.dc_node ?? null,
+      ue_version: request.ue_version ?? null,
+    },
+  });
 // 📝 no-ui: 等 Claude Design handoff（节点就绪矩阵 + 运行历史数据源）
 export const listPsoWarmupRuns = (projectId: number, machineId?: number | null) =>
   call<PsoWarmupRun[]>("list_pso_warmup_runs", { projectId, machineId: machineId ?? null });

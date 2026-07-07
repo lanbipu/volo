@@ -4,7 +4,7 @@
 //!              Delegates to `domain_ini::scan_dispatch` (same real-scan path as
 //!              `ini verify-pso-precaching` / the UI's `verify_pso_precaching`
 //!              Tauri command) — this used to be a stub that only printed a hint.
-//! warmup     — run UE `-game` ON each target render node (interactive session) and
+//! warmup     — run UE `-game` ON each target render node (held SSH session) and
 //!              count PSO creation hitches; the readiness path replacing
 //!              collect/distribute. Concurrent fan-out, NDJSON stream.
 //! runs       — list warm-up/verification runs for a project.
@@ -42,6 +42,10 @@ pub fn handle(ctx: &mut Ctx<'_>, action: PsoAction) -> VoloResult<()> {
             targets,
             resolution,
             max_minutes,
+            dc_cfg_path,
+            dc_node,
+            offscreen,
+            extra_args,
             ue_version,
             cred,
         } => warmup(
@@ -50,10 +54,17 @@ pub fn handle(ctx: &mut Ctx<'_>, action: PsoAction) -> VoloResult<()> {
             &targets,
             &resolution,
             max_minutes,
+            dc_cfg_path.as_deref(),
+            dc_node.as_deref(),
+            offscreen,
+            &extra_args,
             ue_version.as_deref(),
             &cred,
         ),
-        PsoAction::Runs { project_id, machine } => runs(ctx, project_id, machine),
+        PsoAction::Runs {
+            project_id,
+            machine,
+        } => runs(ctx, project_id, machine),
         PsoAction::Collect {
             project_id,
             source_machine,
@@ -61,9 +72,25 @@ pub fn handle(ctx: &mut Ctx<'_>, action: PsoAction) -> VoloResult<()> {
             windowed,
             max_minutes,
             cred,
-        } => collect(ctx, project_id, source_machine, &resolution, windowed, max_minutes, &cred),
+        } => collect(
+            ctx,
+            project_id,
+            source_machine,
+            &resolution,
+            windowed,
+            max_minutes,
+            &cred,
+        ),
         PsoAction::List { project_id } => list(ctx, project_id),
-        PsoAction::Distribute { project_id, source_machine, targets, yes, dry_run, source_smb_cred_alias, cred } => {
+        PsoAction::Distribute {
+            project_id,
+            source_machine,
+            targets,
+            yes,
+            dry_run,
+            source_smb_cred_alias,
+            cred,
+        } => {
             let outcome = destructive::check(yes, dry_run, "pso.distribute")?;
             distribute(
                 ctx,
@@ -86,6 +113,10 @@ fn warmup(
     target_ids: &[i64],
     resolution: &str,
     max_minutes: u32,
+    dc_cfg_path: Option<&str>,
+    dc_node: Option<&str>,
+    offscreen: bool,
+    extra_args: &[String],
     ue_version: Option<&str>,
     cred: &CredentialArgs,
 ) -> VoloResult<()> {
@@ -98,7 +129,9 @@ fn warmup(
     ids.sort_unstable();
     ids.dedup();
     if ids.is_empty() {
-        return Err(VoloError::InvalidInput("no target machines (--targets)".into()));
+        return Err(VoloError::InvalidInput(
+            "no target machines (--targets)".into(),
+        ));
     }
 
     struct Target {
@@ -118,16 +151,16 @@ fn warmup(
     };
     let mut targets = Vec::with_capacity(ids.len());
     for machine_id in &ids {
-        let machine = data_machines::find_by_id(&db_clone, *machine_id)?.ok_or_else(|| {
-            VoloError::InvalidInput(format!("machine {} not found", machine_id))
-        })?;
-        let location = project_locations::get_for_project_machine(&db_clone, project_id, *machine_id)?
-            .ok_or_else(|| {
-                VoloError::InvalidInput(format!(
-                    "project {} not located on machine {}",
-                    project_id, machine_id
-                ))
-            })?;
+        let machine = data_machines::find_by_id(&db_clone, *machine_id)?
+            .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?;
+        let location =
+            project_locations::get_for_project_machine(&db_clone, project_id, *machine_id)?
+                .ok_or_else(|| {
+                    VoloError::InvalidInput(format!(
+                        "project {} not located on machine {}",
+                        project_id, machine_id
+                    ))
+                })?;
         let engine_path = resolve_engine_path_versioned(&db_clone, *machine_id, ue_version)?;
         targets.push(Target {
             machine_id: *machine_id,
@@ -151,16 +184,43 @@ fn warmup(
             HashMap::new();
         let mut run_ids: HashMap<i64, i64> = HashMap::new();
         let mut started_at: HashMap<i64, std::time::Instant> = HashMap::new();
+        let dc_cfg_path = normalize_optional(dc_cfg_path);
+        let dc_node = normalize_optional(dc_node);
+        let extra_args = normalize_extra_args(extra_args);
+        let specs: HashMap<i64, PsoWarmupSpec> = targets
+            .iter()
+            .map(|target| {
+                (
+                    target.machine_id,
+                    PsoWarmupSpec {
+                        project_id,
+                        machine_id: target.machine_id,
+                        resolution: (res_w, res_h),
+                        max_minutes,
+                        dc_cfg_path: dc_cfg_path.clone(),
+                        dc_node: dc_node.clone(),
+                        offscreen,
+                        extra_args: extra_args.clone(),
+                    },
+                )
+            })
+            .collect();
+        for spec in specs.values() {
+            pso_warmup::validate_warmup_spec(spec)?;
+        }
 
         // Persist ALL run rows before launching anything: a mid-loop DB failure
         // must never leave already-launched nodes running untracked.
         for target in &targets {
+            let spec = &specs[&target.machine_id];
             let run_id = pso_warmup_runs::insert_started(
                 &db_clone,
                 project_id,
                 target.machine_id,
                 (res_w, res_h),
                 max_minutes,
+                spec.mode(),
+                spec.dc_node.as_deref(),
             )?;
             run_ids.insert(target.machine_id, run_id);
         }
@@ -175,19 +235,14 @@ fn warmup(
             } else {
                 UeRunnerBackend::Remote
             };
-            let spec = PsoWarmupSpec {
-                project_id,
-                machine_id: target.machine_id,
-                resolution: (res_w, res_h),
-                max_minutes,
-            };
+            let spec = specs[&target.machine_id].clone();
             let mut handle = pso_warmup::launch_warmup(
                 backend,
                 &target.ip,
                 &target.engine_path,
                 &target.uproject_path,
                 &spec,
-            );
+            )?;
             cancels.push(handle.cancel.clone());
             cancel_map.insert(target.machine_id, handle.cancel.clone());
             pso_warmup::spawn_watchdog(
@@ -249,7 +304,10 @@ fn warmup(
                 UeRunnerEvent::Spawned { pid, log_path } => {
                     ctx.emitter
                         .emit_event(&Event::LogLine {
-                            text: format!("[m{}] ue spawned pid={} log={}", machine_id, pid, log_path),
+                            text: format!(
+                                "[m{}] ue spawned pid={} log={}",
+                                machine_id, pid, log_path
+                            ),
                             parsed_kind: Some("spawned".into()),
                         })
                         .ok();
@@ -321,6 +379,7 @@ fn warmup(
                         persisted_hitches,
                         error_message.as_deref(),
                         duration,
+                        None,
                     ) {
                         eprintln!(
                             "warning: persisting run {} for machine {} failed: {}",
@@ -335,7 +394,10 @@ fn warmup(
                     let message = match (&status, &error_message) {
                         (WarmupStatus::Ok, _) => format!("hitch_count={}", hitch_count),
                         (WarmupStatus::Cancelled, _) => {
-                            format!("cancelled by operator (hitch_count={}, not verified)", hitch_count)
+                            format!(
+                                "cancelled by operator (hitch_count={}, not verified)",
+                                hitch_count
+                            )
                         }
                         (_, Some(msg)) => msg.clone(),
                         (_, None) => "failed".into(),
@@ -380,6 +442,22 @@ fn warmup(
     })?;
 
     Ok(())
+}
+
+fn normalize_optional(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn normalize_extra_args(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 // ─── runs ─────────────────────────────────────────────────────────────────────
@@ -432,14 +510,13 @@ fn collect(
     let machine = data_machines::find_by_id(db, source_machine_id)?.ok_or_else(|| {
         VoloError::InvalidInput(format!("machine {} not found", source_machine_id))
     })?;
-    let location =
-        project_locations::get_for_project_machine(db, project_id, source_machine_id)?
-            .ok_or_else(|| {
-                VoloError::InvalidInput(format!(
-                    "project {} not located on machine {}",
-                    project_id, source_machine_id
-                ))
-            })?;
+    let location = project_locations::get_for_project_machine(db, project_id, source_machine_id)?
+        .ok_or_else(|| {
+        VoloError::InvalidInput(format!(
+            "project {} not located on machine {}",
+            project_id, source_machine_id
+        ))
+    })?;
 
     let engine_path = resolve_engine_path(db, source_machine_id)?;
     let (op_user, op_pass) = resolve_creds(db, cred)?;
@@ -529,7 +606,10 @@ fn collect(
                         })
                         .ok();
                 }
-                UeRunnerEvent::Completed { exit_code, log_tail } => {
+                UeRunnerEvent::Completed {
+                    exit_code,
+                    log_tail,
+                } => {
                     // Don't emit `Completed` yet — enumerate / persist still
                     // need to run and can fail. The emitter treats `Completed`
                     // as terminal, so emitting here would prevent a later
@@ -537,10 +617,7 @@ fn collect(
                     // stream. Surface UE exit as an informational LogLine.
                     ctx.emitter
                         .emit_event(&Event::LogLine {
-                            text: format!(
-                                "ue process exited (exit_code={:?})",
-                                exit_code
-                            ),
+                            text: format!("ue process exited (exit_code={:?})", exit_code),
                             parsed_kind: Some("ue_exit".into()),
                         })
                         .ok();
@@ -690,12 +767,14 @@ fn distribute(
     if dry_run {
         let summary_targets: Vec<serde_json::Value> = plan
             .iter()
-            .map(|i| serde_json::json!({
-                "target_machine_id": i.target_machine_id,
-                "target_host": i.target_host,
-                "target_local": i.target_local,
-                "source_unc": i.source_unc,
-            }))
+            .map(|i| {
+                serde_json::json!({
+                    "target_machine_id": i.target_machine_id,
+                    "target_host": i.target_host,
+                    "target_local": i.target_local,
+                    "source_unc": i.source_unc,
+                })
+            })
             .collect();
         destructive::emit_plan(
             ctx.emitter.as_mut(),
@@ -744,12 +823,12 @@ fn distribute(
             // Preflight guard — surface as a non-ok completion rather than panic.
             let mut skip_up_to_date = false;
             let preflight = match push_source.as_ref() {
-                Some(source) => {
-                    cache_core::core::push_distribute::preflight_push_one(&item, &job_id)
-                        .map(|existing| {
-                            skip_up_to_date = existing == Some(source.expected_size);
-                        })
-                }
+                Some(source) => cache_core::core::push_distribute::preflight_push_one(
+                    &item, &job_id,
+                )
+                .map(|existing| {
+                    skip_up_to_date = existing == Some(source.expected_size);
+                }),
                 None => pso_distribute::preflight_one(&item).await,
             };
             if let Err(e) = preflight {
@@ -768,14 +847,16 @@ fn distribute(
             }
 
             let outcome = match push_source.as_ref() {
-                Some(_) if skip_up_to_date => Ok(cache_core::core::pak_distribute::DistributeOutcome {
-                    target_machine_id: item.target_machine_id,
-                    ok: true,
-                    exit_code: 0,
-                    bytes_copied: 0,
-                    stdout_tail: "target already up to date (size match), skipped".into(),
-                    message: None,
-                }),
+                Some(_) if skip_up_to_date => {
+                    Ok(cache_core::core::pak_distribute::DistributeOutcome {
+                        target_machine_id: item.target_machine_id,
+                        ok: true,
+                        exit_code: 0,
+                        bytes_copied: 0,
+                        stdout_tail: "target already up to date (size match), skipped".into(),
+                        message: None,
+                    })
+                }
                 Some(source) => cache_core::core::push_distribute::push_one(&item, source, &job_id),
                 None => pso_distribute::run_one(item).await,
             };

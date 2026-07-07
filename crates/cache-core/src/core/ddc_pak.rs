@@ -166,7 +166,9 @@ pub fn verify_output_local(project_dir: &str) -> VoloResult<PakOutput> {
             });
         }
     }
-    Err(VoloError::OperationFailed("DDC.ddp not found locally".into()))
+    Err(VoloError::OperationFailed(
+        "DDC.ddp not found locally".into(),
+    ))
 }
 
 /// Deletes the generated DDC pak on a remote host over SSH. Idempotent-ish:
@@ -272,6 +274,7 @@ pub fn launch_generation(
         credential_user: user.map(String::from),
         credential_pass: pass.map(String::from),
         interactive: false,
+        hold_ssh_session: false,
     })
 }
 

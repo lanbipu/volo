@@ -495,6 +495,14 @@ export interface StartPsoWarmupRequest {
   resolution_h: number;
   /** 必须 >= 1：0 会解除 watchdog，后端直接拒绝。 */
   max_minutes: number;
+  /** nDisplay config path on the render node. */
+  dc_cfg_path?: string | null;
+  /** nDisplay node id, e.g. Node_0. */
+  dc_node?: string | null;
+  /** 默认 true：使用 -RenderOffscreen；false 使用 -fullscreen。 */
+  offscreen?: boolean;
+  /** Additional Unreal command-line args; empty strings are ignored by backend. */
+  extra_args?: string[];
   /** 钉死各节点用的 UE 版本；省略 = 各节点 primary 安装（与工程版本不符时有风险）。 */
   ue_version?: string | null;
 }
@@ -517,6 +525,9 @@ export interface PsoWarmupRun {
   resolution_w: number;
   resolution_h: number;
   max_minutes: number;
+  mode: string;
+  dc_node: string | null;
+  driver_cache_growth_bytes: number | null;
   /** null while running; 0 once finished = green light. */
   hitch_count: number | null;
   status: WarmupStatus;

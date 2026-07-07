@@ -9,9 +9,9 @@ use cache_core::core::{
     ue_runner::{UeRunnerBackend, UeRunnerEvent},
 };
 use cache_core::data::{
-    machine_ue_installs, machines as data_machines,
-    project_locations, pso_cache_files, pso_distributions, pso_warmup_runs, Db,
-    DistributionStatus, PsoCacheFile, PsoDistribution, PsoWarmupRun, WarmupStatus,
+    machine_ue_installs, machines as data_machines, project_locations, pso_cache_files,
+    pso_distributions, pso_warmup_runs, Db, DistributionStatus, PsoCacheFile, PsoDistribution,
+    PsoWarmupRun, WarmupStatus,
 };
 use cache_core::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
@@ -38,7 +38,6 @@ fn now_millis() -> u128 {
         .map(|duration| duration.as_millis())
         .unwrap_or_default()
 }
-
 
 fn resolve_engine_path(
     db: &Db,
@@ -259,8 +258,9 @@ pub fn list_pso_cache_files(
             normalized_filter
                 .as_ref()
                 .map(|filter| {
-                    cache_core::core::gpu_consistency::normalize_signature_string(&file.gpu_signature)
-                        == *filter
+                    cache_core::core::gpu_consistency::normalize_signature_string(
+                        &file.gpu_signature,
+                    ) == *filter
                 })
                 .unwrap_or(true)
         })
@@ -286,9 +286,13 @@ pub async fn distribute_pso_cache(
     let file = pso_cache_files::get(&db, request.file_id)?.ok_or_else(|| {
         VoloError::InvalidInput(format!("pso cache file {} not found", request.file_id))
     })?;
-    let source_machine = data_machines::find_by_id(&db, file.source_machine_id)?.ok_or_else(|| {
-        VoloError::InvalidInput(format!("source machine {} not found", file.source_machine_id))
-    })?;
+    let source_machine =
+        data_machines::find_by_id(&db, file.source_machine_id)?.ok_or_else(|| {
+            VoloError::InvalidInput(format!(
+                "source machine {} not found",
+                file.source_machine_id
+            ))
+        })?;
     // SSH key auth: operator cred no longer used (param kept as shim, Vue compat).
     let _ = &request.operator_credential_alias;
     // Default transport: SSH push (no share/SMB involved). The legacy SMB pull
@@ -300,7 +304,10 @@ pub async fn distribute_pso_cache(
     if !request.force_gpu_mismatch {
         let matrix = cache_core::core::gpu_consistency::build_matrix(&db)?;
         for target_id in &request.target_machine_ids {
-            let cell = matrix.cells.iter().find(|cell| cell.machine_id == *target_id);
+            let cell = matrix
+                .cells
+                .iter()
+                .find(|cell| cell.machine_id == *target_id);
             let Some(signature) = cell.and_then(|cell| cell.signature.as_ref()) else {
                 return Err(VoloError::InvalidInput(format!(
                     "target machine {} has unknown GPU signature; refresh inventory or force",
@@ -308,7 +315,9 @@ pub async fn distribute_pso_cache(
                 )));
             };
             if cache_core::core::gpu_consistency::normalize_signature_string(&signature.as_string())
-                != cache_core::core::gpu_consistency::normalize_signature_string(&file.gpu_signature)
+                != cache_core::core::gpu_consistency::normalize_signature_string(
+                    &file.gpu_signature,
+                )
             {
                 return Err(VoloError::InvalidInput(format!(
                     "target machine {} GPU signature {} does not match file signature {}",
@@ -349,7 +358,10 @@ pub async fn distribute_pso_cache(
             true,
             &source_location.abs_path,
         )?;
-        let named_unc = request.named_share_unc.clone().or(smb.named_share_unc.clone());
+        let named_unc = request
+            .named_share_unc
+            .clone()
+            .or(smb.named_share_unc.clone());
         pso_distribute::plan(
             &db,
             &source_machine.ip,
@@ -492,15 +504,13 @@ pub async fn distribute_pso_cache(
                         })?
                         .clone();
                     let outcome = match push_source {
-                        Some(source) => {
-                            tokio::task::spawn_blocking(move || {
-                                cache_core::core::push_distribute::push_one(&item, &source, &job_id)
-                            })
-                            .await
-                            .map_err(|e| {
-                                VoloError::OperationFailed(format!("push task failed: {e}"))
-                            })??
-                        }
+                        Some(source) => tokio::task::spawn_blocking(move || {
+                            cache_core::core::push_distribute::push_one(&item, &source, &job_id)
+                        })
+                        .await
+                        .map_err(|e| {
+                            VoloError::OperationFailed(format!("push task failed: {e}"))
+                        })??,
                         None => pso_distribute::run_one(item).await?,
                     };
                     if !outcome.ok {
@@ -566,10 +576,38 @@ pub struct StartPsoWarmupRequest {
     pub resolution_w: u32,
     pub resolution_h: u32,
     pub max_minutes: u32,
+    #[serde(default)]
+    pub dc_cfg_path: Option<String>,
+    #[serde(default)]
+    pub dc_node: Option<String>,
+    #[serde(default = "default_pso_offscreen")]
+    pub offscreen: bool,
+    #[serde(default)]
+    pub extra_args: Vec<String>,
     /// Pin the UE version used on every node; None = each node's primary
     /// install (risky when a node's primary differs from the project version).
     #[serde(default)]
     pub ue_version: Option<String>,
+}
+
+fn default_pso_offscreen() -> bool {
+    true
+}
+
+fn normalize_optional(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn normalize_extra_args(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -634,35 +672,50 @@ pub async fn start_pso_warmup(
 
     let parent_job_id = format!("pso-warmup-{}-{}", request.project_id, now_millis());
     let resolution = (request.resolution_w.max(1), request.resolution_h.max(1));
+    let dc_cfg_path = normalize_optional(request.dc_cfg_path.as_deref());
+    let dc_node = normalize_optional(request.dc_node.as_deref());
+    let extra_args = normalize_extra_args(&request.extra_args);
+    let specs: Vec<PsoWarmupSpec> = targets
+        .iter()
+        .map(|target| PsoWarmupSpec {
+            project_id: request.project_id,
+            machine_id: target.machine_id,
+            resolution,
+            max_minutes: request.max_minutes,
+            dc_cfg_path: dc_cfg_path.clone(),
+            dc_node: dc_node.clone(),
+            offscreen: request.offscreen,
+            extra_args: extra_args.clone(),
+        })
+        .collect();
+    for spec in &specs {
+        pso_warmup::validate_warmup_spec(spec)?;
+    }
 
     // Persist ALL run rows before launching anything: a mid-loop DB failure
     // must never leave already-launched nodes running untracked.
     let mut run_ids = Vec::with_capacity(targets.len());
-    for target in &targets {
+    for (target, spec) in targets.iter().zip(&specs) {
         run_ids.push(pso_warmup_runs::insert_started(
             &db,
             request.project_id,
             target.machine_id,
             resolution,
             request.max_minutes,
+            spec.mode(),
+            spec.dc_node.as_deref(),
         )?);
     }
 
     let mut launched = Vec::with_capacity(targets.len());
-    for (target, run_id) in targets.into_iter().zip(run_ids) {
-        let spec = PsoWarmupSpec {
-            project_id: request.project_id,
-            machine_id: target.machine_id,
-            resolution,
-            max_minutes: request.max_minutes,
-        };
+    for ((target, run_id), spec) in targets.into_iter().zip(run_ids).zip(specs) {
         let handle = pso_warmup::launch_warmup(
             UeRunnerBackend::Remote,
             &target.ip,
             &target.engine_path,
             &target.uproject_path,
             &spec,
-        );
+        )?;
 
         let job_id = format!("pso-warmup-{}-{}", target.machine_id, now_millis());
         registry.insert(&job_id, handle.cancel.clone()).await;
@@ -767,6 +820,7 @@ pub async fn start_pso_warmup(
                     persisted_hitches,
                     error_message.as_deref(),
                     duration_secs,
+                    None,
                 ) {
                     tracing::error!(?err, run_id, "pso warmup finish persist failed");
                 }
