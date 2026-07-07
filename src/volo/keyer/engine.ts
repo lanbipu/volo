@@ -27,7 +27,8 @@ function clampInt(v: number, min: number, max: number): number {
 }
 
 function srgbByteToLinear(v: number): number {
-  return Math.pow(((v / 255) + 0.055) / 1.055, 2.4);
+  const x = v / 255;
+  return x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
 }
 
 function halfToFloat(h: number): number {
@@ -166,6 +167,9 @@ export class KeyerEngine {
   }
 
   private allocate(): void {
+    // 尺寸变化重建：先释放旧纹理，防显存泄漏
+    for (const t of [this.srcTex, this.matteTex, this.matteRaw, ...this.mHist, ...this.hist,
+      this.dn, this.fgTex, this.qTexA, this.qTexB]) t?.destroy();
     this.srcTex = this.d.createTexture({
       size: [this.w, this.h],
       format: "rgba8unorm-srgb",

@@ -11,5 +11,5 @@ export function gradErr(a: Float32Array, gt: Float32Array, w: number, h: number)
     const gxg = gt[i + 1] - gt[i - 1], gyg = gt[i + w] - gt[i - w];
     s += Math.hypot(gxa - gxg, gya - gyg); n++;
   }
-  return s / n;
+  return n > 0 ? s / n : 0;
 }

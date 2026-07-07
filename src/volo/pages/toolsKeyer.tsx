@@ -123,7 +123,7 @@ import { mad, gradErr } from "../keyer/metrics";
           engineRef.current = new KeyerEngine(result);
           keyerStore.attachEngine(engineRef.current);
         }
-      });
+      }).catch((err) => { if (!dead) setProbe({ ok: false, reason: String(err && err.message || err) }); });
       return () => {
         dead = true; keyerStore.attachEngine(null); engineRef.current = null;
         const v = videoRef.current;
@@ -325,7 +325,7 @@ import { mad, gradErr } from "../keyer/metrics";
         if (dead) return;
         setProbe(r);
         if (r.ok) engineRef.current = new KeyerEngine(r);
-      });
+      }).catch((err) => { if (!dead) setProbe({ ok: false, reason: String(err && err.message || err) }); });
       return () => { dead = true; engineRef.current = null; };
     }, []);
     const runBench = async (files) => {
@@ -453,7 +453,7 @@ import { mad, gradErr } from "../keyer/metrics";
               const m = /^#?([0-9a-f]{6})$/i.exec(ev.currentTarget.value.trim());
               if (!m) return;
               const n = parseInt(m[1], 16);
-              const s2l = (b) => Math.pow(((b / 255) + 0.055) / 1.055, 2.4);
+              const s2l = (b) => { const x = b / 255; return x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); };
               keyerStore.setParam("keyColor", [s2l(n >> 16 & 255), s2l(n >> 8 & 255), s2l(n & 255)]);
             },
           }),
