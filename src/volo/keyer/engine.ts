@@ -3,6 +3,9 @@ import keyWgsl from "./shaders/key.wgsl?raw";
 import compositeWgsl from "./shaders/composite.wgsl?raw";
 import plateMaskWgsl from "./shaders/plate_mask.wgsl?raw";
 import plateFillWgsl from "./shaders/plate_fill.wgsl?raw";
+import premultWgsl from "./shaders/premult.wgsl?raw";
+import edgeExtendWgsl from "./shaders/edge_extend.wgsl?raw";
+import despillWgsl from "./shaders/despill.wgsl?raw";
 import type { GpuProbeOk } from "./gpu";
 import { DEFAULTS, packParams, type KeyerParams } from "./params";
 
@@ -48,6 +51,15 @@ export class KeyerEngine {
   private h = 0;
   private keyPass: Pass | null = null;
   private compositePass: Pass | null = null;
+  private premultPass: Pass | null = null;   // → qTexA（1/4 分辨率 premult）
+  private edgeHPass: Pass | null = null;     // qTexA → qTexB
+  private edgeVPass: Pass | null = null;     // qTexB → qTexA（= coreTex）
+  private despillPass: Pass | null = null;   // → fgTex（全分辨率 premult）
+  private fgTex: GPUTexture | null = null;
+  private qTexA: GPUTexture | null = null;
+  private qTexB: GPUTexture | null = null;
+  private dirHBuf: GPUBuffer | null = null;
+  private dirVBuf: GPUBuffer | null = null;
   private frameMs = 0;
   private lastT = 0;
 
@@ -148,6 +160,61 @@ export class KeyerEngine {
       target: this.matteTex,
       bindGroup: this.makeKeyBind(keyPipeline, srcView),
     };
+    // Despill 链：premult(1/4) → edge H → edge V(coreTex) → despill(全分辨率 fgTex)
+    this.fgTex = this.makeTex("rgba16float");
+    this.qTexA = this.makeTex("rgba16float", 0.25);
+    this.qTexB = this.makeTex("rgba16float", 0.25);
+    const qw = Math.max(1, (this.w * 0.25) | 0);
+    const qh = Math.max(1, (this.h * 0.25) | 0);
+    const dirBuf = (x: number, y: number) => {
+      const b = this.d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      this.d.queue.writeBuffer(b, 0, new Float32Array([x, y, 0, 0]));
+      return b;
+    };
+    this.dirHBuf?.destroy(); this.dirVBuf?.destroy();
+    this.dirHBuf = dirBuf(1 / qw, 0);
+    this.dirVBuf = dirBuf(0, 1 / qh);
+
+    const premultPipeline = this.makePipeline("premult", premultWgsl, "rgba16float");
+    this.premultPass = {
+      pipeline: premultPipeline,
+      target: this.qTexA,
+      bindGroup: this.d.createBindGroup({
+        layout: premultPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: this.samp },
+          { binding: 1, resource: srcView },
+          { binding: 2, resource: matteView },
+        ],
+      }),
+    };
+    const edgePipeline = this.makePipeline("edge_extend", edgeExtendWgsl, "rgba16float");
+    const edgeBind = (src: GPUTexture, dir: GPUBuffer) => this.d.createBindGroup({
+      layout: edgePipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: this.samp },
+        { binding: 1, resource: src.createView() },
+        { binding: 2, resource: { buffer: dir } },
+      ],
+    });
+    this.edgeHPass = { pipeline: edgePipeline, target: this.qTexB, bindGroup: edgeBind(this.qTexA, this.dirHBuf) };
+    this.edgeVPass = { pipeline: edgePipeline, target: this.qTexA, bindGroup: edgeBind(this.qTexB, this.dirVBuf) };
+    const despillPipeline = this.makePipeline("despill", despillWgsl, "rgba16float");
+    this.despillPass = {
+      pipeline: despillPipeline,
+      target: this.fgTex,
+      bindGroup: this.d.createBindGroup({
+        layout: despillPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: this.samp },
+          { binding: 1, resource: srcView },
+          { binding: 2, resource: matteView },
+          { binding: 3, resource: this.qTexA.createView() },
+          { binding: 4, resource: { buffer: this.paramBuf } },
+        ],
+      }),
+    };
+
     this.compositePass = {
       pipeline: compositePipeline,
       target: null,
@@ -157,7 +224,7 @@ export class KeyerEngine {
           { binding: 0, resource: this.samp },
           { binding: 1, resource: srcView },
           { binding: 2, resource: matteView },
-          { binding: 3, resource: srcView },
+          { binding: 3, resource: this.fgTex.createView() },
           { binding: 4, resource: { buffer: this.paramBuf } },
         ],
       }),
@@ -338,6 +405,22 @@ export class KeyerEngine {
     keyRp.setBindGroup(0, this.keyPass.bindGroup);
     keyRp.draw(3);
     keyRp.end();
+
+    const run = (p: Pass) => {
+      const rp = enc.beginRenderPass({
+        colorAttachments: [{ view: p.target!.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+      });
+      rp.setPipeline(p.pipeline);
+      rp.setBindGroup(0, p.bindGroup);
+      rp.draw(3);
+      rp.end();
+    };
+    if (this.premultPass && this.edgeHPass && this.edgeVPass && this.despillPass) {
+      run(this.premultPass);
+      run(this.edgeHPass);
+      run(this.edgeVPass);
+      run(this.despillPass);
+    }
 
     const compositeRp = enc.beginRenderPass({
       colorAttachments: [

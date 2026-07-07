@@ -1,5 +1,5 @@
 // 视图输出：0=结果叠棋盘格 1=matte 2=源 3=源|结果 wipe 对比。
-// 本 Task fg 尚未 despill（Task 6 接管 fgTex），先用 src*matte 预乘顶位。
+// fgTex = despill 后 premultiplied 前景（Task 6 起）。
 struct Params { /* 同 key.wgsl，共用同一 uniform buffer */
   keyColor: vec3f, balance: f32, blackClip: f32, whiteClip: f32, softness: f32, shrink: f32,
   feather: f32, despillStrength: f32, despillBalance: f32, lumaRestore: f32,
@@ -19,7 +19,7 @@ fn checker(uv: vec2f) -> vec3f {
 @fragment fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
   let src = textureSampleLevel(srcTex, samp, uv, 0.0).rgb;
   let a = textureSampleLevel(matteTex, samp, uv, 0.0).r;
-  let fg = textureSampleLevel(fgTex, samp, uv, 0.0).rgb * a;
+  let fg = textureSampleLevel(fgTex, samp, uv, 0.0).rgb;
   var outc: vec3f;
   if (P.viewMode < 0.5)      { outc = fg + checker(uv) * (1.0 - a); }
   else if (P.viewMode < 1.5) { outc = vec3f(a); }
