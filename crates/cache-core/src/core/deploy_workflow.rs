@@ -3,7 +3,7 @@
 
 use crate::core::{
     ddc_pak, env_vars, ini_editor, local_cache, pak_distribute, pso_collect, pso_distribute,
-    shares, ue_log_verify,
+    pso_warmup, shares, ue_log_verify,
     ue_runner::{UeRunnerBackend, UeRunnerEvent},
 };
 use crate::data::{
@@ -708,7 +708,7 @@ fn generate_pak_sync(
 /// Run a PSO collection end-to-end synchronously: launch via ue_runner, drain
 /// events until Completed/Cancelled/Error, then enumerate_remote +
 /// finalize_persist. Returns the number of files collected. Mirrors
-/// `commands::pso::start_pso_collection`'s wait loop minus Tauri events.
+/// the removed `start_pso_collection` command's wait loop minus Tauri events.
 #[allow(clippy::too_many_arguments)]
 fn collect_pso_sync(
     db: &Db,
@@ -750,7 +750,7 @@ fn collect_pso_sync(
         user,
         pass,
     );
-    pso_collect::spawn_watchdog(
+    pso_warmup::spawn_watchdog(
         handle.cancel.clone(),
         spec.max_minutes,
         format!("deploy-pso-{}-{}", project_id, source_machine_id),

@@ -142,8 +142,8 @@ const PAGES = [
    by the shell, mirrored onto window.UE_PROJECTS via api/cacheData → toProjectVM.
    ue / size / hasPak / warn have no backend source → "—" / false / null (TODO). */
 
-/* ARTIFACTS removed — PSO 列表改用真实 list_pso_cache_files（cacheDdc psoFiles，
-   按选中工程加载）；DDC pak 列表后端无「列举产物」命令（只有 generate/verify/distribute
+/* ARTIFACTS removed — PSO 文件列表随 collect/distribute 旧链路整体下线（链路证伪）；
+   DDC pak 列表后端无「列举产物」命令（只有 generate/verify/distribute
    单产物），UI 也无 pak 列表（只按工程 verify_pak_output），故整条 mock 移除。 */
 
 /* ============================================================

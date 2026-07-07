@@ -107,7 +107,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       fail);
   };
 
-  /* UeRunnerEvent reduce（generate_ddc_pak / start_pso_collection 共用进度流）.
+  /* UeRunnerEvent reduce（generate_ddc_pak 进度流）.
      payload = {job_id, source_machine_id, project_id, event:UeRunnerEvent}，
      event 是 tag='kind' 的联合。pct 量纲不定（0..1 或 0..100），<=1 视为比例 *100。 */
   const ueLineLv = (pk) => pk && /error/i.test(pk) ? 'err' : pk && /warn/i.test(pk) ? 'warn' : 'info';

@@ -11,7 +11,32 @@ use crate::core::ue_runner::{self, UeRunSpec, UeRunnerBackend};
 use crate::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
 
-pub use crate::core::pso_collect::spawn_watchdog;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+/// Max-minutes watchdog shared by warmup/coldtest (and the deploy
+/// workflow's legacy collect path): flags a planned-duration stop so
+/// consumers can tell it apart from an operator cancel.
+pub fn spawn_watchdog(
+    cancel: Arc<Mutex<crate::core::ue_runner::RunnerCancel>>,
+    max_minutes: u32,
+    job_id: String,
+) {
+    if max_minutes == 0 {
+        return;
+    }
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(max_minutes as u64 * 60)).await;
+        let mut state = cancel.lock().await;
+        if !state.requested {
+            state.requested = true;
+            // Planned-duration stop, not an abort — consumers (warmup finalize)
+            // distinguish this from a user cancel via the flag.
+            state.watchdog = true;
+            tracing::info!("pso warmup watchdog fired for job {}", job_id);
+        }
+    });
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PsoWarmupSpec {

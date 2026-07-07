@@ -1,4 +1,8 @@
 //! PSO cache collection helpers.
+//!
+//! ⚠️ 链路已证伪下线（未 cook `-game` 不写 Saved/CollectedPSOs）：Tauri command /
+//! CLI 子命令 / UI 入口均已删除。本文件仅因 `deploy_workflow` 的 CollectPso 步骤
+//! 仍在引用而保留——deploy 工作流 PSO 段的去留待产品决策后一并处理。
 
 use crate::core::{
     gpu_consistency,
@@ -7,8 +11,6 @@ use crate::core::{
 use crate::data::{machine_gpus, pso_cache_files, Db, PsoCacheFile};
 use crate::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PsoCollectSpec {
@@ -195,26 +197,6 @@ pub fn finalize_persist(
     Ok(ids)
 }
 
-pub fn spawn_watchdog(
-    cancel: Arc<Mutex<crate::core::ue_runner::RunnerCancel>>,
-    max_minutes: u32,
-    job_id: String,
-) {
-    if max_minutes == 0 {
-        return;
-    }
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(max_minutes as u64 * 60)).await;
-        let mut state = cancel.lock().await;
-        if !state.requested {
-            state.requested = true;
-            // Planned-duration stop, not an abort — consumers (warmup finalize)
-            // distinguish this from a user cancel via the flag.
-            state.watchdog = true;
-            tracing::info!("pso collection watchdog fired for job {}", job_id);
-        }
-    });
-}
 
 #[cfg(test)]
 mod tests {

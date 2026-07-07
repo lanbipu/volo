@@ -20,7 +20,6 @@ import type {
   ShareMode, CreateShareResponse, TeardownShareResult, InjectionResult, ShareConfig, EnsureOpenDirShareResponse,
   ProjectSummary, ProjectLocation, DiscoveryResult,
   ExecutionLocation, GenerateJobResponse, PakOutput, DistributeJobResponse, DeployedPakEntry, ProjectProbe,
-  PsoCollectJobResponse, PsoCacheFile, DistributePsoCacheRequest, PsoDistributeJobResponse,
   StartPsoWarmupRequest, PsoWarmupJobResponse, PsoWarmupRun, DriverCacheSnapshot, PsoStatusCell,
   DriverCacheClearResult, StartPsoColdtestRequest, PsoColdtestJobResponse,
   RunHealthCheckRequest, HealthRunSummary, HealthCheckRow,
@@ -303,21 +302,7 @@ export const deleteDdcPak = (machineId: number, projectId: number) =>
 export const getProjectThumbnail = (projectId: number, machineId: number) =>
   call<ProjectProbe>("get_project_thumbnail", { projectId, machineId });
 
-/* ----------------------------- pso ----------------------------- */
-// ✅ wired: cacheDdc collectPso → startPsoCollection via runStreamingCmd（ue-runner-progress + pso-collect-finalized）
-export const startPsoCollection = (
-  sourceMachineId: number, projectId: number, resolutionW: number, resolutionH: number,
-  windowed: boolean, maxMinutes: number, ueVersion?: string | null, operatorCredentialAlias?: string | null,
-) => call<PsoCollectJobResponse>("start_pso_collection", {
-  sourceMachineId, projectId, ueVersion: ueVersion ?? null, resolutionW, resolutionH,
-  windowed, maxMinutes, operatorCredentialAlias: operatorCredentialAlias ?? null,
-});
-// ✅ wired: cacheDdc PSO 列表 → listPsoCacheFiles（按 psoProj 加载 + 收集后重载）
-export const listPsoCacheFiles = (projectId: number, sourceMachineId?: number | null, gpuSignature?: string | null) =>
-  call<PsoCacheFile[]>("list_pso_cache_files", { projectId, sourceMachineId: sourceMachineId ?? null, gpuSignature: gpuSignature ?? null });
-// ✅ wired: cacheDdc distribute → distributePsoCache via runStreamingCmd（pso-distribute-progress；force_gpu_mismatch=false）
-export const distributePsoCache = (request: DistributePsoCacheRequest) =>
-  call<PsoDistributeJobResponse>("distribute_pso_cache", { request });
+/* pso collect/list/distribute 旧链路已下线（链路证伪，见 docs/cache/pso-p0-report.md）*/
 
 /* -------------------- pso warm-up & readiness -------------------- */
 // 📝 no-ui: 等 Claude Design handoff（PSO 就绪重设计）；事件流 pso-warmup-progress + pso-warmup-finalized

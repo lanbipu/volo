@@ -450,39 +450,7 @@ export interface BatchEvent {
   message: string | null;
 }
 
-/* ============================ pso ============================ */
-export interface PsoCollectJobResponse {
-  job_id: string;
-  source_machine_id: number;
-  project_id: number;
-}
-
-export interface PsoCacheFile {
-  id: number | null;
-  project_id: number;
-  source_machine_id: number;
-  file_path: string;
-  file_name: string;
-  size_bytes: number;
-  gpu_signature: string;
-  ue_version: string | null;
-  collected_at: string | null;
-}
-
-export interface DistributePsoCacheRequest {
-  file_id: number;
-  target_machine_ids: number[];
-  named_share_unc: string | null;
-  operator_credential_alias: string | null;
-  source_smb_credential_alias: string | null;
-  force_gpu_mismatch: boolean;
-}
-
-/** PsoDistributePlanItem is a Rust type-alias of DistributePlanItem. */
-export interface PsoDistributeJobResponse {
-  job_id: string;
-  plan: DistributePlanItem[];
-}
+/* pso collect/list/distribute 旧链路 DTO 已随命令下线（表保留停写留档） */
 
 /* ------------- pso warm-up & readiness (per-node -game runs) ------------- */
 /** ok = 两段都跑完且验证段 hitch=0（唯一可给绿灯的状态）；not_ready = 跑完但验证段仍有 hitch（未达标，区别于 err=跑挂）；cancelled = 操作员手动取消（未验证）。 */

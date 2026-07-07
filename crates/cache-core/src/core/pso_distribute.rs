@@ -1,4 +1,8 @@
 //! PSO cache distribution wrapper over `core::pak_distribute`.
+//!
+//! ⚠️ 链路已证伪下线（分发的 .upipelinecache 未 cook `-game` 永不加载）：Tauri
+//! command / CLI 子命令 / UI 入口均已删除。本文件仅因 `deploy_workflow` 的
+//! DistributePso 步骤仍在引用而保留——deploy 工作流 PSO 段的去留待产品决策后一并处理。
 
 use crate::core::pak_distribute::{
     self, DistributeOutcome, DistributePlanItem, DistributeProfile,

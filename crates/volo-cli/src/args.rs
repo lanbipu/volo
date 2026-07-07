@@ -979,49 +979,6 @@ pub enum PsoAction {
         #[arg(long)]
         machine: Option<i64>,
     },
-    /// [DEPRECATED] Run UE `-game` to collect PSO cache files. Verified 2026-07-02:
-    /// uncooked `-game` never writes Saved/CollectedPSOs (FShaderPipelineCache needs
-    /// cooked data), so this records nothing on this cluster — use `pso warmup`.
-    Collect {
-        #[arg(long)]
-        project_id: i64,
-        #[arg(long)]
-        source_machine: i64,
-        #[arg(long, value_name = "WxH", default_value = "1920x1080")]
-        resolution: String,
-        #[arg(long, default_value_t = true)]
-        windowed: bool,
-        #[arg(long, default_value_t = 10)]
-        max_minutes: u32,
-        #[command(flatten)]
-        cred: crate::credential_args::CredentialArgs,
-    },
-    /// List collected PSO cache files for a project.
-    List {
-        #[arg(long)]
-        project_id: i64,
-    },
-    /// [DEPRECATED] Distribute PSO cache files to target machines. Verified: files
-    /// copied to Saved/CollectedPSOs are never loaded by uncooked `-game` builds —
-    /// warm each node locally with `pso warmup` instead.
-    Distribute {
-        #[arg(long)]
-        project_id: i64,
-        #[arg(long)]
-        source_machine: i64,
-        #[arg(long, value_name = "M1,M2,...", value_delimiter = ',')]
-        targets: Vec<i64>,
-        #[arg(long)]
-        yes: bool,
-        #[arg(long)]
-        dry_run: bool,
-        /// SecretStore alias for the source share's SMB credential. Omit to
-        /// auto-derive from a Mode B share registered on the source host.
-        #[arg(long)]
-        source_smb_cred_alias: Option<String>,
-        #[command(flatten)]
-        cred: crate::credential_args::CredentialArgs,
-    },
 }
 
 // ---------- log ----------
