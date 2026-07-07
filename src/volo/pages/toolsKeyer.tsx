@@ -5,6 +5,7 @@ import * as React from "react";
 import "../ds";
 import { probeWebGpu } from "../keyer/gpu";
 import { KeyerEngine } from "../keyer/engine";
+import { DEFAULTS, KNOBS } from "../keyer/params";
 
 (function () {
   const { Button, InlineAlert, StatusLight, Tag } = window.Spectrum2DesignSystem_b6d1b3;
@@ -15,6 +16,78 @@ import { KeyerEngine } from "../keyer/engine";
     { id: "keyer_lab",   label: "抠像实验台", icon: "key" },
     { id: "keyer_bench", label: "基准测试",   icon: "target" },
   ];
+
+  const VIEWS = [
+    { mode: 0, label: "结果" },
+    { mode: 1, label: "matte" },
+    { mode: 2, label: "源" },
+    { mode: 3, label: "对比" },
+  ];
+
+  const cloneParams = (p) => ({ ...p, keyColor: [p.keyColor[0], p.keyColor[1], p.keyColor[2]] });
+  const clamp01 = (v) => Math.max(0, Math.min(1, v));
+  const linearToSrgbByte = (v) => {
+    const x = clamp01(v);
+    const y = x <= 0.0031308 ? x * 12.92 : 1.055 * Math.pow(x, 1 / 2.4) - 0.055;
+    return Math.round(clamp01(y) * 255);
+  };
+  const keyColorCss = (c) => "rgb(" + c.map(linearToSrgbByte).join(",") + ")";
+  const knobValue = (v, step) => Number(v).toFixed(step < 0.01 ? 3 : step < 0.1 ? 2 : 1);
+
+  const keyerStore = (() => {
+    let params = cloneParams(DEFAULTS);
+    let engine = null;
+    const subs = new Set();
+    const emit = () => subs.forEach((fn) => fn());
+    const snapshot = () => ({ params: cloneParams(params), hasEngine: !!engine });
+    const applyParams = (next, render = true) => {
+      params = cloneParams(next);
+      if (engine) {
+        engine.setParams(params);
+        if (render) engine.renderOnce();
+      }
+      emit();
+    };
+    return {
+      snapshot,
+      subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
+      attachEngine(nextEngine) {
+        engine = nextEngine;
+        if (engine) engine.setParams(params);
+        emit();
+      },
+      setParam(key, value) {
+        applyParams({ ...params, [key]: value });
+      },
+      async sampleAt(u, v) {
+        if (!engine) return null;
+        await engine.sampleKeyColor(u, v);
+        params = engine.getParams();
+        engine.renderOnce();
+        emit();
+        return cloneParams(params);
+      },
+    };
+  })();
+
+  function useKeyerSnapshot() {
+    const [snap, setSnap] = useState(keyerStore.snapshot());
+    useEffect(() => keyerStore.subscribe(() => setSnap(keyerStore.snapshot())), []);
+    return snap;
+  }
+
+  function canvasUv(ev, canvas) {
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const u = clamp01((ev.clientX - rect.left) / rect.width);
+    const v = clamp01((ev.clientY - rect.top) / rect.height);
+    return {
+      u,
+      v,
+      x: Math.round(u * Math.max(0, canvas.width - 1)),
+      y: Math.round(v * Math.max(0, canvas.height - 1)),
+    };
+  }
 
   function KeyerCenter() {
     const canvasRef = useRef(null);
@@ -27,15 +100,19 @@ import { KeyerEngine } from "../keyer/engine";
     const [hud, setHud] = useState(null);
     const [playing, setPlaying] = useState(false);
     const [hasVideo, setHasVideo] = useState(false);
+    const keyer = useKeyerSnapshot();
     useEffect(() => {
       let dead = false;
       probeWebGpu(canvasRef.current).then((result) => {
         if (dead) return;
         setProbe(result);
-        if (result.ok) engineRef.current = new KeyerEngine(result);
+        if (result.ok) {
+          engineRef.current = new KeyerEngine(result);
+          keyerStore.attachEngine(engineRef.current);
+        }
       });
       return () => {
-        dead = true; engineRef.current = null;
+        dead = true; keyerStore.attachEngine(null); engineRef.current = null;
         const v = videoRef.current;
         if (v) { v.pause(); if (v.src) URL.revokeObjectURL(v.src); }
       };
@@ -73,7 +150,8 @@ import { KeyerEngine } from "../keyer/engine";
       engineRef.current.loadImage(bmp);
       engineRef.current.renderOnce();
       const [r, g, b] = await engineRef.current.readbackPixel(10, 10);
-      setPixelText("src(10,10)=" + r + "," + g + "," + b);
+      const m = await engineRef.current.readbackMatte(10, 10);
+      setPixelText("src(10,10)=" + r + "," + g + "," + b + " · matte=" + m.toFixed(3));
       if (bmp.close) bmp.close();
     };
     const togglePlay = () => {
@@ -82,11 +160,30 @@ import { KeyerEngine } from "../keyer/engine";
       if (v.paused) { v.play(); setPlaying(true); pumpFrames(); }
       else { v.pause(); setPlaying(false); if (v.cancelVideoFrameCallback && vfcRef.current) v.cancelVideoFrameCallback(vfcRef.current); }
     };
+    const setViewMode = (mode) => keyerStore.setParam("viewMode", mode);
+    const onCanvasClick = async (ev) => {
+      const canvas = canvasRef.current;
+      const engine = engineRef.current;
+      if (!canvas || !engine) return;
+      const p = canvasUv(ev, canvas);
+      if (!p) return;
+      await keyerStore.sampleAt(p.u, p.v);
+      const [r, g, b] = await engine.readbackPixel(p.x, p.y);
+      const m = await engine.readbackMatte(p.x, p.y);
+      setPixelText("sample(" + p.x + "," + p.y + ") src=" + r + "," + g + "," + b + " · matte=" + m.toFixed(3));
+    };
     return h(React.Fragment, null,
       h("input", { ref: fileRef, type: "file", accept: "image/png,image/jpeg,video/mp4,video/quicktime", style: { display: "none" }, onChange: onFile }),
       h("video", { ref: videoRef, muted: true, loop: true, playsInline: true, style: { display: "none" } }),
       h("div", { className: "canvas-head" },
         h("span", { className: "t" }, "抠像实验台"),
+        h("div", { className: "kl-view-seg" },
+          VIEWS.map((v) => h("button", {
+            key: v.mode,
+            type: "button",
+            className: keyer.params.viewMode === v.mode ? "on" : "",
+            onClick: () => setViewMode(v.mode),
+          }, v.label))),
         h("div", { className: "right" },
           hasVideo ? h(Button, { variant: "secondary", size: "S",
             icon: h(Icon, { name: playing ? "pause" : "play", size: 14 }), onPress: togglePlay }, playing ? "暂停" : "播放") : null,
@@ -96,7 +193,7 @@ import { KeyerEngine } from "../keyer/engine";
             ? h(StatusLight, { variant: "positive" }, "WebGPU · " + probe.adapterInfo.vendor)
             : probe ? h(StatusLight, { variant: "negative" }, "WebGPU 不可用") : null)),
       h("div", { className: "canvas-stage kl-stage" },
-        h("canvas", { ref: canvasRef, className: "kl-canvas", width: 1280, height: 720 }),
+        h("canvas", { ref: canvasRef, className: "kl-canvas", width: 1280, height: 720, onClick: onCanvasClick }),
         hud ? h("div", { className: "kl-hud" }, hud) : null,
         probe && probe.ok ? h("div", { className: "kl-probe" },
           pixelText || (probe.adapterInfo.vendor + " · " + probe.adapterInfo.architecture + " · " + probe.format)) : null,
@@ -126,11 +223,36 @@ import { KeyerEngine } from "../keyer/engine";
         h("div", { className: "skl-intent" }, "GT 测试集指标回归 — Task 9 建设")));
     return h(KeyerCenter, { s });
   }
+  function InspectorPanel() {
+    const keyer = useKeyerSnapshot();
+    const params = keyer.params;
+    return h("div", { className: "insp-detail kl-inspector" },
+      h("div", { className: "insp-head" },
+        h("div", null,
+          h("div", { className: "title" }, "参数"),
+          h("div", { className: "sub" }, "Keyer core v1"))),
+      h("div", { className: "insp-sect" },
+        h("div", { className: "lh" }, "Key Color"),
+        h("div", { className: "kl-keycolor" },
+          h("span", { className: "kl-swatch", style: { background: keyColorCss(params.keyColor) } }),
+          h("span", { className: "kl-keyhint" }, "点击画面取样"),
+          h("span", { className: "kl-keyvalue" }, params.keyColor.map((v) => v.toFixed(3)).join(" ")))),
+      h("div", { className: "insp-sect" },
+        h("div", { className: "lh" }, "Primary Matte"),
+        KNOBS.slice(0, 6).map((k) => h("label", { key: k.key, className: "kl-knob" },
+          h("span", { className: "kl-knob-label" }, k.label),
+          h("input", {
+            type: "range",
+            min: k.min,
+            max: k.max,
+            step: k.step,
+            value: params[k.key],
+            onChange: (ev) => keyerStore.setParam(k.key, Number(ev.currentTarget.value)),
+          }),
+          h("span", { className: "kl-knob-value" }, knobValue(params[k.key], k.step))))));
+  }
   function inspector() {
-    return h("div", { className: "insp-empty" },
-      h("div", { className: "ph" }, h(Icon, { name: "key", size: 30 })),
-      h("div", null, h("div", { style: { color: "var(--chrome-dim)", fontWeight: 600, marginBottom: 4 } }, "参数"),
-        "旋钮面板随 Task 4+ 建设"));
+    return h(InspectorPanel, null);
   }
 
   window.VOLO_KEYER = { ctx, left, center, inspector };
