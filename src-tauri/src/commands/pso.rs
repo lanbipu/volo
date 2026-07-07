@@ -2,7 +2,7 @@
 
 use crate::commands::ddc_pak::UeJobRegistry;
 use cache_core::core::{
-    batch, driver_cache_probe, ini_editor,
+    batch, driver_cache_clear, driver_cache_probe, ini_editor, pso_coldtest,
     pso_collect::{self, PsoCollectSpec},
     pso_distribute::{self, PsoDistributePlanItem},
     pso_status::{self, PsoStatusCell},
@@ -624,6 +624,23 @@ pub struct PsoWarmupJobResponse {
     pub runs: Vec<PsoWarmupLaunched>,
 }
 
+pub type StartPsoColdtestRequest = StartPsoWarmupRequest;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PsoColdtestLaunched {
+    pub machine_id: i64,
+    pub run_id: i64,
+    pub job_id: Option<String>,
+    pub clear_result: Option<driver_cache_clear::DriverCacheClearResult>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PsoColdtestJobResponse {
+    pub job_id: String,
+    pub runs: Vec<PsoColdtestLaunched>,
+}
+
 #[tauri::command]
 pub async fn start_pso_warmup(
     app: AppHandle,
@@ -860,6 +877,350 @@ pub async fn start_pso_warmup(
 }
 
 #[tauri::command]
+pub async fn start_pso_coldtest(
+    app: AppHandle,
+    db: State<'_, Db>,
+    registry: State<'_, UeJobRegistry>,
+    request: StartPsoColdtestRequest,
+) -> VoloResult<PsoColdtestJobResponse> {
+    let mut target_ids = request.target_machine_ids.clone();
+    target_ids.sort_unstable();
+    target_ids.dedup();
+    if target_ids.is_empty() {
+        return Err(VoloError::InvalidInput("no target machines".into()));
+    }
+    if request.max_minutes == 0 {
+        return Err(VoloError::InvalidInput("max_minutes must be >= 1".into()));
+    }
+
+    struct Target {
+        machine_id: i64,
+        ip: String,
+        engine_path: String,
+        uproject_path: String,
+    }
+    let mut targets = Vec::with_capacity(target_ids.len());
+    for machine_id in &target_ids {
+        let machine = data_machines::find_by_id(&db, *machine_id)?
+            .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?;
+        let location =
+            project_locations::get_for_project_machine(&db, request.project_id, *machine_id)?
+                .ok_or_else(|| {
+                    VoloError::InvalidInput(format!(
+                        "project {} not located on machine {}",
+                        request.project_id, machine_id
+                    ))
+                })?;
+        let engine_path = resolve_engine_path(&db, *machine_id, request.ue_version.as_deref())?;
+        targets.push(Target {
+            machine_id: *machine_id,
+            ip: machine.ip,
+            engine_path,
+            uproject_path: location.uproject_path,
+        });
+    }
+
+    let parent_job_id = format!("pso-coldtest-{}-{}", request.project_id, now_millis());
+    let resolution = (request.resolution_w.max(1), request.resolution_h.max(1));
+    let dc_cfg_path = normalize_optional(request.dc_cfg_path.as_deref());
+    let dc_node = normalize_optional(request.dc_node.as_deref());
+    let extra_args = normalize_extra_args(&request.extra_args);
+    let specs: Vec<PsoWarmupSpec> = targets
+        .iter()
+        .map(|target| PsoWarmupSpec {
+            project_id: request.project_id,
+            machine_id: target.machine_id,
+            resolution,
+            max_minutes: request.max_minutes,
+            dc_cfg_path: dc_cfg_path.clone(),
+            dc_node: dc_node.clone(),
+            offscreen: request.offscreen,
+            extra_args: extra_args.clone(),
+        })
+        .collect();
+    for spec in &specs {
+        pso_warmup::validate_warmup_spec(spec)?;
+    }
+
+    let mut run_ids = Vec::with_capacity(targets.len());
+    for (target, spec) in targets.iter().zip(&specs) {
+        run_ids.push(pso_warmup_runs::insert_started(
+            &db,
+            request.project_id,
+            target.machine_id,
+            resolution,
+            request.max_minutes,
+            pso_coldtest::COLDTEST_MODE,
+            spec.dc_node.as_deref(),
+        )?);
+    }
+
+    let mut launched = Vec::with_capacity(targets.len());
+    for ((target, run_id), spec) in targets.into_iter().zip(run_ids).zip(specs) {
+        let clear_started = std::time::Instant::now();
+        let host_for_clear = target.ip.clone();
+        let clear_decision = tokio::task::spawn_blocking(move || {
+            pso_coldtest::clear_and_decide(&host_for_clear)
+        })
+        .await
+        .map_err(|err| VoloError::OperationFailed(format!("driver cache clear join: {err}")))??;
+
+        if !clear_decision.can_run {
+            let message = clear_decision.error_message.clone().unwrap_or_else(|| {
+                "driver cache clear residual exceeds coldtest threshold".into()
+            });
+            if let Err(err) = pso_warmup_runs::finish(
+                &db,
+                run_id,
+                WarmupStatus::Err,
+                None,
+                Some(&message),
+                clear_started.elapsed().as_secs() as i64,
+                None,
+            ) {
+                tracing::error!(?err, run_id, "pso coldtest clear failure persist failed");
+            }
+            launched.push(PsoColdtestLaunched {
+                machine_id: target.machine_id,
+                run_id,
+                job_id: None,
+                clear_result: Some(clear_decision.clear_result),
+                error_message: Some(message),
+            });
+            continue;
+        }
+
+        let handle = match pso_coldtest::launch_coldtest_run(
+            UeRunnerBackend::Remote,
+            &target.ip,
+            &target.engine_path,
+            &target.uproject_path,
+            &spec,
+        ) {
+            Ok(handle) => handle,
+            Err(err) => {
+                let message = format!("coldtest launch failed: {err}");
+                if let Err(persist_err) = pso_warmup_runs::finish(
+                    &db,
+                    run_id,
+                    WarmupStatus::Err,
+                    None,
+                    Some(&message),
+                    clear_started.elapsed().as_secs() as i64,
+                    None,
+                ) {
+                    tracing::error!(
+                        ?persist_err,
+                        run_id,
+                        "pso coldtest launch failure persist failed"
+                    );
+                }
+                launched.push(PsoColdtestLaunched {
+                    machine_id: target.machine_id,
+                    run_id,
+                    job_id: None,
+                    clear_result: Some(clear_decision.clear_result),
+                    error_message: Some(message),
+                });
+                continue;
+            }
+        };
+
+        let job_id = format!("pso-coldtest-{}-{}", target.machine_id, now_millis());
+        registry.insert(&job_id, handle.cancel.clone()).await;
+        pso_warmup::spawn_watchdog(handle.cancel.clone(), request.max_minutes, job_id.clone());
+
+        let cancel_for_task = handle.cancel.clone();
+        let mut events = handle.events;
+        let app_for_task = app.clone();
+        let db_for_task: Db = (*db).clone();
+        let parent_for_task = parent_job_id.clone();
+        let job_id_for_task = job_id.clone();
+        let machine_id = target.machine_id;
+        let project_id = request.project_id;
+        let host_for_task = target.ip.clone();
+        let clear_result_for_task = clear_decision.clear_result.clone();
+        let clear_after_bytes = clear_decision.clear_result.after_bytes;
+
+        tokio::spawn(async move {
+            let started = std::time::Instant::now();
+            let mut hitch_count: i64 = 0;
+
+            #[derive(Clone, Serialize)]
+            struct ProgressPayload<'a> {
+                job_id: &'a str,
+                parent_job_id: &'a str,
+                machine_id: i64,
+                project_id: i64,
+                run_id: i64,
+                hitch_count: i64,
+                clear_result: &'a driver_cache_clear::DriverCacheClearResult,
+                event: &'a UeRunnerEvent,
+            }
+            #[derive(Clone, Serialize)]
+            struct FinalizedPayload<'a> {
+                job_id: &'a str,
+                parent_job_id: &'a str,
+                machine_id: i64,
+                project_id: i64,
+                run_id: i64,
+                hitch_count: Option<i64>,
+                driver_cache_growth_bytes: Option<i64>,
+                status: &'a str,
+                error_message: Option<String>,
+                clear_result: &'a driver_cache_clear::DriverCacheClearResult,
+            }
+
+            while let Some(event) = events.recv().await {
+                if let UeRunnerEvent::LogLine { text, .. } = &event {
+                    if pso_warmup::is_hitch_line(text) {
+                        hitch_count += 1;
+                    }
+                }
+                let _ = app_for_task.emit(
+                    "pso-coldtest-progress",
+                    ProgressPayload {
+                        job_id: &job_id_for_task,
+                        parent_job_id: &parent_for_task,
+                        machine_id,
+                        project_id,
+                        run_id,
+                        hitch_count,
+                        clear_result: &clear_result_for_task,
+                        event: &event,
+                    },
+                );
+
+                let (done, status, error_message) = match &event {
+                    UeRunnerEvent::Completed { exit_code, .. } => {
+                        if *exit_code == 0 {
+                            (true, WarmupStatus::Ok, None)
+                        } else {
+                            (
+                                true,
+                                WarmupStatus::Err,
+                                Some(format!("UE exited with code {}", exit_code)),
+                            )
+                        }
+                    }
+                    UeRunnerEvent::Cancelled => {
+                        if cancel_for_task.lock().await.watchdog {
+                            (true, WarmupStatus::Ok, None)
+                        } else {
+                            (true, WarmupStatus::Cancelled, None)
+                        }
+                    }
+                    UeRunnerEvent::Error { message } => {
+                        (true, WarmupStatus::Err, Some(message.clone()))
+                    }
+                    _ => (false, WarmupStatus::Running, None),
+                };
+                if !done {
+                    continue;
+                }
+
+                let duration_secs = started.elapsed().as_secs() as i64;
+                let mut final_status = status;
+                let mut final_error_message = error_message;
+                let mut driver_cache_growth_bytes = None;
+                if matches!(final_status, WarmupStatus::Ok) {
+                    let host_for_probe = host_for_task.clone();
+                    let probe_result =
+                        tokio::task::spawn_blocking(move || driver_cache_probe::probe(&host_for_probe))
+                            .await;
+                    match probe_result {
+                        Ok(Ok(probe)) => {
+                            let after_run_bytes = probe.total_bytes;
+                            match driver_cache_snapshot_input(machine_id, probe) {
+                                Ok(input) => {
+                                    driver_cache_growth_bytes = Some(
+                                        pso_coldtest::driver_cache_growth_bytes(
+                                            clear_after_bytes,
+                                            after_run_bytes,
+                                        ),
+                                    );
+                                    if let Err(err) =
+                                        driver_cache_snapshots::insert(&db_for_task, &input)
+                                    {
+                                        final_status = WarmupStatus::Err;
+                                        final_error_message = Some(format!(
+                                            "driver cache snapshot persist failed: {err}"
+                                        ));
+                                    }
+                                }
+                                Err(err) => {
+                                    final_status = WarmupStatus::Err;
+                                    final_error_message = Some(format!(
+                                        "driver cache verification failed: {err}"
+                                    ));
+                                }
+                            }
+                        }
+                        Ok(Err(err)) => {
+                            final_status = WarmupStatus::Err;
+                            final_error_message =
+                                Some(format!("driver cache verification failed: {err}"));
+                        }
+                        Err(err) => {
+                            final_status = WarmupStatus::Err;
+                            final_error_message =
+                                Some(format!("driver cache verification join failed: {err}"));
+                        }
+                    }
+                }
+                let persisted_hitches =
+                    matches!(final_status, WarmupStatus::Ok | WarmupStatus::Cancelled)
+                        .then_some(hitch_count);
+                if let Err(err) = pso_warmup_runs::finish(
+                    &db_for_task,
+                    run_id,
+                    final_status,
+                    persisted_hitches,
+                    final_error_message.as_deref(),
+                    duration_secs,
+                    driver_cache_growth_bytes,
+                ) {
+                    tracing::error!(?err, run_id, "pso coldtest finish persist failed");
+                }
+                let _ = app_for_task.emit(
+                    "pso-coldtest-finalized",
+                    FinalizedPayload {
+                        job_id: &job_id_for_task,
+                        parent_job_id: &parent_for_task,
+                        machine_id,
+                        project_id,
+                        run_id,
+                        hitch_count: persisted_hitches,
+                        driver_cache_growth_bytes,
+                        status: final_status.as_str(),
+                        error_message: final_error_message,
+                        clear_result: &clear_result_for_task,
+                    },
+                );
+                app_for_task
+                    .state::<UeJobRegistry>()
+                    .remove(&job_id_for_task)
+                    .await;
+                break;
+            }
+        });
+
+        launched.push(PsoColdtestLaunched {
+            machine_id: target.machine_id,
+            run_id,
+            job_id: Some(job_id),
+            clear_result: Some(clear_decision.clear_result),
+            error_message: None,
+        });
+    }
+
+    Ok(PsoColdtestJobResponse {
+        job_id: parent_job_id,
+        runs: launched,
+    })
+}
+
+#[tauri::command]
 pub fn list_pso_warmup_runs(
     db: State<'_, Db>,
     project_id: i64,
@@ -878,6 +1239,19 @@ pub fn list_pso_status(
     machine_ids: Option<Vec<i64>>,
 ) -> VoloResult<Vec<PsoStatusCell>> {
     pso_status::list_pso_status(&db, project_id, machine_ids)
+}
+
+#[tauri::command]
+pub async fn clear_driver_cache(
+    db: State<'_, Db>,
+    machine_id: i64,
+) -> VoloResult<driver_cache_clear::DriverCacheClearResult> {
+    let machine = data_machines::find_by_id(&db, machine_id)?
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?;
+    let host = machine.ip.clone();
+    tokio::task::spawn_blocking(move || driver_cache_clear::clear(&host))
+        .await
+        .map_err(|err| VoloError::OperationFailed(format!("driver cache clear join: {err}")))?
 }
 
 #[tauri::command]

@@ -560,6 +560,43 @@ export interface DriverCacheSnapshot {
   captured_at: string | null;
 }
 
+export interface DriverCacheClearStats {
+  exists: boolean;
+  file_count: number;
+  total_bytes: number;
+  newest_mtime: string | null;
+}
+
+export interface DriverCacheClearDirectoryResult {
+  kind: string;
+  path: string;
+  before: DriverCacheClearStats;
+  after: DriverCacheClearStats;
+  cleared_file_count: number;
+  cleared_bytes: number;
+  failed_file_count: number;
+  failed_bytes: number;
+  residual_file_count: number;
+  residual_bytes: number;
+}
+
+export interface DriverCacheClearResult {
+  ok: boolean;
+  message: string | null;
+  residual_threshold_bytes: number;
+  before_file_count: number;
+  before_bytes: number;
+  after_file_count: number;
+  after_bytes: number;
+  cleared_file_count: number;
+  cleared_bytes: number;
+  failed_file_count: number;
+  failed_bytes: number;
+  residual_file_count: number;
+  residual_bytes: number;
+  directories: DriverCacheClearDirectoryResult[];
+}
+
 export type PsoGreenlightStatus = "ok" | "degraded" | "none";
 
 export type PsoInvalidationReason =
@@ -589,6 +626,21 @@ export interface PsoStatusCell {
   baseline_snapshot_id: number | null;
   latest_snapshot_id: number | null;
   invalidation_reasons: PsoInvalidationEvent[];
+}
+
+export type StartPsoColdtestRequest = StartPsoWarmupRequest;
+
+export interface PsoColdtestLaunched {
+  machine_id: number;
+  run_id: number;
+  job_id: string | null;
+  clear_result: DriverCacheClearResult | null;
+  error_message: string | null;
+}
+
+export interface PsoColdtestJobResponse {
+  job_id: string;
+  runs: PsoColdtestLaunched[];
 }
 
 /* ============================ health check ============================ */
