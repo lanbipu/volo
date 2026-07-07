@@ -617,6 +617,10 @@ function App() {
   const [calStageType, setCalStageType] = useState(persisted.calStageType === 'ar' ? 'ar' : 'led');
   /* 左栏「网格校正」折叠组的展开状态 —— 纯 UI 偏好，与 ddcOpen 同类持久化模式 */
   const [calGridOpen, setCalGridOpen] = useState(persisted.calGridOpen != null ? persisted.calGridOpen : true);
+  /* AR 板块左栏导航 + 「空间校正」折叠组展开状态 —— 与上面 calNav/calGridOpen 同一持久化模式 */
+  const CAL_AR_NAVS = ['overview', 'markers', 'lens', 'spatial', 'delay', 'verify', 'runs'];
+  const [calArNav, setCalArNav] = useState(CAL_AR_NAVS.includes(persisted.calArNav) ? persisted.calArNav : 'overview');
+  const [calArToolsOpen, setCalArToolsOpen] = useState(persisted.calArToolsOpen != null ? persisted.calArToolsOpen : true);
   const [calLensState, setCalLensState] = useState(persisted.calLensState || 'idle');
   /* 集群总览：全新设置演示（无机器 → 引导扫描添加）+ 本会话已添加机器标记 */
   const [freshSetup, setFreshSetup] = useState(!!persisted.freshSetup);
@@ -659,10 +663,10 @@ function App() {
   useEffect(() => {
     clearTimeout(persistTimer.current);
     persistTimer.current = setTimeout(() => {
-      try { localStorage.setItem('volo2', JSON.stringify({ page, selNode, cacheNav, ddcOpen, calNav, calScreen, calMethod, calStageType, calGridOpen, calLensState, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed })); } catch (e) {}
+      try { localStorage.setItem('volo2', JSON.stringify({ page, selNode, cacheNav, ddcOpen, calNav, calScreen, calMethod, calStageType, calGridOpen, calArNav, calArToolsOpen, calLensState, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed })); } catch (e) {}
     }, 150);
     return () => clearTimeout(persistTimer.current);
-  }, [page, selNode, cacheNav, ddcOpen, calNav, calScreen, calMethod, calStageType, calGridOpen, calLensState, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed]);
+  }, [page, selNode, cacheNav, ddcOpen, calNav, calScreen, calMethod, calStageType, calGridOpen, calArNav, calArToolsOpen, calLensState, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed]);
 
   /* 禁掉桌面 WebView 的右键菜单（reload / 检查）；calibrate 画布另有本地 preventDefault */
   useEffect(() => {
@@ -970,6 +974,7 @@ function App() {
     tasks, setTasks, runTask, runCmd, runStreamingCmd, cancelTask, suppressRunPop, conTab, setConTab, logSearch, setLogSearch, logPaused, setLogPaused,
     calNav, setCalNav, calScreen, setCalScreen, calMethod, setCalMethod, calSel, setCalSel,
     calStageType, setCalStageType, calGridOpen, setCalGridOpen,
+    calArNav, setCalArNav, calArToolsOpen, setCalArToolsOpen,
     calLensState, setCalLensState,
     leftCollapsed, setLeftCollapsed, rightCollapsed, setRightCollapsed, maximized,
     machines, setMachines, shares, setShares, projects, setProjects, gpuMatrix, cluster, cacheLoading, cacheError, reloadCache };

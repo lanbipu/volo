@@ -253,6 +253,23 @@ const PROVENANCE = {
   extrapolated: { label: 'extrapolated 外推', tone: 'notice',      dot: 'rgba(255,150,40,.95)' },
 };
 
+/* ---- AR 舞台校正：三通道状态映射表（不含工程数据，真实态直接读后端） ---- */
+/* 世界对齐等级（marker-map validate 的 world_alignment.grade） */
+const AR_GRADE = {
+  millimetre: { label: 'millimetre', tone: 'positive', icon: 'check' },
+  centimetre: { label: 'centimetre', tone: 'notice',   icon: 'alert' },
+  coarse:     { label: 'coarse',     tone: 'notice',   icon: 'alert' },
+  'n/a':      { label: 'n/a',        tone: 'neutral',  icon: 'minus' },
+};
+/* 置信度四档（quick run / delay-cal 的 confidence 字符串档），对齐 CAL_CONF */
+const AR_CONF = CAL_CONF;
+/* AR 工作区（session / marker map / runs 根目录）设置状态三态 */
+const AR_WS_STATUS = {
+  unset:   { label: '未设置',   tone: 'neutral',     icon: 'minus' },
+  set:     { label: '已设置',   tone: 'informative', icon: 'check' },
+  checked: { label: '校验通过', tone: 'positive',    icon: 'check' },
+};
+
 Object.assign(window, {
   Icon, STAGES, PAGES,
   /* machines / creds / shares / projects are loaded from the backend by the
@@ -264,6 +281,8 @@ Object.assign(window, {
   CAL_NAV_STATUS, CAL_GRID_STATUS, CAL_LENS_STATUS, CAL_CONF,
   M2_PATTERN, M2_MANIFEST, M2_INTRINSICS, M2_RECONSTRUCT, M2_QUALITY,
   FUSE_RESULT, FUSE_SOURCE, PROVENANCE,
+  /* AR 舞台校正：三通道状态映射表 */
+  AR_GRADE, AR_CONF, AR_WS_STATUS,
 });
 
 export { Icon, STAGES, PAGES };
