@@ -49,3 +49,4 @@ volo-dev.pid
 .claude/settings.json
 .claude/settings.json
 scripts/keyer/testset/
+testdata/
