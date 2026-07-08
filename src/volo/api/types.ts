@@ -477,6 +477,8 @@ export interface TraversalRequest {
   dwell_ms?: number | null;
   yaw_step_deg?: number | null;
   pitch_levels_deg?: number[] | null;
+  /** 收敛采样间隔（秒），默认 30；「设置」子视图的「收敛窗口」写这里。 */
+  probe_interval_secs?: number | null;
 }
 
 export interface PsoWarmupLaunched {
@@ -620,6 +622,33 @@ export interface PsoColdtestLaunched {
 export interface PsoColdtestJobResponse {
   job_id: string;
   runs: PsoColdtestLaunched[];
+}
+
+/** 每工程持久化的预跑设置（PSO Dashboard「设置」子视图）。extra_args 是空格分隔的单串（与
+ *  StartPsoWarmupRequest.extra_args 的 string[] 之间调用方自己 split/join）；target_machine_ids
+ *  是 JSON 数组文本（如 "[1,2,3]"），不是原生数组——后端表列是 TEXT，调用方自行 JSON.parse/stringify。 */
+export interface PsoProjectSettings {
+  project_id: number;
+  /** "asset" | "manual" */
+  dc_cfg_source: string;
+  dc_cfg_asset: string | null;
+  dc_cfg_manual_path: string | null;
+  extra_args: string;
+  offscreen: boolean;
+  target_machine_ids: string;
+  max_minutes: number;
+  probe_interval_secs: number;
+  /** 遍历引擎地图包路径；留空 = 该工程预跑不启用遍历（固定机位，行为不变）。 */
+  map_path: string | null;
+  /** nDisplay 集群节点 id（如 "Node_0"），传给 UE 的 -dc_node/-StageFriendlyName；必须与 dc_cfg
+   *  指向的 .ndisplay 配置内定义的节点名一致，与配置文件路径无关。留空时调用方退回 "Node_0"。 */
+  dc_node: string | null;
+  updated_at: string | null;
+}
+
+export interface PsoConfigPreflightResult {
+  machine_id: number;
+  exists: boolean;
 }
 
 /* ============================ health check ============================ */

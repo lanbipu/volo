@@ -10,7 +10,8 @@ use cache_core::core::{
 };
 use cache_core::data::{
     driver_cache_snapshots, machine_ue_installs, machines as data_machines, project_locations,
-    pso_warmup_runs, Db, DriverCacheSnapshot, PsoWarmupRun, WarmupStatus,
+    pso_project_settings, pso_warmup_runs, Db, DriverCacheSnapshot, PsoProjectSettings,
+    PsoWarmupRun, WarmupStatus,
 };
 use cache_core::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
@@ -108,6 +109,8 @@ pub struct TraversalRequest {
     pub yaw_step_deg: Option<f64>,
     #[serde(default)]
     pub pitch_levels_deg: Option<Vec<f64>>,
+    #[serde(default)]
+    pub probe_interval_secs: Option<u64>,
 }
 
 impl TraversalRequest {
@@ -129,6 +132,7 @@ impl TraversalRequest {
                 .pitch_levels_deg
                 .clone()
                 .unwrap_or(base.pitch_levels_deg.clone()),
+            probe_interval_secs: self.probe_interval_secs.unwrap_or(base.probe_interval_secs),
             ..base
         }
     }
@@ -246,6 +250,7 @@ fn spawn_traversal_emitter(
     mut events: tokio::sync::mpsc::UnboundedReceiver<pso_traversal::TraversalEvent>,
     app: AppHandle,
     machine_id: i64,
+    project_id: i64,
     run_id: i64,
     phase: &'static str,
     parent_job_id: String,
@@ -256,6 +261,7 @@ fn spawn_traversal_emitter(
         job_id: &'a str,
         parent_job_id: &'a str,
         machine_id: i64,
+        project_id: i64,
         run_id: i64,
         phase: &'a str,
         event: &'a pso_traversal::TraversalEvent,
@@ -268,6 +274,7 @@ fn spawn_traversal_emitter(
                     job_id: &job_id,
                     parent_job_id: &parent_job_id,
                     machine_id,
+                    project_id,
                     run_id,
                     phase,
                     event: &ev,
@@ -494,6 +501,7 @@ pub async fn start_pso_warmup(
                     handle.events,
                     app_for_task.clone(),
                     machine_id,
+                    project_id,
                     run_id,
                     "prerun",
                     parent_for_task.clone(),
@@ -583,6 +591,7 @@ pub async fn start_pso_warmup(
                                     handle.events,
                                     app_for_task.clone(),
                                     machine_id,
+                                    project_id,
                                     run_id,
                                     "verify",
                                     parent_for_task.clone(),
@@ -1139,5 +1148,87 @@ fn driver_cache_dir_to_data(
         total_bytes: dir.total_bytes,
         newest_mtime: dir.newest_mtime.clone(),
     }
+}
+
+/// 批量驱动缓存快照读取（无 SSH 往返，纯读库）：从未探测过的机器直接跳过，
+/// 不用错误占位。供「配置巡检」/概览卡片一次性拉全量最新快照用。
+#[tauri::command]
+pub fn list_driver_cache_snapshots(
+    db: State<'_, Db>,
+    machine_ids: Vec<i64>,
+) -> VoloResult<Vec<DriverCacheSnapshot>> {
+    let mut out = Vec::with_capacity(machine_ids.len());
+    for machine_id in machine_ids {
+        if let Some(snapshot) = driver_cache_snapshots::latest_for_machine(&db, machine_id)? {
+            out.push(snapshot);
+        }
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn get_pso_project_settings(
+    db: State<'_, Db>,
+    project_id: i64,
+) -> VoloResult<Option<PsoProjectSettings>> {
+    pso_project_settings::get(&db, project_id)
+}
+
+#[tauri::command]
+pub fn set_pso_project_settings(
+    db: State<'_, Db>,
+    settings: PsoProjectSettings,
+) -> VoloResult<PsoProjectSettings> {
+    pso_project_settings::upsert(&db, &settings)
+}
+
+/// nDisplay 配置资产发现：SSH 到目标机递归找工程根目录下的 .ndisplay 文件，
+/// 供「设置」子视图 dc_cfg 来源单选的「工程内自动发现」选项使用。
+#[tauri::command]
+pub async fn discover_ndisplay_assets(
+    db: State<'_, Db>,
+    machine_id: i64,
+    project_root: String,
+) -> VoloResult<Vec<String>> {
+    let machine = data_machines::find_by_id(&db, machine_id)?
+        .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?;
+    let host = machine.ip.clone();
+    tokio::task::spawn_blocking(move || pso_warmup::discover_ndisplay_assets(&host, &project_root))
+        .await
+        .map_err(|err| VoloError::OperationFailed(format!("ndisplay asset discovery join: {err}")))?
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PsoConfigPreflightResult {
+    pub machine_id: i64,
+    pub exists: bool,
+}
+
+/// 预跑配置巡检：逐机检查 dc_cfg_path 是否存在，单台 SSH 失败只记 exists=false
+/// 并继续，不让整单命令失败（与 all-or-nothing 的 preflight_dc_cfg 区分开，
+/// 后者是真正发起预跑前的拒绝闸；这个是「配置巡检」卡片/保存前校验用的只读探测）。
+#[tauri::command]
+pub async fn check_pso_config_preflight(
+    db: State<'_, Db>,
+    machine_ids: Vec<i64>,
+    dc_cfg_path: String,
+) -> VoloResult<Vec<PsoConfigPreflightResult>> {
+    let mut checks = Vec::with_capacity(machine_ids.len());
+    for machine_id in machine_ids {
+        let machine = data_machines::find_by_id(&db, machine_id)?
+            .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?;
+        checks.push((machine_id, machine.ip));
+    }
+    tokio::task::spawn_blocking(move || {
+        checks
+            .into_iter()
+            .map(|(machine_id, ip)| PsoConfigPreflightResult {
+                machine_id,
+                exists: pso_warmup::check_dc_cfg_exists(&ip, &dc_cfg_path).unwrap_or(false),
+            })
+            .collect()
+    })
+    .await
+    .map_err(|err| VoloError::OperationFailed(format!("pso config preflight join: {err}")))
 }
 

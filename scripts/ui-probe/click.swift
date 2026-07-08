@@ -6,8 +6,13 @@ import CoreGraphics
 import Foundation
 let args = CommandLine.arguments
 let pt = CGPoint(x: Double(args[1])!, y: Double(args[2])!)
+CGWarpMouseCursorPosition(pt) /* 真实光标必须先移到目标点——WKWebView 命中测试认的是实际光标位置，不是事件自带坐标 */
+usleep(30000)
+let moved = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: pt, mouseButton: .left)!
+moved.post(tap: .cghidEventTap) /* React Aria usePress 等基于 pointer 状态机的组件需要先有 hover-in，纯 down/up 可能判定不到目标 */
+usleep(80000)
 for type in [CGEventType.leftMouseDown, .leftMouseUp] {
   let ev = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: pt, mouseButton: .left)!
   ev.post(tap: .cghidEventTap)
-  usleep(60000)
+  usleep(90000)
 }

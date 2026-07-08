@@ -583,6 +583,17 @@ function App() {
   /* PSO 工程选择（主视图勾选 · 检查器就地显示 + 操作）。DDC PAK 已改为主视图双栏自管选择/
      操作（cacheDdcPak.tsx 内部 state），不再经由 shell 的 pakSel/pakVerify。 */
   const [psoSel, setPsoSel] = useState(null);
+  /* PSO 绿灯矩阵 / 预跑历史 / 驱动缓存快照 —— Dashboard(center) 与检查器(inspector) 是两棵独立
+     渲染的子树（cacheDdc 的 ddc(s)/detail(s) 各自单独调用），靠 shell state 而非页面内 module
+     变量才能让两边读到同一份数据（对齐 machines/gpuMatrix 的共享模式）；由 cachePsoDash.tsx 的
+     loadPsoData(s) 按工程 fan-out 填充，不随 reloadCache 联动（比机器/工程列表更重，只在
+     Dashboard 挂载或动作完成后按需刷新）。 */
+  const [psoStatusByProject, setPsoStatusByProject] = useState({});
+  const [psoRunsByProject, setPsoRunsByProject] = useState({});
+  const [psoDriverSnapshots, setPsoDriverSnapshots] = useState({});
+  /* 每工程持久化预跑设置（get_pso_project_settings，纯读库无 SSH）——配置巡检卡 / 预跑确认对话框
+     的红线校验都要读全量，随 loadPsoData 一起 fan-out 加载，不单独维护第二套加载时序。 */
+  const [psoSettingsByProject, setPsoSettingsByProject] = useState({});
   /* task drawer + NDJSON console */
   const [tasks, setTasks] = useState([]);
   const taskSeq = useRef(1);
@@ -596,8 +607,6 @@ function App() {
   const applyTaskLogPop = ({ quiet }) => {
     if (quiet) suppressRunPop.current = true;
   };
-  /* PSO 预热验证运行记录（list_pso_warmup_runs）——主视图就绪矩阵与检查器运行历史共读 */
-  const [psoRuns, setPsoRuns] = useState([]);
   /* 控制台标签页：stream(NDJSON 流) | hist(历史任务卡片)。检查器旧「进行中/历史」tab 已移除，
      原 taskTab 随之删除（无消费者）。 */
   const [conTab, setConTab] = useState('stream');
@@ -968,7 +977,9 @@ function App() {
     selNode, setSelNode, cacheNav, setCacheNav: goCacheNav, ddcOpen, setDdcOpen,
     cacheDdcEverOpened, ddcViewsSeen, drawer, setDrawer,
     modal, setModal,
-    psoSel, setPsoSel, psoRuns, setPsoRuns,
+    psoSel, setPsoSel,
+    psoStatusByProject, setPsoStatusByProject, psoRunsByProject, setPsoRunsByProject,
+    psoDriverSnapshots, setPsoDriverSnapshots, psoSettingsByProject, setPsoSettingsByProject,
     freshSetup, setFreshSetup, machinesAdded, setMachinesAdded,
     enrolled, setEnrolled, creds, setCreds,
     tasks, setTasks, runTask, runCmd, runStreamingCmd, cancelTask, suppressRunPop, conTab, setConTab, logSearch, setLogSearch, logPaused, setLogPaused,

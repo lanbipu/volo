@@ -220,6 +220,24 @@ pub fn check_dc_cfg_exists(host: &str, dc_cfg_path: &str) -> VoloResult<bool> {
     Ok(out.stdout.contains("DC_CFG_EXISTS"))
 }
 
+/// 在目标机的工程根目录下递归发现 .ndisplay 配置资产（用于「设置」子视图 nDisplay
+/// 配置来源单选的「工程内自动发现」选项）。只列举存在性，不解析内容。
+pub fn discover_ndisplay_assets(host: &str, project_root: &str) -> VoloResult<Vec<String>> {
+    let exec = crate::core::ssh::SshExecutor::from_config()?;
+    let ps = format!(
+        "Get-ChildItem -LiteralPath '{}' -Recurse -Filter *.ndisplay -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName",
+        project_root.replace('\'', "''")
+    );
+    let out = exec.run_inline_powershell(host, &ps)?;
+    Ok(out
+        .stdout
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
 pub fn launch_warmup(
     backend: UeRunnerBackend,
     host: &str,

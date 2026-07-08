@@ -523,6 +523,40 @@ const MIGRATIONS: &[(&str, &str)] = &[
         ALTER TABLE pso_warmup_runs ADD COLUMN converged INTEGER;
         "#,
     ),
+    (
+        "033_pso_project_settings_table",
+        r#"
+        CREATE TABLE IF NOT EXISTS pso_project_settings (
+            project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+            dc_cfg_source TEXT NOT NULL DEFAULT 'manual',
+            dc_cfg_asset TEXT,
+            dc_cfg_manual_path TEXT,
+            extra_args TEXT NOT NULL DEFAULT '',
+            offscreen INTEGER NOT NULL DEFAULT 1,
+            target_machine_ids TEXT NOT NULL DEFAULT '[]',
+            max_minutes INTEGER NOT NULL DEFAULT 20,
+            probe_interval_secs INTEGER NOT NULL DEFAULT 30,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        "#,
+    ),
+    (
+        // 遍历引擎的地图包路径（TraversalRequest.map_path）设计稿标「只读」但实际必填才能启用
+        // 遍历——按工程持久化，留空 = 该工程预跑不启用遍历（退化为固定机位，行为不变）。
+        "034_pso_project_settings_map_path",
+        r#"
+        ALTER TABLE pso_project_settings ADD COLUMN map_path TEXT;
+        "#,
+    ),
+    (
+        // nDisplay 集群节点 id（-dc_node / -StageFriendlyName）此前代码错误地从 dc_cfg_asset
+        // 文件路径派生（或冷启动验证里硬编码 "Node_0"），两者都与 .ndisplay 配置内定义的真实
+        // 节点名无关——按工程持久化为独立字段，留空时调用方退回 "Node_0"。
+        "035_pso_project_settings_dc_node",
+        r#"
+        ALTER TABLE pso_project_settings ADD COLUMN dc_node TEXT;
+        "#,
+    ),
 ];
 
 pub fn migrate(conn: &mut Connection) -> VoloResult<()> {
@@ -1212,5 +1246,29 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn migrate_creates_pso_project_settings_table_with_expected_columns() {
+        let db = open_in_memory().unwrap();
+        let mut conn = db.lock().unwrap();
+        migrate(&mut conn).unwrap();
+        assert!(table_exists(&conn, "pso_project_settings"));
+        assert_has_columns(
+            &conn,
+            "pso_project_settings",
+            &[
+                ("project_id", "INTEGER", false),
+                ("dc_cfg_source", "TEXT", true),
+                ("dc_cfg_asset", "TEXT", false),
+                ("dc_cfg_manual_path", "TEXT", false),
+                ("extra_args", "TEXT", true),
+                ("offscreen", "INTEGER", true),
+                ("target_machine_ids", "TEXT", true),
+                ("max_minutes", "INTEGER", true),
+                ("probe_interval_secs", "INTEGER", true),
+                ("updated_at", "TEXT", true),
+            ],
+        );
     }
 }

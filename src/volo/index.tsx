@@ -11,7 +11,8 @@ import "./styles/fonts.css";
 import "./styles/app.css";
 import "./styles/clean.css";
 import "./styles/zen.css";       // ZenServer 重做版样式（zen-status / zbadge / zsteps / zcli …）
-import "./styles/pso.css";       // PSO 上场就绪保障样式（nm-矩阵 / wv-预热 / hist-历史 / cvar-合规 / lrp-cancel）
+import "./styles/pso.css";       // PSO 旧节点就绪矩阵样式（nm-/wv-/hist-/cvar-，PsoMaster/PsoDetail 已下线后基本是死代码，留作 lrp-cancel 等仍被引用的规则）
+import "./styles/psoDash.css";   // PSO 上场就绪保障 Dashboard + 设置（绿灯矩阵 glm-/glc- / 驱动缓存 dcr- / 预跑历史+运行态 ph-/pso-run- / 失效告警 fa- / 配置巡检 ck- / 设置双栏 pset-）
 import "./styles/keyer.css";     // Keyer Lab（kl-）— Tools · 键控
 import "./styles/ddcPak.css";    // DDC PAK 双栏重设计样式（已部署卡片 / 根目录编辑器 / 生成对话框 / 控制台指针统一）
 import "./styles/calExt.css";    // Calibrate 增量样式（采集设置模态基础 cap-* 原子；AR 分支 ar-* 主体规则 + 本轮新 IA 追加的 ar-ws-*/ar-ovcard*/ar-degen* 等）
@@ -27,6 +28,7 @@ import "./pages/cache";        // window.VOLO_CX / VOLO_CACHE
 import "./pages/cacheMachines"; // window.VOLO_CACHE_MACHINES
 import "./pages/cacheZen";      // window.VOLO_CACHE_ZEN（ZenServer 重做版，须在 cacheDdc 前）
 import "./pages/cacheDdc";      // window.VOLO_CACHE_DDC
+import "./pages/cachePsoDash";  // window.VOLO_CACHE_PSO_DASH（PSO 上场就绪保障 Dashboard + 设置，cacheDdc 的 ddc_pso 路由指向它）
 import "./pages/cacheDdcPak";   // window.VOLO_CACHE_DDC_PAK（DDC PAK 双栏重设计，须在 cacheDdc 后）
 import "./pages/toolsKeyer";    // window.VOLO_KEYER（键控 · Keyer Lab，须在 skeletons 前）
 import "./pages/skeletons";     // window.VOLO_PAGES.{previz,color,live,tools}

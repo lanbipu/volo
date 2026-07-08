@@ -10,7 +10,7 @@
      🔌 ui-sim —— 前端有对应 UI 入口（按钮/面板/流程），当前 runTask 模拟或读 mock，
                   待接真实 invoke（wire-target）
      📝 no-ui  —— 当前设计无对应 UI 承载点（后端-only 能力）；附原因，不强造 UI
-   现状汇总：✅ 52 · 🔌 0 · 📝 43 = 95。 */
+   现状汇总：✅ 62 · 🔌 0 · 📝 38 = 100。 */
 import { call } from "./invoke";
 import type {
   Machine, MachineDetail, UeRuntimeUserRow, WinrmBootstrapResult, PackageBootstrapResult, EchoResult,
@@ -22,6 +22,7 @@ import type {
   ExecutionLocation, GenerateJobResponse, PakOutput, DistributeJobResponse, DeployedPakEntry, ProjectProbe,
   StartPsoWarmupRequest, PsoWarmupJobResponse, PsoWarmupRun, DriverCacheSnapshot, PsoStatusCell,
   DriverCacheClearResult, StartPsoColdtestRequest, PsoColdtestJobResponse,
+  PsoProjectSettings, PsoConfigPreflightResult,
   RunHealthCheckRequest, HealthRunSummary, HealthCheckRow,
   ZenStatusRow, ZenProbeReport, ZenCacheStatsReport, ZenDiskSpaceResult, ZenDetectBinaryReport, ZenEndpoint,
   ZenBinaryExpected, ZenRegisterInput, ZenRegisterOutcome, ZenUpdateDeployConfigInput, ZenUpdateDeployConfigOutcome, ZenMigrateDataDirResult, ZenUnregisterResult,
@@ -279,7 +280,7 @@ export const generateDdcPak = (
   localUprojectPath: localUprojectPath ?? null, localEnginePath: localEnginePath ?? null,
   ueVersion: ueVersion ?? null, operatorCredentialAlias: operatorCredentialAlias ?? null,
 });
-// 📝 no-ui: 任务抽屉无取消按钮
+// ✅ wired: cachePsoDash Dashboard 运行态「取消预跑」→ 逐 job 调用（跨 pso/ddc_pak 共用的取消登记表）
 export const cancelUeJob = (jobId: string) => call<boolean>("cancel_ue_job", { jobId });
 // ✅ wired: cacheDdc verifyPak → verifyPakOutput（not-found=后端抛错，非空态）
 export const verifyPakOutput = (machineId: number, projectId: number, operatorCredentialAlias?: string | null) =>
@@ -305,7 +306,7 @@ export const getProjectThumbnail = (projectId: number, machineId: number) =>
 /* pso collect/list/distribute 旧链路已下线（链路证伪，见 docs/cache/pso-p0-report.md）*/
 
 /* -------------------- pso warm-up & readiness -------------------- */
-// 📝 no-ui: 等 Claude Design handoff（PSO 就绪重设计）；事件流 pso-warmup-progress + pso-warmup-finalized
+// ✅ wired: cachePsoDash Dashboard「预跑并验证」/ 矩阵单格「复验」/ 失效告警「复验」→ launchWarmup via runStreamingCmd（pso-warmup-progress + pso-warmup-finalized）
 export const startPsoWarmup = (request: StartPsoWarmupRequest) =>
   call<PsoWarmupJobResponse>("start_pso_warmup", {
     request: {
@@ -317,7 +318,7 @@ export const startPsoWarmup = (request: StartPsoWarmupRequest) =>
       ue_version: request.ue_version ?? null,
     },
   });
-// 📝 no-ui: PSO 冷启动验证；清 DXCache 后复用 warmup 持锁启动，结果写 pso_warmup_runs(mode=coldtest)
+// ✅ wired: cachePsoDash 设置子视图「危险区 · 冷启动验证」二次确认 → launchColdtest via runStreamingCmd（pso-coldtest-progress + pso-coldtest-finalized）
 export const startPsoColdtest = (request: StartPsoColdtestRequest) =>
   call<PsoColdtestJobResponse>("start_pso_coldtest", {
     request: {
@@ -329,19 +330,33 @@ export const startPsoColdtest = (request: StartPsoColdtestRequest) =>
       ue_version: request.ue_version ?? null,
     },
   });
-// 📝 no-ui: 等 Claude Design handoff（节点就绪矩阵 + 运行历史数据源）
+// ✅ wired: cachePsoDash loadPsoData → 按工程 fan-out，喂预跑历史卡 + 绿灯矩阵派生
 export const listPsoWarmupRuns = (projectId: number, machineId?: number | null) =>
   call<PsoWarmupRun[]>("list_pso_warmup_runs", { projectId, machineId: machineId ?? null });
-// 📝 no-ui: PSO 绿灯矩阵数据源；读取最新 warmup + driver cache snapshot，必要时生成保守降级事件
+// ✅ wired: cachePsoDash loadPsoData → 绿灯矩阵五态映射数据源 + 失效告警卡（invalidation_reasons 聚合）
 export const listPsoStatus = (projectId: number, machineIds?: number[] | null) =>
   call<PsoStatusCell[]>("list_pso_status", { projectId, machineIds: machineIds ?? null });
-// 📝 no-ui: 冷启动验证前的危险操作；逐文件清远端 DXCache，锁文件残留 <5MB 视为 ok
+// 📝 no-ui: 独立清缓存危险操作；Dashboard 走 startPsoColdtest（清缓存+复测一体化），未单独暴露这个原子命令
 export const clearDriverCache = (machineId: number) =>
   call<DriverCacheClearResult>("clear_driver_cache", { machineId });
-// 📝 no-ui: 等 PSO 就绪矩阵重设计消费；探测节点 GPU driver cache 目录状态并落库
+// 📝 no-ui: 单机实时探测（发起一次 SSH）；Dashboard 驱动缓存卡改走 listDriverCacheSnapshots 批量读库，不逐机触发 SSH
 export const probeDriverCache = (machineId: number) =>
   call<DriverCacheSnapshot>("probe_driver_cache", { machineId });
-// 📝 no-ui: 等 Claude Design handoff（配置合规卡「一键修复」；写 4 个 PSO CVar 到 ConsoleVariables.ini）
+// ✅ wired: cachePsoDash 驱动缓存状态卡 → 批量读最新快照（无 SSH 往返），loadDriverSnapshots
+export const listDriverCacheSnapshots = (machineIds: number[]) =>
+  call<DriverCacheSnapshot[]>("list_driver_cache_snapshots", { machineIds });
+// ✅ wired: cachePsoDash 设置子视图读取已保存的预跑设置（选工程时加载）
+export const getPsoProjectSettings = (projectId: number) =>
+  call<PsoProjectSettings | null>("get_pso_project_settings", { projectId });
+// ✅ wired: cachePsoDash 设置子视图「保存设置」
+export const setPsoProjectSettings = (settings: PsoProjectSettings) =>
+  call<PsoProjectSettings>("set_pso_project_settings", { settings });
+// ✅ wired: cachePsoDash 设置子视图 nDisplay 配置来源「工程内自动发现」→ 选中工程时对主机器 SSH 递归找 .ndisplay
+export const discoverNdisplayAssets = (machineId: number, projectRoot: string) =>
+  call<string[]>("discover_ndisplay_assets", { machineId, projectRoot });
+// ✅ wired: cachePsoDash 配置巡检卡「nDisplay 配置同源」+ 设置保存前校验 → 逐机存在性检查（单机失败不拖垮整体）
+export const checkPsoConfigPreflight = (machineIds: number[], dcCfgPath: string) =>
+  call<PsoConfigPreflightResult[]>("check_pso_config_preflight", { machineIds, dcCfgPath });
 
 /* ----------------------------- health check ----------------------------- */
 // ✅ wired: Overview「立即巡检」refreshScan → runHealthCheck（后端改 async 不冻 UI）+ 诊断面板真实数据

@@ -2,17 +2,19 @@
 /* Volo — Cache · DDC 管理 (§6) — 折叠子菜单分视图：ZenServer / 文件系统 DDC / DDC PAK / PSO.
    1:1 port of the Claude Design handoff `src/cache_ddc.jsx`（检查器重构版），接真实后端。
 
-   ZenServer / 文件系统 DDC 仍是整页视图；DDC PAK 与 PSO 缓存改为
-   「主视图(选工程) + 右侧检查器(操作)」的细节显示模式：
-   - 主视图(center)只负责发现 / 选择工程（PAK 多选、PSO 单选），选择提到 shell（s.pakSel / s.psoSel）；
+   ZenServer / 文件系统 DDC 仍是整页视图；DDC PAK 改为「主视图(选工程) + 右侧检查器(操作)」
+   的细节显示模式：
+   - 主视图(center)只负责发现 / 选择工程（PAK 多选），选择提到 shell（s.pakSel）；
    - 选中工程、生成 / 校验 / 收集 / 分发等操作，全部在右侧检查器(inspector)里就地展开，不再弹滑窗。
-   center 走 ddc(s)，inspector 走 detail(s)；两栏读同一份 shell 选择状态。 */
+   center 走 ddc(s)，inspector 走 detail(s)；两栏读同一份 shell 选择状态。
+   PSO 缓存已改为「上场就绪保障」Dashboard（矩阵 + 驱动缓存 + 历史 + 告警 + 巡检）与设置两个
+   子视图，逻辑与 window.VOLO_CACHE_PSO_DASH 导出全部迁至 cachePsoDash.tsx；s.psoSel 语义也随之
+   改为绿灯矩阵选中的单元格 {proj,node}（不再是单选工程 id），见该文件顶部注释。 */
 import * as React from "react";
 import "../ds";
 import "./cache";
 import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createShare,
-  generateDdcPak, getProjectThumbnail,
-  startPsoWarmup, listPsoWarmupRuns,
+  generateDdcPak,
   setMachineEnvVar, getMachineEnvVar, createLocalCache,
   prepareManagedShareClients, unprepareManagedShareClients,
   prepareOpenShareClients, unprepareOpenShareClients,
@@ -142,47 +144,6 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
     ? { done: true, ok: !!p.verified, exit: p.verified ? 0 : 2,
         log: { lv: p.verified ? 'ok' : 'err', msg: '产物校验 ' + (p.verified ? '通过' : '未通过') + (p.output && p.output.path ? (' · ' + p.output.path) : '') } }
     : ueProgressReduce(p, false);
-  /* pso warmup（fan-out）：kickoff 返回 {job_id(父), runs:[{machine_id,run_id,job_id}]}；
-     事件 pso-warmup-progress 是各机 UeRunnerEvent 信封（带 machine_id / parent_job_id），
-     真终态是每机一条 pso-warmup-finalized{status:'ok'|'not_ready'|'cancelled'|'err', hitch_count(预跑段), verify_hitch_count(验证段=绿灯依据)}——
-     数到 st.total 台终态即收尾；任一 err → 整体失败；not_ready = 跑完但验证未达标（整体不算 ok）；无 err 但有 cancelled → 整体 canceled。
-     log_line 只转发有 parsed_kind 的行（N 台机全量 UE 日志会淹没控制台流）。 */
-  const warmupReduce = (hostOf, onNodeDone) => (ev, p, st) => {
-    st.done = st.done || new Set();
-    const host = hostOf(p && p.machine_id) || ('机器 ' + (p && p.machine_id));
-    if (ev === 'pso-warmup-finalized') {
-      st.done.add(p.machine_id);
-      if (p.status === 'err') st.anyErr = true;
-      if (p.status === 'cancelled') st.anyCancel = true;
-      if (p.status === 'not_ready') st.anyNotReady = true;
-      if (onNodeDone) { try { onNodeDone(); } catch (e) {} } /* 每台落定即刷新就绪矩阵 */
-      const done = st.total != null && st.done.size >= st.total;
-      return {
-        pct: st.total ? (st.done.size / st.total * 100) : null,
-        done,
-        ok: done ? (!st.anyErr && !st.anyCancel && !st.anyNotReady) : undefined,
-        canceled: done && !st.anyErr && !st.anyNotReady && !!st.anyCancel,
-        exit: done && st.anyErr ? 2 : 0,
-        log: p.status === 'ok'
-          ? { lv: 'ok', msg: host + ' 预热验证完成 · 预跑吸收 ' + (p.hitch_count == null ? '—' : p.hitch_count) + ' · 验证段 hitch 0' }
-          : p.status === 'not_ready'
-            ? { lv: 'warn', msg: host + ' 验证未达标 · 验证段 hitch ' + (p.verify_hitch_count == null ? '—' : p.verify_hitch_count) + '（可再跑一轮预热）' }
-            : p.status === 'cancelled'
-              ? { lv: 'warn', msg: host + ' 已取消（未验证）' }
-              : { lv: 'err', msg: host + ' 运行失败 · ' + (p.error_message || '') },
-      };
-    }
-    const e = p && p.event ? p.event : {};
-    switch (e.kind) {
-      case 'spawned':  return { log: { lv: 'info', msg: host + ' 本机拉起 UE -game · pid ' + e.pid } };
-      case 'log_line': return e.parsed_kind
-        ? { log: { lv: e.parsed_kind === 'pso_hitch' ? 'warn' : ueLineLv(e.parsed_kind), msg: '[' + host + '] ' + e.text } }
-        : {};
-      case 'progress': return e.label ? { log: { lv: 'info', msg: '[' + host + '] ' + e.label } } : {};
-      default:         return {}; /* 各机 completed/cancelled/error 由 finalized 事件收口 */
-    }
-  };
-
   /* 分发流（pak / pso-distribute-progress）共用：payload {…, event:BatchEvent}，
      BatchEvent {machine_id, status:'running'|'ok'|'err', message}。无「全部完成」哨兵事件
      → 数到 st.total（=plan 长度）个终态(ok|err)即收尾，期间任一 err 则整体失败。 */
@@ -225,115 +186,6 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
   const onlineNodes = () => RENDER_NODES.filter((n) => n.status !== 'offline');
   const scopeOpts = () => [{ id: 'all', label: '全部在线机' }]
     .concat(onlineNodes().map((n) => ({ id: n.id, label: n.host, sub: n.ip })));
-  const resOpts = [{ id: '1920×1080', label: '1920 × 1080' }, { id: '2560×1440', label: '2560 × 1440' }, { id: '3840×2160', label: '3840 × 2160' }];
-  const maxOpts = [{ id: '10', label: '10 分钟' }, { id: '20', label: '20 分钟' }, { id: '30', label: '30 分钟' }];
-
-  /* =================== PSO · 上场就绪保障 helpers =================== */
-  const READY_META = {
-    ready:   { vis: 'positive',    icon: 'check' },
-    hitch:   { vis: 'notice',      icon: 'alert' },
-    never:   { vis: 'neutral',     icon: 'minus' },
-    failed:  { vis: 'negative',    icon: 'x' },
-    running: { vis: 'informative', icon: 'sync' },
-  };
-  const readyLabel = (r) => r.state === 'ready' ? '已就绪 · hitch 0'
-    : r.state === 'hitch' ? ('有卡顿 · ' + r.hitches + ' 次')
-    : r.state === 'failed' ? '运行失败'
-    : r.state === 'running' ? '验证中' : '从未验证';
-  const psoNodes = () => RENDER_NODES.filter((n) => n.roleKey === 'render');
-  /* GPU 型号/驱动来自 GPU 一致性矩阵（DB 读，非实时 SSH）；NodeVM.gpu 列表态是占位。 */
-  const gpuSigOf = (s, n) => {
-    const cells = (s.gpuMatrix && s.gpuMatrix.cells) || [];
-    const cell = cells.find((c) => c.machine_id === n.machineId);
-    return (cell && cell.signature) || null;
-  };
-  const gpuText = (s, n) => {
-    const sig = gpuSigOf(s, n);
-    return sig ? (sig.model + (sig.driver ? ' · 驱动 ' + sig.driver : '')) : '—';
-  };
-  const majorityDriver = (s) => {
-    const ct = {};
-    psoNodes().forEach((n) => { const sig = gpuSigOf(s, n); if (sig && sig.driver) ct[sig.driver] = (ct[sig.driver] || 0) + 1; });
-    return Object.keys(ct).sort((a, b) => ct[b] - ct[a])[0] || null;
-  };
-  /* SQLite CURRENT_TIMESTAMP 是 UTC「YYYY-MM-DD HH:MM:SS」→ 本地「MM-DD HH:MM」 */
-  const fmtRunTime = (ts) => {
-    if (!ts) return '—';
-    const d = new Date(String(ts).replace(' ', 'T') + 'Z');
-    if (isNaN(d.getTime())) return String(ts);
-    const p = (x) => String(x).padStart(2, '0');
-    return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
-  };
-  const fmtDur = (secs) => secs == null ? '—' : secs >= 60 ? (Math.round(secs / 60) + ' 分钟') : (secs + ' 秒');
-  /* 就绪状态派生：有 running 行 → 验证中；否则取最近一条非 cancelled 的 run
-     （ok+hitch0=绿 / ok+hitch>0=黄 / err=红），一条都没有 = 从未验证。 */
-  const readinessOf = (runs, machineId) => {
-    const mine = (runs || []).filter((r) => r.machine_id === machineId);
-    const running = mine.find((r) => r.status === 'running');
-    if (running) return { state: 'running', verified: fmtRunTime(running.started_at) };
-    const last = mine.find((r) => r.status !== 'cancelled'); /* list 按 started_at 倒序 */
-    if (!last) return { state: 'never' };
-    if (last.status === 'err') return { state: 'failed', verified: fmtRunTime(last.started_at), err: last.error_message };
-    /* 两段式后绿灯依据 = 验证段 hitch；旧单段行 verify_hitch_count 为 null 时回落 hitch_count。 */
-    const hitches = (last.verify_hitch_count != null ? last.verify_hitch_count : last.hitch_count) || 0;
-    return (last.status === 'not_ready' || hitches > 0)
-      ? { state: 'hitch', verified: fmtRunTime(last.started_at), hitches }
-      : { state: 'ready', verified: fmtRunTime(last.started_at), hitches: 0 };
-  };
-  /* 长任务回填防串台：launchWarmup 捕获的 s 是启动时快照，切走工程后 s.psoSel 是旧值——
-     reload 必须读「当前选中工程」的活值，否则 A 的 warmup 落定会覆盖 B 的矩阵/历史
-     （旧实现用 projRef 防的就是这个）。PsoMaster/PsoDetail 每次渲染刷新。 */
-  let psoSelLive = null;
-  /* 运行记录加载（list_pso_warmup_runs）——主视图矩阵与检查器历史共读 s.psoRuns。
-     失败保留旧值不闪空；未选工程清空。 */
-  const loadWarmupRuns = (s, pid) => {
-    if (pid == null) { s.setPsoRuns([]); return; }
-    listPsoWarmupRuns(Number(pid), null).then(
-      (rs) => s.setPsoRuns(Array.isArray(rs) ? rs : []),
-      () => {});
-  };
-  /* 预热验证启动（共用：确认门批量 / 矩阵行内复跑）。max_minutes>=1 后端硬校验。 */
-  const launchWarmup = (s, p, nodes, resStr, maxStr) => {
-    const parts = String(resStr).split('×');
-    const rw = Number(parts[0]) || 1920, rh = Number(parts[1]) || 1080;
-    const mm = Math.max(1, parseInt(maxStr, 10) || 20);
-    const hostOf = (mid) => { const n = RENDER_NODES.find((x) => x.machineId === mid); return n ? n.host : null; };
-    const reload = () => loadWarmupRuns(s, psoSelLive);
-    return s.runStreamingCmd(
-      { domain: 'pso', action: 'warmup', target: p.name + ' · ' + nodes.length + ' 台', chan: 'ssh',
-        note: '预热验证 · ' + p.name + '（长任务 · 可在任务抽屉取消）' },
-      () => startPsoWarmup({ project_id: Number(p.id), target_machine_ids: nodes.map((n) => n.machineId),
-        resolution_w: rw, resolution_h: rh, max_minutes: mm, ue_version: null }),
-      { mode: 'event', events: ['pso-warmup-progress', 'pso-warmup-finalized'],
-        jobIdOf: (r) => r.job_id,
-        isMine: (pp, jid) => pp && pp.parent_job_id === jid,
-        total: (r) => (r.runs || []).length,
-        cancellable: true, cancelIds: (r) => (r.runs || []).map((x) => x.job_id),
-        reduce: warmupReduce(hostOf, reload),
-        timeoutMs: (mm + 10) * 60 * 1000,
-        onDone: () => reload() })
-      .then(() => reload(), () => {}); /* kickoff 落地即刷一次：矩阵立刻显示「验证中」 */
-  };
-  /* 运行预热验证 —— 多机操作，走确认门（核对节点清单后执行；长任务进度在任务抽屉） */
-  const runWarmup = (s, p, nodes, resStr, maxStr) => {
-    if (!nodes.length) return;
-    const mm = Math.max(1, parseInt(maxStr, 10) || 20);
-    CX.openModalPreview(s, {
-      title: '运行预热验证 · ' + p.name, icon: 'bolt', cli: 'pso warmup', destructive: false, channel: 'ssh',
-      confirmLabel: '核对无误 · 运行（' + nodes.length + ' 台）',
-      liveProgress: false, /* 确认即关：进度在任务抽屉 / 控制台 NDJSON 流 */
-      steps: [
-        '在 ' + nodes.length + ' 台节点本机拉起 UE -game，按 ' + resStr + ' 遍历场景（每台上限 ' + mm + ' 分钟）',
-        '填充各节点本机驱动缓存，实时统计 PSO 卡顿（hitch）次数',
-        '回传每台节点的 hitch 统计，刷新节点就绪矩阵与运行历史'],
-      simpleScope: nodes.map((n) => ({ host: n.host, ip: n.ip, msg: gpuText(s, n) })),
-      run: () => launchWarmup(s, p, nodes, resStr, maxStr),
-    });
-  };
-  /* 复跑验证 —— 单机直接执行（不走确认门） */
-  const rerunNode = (s, p, n) => launchWarmup(s, p, [n], '1920×1080', '10');
-  /* 查看日志 —— 跳到控制台流并按主机过滤 */
-  const seeNodeLog = (s, host) => { s.setConTab && s.setConTab('stream'); s.setLogFilter('all'); s.setLogSearch(host); s.setLogOpen(true); };
 
   /* three-channel gate (色+图标+文字)：DDC 视图都建立在真实机器 id 上，后端读取路径
      未就绪时不渲染 mock 形状的 body（与 Overview gate 一致）。仅用于 master(center) 视图。 */
@@ -531,233 +383,6 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
           onRemove: rows.length > 1 ? () => remove(r.id) : null }))),
       h('button', { className: 'pathb-add', type: 'button', onClick: add },
         h(Icon, { name: 'plus', size: 14 }), '添加地址'));
-  }
-
-  /* PSO 主视图工程行的缩略图来源标签（同 cacheDdcPak.tsx 的 THUMB_FROM_LABEL，两页各自懒加载，
-     不共享/不写回全局 UE_PROJECTS——PSO 页不需要 DDC Pak 那套按 mtime 排序的额外复杂度）。 */
-  const PSO_THUMB_FROM_LABEL = {
-    uproject_same_name: 'uproject 同名缩略图',
-    saved_auto_screenshot: 'Saved 编辑器自动截图（无同名图）',
-    saved_autosequence: 'Saved 回退缩略图（无同名图）',
-  };
-
-  /* 缩略图跨挂载缓存：顶层切页卸载重挂后不重发全量 SSH 探测（同 cacheDdcPak.tsx
-     THUMB_CACHE 模式，两页 patch 形状不同故各存各的，不共享）。 */
-  const PSO_THUMB_CACHE = { thumbs: {}, tried: new Set() };
-
-  /* =================== PSO 缓存 — master (center) · 选工程 + 节点就绪矩阵 =================== */
-  function PsoMaster({ s }) {
-    const selId = s.psoSel;
-    psoSelLive = selId; /* 长任务回填读活值（见 loadWarmupRuns 上方注释） */
-    const p = UE_PROJECTS.find((x) => x.id === selId) || null; /* 选中工程被 reloadCache 剔除时回退「未选工程」，与检查器空态一致 */
-    const pick = (x) => { const next = selId === x.id ? null : x.id; s.setPsoSel(next); if (next) CX.showInspector(s); };
-    const nodes = psoNodes();
-    const maj = majorityDriver(s);
-    const runs = s.psoRuns || [];
-    const readyCt = p ? nodes.filter((n) => readinessOf(runs, n.machineId).state === 'ready').length : 0;
-
-    /* 工程缩略图（懒加载，对齐 DDC Pak 页面同款体验：有缩略图显示图片，无则回退 film 图标）——
-       gate 早退必须放在全部 Hooks 之后，否则加载态/完成态两次渲染的 Hook 调用数不一致，
-       React 会抛 "Rendered more hooks than during the previous render"（同 cacheDdcPak.tsx 注释）。 */
-    const [thumbs, setThumbs] = useState(() => PSO_THUMB_CACHE.thumbs);
-    useEffect(() => {
-      let alive = true;
-      const queue = UE_PROJECTS.filter((x) => !PSO_THUMB_CACHE.tried.has(x.id));
-      let next = 0;
-      const pump = () => {
-        if (!alive || next >= queue.length) return;
-        const x = queue[next++];
-        const src = pickSrc(x);
-        if (!src) { pump(); return; }
-        getProjectThumbnail(Number(x.id), src.machineId).then(
-          (probe) => {
-            if (!alive) return;
-            PSO_THUMB_CACHE.tried.add(x.id);
-            const t = probe && probe.thumbnail;
-            if (t) setThumbs((m) => {
-              const nextMap = Object.assign({}, m, { [x.id]: {
-                thumb: 'data:image/png;base64,' + t.base64,
-                thumbSrc: t.path,
-                thumbFrom: PSO_THUMB_FROM_LABEL[t.from] || t.from,
-              } });
-              PSO_THUMB_CACHE.thumbs = nextMap;
-              return nextMap;
-            });
-            pump();
-          },
-          () => { if (alive) pump(); });
-      };
-      for (let i = 0; i < 8; i++) pump();
-      return () => { alive = false; };
-    }, [UE_PROJECTS.length]);
-    const withThumb = (x) => { const t = thumbs[x.id]; return t ? Object.assign({}, x, t) : x; };
-
-    const g = gate(s); if (g) return g;
-
-    const nmRow = (n) => {
-      const r = readinessOf(runs, n.machineId);
-      const off = n.status === 'offline';
-      const meta = READY_META[r.state] || READY_META.never;
-      const sig = gpuSigOf(s, n);
-      const drift = !off && sig && sig.driver && maj && sig.driver !== maj;
-      return h('div', { key: n.id, className: 'nm-row' + (off ? ' off' : '') },
-        h('div', { className: 'nm-id' },
-          CX.dot(NODE_STATUS[n.status].visual),
-          h('div', { className: 'nm-meta' },
-            h('div', { className: 'nm-host' }, n.host,
-              off ? h('span', { className: 'nm-chip off' }, h(Icon, { name: 'power', size: 10 }), '离线') : null,
-              drift ? h('span', { className: 'nm-chip warn', title: '本机驱动 ' + sig.driver + ' · 集群多数 ' + maj }, h(Icon, { name: 'alert', size: 10 }), '驱动版本不一致') : null),
-            h('div', { className: 'nm-gpu' }, gpuText(s, n)))),
-        h('span', { className: 'nm-time' }, r.verified || '—'),
-        h('span', { className: 'nm-hitch' + (r.state === 'hitch' ? ' warn' : r.state === 'ready' ? '' : ' dim') },
-          r.state === 'ready' ? '0' : r.state === 'hitch' ? String(r.hitches) : '—'),
-        h('span', { className: 'spill spill--' + meta.vis, title: r.err || undefined },
-          meta.icon === 'minus' ? h('span', { style: { fontWeight: 700 } }, '—')
-            : meta.icon === 'sync' ? h('span', { className: 'spin', style: { display: 'flex' } }, h(Icon, { name: 'sync', size: 12 }))
-            : h(Icon, { name: meta.icon, size: 12 }),
-          readyLabel(r)),
-        h('div', { className: 'nm-ops' },
-          !off && r.state === 'hitch' ? h('button', { className: 'mini-btn', title: '在该节点复跑一次预热验证', onClick: () => rerunNode(s, p, n) }, h(Icon, { name: 'sync', size: 12 }), '复跑验证') : null,
-          !off && r.state === 'failed' ? h('button', { className: 'mini-btn', title: '在控制台流中查看该节点的失败日志', onClick: () => seeNodeLog(s, n.host) }, h(Icon, { name: 'terminal', size: 12 }), '查看日志') : null));
-    };
-
-    return h('div', { className: 'res ddc' },
-      h('div', { className: 'canvas-head' },
-        h('span', { className: 't' }, 'DDC · PSO 缓存'),
-        h('div', { className: 'right' },
-          p ? h('span', { className: 'toolchip' }, h(Icon, { name: 'check', size: 14 }), '就绪 ' + readyCt + ' / ' + nodes.length + ' 台') : null,
-          h('span', { className: 'toolchip' }, h(Icon, { name: 'layers', size: 14 }), p ? ('已选 · ' + p.name) : '未选工程'))),
-      h('div', { className: 'ddc-body' },
-        h('div', { className: 'ddc-sec-h' }, h('span', null, '选择工程'),
-          h('span', { className: 'dim' }, '选中一个工程，预热验证 / 运行历史都在右侧检查器中进行')),
-        h('div', { className: 'pak-scan-meta', style: { margin: '0 0 12px' } }, h(Icon, { name: 'check', size: 12 }), '已发现 ' + UE_PROJECTS.length + ' 个工程位置'),
-        h('div', { className: 'proj-list' }, UE_PROJECTS.map((x) => projRow(withThumb(x), selId === x.id, pick, s))),
-        UE_PROJECTS.length === 0 ? h('div', { className: 'gen-empty' }, h(Icon, { name: 'film', size: 22 }), h('span', null, '尚未发现工程，先在右侧检查器扫描')) : null,
-
-        /* 节点就绪矩阵 —— 选中工程后显示，每台 render 节点一行 */
-        h('div', { className: 'ddc-sec-h', style: { marginTop: 18 } }, h('span', null, '节点就绪矩阵'),
-          h('span', { className: 'dim' }, p ? (p.name + ' · 每台 render 节点本机的预热就绪情况') : '选中工程后按节点显示就绪状态')),
-        p
-          ? h('div', { className: 'nm-list' },
-              h('div', { className: 'nm-head' },
-                h('span', null, '节点 / GPU'), h('span', null, '最近验证'), h('span', null, 'hitch 数'), h('span', null, '就绪状态'), h('span', null)),
-              nodes.map(nmRow))
-          : h('div', { className: 'gen-empty' }, h(Icon, { name: 'grid', size: 22 }), h('span', null, '选中一个工程后，这里显示各 render 节点的就绪矩阵'))));
-  }
-
-  /* =================== PSO 缓存 — detail (inspector) · 扫描 / 预热验证 / 运行历史 / 配置合规 =================== */
-
-  function PsoDetail({ s }) {
-    const [scope, setScope] = useState('all');
-    const [roots, setRoots] = useState('D:\\Projects;E:\\UEProjects');
-    const [targets, setTargets] = useState(null); /* null = 默认全选在线 render 机（机器列表异步加载，不能在挂载时定死） */
-    const [res, setRes] = useState('1920×1080');
-    const [max, setMax] = useState('20');
-    const projId = s.psoSel;
-    psoSelLive = projId; /* 长任务回填读活值（见 loadWarmupRuns 上方注释） */
-    const p = UE_PROJECTS.find((x) => x.id === projId) || null;
-    /* 切工程：重载运行记录。 */
-    useEffect(() => { loadWarmupRuns(s, projId); /* eslint-disable-line */ }, [projId]);
-
-    const online = RENDER_NODES.filter((n) => n.roleKey === 'render' && n.status !== 'offline');
-    /* 有效选择 = 用户点过就用点过的（剪掉已离线的），没点过默认全选在线 render 机。 */
-    const effTargets = targets == null
-      ? online.map((n) => n.id)
-      : targets.filter((id) => online.some((n) => n.id === id));
-    const toggleT = (id) => setTargets(effTargets.includes(id) ? effTargets.filter((x) => x !== id) : effTargets.concat(id));
-    const allT = online.length > 0 && online.every((n) => effTargets.includes(n.id));
-
-    /* ---- 目标节点多选（host + GPU）---- */
-    const tgRow = (n) => {
-      const on = effTargets.includes(n.id);
-      return h('div', { key: n.id, className: 'wv-node' + (on ? ' on' : ''), onClick: () => toggleT(n.id) },
-        h('span', { className: 'proj-mck' + (on ? ' on' : '') }, on ? h(Icon, { name: 'check', size: 11 }) : null),
-        CX.dot(NODE_STATUS[n.status].visual),
-        h('span', { className: 'wv-host mono' }, n.host),
-        h('span', { className: 'wv-gpu' }, gpuText(s, n)));
-    };
-
-    /* ---- 运行历史（list_pso_warmup_runs，按节点分组；list 已按时间倒序）---- */
-    const runs = p ? (s.psoRuns || []) : [];
-    const histGroups = RENDER_NODES.filter((n) => runs.some((r) => r.machine_id === n.machineId))
-      .map((n) => ({ n, list: runs.filter((r) => r.machine_id === n.machineId) }));
-    const histRun = (r) => {
-      const failed = r.status === 'err';
-      const canceled = r.status === 'cancelled';
-      const running = r.status === 'running';
-      const notReady = r.status === 'not_ready';
-      /* 绿灯依据 = 验证段 hitch；旧单段行回落预跑段计数 */
-      const hitches = r.verify_hitch_count != null ? r.verify_hitch_count : r.hitch_count;
-      return h('div', { key: r.id, className: 'hist-run' },
-        h('span', { className: 'tm' }, fmtRunTime(r.started_at)),
-        h('span', { className: 'rs mono' }, r.resolution_w + '×' + r.resolution_h),
-        h('span', { className: 'du' }, running ? '进行中' : fmtDur(r.duration_secs)),
-        h('span', { className: 'hh' + ((failed || canceled || running || hitches == null) ? ' dim' : hitches > 0 ? ' warn' : '') },
-          hitches == null ? 'hitch —' : ('hitch ' + hitches)),
-        h('span', { className: 'hist-state s-' + (failed ? 'negative' : canceled ? 'neutral' : running ? 'informative' : notReady ? 'notice' : 'positive'), title: r.error_message || undefined },
-          running ? h('span', { className: 'spin', style: { display: 'flex' } }, h(Icon, { name: 'sync', size: 11 })) : h(Icon, { name: failed ? 'x' : canceled ? 'minus' : notReady ? 'alert' : 'check', size: 11 }),
-          failed ? '失败' : canceled ? '已取消' : running ? '验证中' : notReady ? '未达标' : '成功'));
-    };
-
-
-    return h('div', { className: 'insp-detail' },
-      h('div', { className: 'insp-head' },
-        h('span', { className: 'ico' }, h(Icon, { name: 'layers', size: 15 })),
-        h('div', { style: { minWidth: 0 } }, h('div', { className: 'tt' }, '检查器 · PSO 缓存'),
-          h('div', { className: 'sub' }, 'discover_projects / pso warmup'))),
-      h('div', { className: 'id-body' },
-        /* 扫描 UE 工程（保持现状）*/
-        h('div', { className: 'id-scan' },
-          h('div', { className: 'id-sec-h' }, '扫描 UE 工程'),
-          h('div', { className: 'id-field' }, h('label', null, '扫描范围'),
-            h(Selector, { kpre: '范围', value: scope, options: scopeOpts(), width: 200, onChange: setScope })),
-          h('div', { className: 'id-field' }, h('label', null, '搜索根目录'),
-            h('input', { className: 'dp-input mono', value: roots, spellCheck: false, onChange: (e) => setRoots(e.target.value) })),
-          h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'search', size: 14 }), onPress: () => runDiscover(s, scope, roots) }, '扫描工程'),
-          h('div', { className: 'id-scan-meta' }, h(Icon, { name: 'check', size: 12 }), '已发现 ' + UE_PROJECTS.length + ' 个工程')),
-
-        /* 预热验证（需已选工程）*/
-        h('div', { className: 'id-sec-h', style: { marginTop: 4 } }, '预热验证',
-          p ? h('span', { className: 'ct' }, p.name) : null),
-        p ? h('div', { className: 'wv-block' },
-            h('div', { className: 'wv-selbar' },
-              h('button', { className: 'wv-all', onClick: () => setTargets(allT ? [] : online.map((n) => n.id)) },
-                h('span', { className: 'proj-mck' + (allT ? ' on' : (effTargets.length ? ' part' : '')) },
-                  allT ? h(Icon, { name: 'check', size: 11 }) : (effTargets.length ? h(Icon, { name: 'minus', size: 11 }) : null)),
-                allT ? '取消全选' : '全选在线 render 机'),
-              h('span', { className: 'wv-ct' }, '已选 ' + effTargets.length + ' / ' + online.length + ' 台')),
-            h('div', { className: 'wv-list' }, online.map(tgRow)),
-            h('div', { className: 'id-form' },
-              h('div', { className: 'id-field' }, h('label', null, '渲染分辨率'),
-                h(Selector, { kpre: '分辨率', value: res, options: resOpts, width: 180, onChange: setRes })),
-              h('div', { className: 'id-field' }, h('label', null, '最长时长'),
-                h(Selector, { kpre: '时长', value: max, options: maxOpts, width: 150, onChange: setMax }))),
-            h('div', { className: 'id-note' }, h(Icon, { name: 'terminal', size: 12 }),
-              '在每台节点本机跑 UE -game 遍历场景，填充本机驱动缓存并统计 PSO 卡顿次数 · 长任务'),
-            h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'bolt', size: 14 }), isDisabled: effTargets.length === 0,
-              onPress: () => runWarmup(s, p, effTargets.map((id) => CX.node(id)).filter(Boolean), res, max) },
-              '运行预热验证（' + effTargets.length + ' 台）'))
-          : h('div', { className: 'id-empty' }, h('div', { className: 'ph' }, h(Icon, { name: 'layers', size: 22 })),
-              h('div', null, '在主视图选择一个工程'), h('div', { style: { fontSize: 11 } }, '选中后在这里配置目标节点并运行预热验证')),
-
-        /* 运行历史（按节点分组）*/
-        p ? h(React.Fragment, null,
-          h('div', { className: 'id-sec-h', style: { marginTop: 4 } }, '运行历史', h('span', { className: 'ct' }, runs.length + ' 条')),
-          runs.length === 0
-            ? h('div', { className: 'id-note' }, h(Icon, { name: 'list', size: 12 }), '暂无运行记录 · 运行预热验证后按节点在此分组显示')
-            : h('div', { className: 'hist-list' }, histGroups.map((g) => h('div', { key: g.n.id, className: 'hist-group' },
-                h('div', { className: 'hist-node' },
-                  CX.dot(NODE_STATUS[g.n.status].visual),
-                  h('span', { className: 'host' }, g.n.host),
-                  h('span', { className: 'gpu' }, gpuText(s, g.n)),
-                  h('span', { className: 'ct' }, g.list.length + ' 次')),
-                h('div', { className: 'hist-runs' }, g.list.map(histRun)))))) : null,
-
-        /* 官方 CVar 合规面板已移除（R008-R010 断言删除、fix_pso_cvars 下线）——
-           官方 PSO Precaching 在未 cook -game 生产形态下被 WITH_EDITOR 编译期禁用，
-           断言这些 CVar 没有意义；防卡顿依赖预跑 + 验证跑（上方就绪矩阵）。 */
-        p ? h('div', { className: 'cvar-note' }, h(Icon, { name: 'info', size: 12 }),
-          h('span', null, '官方 PSO 预缓存 CVar 在当前生产形态（未打包 -game 直启）下不生效，无需配置；上场防卡顿以预跑 + 验证跑的绿灯为准。')) : null));
   }
 
   /* =================== 文件系统 DDC（本地 + 共享）— 双列视图，接真实后端 ===================
@@ -1327,7 +952,8 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
     ['ddc_legacy', (s) => h(LegacyView, { s })],
     /* DDC PAK 子页已重设计为左右双栏（已部署 PAK | 扫描与生成），见 cacheDdcPak.tsx */
     ['ddc_pak', (s) => window.VOLO_CACHE_DDC_PAK.page(s)],
-    ['ddc_pso', (s) => h(PsoMaster, { s })],
+    /* PSO 缓存改为「上场就绪保障」Dashboard 子视图（Dashboard + 设置），见 cachePsoDash.tsx */
+    ['ddc_pso', (s) => window.VOLO_CACHE_PSO_DASH.center(s)],
   ];
   function ddc(s) {
     const view = /^ddc_/.test(s.cacheNav) ? s.cacheNav : 'ddc_zen';
@@ -1346,7 +972,7 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
       h('div', null,
         h('div', { style: { color: 'var(--chrome-dim)', fontWeight: 600, marginBottom: 4 } }, 'DDC PAK 已整合到主视图'),
         '扫描、生成、已部署与分发都在左右双栏中就地完成，无需检查器'));
-    if (s.cacheNav === 'ddc_pso') return h(PsoDetail, { s });
+    if (s.cacheNav === 'ddc_pso') return window.VOLO_CACHE_PSO_DASH.inspector(s);
     return null;
   }
 
