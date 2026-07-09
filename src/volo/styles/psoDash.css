@@ -1,118 +1,119 @@
 /* ============================================================
-   Volo — Cache · PSO · Dashboard 子视图（Claude Design handoff src/pso_dash.css 1:1）
-   绿灯矩阵 / 驱动缓存 / 预跑历史+运行态(收敛曲线) / 失效告警 / 配置巡检
-   复用：.dash .dash-card .dc-h .spill .mini-btn .toolchip .insp-* .drawer-*（均已在 app.css 定义）
+   Volo — Cache · PSO 缓存（合并页 · 借鉴 DDC PAK 双栏形式）
+   左栏「预跑就绪状态」（hero + 节点色条 + 工程卡片/节点药丸）
+   右栏「工程扫描与预跑」复用 ddcPak.css 的 .pak2 / .root-x / .pak-tool-x / .proj-tile-x 等类
+   模态「工程预跑设置」复用下方 .pset-* 表单控件 + .pso-confirm 同款 .drawer
    ============================================================ */
 
-.pso-dash { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.pso-body { gap: 16px; }
-.pso-2col { display: grid; grid-template-columns: 1.35fr 1fr; gap: 16px; align-items: start; }
-@media (max-width: 1180px) { .pso-2col { grid-template-columns: 1fr; } }
+/* ---- 合并页 · 双栏骨架（借鉴 .pak2，见 ddcPak.css）+ 左栏窄右栏宽 ---- */
+.pso-merged { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.pso-merged .canvas-head .t { white-space: nowrap; }
+.pak2.pso2 .pak2-left { flex: 0 0 380px; }
+.pak2.pso2 .pak2-right { flex: 1 1 0; }
+@media (max-width: 1180px) { .pak2.pso2 .pak2-left { flex: 0 0 auto; } }
 
-/* ---- 子视图切换器（canvas-head 左侧）---- */
-.pso-subswitch { display: inline-flex; background: var(--sunken); border: 1px solid var(--chrome-line-2); border-radius: 9px; padding: 2px; gap: 2px; }
-.pss { all: unset; box-sizing: border-box; display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 7px; cursor: pointer;
-  font-size: 12px; font-weight: 700; color: var(--chrome-dim); white-space: nowrap; }
-.pss:hover { color: var(--chrome-text); }
-.pss.on { background: var(--chrome-card); color: var(--volo-400); box-shadow: 0 1px 2px rgba(0,0,0,.16); }
-.pss.on svg { color: var(--volo-500); }
 .toolchip.pso-running { color: var(--volo-400); border-color: color-mix(in srgb, var(--volo-500) 40%, transparent); }
 .toolchip.pso-running svg { color: var(--volo-500); }
 
-/* ============================================================
-   卡片 1 · 绿灯矩阵
-   ============================================================ */
-.pso-matrix { padding-bottom: 12px; }
-.glm { display: grid; gap: 8px; align-items: stretch; }
-.glm-corner { font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--chrome-faint); font-weight: 700;
-  display: flex; align-items: flex-end; padding: 0 2px 6px; }
-.glm-col { display: flex; flex-direction: column; gap: 3px; padding: 4px 8px 8px; border-bottom: 2px solid var(--chrome-line); min-width: 0; }
-.glm-col.off { opacity: .6; }
-.glm-host { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 700; color: var(--chrome-text); white-space: nowrap; }
-.glm-host .sdot { flex: 0 0 auto; }
-.glm-gpu { font-size: 10.5px; color: var(--chrome-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 14px; }
-
-.glm-row { display: flex; flex-direction: column; justify-content: center; gap: 3px; padding: 0 6px 0 2px; min-width: 0; border-right: 1px solid var(--chrome-line); }
-.glm-proj { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 700; color: var(--chrome-text); white-space: nowrap; }
-.glm-proj svg { color: var(--volo-500); flex: 0 0 auto; }
-.glm-ue { font-size: 10.5px; color: var(--chrome-faint); padding-left: 21px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-/* 单元格：色 + 图标 + 文字三通道；边框按态着色 */
-.glc { position: relative; display: flex; flex-direction: column; gap: 6px; padding: 10px 11px 11px; border-radius: 10px;
-  background: var(--sunken); border: 1px solid var(--chrome-line); cursor: pointer; transition: border-color .12s, background .12s, transform .08s; min-height: 74px; }
-.glc:hover { border-color: var(--chrome-line-2); }
-.glc:active { transform: scale(.99); }
-.glc-top { display: flex; align-items: center; }
-.glc-time { font-size: 11px; color: var(--chrome-dim); line-height: 1.4; text-wrap: pretty; }
-.glc-reval { all: unset; box-sizing: border-box; display: inline-flex; align-items: center; gap: 4px; align-self: flex-start; margin-top: 1px;
-  font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; cursor: pointer;
-  color: var(--chrome-dim); background: var(--wash); border: 1px solid var(--chrome-line-2); }
-.glc-reval:hover { background: var(--wash-2); color: var(--chrome-text); }
-.glc-reval svg { flex: 0 0 auto; }
-
-/* 态着色（左侧强调条 + 轻背景）*/
-.glc--ready   { border-color: color-mix(in srgb, var(--positive-visual) 40%, transparent); background: color-mix(in srgb, var(--positive-visual) 8%, var(--sunken)); }
-.glc--stale   { border-color: color-mix(in srgb, var(--notice-visual) 44%, transparent);   background: color-mix(in srgb, var(--notice-visual) 9%, var(--sunken)); }
-.glc--invalid { border-color: color-mix(in srgb, var(--negative-visual) 46%, transparent); background: color-mix(in srgb, var(--negative-visual) 9%, var(--sunken)); }
+/* 状态三通道色 primitive（.psL2-node / .psL2-seg 复用） */
+.glc--ready   { border-color: color-mix(in srgb, var(--positive-visual) 40%, transparent); }
+.glc--stale   { border-color: color-mix(in srgb, var(--notice-visual) 44%, transparent); }
+.glc--invalid { border-color: color-mix(in srgb, var(--negative-visual) 46%, transparent); }
 .glc--never   { border-style: dashed; }
-.glc--off     { opacity: .5; }
-.glc.is-off { cursor: default; }
-.glc.is-off:hover { border-color: var(--chrome-line); }
-.glc.is-sel { border-color: var(--volo-500); box-shadow: 0 0 0 1px var(--volo-500), 0 4px 14px rgba(0,0,0,.18); }
-
-/* 图例 */
-.glm-legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--chrome-line); }
-.glm-lg { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; color: var(--chrome-dim); font-weight: 600; }
-.glm-lg-dot { width: 12px; height: 12px; border-radius: 4px; border: 1px solid var(--chrome-line-2); flex: 0 0 auto; }
-.glm-lg-dot.glc--ready   { background: color-mix(in srgb, var(--positive-visual) 55%, transparent); border-color: var(--positive-visual); }
-.glm-lg-dot.glc--stale   { background: color-mix(in srgb, var(--notice-visual) 55%, transparent);   border-color: var(--notice-visual); }
-.glm-lg-dot.glc--invalid { background: color-mix(in srgb, var(--negative-visual) 55%, transparent); border-color: var(--negative-visual); }
-.glm-lg-dot.glc--never   { background: transparent; border-style: dashed; }
-.glm-lg-dot.glc--off     { background: var(--wash-2); }
 
 /* ============================================================
-   卡片 2 · 驱动缓存状态
+   左栏 · 预跑就绪状态（hero + 节点色条 + 图例 + 工程卡片/节点药丸）
    ============================================================ */
-.dcr-head, .dcr { display: grid; grid-template-columns: minmax(96px, 1.1fr) minmax(90px, 1fr) minmax(72px, .8fr) minmax(88px, .9fr) minmax(66px, .7fr) auto; gap: 10px; align-items: center; }
-.dcr-head { padding: 0 10px 7px; font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: var(--chrome-faint); font-weight: 700; }
-.dcr-list { display: flex; flex-direction: column; gap: 6px; }
-.dcr { padding: 9px 10px; border-radius: 9px; background: var(--sunken); border: 1px solid var(--chrome-line); font-size: 12px; }
-.dcr--warn { border-color: color-mix(in srgb, var(--notice-visual) 40%, transparent); background: color-mix(in srgb, var(--notice-visual) 7%, var(--sunken)); }
-.dcr--off { grid-template-columns: minmax(96px, 1.1fr) 1fr; opacity: .6; }
-.dcr-host { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 700; color: var(--chrome-text); white-space: nowrap; }
-.dcr-host .sdot { flex: 0 0 auto; }
-.dcr-v { color: var(--chrome-text); font-size: 11.5px; display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; }
-.dcr-v.bad { color: var(--notice-visual); font-weight: 700; }
-.dcr-was { font-size: 10px; color: var(--chrome-faint); font-weight: 500; }
-.dcr-when { color: var(--chrome-dim); font-size: 11px; white-space: nowrap; }
-.dcr-acct { justify-self: start; font-size: 10.5px; }
-.dcr-off-tx { color: var(--chrome-faint); font-size: 11.5px; }
+.pso-status .pak2-b { gap: 12px; }
+
+.psL2-hero { display: flex; align-items: center; gap: 14px; padding: 15px 16px; border-radius: 13px; border: 1px solid var(--chrome-line); background: var(--sunken); }
+.psL2-hero.is-ready { border-color: color-mix(in srgb, var(--positive-visual) 48%, transparent); background: color-mix(in srgb, var(--positive-visual) 11%, var(--sunken)); }
+.psL2-hero.is-warn { border-color: color-mix(in srgb, var(--notice-visual) 46%, transparent); background: color-mix(in srgb, var(--notice-visual) 10%, var(--sunken)); }
+.psL2-hero-ico { width: 46px; height: 46px; border-radius: 13px; flex: 0 0 auto; display: grid; place-items: center; }
+.psL2-hero.is-ready .psL2-hero-ico { color: #fff; background: var(--positive-visual); box-shadow: 0 4px 14px color-mix(in srgb, var(--positive-visual) 40%, transparent); }
+.psL2-hero.is-warn .psL2-hero-ico { color: #fff; background: var(--notice-visual); box-shadow: 0 4px 14px color-mix(in srgb, var(--notice-visual) 34%, transparent); }
+.psL2-hero-main { flex: 1; min-width: 0; }
+.psL2-hero-tt { font-size: 17px; font-weight: 800; letter-spacing: -.01em; line-height: 1.15; }
+.psL2-hero.is-ready .psL2-hero-tt { color: var(--positive-visual); }
+.psL2-hero.is-warn .psL2-hero-tt { color: var(--notice-visual); }
+.psL2-hero-sub { font-size: 11.5px; color: var(--chrome-dim); line-height: 1.5; margin-top: 4px; text-wrap: pretty; }
+.psL2-hero-metric { flex: 0 0 auto; text-align: right; display: flex; flex-direction: column; align-items: flex-end; }
+.psL2-hero-frac { display: flex; align-items: baseline; gap: 2px; }
+.psL2-hero-frac .big { font-size: 30px; font-weight: 800; line-height: 1; letter-spacing: -.02em; color: var(--chrome-text); }
+.psL2-hero.is-ready .psL2-hero-frac .big { color: var(--positive-visual); }
+.psL2-hero-den { font-size: 15px; font-weight: 700; color: var(--chrome-faint); }
+.psL2-hero-metric-lbl { font-size: 10px; font-weight: 700; letter-spacing: .04em; color: var(--chrome-faint); margin-top: 3px; }
+
+/* 节点状态色条 + 图例 */
+.psL2-bar { display: flex; gap: 3px; height: 9px; border-radius: 6px; overflow: hidden; background: var(--wash-2); }
+.psL2-seg { display: block; min-width: 3px; }
+.psL2-seg.glc--ready { background: var(--positive-visual); }
+.psL2-seg.glc--stale { background: var(--notice-visual); }
+.psL2-seg.glc--invalid { background: var(--negative-visual); }
+.psL2-seg.glc--never { background: color-mix(in srgb, var(--chrome-faint) 45%, transparent); }
+.psL2-legend { display: flex; flex-wrap: wrap; gap: 13px; margin-top: -2px; }
+.psL2-lg { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--chrome-dim); font-weight: 600; }
+.psL2-lg-dot { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; }
+.psL2-lg-dot.glc--ready { background: var(--positive-visual); }
+.psL2-lg-dot.glc--stale { background: var(--notice-visual); }
+.psL2-lg-dot.glc--invalid { background: var(--negative-visual); }
+.psL2-lg-dot.glc--never { background: color-mix(in srgb, var(--chrome-faint) 45%, transparent); }
+.psL2-lg-ct { color: var(--chrome-faint); font-weight: 700; }
+
+/* 每个已预跑验证过的工程一张卡片 */
+.psL2-projs { display: flex; flex-direction: column; gap: 10px; }
+.psL2-proj { border: 1px solid var(--chrome-line); border-radius: 12px; background: var(--chrome-panel); padding: 12px 13px; display: flex; flex-direction: column; gap: 11px; }
+.psL2-proj.ready { border-color: color-mix(in srgb, var(--positive-visual) 34%, transparent); }
+.psL2-proj-head { display: flex; align-items: center; gap: 11px; }
+.psL2-proj-thumb { width: 50px; height: 34px; border-radius: 8px; overflow: hidden; flex: 0 0 auto; background: var(--sunken); border: 1px solid var(--chrome-line); display: grid; place-items: center; color: var(--chrome-faint); }
+.psL2-proj-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.psL2-proj-meta { flex: 1; min-width: 0; }
+.psL2-proj-name { font-size: 14px; font-weight: 700; color: var(--chrome-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.psL2-proj-sub { font-size: 11px; color: var(--chrome-faint); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.psL2-proj-st { flex: 0 0 auto; font-size: 10.5px; }
+
+/* 节点小药丸（三通道：色 + host + 图标）*/
+.psL2-nodes { display: flex; flex-wrap: wrap; gap: 6px; }
+.psL2-node { all: unset; box-sizing: border-box; display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px 4px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; border: 1px solid var(--chrome-line); background: var(--sunken); color: var(--chrome-dim); }
+.psL2-node.can { cursor: pointer; }
+.psL2-node.can:hover { border-color: var(--chrome-line-2); background: var(--wash-3); color: var(--chrome-text); }
+.psL2-node-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: var(--chrome-faint); }
+.psL2-node .psL2-node-tx { font-size: 11px; }
+.psL2-node.glc--ready { color: var(--positive-visual); border-color: color-mix(in srgb, var(--positive-visual) 40%, transparent); background: color-mix(in srgb, var(--positive-visual) 12%, var(--sunken)); }
+.psL2-node.glc--ready .psL2-node-dot { background: var(--positive-visual); }
+.psL2-node.glc--stale { color: var(--notice-visual); border-color: color-mix(in srgb, var(--notice-visual) 42%, transparent); background: color-mix(in srgb, var(--notice-visual) 11%, var(--sunken)); }
+.psL2-node.glc--stale .psL2-node-dot { background: var(--notice-visual); }
+.psL2-node.glc--invalid { color: var(--negative-visual); border-color: color-mix(in srgb, var(--negative-visual) 44%, transparent); background: color-mix(in srgb, var(--negative-visual) 11%, var(--sunken)); }
+.psL2-node.glc--invalid .psL2-node-dot { background: var(--negative-visual); }
+.psL2-node.glc--never { border-style: dashed; }
+.psL2-noconf { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 600; color: var(--notice-visual);
+  background: color-mix(in srgb, var(--notice-visual) 10%, transparent); border: 1px solid color-mix(in srgb, var(--notice-visual) 28%, transparent); padding: 6px 10px; border-radius: 8px; }
+
+.psL2-proj-foot { display: flex; align-items: center; gap: 10px; padding-top: 10px; border-top: 1px solid var(--chrome-line); }
+.psL2-proj-last { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--chrome-faint); min-width: 0; flex: 1; }
+.psL2-proj.ready .psL2-proj-last { color: var(--positive-visual); }
+.psL2-proj-last svg { flex: 0 0 auto; }
+.psL2-proj-acts { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.psL2-proj-acts .mini-btn { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.psL2-go { color: #fff !important; background: var(--volo-700) !important; border-color: var(--volo-700) !important; }
+.psL2-go:hover { background: var(--volo-800, var(--volo-700)) !important; }
+.psL2-go:disabled { opacity: .45; cursor: default; }
+.psL2-go.ghost { color: var(--chrome-dim) !important; background: var(--sunken) !important; border-color: var(--chrome-line-2) !important; }
+.psL2-go.ghost:hover { color: var(--chrome-text) !important; background: var(--wash-3) !important; }
+
+/* 空态 */
+.psL2-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 12px; padding: 34px 22px; }
+.psL2-empty-ico { width: 60px; height: 60px; border-radius: 16px; display: grid; place-items: center; background: var(--wash); border: 1px solid var(--chrome-line); color: var(--chrome-faint); }
+.psL2-empty-t { font-size: 14px; font-weight: 700; color: var(--chrome-text); }
+.psL2-empty-d { font-size: 12px; color: var(--chrome-dim); line-height: 1.65; max-width: 320px; text-wrap: pretty; }
+.psL2-empty-hint { display: inline-flex; align-items: center; gap: 7px; font-size: 11.5px; font-weight: 700; color: var(--volo-400); background: var(--highlight-selected); padding: 7px 13px; border-radius: 9999px; }
+.psL2-empty-hint svg { flex: 0 0 auto; }
 
 /* ============================================================
-   卡片 3 · 预跑历史 + 运行态
+   运行态（预跑并验证进行中，StatusPanel 内嵌）—— 无百分比进度条，
+   收敛曲线走平是唯一完成度表达
    ============================================================ */
-.ph-live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--volo-500); flex: 0 0 auto; }
-@media (prefers-reduced-motion: no-preference) { .ph-live-dot { animation: psoPulse 1.4s ease-in-out infinite; } }
-@keyframes psoPulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
-.ph-live-tag { font-size: 10px; font-weight: 800; color: var(--volo-400); letter-spacing: .03em; }
-
-.ph-head, .ph-row { display: grid; grid-template-columns: minmax(74px,.9fr) minmax(96px,1.1fr) minmax(84px,.9fr) 48px minmax(58px,.7fr) minmax(64px,.8fr) minmax(74px,.8fr) minmax(94px,auto); gap: 10px; align-items: center; }
-.ph-head { padding: 0 10px 7px; font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: var(--chrome-faint); font-weight: 700; }
-.ph-list { display: flex; flex-direction: column; gap: 5px; }
-.ph-row { padding: 8px 10px; border-radius: 8px; background: var(--sunken); border: 1px solid var(--chrome-line); font-size: 11.5px; }
-.ph-row--cancel { opacity: .72; }
-.ph-when { color: var(--chrome-dim); white-space: nowrap; }
-.ph-proj { color: var(--chrome-text); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ph-node { color: var(--chrome-dim); font-size: 11px; white-space: nowrap; }
-.ph-mode { color: var(--chrome-faint); white-space: nowrap; }
-.ph-dur { color: var(--chrome-dim); white-space: nowrap; }
-.ph-hitch { font-weight: 700; white-space: nowrap; }
-.ph-hitch.ok { color: var(--positive-visual); } .ph-hitch.warn { color: var(--notice-visual); } .ph-hitch.dim { color: var(--chrome-faint); font-weight: 600; }
-.ph-growth { color: var(--chrome-dim); white-space: nowrap; }
-.ph-res { justify-self: start; font-size: 10.5px; }
-.ph-nogreen { font-size: 9.5px; font-weight: 600; color: var(--chrome-faint); margin-left: 3px; }
-
-/* 运行态（无百分比进度条；收敛曲线是唯一完成度表达）*/
 .pso-run { border: 1px solid color-mix(in srgb, var(--volo-500) 32%, transparent); border-radius: 11px;
   background: color-mix(in srgb, var(--volo-500) 6%, var(--chrome-card)); padding: 13px 14px; margin-bottom: 14px; }
 .pso-run-h { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
@@ -145,35 +146,6 @@
 .pso-run-note svg { flex: 0 0 auto; margin-top: 1px; }
 
 /* ============================================================
-   卡片 4 · 失效告警
-   ============================================================ */
-.fa-list { display: flex; flex-direction: column; gap: 8px; }
-.fa-row { display: flex; align-items: flex-start; gap: 11px; padding: 10px 12px; border-radius: 10px; background: var(--sunken); border: 1px solid var(--chrome-line); }
-.fa-ico { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; flex: 0 0 auto; }
-.fa-ico.s-negative { color: var(--negative-visual); background: color-mix(in srgb, var(--negative-visual) 13%, transparent); }
-.fa-ico.s-notice { color: var(--notice-visual); background: color-mix(in srgb, var(--notice-visual) 15%, transparent); }
-.fa-main { flex: 1; min-width: 0; }
-.fa-msg { font-size: 12.5px; color: var(--chrome-text); line-height: 1.5; text-wrap: pretty; }
-.fa-scope { display: flex; align-items: baseline; gap: 9px; margin-top: 4px; flex-wrap: wrap; }
-.fa-time { font-size: 10.5px; color: var(--chrome-faint); flex: 0 0 auto; }
-.fa-scope-tx { font-size: 11px; color: var(--chrome-dim); }
-.fa-reval { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; align-self: center; white-space: nowrap; }
-
-/* ============================================================
-   卡片 5 · 配置巡检
-   ============================================================ */
-.ck-list { display: flex; flex-direction: column; gap: 7px; }
-.ck-row { display: flex; align-items: flex-start; gap: 11px; padding: 9px 11px; border-radius: 9px; background: var(--sunken); border: 1px solid var(--chrome-line); }
-.ck-chip { flex: 0 0 auto; margin-top: 1px; font-size: 10.5px; }
-.ck-main { flex: 1; min-width: 0; }
-.ck-label { font-size: 12.5px; font-weight: 700; color: var(--chrome-text); }
-.ck-note { font-size: 11px; color: var(--chrome-faint); line-height: 1.5; margin-top: 2px; text-wrap: pretty; }
-.ck-row .mini-btn { flex: 0 0 auto; align-self: center; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
-.ck-foot { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--chrome-line);
-  font-size: 11px; color: var(--chrome-faint); line-height: 1.55; text-wrap: pretty; }
-.ck-foot svg { flex: 0 0 auto; margin-top: 1px; color: var(--chrome-dim); }
-
-/* ============================================================
    预跑并验证 · 确认对话框（复用 .drawer .dblock）
    ============================================================ */
 .pso-confirm { width: 520px; max-width: 92vw; }
@@ -196,40 +168,17 @@
 .pc-sum { margin-right: auto; font-size: 11.5px; color: var(--chrome-dim); font-weight: 600; }
 
 /* ============================================================
-   设置子视图 · 左右双栏 master/detail
+   工程预跑设置 · 二级页面（模态，代替旧的 master/detail 双栏）
    ============================================================ */
-.pset { flex: 1; min-height: 0; display: grid; grid-template-columns: 296px 1fr; }
-/* 左栏 · 工程列表 */
-.pset-master { min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--chrome-line); background: var(--wash-3); }
-.pset-scan { display: flex; flex-direction: column; gap: 9px; padding: 13px 14px; border-bottom: 1px solid var(--chrome-line); }
-.pset-scan-info { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--chrome-dim); font-weight: 600; }
-.pset-scan-info .spin { color: var(--volo-500); }
-.pset-scan-acts { display: flex; gap: 7px; }
-.pset-scan-acts .mini-btn { display: inline-flex; align-items: center; gap: 5px; }
-.pset-plist { flex: 1; min-height: 0; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
-.pset-proj { display: flex; align-items: center; gap: 11px; padding: 9px 10px; border-radius: 10px; cursor: pointer; border: 1px solid transparent; transition: background .1s, border-color .1s; }
-.pset-proj:hover { background: var(--wash); }
-.pset-proj.on { background: var(--highlight-selected); border-color: color-mix(in srgb, var(--volo-500) 40%, transparent); }
-.pset-proj-thumb { width: 48px; height: 32px; border-radius: 6px; overflow: hidden; flex: 0 0 auto; background: var(--sunken); border: 1px solid var(--chrome-line); display: grid; place-items: center; color: var(--chrome-faint); }
-.pset-proj-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.pset-proj-meta { flex: 1; min-width: 0; }
-.pset-proj-name { font-size: 12.5px; font-weight: 700; color: var(--chrome-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pset-proj-sub { display: flex; align-items: center; gap: 8px; margin-top: 3px; min-width: 0; }
-.pset-ue { font-size: 10px; font-weight: 700; color: var(--volo-400); background: color-mix(in srgb, var(--volo-500) 14%, transparent); padding: 1px 6px; border-radius: 5px; flex: 0 0 auto; }
-.pset-proj-file { font-size: 10.5px; color: var(--chrome-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pset-proj-st { flex: 0 0 auto; display: inline-flex; }
+.pso-set-dialog { width: 640px; max-width: 94vw; }
+.pset-form--modal { padding: 4px 2px 2px; gap: 18px; overflow: visible; }
+.pso-set-dialog .drawer-b { max-height: 64vh; overflow-y: auto; }
+.pso-set-dialog .drawer-h .pset-dh-thumb { width: 46px; height: 30px; border-radius: 7px; overflow: hidden; flex: 0 0 auto; background: var(--sunken); border: 1px solid var(--chrome-line); display: grid; place-items: center; color: var(--chrome-faint); }
+.pso-set-dialog .drawer-h .pset-dh-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pso-set-dialog .drawer-f { align-items: center; gap: 10px; }
 
-/* 右栏 · 表单 */
-.pset-detail { min-height: 0; display: flex; flex-direction: column; }
-.pset-detail-head { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--chrome-line); background: var(--wash-3); }
-.pset-dh-thumb { width: 52px; height: 34px; border-radius: 7px; overflow: hidden; flex: 0 0 auto; background: var(--sunken); border: 1px solid var(--chrome-line); display: grid; place-items: center; color: var(--chrome-faint); }
-.pset-dh-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.pset-dh-name { font-size: 15px; font-weight: 800; color: var(--chrome-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pset-dh-sub { font-size: 11.5px; color: var(--chrome-faint); margin-top: 2px; }
-.pset-detail-head .spill { margin-left: auto; flex: 0 0 auto; }
-
+/* 表单本体（模态内滚动区域） */
 .pset-form { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 20px 24px; display: flex; flex-direction: column; gap: 20px; }
-.pset-group { }
 .pset-group-h { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; padding-bottom: 9px; border-bottom: 1px solid var(--chrome-line); }
 .pset-group-t { font-size: 13px; font-weight: 800; color: var(--chrome-text); }
 .pset-group-s { font-size: 11.5px; color: var(--chrome-faint); }
@@ -310,28 +259,3 @@
 .pset-cold-list b { color: var(--negative-visual); font-weight: 700; }
 .pset-cold-note { display: flex; align-items: flex-start; gap: 7px; font-size: 11px; color: var(--chrome-faint); line-height: 1.5; margin-top: 12px; text-wrap: pretty; }
 .pset-cold-note svg { flex: 0 0 auto; margin-top: 1px; }
-
-@media (max-width: 1080px) { .pset { grid-template-columns: 240px 1fr; } }
-
-/* ============================================================
-   检查器 · 绿灯单元格详情
-   ============================================================ */
-.pin-state { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.pin-verified { font-size: 11.5px; color: var(--chrome-dim); line-height: 1.4; text-wrap: pretty; }
-.pin-attr { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; line-height: 1.5; padding: 9px 11px; border-radius: 9px; text-wrap: pretty; }
-.pin-attr svg { flex: 0 0 auto; margin-top: 1px; }
-.pin-attr.ok  { color: var(--positive-visual); background: color-mix(in srgb, var(--positive-visual) 9%, transparent); }
-.pin-attr.warn { color: var(--notice-visual);  background: color-mix(in srgb, var(--notice-visual) 10%, transparent); }
-.pin-attr.bad { color: var(--negative-visual); background: color-mix(in srgb, var(--negative-visual) 9%, transparent); }
-.pin-attr.dim { color: var(--chrome-dim); background: var(--wash); }
-.pin-chain { display: flex; flex-direction: column; }
-.pin-ev { display: grid; grid-template-columns: 12px 1fr; gap: 10px; padding: 4px 0; position: relative; }
-.pin-ev-dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 4px; flex: 0 0 auto; }
-.pin-ev:not(:last-child)::before { content: ''; position: absolute; left: 4px; top: 15px; bottom: -4px; width: 1.5px; background: var(--chrome-line); }
-.pin-ev-dot.s-positive { background: var(--positive-visual); }
-.pin-ev-dot.s-notice { background: var(--notice-visual); }
-.pin-ev-dot.s-negative { background: var(--negative-visual); }
-.pin-ev-tx { font-size: 12px; color: var(--chrome-text); line-height: 1.45; text-wrap: pretty; }
-.pin-ev-t { font-size: 10.5px; color: var(--chrome-faint); margin-top: 2px; }
-.insp-detail .drawer-f { display: flex; gap: 8px; }
-.insp-detail .drawer-f .mini-btn { display: inline-flex; align-items: center; gap: 6px; margin-right: auto; }
