@@ -6,8 +6,8 @@
      · 左栏「已部署 DDC PAK」—— 真实扇出扫描 UE_PROJECTS 的每个已知位置（list_deployed_ddc_paks），
        按工程聚合展示；行内操作重新生成 / 分发到其他机器 / 删除 PAK（删除为危险操作，卡片内
        就地展开红色确认门）。
-     · 右栏「工程扫描与生成」—— 沿用 cacheDdc.tsx 已验证过的 discover_projects / generate_ddc_pak
-       归约逻辑（经 window.VOLO_CACHE_DDC 共享），只是把选工程 + 生成收进本页，不再借道检查器。
+     · 右栏「工程扫描与生成」—— 工程发现走中立模块 cacheProjectScan（与 PSO 各自独立入口），
+       generate_ddc_pak 归约仍经 window.VOLO_CACHE_DDC 共享；只是把选工程 + 生成收进本页，不再借道检查器。
 
    与 mock 设计稿的关键差异（见 auto-memory volo-cache-design-sync）：
      · 已部署列表来自真实扫描，不种 DEPLOYED_PAKS 假数据；PAK 文件名固定是
@@ -18,6 +18,9 @@ import * as React from "react";
 import "../ds";
 import "./cacheDdc";
 import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnail, deleteProject, listRemoteDirectories } from "../api/commands";
+import {
+  humanBytes, pickSrc, scopeOpts, runDiscover, openFolder, clusterGate,
+} from "./cacheProjectScan";
 
 (function () {
   const { Button } = window.Spectrum2DesignSystem_b6d1b3;
@@ -148,7 +151,7 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
           h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'check', size: 15 }), onPress: close }, 'OK')));
     }
 
-    const src = p ? DDC.pickSrc(p) : null;
+    const src = p ? pickSrc(p) : null;
     const pctLabel = stageKey.indet
       ? h('span', { className: 'pakgen-pct indet' }, h('span', { className: 'spin' }, h(Icon, { name: 'sync', size: 13 })), '进行中')
       : h('span', { className: 'pakgen-pct' + (pct >= 100 ? ' done' : '') }, Math.round(pct) + '%');
@@ -313,7 +316,7 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
      既有约定：pickSrc 选中的源机可能不是该工程第一条 location，必须按 locByMachine 取该源机
      自己的路径，不能落回 p.root——否则显示路径与实际点开的文件夹对不上（此前修过的坑）。 */
   function projTile(p, selected, onClick, s) {
-    const src = s ? DDC.pickSrc(p) : null;
+    const src = s ? pickSrc(p) : null;
     const path = (src && p.locByMachine && p.locByMachine[String(src.machineId)]) || p.root;
     const full = path + '\\' + p.uproject;
     return h('div', { key: p.id, className: 'proj-tile' + (selected ? ' on' : ''),
@@ -333,7 +336,7 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
           h('button', { type: 'button', className: 'proj-tile-open', 'aria-label': '在文件资源管理器中打开：' + full,
               onMouseEnter: (e) => schedulePathTip(e, full),
               onMouseLeave: hidePathTip,
-              onClick: (e) => { e.stopPropagation(); hidePathTip(); s && DDC.openFolder(s, path, p.name, src); } },
+              onClick: (e) => { e.stopPropagation(); hidePathTip(); s && openFolder(s, path, p.name, src, 'ddc'); } },
             h(Icon, { name: 'folder', size: 14 })))));
   }
 
@@ -449,7 +452,7 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
     const [confirmClear, setConfirmClear] = useState(false);
 
     /* ---------- 缩略图（懒加载，只在本页 merge 进 project 对象，不写回全局 UE_PROJECTS） ----------
-       每个工程用 DDC.pickSrc 选源机（与生成/校验同一套「哪台机代表这个工程」的既有约定）。
+       每个工程用 pickSrc 选源机（与生成/校验同一套「哪台机代表这个工程」的既有约定）。
        THUMB_CONCURRENCY 个 worker 从队列里拉取，而不是对全部 UE_PROJECTS 一次性并发发起
        ——工程一多，无限并发会同时起一堆 ssh 子进程（每条请求最多 8MB base64），既打满
        WebView 又可能把源机 SSH 撑爆。THUMB_CACHE.tried 只在 promise 真正 resolve（拿到「有/无
@@ -482,7 +485,7 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
         const pump = () => {
           if (!alive || next >= queue.length) return;
           const p = queue[next++];
-          const src = DDC.pickSrc(p);
+          const src = pickSrc(p);
           if (!src) { pump(); return; }
           getProjectThumbnail(Number(p.id), src.machineId).then(
             (probe) => {
@@ -497,7 +500,7 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
                 thumbFrom: THUMB_FROM_LABEL[t.from] || t.from,
                 mtime: t.mtime || '',
               });
-              if (probe && probe.size_bytes != null) patch.size = DDC.humanBytes(probe.size_bytes);
+              if (probe && probe.size_bytes != null) patch.size = humanBytes(probe.size_bytes);
               if (Object.keys(patch).length) setThumbs((m) => {
                 const nextMap = Object.assign({}, m, { [p.id]: patch });
                 THUMB_CACHE.thumbs = nextMap;
@@ -716,16 +719,16 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
        第一行。此前 gate 放在中段（地址栏自动补全的一串 useState/useEffect 之前），
        reloadCache 让 s.cacheLoading 翻转时两次渲染的 Hook 数量不一致，React 抛
        "Rendered fewer hooks than expected" 崩掉整个面板。 */
-    const g = DDC.gate(s); if (g) return g;
+    const g = clusterGate(s, '集群里还没有机器 — 先在「集群总览」扫描添加机器，再配置 DDC'); if (g) return g;
     const doScan = () => {
       setCleared(false); setConfirmClear(false);
-      const scanned = DDC.runDiscover(s, scope, rootsStr);
+      const scanned = runDiscover(s, scope, rootsStr);
       if (scanned) scanned.then(() => {
         THUMB_CACHE.tried = new Set();
         /* 立即落盘 cleared tried，避免 debounce 前退出 App 后重启复用旧探测结果。 */
         persistThumbCache();
         setThumbGen((g) => g + 1);
-      });
+      }, () => {});
     };
     /* 清空已发现工程 —— 从 Volo 数据库删除全部工程记录（级联各机位置），不删磁盘文件。
        此前只 setCleared 清屏不删库，重扫后旧记录（DB 里仍在）原样回来，等于没清 —— 现在
@@ -810,12 +813,12 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
             h('div', { className: 'dpak-name' }, dp.project.name,
               dp.project.ue !== '—' ? h('span', { className: 'dpak-tag ue' }, 'UE ' + dp.project.ue) : null),
             h('button', { type: 'button', className: 'dpak-path dpak-path-open', title: '在文件资源管理器中打开工程文件夹',
-                onClick: (e) => { e.stopPropagation(); DDC.openFolder(s, srcPath, dp.project.name, srcNode); } },
+                onClick: (e) => { e.stopPropagation(); openFolder(s, srcPath, dp.project.name, srcNode, 'ddc'); } },
               h('span', { className: 'proj-sub-tx' }, srcPath),
               h('span', { className: 'proj-sub-ico' }, h(Icon, { name: 'folder', size: 12 })))),
           h('span', { className: 'spill spill--positive' }, h(Icon, { name: 'check', size: 12 }), '就绪')),
         h('div', { className: 'dpak-grid' },
-          h('div', { className: 'dpak-kv' }, h('span', { className: 'k' }, 'PAK 文件大小'), h('span', { className: 'v' }, DDC.humanBytes(dp.source.size_bytes))),
+          h('div', { className: 'dpak-kv' }, h('span', { className: 'k' }, 'PAK 文件大小'), h('span', { className: 'v' }, humanBytes(dp.source.size_bytes))),
           h('div', { className: 'dpak-kv' }, h('span', { className: 'k' }, '生成时间'), h('span', { className: 'v' }, fmtMtime(dp.source.modified_at))),
           h('div', { className: 'dpak-kv' }, h('span', { className: 'k' }, '源机器'), h('span', { className: 'v mono' }, srcHost)),
           h('div', { className: 'dpak-kv' }, h('span', { className: 'k' }, 'PAK 文件'), h('span', { className: 'v mono', title: dp.source.pak_path }, 'DerivedDataCache\\DDC.ddp'))),
@@ -1011,7 +1014,7 @@ import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnai
               h('div', { className: 'pak-ctl scan' }, h('label', null, '扫描范围'),
                 /* popover min-width(210) 比按钮(168)宽：默认右对齐会向左溢出栏边界，
                    被 .pak2-col overflow:hidden 裁切 → 必须左对齐向栏内展开 */
-                h(Selector, { kpre: '范围', value: scope, options: DDC.scopeOpts(), width: 168, align: 'left', onChange: setScope })),
+                h(Selector, { kpre: '范围', value: scope, options: scopeOpts(), width: 168, align: 'left', onChange: setScope })),
               h('div', { className: 'pak-ctl' }, h('label', { style: { visibility: 'hidden' } }, '扫描'),
                 h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'search', size: 14 }), onPress: doScan }, '扫描'))),
             h('div', { className: 'pak-roots' },

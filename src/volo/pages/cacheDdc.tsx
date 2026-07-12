@@ -13,13 +13,16 @@
 import * as React from "react";
 import "../ds";
 import "./cache";
-import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createShare,
+import { deleteShare as deleteShareCmd, teardownShare, createShare,
   generateDdcPak,
   setMachineEnvVar, getMachineEnvVar, createLocalCache,
   prepareManagedShareClients, unprepareManagedShareClients,
   prepareOpenShareClients, unprepareOpenShareClients,
   setMachineBackendField, removeMachineBackendField,
-  revealPath, isLoopbackMachine, revealRemotePath, ensureOpenDirShare } from "../api/commands";
+  revealPath } from "../api/commands";
+import {
+  pickSrc, openFolder as openFolderShared, clusterGate,
+} from "./cacheProjectScan";
 
 (function () {
   const { Button } = window.Spectrum2DesignSystem_b6d1b3;
@@ -28,86 +31,13 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
   const CX = window.VOLO_CX;
   const Selector = window.Selector;
 
-  /* 选生成/校验/收集的源机：检查器无源机选择器（按设计自动选源）。优先工程 primary，但 primary
-     可能离线 → 回退到该工程任一在线机；都不可用返回 null（调用方据此给可见反馈）。 */
-  const pickSrc = (p) => {
-    if (!p) return null;
-    const prim = CX.node(p.primary);
-    if (prim && prim.status !== 'offline') return prim;
-    return RENDER_NODES.find((n) => (p.machines || []).includes(n.id) && n.status !== 'offline') || prim || null;
-  };
   /* 无可用源机时，派一个立即失败的任务给可见反馈，而不是静默 return（按钮点了像没反应）。 */
   const noSrcFail = (s, domain, action, p) =>
     s.runCmd({ domain, action, target: p.name, chan: 'ssh', note: domain + ' ' + action + ' · ' + p.name },
       () => Promise.reject(new Error('该工程没有可用的在线源机器')), {}).catch(() => {});
 
-  const humanBytes = (b) => b == null ? '—'
-    : b >= 1e9 ? (b / 1073741824).toFixed(1) + ' GB'
-    : b >= 1e6 ? (b / 1048576).toFixed(0) + ' MB'
-    : (b / 1024).toFixed(0) + ' KB';
-
-  /* 打开工程文件夹（在系统文件资源管理器中 reveal）。工程可能在远程渲染节点而非本机
-     ——is_loopback_machine 判断目标是否就是 Volo 自身所在机器：是则直接 reveal_path 本机路径；
-     否则走 reveal_remote_path——后端优先按已登记共享（DDC 部署共享 / Zen「设置缓存目录」
-     自动建的 volo-zen）把路径改写成 \\host\share\...（免凭据可达），查不到覆盖该路径的
-     共享才回落管理员共享；按 Volo 运行时所在 OS 决定用 UNC（Windows）还是 smb:// URL
-     （macOS/Linux，reveal_item_in_dir 的 canonicalize 在这些平台上不认 Windows UNC 字符串，
-     永远失败，故不能不分平台一律拼 UNC 交给本机 revealPath）。管理共享回落在工作组环境
-     通常拒绝访问，会 reject——此时按需把工程父目录开成开放共享（ensure_open_dir_share，
-     与 Zen「设置缓存目录」同一套 volo-zen 机制）后重试一次，之后该目录下所有工程都
-     免凭据可达；开共享也失败才落到失败态提示，不静默假装成功。 */
-
-  /* 开放共享的目录取工程的父目录（一次覆盖同根下所有兄弟工程，对齐「搜索根目录」的
-     粒度），但工程直接躺在盘符根下时共享工程目录自身——绝不把整个盘开成 Guest 共享。 */
-  const shareDirFor = (path) => {
-    const norm = String(path).replace(/\//g, '\\').replace(/\\+$/, '');
-    const parts = norm.split('\\').filter(Boolean); /* ["D:","Unreal Projects","Hillside"] */
-    if (parts.length <= 2) return norm;
-    return parts.slice(0, -1).join('\\');
-  };
-  /* 共享名按目录路径确定（幂等：同目录恒同名，重复打开不重复建）；保留 CJK 字符避免
-     不同中文目录坍缩成同名共享互相顶掉（ensure_open_dir_share 对同名异路径是替换语义）。 */
-  const shareNameFor = (dir) => 'volo-dir-' + dir.toLowerCase().replace(/:/g, '')
-    .replace(/[^a-z0-9一-鿿]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
-  /* Volo 自身所在机器的 machine_id（用作开共享后的客户端预连目标——放开本机 Guest 访问
-     限制，否则 Windows 默认拒绝匿名共享）。逐台问 is_loopback_machine，命中即止；结果
-     进程级缓存（机器身份不随会话变）。Volo 所在机不在集群里则返回 null，跳过客户端预连。 */
-  let selfIdPromise = null;
-  const selfMachineId = () => {
-    if (!selfIdPromise) selfIdPromise = (async () => {
-      for (const n of (RENDER_NODES || [])) {
-        try { if (await isLoopbackMachine(n.ip)) return Number(n.machineId); } catch (e) {}
-      }
-      return null;
-    })();
-    return selfIdPromise;
-  };
-  const openFolder = (s, path, label, machine) => {
-    const fail = (e) => s.pushLog({ lv: 'err', cat: 'ddc', ch: 'ssh',
-      msg: '打开文件夹失败 · ' + label + ' · ' + (e && e.message ? e.message : e) });
-    if (!machine) { fail(new Error('找不到该工程所在的机器')); return; }
-    const logOk = () => s.pushLog({ lv: 'info', cat: 'ddc', ch: 'ssh',
-      msg: '<b>explorer</b> · 在文件资源管理器中打开' + (label ? '（' + label + '）' : '') + ' ' + path });
-    const logInfo = (msg) => s.pushLog({ lv: 'info', cat: 'ddc', ch: 'ssh', msg });
-    isLoopbackMachine(machine.ip).then(
-      (loopback) => {
-        if (loopback) return revealPath(path).then(logOk, fail);
-        return revealRemotePath(machine.ip, path).then(logOk, () => {
-          /* 管理共享打不开（工作组两机本地账户互不信任的常态）→ 按需开放共享后重试 */
-          const dir = shareDirFor(path);
-          logInfo('<b>share</b> · 该路径不在任何共享内，正在把 ' + dir + ' 开放为共享…');
-          return selfMachineId()
-            .then((selfId) => ensureOpenDirShare(
-              Number(machine.machineId), shareNameFor(dir), dir,
-              selfId != null && selfId !== Number(machine.machineId) ? [selfId] : []))
-            .then((r) => {
-              logInfo('<b>share</b> · ' + (r.created ? '已开放共享 ' : '共享已存在 ') + r.unc_path + ' · 重试打开');
-              return revealRemotePath(machine.ip, path).then(logOk, fail);
-            }, fail);
-        });
-      },
-      fail);
-  };
+  /* DDC 页打开文件夹时日志 cat 仍标 ddc（控制台过滤习惯）。 */
+  const openFolder = (s, path, label, machine) => openFolderShared(s, path, label, machine, 'ddc');
 
   /* UeRunnerEvent reduce（generate_ddc_pak 进度流）.
      payload = {job_id, source_machine_id, project_id, event:UeRunnerEvent}，
@@ -183,52 +113,11 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
   };
 
   /* =================== 共享选项构造 =================== */
-  const onlineNodes = () => RENDER_NODES.filter((n) => n.status !== 'offline');
-  const scopeOpts = () => [{ id: 'all', label: '全部在线机' }]
-    .concat(onlineNodes().map((n) => ({ id: n.id, label: n.host, sub: n.ip })));
 
-  /* three-channel gate (色+图标+文字)：DDC 视图都建立在真实机器 id 上，后端读取路径
-     未就绪时不渲染 mock 形状的 body（与 Overview gate 一致）。仅用于 master(center) 视图。 */
+  /* three-channel gate：DDC 视图建立在真实机器 id 上，未就绪时不渲染 body。 */
   function gate(s) {
-    if (s.cacheError) return h('div', { className: 'res ddc' }, h('div', { className: 'ddc-body' },
-      h('div', { className: 'gen-empty' },
-        h('span', { className: 's-negative', style: { display: 'flex' } }, h(Icon, { name: 'alert', size: 22 })),
-        h('span', null, '加载集群数据失败 · ' + s.cacheError),
-        h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'sync', size: 14 }), onPress: s.reloadCache }, '重试'))));
-    if (s.cacheLoading) return h('div', { className: 'res ddc' }, h('div', { className: 'ddc-body' },
-      h('div', { className: 'gen-empty' },
-        h('span', { className: 's-informative', style: { display: 'flex' } }, h('span', { className: 'spin' }, h(Icon, { name: 'sync', size: 20 }))),
-        h('span', null, '正在加载集群数据…'))));
-    if (!RENDER_NODES.length) return h('div', { className: 'res ddc' }, h('div', { className: 'ddc-body' },
-      h('div', { className: 'gen-empty' }, h(Icon, { name: 'node', size: 22 }),
-        h('span', null, '集群里还没有机器 — 先在「集群总览」扫描添加机器，再配置 DDC'))));
-    return null;
+    return clusterGate(s, '集群里还没有机器 — 先在「集群总览」扫描添加机器，再配置 DDC');
   }
-
-  /* =================== 真实动作（模块级，接 s）=================== */
-  /* discover_projects：远程扫各机 .uproject（只发现不写盘）。命令只收单台 machineId，
-     scope='all' 时对全部在线机 fan-out（allSettled 容部分失败）；rootsStr 分号串 split；
-     发现写库后 reloadCache 刷新 window.UE_PROJECTS。 */
-  const runDiscover = (s, scope, rootsStr) => {
-    const roots = (rootsStr || '').split(';').map((r) => r.trim()).filter(Boolean);
-    if (!roots.length) return;
-    const targets = scope === 'all'
-      ? RENDER_NODES.filter((n) => n.status !== 'offline').map((n) => n.machineId)
-      : [CX.node(scope) ? CX.node(scope).machineId : null].filter((x) => x != null);
-    if (!targets.length) return;
-    const tgtLabel = scope === 'all' ? targets.length + ' 台在线机' : (CX.node(scope) || {}).host;
-    /* 返回 settle 后的 promise（成功/失败都 resolve）——cacheDdcPak.tsx 借此在扫描落地后
-       触发一次缩略图/mtime 重新探测；本页自身的调用方不消费返回值，加 return 不影响它们。 */
-    return s.runCmd({ domain: 'project', action: 'discover', target: tgtLabel, chan: 'ssh', note: '远程扫描 UE 工程（.uproject）' },
-      () => Promise.allSettled(targets.map((mid) => discoverProjects(mid, roots, null))).then((rs) => {
-        const ok = rs.filter((r) => r.status === 'fulfilled');
-        if (!ok.length) throw new Error('全部目标扫描失败');
-        const found = ok.reduce((a, r) => a + (Array.isArray(r.value) ? r.value.length : 0), 0);
-        return { found, failed: rs.length - ok.length };
-      }),
-      { okMsg: (r) => '发现 ' + r.found + ' 个工程位置' + (r.failed ? ('（' + r.failed + ' 台失败）') : '') })
-      .then(() => s.reloadCache(), () => {});
-  };
 
   /* generate_ddc_pak（流式）：源机取工程 primary（检查器无 src 选择器）；invoke 的
      ExecutionLocation='remote' 是执行位置（远端源机 vs 操作员本机），与工程的缓存路由（zen/legacy_pak）
@@ -976,9 +865,8 @@ import { deleteShare as deleteShareCmd, teardownShare, discoverProjects, createS
     return null;
   }
 
-  /* window.VOLO_CACHE_DDC_PAK（cacheDdcPak.tsx）复用这些 DDC 域共享 helper，
-     避免在新页面里重新实现流式进度归约 / 源机选取等已验证过的逻辑。 */
-  window.VOLO_CACHE_DDC = { ddc, detail, gate, projRow, scopeOpts, runDiscover, genPak, pickSrc, humanBytes, batchReduce, openFolder };
+  /* DDC 域导出：生成/分发/行组件。扫描类 helper 由各页直引 cacheProjectScan。 */
+  window.VOLO_CACHE_DDC = { ddc, detail, projRow, genPak, batchReduce };
 })();
 
 export {};

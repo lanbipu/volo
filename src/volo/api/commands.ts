@@ -248,7 +248,7 @@ export const removeOpenDirShare = (hostMachineId: number, shareName: string, cli
 export const listProjects = () => call<ProjectSummary[]>("list_projects");
 // ✅ wired: loadProjects 每工程拉 location → machines[] / root / last
 export const listProjectLocations = (projectId: number) => call<ProjectLocation[]>("list_project_locations", { projectId });
-// ✅ wired: cacheDdc scanProjects/scanPso → discoverProjects（scope=all fan-out）+ reloadCache
+// ✅ wired: cacheProjectScan.runDiscover → discoverProjects（scope=all fan-out）+ reloadCache
 export const discoverProjects = (machineId: number, searchRoots: string[], operatorCredentialAlias?: string | null) =>
   call<DiscoveryResult[]>("discover_projects", { machineId, searchRoots, operatorCredentialAlias: operatorCredentialAlias ?? null });
 // 📝 no-ui: 无手动设工程位置 UI

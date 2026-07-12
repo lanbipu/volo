@@ -4,15 +4,17 @@
    原「Dashboard | 设置」两个子页合并为一页，左右双栏：
      · 左栏「预跑就绪状态」—— 只显示已预跑并验证过的工程（hero + 节点色条 + 工程卡片/节点药丸），
        不再逐一铺开每个工程×节点的矩阵/驱动缓存/告警/巡检细节卡片。
-     · 右栏「工程扫描与预跑」—— 完全借鉴 DDC PAK 页的「工程扫描与生成」形式：扫描范围 +
-       多个可编辑搜索根目录（逐级路径提示 + 常用地址收藏）+ 列表工具条（全选/搜索/显示-排序-筛选/
-       显示比例）+ 列表/文件夹/按机器三视图 + 平铺卡片/列表行；点工程打开「工程预跑设置」模态。
+     · 右栏「工程扫描与预跑」—— UI/板块设置借鉴 DDC PAK「工程扫描与生成」，但扫描控制面独立：
+       走 cacheProjectScan.runDiscover（不经 window.VOLO_CACHE_DDC），自有搜索根/收藏
+       （volo.psoFavRoots）；扫描范围 + 多个可编辑搜索根目录 + 列表工具条 + 三视图；
+       点工程打开「工程预跑设置」模态。
    检查器不再承载任何内容（同 DDC PAK 页的处理），只给说明性空状态。
 
    心智模型不变：绿灯是实测出来的 · 绿灯会过期 · 预跑无人值守。禁止官方 PSO 指标 / 覆盖率百分比。
 
    真实数据源映射（对应设计稿 mock）：
      PNODES/PPROJ  → window.RENDER_NODES(过滤 roleKey==='render') / window.UE_PROJECTS
+                     （集群工程清单是共享资源；PSO 与 DDC PAK 都能独立发起扫描并刷新它）
      GL_SEED       → list_pso_status（PsoStatusCell，ok/degraded/none 三态 + invalidation_reasons）
                       按工程 fan-out 存 s.psoStatusByProject；四态由 glOf() 在 3 态基础上结合节点
                       在线态 + 失效原因分类现算（node_rebooted-only → 需复验，其余原因 → 已失效）
@@ -21,7 +23,7 @@
      HIST_SEED     → list_pso_warmup_runs 按工程 fan-out 存 s.psoRunsByProject，跨工程合并时间倒序
      CFG_SEED      → get/set_pso_project_settings 按工程持久化（pso_project_settings 表）
      NDC_ASSETS    → discover_ndisplay_assets（SSH 递归扫 .ndisplay，打开设置模态时按需触发）
-     常用地址收藏   → 纯前端 localStorage（volo.psoFavRoots），照抄 DDC PAK 页同款方案，无需后端
+     常用地址收藏   → 纯前端 localStorage（volo.psoFavRoots），与 DDC PAK 的 volo.pakFavRoots 独立
 
    遍历引擎（RC WebSocket 驱动舞台扫场 + 收敛判定）设计稿标「只读」，但 TraversalRequest.map_path
    是必填才能启用——设计稿没给这个字段留输入框，本次移植沿用此前在「设置 · 预跑范围」组已补的
@@ -39,6 +41,9 @@ import {
   listDriverCacheSnapshots, getPsoProjectSettings, setPsoProjectSettings,
   discoverNdisplayAssets, listRemoteDirectories,
 } from "../api/commands";
+import {
+  humanBytes, pickSrc, scopeOpts, runDiscover, openFolder, clusterGate,
+} from "./cacheProjectScan";
 
 (function () {
   const { Button } = window.Spectrum2DesignSystem_b6d1b3;
@@ -46,9 +51,6 @@ import {
   const h = React.createElement;
   const CX = window.VOLO_CX;
   const Selector = window.Selector;
-  /* 惰性引用 window.VOLO_CACHE_DDC——本文件与 cacheDdc.tsx 都在 index.tsx 里 import，模块级顶层
-     不能假定加载顺序；延到调用时才取，避免顶层 const 捕获到 undefined。 */
-  const humanBytes = (b) => window.VOLO_CACHE_DDC.humanBytes(b);
 
   /* =================== 真实数据源 helper（每次渲染直读全局，跟随 reloadCache 自动刷新）=== */
   const PNODES = () => (window.RENDER_NODES || []).filter((n) => n.roleKey === 'render');
@@ -564,7 +566,7 @@ import {
   }
 
   /* =========================================================================
-     右栏 · 工程扫描与预跑（1:1 借鉴 DDC PAK「工程扫描与生成」，见 cacheDdcPak.tsx）
+     右栏 · 工程扫描与预跑（UI 借鉴 DDC PAK；扫描走 cacheProjectScan，不经 VOLO_CACHE_DDC）
      ========================================================================= */
   const VIEW_OPTS = [
     { id: 'flat', label: '列表', icon: 'list', hint: '平铺矩形模块' },
@@ -576,7 +578,7 @@ import {
   function ScanPanel({ s, sel, setSel, openSettings, onPrerun, run }) {
     const [scope, setScope] = useState('all');
     const ridRef = useRef(0);
-    const [roots, setRoots] = useState(() => [{ id: ++ridRef.current, val: 'D:\\Projects' }, { id: ++ridRef.current, val: 'E:\\UEProjects' }]);
+    const [roots, setRoots] = useState(() => [{ id: ++ridRef.current, val: 'D:\\Unreal Projects' }]);
     const [rootDraft, setRootDraft] = useState('');
     /* 逐级路径提示：当前展开的字段（'add' 或某行 id）+ 高亮项 + 真实查询到的目录项（按
        machineId+parentPath 缓存，避免同一目录反复发起 SSH 往返） */
@@ -739,12 +741,14 @@ import {
     /* gate 必须在【全部】Hooks 之后才能条件 return——否则 reloadCache 让 s.cacheLoading 翻转时
        两次渲染的 Hook 数量不一致，React 抛 "Rendered fewer hooks than expected"（同
        cacheDdcPak.tsx 的既有注释同一坑）。 */
-    const g = window.VOLO_CACHE_DDC.gate(s); if (g) return g;
+    const g = clusterGate(s, '集群里还没有机器 — 先在「集群总览」扫描添加机器，再做 PSO 预跑'); if (g) return g;
 
     const doScan = () => {
       setScanning(true);
-      const scanned = window.VOLO_CACHE_DDC.runDiscover(s, scope, rootsStr);
-      (scanned || Promise.resolve()).finally(() => { setScanning(false); setLastScan(new Date()); });
+      const scanned = runDiscover(s, scope, rootsStr);
+      if (!scanned) { setScanning(false); setLastScan(new Date()); return; }
+      scanned.finally(() => { setScanning(false); setLastScan(new Date()); });
+      scanned.then(() => { refreshAll(s).catch(() => {}); }, () => {});
     };
 
     /* ---- 过滤 / 排序 / 分组 ---- */
@@ -787,7 +791,7 @@ import {
       const cc = cfgComplete(settingsOf(s, p.id));
       const readyTone = rd.tot === 0 ? 'neutral' : rd.ok === rd.tot ? 'positive' : rd.ok === 0 ? 'negative' : 'notice';
       const selected = sel.includes(p.id);
-      const src = window.VOLO_CACHE_DDC.pickSrc(p);
+      const src = pickSrc(p);
       return h('div', { key: p.id, className: 'proj-row' + (selected ? ' on' : ''), onClick: () => openSettings(p) },
         h('span', { className: 'proj-mck' + (selected ? ' on' : ''), title: '选入批量预跑',
             onClick: (e) => { e.stopPropagation(); toggleSel(p); } }, selected ? h(Icon, { name: 'check', size: 12 }) : null),
@@ -795,7 +799,7 @@ import {
         h('div', { className: 'proj-main' },
           h('div', { className: 'proj-name' }, p.name),
           h('button', { type: 'button', className: 'proj-sub proj-sub-open mono', title: '在文件资源管理器中打开工程文件夹',
-              onClick: (e) => { e.stopPropagation(); window.VOLO_CACHE_DDC.openFolder(s, p.root, p.name, src); } },
+              onClick: (e) => { e.stopPropagation(); openFolder(s, p.root, p.name, src, 'pso'); } },
             h('span', { className: 'proj-sub-tx' }, p.root + '\\' + p.uproject),
             h('span', { className: 'proj-sub-ico' }, h(Icon, { name: 'folder', size: 12 })))),
         h('div', { className: 'proj-tags' },
@@ -809,7 +813,7 @@ import {
       const rd = projReady(s, p);
       const cc = cfgComplete(settingsOf(s, p.id));
       const selected = sel.includes(p.id);
-      const src = window.VOLO_CACHE_DDC.pickSrc(p);
+      const src = pickSrc(p);
       return h('div', { key: p.id, className: 'proj-tile' + (selected ? ' on' : ''), title: p.name + '  ·  ' + p.root + '\\' + p.uproject, onClick: () => openSettings(p) },
         h('span', { className: 'proj-tile-mck' + (selected ? ' on' : ''), title: '选入批量预跑',
             onClick: (e) => { e.stopPropagation(); toggleSel(p); } }, selected ? h(Icon, { name: 'check', size: 11 }) : null),
@@ -823,7 +827,7 @@ import {
           h('div', { className: 'proj-tile-nrow' },
             h('div', { className: 'proj-tile-sub' }, 'UE ' + p.ue + ' · 就绪 ' + rd.ok + '/' + rd.tot),
             h('button', { type: 'button', className: 'proj-tile-open', title: '打开工程文件夹',
-                onClick: (e) => { e.stopPropagation(); window.VOLO_CACHE_DDC.openFolder(s, p.root, p.name, src); } }, h(Icon, { name: 'folder', size: 14 })))));
+                onClick: (e) => { e.stopPropagation(); openFolder(s, p.root, p.name, src, 'pso'); } }, h(Icon, { name: 'folder', size: 14 })))));
     };
 
     const groupBlock = (key, icon, title, items) => h('div', { key, className: 'pak-group' },
@@ -938,7 +942,7 @@ import {
       h('div', { className: 'pak2-b' },
         h('div', { className: 'pak-controls' },
           h('div', { className: 'pak-ctl scan' }, h('label', null, '扫描范围'),
-            h(Selector, { kpre: '范围', value: scope, options: window.VOLO_CACHE_DDC.scopeOpts(), width: 176, align: 'left', onChange: setScope })),
+            h(Selector, { kpre: '范围', value: scope, options: scopeOpts(), width: 176, align: 'left', onChange: setScope })),
           h('div', { className: 'pak-ctl' }, h('label', { style: { visibility: 'hidden' } }, '扫描'),
             h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: scanning ? 'sync' : 'search', size: 14 }), isDisabled: scanning, onPress: doScan }, scanning ? '扫描中…' : '扫描'))),
         h('div', { className: 'pak-roots' },
