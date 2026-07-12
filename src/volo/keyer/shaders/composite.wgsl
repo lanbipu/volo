@@ -1,4 +1,4 @@
-// 视图输出：0=结果叠棋盘格 1=matte 2=源 3=源|结果 wipe 对比。
+// 视图输出：0=结果 1=matte 2=源 3=wipe 4=plate 5=raw matte（clip 前）。
 // fgTex = despill 后 premultiplied 前景（Task 6 起）。
 struct Params { /* 同 key.wgsl，共用同一 uniform buffer */
   keyColor: vec3f, balance: f32, blackClip: f32, whiteClip: f32, softness: f32, shrink: f32,
@@ -9,7 +9,9 @@ struct Params { /* 同 key.wgsl，共用同一 uniform buffer */
 @group(0) @binding(1) var srcTex: texture_2d<f32>;
 @group(0) @binding(2) var matteTex: texture_2d<f32>;
 @group(0) @binding(3) var fgTex: texture_2d<f32>;    // premultiplied（Task 6 起为 despill 后）
-@group(0) @binding(4) var<uniform> P: Params;
+@group(0) @binding(4) var plateTex: texture_2d<f32>;
+@group(0) @binding(5) var matteRaw: texture_2d<f32>;
+@group(0) @binding(6) var<uniform> P: Params;
 
 fn checker(uv: vec2f) -> vec3f {
   let g = floor(uv * vec2f(48.0, 27.0));
@@ -24,6 +26,8 @@ fn checker(uv: vec2f) -> vec3f {
   if (P.viewMode < 0.5)      { outc = fg + checker(uv) * (1.0 - a); }
   else if (P.viewMode < 1.5) { outc = vec3f(a); }
   else if (P.viewMode < 2.5) { outc = src; }
-  else { outc = select(fg + checker(uv) * (1.0 - a), src, uv.x < P.wipe); }
+  else if (P.viewMode < 3.5) { outc = select(fg + checker(uv) * (1.0 - a), src, uv.x < P.wipe); }
+  else if (P.viewMode < 4.5) { outc = textureSampleLevel(plateTex, samp, uv, 0.0).rgb; }
+  else { outc = vec3f(textureSampleLevel(matteRaw, samp, uv, 0.0).g); }
   return vec4f(outc, 1.0);
 }

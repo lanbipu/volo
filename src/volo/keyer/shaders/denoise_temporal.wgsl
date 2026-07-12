@@ -13,7 +13,9 @@ struct Params {
 @fragment fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
   let cur = textureSampleLevel(curTex, samp, uv, 0.0).rgb;
   let hist = textureSampleLevel(histTex, samp, uv, 0.0).rgb;
-  let motion = smoothstep(0.015, 0.10, distance(cur, hist));
+  let y = dot(cur, vec3f(0.2126, 0.7152, 0.0722));
+  let relativeDist = distance(cur, hist) / (y + 0.05);
+  let motion = smoothstep(0.04, 0.22, relativeDist);
   let blend = max(1.0 - P.denoise * 0.9, motion);   // denoise=0 → 直通
   let outc = mix(hist, cur, blend);
   return vec4f(outc, motion);   // a 通道带出 motion（写入 hist[par]，下一帧作历史）

@@ -1,5 +1,5 @@
-// 核心色差 key（Vlahos 系）+ plate 均衡化（IBK 系）。
-// HLSL 移植：Params 即 cbuffer；plateMode==0 时 plateTex 绑白噪声占位不采样分支。
+// Key v2：Vlahos 色差 + Clean-Plate-First 逐像素归一，输出 r=linear-clipped soft、g=raw alpha。
+// HLSL/Unreal 移植：rg16f 对应 PF_G16R16F；Params 即 cbuffer；plate 可疑处回退 keyColor。
 struct Params {
   keyColor: vec3f, balance: f32,
   blackClip: f32, whiteClip: f32, softness: f32, shrink: f32,
@@ -19,11 +19,15 @@ fn cdiff(c: vec3f, balance: f32) -> f32 {   // 色差：绿主导度
 @fragment fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
   let src = textureSampleLevel(srcTex, samp, uv, 0.0).rgb;
   let dS = cdiff(src, P.balance);
-  // 均衡化参考：plate 模式用逐像素 plate 色差（打光不匀被除掉），否则用全局 keyColor
-  var dRef = cdiff(P.keyColor, P.balance);
-  if (P.plateMode > 0.5) { dRef = cdiff(textureSampleLevel(plateTex, samp, uv, 0.0).rgb, P.balance); }
-  var a = 1.0 - clamp(dS / max(dRef, 1e-4), 0.0, 1.0);
-  a = smoothstep(P.blackClip, P.whiteClip, a);   // 黑白位裁剪
-  a = pow(a, P.softness);                        // 软度曲线
-  return vec4f(a, 0.0, 0.0, 1.0);
+  let dKey = cdiff(P.keyColor, P.balance);
+  var dRef = dKey;
+  if (P.plateMode > 0.5) {
+    let dPlate = cdiff(textureSampleLevel(plateTex, samp, uv, 0.0).rgb, P.balance);
+    let confidence = clamp((dPlate - 0.15 * dKey) / max(0.35 * dKey, 1e-4), 0.0, 1.0);
+    dRef = mix(dKey, dPlate, confidence);
+  }
+  let raw = 1.0 - clamp(dS / max(dRef, 1e-4), 0.0, 1.0);
+  var soft = clamp((raw - P.blackClip) / max(P.whiteClip - P.blackClip, 1e-4), 0.0, 1.0);
+  soft = pow(soft, P.softness);                  // softness 仅作 gamma，不再改变 clip 线性度
+  return vec4f(soft, raw, 0.0, 1.0);
 }

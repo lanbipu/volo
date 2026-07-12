@@ -1,120 +1,124 @@
-# Keyer Lab 使用手册（键控模块 + 测试素材 + 验证方法）
+# Keyer Lab v2 使用与验证
 
-> 模块代码：`src/volo/keyer/` + `src/volo/pages/toolsKeyer.tsx`（分支 feat/keyer-lab）。
-> 算法/移植规格见 `docs/architecture/chroma-keyer-spec.md`，本档只讲**怎么用、怎么验**。
-> 运行环境：原生 app（`pnpm tauri dev`）。浏览器打开 devUrl 会被 `isTauri()` gate 拦下；且模块要求 WebGPU，探测失败页面会显示红色 InlineAlert 并停用一切操作。
+> Module: `src/volo/keyer/` + `src/volo/pages/toolsKeyer.tsx`
+> Algorithm/porting truth source: `docs/architecture/chroma-keyer-spec.md`
 
-## 一、模块入口
+## 1. Basic workflow
 
-左侧导航 **键控** 类目下两个页面：
+1. Open a PNG/JPEG or H.264/HEVC/ProRes file.
+2. Click a clean screen pixel to sample `keyColor`, or press **自动 Key**.
+3. Inspect **结果 / matte / 源 / 对比 / plate / raw matte**.
+4. Tune only what the diagnostic view shows is necessary; export produces a straight-alpha PNG from the internal premultiplied foreground.
 
-| 页面 | 用途 |
+**自动 Key** performs screen sampling and plate estimation. Screen sampling scans a 16×16 grid of the current frame in one readback and picks the block with the highest green dominance (`d = g − mix(r, b, 0.5)`) as the key color, so it no longer assumes the top-left corner is screen; it falls back to the fixed `(10,10)` sample only when no block is green-dominant. For a still it selects an estimated static plate (`plateMode=1`); for video it enables per-frame dynamic plate (`plateMode=2`). Dynamic mode freezes its background model when visible-screen coverage is too low. (The benchmark page keeps the fixed `(10,10)` sample so its numbers stay comparable to the reference.)
+
+## 2. Plate controls
+
+- **加载 plate**: use a clean frame from the same view; this is the highest-confidence fixed-camera path.
+- **估计 plate**: one-shot half-resolution pull-push from the current frame.
+- **自动 Key** on video: per-frame pull-push + coverage-gated EMA.
+- **清除**: return to sampled Color Key (`plateMode=0`).
+
+The status Tag distinguishes `plate · 已加载`, `plate · 已估计`, and `plate · 动态`. The **plate** diagnostic view must track camera/image motion in dynamic mode; **raw matte** shows pre-clip alpha and is the quickest way to diagnose bad screen normalization.
+
+## 3. v2 knobs
+
+| knob | practical use | default |
+|---|---|---:|
+| 色差平衡 | shift Vlahos R/B weighting | 0.5 |
+| 黑位 / 白位 | linear matte clip; do not use as an S-curve | 0.03 / 0.95 |
+| 边缘软度 | gamma after linear clip | 1.0 |
+| 收缩 | limited erode/dilate mix | 0 |
+| 羽化 | fixed-1px Gaussian amount, range 0–1.5 | 0 |
+| 去孤点 | optional 3x3 median blend; keep 0 for fine hair | 0 |
+| despill 强度 / 平衡 | residual premult spill cleanup after plate un-mix | 0.8 / 0.5 |
+| 降噪 | temporal + luma-guided chroma denoise | 0.4 |
+| matte 稳定 | neighborhood-clamped history | 0.5 |
+
+`去孤点` replaces v1's always-on median. Raising it can remove isolated compression defects, but also removes one-pixel hair; use the matte/raw views at 100–400% before changing it.
+
+## 4. Test set v2
+
+Generate deterministic fixtures (seed 7):
+
+```bash
+python3 scripts/keyer/gen_testset.py --out testdata/keyer/testset
+```
+
+All composites are formed in scene-linear light and then encoded to sRGB. Every case has canonical `.gt.png` and `.fgpre.png`; multi-frame cases also have per-frame GT.
+
+| case | target |
 |---|---|
-| **抠像实验台**（keyer_lab） | 交互调参、实时预览、性能观测、导出抠像结果 |
-| **基准测试**（keyer_bench） | 跑 6 case 客观指标（MAD / 梯度误差），导出 report JSON 做回归判定 |
+| `case01_disc` | hard-edge sanity |
+| `case02_hair` | one-pixel/partial-alpha hair |
+| `case03_bottle` | neutral transparent gradient |
+| `case04_uneven` | hair on spatially uneven screen |
+| `case05_noise` | eight-frame sensor-noise stability |
+| `case06_spill` | spill on uneven screen |
+| `case07_motion` | eight-frame fast motion + shutter blur |
+| `case08_blonde` | blonde hair with positive foreground color difference |
+| `case09_glass` | colored semi-transparent glass |
+| `case10_pan` | moving screen features; no supplied plate; dynamic mode |
+| `case11_chroma420` | simulated 4:2:0 chroma down/up sampling |
+| `case12_greenish` | same-color foreground guard gate |
 
-## 二、抠像实验台
+`manifest.json` controls frame count, whether a plate is supplied, dynamic mode, and per-case parameter overrides. The bench must not infer those choices from aggregate behavior.
 
-### 2.1 基本流程
-
-1. **打开素材** —— 顶栏「打开素材」选择图片（PNG/JPEG）或视频（H.264 / HEVC / ProRes，见素材支持矩阵）。视频加载后出现「播放 / 暂停」按钮，按 rVFC 逐帧驱动管线。
-2. **采样主色** —— 直接**点击画布**上的幕布区域，取样点 3×3 均值作为 keyColor（sRGB→线性）。右侧参数面板也有 hex 输入框（`#26a626`）手动兜底。
-3. **调参** —— 右侧 Inspector 10 个旋钮（黑位 / 白位 / 边缘软度 / 收缩 / 羽化 / despill 强度 / despill 平衡 / 降噪 / matte 稳定 / 色差平衡），语义与范围见 spec ②的 Params 表。「重置默认」一键回到 DEFAULTS。
-4. **看结果** —— 画布上方视图分段：**结果 / matte / 源 / 对比**。对比模式出现 wipe 拖杆，左源右结果。
-5. **导出** —— 「导出」输出 straight-alpha PNG（前景 un-premultiply + matte），Tauri WKWebView 下直接落 `~/Downloads`。
-
-### 2.2 plate（不均匀幕补偿）
-
-顶栏三个按钮：
-
-- **加载 plate**：选一张与素材同机位的「净幕板」（无前景的幕布照片），key pass 逐像素用 plate 色差做参考，打光不匀被除掉。
-- **估计 plate**：没有净幕板时，从当前帧用 pull-push 补洞估计一张（前景区域由邻域幕色填充）。对静帧效果好；前景占比过大时估计质量下降。
-- **清除**：回到全局 keyColor 模式。
-
-状态 Tag 显示 `plate · 已加载` / `plate · 已估计`。
-
-### 2.3 HUD 与性能
-
-画布角落 HUD 显示 `xx.x fps · x.xx ms`（EMA 平滑，每 10 帧刷新）。1080p60 素材验收线 **≥58fps**；若掉到恰好 ~30fps，通常是单帧超 16.6ms 被 vsync 量化——排查思路见 spec ⑥性能教训。
-
-### 2.4 预设
-
-Inspector 底部可将当前整组参数存为命名预设（localStorage `volo-keyer-presets`），「加载」一键切换。换素材类型（发丝 / 玻璃 / 均匀幕）时用。
-
-## 三、测试素材（`testdata/keyer/`，git 已 ignore）
-
-本地生成的合成素材，**自带真值**，与基准基线同源（seed=7）。丢失可随时重新生成。
-
-### 3.1 静帧测试集 `testset/`（生成器 `scripts/keyer/gen_testset.py`）
+## 5. Reference and objective metrics
 
 ```bash
-python3 scripts/keyer/gen_testset.py --out testdata/keyer/testset   # seed 默认 7，勿改（改了基线失效）
+python3 scripts/keyer/ref_pipeline.py --mode v1 --report scripts/keyer/report-v1-algo-ref.json
+python3 scripts/keyer/ref_pipeline.py --mode v2 --report scripts/keyer/report-v2-ref.json
+python3 scripts/keyer/check_report.py scripts/keyer/report-v2-ref.json scripts/keyer/baseline.json
 ```
 
-6 个 case，每个 case 三类文件：
+The v2 gate checks every case independently for:
 
-| 文件 | 内容 |
-|---|---|
-| `caseNN_xxx.input.png`（case05 为 `_f00..07` 8 帧） | 合成输入帧 `fg·a + screen·(1−a)` |
-| `caseNN_xxx.gt.png` | 真值 matte（灰度 = alpha） |
-| `caseNN_xxx.plate.png` | 净幕板（可喂「加载 plate」） |
+- alpha MAD;
+- Sobel-like gradient error;
+- Edge-band SAD;
+- premultiplied scene-linear foreground error (`fgErr`);
+- Background Residue;
+- Core Leakage;
+- alpha flicker after subtracting intentional GT frame change.
 
-case 难点覆盖：`disc` 硬边基线 / `hair` 600 根发丝 / `bottle` 半透明渐变+高光 / `uneven` 不均匀幕(径向增益+皱褶) / `noise` 8 帧传感器噪声序列(测时域降噪) / `spill` 边缘溢绿。
+`baseline.json` now records the native **GPU** bench (M3 Max WKWebView WebGPU) and says so in `source`. It was ref-calibrated: MAD/grad agree with the NumPy reference within `check_report` tolerance on all 12 cases; the near-zero relative gaps on tiny-value cases are the documented fp16/bilinear/8-bit-PNG floor, not divergence.
 
-### 3.2 动态视频（生成器 `testdata/keyer/gen_video.py`）
+In development builds, **自动加载测试集** uses the generated manifest and bypasses the file dialog. Manual loading still accepts selecting all fixture PNGs. Bench image decoding always sets `colorSpaceConversion: "none"`.
 
-10 秒 1080p60 合成场景，把 6 个静帧 case 的难点揉进一条：摆动人形 + 800 根摆动发丝 + 半透明摆动瓶 + 不均匀幕 + 噪声 + 溢绿。
+## 6. Real-footage validation
 
-| 文件 | 用途 |
-|---|---|
-| `greenscreen_1080p60_h264.mp4` | 主力：性能实测 + 交互调参 |
-| `greenscreen_1080p60_hevc10.mp4`（hvc1 10bit） | 解码矩阵复测（Windows WebView2 上线前必测） |
-| `greenscreen_1080p60_prores.mov`（422 HQ，421MB） | 同上；不用可删 |
+Synthetic GT is necessary but not sufficient. Validate at normal playback speed and at 400% on at least:
 
-重新生成 / 改参数（时长、分辨率在脚本头部常量）：
+- backlit fine hair against both bright and dark replacement backgrounds;
+- colored glass/fabric with genuinely partial transmission;
+- fast limbs/hair with the production shutter angle;
+- a camera pan with uneven, marked screen texture.
+
+Check result and matte together: `bgResidue` should appear as no colored checker contamination; core must remain solid; motion must not trail; plate view must follow the current frame. Tiny-alpha straight RGB noise is expected, so judge edge color in premultiplied composition, not by un-premultiplying a single hair pixel.
+
+## 7. Video fixture
+
+The v2 H.264 fixture is regenerated from a scene-linear composite:
 
 ```bash
-python3 testdata/keyer/gen_video.py | ffmpeg -y -f rawvideo -pix_fmt rgb24 -s 1920x1080 -r 60 -i - \
-  -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p testdata/keyer/greenscreen_1080p60_h264.mp4
+python3 scripts/keyer/gen_video.py | ffmpeg -y \
+  -f rawvideo -pix_fmt rgb24 -s 1920x1080 -r 60 -i - \
+  -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p \
+  testdata/keyer/greenscreen_1080p60_h264.mp4
 ```
 
-## 四、验证方法
+HEVC/ProRes files from v1 are intentionally not regenerated and must be labelled as v1-physics codec fixtures.
 
-### 4.1 主观验收（抠像实验台）
+Performance acceptance remains native-app 1080p60 HUD `>=58fps`. If dynamic plate misses budget, degrade in this order: update plate every other frame, then keep conditional refine disabled. Never reintroduce per-frame texture allocation.
 
-用 h264 视频走一遍 §2.1 流程（点幕布采样即可，默认参数就应可用），检查：
+Measured (M3 Max, WKWebView WebGPU dev build): static/estimated plate hits **58.6 fps (17.1 ms)**; per-frame **dynamic** plate settles at **~48–54 fps (18–21 ms)** with brief dips to ~30 fps while the plate EMA re-converges after `自动 Key`. The dynamic per-frame pull-push (~24 small passes) is the ~2–3 ms that pushes the dynamic case just over the 16.7 ms budget, so it is the first degradation lever (update every other frame); note that changing that cadence also shifts `case10_pan`, so keep the NumPy reference in sync when applying it. This is a dev-lab figure — the production real-time host is UE (native Metal/D3D), where per-pass overhead is far lower.
 
-- **matte 视图**：纯幕区应为纯黑（点击画布任意幕区，底部像素读数 α≤0.01；实测 0.000），人物核心纯白，发丝呈灰度过渡（不是硬边也不是整体发灰——整体发灰是历史 YCoCg bug 的症状）。
-- **结果视图**：checker 背景上边缘无绿边（despill 生效）、发暗可调 lumaRestore；半透明瓶能透出 checker。
-- **对比视图**：拖 wipe 杆目检边缘。
-- **HUD**：播放中稳定 ≥58fps。
-- **plate 对照**：`case04_uneven.input.png` 载入后先不加 plate（暗角处 matte 发灰），再「加载 plate」喂 `case04_uneven.plate.png`，暗角应立刻变干净——这是 plate 通路的最直观验证。
-
-### 4.2 客观回归（基准测试页）
-
-1. 「加载测试集」→ 文件对话框进入 `testdata/keyer/testset/`，**Cmd+A 全选**所有 PNG（文件名正则匹配分组，manifest.json 会被忽略，不用剔除）。
-2. 自动逐 case 跑：复位默认参数 → 喂 plate → 左上角 (10,10) 自动采样 → 单帧 case 渲染 8 次收敛时域项 / 多帧 case 顺序喂 → 回读 matte 与 GT 算 MAD + Sobel 梯度误差，表格实时出行。
-3. 「导出报告」→ `~/Downloads/keyer-report.json`。
-4. 回归判定：
+## 8. Build verification
 
 ```bash
-python3 scripts/keyer/check_report.py ~/Downloads/keyer-report.json scripts/keyer/baseline.json
-# 输出 ΔMAD / Δgrad；MAD 恶化 >0.002 或 grad >0.004 → exit 1
+pnpm exec tsc --noEmit
+pnpm exec vite build
 ```
 
-基线数值（aggregate MAD 0.0122 / grad 0.0225，逐 case 见 spec ⑥）。**改动任何 WGSL / params 打包 / 引擎编排后，必须复跑此链路且 exit 0。**
-
-### 4.3 构建验证
-
-```bash
-pnpm exec tsc --noEmit && pnpm exec vite build   # 零错误
-```
-
-（worktree 内 vite 需直调主仓 `node_modules/.bin/vite`，除非该 worktree 已 `pnpm install`。）
-
-## 五、已知边界速查
-
-- 摄像机实时通路是阶段二，当前素材入口仅文件。
-- 镜面反射抠成透明，不承诺镜内虚拟反射。
-- 静帧导出时 matteStab 未收敛会轻微压低半透明 alpha：导出前多渲染几次或临时把「matte 稳定」归零。
-- Windows（WebView2）的解码矩阵与性能均未实测。
+When a worktree has no local `node_modules`, use the main repository binaries. A sandbox that cannot write the shared Vite `.vite-temp` may use `vite build --configLoader runner`; this changes config loading only, not the production bundle.

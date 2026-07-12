@@ -3,11 +3,10 @@ import keyWgsl from "./shaders/key.wgsl?raw";
 import compositeWgsl from "./shaders/composite.wgsl?raw";
 import plateMaskWgsl from "./shaders/plate_mask.wgsl?raw";
 import plateFillWgsl from "./shaders/plate_fill.wgsl?raw";
-import edgePreWgsl from "./shaders/edge_pre.wgsl?raw";
+import plateEmaWgsl from "./shaders/plate_ema.wgsl?raw";
 import denoiseTemporalWgsl from "./shaders/denoise_temporal.wgsl?raw";
 import denoiseSpatialWgsl from "./shaders/denoise_spatial.wgsl?raw";
 import mattePostWgsl from "./shaders/matte_post.wgsl?raw";
-import edgeExtendWgsl from "./shaders/edge_extend.wgsl?raw";
 import despillWgsl from "./shaders/despill.wgsl?raw";
 import type { GpuProbeOk } from "./gpu";
 import { DEFAULTS, packParams, type KeyerParams } from "./params";
@@ -48,21 +47,29 @@ export class KeyerEngine {
   private srcTex: GPUTexture | null = null;
   private matteTex: GPUTexture | null = null;
   private plateTex: GPUTexture;                 // 1×1 占位（plateMode=0 时绑定）
-  private plateFull: GPUTexture | null = null;  // 加载 / 估计出的全幅 plate
+  private plateFull: GPUTexture | null = null;  // 估计 / 动态 plate（预分配全幅）
+  private loadedPlate: GPUTexture | null = null;
   private paramBuf: GPUBuffer;
   private params: KeyerParams = cloneParams(DEFAULTS);
   private w = 0;
   private h = 0;
   private keyPass: Pass | null = null;
   private compositePass: Pass | null = null;
-  private edgeHPass: Pass | null = null;     // qTexA → qTexB
-  private edgeVPass: Pass | null = null;     // qTexB → qTexA（= coreTex）
   private despillPass: Pass | null = null;   // → fgTex（全分辨率 premult）
   private fgTex: GPUTexture | null = null;
-  private qTexA: GPUTexture | null = null;
-  private qTexB: GPUTexture | null = null;
-  private dirHBuf: GPUBuffer | null = null;
-  private dirVBuf: GPUBuffer | null = null;
+  private platePyr: GPUTexture[] = [];
+  private plateFill: GPUTexture[] = [];
+  private plateHistory: GPUTexture[] = [];
+  private plateParity = 0;
+  private plateUpdatePending = false;
+  private plateMaskPass: Pass | null = null;
+  private plateDownPasses: Pass[] = [];
+  private plateCoarsePass: Pass | null = null;
+  private plateUpPasses: Pass[] = [];
+  private plateEmaPasses: Pass[] = [];
+  private plateFullPasses: Pass[] = [];
+  private plateDownMode: GPUBuffer | null = null;
+  private plateUpMode: GPUBuffer | null = null;
   private spatialPipeline: GPURenderPipeline | null = null;
   private spatialBinds: GPUBindGroup[] = []; // [p] 读 hist[p]
   private hist: GPUTexture[] = [];           // 时域历史 ping-pong
@@ -147,6 +154,11 @@ export class KeyerEngine {
     });
   }
 
+  private activePlate(): GPUTexture {
+    if (this.params.plateMode > 0.5) return this.loadedPlate ?? this.plateFull ?? this.plateTex;
+    return this.plateTex;
+  }
+
   resize(w: number, h: number): void {
     if (w !== this.w || h !== this.h || !this.srcTex) {
       this.w = w;
@@ -169,7 +181,14 @@ export class KeyerEngine {
   private allocate(): void {
     // 尺寸变化重建：先释放旧纹理，防显存泄漏
     for (const t of [this.srcTex, this.matteTex, this.matteRaw, ...this.mHist, ...this.hist,
-      this.dn, this.fgTex, this.qTexA, this.qTexB]) t?.destroy();
+      this.dn, this.fgTex, this.plateFull, ...this.platePyr, ...this.plateFill, ...this.plateHistory]) t?.destroy();
+    this.platePyr = [];
+    this.plateFill = [];
+    this.plateHistory = [];
+    this.plateDownPasses = [];
+    this.plateUpPasses = [];
+    this.plateEmaPasses = [];
+    this.plateFullPasses = [];
     this.srcTex = this.d.createTexture({
       size: [this.w, this.h],
       format: "rgba8unorm-srgb",
@@ -180,13 +199,14 @@ export class KeyerEngine {
         GPUTextureUsage.RENDER_ATTACHMENT,
     });
     this.matteTex = this.makeTex("r16float");
-    this.matteRaw = this.makeTex("r16float");
+    this.matteRaw = this.makeTex("rg16float");
     this.mHist = [this.makeTex("r16float"), this.makeTex("r16float")];
     this.hist = [this.makeTex("rgba16float"), this.makeTex("rgba16float")];
     this.dn = this.makeTex("rgba16float");
     this.parity = 0;
+    this.plateParity = 0;
 
-    const keyPipeline = this.makePipeline("key", keyWgsl, "r16float");
+    const keyPipeline = this.makePipeline("key", keyWgsl, "rg16float");
     const compositePipeline = this.makePipeline("composite", compositeWgsl, this.fmt);
     const srcView = this.dn.createView();   // 下游一律吃降噪后的 dn
     const matteView = this.matteTex.createView();
@@ -227,78 +247,23 @@ export class KeyerEngine {
       target: this.matteRaw,
       bindGroup: this.makeKeyBind(keyPipeline, srcView),
     };
-    // Despill 链：edge_pre(内联 premult, 1/4 H) → edge V(coreTex=qTexB) → despill(全分辨率 fgTex)
+    // v2 条件评审未收留 edge/core 借色链：直接 Clean Plate un-mix → fgTex。
     this.fgTex = this.makeTex("rgba16float");
-    this.qTexA = this.makeTex("rgba16float", 0.25);
-    this.qTexB = this.makeTex("rgba16float", 0.25);
-    const qw = Math.max(1, (this.w * 0.25) | 0);
-    const qh = Math.max(1, (this.h * 0.25) | 0);
-    const dirBuf = (x: number, y: number) => {
-      const b = this.d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-      this.d.queue.writeBuffer(b, 0, new Float32Array([x, y, 0, 0]));
-      return b;
-    };
-    this.dirHBuf?.destroy(); this.dirVBuf?.destroy();
-    this.dirHBuf = dirBuf(1 / qw, 0);
-    this.dirVBuf = dirBuf(0, 1 / qh);
-
-    const edgePrePipeline = this.makePipeline("edge_pre", edgePreWgsl, "rgba16float");
-    this.edgeHPass = {
-      pipeline: edgePrePipeline,
-      target: this.qTexA,
-      bindGroup: this.d.createBindGroup({
-        layout: edgePrePipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: this.samp },
-          { binding: 1, resource: srcView },
-          { binding: 2, resource: matteView },
-          { binding: 3, resource: { buffer: this.dirHBuf } },
-        ],
-      }),
-    };
-    const edgePipeline = this.makePipeline("edge_extend", edgeExtendWgsl, "rgba16float");
-    this.edgeVPass = {
-      pipeline: edgePipeline,
-      target: this.qTexB,
-      bindGroup: this.d.createBindGroup({
-        layout: edgePipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: this.samp },
-          { binding: 1, resource: this.qTexA.createView() },
-          { binding: 2, resource: { buffer: this.dirVBuf } },
-        ],
-      }),
-    };
     const despillPipeline = this.makePipeline("despill", despillWgsl, "rgba16float");
     this.despillPass = {
       pipeline: despillPipeline,
       target: this.fgTex,
-      bindGroup: this.d.createBindGroup({
-        layout: despillPipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: this.samp },
-          { binding: 1, resource: srcView },
-          { binding: 2, resource: matteView },
-          { binding: 3, resource: this.qTexB!.createView() },
-          { binding: 4, resource: { buffer: this.paramBuf } },
-        ],
-      }),
+      bindGroup: this.makeDespillBind(despillPipeline, srcView, matteView),
     };
 
     this.compositePass = {
       pipeline: compositePipeline,
       target: null,
-      bindGroup: this.d.createBindGroup({
-        layout: compositePipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: this.samp },
-          { binding: 1, resource: srcView },
-          { binding: 2, resource: matteView },
-          { binding: 3, resource: this.fgTex.createView() },
-          { binding: 4, resource: { buffer: this.paramBuf } },
-        ],
-      }),
+      bindGroup: this.makeCompositeBind(compositePipeline, srcView, matteView),
     };
+    this.allocatePlatePipeline();
+    if (this.params.plateMode > 0.5 && !this.loadedPlate) this.plateUpdatePending = true;
+    this.rebindPlate();
     (this.ctx.canvas as HTMLCanvasElement).width = this.w;
     (this.ctx.canvas as HTMLCanvasElement).height = this.h;
   }
@@ -309,22 +274,200 @@ export class KeyerEngine {
       entries: [
         { binding: 0, resource: this.samp },
         { binding: 1, resource: srcView },
-        { binding: 2, resource: (this.plateFull ?? this.plateTex).createView() },
+        { binding: 2, resource: this.activePlate().createView() },
         { binding: 3, resource: { buffer: this.paramBuf } },
       ],
     });
   }
 
+  private makeDespillBind(pipeline: GPURenderPipeline, srcView: GPUTextureView, matteView: GPUTextureView): GPUBindGroup {
+    return this.d.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: this.samp },
+        { binding: 1, resource: srcView },
+        { binding: 2, resource: matteView },
+        { binding: 3, resource: this.activePlate().createView() },
+        { binding: 4, resource: { buffer: this.paramBuf } },
+      ],
+    });
+  }
+
+  private makeCompositeBind(pipeline: GPURenderPipeline, srcView: GPUTextureView, matteView: GPUTextureView): GPUBindGroup {
+    return this.d.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: this.samp },
+        { binding: 1, resource: srcView },
+        { binding: 2, resource: matteView },
+        { binding: 3, resource: this.fgTex!.createView() },
+        { binding: 4, resource: this.activePlate().createView() },
+        { binding: 5, resource: this.matteRaw!.createView() },
+        { binding: 6, resource: { buffer: this.paramBuf } },
+      ],
+    });
+  }
+
   private rebindPlate(): void {
-    if (this.keyPass && this.dn) {
-      this.keyPass.bindGroup = this.makeKeyBind(this.keyPass.pipeline, this.dn.createView());
-    }
+    if (!this.dn || !this.matteTex) return;
+    const srcView = this.dn.createView();
+    const matteView = this.matteTex.createView();
+    if (this.keyPass) this.keyPass.bindGroup = this.makeKeyBind(this.keyPass.pipeline, srcView);
+    if (this.despillPass) this.despillPass.bindGroup = this.makeDespillBind(this.despillPass.pipeline, srcView, matteView);
+    if (this.compositePass) this.compositePass.bindGroup = this.makeCompositeBind(this.compositePass.pipeline, srcView, matteView);
   }
 
   private setPlateMode(mode: number): void {
     const next = cloneParams(this.params);
     next.plateMode = mode;
     this.setParams(next);
+  }
+
+  private allocatePlatePipeline(): void {
+    if (!this.dn || this.w <= 0 || this.h <= 0) return;
+    this.plateFull = this.makeTex("rgba16float");
+    const makeLevel = (w: number, h: number, label: string) => this.d.createTexture({
+      label,
+      size: [Math.max(1, w), Math.max(1, h)],
+      format: "rgba16float",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    });
+    let pw = Math.max(1, this.w >> 1);
+    let ph = Math.max(1, this.h >> 1);
+    while (true) {
+      this.platePyr.push(makeLevel(pw, ph, `plate pyr ${this.platePyr.length}`));
+      this.plateFill.push(makeLevel(pw, ph, `plate fill ${this.plateFill.length}`));
+      if (pw === 1 && ph === 1) break;
+      pw = Math.max(1, pw >> 1);
+      ph = Math.max(1, ph >> 1);
+    }
+    const halfW = Math.max(1, this.w >> 1);
+    const halfH = Math.max(1, this.h >> 1);
+    this.plateHistory = [
+      makeLevel(halfW, halfH, "dynamic plate history 0"),
+      makeLevel(halfW, halfH, "dynamic plate history 1"),
+    ];
+    const modeBuffer = (value: number) => {
+      const buffer = this.d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      this.d.queue.writeBuffer(buffer, 0, new Float32Array([value, 0, 0, 0]));
+      return buffer;
+    };
+    this.plateDownMode?.destroy();
+    this.plateUpMode?.destroy();
+    this.plateDownMode = modeBuffer(0);
+    this.plateUpMode = modeBuffer(1);
+    const maskPipeline = this.makePipeline("plate_mask_half", plateMaskWgsl, "rgba16float");
+    const fillPipeline = this.makePipeline("plate_fill", plateFillWgsl, "rgba16float");
+    const emaPipeline = this.makePipeline("plate_ema", plateEmaWgsl, "rgba16float");
+    this.plateMaskPass = {
+      pipeline: maskPipeline,
+      target: this.platePyr[0],
+      bindGroup: this.d.createBindGroup({
+        layout: maskPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: this.samp },
+          { binding: 1, resource: this.dn.createView() },
+          { binding: 2, resource: { buffer: this.paramBuf } },
+        ],
+      }),
+    };
+    this.plateDownPasses = [];
+    for (let i = 1; i < this.platePyr.length; i++) {
+      this.plateDownPasses.push({
+        pipeline: fillPipeline,
+        target: this.platePyr[i],
+        bindGroup: this.d.createBindGroup({
+          layout: fillPipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: this.samp },
+            { binding: 1, resource: this.platePyr[i - 1].createView() },
+            { binding: 2, resource: this.platePyr[i - 1].createView() },
+            { binding: 3, resource: { buffer: this.plateDownMode } },
+          ],
+        }),
+      });
+    }
+    const last = this.platePyr.length - 1;
+    this.plateCoarsePass = {
+      pipeline: fillPipeline,
+      target: this.plateFill[last],
+      bindGroup: this.d.createBindGroup({
+        layout: fillPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: this.samp },
+          { binding: 1, resource: this.platePyr[last].createView() },
+          { binding: 2, resource: this.platePyr[last].createView() },
+          { binding: 3, resource: { buffer: this.plateUpMode } },
+        ],
+      }),
+    };
+    this.plateUpPasses = [];
+    for (let i = last - 1; i >= 0; i--) {
+      this.plateUpPasses.push({
+        pipeline: fillPipeline,
+        target: this.plateFill[i],
+        bindGroup: this.d.createBindGroup({
+          layout: fillPipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: this.samp },
+            { binding: 1, resource: this.plateFill[i + 1].createView() },
+            { binding: 2, resource: this.platePyr[i].createView() },
+            { binding: 3, resource: { buffer: this.plateUpMode } },
+          ],
+        }),
+      });
+    }
+    this.plateEmaPasses = [0, 1].map((parity) => ({
+      pipeline: emaPipeline,
+      target: this.plateHistory[parity],
+      bindGroup: this.d.createBindGroup({
+        layout: emaPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: this.samp },
+          { binding: 1, resource: this.plateFill[0].createView() },
+          { binding: 2, resource: this.plateHistory[1 - parity].createView() },
+          { binding: 3, resource: this.platePyr[last].createView() },
+        ],
+      }),
+    }));
+    const upMode = this.plateUpMode;
+    this.plateFullPasses = [0, 1].map((parity) => ({
+      pipeline: fillPipeline,
+      target: this.plateFull,
+      bindGroup: this.d.createBindGroup({
+        layout: fillPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: this.samp },
+          { binding: 1, resource: this.plateHistory[parity].createView() },
+          { binding: 2, resource: this.plateHistory[parity].createView() },
+          { binding: 3, resource: { buffer: upMode } },
+        ],
+      }),
+    }));
+  }
+
+  private encodePlateUpdate(enc: GPUCommandEncoder): void {
+    const run = (pass: Pass | null) => {
+      if (!pass?.target || !pass.bindGroup) return;
+      const render = enc.beginRenderPass({
+        colorAttachments: [{
+          view: pass.target.createView(), loadOp: "clear", storeOp: "store",
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        }],
+      });
+      render.setPipeline(pass.pipeline);
+      render.setBindGroup(0, pass.bindGroup);
+      render.draw(3);
+      render.end();
+    };
+    run(this.plateMaskPass);
+    this.plateDownPasses.forEach(run);
+    run(this.plateCoarsePass);
+    this.plateUpPasses.forEach(run);
+    const parity = this.plateParity;
+    run(this.plateEmaPasses[parity]);
+    run(this.plateFullPasses[parity]);
+    this.plateParity = 1 - parity;
   }
 
   loadPlate(src: ImageBitmap): void {
@@ -335,117 +478,69 @@ export class KeyerEngine {
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
     });
     this.d.queue.copyExternalImageToTexture({ source: src }, { texture: tex }, [src.width, src.height]);
-    this.plateFull?.destroy();
-    this.plateFull = tex;
-    this.rebindPlate();
+    this.loadedPlate?.destroy();
+    this.loadedPlate = tex;
     this.setPlateMode(1);
+    this.rebindPlate();
     this.renderOnce();
   }
 
   clearPlate(): void {
-    this.plateFull?.destroy();
-    this.plateFull = null;
-    this.rebindPlate();
+    this.loadedPlate?.destroy();
+    this.loadedPlate = null;
     this.setPlateMode(0);
+    this.rebindPlate();
     this.renderOnce();
   }
 
   hasPlate(): boolean {
-    return !!this.plateFull;
+    return this.params.plateMode > 0.5;
   }
 
-  /* pull-push：mask → 6 级 down（premult 双线性均值）→ 6 级 up 补洞 → 全幅 plate */
-  estimatePlate(): void {
-    if (!this.srcTex || this.w <= 0 || this.h <= 0) return;
-    const LEVELS = 6;
-    const maskPipeline = this.makePipeline("plate_mask", plateMaskWgsl, "rgba16float");
-    const fillPipeline = this.makePipeline("plate_fill", plateFillWgsl, "rgba16float");
-    const levelTex = (level: number, label: string) =>
-      this.d.createTexture({
-        label,
-        size: [Math.max(1, this.w >> level), Math.max(1, this.h >> level)],
-        format: "rgba16float",
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
-      });
-    const pyr: GPUTexture[] = [];
-    const fill: GPUTexture[] = [];
-    for (let i = 0; i <= LEVELS; i++) {
-      pyr.push(levelTex(i, "plate pyr " + i));
-      fill.push(levelTex(i, "plate fill " + i));
-    }
-    const modeBuf = (x: number) => {
-      const b = this.d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-      this.d.queue.writeBuffer(b, 0, new Float32Array([x, 0, 0, 0]));
-      return b;
-    };
-    const downMode = modeBuf(0);
-    const upMode = modeBuf(1);
-    const enc = this.d.createCommandEncoder();
-    const runPass = (
-      pipeline: GPURenderPipeline,
-      target: GPUTexture,
-      entries: GPUBindGroupEntry[],
-    ) => {
-      const rp = enc.beginRenderPass({
-        colorAttachments: [{ view: target.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
-      });
-      rp.setPipeline(pipeline);
-      rp.setBindGroup(0, this.d.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries }));
-      rp.draw(3);
-      rp.end();
-    };
-    // mask → pyr[0]（吃降噪后 dn，与 key 同源）
-    runPass(maskPipeline, pyr[0], [
-      { binding: 0, resource: this.samp },
-      { binding: 1, resource: (this.dn ?? this.srcTex).createView() },
-      { binding: 2, resource: { buffer: this.paramBuf } },
-    ]);
-    // down: pyr[i-1] → pyr[i]
-    for (let i = 1; i <= LEVELS; i++) {
-      runPass(fillPipeline, pyr[i], [
-        { binding: 0, resource: this.samp },
-        { binding: 1, resource: pyr[i - 1].createView() },
-        { binding: 2, resource: pyr[i - 1].createView() },
-        { binding: 3, resource: { buffer: downMode } },
-      ]);
-    }
-    // 最粗一级补洞：fine = coarse = pyr[LEVELS]
-    runPass(fillPipeline, fill[LEVELS], [
-      { binding: 0, resource: this.samp },
-      { binding: 1, resource: pyr[LEVELS].createView() },
-      { binding: 2, resource: pyr[LEVELS].createView() },
-      { binding: 3, resource: { buffer: upMode } },
-    ]);
-    // up: fill[i+1] + pyr[i] → fill[i]
-    for (let i = LEVELS - 1; i >= 0; i--) {
-      runPass(fillPipeline, fill[i], [
-        { binding: 0, resource: this.samp },
-        { binding: 1, resource: fill[i + 1].createView() },
-        { binding: 2, resource: pyr[i].createView() },
-        { binding: 3, resource: { buffer: upMode } },
-      ]);
-    }
-    this.d.queue.submit([enc.finish()]);
-    for (let i = 0; i <= LEVELS; i++) {
-      pyr[i].destroy();
-      if (i > 0) fill[i].destroy();
-    }
-    downMode.destroy();
-    upMode.destroy();
-    this.plateFull?.destroy();
-    this.plateFull = fill[0];
+  /* Preallocated half-res pull-push. dynamic=true enables per-frame updates. */
+  estimatePlate(dynamic = false): void {
+    if (!this.srcTex || !this.plateFull) return;
+    this.loadedPlate?.destroy();
+    this.loadedPlate = null;
+    this.setPlateMode(dynamic ? 2 : 1);
+    this.plateUpdatePending = true;
     this.rebindPlate();
-    this.setPlateMode(1);
     this.renderOnce();
   }
 
   setParams(p: KeyerParams): void {
+    const plateBindingChanged = (this.params.plateMode > 0.5) !== (p.plateMode > 0.5);
     this.params = cloneParams(p);
     this.d.queue.writeBuffer(this.paramBuf, 0, packParams(this.params));
+    if (plateBindingChanged) this.rebindPlate();
   }
 
   getParams(): KeyerParams {
     return cloneParams(this.params);
+  }
+
+  /** Clear all temporal state between benchmark cases or after a scene cut. */
+  resetHistory(): void {
+    const textures = [...this.hist, ...this.mHist, ...this.plateHistory];
+    if (textures.length > 0) {
+      const enc = this.d.createCommandEncoder();
+      for (const texture of textures) {
+        const pass = enc.beginRenderPass({
+          colorAttachments: [{
+            view: texture.createView(),
+            loadOp: "clear",
+            storeOp: "store",
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          }],
+        });
+        pass.end();
+      }
+      this.d.queue.submit([enc.finish()]);
+    }
+    this.parity = 0;
+    this.plateParity = 0;
+    this.frameMs = 0;
+    this.lastT = 0;
   }
 
   stats(): { fps: number; frameMs: number } {
@@ -482,22 +577,22 @@ export class KeyerEngine {
       rp.draw(3);
       rp.end();
     };
-    const SKIP = (globalThis as unknown as { KEYER_SKIP?: { dn?: boolean; post?: boolean; edge?: boolean } }).KEYER_SKIP ?? {};
+    const SKIP = (globalThis as unknown as { KEYER_SKIP?: { dn?: boolean; post?: boolean; despill?: boolean } }).KEYER_SKIP ?? {};
     const par = this.parity;
     this.parity = 1 - this.parity;
     if (!SKIP.dn && this.temporalPipeline && this.spatialPipeline) {
       runMRT(this.temporalPipeline, this.temporalBinds[par], [this.hist[par]]);
       runMRT(this.spatialPipeline, this.spatialBinds[par], [this.dn!]);
     }
+    if (this.params.plateMode > 1.5 || this.plateUpdatePending) {
+      this.encodePlateUpdate(enc);
+      this.plateUpdatePending = false;
+    }
     run(this.keyPass);
     if (!SKIP.post && this.mattePostPipeline) {
       runMRT(this.mattePostPipeline, this.mattePostBinds[par], [this.matteTex!, this.mHist[par]]);
     }
-    if (!SKIP.edge && this.edgeHPass && this.edgeVPass && this.despillPass) {
-      run(this.edgeHPass);
-      run(this.edgeVPass);
-      run(this.despillPass);
-    }
+    if (!SKIP.despill && this.despillPass) run(this.despillPass);
 
     const compositeRp = enc.beginRenderPass({
       colorAttachments: [
@@ -584,6 +679,35 @@ export class KeyerEngine {
     return { data: out, w: this.w, h: this.h };
   }
 
+  /* Full premultiplied foreground readback for fgErr: RGB float triples in scene-linear light. */
+  async readbackFgFull(): Promise<{ data: Float32Array; w: number; h: number } | null> {
+    if (!this.fgTex || this.w <= 0 || this.h <= 0) return null;
+    const row = Math.ceil((this.w * 8) / 256) * 256;
+    const buf = this.d.createBuffer({
+      size: row * this.h,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    const enc = this.d.createCommandEncoder();
+    enc.copyTextureToBuffer({ texture: this.fgTex }, { buffer: buf, bytesPerRow: row }, [this.w, this.h]);
+    this.d.queue.submit([enc.finish()]);
+    await buf.mapAsync(GPUMapMode.READ);
+    const half = new Uint16Array(buf.getMappedRange());
+    const out = new Float32Array(this.w * this.h * 3);
+    for (let y = 0; y < this.h; y++) {
+      const srcRow = (y * row) / 2;
+      for (let x = 0; x < this.w; x++) {
+        const src = srcRow + x * 4;
+        const dst = (y * this.w + x) * 3;
+        out[dst] = halfToFloat(half[src]);
+        out[dst + 1] = halfToFloat(half[src + 1]);
+        out[dst + 2] = halfToFloat(half[src + 2]);
+      }
+    }
+    buf.unmap();
+    buf.destroy();
+    return { data: out, w: this.w, h: this.h };
+  }
+
   /* 导出 straight-alpha PNG：fgTex(premult 线性) + matte 回读 → un-premultiply → sRGB 编码 */
   async exportPng(): Promise<Blob | null> {
     if (!this.fgTex || !this.matteTex || this.w <= 0 || this.h <= 0) return null;
@@ -666,5 +790,69 @@ export class KeyerEngine {
     const next = cloneParams(this.params);
     next.keyColor = [r / count, g / count, b / count];
     this.setParams(next);
+  }
+
+  /* 一次 readback 扫 16×16 网格，返回绿主导度 d=g−mix(r,b,0.5) 最高块的线性均值主色；无绿主导块回 null。 */
+  private async scanGreenKeyColor(): Promise<[number, number, number] | null> {
+    if (!this.srcTex || this.w <= 0 || this.h <= 0) return null;
+    const bytesPerRow = Math.ceil((this.w * 4) / 256) * 256;
+    const buf = this.d.createBuffer({ size: bytesPerRow * this.h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const enc = this.d.createCommandEncoder();
+    enc.copyTextureToBuffer({ texture: this.srcTex }, { buffer: buf, bytesPerRow, rowsPerImage: this.h }, [this.w, this.h]);
+    this.d.queue.submit([enc.finish()]);
+    try {
+      await buf.mapAsync(GPUMapMode.READ);
+    } catch {
+      buf.destroy();
+      return null;
+    }
+    const bytes = new Uint8Array(buf.getMappedRange());
+    const GRID = 16;
+    const sumR = new Float64Array(GRID * GRID);
+    const sumG = new Float64Array(GRID * GRID);
+    const sumB = new Float64Array(GRID * GRID);
+    const cnt = new Uint32Array(GRID * GRID);
+    const stride = Math.max(1, Math.min(this.w, this.h) >> 7); // 稀疏采样控成本（~几万样本）
+    for (let y = 0; y < this.h; y += stride) {
+      const gy = Math.min(GRID - 1, ((y * GRID) / this.h) | 0);
+      const rowBase = y * bytesPerRow;
+      for (let x = 0; x < this.w; x += stride) {
+        const gx = Math.min(GRID - 1, ((x * GRID) / this.w) | 0);
+        const i = rowBase + x * 4;
+        const bin = gy * GRID + gx;
+        sumR[bin] += srgbByteToLinear(bytes[i]);
+        sumG[bin] += srgbByteToLinear(bytes[i + 1]);
+        sumB[bin] += srgbByteToLinear(bytes[i + 2]);
+        cnt[bin]++;
+      }
+    }
+    buf.unmap();
+    buf.destroy();
+    let best = 0; // 需 d>0 才算绿主导
+    let bestBin = -1;
+    for (let bin = 0; bin < GRID * GRID; bin++) {
+      if (!cnt[bin]) continue;
+      const r = sumR[bin] / cnt[bin];
+      const g = sumG[bin] / cnt[bin];
+      const b = sumB[bin] / cnt[bin];
+      const d = g - 0.5 * (r + b);
+      if (d > best) { best = d; bestBin = bin; }
+    }
+    if (bestBin < 0) return null;
+    const c = cnt[bestBin];
+    return [sumR[bestBin] / c, sumG[bestBin] / c, sumB[bestBin] / c];
+  }
+
+  async autoKey(dynamicPlate: boolean): Promise<void> {
+    const scanned = await this.scanGreenKeyColor();
+    if (scanned) {
+      const next = cloneParams(this.params);
+      next.keyColor = scanned;
+      this.setParams(next);
+    } else {
+      await this.sampleKeyColor(10 / Math.max(1, this.w), 10 / Math.max(1, this.h)); // 回退：左上角 (10,10)
+    }
+    this.resetHistory();
+    this.estimatePlate(dynamicPlate);
   }
 }

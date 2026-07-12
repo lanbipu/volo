@@ -1,4 +1,4 @@
-// 空域降噪：YCoCg 域，Co/Cg 走 3×3 range-bilateral（σ=0.08×denoise），Y 与 a(motion) 直通。
+// 空域降噪 v2：YCoCg 色度联合双边，色度权重叠加 luma guidance，Y 与 a(motion) 直通。
 // 色度噪声是 matte 噪的主凶，亮度细节（发丝）不动。
 // HLSL 移植：textureDimensions→纹理尺寸 cbuffer 传入或 GetDimensions；循环可展开。
 struct Params {
@@ -21,7 +21,10 @@ fn toRGB(y: vec3f) -> vec3f { return vec3f(y.x + y.y * 0.5 - y.z, y.x + y.z, y.x
   for (var dy = -1; dy <= 1; dy++) { for (var dx = -1; dx <= 1; dx++) {
     let yi = toYCoCg(textureSampleLevel(srcTex, samp, uv + vec2f(f32(dx), f32(dy)) * px, 0.0).rgb);
     let d2 = dot(yi.yz - y0.yz, yi.yz - y0.yz);
-    let w = 1.0 / (1.0 + d2 / (2.0 * sigma * sigma));   // exp 的有理近似（省超越函数）
+    let chromaW = 1.0 / (1.0 + d2 / (2.0 * sigma * sigma));
+    let lumaSigma = 0.025 + 0.08 * P.denoise;
+    let lumaW = 1.0 / (1.0 + (yi.x - y0.x) * (yi.x - y0.x) / (2.0 * lumaSigma * lumaSigma));
+    let w = chromaW * lumaW;
     acc += yi.yz * w; wsum += w;
   }}
   let chroma = mix(y0.yz, acc / wsum, step(0.01, P.denoise));
