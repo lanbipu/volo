@@ -274,6 +274,7 @@ pub fn run() {
             commands::pso::get_pso_project_settings,
             commands::pso::set_pso_project_settings,
             commands::pso::discover_ndisplay_assets,
+            commands::pso::discover_project_maps,
             commands::pso::check_pso_config_preflight,
             commands::gpu_consistency::get_gpu_consistency_matrix,
             commands::ini_scanner::verify_pso_precaching,

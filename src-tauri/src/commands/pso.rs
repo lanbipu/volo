@@ -1190,12 +1190,34 @@ pub async fn discover_ndisplay_assets(
     machine_id: i64,
     project_root: String,
 ) -> VoloResult<Vec<String>> {
+    discover_on_machine(db, machine_id, project_root, pso_warmup::discover_ndisplay_assets, "ndisplay").await
+}
+
+/// 工程地图包发现：见 `discover-project-maps.ps1`（Content/**/*.umap → /Game/...）。
+#[tauri::command]
+pub async fn discover_project_maps(
+    db: State<'_, Db>,
+    machine_id: i64,
+    project_root: String,
+) -> VoloResult<Vec<String>> {
+    discover_on_machine(db, machine_id, project_root, pso_warmup::discover_project_maps, "project map").await
+}
+
+async fn discover_on_machine(
+    db: State<'_, Db>,
+    machine_id: i64,
+    project_root: String,
+    discover: fn(&str, &str) -> VoloResult<Vec<String>>,
+    join_label: &'static str,
+) -> VoloResult<Vec<String>> {
     let machine = data_machines::find_by_id(&db, machine_id)?
         .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?;
     let host = machine.ip.clone();
-    tokio::task::spawn_blocking(move || pso_warmup::discover_ndisplay_assets(&host, &project_root))
+    tokio::task::spawn_blocking(move || discover(&host, &project_root))
         .await
-        .map_err(|err| VoloError::OperationFailed(format!("ndisplay asset discovery join: {err}")))?
+        .map_err(|err| {
+            VoloError::OperationFailed(format!("{join_label} discovery join: {err}"))
+        })?
 }
 
 #[derive(Debug, Clone, Serialize)]

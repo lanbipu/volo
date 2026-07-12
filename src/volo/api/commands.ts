@@ -358,6 +358,9 @@ export const setPsoProjectSettings = (settings: PsoProjectSettings) =>
 // ✅ wired: cachePsoDash「工程内自动发现」→ discover_ndisplay_assets
 export const discoverNdisplayAssets = (machineId: number, projectRoot: string) =>
   call<string[]>("discover_ndisplay_assets", { machineId, projectRoot });
+// ✅ wired: cachePsoDash 预跑设置「地图包路径」→ 扫 Content/**/*.umap 为 /Game/... 列表
+export const discoverProjectMaps = (machineId: number, projectRoot: string) =>
+  call<string[]>("discover_project_maps", { machineId, projectRoot });
 // ✅ wired: cachePsoDash 配置巡检卡「nDisplay 配置同源」+ 设置保存前校验 → 逐机存在性检查（单机失败不拖垮整体）
 export const checkPsoConfigPreflight = (machineIds: number[], dcCfgPath: string) =>
   call<PsoConfigPreflightResult[]>("check_pso_config_preflight", { machineIds, dcCfgPath });
