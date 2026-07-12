@@ -284,20 +284,51 @@ fn local_backup_path(file_path: &str) -> String {
     format!("{}.bak.{}", file_path, millis)
 }
 
+/// Renders a brand-new `node_name=(field=value)` line — used when the target
+/// node (or its whole section, or the file itself) doesn't exist yet.
+fn fresh_backend_node_line(node_name: &str, field: &str, value: &str) -> String {
+    let mut node = crate::core::ini_backend_graph::BackendNode {
+        name: node_name.to_string(),
+        fields: Vec::new(),
+        line_number: 0,
+    };
+    crate::core::ini_backend_graph::upsert_field(&mut node, field, value);
+    crate::core::ini_backend_graph::write_node(&node)
+}
+
+/// Writes a single field of a `[section]` `node_name=(...)` backend-graph
+/// node, creating the node / section / file as needed when any of them don't
+/// exist yet — a project's `DefaultEngine.ini` commonly has no
+/// `[DerivedDataBackendGraph]` override at all until the first join/edit, and
+/// erroring there would make the ② 共享 DDC 配置通道详情 panel's "设置" button
+/// permanently unusable for such a project (mirrors `set_key_create`'s
+/// create-on-first-write behavior for the sibling ini-key channel).
 fn write_backend_field_local(
     file_path: &str, section: &str, node_name: &str, field: &str, value: &str,
 ) -> VoloResult<()> {
     use std::fs;
-    let body = fs::read_to_string(file_path)
-        .map_err(|e| VoloError::OperationFailed(format!("read {}: {}", file_path, e)))?;
-    let mut out: Vec<String> = Vec::with_capacity(body.lines().count() + 1);
+    let body = match fs::read_to_string(file_path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(VoloError::OperationFailed(format!("read {}: {}", file_path, e))),
+    };
+    let mut out: Vec<String> = Vec::with_capacity(body.lines().count() + 2);
     let mut in_section = false;
+    let mut section_seen = false;
     let mut handled = false;
     for raw in body.lines() {
         let trimmed = raw.trim();
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            // Leaving our target section without having found the node — append
+            // it as the section's last line before the next section header.
+            if in_section && !handled {
+                out.push(fresh_backend_node_line(node_name, field, value));
+                handled = true;
+            }
             in_section = trimmed[1..trimmed.len() - 1].eq_ignore_ascii_case(section);
-            out.push(raw.to_string()); continue;
+            section_seen = section_seen || in_section;
+            out.push(raw.to_string());
+            continue;
         }
         if in_section && !handled {
             if let Ok(mut node) = crate::core::ini_backend_graph::parse_node(raw, 0) {
@@ -311,9 +342,18 @@ fn write_backend_field_local(
         }
         out.push(raw.to_string());
     }
+    // Our target section was the last one in the file (loop ended still inside it).
+    if in_section && !handled {
+        out.push(fresh_backend_node_line(node_name, field, value));
+        handled = true;
+    }
+    // Section never appeared at all — append a fresh `[section]` + node block.
     if !handled {
-        return Err(VoloError::OperationFailed(format!(
-            "section [{}] node {} not found in {}", section, node_name, file_path)));
+        if out.last().is_some_and(|line| !line.trim().is_empty()) {
+            out.push(String::new());
+        }
+        out.push(format!("[{}]", section));
+        out.push(fresh_backend_node_line(node_name, field, value));
     }
     out.push(String::new());
     fs::write(file_path, out.join("\n"))
@@ -404,6 +444,12 @@ pub fn set_backend_field(
     field: &str, value: &str,
 ) -> VoloResult<String> {
     if loopback::is_loopback_target(host) {
+        // Same create-on-first-write parent-dir handling as `set_key_create`:
+        // `write_backend_field_local` now creates a missing section/node/file's
+        // *content*, but `fs::write` still needs the parent directory to exist.
+        if let Some(parent) = std::path::Path::new(file_path).parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         write_backend_field_local(file_path, section, node_name, field, value)?;
         return Ok(format!("wrote {}.{} locally", node_name, field));
     }
@@ -422,6 +468,54 @@ pub fn set_backend_field(
     )?;
     if !r.ok { return Err(VoloError::OperationFailed(r.message)); }
     Ok(r.message)
+}
+
+/// True for either shape `read_section` uses to report a missing file: remote
+/// reads throw `"file not found: <path>"` from `read-ini-section.ps1`
+/// (wrapped as `OperationFailed`); a loopback target instead surfaces
+/// `std::io::ErrorKind::NotFound` from `read_section_local`'s `std::fs` call
+/// (same distinction `get_ddc_ini_overrides` in `ddc_channels.rs` needs for
+/// the EditorSettings.ini channel — that command reuses this via the `pub`
+/// visibility instead of keeping its own copy).
+pub fn is_missing_file(e: &VoloError) -> bool {
+    match e {
+        VoloError::OperationFailed(msg) => msg.contains("file not found"),
+        VoloError::Io(io) => io.kind() == std::io::ErrorKind::NotFound,
+        _ => false,
+    }
+}
+
+/// Read-side counterpart of [`set_backend_field`]/[`remove_backend_field`]:
+/// reads one `[section]` `node_name=(...)` backend-graph node (e.g. the
+/// `Shared` node's `Type`/`Path`/`EnvPathOverride`/... fields) and returns its
+/// fields in source order. `None` means "no config yet" (file, section, or
+/// node not found) — a real state for the 共享 DDC 配置通道 panel's per-project
+/// rows, not an error; a genuine transport/parse failure still bubbles as Err.
+pub fn get_backend_field(
+    host: &str, file_path: &str, section: &str, node_name: &str,
+) -> VoloResult<Option<Vec<(String, String)>>> {
+    let keys = match read_section(host, file_path, section) {
+        Ok(k) => k,
+        Err(e) if is_missing_file(&e) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let Some(key) = keys.iter().find(|k| k.name.eq_ignore_ascii_case(node_name)) else {
+        return Ok(None);
+    };
+    let line = format!("{}={}", key.name, key.value);
+    // A parse failure here means the node LINE EXISTS but is malformed (hand-edited,
+    // truncated, ...) — a real diagnostic condition, not "never configured". Bubbling
+    // it as Err (rather than folding it into the same Ok(None) as "node absent") lets
+    // callers surface "未核对 · <reason>" instead of a confident-looking "未设" that
+    // would silently mask the corrupted config.
+    crate::core::ini_backend_graph::parse_node(&line, 0)
+        .map(|node| Some(node.fields))
+        .map_err(|e| {
+            VoloError::OperationFailed(format!(
+                "malformed backend node [{}] {} in {}: {:?}",
+                section, node_name, file_path, e
+            ))
+        })
 }
 
 #[cfg(test)]
@@ -605,12 +699,46 @@ mod tests {
     }
 
     #[test]
-    fn set_backend_field_errors_when_node_missing() {
+    fn set_backend_field_creates_node_when_missing_from_existing_section() {
+        // A project's DefaultEngine.ini may have a [DerivedDataBackendGraph]
+        // section with other nodes but no Shared override yet — the ② panel's
+        // first "设置" click for that project must still succeed.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("DefaultEngine.ini");
         std::fs::write(&path, "[DerivedDataBackendGraph]\nBoot=(Type=Boot)\n").unwrap();
-        let r = write_backend_field_local(path.to_str().unwrap(), "DerivedDataBackendGraph", "Shared", "ReadOnly", "false");
-        assert!(matches!(r, Err(VoloError::OperationFailed(_))));
+        write_backend_field_local(path.to_str().unwrap(), "DerivedDataBackendGraph", "Shared", "Path", r"\\ddc01\Volo\DDC").unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("Boot=(Type=Boot)"), "existing node preserved");
+        let line = body.lines().find(|l| l.starts_with("Shared=")).unwrap();
+        assert!(line.contains(r"Path=\\ddc01\Volo\DDC"));
+    }
+
+    #[test]
+    fn set_backend_field_creates_section_when_missing_from_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("DefaultEngine.ini");
+        std::fs::write(&path, "[SomeOtherSection]\nFoo=Bar\n").unwrap();
+        write_backend_field_local(path.to_str().unwrap(), "DerivedDataBackendGraph", "Shared", "Path", r"\\ddc01\Volo\DDC").unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("[SomeOtherSection]"), "existing section preserved");
+        assert!(body.contains("[DerivedDataBackendGraph]"));
+        let line = body.lines().find(|l| l.starts_with("Shared=")).unwrap();
+        assert!(line.contains(r"Path=\\ddc01\Volo\DDC"));
+    }
+
+    #[test]
+    fn set_backend_field_creates_file_when_missing() {
+        // Through the public set_backend_field (not write_backend_field_local
+        // directly) — parent-directory creation lives at that layer, same as
+        // set_key_create's split of concerns.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist").join("DefaultEngine.ini");
+        assert!(!path.exists());
+        set_backend_field("localhost", path.to_str().unwrap(), "DerivedDataBackendGraph", "Shared", "Path", r"\\ddc01\Volo\DDC").unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("[DerivedDataBackendGraph]"));
+        let line = body.lines().find(|l| l.starts_with("Shared=")).unwrap();
+        assert!(line.contains(r"Path=\\ddc01\Volo\DDC"));
     }
 
     #[test]
@@ -652,5 +780,58 @@ mod tests {
         assert!(!remove_backend_field_local(path.to_str().unwrap(), "DerivedDataBackendGraph", "Boot", "Path").unwrap());
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(body.contains("Shared=(Type=FileSystem)"));
+    }
+
+    #[test]
+    fn get_backend_field_returns_fields_in_source_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("DefaultEngine.ini");
+        std::fs::write(
+            &path,
+            "[DerivedDataBackendGraph]\nShared=(Type=FileSystem, Path=\\\\ddc01\\Volo\\DDC, EnvPathOverride=UE-SharedDataCachePath)\n",
+        )
+        .unwrap();
+        let fields = get_backend_field("localhost", path.to_str().unwrap(), "DerivedDataBackendGraph", "Shared")
+            .unwrap()
+            .expect("node should be found");
+        assert_eq!(
+            fields,
+            vec![
+                ("Type".to_string(), "FileSystem".to_string()),
+                ("Path".to_string(), r"\\ddc01\Volo\DDC".to_string()),
+                ("EnvPathOverride".to_string(), "UE-SharedDataCachePath".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn get_backend_field_missing_node_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("DefaultEngine.ini");
+        std::fs::write(&path, "[DerivedDataBackendGraph]\nBoot=(Type=Boot)\n").unwrap();
+        assert!(get_backend_field("localhost", path.to_str().unwrap(), "DerivedDataBackendGraph", "Shared").unwrap().is_none());
+    }
+
+    #[test]
+    fn get_backend_field_missing_file_is_none_not_error() {
+        // A project whose DefaultEngine.ini hasn't been touched yet (never joined
+        // a share) must read as "no config" for the shared-DDC channel panel, not
+        // an error that surfaces as "未核对".
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist").join("DefaultEngine.ini");
+        assert!(get_backend_field("localhost", path.to_str().unwrap(), "DerivedDataBackendGraph", "Shared").unwrap().is_none());
+    }
+
+    #[test]
+    fn get_backend_field_malformed_node_is_error_not_unset() {
+        // A node line that exists but fails to parse (hand-edited, truncated —
+        // missing the closing paren here) is a real diagnostic condition and
+        // must surface as Err ("未核对"), not silently read as "未设" like a
+        // genuinely-absent node would.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("DefaultEngine.ini");
+        std::fs::write(&path, "[DerivedDataBackendGraph]\nShared=(Type=FileSystem\n").unwrap();
+        let r = get_backend_field("localhost", path.to_str().unwrap(), "DerivedDataBackendGraph", "Shared");
+        assert!(matches!(r, Err(VoloError::OperationFailed(_))), "expected Err, got {:?}", r);
     }
 }

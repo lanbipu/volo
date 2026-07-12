@@ -4,6 +4,7 @@ use cache_core::core::ini_editor;
 use cache_core::data::{machines as data_machines, Db};
 use cache_core::error::{VoloError, VoloResult};
 use serde::Serialize;
+use std::collections::HashMap;
 use tauri::State;
 
 fn ip_for(db: &Db, machine_id: i64) -> VoloResult<String> {
@@ -123,6 +124,39 @@ pub async fn remove_machine_backend_field(
     })
     .await
     .map_err(|e| VoloError::OperationFailed(format!("ini write task join: {}", e)))?
+}
+
+#[derive(Debug, Serialize)]
+pub struct BackendFieldReadResult {
+    pub found: bool,
+    pub fields: HashMap<String, String>,
+}
+
+/// Read one field-map of a DerivedDataBackendGraph backend node (e.g. the
+/// `Shared` node's `Type`/`Path`/`EnvPathOverride`). Read-side counterpart of
+/// [`set_machine_backend_field`]/[`remove_machine_backend_field`] — backs the
+/// 共享 DDC 配置通道 panel's per-project rows. Reads the whole node once (not
+/// once per field) so a fan-out across N projects × M machines doesn't double
+/// its SSH round trips.
+#[tauri::command]
+pub async fn get_machine_backend_field(
+    db: State<'_, Db>,
+    machine_id: i64,
+    file_path: String,
+    section: String,
+    node_name: String,
+) -> VoloResult<BackendFieldReadResult> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || -> VoloResult<BackendFieldReadResult> {
+        let host = ip_for(&db, machine_id)?;
+        let fields = ini_editor::get_backend_field(&host, &file_path, &section, &node_name)?;
+        Ok(BackendFieldReadResult {
+            found: fields.is_some(),
+            fields: fields.unwrap_or_default().into_iter().collect(),
+        })
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("ini read task join: {}", e)))?
 }
 
 #[tauri::command]

@@ -328,6 +328,31 @@ import {
       setChanExpanded((prev) => { const s = new Set(prev); s.has(n.id) ? s.delete(n.id) : s.add(n.id); return s; });
       if (!chanExpanded.has(n.id) && !(n.id in chanData) && !chanLoadingIds.has(n.id)) fetchChanOne(n);
     };
+    /* ② 其他服务器加入共享 DDC · 每台机器的「共享 DDC 配置通道详情」+ 展开态。同 CHAN 一样
+       懒加载（首次展开 / 模块「刷新状态」批量刷新才拉取）——不在挂载时对全部机器 eager
+       fetch（四路通道 × 每台机每个工程一次 SSH，N 台放大后开销不小）；schanGenRef 独立于
+       chanGenRef（两套数据各自的代次令牌，互不干扰）。 */
+    const SCHAN = window.VOLO_DDC_SCHAN;
+    const [schanExpanded, setSchanExpanded] = useState(() => new Set());
+    const [schanData, setSchanData] = useState({});
+    const [schanLoadingIds, setSchanLoadingIds] = useState(() => new Set());
+    const schanGenRef = useRef({});
+    const bumpSchanGen = (id) => { schanGenRef.current[id] = (schanGenRef.current[id] || 0) + 1; return schanGenRef.current[id]; };
+    const fetchSchanOne = (n) => {
+      const gen = bumpSchanGen(n.id);
+      setSchanLoadingIds((prev) => { const s = new Set(prev); s.add(n.id); return s; });
+      return SCHAN.channelsForShared(n)
+        .then((ch) => ch, () => null)
+        .then((ch) => {
+          if (schanGenRef.current[n.id] === gen) setSchanData((prev) => Object.assign({}, prev, { [n.id]: ch }));
+          setSchanLoadingIds((prev) => { const s = new Set(prev); s.delete(n.id); return s; });
+        });
+    };
+    const toggleSchan = (n) => {
+      setSchanExpanded((prev) => { const s = new Set(prev); s.has(n.id) ? s.delete(n.id) : s.add(n.id); return s; });
+      if (!schanExpanded.has(n.id) && !(n.id in schanData) && !schanLoadingIds.has(n.id)) fetchSchanOne(n);
+    };
+    const [schanSel, setSchanSel] = useState([]);   /* ② 无纳管共享形态下批量清除的所选机器 */
     /* 共享创建（create_share）表单：share_name + local_path + mode。 */
     const [shareName, setShareName] = useState('Volo_DDC');
     const [shareLocal, setShareLocal] = useState('D:\\Volo\\DDC');
@@ -578,6 +603,26 @@ import {
     const joinCandidates = onlineLocalTargets.filter((n) => !shareHostIds.includes(n.id));
     const unjoinedCandidates = joinTargetShare
       ? joinCandidates.filter((n) => shareJoined[n.id] !== joinTargetShare.path && !joinPending[n.id]) : [];
+    /* 有无已纳管共享服务器：门控②的两种形态（加入表单 vs 信息提示条 + 逐机核对/清理）。 */
+    const hasShares = (SHARES || []).length > 0;
+    /* 批量清除所选机 / 模块级「一键清空所有配置」：可选 = 已核对（schanData 懒加载，未展开/
+       未刷新过的机器不计入——不能对没查过的机器妄称「有配置」）、确有「可写」通道可清（用
+       clearableEntries 而不是 hasAnySharedConfig——后者把只读的命令行通道也算作「有配置」，
+       若一台机器仅有命令行命中会导致勾选/清除操作对着 0 个可写条目空转），且不是当前正确
+       指向某个已纳管共享的机器（env 值命中任一 SHARES.path 视为「正在正常使用」，不当残留
+       死配置处理——否则模块级「一键清空所有配置」会连健康的加入配置一并清掉）。 */
+    const clearableSchanNodes = joinCandidates.filter((n) => {
+      if (hasShares && (SHARES || []).some((sh) => sh.path === shareJoined[n.id])) return false;
+      return (n.id in schanData) && SCHAN.clearableEntries(schanData[n.id]).length > 0;
+    });
+    const clearableSchanIds = clearableSchanNodes.map((n) => n.id);
+    const schanSelValid = schanSel.filter((id) => clearableSchanIds.includes(id));
+    const allSchanSel = clearableSchanIds.length > 0 && clearableSchanIds.every((id) => schanSel.includes(id));
+    const someSchanSel = schanSelValid.length > 0;
+    const toggleSchanSel = (id) => setSchanSel((sl) => sl.includes(id) ? sl.filter((x) => x !== id) : sl.concat(id));
+    const toggleAllSchanSel = () => setSchanSel(allSchanSel ? [] : clearableSchanIds.slice());
+    const selSchanNodes = clearableSchanNodes.filter((n) => schanSel.includes(n.id));
+    const selSchanDeadCount = selSchanNodes.filter((n) => SCHAN.hasDeadShared(schanData[n.id])).length;
     const joinShareOne = (n, sh) => {
       if (!sh || joinPending[n.id]) return;
       setJP(n.id, 'join');
@@ -661,27 +706,63 @@ import {
     };
     const joinRow = (n) => {
       const pend = joinPending[n.id];
-      const cur = shareJoined[n.id];
+      const cur = shareJoined[n.id];               /* 真实 env-var 快照（readStatus 挂载时已 eager 拉取）*/
       const onThis = joinTargetShare && cur === joinTargetShare.path;
-      return h('div', { key: n.id, className: 'cli-row join' + (onThis ? ' on' : '') },
+      const sc = schanData[n.id];                   /* 懒加载的四通道详情：undefined=未核对 / null=离线 / 对象=数据 */
+      const schanChecked = n.id in schanData;
+      const hasCfg = schanChecked && SCHAN.hasAnySharedConfig(sc);           /* 徽章用：含只读命令行命中 */
+      const canClear = schanChecked && SCHAN.clearableEntries(sc).length > 0; /* 勾选/清除按钮用：只算可写通道 */
+      /* env KV 的「路径失效」着色：只有在 schanData 恰好已加载、且它读到的 env 值与
+         eager shareJoined 快照一致时才采信（避免用一份可能过期的懒加载数据误判刚加入的机器）。 */
+      const envDead = schanChecked && sc && sc.env && sc.env.st === 'dead' && sc.env.v === cur;
+      const dead = schanChecked && SCHAN.hasDeadShared(sc);
+      const open = schanExpanded.has(n.id);
+      /* 无纳管共享形态下：有配置机可勾选参与批量清除；未核对 / 无配置机勾选框禁用。 */
+      const isSel = schanSel.includes(n.id);
+      const checkbox = !hasShares
+        ? (canClear
+            ? h('button', { className: 'lcheck', title: isSel ? '取消选择' : '选择', onClick: () => toggleSchanSel(n.id) },
+                h('span', { className: 'proj-mck' + (isSel ? ' on' : '') }, isSel ? h(Icon, { name: 'check', size: 12 }) : null))
+            : h('span', { className: 'lcheck dis', title: !schanChecked ? '尚未核对 · 展开或点「刷新状态」' : (hasCfg ? '仅命令行只读命中，无可清除项' : '无配置') }, h('span', { className: 'proj-mck dis' })))
+        : null;
+      const envKV = h('div', { className: 'cli-envvar mono' },
+        h('span', { className: 'ev-k' }, ENV_KEY),
+        h('span', { className: 'ev-eq' }, '='),
+        envDead
+          ? h('span', { className: 'ev-v dead', title: cur }, cur)
+          : h('span', { className: 'ev-v' + (cur ? '' : ' none') }, cur || (statusLoading ? '读取中…' : '未设置')));
+      let badgeEl;
+      if (pend === 'join') badgeEl = badge('pend', 'sync', '加入中…');
+      else if (pend === 'leave') badgeEl = badge('pend', 'sync', '退出中…');
+      else if (envDead || (!hasShares && dead)) badgeEl = badge('dead', 'alert', '路径失效');
+      else if (hasShares) badgeEl = onThis ? badge('ok', 'check', '已加入')
+        : cur ? badge('alt', 'link', '加入其他')
+        : statusLoading ? badge('none', 'sync', '读取中…')
+        : badge('none', 'minus', '未加入');
+      else badgeEl = !schanChecked ? badge('none', 'minus', '待核对')
+        : hasCfg ? badge('info2', 'layers', '有配置')
+        : badge('none', 'minus', '无配置');
+      let actBtn = null;
+      if (pend) actBtn = h('button', { className: 'mini-btn', disabled: true }, h(Icon, { name: 'sync', size: 12 }), '执行中');
+      else if (hasShares) actBtn = onThis
+        ? h('button', { className: 'mini-btn danger', onClick: () => leaveShareOne(n) }, h(Icon, { name: 'x', size: 12 }), '退出')
+        : h('button', { className: 'mini-btn', onClick: () => joinShareOne(n, joinTargetShare) }, h(Icon, { name: 'link', size: 12 }), '加入');
+      else if (canClear) actBtn = h('button', { className: 'mini-btn danger', onClick: () => clearAllShared(n) }, h(Icon, { name: 'trash', size: 12 }), '清除配置');
+      const row = h('div', { className: 'cli-row join' + (isSel ? ' sel' : (onThis ? ' on' : '')) + (envDead || (!hasShares && dead) ? ' dead' : '') },
+        checkbox,
         CX.dot(NODE_STATUS[n.status].visual),
-        h('div', { className: 'cli-meta' },
+        h('div', { className: 'cli-meta clk', title: open ? '收起配置通道' : '展开配置通道', onClick: () => toggleSchan(n) },
           h('div', { className: 'cli-host mono' }, n.host),
           h('div', { className: 'cli-sub' }, n.ip + ' · ' + n.role)),
-        h('div', { className: 'cli-envvar mono' },
-          h('span', { className: 'ev-k' }, ENV_KEY),
-          h('span', { className: 'ev-eq' }, '='),
-          h('span', { className: 'ev-v' + (cur ? '' : ' none') }, cur || (statusLoading ? '读取中…' : '未设置'))),
+        envKV,
         h('div', { className: 'local-act' },
-          pend === 'join' ? badge('pend', 'sync', '加入中…')
-            : pend === 'leave' ? badge('pend', 'sync', '退出中…')
-            : onThis ? badge('ok', 'check', '已加入')
-            : cur ? badge('alt', 'link', '加入其他')
-            : statusLoading ? badge('none', 'sync', '读取中…')
-            : badge('none', 'minus', '未加入'),
-          pend ? h('button', { className: 'mini-btn', disabled: true }, h(Icon, { name: 'sync', size: 12 }), '执行中')
-            : onThis ? h('button', { className: 'mini-btn danger', onClick: () => leaveShareOne(n) }, h(Icon, { name: 'x', size: 12 }), '退出')
-            : h('button', { className: 'mini-btn', onClick: () => joinShareOne(n, joinTargetShare) }, h(Icon, { name: 'link', size: 12 }), '加入')));
+          badgeEl,
+          actBtn,
+          h('button', { className: 'lrow-chev' + (open ? ' on' : ''), title: open ? '收起配置通道' : '展开配置通道',
+            'aria-expanded': open, onClick: () => toggleSchan(n) }, h(Icon, { name: 'chevd', size: 16 }))));
+      return h('div', { key: n.id, className: 'lcli' + (open ? ' open' : '') },
+        row,
+        open ? h(SCHAN.ChanPanelShared, { node: n, ch: sc, loading: chanRefreshing || schanLoadingIds.has(n.id), onSet: onSetSchan, onClear: onClearSchan }) : null);
     };
 
     /* ===== ③ 本地 DDC（直接执行，真实 create_local_cache + 设 UE-LocalDataCachePath）===== */
@@ -772,19 +853,28 @@ import {
       setChanRefreshing(true);
       readStatus();
       const gens = {};
-      IP_SORTED_NODES.forEach((n) => { gens[n.id] = bumpChanGen(n.id); });
-      Promise.allSettled(IP_SORTED_NODES.map((n) =>
-        CHAN.channelsFor(n).then((ch) => ({ id: n.id, ch }), () => ({ id: n.id, ch: null }))))
-        .then((rs) => {
-          setChanData((prev) => {
+      const sgens = {};
+      IP_SORTED_NODES.forEach((n) => { gens[n.id] = bumpChanGen(n.id); sgens[n.id] = bumpSchanGen(n.id); });
+      Promise.allSettled([
+        Promise.allSettled(IP_SORTED_NODES.map((n) =>
+          CHAN.channelsFor(n).then((ch) => ({ id: n.id, ch }), () => ({ id: n.id, ch: null }))))
+          .then((rs) => setChanData((prev) => {
             const next = Object.assign({}, prev);
             rs.forEach((r) => {
               if (r.status === 'fulfilled' && chanGenRef.current[r.value.id] === gens[r.value.id]) next[r.value.id] = r.value.ch;
             });
             return next;
-          });
-          setChanRefreshing(false);
-        });
+          })),
+        Promise.allSettled(IP_SORTED_NODES.map((n) =>
+          SCHAN.channelsForShared(n).then((ch) => ({ id: n.id, ch }), () => ({ id: n.id, ch: null }))))
+          .then((rs) => setSchanData((prev) => {
+            const next = Object.assign({}, prev);
+            rs.forEach((r) => {
+              if (r.status === 'fulfilled' && schanGenRef.current[r.value.id] === sgens[r.value.id]) next[r.value.id] = r.value.ch;
+            });
+            return next;
+          })),
+      ]).then(() => setChanRefreshing(false));
     };
     /* 通道就地编辑「保存/清除」→ 真实写入对应后端（env var / 注册表 / ini），成功后
        乐观更新本地 chanData（不必整台机器重新拉取四路）、并 bump 该节点代次令牌
@@ -803,6 +893,143 @@ import {
     });
     const onSetChan = (n, key, sub, val) => applyChanEdit(n, key, sub, val);
     const onClearChan = (n, key, sub) => applyChanEdit(n, key, sub, '');
+
+    /* ② 共享 DDC 通道就地编辑「保存/清除」→ 同 applyChanEdit，但 ini 子字段按
+       "<projectId>#path" | "<projectId>#envOverride" 定位到具体工程的具体字段
+       （sub 里的 projectId 是字符串比较，UE_PROJECTS.id 类型不定）。 */
+    const applySchanEdit = (n, key, sub, value) => SCHAN.writeChannel(n, key, sub, value).then(() => {
+      bumpSchanGen(n.id);
+      setSchanData((prev) => {
+        const cur = prev[n.id];
+        if (!cur) return prev;
+        const field = value ? { v: value, st: 'set' } : { v: null, st: 'unset' };
+        let nd;
+        if (key === 'ini') {
+          const [projId, sf] = String(sub).split('#');
+          const subKey = sf === 'envOverride' ? 'envOverride' : 'path';
+          nd = Object.assign({}, cur, { ini: { projects: (cur.ini.projects || []).map((p) =>
+            String(p.projectId) === projId ? Object.assign({}, p, { [subKey]: field }) : p) } });
+        } else {
+          nd = Object.assign({}, cur, { [key]: field });
+        }
+        return Object.assign({}, prev, { [n.id]: nd });
+      });
+    });
+    const onSetSchan = (n, key, sub, val) => applySchanEdit(n, key, sub, val);
+    const onClearSchan = (n, key, sub) => applySchanEdit(n, key, sub, '');
+
+    /* ② 行级「清除配置」（无纳管共享形态）：清空该机全部可写共享 DDC 配置通道，
+       含确认弹层逐条列出通道名 + 值；清除后重新拉取该机通道详情做真实回读校验。 */
+    const clearAllShared = (n) => {
+      const entries = SCHAN.clearableEntries(schanData[n.id] || {});
+      if (entries.length === 0) return;
+      CX.openModalPreview(s, {
+        title: '清除共享 DDC 残留配置 · ' + n.host, icon: 'trash', cli: 'ddc.clear_shared_channels', destructive: true, channel: 'ssh', confirmLabel: '清除这些配置',
+        doneTitle: '已清除残留配置', doneMsg: n.host + ' 的 ' + entries.length + ' 项共享 DDC 配置已清除（不动命令行只读项与远端共享文件夹）',
+        steps: ['清空 ' + n.host + ' 上全部可写的共享 DDC 配置通道 —— 环境变量 ' + ENV_KEY + ' + 注册表共享值 + 工程 INI 的 Shared Path / EnvPathOverride',
+          '命令行参数为只读扫描项，不在清理范围；不删除任何远端共享文件夹',
+          '清除后自动回读校验，该机不再指向任何共享 DDC 上游'],
+        simpleScope: entries.map((e) => ({ host: e.chan, ip: '', msg: e.val })),
+        run: () => s.runCmd({ domain: 'share', action: 'clear', target: n.host + ' · ' + entries.length + ' 项', chan: 'ssh', note: '清除全部共享 DDC 残留配置（' + entries.length + ' 项）' },
+          () => SCHAN.writeEntriesSafely(entries.map((e) => ({ node: n, key: e.key, sub: e.sub, value: '' }))).then((rs) => {
+            const fail = rs.filter((r) => r.status === 'rejected').length;
+            if (rs.length > 0 && fail === rs.length) throw new Error('全部清除失败');
+            return { ok: rs.length - fail, fail };
+          }),
+          { okMsg: (r) => n.host + ' 已清除 ' + r.ok + ' 项' + (r.fail ? ('，' + r.fail + ' 项失败') : '') })
+          .then((r) => {
+            fetchSchanOne(n);
+            /* schanData 是懒加载的独立快照，env 通道的清除还得同步进 eager 的 shareJoined
+               （readStatus 挂载时拉的那份）——否则行首「加入目标」表单切回 hasShares 形态时，
+               或未来重新展开前，env KV 行内展示的仍是清除前的旧值（本次真机验证时抓到）。 */
+            if (entries.some((e) => e.key === 'env')) {
+              setShareJoined((m) => { if (!(n.id in m)) return m; const x = Object.assign({}, m); delete x[n.id]; return x; });
+            }
+            return r;
+          }),
+      });
+    };
+    /* ② 批量清除（模块级「一键清空所有配置」+ 批量选中「清除所选」共用）：清空传入这批
+       机器上全部可写共享 DDC 配置通道，确认弹层列出全部机器 + 条目；成功后逐台重新拉取
+       通道详情做真实回读校验，并清空批量选择。 */
+    const clearAllSharedMany = (nodes) => {
+      /* clearableEntries（不是 hasAnySharedConfig）——只读的命令行命中不提供任何可清除通道，
+       * 用 hasAnySharedConfig 筛选会把「全部配置都来自命令行」的机器也纳入 targets，
+       * 导致下面 writeEntriesSafely([]) 结果为空数组，误判成功/失败都说不通。 */
+      const targets = (nodes || []).filter((n) => SCHAN.clearableEntries(schanData[n.id]).length > 0);
+      if (targets.length === 0) return;
+      const scopeRows = [];
+      const envClearedIds = [];
+      targets.forEach((n) => {
+        const entries = SCHAN.clearableEntries(schanData[n.id]);
+        entries.forEach((e) => scopeRows.push({ host: n.host, ip: e.chan, msg: e.val }));
+        if (entries.some((e) => e.key === 'env')) envClearedIds.push(n.id);
+      });
+      const totalItems = scopeRows.length;
+      CX.openModalPreview(s, {
+        title: '批量清除共享 DDC 残留配置 · ' + targets.length + ' 台', icon: 'trash', cli: 'ddc.clear_shared_channels --hosts', destructive: true, channel: 'ssh',
+        confirmLabel: '清除这些配置',
+        doneTitle: '已批量清除', doneMsg: targets.length + ' 台机器共 ' + totalItems + ' 项共享 DDC 配置已清除（不动命令行只读项与远端共享文件夹）',
+        steps: ['在 ' + targets.length + ' 台机器上清空全部可写的共享 DDC 配置通道 —— 环境变量 ' + ENV_KEY + ' + 注册表共享值 + 工程 INI 的 Shared Path / EnvPathOverride',
+          '命令行参数为只读扫描项，不在清理范围；不删除任何远端共享文件夹',
+          '清除后自动回读校验，这些机器不再指向任何共享 DDC 上游'],
+        simpleScope: scopeRows,
+        run: () => s.runCmd({ domain: 'share', action: 'clear', target: targets.length + ' 台 · ' + totalItems + ' 项', chan: 'ssh', note: '批量清除共享 DDC 残留配置（' + targets.length + ' 台 / ' + totalItems + ' 项）' },
+          () => SCHAN.writeEntriesSafely(targets.flatMap((n) => SCHAN.clearableEntries(schanData[n.id]).map((e) => ({ node: n, key: e.key, sub: e.sub, value: '' })))).then((rs) => {
+            const fail = rs.filter((r) => r.status === 'rejected').length;
+            if (rs.length > 0 && fail === rs.length) throw new Error('全部清除失败');
+            return { ok: rs.length - fail, fail };
+          }),
+          { okMsg: (r) => '已清除 ' + r.ok + ' 项' + (r.fail ? ('，' + r.fail + ' 项失败') : '') })
+          .then((r) => {
+            targets.forEach(fetchSchanOne);
+            setSchanSel([]);
+            /* 同 clearAllShared：把本批次清了 env 通道的机器同步从 eager 的 shareJoined 里摘掉。 */
+            if (envClearedIds.length) {
+              setShareJoined((m) => { const x = Object.assign({}, m); envClearedIds.forEach((id) => { delete x[id]; }); return x; });
+            }
+            return r;
+          }),
+      });
+    };
+    /* ③ 模块级「一键清空所有配置」：清空当前列表全部（有配置）机器的可写本地 DDC 配置
+       通道，确认弹层列出全部机器 + 条目；成功后逐台重新拉取通道详情做真实回读校验。 */
+    const clearAllLocalMany = (nodes) => {
+      const targets = (nodes || []).filter((n) => CHAN.hasAnyLocalConfig(chanData[n.id]));
+      if (targets.length === 0) return;
+      const ids = targets.map((n) => n.id);
+      const scopeRows = [];
+      targets.forEach((n) => CHAN.clearableLocalEntries(chanData[n.id]).forEach((e) => scopeRows.push({ host: n.host, ip: e.chan, msg: e.val })));
+      const totalItems = scopeRows.length;
+      CX.openModalPreview(s, {
+        title: '一键清空本地 DDC 配置 · ' + targets.length + ' 台', icon: 'trash', cli: 'ddc.clear_local_channels --hosts', destructive: true, channel: 'ssh',
+        confirmLabel: '清除这些配置',
+        doneTitle: '已一键清空', doneMsg: targets.length + ' 台机器共 ' + totalItems + ' 项本地 DDC 配置已清除（命令行只读项与本地缓存文件保留）',
+        steps: ['在当前列表 ' + targets.length + ' 台有配置的机器上清空全部可写本地 DDC 配置通道 —— EditorSettings ini（本地 + 共享上游）+ 注册表 + 环境变量 UE-LocalDataCachePath',
+          '命令行参数为只读扫描项，不在清理范围；不删除本地缓存文件夹与已有缓存',
+          '清除后自动回读校验，这些机器本地 DDC 路径回到未设置状态'],
+        simpleScope: scopeRows,
+        run: () => s.runCmd({ domain: 'local-cache', action: 'clear', target: targets.length + ' 台 · ' + totalItems + ' 项', chan: 'ssh', note: '一键清空全部机器本地 DDC 配置（' + targets.length + ' 台 / ' + totalItems + ' 项）' },
+          () => Promise.allSettled(targets.flatMap((n) => CHAN.clearableLocalEntries(chanData[n.id]).map((e) => CHAN.writeChannel(n, e.key, e.sub, '')))).then((rs) => {
+            const fail = rs.filter((r) => r.status === 'rejected').length;
+            if (fail === rs.length) throw new Error('全部清除失败');
+            return { ok: rs.length - fail, fail };
+          }),
+          { okMsg: (r) => '已清除 ' + r.ok + ' 项' + (r.fail ? ('，' + r.fail + ' 项失败') : '') })
+          .then((r) => {
+            targets.forEach(fetchChanOne);
+            /* 清空了 env/reg/ini 通道后，「已部署」徽章（localDeployed，readStatus 挂载时
+               eager 拉取的那份，不是这里刷新的懒加载 chanData）必须同步摘除，否则该机会永久
+               卡在「已部署」——readStatus 的合并逻辑只在 localPending[id]==='undeploy' 时才
+               剔除，而这条清空路径从不设置 localPending。 */
+            setLocalDeployed((d) => d.filter((x) => !ids.includes(x)));
+            return r;
+          }),
+      });
+    };
+    /* 模块头部「一键清空所有配置」按钮（② / ③ 共用外观，各自传入清空回调 + disabled 态）。 */
+    const wipeBtn = (onClick, disabled) => h('button', { className: 'chan-wipe', disabled, onClick,
+      title: '清空当前列表全部机器的配置' }, h(Icon, { name: 'trash', size: 12 }), '一键清空所有配置');
 
     const localRow = (n) => {
       const dep = localDeployed.includes(n.id);
@@ -841,12 +1068,14 @@ import {
         row,
         open ? h(CHAN.ChanPanel, { node: n, ch: chanData[n.id], loading: chanRefreshing || chanLoadingIds.has(n.id), onSet: onSetChan, onClear: onClearChan }) : null);
     };
+    /* ③ 模块头部「一键清空所有配置」按钮的范围/disabled 态：同②一样只算已核对
+       （chanData 懒加载，未展开/未刷新过的机器不计入）且确有可清理配置的机器。 */
+    const localClearable = IP_SORTED_NODES.filter((n) => (n.id in chanData) && CHAN.hasAnyLocalConfig(chanData[n.id]));
 
     return h('div', { className: 'res ddc' },
       h('div', { className: 'canvas-head' },
         h('span', { className: 't' }, 'DDC · 文件系统 DDC'),
-        h('div', { className: 'right' },
-          h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'sync', size: 14 }), isDisabled: statusLoading, onPress: readStatus }, statusLoading ? '读取中…' : '刷新状态'))),
+        h('div', { className: 'right' })),
       h('div', { className: 'ddc-body' },
         h('div', { className: 'zen-2col' },
           /* 左列：① 共享 DDC 服务器部署 + 已纳管共享 + ② 其他服务器加入 */
@@ -856,28 +1085,53 @@ import {
             SHARES.length ? h(React.Fragment, null,
               h('div', { className: 'ddc-sec-h' }, h('span', null, '已纳管的共享服务器'), h('span', { className: 'dim' }, SHARES.length + ' 台 · 每台共享 DDC 服务器都可单独取消 · 取消不删除远端文件夹')),
               h('div', { className: 'art-list' }, SHARES.map(shareRow))) : null,
-            SHARES.length ? h(React.Fragment, null,
-              h('div', { className: 'ddc-sec-h' },
-                h('span', null, '② 其他服务器加入共享 DDC'),
-                h('span', { className: 'dim' }, joinCandidates.filter((n) => joinTargetShare && shareJoined[n.id] === joinTargetShare.path).length + ' / ' + joinCandidates.length + ' 已加入 · 写环境变量 ' + ENV_KEY + ' 指向共享路径')),
-              h('div', { className: 'cli-panel' },
-                h('div', { className: 'cli-top' },
-                  h('div', { className: 'cli-server-chip' },
-                    h('span', { className: 'csc-ico' }, h(Icon, { name: 'folder', size: 15 })),
-                    h('div', { style: { minWidth: 0 } },
-                      h('div', { className: 'csc-t' }, '加入目标 · ' + (joinTargetShare ? joinTargetShare.host : '—')),
-                      h('div', { className: 'csc-s mono' }, joinTargetShare ? joinTargetShare.path : '—'))),
-                  SHARES.length > 1 ? h('div', { className: 'dp-field' }, h('label', null, '共享服务器'),
-                    h('div', { className: 'sel-with-open' },
-                      h(Selector, { kpre: '共享', value: joinTargetShare ? joinTargetShare.id : null, options: shareSelOpts, width: 240, onChange: setJoinTarget }),
-                      pathOpenBtn(joinTargetShare ? joinTargetShare.path : '',
-                        { machine: joinTargetShare ? CX.node(joinTargetShare.hostId) : null, label: joinTargetShare ? joinTargetShare.host : '', standalone: true }))) : null,
-                  h('div', { className: 'cli-go' },
-                    h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'link', size: 14 }), isDisabled: unjoinedCandidates.length === 0, onPress: joinShareAll },
-                      '全部加入（' + unjoinedCandidates.length + '）'))),
-                h('div', { className: 'cli-note' }, h(Icon, { name: 'shield', size: 13 }),
-                  '加入 = 在该机设机器级系统环境变量 ' + ENV_KEY + ' 指向共享路径；Mode A 会预存 Guest 空密码会话（cmdkey + net use，资源管理器直接输入 UNC 不再弹框）；Mode B 会为计算机名与 IP 注入 ddc-svc 凭据；运行中的 UE 需重启生效。退出仅清除变量（不撤销已预连接会话）。'),
-                h('div', { className: 'cli-list' }, joinCandidates.map(joinRow)))) : null),
+            /* ② 永远渲染：有已纳管共享服务器时保留加入表单；否则顶部换成信息提示条，
+               下方仍逐机展示 / 核对 / 清理已有共享 DDC 配置（此处「加入候选」= 全部在线且
+               非共享服务器本机的机器，与是否已纳管共享无关）。 */
+            h('div', { className: 'ddc-sec-h chan-sech ddc-schan-head' },
+              h('span', null, '② 其他服务器加入共享 DDC'),
+              h('div', { className: 'chan-sech-r' },
+                h('span', { className: 'dim' }, hasShares
+                  ? (joinCandidates.filter((n) => joinTargetShare && shareJoined[n.id] === joinTargetShare.path).length + ' / ' + joinCandidates.length + ' 已加入 · 写环境变量 ' + ENV_KEY + ' 指向共享路径')
+                  : '未纳管共享 · 展开每台机器可核对 / 清理已有共享 DDC 配置'),
+                wipeBtn(() => clearAllSharedMany(clearableSchanNodes), clearableSchanIds.length === 0))),
+            h('div', { className: 'cli-panel ddc-schan-panel' },
+              hasShares
+                ? h('div', { className: 'cli-top' },
+                    h('div', { className: 'cli-server-chip' },
+                      h('span', { className: 'csc-ico' }, h(Icon, { name: 'folder', size: 15 })),
+                      h('div', { style: { minWidth: 0 } },
+                        h('div', { className: 'csc-t' }, '加入目标 · ' + (joinTargetShare ? joinTargetShare.host : '—')),
+                        h('div', { className: 'csc-s mono' }, joinTargetShare ? joinTargetShare.path : '—'))),
+                    SHARES.length > 1 ? h('div', { className: 'dp-field' }, h('label', null, '共享服务器'),
+                      h('div', { className: 'sel-with-open' },
+                        h(Selector, { kpre: '共享', value: joinTargetShare ? joinTargetShare.id : null, options: shareSelOpts, width: 240, onChange: setJoinTarget }),
+                        pathOpenBtn(joinTargetShare ? joinTargetShare.path : '',
+                          { machine: joinTargetShare ? CX.node(joinTargetShare.hostId) : null, label: joinTargetShare ? joinTargetShare.host : '', standalone: true }))) : null,
+                    h('div', { className: 'cli-go' },
+                      h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'link', size: 14 }), isDisabled: unjoinedCandidates.length === 0, onPress: joinShareAll },
+                        '全部加入（' + unjoinedCandidates.length + '）')))
+                : h('div', { className: 'schan-infobar' },
+                    h('span', { className: 'sib-ic' }, h(Icon, { name: 'info', size: 16 })),
+                    h('div', { className: 'sib-tx' },
+                      '尚未纳管共享 DDC 服务器 —— 可先在①部署；下方仍会显示各机器已有的共享 DDC 配置，便于核对与清理。')),
+              hasShares
+                ? h('div', { className: 'cli-note' }, h(Icon, { name: 'shield', size: 13 }),
+                    '加入 = 在该机设机器级系统环境变量 ' + ENV_KEY + ' 指向共享路径；Mode A 会预存 Guest 空密码会话（cmdkey + net use，资源管理器直接输入 UNC 不再弹框）；Mode B 会为计算机名与 IP 注入 ddc-svc 凭据；运行中的 UE 需重启生效。退出仅清除变量（不撤销已预连接会话）。')
+                : h('div', { className: 'cli-note warn' }, h(Icon, { name: 'alert', size: 13 }),
+                    '标「路径失效」的是死配置（UNC 共享当前不可达）；行尾「清除配置」可一次性清空该机的环境变量 / 注册表 / 工程 INI 共享键；展开或点「刷新状态」后才能核对某台机器是否真的无配置。'),
+              !hasShares ? h('div', { className: 'local-selbar schan-selbar' + (someSchanSel ? ' on' : '') },
+                h('button', { className: 'lsb-all', disabled: clearableSchanIds.length === 0, onClick: toggleAllSchanSel },
+                  h('span', { className: 'proj-mck' + (allSchanSel ? ' on' : (someSchanSel ? ' part' : '')) },
+                    allSchanSel ? h(Icon, { name: 'check', size: 12 }) : (someSchanSel ? h(Icon, { name: 'minus', size: 12 }) : null)),
+                  allSchanSel ? '取消全选' : '全选有配置机'),
+                h('span', { className: 'lsb-ct' }, someSchanSel
+                  ? ('已选 ' + schanSelValid.length + ' 台' + (selSchanDeadCount ? (' · 其中 ' + selSchanDeadCount + ' 台路径失效') : ''))
+                  : (clearableSchanIds.length ? ('勾选机器后可批量清除残留配置 · ' + clearableSchanIds.length + ' 台有配置') : '当前没有已核对到残留共享 DDC 配置的机器')),
+                h('div', { className: 'lsb-acts' },
+                  h(Button, { variant: 'negative', size: 'S', icon: h(Icon, { name: 'trash', size: 13 }), isDisabled: schanSelValid.length === 0, onPress: () => clearAllSharedMany(selSchanNodes) },
+                    '批量清除所选（' + schanSelValid.length + '）'))) : null,
+              h('div', { className: 'cli-list' }, joinCandidates.map(joinRow)))),
           /* 右列：③ 本地 DDC */
           h('div', { className: 'zen-col' },
             h('div', { className: 'ddc-sec-h chan-sech' },
@@ -885,9 +1139,10 @@ import {
               h('div', { className: 'chan-sech-r' },
                 h('span', { className: 'dim' }, localDeployed.length + ' / ' + RENDER_NODES.length + ' 已部署 · 可逐台设置，或用上方统一路径一键应用到全部'),
                 h('button', { className: 'chan-refresh', disabled: chanRefreshing, onClick: refreshChanAll,
-                  title: '回读部署状态与四条配置通道详情' },
-                  h(Icon, { name: 'sync', size: 12 }), chanRefreshing ? '读取中…' : '刷新状态'))),
-            h('div', { className: 'cli-panel' },
+                  title: '回读②共享 + ③本地两板块的部署状态与四条配置通道详情' },
+                  h(Icon, { name: 'sync', size: 12 }), chanRefreshing ? '读取中…' : '刷新状态'),
+                wipeBtn(() => clearAllLocalMany(localClearable), localClearable.length === 0))),
+            h('div', { className: 'cli-panel ddc-local-panel' },
               h('div', { className: 'cli-top' },
                 h('div', { className: 'local-hint' }, h(Icon, { name: 'server', size: 15 }), '逐台本地缓存回退层 · 命中链路兜底'),
                 h('div', { className: 'cli-unify' },

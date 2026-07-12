@@ -22,7 +22,7 @@
 //! (runtime user, UE major.minor) — not per project, matching this page's
 //! per-machine (not per-project) row model.
 
-use cache_core::core::{command_line_scanner, ini_editor};
+use cache_core::core::{command_line_scanner, ini_editor, path_reachability};
 use cache_core::data::{machine_ue_installs, machines as data_machines, Db};
 use cache_core::error::{VoloError, VoloResult};
 use tauri::State;
@@ -173,16 +173,6 @@ fn wrap_directory_path(value: &str) -> String {
     format!("(Path=\"{}\")", ue_escape_string(value))
 }
 
-/// True for either shape `ini_editor::read_section` uses to report a missing
-/// file — see the call site in `get_ddc_ini_overrides` for why there are two.
-fn is_missing_ini_file(e: &VoloError) -> bool {
-    match e {
-        VoloError::OperationFailed(msg) => msg.contains("file not found"),
-        VoloError::Io(io) => io.kind() == std::io::ErrorKind::NotFound,
-        _ => false,
-    }
-}
-
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DdcIniOverrides {
     pub machine_id: i64,
@@ -239,7 +229,7 @@ pub async fn get_ddc_ini_overrides(
             // VoloError::Io(NotFound) — same pitfall already hit and fixed for
             // this exact read_section callee in
             // crates/cache-core/src/core/zen/local_port.rs::read_configured_port.
-            Err(e) if is_missing_ini_file(&e) => Ok(DdcIniOverrides {
+            Err(e) if ini_editor::is_missing_file(&e) => Ok(DdcIniOverrides {
                 machine_id,
                 ue_runtime_user: ue_user,
                 ue_version,
@@ -378,6 +368,59 @@ pub async fn set_ddc_registry_local_path(
     .map_err(|e| VoloError::OperationFailed(format!("ddc registry set task join: {}", e)))?
 }
 
+/// Write-side companion of [`get_ddc_registry_overrides`] for the SHARED
+/// variant (`UE-SharedDataCachePath`) — backs the ② 共享 DDC 配置通道详情
+/// panel's registry row. Sibling of [`set_ddc_registry_local_path`] rather
+/// than a `field` param added to it, so that command's existing call site and
+/// established behavior stay untouched: `ddc-write-registry.ps1`'s `Field`
+/// param defaults to `UE-LocalDataCachePath` when omitted, exactly what that
+/// existing caller still sends.
+#[tauri::command]
+pub async fn set_ddc_registry_shared_path(
+    db: State<'_, Db>,
+    machine_id: i64,
+    value: String,
+) -> VoloResult<DdcRegistrySetResult> {
+    use cache_core::core::zen::ops as node;
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || -> VoloResult<DdcRegistrySetResult> {
+        let host = ip_for(&db, machine_id)?;
+        let ue_user = require_ue_runtime_user(&db, machine_id)?;
+        let value = value.trim().to_string();
+        let invocation = if value.is_empty() {
+            format!("clear ddc registry shared path on machine {machine_id}")
+        } else {
+            format!("set ddc registry shared path {value} on machine {machine_id}")
+        };
+        let env = crate::commands::oplog::logged(
+            &db,
+            "ddc.set_registry_shared_path",
+            &[machine_id],
+            &invocation,
+            || {
+                node::run_node(
+                    &host,
+                    "ddc-write-registry.ps1",
+                    serde_json::json!({ "RuntimeUser": ue_user, "Value": value, "Field": "UE-SharedDataCachePath" }),
+                )
+                .and_then(|raw| node::parse_envelope(&raw, "ddc-write-registry"))
+            },
+        )?;
+        let message = env
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        Ok(DdcRegistrySetResult {
+            machine_id,
+            value: if value.is_empty() { None } else { Some(value) },
+            message,
+        })
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("ddc registry set task join: {}", e)))?
+}
+
 /// Read-only scan of `machine_id`'s desktop/start-menu shortcuts, `.bat`
 /// scripts, and Win32 services for `-LocalDataCachePath=`/
 /// `-SharedDataCachePath=` command-line overrides (the ② channel — never
@@ -395,6 +438,26 @@ pub async fn scan_command_line_args(
     })
     .await
     .map_err(|e| VoloError::OperationFailed(format!("cmdline scan task join: {}", e)))?
+}
+
+/// Tests whether `path` (typically a UNC share surfaced by ② join / a channel
+/// value on the 共享 DDC 配置通道 panel) is reachable from `machine_id` right
+/// now — backs the "路径失效" badge for a channel that was written but whose
+/// target share has since been torn down / renamed / gone offline.
+#[tauri::command]
+pub async fn test_path_reachable(
+    db: State<'_, Db>,
+    machine_id: i64,
+    path: String,
+) -> VoloResult<bool> {
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || {
+        let host = ip_for(&db, machine_id)?;
+        let exec = cache_core::core::ssh::SshExecutor::from_config()?;
+        path_reachability::test_reachable(&exec, &host, &path)
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("path reachability task join: {}", e)))?
 }
 
 #[cfg(test)]

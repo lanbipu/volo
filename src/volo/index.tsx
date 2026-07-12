@@ -30,6 +30,7 @@ import "./pages/cacheMachines"; // window.VOLO_CACHE_MACHINES
 import "./pages/cacheProjectScan"; // 集群工程扫描中立模块（须在 DDC/PSO 前，供其 ES import）
 import "./pages/cacheZen";      // window.VOLO_CACHE_ZEN（ZenServer 重做版，须在 cacheDdc 前）
 import "./pages/cacheDdcChan";  // window.VOLO_DDC_CHAN（③ 本地 DDC「DDC 配置通道详情」，须在 cacheDdc 前）
+import "./pages/cacheDdcSchan"; // window.VOLO_DDC_SCHAN（② 共享 DDC「共享 DDC 配置通道详情」，须在 cacheDdc 前）
 import "./pages/cacheDdc";      // window.VOLO_CACHE_DDC
 import "./pages/cachePsoDash";  // window.VOLO_CACHE_PSO_DASH（PSO 上场就绪保障 Dashboard + 设置，cacheDdc 的 ddc_pso 路由指向它）
 import "./pages/cacheDdcPak";   // window.VOLO_CACHE_DDC_PAK（DDC PAK 双栏重设计，须在 cacheDdc 后）

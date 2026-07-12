@@ -28,6 +28,7 @@ pub mod local_cache;
 pub mod loopback;
 pub mod network;
 pub mod pak_distribute;
+pub mod path_reachability;
 pub mod powershell;
 pub mod probe_keys;
 pub mod proc;
