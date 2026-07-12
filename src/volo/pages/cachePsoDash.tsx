@@ -271,7 +271,7 @@ import { useProjectThumbs } from "./cacheProjectThumbs";
         () => startPsoWarmup({ project_id: Number(p.id), target_machine_ids: nodes.map((n) => n.machineId),
           resolution_w: 1920, resolution_h: 1080, max_minutes: opts.maxMinutes || settings.max_minutes || 20,
           dc_cfg_path: dcPath, dc_node: dcNode, offscreen: opts.headless !== false,
-          extra_args: extraArgs, traversal, ue_version: null }).then((r) => {
+          extra_args: extraArgs, traversal, ue_version: (p.ue && p.ue !== '—') ? p.ue : null }).then((r) => {
             started = true;
             if (jobsRef) (r.runs || []).forEach((run) => jobsRef.current.push({ jobId: run.job_id, parentJobId: r.job_id }));
             resolve(r);
@@ -467,7 +467,8 @@ import { useProjectThumbs } from "./cacheProjectThumbs";
         () => startPsoColdtest({ project_id: Number(proj.id), target_machine_ids: [node.machineId],
           resolution_w: 1920, resolution_h: 1080, max_minutes: form.max_minutes || 20,
           dc_cfg_path: dcPath, dc_node: (form.dc_node && form.dc_node.trim()) || 'Node_0',
-          offscreen: form.offscreen !== false, extra_args: extraArgs, traversal: null, ue_version: null }),
+          offscreen: form.offscreen !== false, extra_args: extraArgs, traversal: null,
+          ue_version: (proj.ue && proj.ue !== '—') ? proj.ue : null }),
         { mode: 'event', events: ['pso-coldtest-progress', 'pso-coldtest-finalized'], jobIdOf: (r) => r.job_id,
           isMine: (pp, jid) => pp && pp.parent_job_id === jid, total: (r) => (r.runs || []).length,
           cancellable: true, cancelIds: (r) => (r.runs || []).map((x) => x.job_id).filter(Boolean),
