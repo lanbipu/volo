@@ -620,6 +620,11 @@ import {
     }, [searchOpen, query]);
     const [scanning, setScanning] = useState(false);
     const [lastScan, setLastScan] = useState(null);
+    /* 清空仅清屏（cleared=true），不删 PPROJ() 里的工程记录——与 DDC Pak 页真删库不同：
+       这里没有独立的工程发现表，projs 是全局共享数据，清空只是让本面板暂时不显示，
+       重新扫描（doScan 会重置 cleared）即恢复。 */
+    const [cleared, setCleared] = useState(false);
+    const [confirmClear, setConfirmClear] = useState(false);
 
     /* ---- 搜索根目录：可编辑行 + 一次添加多个 + 常用地址 ---- */
     const rootVals = roots.map((r) => r.val.trim()).filter(Boolean);
@@ -743,9 +748,11 @@ import {
 
     const doScan = () => {
       setScanning(true);
+      setCleared(false); setConfirmClear(false);
       const scanned = window.VOLO_CACHE_DDC.runDiscover(s, scope, rootsStr);
       (scanned || Promise.resolve()).finally(() => { setScanning(false); setLastScan(new Date()); });
     };
+    const clearList = () => { setCleared(true); setSel([]); setConfirmClear(false); };
 
     /* ---- 过滤 / 排序 / 分组 ---- */
     const projs = PPROJ();
@@ -762,10 +769,10 @@ import {
       return true;
     };
     const clearFilters = () => setFilters({ machine: null, cfg: null, warnOnly: false });
-    const matched = projs.filter((p) => inScope(p) && passFilters(p)
+    const matched = cleared ? [] : projs.filter((p) => inScope(p) && passFilters(p)
       && (!q || p.name.toLowerCase().includes(q) || (p.root + '\\' + p.uproject).toLowerCase().includes(q)));
     const projMachines = PNODES().filter((n) => projs.some((p) => p.machines.includes(n.id)));
-    const machineProjCount = (id) => projs.filter((p) => p.machines.includes(id)).length;
+    const machineProjCount = (id) => (cleared ? [] : projs).filter((p) => p.machines.includes(id)).length;
     const sorters = {
       updated: (a, b) => String(b.last).localeCompare(String(a.last)),
       name: (a, b) => a.name.localeCompare(b.name),
@@ -832,7 +839,8 @@ import {
     const listBody = sorted.length === 0
       ? h('div', { className: 'pak-list-empty' }, h(Icon, { name: 'search', size: 22 }),
           h('span', null, q ? ('无匹配「' + query + '」的工程')
-            : activeFilterCount ? '当前筛选无匹配工程 · 调整或清除筛选' : '当前范围内尚未发现工程，点上方「扫描」'))
+            : activeFilterCount ? '当前筛选无匹配工程 · 调整或清除筛选'
+            : cleared ? '已清空列表 · 点上方「扫描」重新发现工程' : '当前范围内尚未发现工程，点上方「扫描」'))
       : view === 'grouped'
         ? (() => {
             const groups = [];
@@ -928,6 +936,22 @@ import {
     const batchPairs = [];
     sel.forEach((id) => { const st = settingsOf(s, id); cfgTargetIds(st).forEach((mid) => batchPairs.push({ projId: id, machineId: mid })); });
 
+    const footEl = confirmClear
+      ? h(React.Fragment, null,
+          h('span', { className: 'pak-genbar-info' }, h(Icon, { name: 'alert', size: 13 }),
+            h('span', null, '确认清空扫描列表？仅清除当前显示，不影响原始工程，重新扫描即可恢复。')),
+          h('span', { className: 'pak-genbar-spacer' }),
+          h(Button, { variant: 'secondary', size: 'M', onPress: () => setConfirmClear(false) }, '取消'),
+          h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'x', size: 14 }), onPress: clearList }, '确认清空'))
+      : h(React.Fragment, null,
+          h('span', { className: 'pak-genbar-info' }, h(Icon, { name: 'info', size: 12 }),
+            sel.length ? h(React.Fragment, null, '已选 ', h('b', null, sel.length), ' 个工程 · 按各自设置的节点预跑并验证，跑完后显示在左栏')
+              : h(React.Fragment, null, '点工程打开设置 · 或勾选后批量预跑验证')),
+          h('span', { className: 'pak-genbar-spacer' }),
+          h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'x', size: 14 }), isDisabled: sorted.length === 0, onPress: () => setConfirmClear(true) }, '清空'),
+          h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'bolt', size: 14 }), isDisabled: batchPairs.length === 0 || !!run,
+            onPress: () => { onPrerun(batchPairs, null); setSel([]); } }, '预跑并验证' + (sel.length ? '（' + sel.length + '）' : '')));
+
     return h('section', { className: 'pak2-col pak2-right' },
       h('div', { className: 'pak2-h' },
         h('span', { className: 'pak2-ico' }, h(Icon, { name: 'search', size: 15 })),
@@ -967,16 +991,11 @@ import {
                 h(Icon, { name: rootVals.includes(f) ? 'check' : 'folder', size: 11 }), f),
               h('button', { className: 'pf-chip-x', type: 'button', title: '从常用中移除', onClick: () => removeFav(f) }, h(Icon, { name: 'x', size: 11 })))))) : null),
         h('div', { className: 'pak-scan-meta' }, h(Icon, { name: 'check', size: 12 }),
-          lastScan ? ('上次扫描 ' + lastScan.toLocaleTimeString().slice(0, 5) + ' · 已发现 ' + projs.length + ' 个工程') : ('已发现 ' + projs.length + ' 个工程')),
+          cleared ? '已清空列表 · 待重新扫描'
+            : lastScan ? ('上次扫描 ' + lastScan.toLocaleTimeString().slice(0, 5) + ' · 已发现 ' + projs.length + ' 个工程') : ('已发现 ' + projs.length + ' 个工程')),
         listBar,
         listBody),
-      h('div', { className: 'pak2-foot' },
-        h('span', { className: 'pak-genbar-info' }, h(Icon, { name: 'info', size: 12 }),
-          sel.length ? h(React.Fragment, null, '已选 ', h('b', null, sel.length), ' 个工程 · 按各自设置的节点预跑并验证，跑完后显示在左栏')
-            : h(React.Fragment, null, '点工程打开设置 · 或勾选后批量预跑验证')),
-        h('span', { className: 'pak-genbar-spacer' }),
-        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'bolt', size: 14 }), isDisabled: batchPairs.length === 0 || !!run,
-          onPress: () => { onPrerun(batchPairs, null); setSel([]); } }, '预跑并验证' + (sel.length ? '（' + sel.length + '）' : ''))));
+      h('div', { className: 'pak2-foot' + (confirmClear ? ' confirming' : '') }, footEl));
   }
 
   /* =========================================================================
