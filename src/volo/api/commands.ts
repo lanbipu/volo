@@ -139,10 +139,20 @@ export const setDdcIniPath = (machineId: number, field: "local" | "shared", valu
 // ✅ wired: cacheDdcChan ChanPanel ③ 注册表字段「修改/清除/设置」→ setDdcRegistryLocalPath（value 空串=清除；只写 UE-LocalDataCachePath，不动环境变量）
 export const setDdcRegistryLocalPath = (machineId: number, value: string) =>
   call<{ machine_id: number; value: string | null; message: string }>("set_ddc_registry_local_path", { machineId, value });
+// ✅ wired: cacheDdcSchan ChanPanelShared 注册表字段「修改/清除/设置」→ setDdcRegistrySharedPath（value 空串=清除；只写 UE-SharedDataCachePath，不动环境变量）
+export const setDdcRegistrySharedPath = (machineId: number, value: string) =>
+  call<{ machine_id: number; value: string | null; message: string }>("set_ddc_registry_shared_path", { machineId, value });
 // ✅ wired: cacheDdcChan ChanPanel ② 命令行参数通道（只读）→ scanCommandLineArgs（扫快捷方式/bat/服务）
 export const scanCommandLineArgs = (machineId: number) =>
   call<Array<{ source: string; name: string | null; path: string; cmd: string | null; matches: Record<string, string> }>>(
     "scan_command_line_args", { machineId });
+// ✅ wired: cacheDdcSchan channelsForShared ① 工程 INI 通道 → getMachineBackendField（读 [DerivedDataBackendGraph] Shared 整节点字段）
+export const getMachineBackendField = (machineId: number, filePath: string, section: string, nodeName: string) =>
+  call<{ found: boolean; fields: Record<string, string> }>(
+    "get_machine_backend_field", { machineId, filePath, section, nodeName });
+// ✅ wired: cacheDdcSchan channelsForShared → 「路径失效」徽章，测试已配置的 UNC 路径当前是否可达
+export const testPathReachable = (machineId: number, path: string) =>
+  call<boolean>("test_path_reachable", { machineId, path });
 
 /* ----------------------------- local cache ----------------------------- */
 // ✅ wired: cacheDdc 本地 DDC 部署（单机/批量）→ createLocalCache 远端建目录+ACL，再 set UE-LocalDataCachePath

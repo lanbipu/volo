@@ -838,6 +838,15 @@ pub enum HealthAction {
         #[command(flatten)]
         cred: crate::credential_args::CredentialArgs,
     },
+    /// Test whether a filesystem path (typically a UNC share) is reachable from a machine.
+    TestPathReachable {
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        path: String,
+        #[command(flatten)]
+        cred: crate::credential_args::CredentialArgs,
+    },
     /// Local vs Shared DDC file count + total size probe, with imbalance classifier.
     FileStats {
         #[arg(long)]
@@ -2327,6 +2336,31 @@ mod tests {
                 action: HealthAction::ScanCommandLine { host, .. },
             } => {
                 assert_eq!(host, "RENDER-01");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_health_test_path_reachable() {
+        let cli = Cli::try_parse_from([
+            "cache",
+            "health",
+            "test-path-reachable",
+            "--host",
+            "RENDER-01",
+            "--path",
+            r"\\ddc01\Volo\DDC",
+            "--cred-alias",
+            "admin",
+        ])
+        .unwrap();
+        match cli.command {
+            Domain::Health {
+                action: HealthAction::TestPathReachable { host, path, .. },
+            } => {
+                assert_eq!(host, "RENDER-01");
+                assert_eq!(path, r"\\ddc01\Volo\DDC");
             }
             _ => panic!("wrong variant"),
         }

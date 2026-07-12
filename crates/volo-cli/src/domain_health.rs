@@ -79,6 +79,12 @@ pub fn handle(ctx: &mut Ctx<'_>, action: HealthAction) -> VoloResult<()> {
             ctx.emitter.emit_result(&hits).ok();
             Ok(())
         }
+        HealthAction::TestPathReachable { host, path, cred: _ } => {
+            let exec = cache_core::core::ssh::SshExecutor::from_config()?;
+            let reachable = cache_core::core::path_reachability::test_reachable(&exec, &host, &path)?;
+            ctx.emitter.emit_result(&reachable).ok();
+            Ok(())
+        }
         HealthAction::FileStats { host, local_path, shared_path, cred: _ } => {
             let exec = cache_core::core::ssh::SshExecutor::from_config()?;
             let stats = cache_core::core::ddc_file_stats::run(&exec, &host, &local_path, &shared_path)?;

@@ -107,6 +107,20 @@ import {
     return null;
   };
 
+  /* 可清除的本地通道条目（命令行只读，不纳入）—— 供模块头部「一键清空所有配置」用 */
+  const LOCAL_ENTRY_LABEL = { 'ini.local': '本地 · LocalDerivedDataCache', 'ini.shared': '共享上游 · SharedDerivedDataCache',
+    reg: '注册表 · GlobalDataCachePath', env: '环境变量 · UE-LocalDataCachePath' };
+  function clearableLocalEntries(ch) {
+    if (!ch) return [];
+    const out = [];
+    if (ch.ini.local && ch.ini.local.st === 'set') out.push({ chan: LOCAL_ENTRY_LABEL['ini.local'], val: ch.ini.local.v, key: 'ini', sub: 'local' });
+    if (ch.ini.shared && ch.ini.shared.st === 'set') out.push({ chan: LOCAL_ENTRY_LABEL['ini.shared'], val: ch.ini.shared.v, key: 'ini', sub: 'shared' });
+    if (ch.reg && ch.reg.st === 'set') out.push({ chan: LOCAL_ENTRY_LABEL.reg, val: ch.reg.v, key: 'reg', sub: null });
+    if (ch.env && ch.env.st === 'set') out.push({ chan: LOCAL_ENTRY_LABEL.env, val: ch.env.v, key: 'env', sub: null });
+    return out;
+  }
+  const hasAnyLocalConfig = (ch) => clearableLocalEntries(ch).length > 0;
+
   /* 真实写入路由：ChanPanel 只认 (key, sub) 语义，实际 API 选择交给调用方
      （LegacyView 的 onSetChan/onClearChan），这里只是把 (key,sub,value) 映射到对应
      真实 invoke，返回 Promise 供 ChanPanel 展示 commit 中 / 失败态。 */
@@ -243,5 +257,5 @@ import {
         '按优先级顺序解析，高优先级通道非空时覆盖低优先级；实际生效以引擎启动日志为准。'));
   }
 
-  window.VOLO_DDC_CHAN = { CHAN_DEFS, channelsFor, effectiveKey, writeChannel, ChanPanel };
+  window.VOLO_DDC_CHAN = { CHAN_DEFS, channelsFor, effectiveKey, writeChannel, clearableLocalEntries, hasAnyLocalConfig, ChanPanel };
 })();

@@ -126,3 +126,63 @@
   .chan-field .fl { min-width: 110px; }
   .chan-err-reason, .chan-hosthint { padding-left: 0; }
 }
+
+/* 工程 INI 通道无工程时的占位说明（sans，弱化） */
+.chan-noproj { padding: 2px 0; font-family: var(--font-sans); font-size: 10.5px; color: var(--chrome-faint); }
+
+/* ②/③ 头部按钮簇（含「刷新状态」/「一键清空所有配置」）引入的行高差异，用少量
+   position:relative 微调对齐——仅在 .zen-2col 两栏并排时成立；@1180px 断点两栏
+   堆叠为一栏后必须清零，否则偏移量会让内容互相盖住（.zen-2col 断点定义见 app.css）。 */
+.ddc-schan-head { position: relative; top: 20px; }
+.ddc-schan-panel { position: relative; top: 10px; }
+.ddc-local-panel { position: relative; top: -10px; }
+@media (max-width: 1180px) {
+  .ddc-schan-head, .ddc-schan-panel, .ddc-local-panel { top: 0; }
+}
+
+/* ============================================================
+   ② 共享 DDC · 通道详情复用同一套视觉语言，追加两处专属状态：
+   「路径失效」死配置警示 + 无纳管共享时的信息提示条 / 行级清理
+   ============================================================ */
+
+/* 模块头部「一键清空所有配置」按钮（②/③ 共用 · danger 描边） */
+.chan-wipe { all: unset; box-sizing: border-box; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 12px; border-radius: 9999px; border: 1px solid color-mix(in srgb, var(--negative-visual) 34%, transparent);
+  background: color-mix(in srgb, var(--negative-visual) 10%, transparent); font-size: 11.5px; font-weight: 700;
+  color: var(--negative-visual); cursor: pointer; white-space: nowrap; transition: background .12s, border-color .12s; }
+.chan-wipe:hover:not(:disabled) { background: color-mix(in srgb, var(--negative-visual) 18%, transparent); }
+.chan-wipe svg { flex: 0 0 auto; }
+.chan-wipe:disabled { cursor: default; color: var(--chrome-faint); background: transparent; border-color: var(--chrome-line); }
+
+/* 展开壳：join 行与 local 行同款收下圆角 + 底边淡化 */
+.lcli.open > .cli-row.join {
+  border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+  border-bottom-color: color-mix(in srgb, var(--chrome-line) 40%, transparent);
+}
+.cli-row.join .cli-meta.clk { cursor: pointer; border-radius: 6px; }
+
+/* 通道徽章 · 路径失效（warning 色 + 图标 + 文字） */
+.chan-badge.dead { color: var(--notice-visual); background: color-mix(in srgb, var(--notice-visual) 15%, transparent); }
+
+/* 通道值 · 路径失效：等宽路径仍可见 + 「共享不可达」标签 */
+.chan-val.dead { color: var(--notice-visual); font-family: var(--font-code); gap: 6px;
+  border-color: color-mix(in srgb, var(--notice-visual) 45%, var(--chrome-line));
+  background: color-mix(in srgb, var(--notice-visual) 9%, var(--sunken)); }
+.chan-val.dead svg { flex: 0 0 auto; }
+.chan-val.dead .dv { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.chan-val.dead .dtag { flex: 0 0 auto; font-family: var(--font-sans); font-size: 10px; font-weight: 700;
+  padding: 1px 7px; border-radius: 9999px; background: color-mix(in srgb, var(--notice-visual) 18%, transparent); }
+
+/* 行级徽章 · 路径失效 / 有配置；环境变量 KV 死配置着色；行体警示边 */
+.cli-badge.dead { color: var(--notice-visual); background: color-mix(in srgb, var(--notice-visual) 15%, transparent); }
+.cli-badge.info2 { color: var(--informative-visual); background: color-mix(in srgb, var(--informative-visual) 13%, transparent); }
+.cli-envvar .ev-v.dead { color: var(--notice-visual); font-weight: 600; }
+.cli-row.join.dead { border-color: color-mix(in srgb, var(--notice-visual) 34%, var(--chrome-line)); }
+
+/* 无纳管共享时顶部信息提示条（info 样式） */
+.schan-infobar { display: flex; align-items: flex-start; gap: 10px; padding: 11px 13px; border-radius: 10px;
+  background: color-mix(in srgb, var(--informative-visual) 8%, var(--chrome-card));
+  border: 1px solid color-mix(in srgb, var(--informative-visual) 30%, var(--chrome-line)); }
+.schan-infobar .sib-ic { flex: 0 0 auto; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px;
+  background: color-mix(in srgb, var(--informative-visual) 16%, transparent); color: var(--informative-visual); margin-top: 1px; }
+.schan-infobar .sib-tx { font-family: var(--font-sans); font-size: 12px; line-height: 1.7; color: var(--chrome-dim); text-wrap: pretty; }
