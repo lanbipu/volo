@@ -17,10 +17,11 @@
 import * as React from "react";
 import "../ds";
 import "./cacheDdc";
-import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, getProjectThumbnail, deleteProject, listRemoteDirectories } from "../api/commands";
+import { listDeployedDdcPaks, deleteDdcPak, distributeDdcPak, deleteProject, listRemoteDirectories } from "../api/commands";
 import {
   humanBytes, pickSrc, scopeOpts, runDiscover, openFolder, clusterGate,
 } from "./cacheProjectScan";
+import { useProjectThumbs } from "./cacheProjectThumbs";
 
 (function () {
   const { Button } = window.Spectrum2DesignSystem_b6d1b3;
@@ -36,12 +37,6 @@ import {
     { id: 'machine', label: '按机器', icon: 'server', hint: '按每台机器持有的工程分组' },
   ];
   const SORT_OPTS = [{ id: 'updated', label: '更新时间' }, { id: 'name', label: '名称' }, { id: 'path', label: '路径' }, { id: 'time', label: '发现时间' }];
-  /* get_project_thumbnail 只回传策略 key，人话文案留在前端（PROBE_DICT/PROBE_NARRATIVE 同款分工）。 */
-  const THUMB_FROM_LABEL = {
-    uproject_same_name: 'uproject 同名缩略图',
-    saved_auto_screenshot: 'Saved 编辑器自动截图（无同名图）',
-    saved_autosequence: 'Saved 回退缩略图（无同名图）',
-  };
 
   const fmtMtime = (iso) => {
     if (!iso) return '—';
@@ -199,88 +194,6 @@ import {
   /* 已部署列表会话缓存：切顶层页（Cache↔校正等）会 remount PakPage，但不能因此重跑扫描。
      raw===undefined 表示本会话尚未扫过；[]=已扫且空；非空数组=已扫有结果。 */
   const DEPLOYED_CACHE = { raw: undefined, scannedAt: null };
-
-  /* 缩略图跨挂载缓存（同 DEPLOYED_CACHE 模式）：顶层切页会卸载重挂本组件（shell 的
-     ErrBoundary key 带 page），若缓存放组件内，每次切回都对全部工程重发 SSH 探测，
-     列表闪烁 1-2 秒。thumbs 为已取回的缩略图 patch，tried 为已出确定结果的工程 id。 */
-  const THUMB_CACHE = { thumbs: {}, tried: new Set() };
-  const THUMB_DB_NAME = 'volo-ddc-pak';
-  const THUMB_STORE_NAME = 'thumbs';
-  const THUMB_RECORD_KEY = 'cache';
-  let thumbPersistTimer = null;
-  let thumbPersistMerged = false;
-
-  /* base64 PNG 可能达到 MB 级，必须放 IndexedDB；任何不可用/失败都降级为空缓存，不能阻断页面。 */
-  const emptyThumbPersist = () => ({ thumbs: {}, tried: [] });
-  const openThumbDb = () => new Promise((resolve) => {
-    if (typeof indexedDB === 'undefined') { resolve(null); return; }
-    let settled = false;
-    const finish = (db) => {
-      if (settled) { if (db) db.close(); return; }
-      settled = true;
-      resolve(db);
-    };
-    try {
-      const req = indexedDB.open(THUMB_DB_NAME, 1);
-      req.onupgradeneeded = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains(THUMB_STORE_NAME)) db.createObjectStore(THUMB_STORE_NAME);
-      };
-      req.onsuccess = () => finish(req.result);
-      req.onerror = () => finish(null);
-      req.onblocked = () => finish(null);
-    } catch (e) { finish(null); }
-  });
-  const readThumbPersist = () => openThumbDb().then((db) => new Promise((resolve) => {
-    if (!db) { resolve(emptyThumbPersist()); return; }
-    let settled = false;
-    const finish = (value) => {
-      if (settled) return;
-      settled = true;
-      db.close();
-      resolve(value);
-    };
-    try {
-      const tx = db.transaction(THUMB_STORE_NAME, 'readonly');
-      const req = tx.objectStore(THUMB_STORE_NAME).get(THUMB_RECORD_KEY);
-      req.onsuccess = () => {
-        const value = req.result || {};
-        finish({
-          thumbs: value.thumbs && typeof value.thumbs === 'object' ? value.thumbs : {},
-          tried: Array.isArray(value.tried) ? value.tried : [],
-        });
-      };
-      req.onerror = () => finish(emptyThumbPersist());
-      tx.onabort = () => finish(emptyThumbPersist());
-    } catch (e) { finish(emptyThumbPersist()); }
-  })).catch(() => emptyThumbPersist());
-  const writeThumbPersist = (value) => openThumbDb().then((db) => new Promise((resolve) => {
-    if (!db) { resolve(); return; }
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      db.close();
-      resolve();
-    };
-    try {
-      const tx = db.transaction(THUMB_STORE_NAME, 'readwrite');
-      tx.objectStore(THUMB_STORE_NAME).put(value, THUMB_RECORD_KEY);
-      tx.oncomplete = finish;
-      tx.onerror = finish;
-      tx.onabort = finish;
-    } catch (e) { finish(); }
-  })).catch(() => {});
-  const persistThumbCache = () => writeThumbPersist({
-    thumbs: THUMB_CACHE.thumbs,
-    tried: Array.from(THUMB_CACHE.tried),
-  });
-  const scheduleThumbPersist = () => {
-    clearTimeout(thumbPersistTimer);
-    thumbPersistTimer = setTimeout(persistThumbCache, 800);
-  };
-  /* 模块加载即开始 hydrate，页面 effect 复用同一 Promise，避免每次 mount 重读。 */
-  const THUMB_PERSIST_READY = readThumbPersist();
 
   /* 完整路径悬浮提示 —— 自绘浮层（挂到 body，避开卡片 overflow:hidden 裁剪），
      近乎即时显示（120ms），替代原生 title 的 ~2s 延迟 */
@@ -451,71 +364,9 @@ import {
     const [cleared, setCleared] = useState(false);
     const [confirmClear, setConfirmClear] = useState(false);
 
-    /* ---------- 缩略图（懒加载，只在本页 merge 进 project 对象，不写回全局 UE_PROJECTS） ----------
-       每个工程用 pickSrc 选源机（与生成/校验同一套「哪台机代表这个工程」的既有约定）。
-       THUMB_CONCURRENCY 个 worker 从队列里拉取，而不是对全部 UE_PROJECTS 一次性并发发起
-       ——工程一多，无限并发会同时起一堆 ssh 子进程（每条请求最多 8MB base64），既打满
-       WebView 又可能把源机 SSH 撑爆。THUMB_CACHE.tried 只在 promise 真正 resolve（拿到「有/无
-       缩略图」这个确定结果）后才标记，reject（如源机瞬时离线、SSH 抖动）不标记——否则一次
-       瞬时失败会让该工程拿不到缩略图，直到 project count 变化触发下一次 effect。machine 暂
-       不在线（pickSrc 返回 null）同样不标记，原地跳过换下一个候选，让 worker 不因为一个工程
-       卡住。模块级缓存跨挂载存活，切页回来不重探。 */
-    const [thumbs, setThumbs] = useState(() => THUMB_CACHE.thumbs);
-    const THUMB_CONCURRENCY = 8; // 对齐后端 batch::DEFAULT_MAX_CONCURRENCY 的既有并发约定
-    /* thumbGen：工程扫描（doScan）完成后打一次点，强制已探测过的工程重新探测一轮——
-       否则「按最近更新时间」排序会一直用首次挂载时探测到的旧 mtime，直到本组件真正卸载重挂
-       （sort 键依赖同一份缩略图探测）。只挂在 doScan 上，不挂在通用 reloadCache 上：机器/凭据
-       等无关操作也会触发 reloadCache，若跟着清空 THUMB_CACHE.tried 会让所有工程重新探测一遍，
-       白白打一堆 SSH（这正是本页缩略图并发池设计要避免的“探测风暴”）。 */
-    const [thumbGen, setThumbGen] = useState(0);
-    useEffect(() => {
-      let alive = true;
-      THUMB_PERSIST_READY.then((persisted) => {
-        /* memory cache 更新更近：只用 persisted 补缺，再一次性显示，避免缩略图逐张 refresh-in。 */
-        if (!thumbPersistMerged) {
-          THUMB_CACHE.thumbs = Object.assign({}, persisted.thumbs, THUMB_CACHE.thumbs);
-          THUMB_CACHE.tried = new Set(persisted.tried.concat(Array.from(THUMB_CACHE.tried)));
-          thumbPersistMerged = true;
-          scheduleThumbPersist();
-        }
-        if (!alive) return;
-        setThumbs(THUMB_CACHE.thumbs);
-        const queue = UE_PROJECTS.filter((p) => !THUMB_CACHE.tried.has(p.id));
-        let next = 0;
-        const pump = () => {
-          if (!alive || next >= queue.length) return;
-          const p = queue[next++];
-          const src = pickSrc(p);
-          if (!src) { pump(); return; }
-          getProjectThumbnail(Number(p.id), src.machineId).then(
-            (probe) => {
-              if (!alive) return;
-              THUMB_CACHE.tried.add(p.id);
-              scheduleThumbPersist();
-              const t = probe && probe.thumbnail;
-              const patch = {};
-              if (t) Object.assign(patch, {
-                thumb: 'data:image/png;base64,' + t.base64,
-                thumbSrc: t.path,
-                thumbFrom: THUMB_FROM_LABEL[t.from] || t.from,
-                mtime: t.mtime || '',
-              });
-              if (probe && probe.size_bytes != null) patch.size = humanBytes(probe.size_bytes);
-              if (Object.keys(patch).length) setThumbs((m) => {
-                const nextMap = Object.assign({}, m, { [p.id]: patch });
-                THUMB_CACHE.thumbs = nextMap;
-                scheduleThumbPersist();
-                return nextMap;
-              });
-              pump();
-            },
-            () => { if (alive) pump(); });
-        };
-        for (let i = 0; i < THUMB_CONCURRENCY; i++) pump();
-      });
-      return () => { alive = false; };
-    }, [UE_PROJECTS.length, thumbGen]);
-    const withThumb = (p) => Object.assign({}, p, thumbs[p.id], { hasPak: deployedProjectIds.has(p.id) });
+    /* 缩略图懒加载：与 PSO 共用 cacheProjectThumbs（模块级缓存 + IndexedDB）。 */
+    const { thumbs, withThumb: mergeThumb, invalidate: invalidateThumbs } = useProjectThumbs(UE_PROJECTS, { includeSize: true });
+    const withThumb = (p) => mergeThumb(p, { hasPak: deployedProjectIds.has(p.id) });
 
     const openGenerate = (projs) => {
       if (!projs.length) return;
@@ -723,12 +574,7 @@ import {
     const doScan = () => {
       setCleared(false); setConfirmClear(false);
       const scanned = runDiscover(s, scope, rootsStr);
-      if (scanned) scanned.then(() => {
-        THUMB_CACHE.tried = new Set();
-        /* 立即落盘 cleared tried，避免 debounce 前退出 App 后重启复用旧探测结果。 */
-        persistThumbCache();
-        setThumbGen((g) => g + 1);
-      }, () => {});
+      if (scanned) scanned.then(() => invalidateThumbs(), () => {});
     };
     /* 清空已发现工程 —— 从 Volo 数据库删除全部工程记录（级联各机位置），不删磁盘文件。
        此前只 setCleared 清屏不删库，重扫后旧记录（DB 里仍在）原样回来，等于没清 —— 现在

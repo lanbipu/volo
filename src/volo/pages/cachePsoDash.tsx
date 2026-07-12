@@ -14,7 +14,8 @@
 
    真实数据源映射（对应设计稿 mock）：
      PNODES/PPROJ  → window.RENDER_NODES(过滤 roleKey==='render') / window.UE_PROJECTS
-                     （集群工程清单是共享资源；PSO 与 DDC PAK 都能独立发起扫描并刷新它）
+                     （集群工程清单是共享资源；PSO 与 DDC PAK 都能独立发起扫描并刷新它；
+                      缩略图经 cacheProjectThumbs 共用探测缓存）
      GL_SEED       → list_pso_status（PsoStatusCell，ok/degraded/none 三态 + invalidation_reasons）
                       按工程 fan-out 存 s.psoStatusByProject；四态由 glOf() 在 3 态基础上结合节点
                       在线态 + 失效原因分类现算（node_rebooted-only → 需复验，其余原因 → 已失效）
@@ -44,6 +45,7 @@ import {
 import {
   humanBytes, pickSrc, scopeOpts, runDiscover, openFolder, clusterGate,
 } from "./cacheProjectScan";
+import { useProjectThumbs } from "./cacheProjectThumbs";
 
 (function () {
   const { Button } = window.Spectrum2DesignSystem_b6d1b3;
@@ -622,6 +624,8 @@ import {
     }, [searchOpen, query]);
     const [scanning, setScanning] = useState(false);
     const [lastScan, setLastScan] = useState(null);
+    const projsForThumb = PPROJ();
+    const { thumbs, withThumb, invalidate: invalidateThumbs } = useProjectThumbs(projsForThumb, { includeSize: false });
 
     /* ---- 搜索根目录：可编辑行 + 一次添加多个 + 常用地址 ---- */
     const rootVals = roots.map((r) => r.val.trim()).filter(Boolean);
@@ -748,7 +752,10 @@ import {
       const scanned = runDiscover(s, scope, rootsStr);
       if (!scanned) { setScanning(false); setLastScan(new Date()); return; }
       scanned.finally(() => { setScanning(false); setLastScan(new Date()); });
-      scanned.then(() => { refreshAll(s).catch(() => {}); }, () => {});
+      scanned.then(() => {
+        invalidateThumbs();
+        refreshAll(s).catch(() => {});
+      }, () => {});
     };
 
     /* ---- 过滤 / 排序 / 分组 ---- */
@@ -770,8 +777,13 @@ import {
       && (!q || p.name.toLowerCase().includes(q) || (p.root + '\\' + p.uproject).toLowerCase().includes(q)));
     const projMachines = PNODES().filter((n) => projs.some((p) => p.machines.includes(n.id)));
     const machineProjCount = (id) => projs.filter((p) => p.machines.includes(id)).length;
+    const mtimeOf = (p) => (thumbs[p.id] && thumbs[p.id].mtime) || '';
     const sorters = {
-      updated: (a, b) => String(b.last).localeCompare(String(a.last)),
+      updated: (a, b) => {
+        const ma = mtimeOf(a), mb = mtimeOf(b);
+        if (ma || mb) return mb.localeCompare(ma);
+        return String(b.last).localeCompare(String(a.last));
+      },
       name: (a, b) => a.name.localeCompare(b.name),
       path: (a, b) => (a.root + '\\' + a.uproject).localeCompare(b.root + '\\' + b.uproject),
     };
@@ -785,22 +797,28 @@ import {
     const someSelected = visibleSelectedCount > 0 && !allSelected;
     const toggleAll = () => setSel((v) => allSelected ? v.filter((id) => !visibleIds.includes(id)) : Array.from(new Set(v.concat(visibleIds))));
 
-    /* ---- 工程行 / 平铺卡片：PSO 语境徽标（就绪 ok/tot · 已配置/待配置），不显示缩略图 ---- */
-    const psoRow = (p) => {
+    /* ---- 工程行 / 平铺卡片：就绪徽标 + 缩略图（与 DDC PAK 共用探测缓存） ---- */
+    const psoRow = (raw) => {
+      const p = withThumb(raw);
       const rd = projReady(s, p);
       const cc = cfgComplete(settingsOf(s, p.id));
       const readyTone = rd.tot === 0 ? 'neutral' : rd.ok === rd.tot ? 'positive' : rd.ok === 0 ? 'negative' : 'notice';
       const selected = sel.includes(p.id);
       const src = pickSrc(p);
+      const path = (src && p.locByMachine && p.locByMachine[String(src.machineId)]) || p.root;
       return h('div', { key: p.id, className: 'proj-row' + (selected ? ' on' : ''), onClick: () => openSettings(p) },
         h('span', { className: 'proj-mck' + (selected ? ' on' : ''), title: '选入批量预跑',
             onClick: (e) => { e.stopPropagation(); toggleSel(p); } }, selected ? h(Icon, { name: 'check', size: 12 }) : null),
-        h('span', { className: 'proj-ico' }, h(Icon, { name: 'film', size: 17 })),
+        h('span', { className: 'proj-ico' + (p.thumb ? ' has-thumb' : ''),
+            title: p.thumb ? ('缩略图来源 · ' + (p.thumbFrom || '') + '\n' + (p.thumbSrc || '')) : null },
+          p.thumb
+            ? h('img', { className: 'proj-thumb', src: p.thumb, alt: '', draggable: false })
+            : h(Icon, { name: 'film', size: 17 })),
         h('div', { className: 'proj-main' },
           h('div', { className: 'proj-name' }, p.name),
           h('button', { type: 'button', className: 'proj-sub proj-sub-open mono', title: '在文件资源管理器中打开工程文件夹',
-              onClick: (e) => { e.stopPropagation(); openFolder(s, p.root, p.name, src, 'pso'); } },
-            h('span', { className: 'proj-sub-tx' }, p.root + '\\' + p.uproject),
+              onClick: (e) => { e.stopPropagation(); openFolder(s, path, p.name, src, 'pso'); } },
+            h('span', { className: 'proj-sub-tx' }, path + '\\' + p.uproject),
             h('span', { className: 'proj-sub-ico' }, h(Icon, { name: 'folder', size: 12 })))),
         h('div', { className: 'proj-tags' },
           h('span', { className: 'proj-tag ue' }, 'UE ' + p.ue),
@@ -809,16 +827,20 @@ import {
           cc ? h('span', { className: 'proj-tag pak' }, h(Icon, { name: 'check', size: 10 }), '已配置')
              : h('span', { className: 'proj-tag warn' }, h(Icon, { name: 'alert', size: 10 }), '待配置')));
     };
-    const psoTile = (p) => {
+    const psoTile = (raw) => {
+      const p = withThumb(raw);
       const rd = projReady(s, p);
       const cc = cfgComplete(settingsOf(s, p.id));
       const selected = sel.includes(p.id);
       const src = pickSrc(p);
-      return h('div', { key: p.id, className: 'proj-tile' + (selected ? ' on' : ''), title: p.name + '  ·  ' + p.root + '\\' + p.uproject, onClick: () => openSettings(p) },
+      const path = (src && p.locByMachine && p.locByMachine[String(src.machineId)]) || p.root;
+      return h('div', { key: p.id, className: 'proj-tile' + (selected ? ' on' : ''), title: p.name + '  ·  ' + path + '\\' + p.uproject, onClick: () => openSettings(p) },
         h('span', { className: 'proj-tile-mck' + (selected ? ' on' : ''), title: '选入批量预跑',
             onClick: (e) => { e.stopPropagation(); toggleSel(p); } }, selected ? h(Icon, { name: 'check', size: 11 }) : null),
-        h('div', { className: 'proj-tile-media' },
-          h(Icon, { name: 'film', size: 22 }),
+        h('div', { className: 'proj-tile-media' + (p.thumb ? ' has-thumb' : '') },
+          p.thumb
+            ? h('img', { className: 'proj-tile-thumb', src: p.thumb, alt: '', draggable: false })
+            : h(Icon, { name: 'film', size: 22 }),
           h('div', { className: 'proj-tile-badges' },
             cc ? h('span', { className: 'proj-tile-badge pak', title: '已配置预跑' }, h(Icon, { name: 'check', size: 10 }), '已配置')
                : h('span', { className: 'proj-tile-badge warn', title: '待配置预跑' }, h(Icon, { name: 'alert', size: 10 })))),
@@ -827,7 +849,7 @@ import {
           h('div', { className: 'proj-tile-nrow' },
             h('div', { className: 'proj-tile-sub' }, 'UE ' + p.ue + ' · 就绪 ' + rd.ok + '/' + rd.tot),
             h('button', { type: 'button', className: 'proj-tile-open', title: '打开工程文件夹',
-                onClick: (e) => { e.stopPropagation(); openFolder(s, p.root, p.name, src, 'pso'); } }, h(Icon, { name: 'folder', size: 14 })))));
+                onClick: (e) => { e.stopPropagation(); openFolder(s, path, p.name, src, 'pso'); } }, h(Icon, { name: 'folder', size: 14 })))));
     };
 
     const groupBlock = (key, icon, title, items) => h('div', { key, className: 'pak-group' },
