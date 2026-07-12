@@ -214,6 +214,7 @@ pub fn run() {
             commands::env_vars::get_machine_env_var,
             commands::env_vars::set_machine_env_var_with_credential,
             commands::env_vars::get_machine_env_var_with_credential,
+            commands::env_vars::get_ddc_registry_overrides,
             commands::local_cache::create_local_cache,
             commands::oplog::record_operation,
             commands::ini_editor::read_ini_section,

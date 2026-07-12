@@ -49,6 +49,57 @@ pub async fn get_machine_env_var(
     .map_err(|e| VoloError::OperationFailed(format!("env var task join: {}", e)))?
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DdcRegistryOverrides {
+    pub machine_id: i64,
+    pub ue_runtime_user: String,
+    /// `HKCU\SOFTWARE\Epic Games\GlobalDataCachePath` key exists for that user.
+    pub found: bool,
+    pub local_path: Option<String>,
+    pub shared_path: Option<String>,
+}
+
+/// Read `machine_id`'s UE DDC registry overrides (`HKCU\SOFTWARE\Epic Games\
+/// GlobalDataCachePath`, values `UE-LocalDataCachePath`/`UE-SharedDataCachePath`)
+/// under `ue_runtime_user`'s hive. This is the channel the editor preferences
+/// 「全局本地/共享DDC路径」 fields actually read/write (registry only, never ini),
+/// and in UE's FFileSystemCacheStoreParams::Parse it beats the same-named env
+/// var — so probing only env vars misreports 「未设」 (lanPC 2026-07-12).
+/// Requires `ue_runtime_user` (same precondition as zen_read_local_runcontext).
+#[tauri::command]
+pub async fn get_ddc_registry_overrides(
+    db: State<'_, Db>,
+    machine_id: i64,
+) -> VoloResult<DdcRegistryOverrides> {
+    use cache_core::core::zen::ops as node;
+    // 同 get_machine_env_var：阻塞 SSH 不进主线程。
+    let db: Db = (*db).clone();
+    tokio::task::spawn_blocking(move || -> VoloResult<DdcRegistryOverrides> {
+        let host = ip_for(&db, machine_id)?;
+        let ue_user = data_machines::get_ue_runtime_user(&db, machine_id)?.ok_or_else(|| {
+            VoloError::InvalidInput(format!(
+                "machine id={machine_id} has no ue_runtime_user set — 先在机器详情①填「UE 运行用户」"
+            ))
+        })?;
+        let env = node::run_node(
+            &host,
+            "ddc-read-registry.ps1",
+            serde_json::json!({ "RuntimeUser": ue_user }),
+        )
+        .and_then(|raw| node::parse_envelope(&raw, "ddc-read-registry"))?;
+        let s = |k: &str| env.get(k).and_then(|v| v.as_str()).map(str::to_string);
+        Ok(DdcRegistryOverrides {
+            machine_id,
+            ue_runtime_user: ue_user,
+            found: env.get("found").and_then(|v| v.as_bool()).unwrap_or(false),
+            local_path: s("local_path"),
+            shared_path: s("shared_path"),
+        })
+    })
+    .await
+    .map_err(|e| VoloError::OperationFailed(format!("ddc registry task join: {}", e)))?
+}
+
 #[tauri::command]
 pub async fn set_machine_env_var_with_credential(
     db: State<'_, Db>,

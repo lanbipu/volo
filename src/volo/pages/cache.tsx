@@ -9,7 +9,7 @@ import * as React from "react";
 import "../ds";
 import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
   getWinrmBootstrapScript, getMachineDetail, scanNetwork, addDiscoveredMachine,
-  runHealthCheck, scanInis, applyFinding, getMachineEnvVar, readIniSection,
+  runHealthCheck, scanInis, applyFinding, getMachineEnvVar, getDdcRegistryOverrides, readIniSection,
   packageSshBootstrap, pickDirectory, revealPath, setUeRuntimeUser } from "../api/commands";
 
 (function () {
@@ -461,8 +461,11 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
     const proj = (window.UE_PROJECTS || []).find((p) => p.locByMachine && p.locByMachine[key]);
     return proj ? (proj.locByMachine[key] + '\\Config\\DefaultEngine.ini') : null;
   };
-  /* ⑤ 已读到的 DDC 相关配置 — 真实读三项（离线机不读，由调用方门控）：
+  /* ⑤ 已读到的 DDC 相关配置 — 真实读四项（离线机不读，由调用方门控）：
      ① 环境变量 UE-LocalDataCachePath / UE-SharedDataCachePath（get_machine_env_var）
+     ①' 注册表 HKCU GlobalDataCachePath（get_ddc_registry_overrides）——编辑器偏好
+        「全局本地/共享DDC路径」的真身，UE 解析时优先于同名环境变量；需 UE 运行用户已设
+        且该用户已登录（否则报错，按「未核对」展示而非误报「未设」）。
      ② 项目 DefaultEngine.ini 的 [StorageServers]（read_ini_section）——与 Zen ② 写入路径一致，
         按 locByMachine 推导；读显式声明值，不是「多层有效配置解析」。 */
   function loadDdcConfig(mid) {
@@ -471,9 +474,20 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
       getMachineEnvVar(mid, 'UE-LocalDataCachePath'),
       getMachineEnvVar(mid, 'UE-SharedDataCachePath'),
       iniPath ? readIniSection(mid, iniPath, 'StorageServers') : Promise.resolve(null),
+      getDdcRegistryOverrides(mid),
     ]).then((rs) => {
       const envLocal = rs[0].status === 'rejected' ? '读取失败' : (rs[0].value || '未设');
       const envShared = rs[1].status === 'rejected' ? '读取失败' : (rs[1].value || '未设');
+      let regLocal, regShared;
+      if (rs[3].status === 'rejected') {
+        const m = rs[3].reason && rs[3].reason.message ? String(rs[3].reason.message) : '';
+        const why = m.includes('ue_runtime_user') ? '未核对（先在①填「UE 运行用户」）'
+          : m.includes('not logged on') ? '未核对（该用户未登录，读不到其注册表）' : '读取失败';
+        regLocal = why; regShared = why;
+      } else {
+        regLocal = rs[3].value.local_path || '未设';
+        regShared = rs[3].value.shared_path || '未设';
+      }
       let ini;
       if (!iniPath) ini = { ok: false, val: '该机未发现 UE 工程', note: '未扫描到工程目录，无法读取 DefaultEngine.ini [StorageServers]', plain: '还没在这台机器上发现 UE 工程，读不到项目配置，因此无法判断是否连上了团队共享缓存。请先在「集群总览」扫描发现工程。', path: null };
       else if (rs[2].status === 'rejected') ini = { ok: false, val: '读取失败', note: (rs[2].reason && rs[2].reason.message) ? rs[2].reason.message : '远程读取 INI 失败', plain: '没能读到这台机器的项目配置，暂时无法判断是否连上了团队共享缓存。', path: iniPath };
@@ -483,7 +497,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
           ? { ok: true, val: '[StorageServers] Shared = ' + sh.value, note: '已配置共享上游', plain: '这台机器已连上团队共享缓存服务器（' + sh.value + '），渲染时可以直接复用团队已经算好的缓存，不用从头重算。', path: iniPath }
           : { ok: false, val: '[StorageServers] 未配置 Shared', note: '未写入共享上游服务器', plain: '这台机器还没连上团队共享缓存服务器，渲染结果只存在本地，不能复用别人已经算好的缓存，也无法共享给其他机器。', path: iniPath };
       }
-      return { envLocal, envShared, ini };
+      return { envLocal, envShared, regLocal, regShared, ini };
     });
   }
 
@@ -647,9 +661,12 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
               ? h('div', { className: 'ddc-read-row miss' }, h('span', { className: 'dim', style: { fontSize: 12 } }, '读取失败'))
               : h(React.Fragment, null,
                   h('div', { className: 'ddc-read-row' },
-                    h('div', { className: 'ddc-read-h' }, h('span', { className: 'ddc-read-k' }, '① 缓存目录在哪'), h('code', { className: 'ddc-tfile' }, '系统环境变量')),
-                    KV('本机缓存目录', ddc.envLocal, true),
-                    KV('团队共享缓存目录', ddc.envShared === '未设' ? '未设置（不使用团队共享缓存）' : ddc.envShared, ddc.envShared !== '未设' && ddc.envShared !== '读取失败')),
+                    h('div', { className: 'ddc-read-h' }, h('span', { className: 'ddc-read-k' }, '① 缓存目录在哪'), h('code', { className: 'ddc-tfile' }, '系统环境变量 + 注册表')),
+                    KV('本机缓存目录 · 环境变量', ddc.envLocal, true),
+                    KV('本机缓存目录 · 注册表', ddc.regLocal, ddc.regLocal !== '未设' && !/^未核对|^读取失败/.test(ddc.regLocal)),
+                    KV('团队共享缓存目录 · 环境变量', ddc.envShared === '未设' ? '未设置（不使用团队共享缓存）' : ddc.envShared, ddc.envShared !== '未设' && ddc.envShared !== '读取失败'),
+                    KV('团队共享缓存目录 · 注册表', ddc.regShared, ddc.regShared !== '未设' && !/^未核对|^读取失败/.test(ddc.regShared)),
+                    h('div', { className: 'ddc-read-sub' }, '注册表 = 编辑器偏好「全局本地/共享DDC路径」实际存放处（HKCU GlobalDataCachePath），UE 解析时优先于同名环境变量；两处都未设时用引擎默认目录。')),
                   h('div', { className: 'ddc-read-row' + (ddc.ini.ok ? '' : ' miss') },
                     h('div', { className: 'ddc-read-h' }, h('span', { className: 'ddc-read-k' }, '② 是否连上共享缓存'), h('code', { className: 'ddc-tfile' }, 'DefaultEngine.ini')),
                     h('div', { className: 'ddc-read-plain' + (ddc.ini.ok ? '' : ' warn') }, ddc.ini.plain),

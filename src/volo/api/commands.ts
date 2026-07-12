@@ -115,6 +115,10 @@ export const setMachineEnvVar = (machineId: number, name: string, value: string)
 // ✅ wired: machineDetail ⑥ → getMachineEnvVar(UE-Local/SharedDataCachePath) 异步读取
 export const getMachineEnvVar = (machineId: number, name: string) =>
   call<string | null>("get_machine_env_var", { machineId, name });
+// ✅ wired: machineDetail ⑤ → getDdcRegistryOverrides（HKCU GlobalDataCachePath，编辑器偏好「全局」DDC 路径的真身；注册表优先于同名环境变量）
+export const getDdcRegistryOverrides = (machineId: number) =>
+  call<{ machine_id: number; ue_runtime_user: string; found: boolean; local_path: string | null; shared_path: string | null }>(
+    "get_ddc_registry_overrides", { machineId });
 // 📝 no-ui: 凭据变体，无 UI 入口
 export const setMachineEnvVarWithCredential = (machineId: number, name: string, value: string, credentialAlias: string) =>
   call<void>("set_machine_env_var_with_credential", { machineId, name, value, credentialAlias });
