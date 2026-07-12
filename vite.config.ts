@@ -4,9 +4,18 @@ import macros from "unplugin-parcel-macros";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
+// @ts-expect-error process is a nodejs global
+const root = process.cwd();
+// @ts-expect-error process is a nodejs global
+const keyerTestTools = process.env.VITE_KEYER_TEST_TOOLS === "1";
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
+  publicDir: keyerTestTools ? `${root}/testdata/keyer` : "public",
+  define: {
+    __KEYER_TESTSET_FS__: JSON.stringify(`${root}/testdata/keyer/testset`),
+    __KEYER_VIDEO_FS__: JSON.stringify(`${root}/testdata/keyer/greenscreen_1080p60_h264.mp4`),
+  },
   // macros.vite() 必须在 react() 前：处理 @react-spectrum/s2 的 style() 宏
   plugins: [macros.vite(), react()],
 
@@ -47,6 +56,9 @@ export default defineConfig(async () => ({
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
+    },
+    fs: {
+      allow: [root],
     },
   },
 }));

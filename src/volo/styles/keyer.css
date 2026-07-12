@@ -30,7 +30,8 @@
 .kl-bench { flex-direction: column; gap: 12px; padding: 16px; align-items: stretch; }
 .kl-bench-canvas { max-height: 46%; align-self: center; }
 .kl-bench-table { overflow: auto; border: 1px solid var(--chrome-line); border-radius: 8px; background: var(--wash); }
-.kl-bench-row { display: grid; grid-template-columns: 1fr 90px 90px 80px; gap: 8px; padding: 6px 12px; font-size: 12px; color: var(--chrome-text); border-top: 1px solid var(--chrome-line); font-family: var(--font-code, monospace); }
+.kl-bench-row { display: grid; grid-template-columns: minmax(140px, 1fr) repeat(7, 74px) 80px; gap: 8px; min-width: 850px; padding: 6px 12px; font-size: 12px; color: var(--chrome-text); border-top: 1px solid var(--chrome-line); font-family: var(--font-code, monospace); }
 .kl-bench-row:first-child { border-top: 0; }
 .kl-bench-head { color: var(--chrome-dim); font-weight: 700; font-family: inherit; }
 .kl-bench-agg { color: var(--volo-700); font-weight: 700; }
+.kl-bench-error { grid-column: 2 / -1; color: var(--negative, #d7373f); }
