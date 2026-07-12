@@ -355,7 +355,7 @@ export const getPsoProjectSettings = (projectId: number) =>
 // ✅ wired: cachePsoDash 设置子视图「保存设置」
 export const setPsoProjectSettings = (settings: PsoProjectSettings) =>
   call<PsoProjectSettings>("set_pso_project_settings", { settings });
-// ✅ wired: cachePsoDash 设置子视图 nDisplay 配置来源「工程内自动发现」→ 选中工程时对主机器 SSH 递归找 .ndisplay
+// ✅ wired: cachePsoDash「工程内自动发现」→ discover_ndisplay_assets
 export const discoverNdisplayAssets = (machineId: number, projectRoot: string) =>
   call<string[]>("discover_ndisplay_assets", { machineId, projectRoot });
 // ✅ wired: cachePsoDash 配置巡检卡「nDisplay 配置同源」+ 设置保存前校验 → 逐机存在性检查（单机失败不拖垮整体）

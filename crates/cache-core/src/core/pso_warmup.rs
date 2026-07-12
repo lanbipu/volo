@@ -13,6 +13,7 @@
 //! (Replaces the falsified collect→distribute file pipeline: distributed
 //! `.upipelinecache` files are never consumed by uncooked `-game` builds.)
 
+use crate::core::ssh::{run_json, NodeScript, SshExecutor};
 use crate::core::ue_runner::{self, UeRunSpec, UeRunnerBackend};
 use crate::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
@@ -211,7 +212,7 @@ pub fn is_hitch_line(line: &str) -> bool {
 /// fast on a missing `-dc_cfg` — the run would silently degrade to a
 /// non-cluster shape and warm the wrong PSO set.
 pub fn check_dc_cfg_exists(host: &str, dc_cfg_path: &str) -> VoloResult<bool> {
-    let exec = crate::core::ssh::SshExecutor::from_config()?;
+    let exec = SshExecutor::from_config()?;
     let ps = format!(
         "if (Test-Path -LiteralPath '{}' -PathType Leaf) {{ 'DC_CFG_EXISTS' }} else {{ 'DC_CFG_MISSING' }}",
         dc_cfg_path.replace('\'', "''")
@@ -220,22 +221,66 @@ pub fn check_dc_cfg_exists(host: &str, dc_cfg_path: &str) -> VoloResult<bool> {
     Ok(out.stdout.contains("DC_CFG_EXISTS"))
 }
 
-/// 在目标机的工程根目录下递归发现 .ndisplay 配置资产（用于「设置」子视图 nDisplay
-/// 配置来源单选的「工程内自动发现」选项）。只列举存在性，不解析内容。
+/// 从 nDisplay 配置 `.uasset` 字节抽出内嵌 ConfigExport JSON（算法规格 / 单测锚点）。
+///
+/// 生产路径在远端 `discover-ndisplay-assets.ps1`（须与本函数同算法：marker
+/// `{"nDisplay":` → 括号深度 → 要求含 `"version"`）。不能 scp 回本机提取——
+/// `-dc_cfg` 必须落在渲染节点磁盘上的 `.ndisplay`。
+#[allow(dead_code)] // mirrored by discover-ndisplay-assets.ps1; kept as the tested algorithm spec
+pub(crate) fn extract_ndisplay_json_from_uasset_bytes(bytes: &[u8]) -> Option<String> {
+    const MARKER: &[u8] = b"{\"nDisplay\":";
+    let start = bytes.windows(MARKER.len()).position(|w| w == MARKER)?;
+    let mut depth = 0;
+    let mut end = None;
+    for (i, &b) in bytes.iter().enumerate().skip(start) {
+        match b {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let end = end?;
+    // ConfigExport 以 ASCII JSON 写入 uasset；非 UTF-8 直接丢弃。
+    let json = std::str::from_utf8(&bytes[start..=end]).ok()?;
+    json.contains("\"version\"").then(|| json.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+struct DiscoverNdisplayScriptResult {
+    ok: bool,
+    #[serde(default)]
+    paths: Vec<String>,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+/// 远端发现 nDisplay 配置（`discover-ndisplay-assets.ps1`）：已有 `*.ndisplay` +
+/// `Content/nDisplay_*.uasset` 物化为 `Saved/Volo/ndisplay/*.ndisplay`。
 pub fn discover_ndisplay_assets(host: &str, project_root: &str) -> VoloResult<Vec<String>> {
-    let exec = crate::core::ssh::SshExecutor::from_config()?;
-    let ps = format!(
-        "Get-ChildItem -LiteralPath '{}' -Recurse -Filter *.ndisplay -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName",
-        project_root.replace('\'', "''")
-    );
-    let out = exec.run_inline_powershell(host, &ps)?;
-    Ok(out
-        .stdout
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(str::to_string)
-        .collect())
+    let exec = SshExecutor::from_config()?;
+    let result: DiscoverNdisplayScriptResult = run_json(
+        &exec,
+        host,
+        &NodeScript {
+            name: "discover-ndisplay-assets.ps1",
+            args: serde_json::json!({ "ProjectRoot": project_root }),
+            ssh_user: None,
+        },
+    )?;
+    if !result.ok {
+        return Err(VoloError::OperationFailed(
+            result
+                .message
+                .unwrap_or_else(|| "ndisplay asset discovery failed".into()),
+        ));
+    }
+    Ok(result.paths)
 }
 
 pub fn launch_warmup(
@@ -349,5 +394,27 @@ mod tests {
         assert!(!is_hitch_line(
             "LogInit: Command Line: -LogCmds=\"LogPSOHitching Verbose\" -game"
         ));
+    }
+
+    #[test]
+    fn extract_ndisplay_json_from_uasset_bytes_finds_config_export() {
+        let mut bytes = b"preamble\0AssetPath\0".to_vec();
+        bytes.extend_from_slice(
+            br#"{"nDisplay":{"description":"","version":"5.00","assetPath":"/Game/InCamVFXBP/nDisplay_InCamVFX_Config.nDisplay_InCamVFX_Config","cluster":{"primaryNode":{"id":"Node_0"}}}}"#,
+        );
+        bytes.extend_from_slice(b"\0trailing");
+        let json = extract_ndisplay_json_from_uasset_bytes(&bytes).expect("json");
+        assert!(json.starts_with("{\"nDisplay\":"));
+        assert!(json.contains("\"version\":\"5.00\""));
+        assert!(json.contains("Node_0"));
+        assert!(extract_ndisplay_json_from_uasset_bytes(b"no export here").is_none());
+    }
+
+    #[test]
+    fn discover_ndisplay_script_is_loadable() {
+        let body = crate::core::powershell::read_script("discover-ndisplay-assets.ps1").unwrap();
+        assert!(body.contains("Extract-NDisplayJson"));
+        assert!(body.contains("nDisplay_*.uasset"));
+        assert!(body.contains("Saved\\Volo\\ndisplay") || body.contains("Saved\\\\Volo\\\\ndisplay"));
     }
 }

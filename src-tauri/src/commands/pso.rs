@@ -1182,8 +1182,8 @@ pub fn set_pso_project_settings(
     pso_project_settings::upsert(&db, &settings)
 }
 
-/// nDisplay 配置资产发现：SSH 到目标机递归找工程根目录下的 .ndisplay 文件，
-/// 供「设置」子视图 dc_cfg 来源单选的「工程内自动发现」选项使用。
+/// nDisplay 配置资产发现：见 `discover-ndisplay-assets.ps1`（*.ndisplay +
+/// Content/nDisplay_*.uasset → Saved/Volo/ndisplay）。
 #[tauri::command]
 pub async fn discover_ndisplay_assets(
     db: State<'_, Db>,
