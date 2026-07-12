@@ -24,11 +24,11 @@
      HIST_SEED     → list_pso_warmup_runs 按工程 fan-out 存 s.psoRunsByProject，跨工程合并时间倒序
      CFG_SEED      → get/set_pso_project_settings 按工程持久化（pso_project_settings 表）
      NDC_ASSETS    → discover_ndisplay_assets（打开设置模态时按需触发）
-     MAP_PATHS     → discover_project_maps（同模态并行扫 Content/**/*.umap → /Game/...）
+     MAP_PATHS     → discover_project_maps（同模态并行扫 Content 下 *.umap → /Game/...）
      常用地址收藏   → 纯前端 localStorage（volo.psoFavRoots），与 DDC PAK 的 volo.pakFavRoots 独立
 
    遍历引擎（RC WebSocket 驱动舞台扫场 + 收敛判定）设计稿标「只读」，但 TraversalRequest.map_path
-   是必填才能启用——「地图包路径」从工程 Content/**/*.umap 扫描成 /Game/... 列表供选择
+   是必填才能启用——「地图包路径」从工程 Content 下 *.umap 扫描成 /Game/... 列表供选择
    （可选手动保留旧路径）；留空 = 不启用遍历，预跑仍完整可用，只是没有收敛曲线。「收敛窗口」
    字段沿用既有 probe_interval_secs（遍历采样间隔），不是新概念、不新增后端字段。
 
