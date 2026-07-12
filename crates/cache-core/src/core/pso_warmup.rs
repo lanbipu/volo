@@ -252,7 +252,7 @@ pub(crate) fn extract_ndisplay_json_from_uasset_bytes(bytes: &[u8]) -> Option<St
 }
 
 #[derive(Debug, Deserialize)]
-struct DiscoverNdisplayScriptResult {
+struct DiscoverPathsScriptResult {
     ok: bool,
     #[serde(default)]
     paths: Vec<String>,
@@ -260,15 +260,18 @@ struct DiscoverNdisplayScriptResult {
     message: Option<String>,
 }
 
-/// 远端发现 nDisplay 配置（`discover-ndisplay-assets.ps1`）：已有 `*.ndisplay` +
-/// `Content/nDisplay_*.uasset` 物化为 `Saved/Volo/ndisplay/*.ndisplay`。
-pub fn discover_ndisplay_assets(host: &str, project_root: &str) -> VoloResult<Vec<String>> {
+fn discover_paths(
+    host: &str,
+    project_root: &str,
+    script_name: &'static str,
+    default_err: &str,
+) -> VoloResult<Vec<String>> {
     let exec = SshExecutor::from_config()?;
-    let result: DiscoverNdisplayScriptResult = run_json(
+    let result: DiscoverPathsScriptResult = run_json(
         &exec,
         host,
         &NodeScript {
-            name: "discover-ndisplay-assets.ps1",
+            name: script_name,
             args: serde_json::json!({ "ProjectRoot": project_root }),
             ssh_user: None,
         },
@@ -277,10 +280,61 @@ pub fn discover_ndisplay_assets(host: &str, project_root: &str) -> VoloResult<Ve
         return Err(VoloError::OperationFailed(
             result
                 .message
-                .unwrap_or_else(|| "ndisplay asset discovery failed".into()),
+                .unwrap_or_else(|| default_err.to_string()),
         ));
     }
     Ok(result.paths)
+}
+
+/// 远端发现 nDisplay 配置（`discover-ndisplay-assets.ps1`）：已有 `*.ndisplay` +
+/// `Content/nDisplay_*.uasset` 物化为 `Saved/Volo/ndisplay/*.ndisplay`。
+pub fn discover_ndisplay_assets(host: &str, project_root: &str) -> VoloResult<Vec<String>> {
+    discover_paths(
+        host,
+        project_root,
+        "discover-ndisplay-assets.ps1",
+        "ndisplay asset discovery failed",
+    )
+}
+
+/// `Content\Foo\Bar.umap` → `/Game/Foo/Bar`（与 `discover-project-maps.ps1` 同算法）。
+#[allow(dead_code)] // mirrored by discover-project-maps.ps1; kept as the tested algorithm spec
+pub(crate) fn content_umap_to_game_path(project_root: &str, umap_full_path: &str) -> Option<String> {
+    let full = umap_full_path.replace('/', "\\");
+    let root = project_root
+        .replace('/', "\\")
+        .trim_end_matches(['\\', '/'])
+        .to_string();
+    if root.is_empty()
+        || !full
+            .to_ascii_lowercase()
+            .starts_with(&root.to_ascii_lowercase())
+    {
+        return None;
+    }
+    const MARKER: &str = "\\Content\\";
+    let idx = full
+        .to_ascii_lowercase()
+        .find(&MARKER.to_ascii_lowercase())?;
+    let after = &full[idx + MARKER.len()..];
+    if !after.to_ascii_lowercase().ends_with(".umap") {
+        return None;
+    }
+    let rel = &after[..after.len() - ".umap".len()];
+    if rel.is_empty() {
+        return None;
+    }
+    Some(format!("/Game/{}", rel.replace('\\', "/")))
+}
+
+/// 远端发现工程地图包（`discover-project-maps.ps1`）：`Content/**/*.umap` → `/Game/...`。
+pub fn discover_project_maps(host: &str, project_root: &str) -> VoloResult<Vec<String>> {
+    discover_paths(
+        host,
+        project_root,
+        "discover-project-maps.ps1",
+        "project map discovery failed",
+    )
 }
 
 pub fn launch_warmup(
@@ -416,5 +470,43 @@ mod tests {
         assert!(body.contains("Extract-NDisplayJson"));
         assert!(body.contains("nDisplay_*.uasset"));
         assert!(body.contains("Saved\\Volo\\ndisplay") || body.contains("Saved\\\\Volo\\\\ndisplay"));
+    }
+
+    #[test]
+    fn content_umap_to_game_path_converts_under_content() {
+        assert_eq!(
+            content_umap_to_game_path(
+                r"E:\projects\test0712",
+                r"E:\projects\test0712\Content\InCamVFXBP\Maps\LED_CurvedStage.umap",
+            )
+            .as_deref(),
+            Some("/Game/InCamVFXBP/Maps/LED_CurvedStage")
+        );
+        assert_eq!(
+            content_umap_to_game_path(
+                r"E:\projects\test0712",
+                r"E:\projects\test0712\Content\StarterContent\Maps\Minimal_Default.umap",
+            )
+            .as_deref(),
+            Some("/Game/StarterContent/Maps/Minimal_Default")
+        );
+        assert!(content_umap_to_game_path(
+            r"E:\projects\test0712",
+            r"E:\other\Content\Maps\X.umap",
+        )
+        .is_none());
+        assert!(content_umap_to_game_path(
+            r"E:\projects\test0712",
+            r"E:\projects\test0712\Content\Maps\X.uasset",
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn discover_project_maps_script_is_loadable() {
+        let body = crate::core::powershell::read_script("discover-project-maps.ps1").unwrap();
+        assert!(body.contains("Convert-UmapToGamePath"));
+        assert!(body.contains("*.umap"));
+        assert!(body.contains("/Game/"));
     }
 }

@@ -24,13 +24,13 @@
      HIST_SEED     → list_pso_warmup_runs 按工程 fan-out 存 s.psoRunsByProject，跨工程合并时间倒序
      CFG_SEED      → get/set_pso_project_settings 按工程持久化（pso_project_settings 表）
      NDC_ASSETS    → discover_ndisplay_assets（打开设置模态时按需触发）
+     MAP_PATHS     → discover_project_maps（同模态并行扫 Content/**/*.umap → /Game/...）
      常用地址收藏   → 纯前端 localStorage（volo.psoFavRoots），与 DDC PAK 的 volo.pakFavRoots 独立
 
    遍历引擎（RC WebSocket 驱动舞台扫场 + 收敛判定）设计稿标「只读」，但 TraversalRequest.map_path
-   是必填才能启用——设计稿没给这个字段留输入框，本次移植沿用此前在「设置 · 预跑范围」组已补的
-   「地图包路径」输入（对预跑效果的必要补全，不是无中生有的新功能）；留空的工程预跑仍完整可用，
-   只是退化为固定机位、没有收敛 sparkline 数据。「收敛窗口」字段沿用既有 probe_interval_secs
-   （遍历采样间隔），不是新概念、不新增后端字段。
+   是必填才能启用——「地图包路径」从工程 Content/**/*.umap 扫描成 /Game/... 列表供选择
+   （可选手动保留旧路径）；留空 = 不启用遍历，预跑仍完整可用，只是没有收敛曲线。「收敛窗口」
+   字段沿用既有 probe_interval_secs（遍历采样间隔），不是新概念、不新增后端字段。
 
    s.psoSel（绿灯矩阵选中单元格）随本次改造一并下线——矩阵视图已移除，检查器不再承载任何选中态。 */
 import * as React from "react";
@@ -40,7 +40,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   listPsoStatus, listPsoWarmupRuns, startPsoWarmup, startPsoColdtest, cancelUeJob,
   listDriverCacheSnapshots, getPsoProjectSettings, setPsoProjectSettings,
-  discoverNdisplayAssets, listRemoteDirectories,
+  discoverNdisplayAssets, discoverProjectMaps, listRemoteDirectories,
 } from "../api/commands";
 import {
   humanBytes, pickSrc, scopeOpts, runDiscover, openFolder, clusterGate,
@@ -82,6 +82,22 @@ import { useProjectThumbs } from "./cacheProjectThumbs";
     node_rebooted: '节点已重启',
   };
   const STAGES = ['启动', '遍历中', '收敛判定', '验证跑'];
+  const shortGamePathLabel = (path) => path.split('/').filter(Boolean).slice(-2).join('/');
+  const buildMapPathOptions = (maps, savedPath) => {
+    const saved = (savedPath || '').trim();
+    const opts = [{ id: '', label: '不启用遍历（固定机位）' }]
+      .concat(maps.map((m) => ({ id: m, label: shortGamePathLabel(m) })));
+    if (saved && maps.indexOf(saved) < 0) {
+      opts.push({ id: saved, label: saved + '（工程内未找到）' });
+    }
+    return opts;
+  };
+  const loadDiscoveredList = (invoke, setItems, setLoading) => {
+    setLoading(true);
+    invoke()
+      .then((v) => setItems(Array.isArray(v) ? v : []), () => setItems([]))
+      .finally(() => setLoading(false));
+  };
 
   /* =================== 时间格式化 =================== */
   const parseTs = (ts) => {
@@ -370,6 +386,8 @@ import { useProjectThumbs } from "./cacheProjectThumbs";
     const [flash, setFlash] = useState(false);
     const [assets, setAssets] = useState([]);
     const [assetsLoading, setAssetsLoading] = useState(false);
+    const [maps, setMaps] = useState([]);
+    const [mapsLoading, setMapsLoading] = useState(false);
     const [coldNode, setColdNode] = useState(null);
     const [coldConfirm, setColdConfirm] = useState(false);
     const ft = useRef(null);
@@ -380,11 +398,12 @@ import { useProjectThumbs } from "./cacheProjectThumbs";
 
     useEffect(() => {
       if (!proj) return;
-      const nodeId = proj.primary || (proj.machines || [])[0];
-      const node = nodeId ? NODE(String(nodeId)) : null;
-      if (!node || node.status === 'offline' || !proj.root) { setAssets([]); return; }
-      setAssetsLoading(true);
-      discoverNdisplayAssets(node.machineId, proj.root).then((a) => setAssets(Array.isArray(a) ? a : []), () => setAssets([])).finally(() => setAssetsLoading(false));
+      const node = pickSrc(proj);
+      if (!node || node.status === 'offline' || !proj.root) {
+        setAssets([]); setMaps([]); return;
+      }
+      loadDiscoveredList(() => discoverNdisplayAssets(node.machineId, proj.root), setAssets, setAssetsLoading);
+      loadDiscoveredList(() => discoverProjectMaps(node.machineId, proj.root), setMaps, setMapsLoading);
     }, [projId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     /* Selector 在未选值时会回退显示 assets[0]（纯 UI 兜底），但那不会写回 form——不补这一步，
@@ -523,9 +542,19 @@ import { useProjectThumbs } from "./cacheProjectThumbs";
               numField('遍历时长上限', form.max_minutes, '分钟', (v) => set({ max_minutes: v }), '单节点遍历的硬上限，到点即停。'),
               numField('收敛窗口', form.probe_interval_secs, '秒', (v) => set({ probe_interval_secs: v }), '收敛采样间隔；仅在下方地图包路径已配置（启用遍历引擎）时生效。')),
             field('地图包路径（遍历引擎）',
-              h('input', { className: 'dp-input mono', placeholder: '例如 /Game/InCamVFXBP/Maps/LED_CurvedStage（留空 = 不启用遍历，固定机位）',
-                value: form.map_path || '', spellCheck: false, onChange: (e) => set({ map_path: e.target.value }) }),
-              '启用遍历引擎必须知道当前加载的地图包；留空预跑仍完整可用，只是没有收敛曲线。'),
+              mapsLoading
+                ? h('div', { className: 'pset-noasset' }, h('span', { className: 'spin' }, h(Icon, { name: 'sync', size: 13 })), '正在扫描工程内地图…')
+                : h(Selector, {
+                    kpre: '地图',
+                    value: form.map_path || '',
+                    options: buildMapPathOptions(maps, form.map_path),
+                    width: 300, align: 'left',
+                    onChange: (v) => set({ map_path: v || '' }),
+                  }),
+              mapsLoading ? null
+                : (maps.length
+                  ? '从工程 Content 扫描到的 .umap；选「不启用遍历」则固定机位预跑，无收敛曲线。'
+                  : '工程内未发现 .umap —— 可保持「不启用遍历」，或检查 Content 是否有地图。')),
             field('遍历驱动方式',
               h('div', { className: 'pset-ro' }, h(Icon, { name: 'live', size: 14 }), h('span', { className: 'mono' }, '舞台扫描 + RC WebSocket 走位'), h('span', { className: 'pset-ro-tag' }, '只读')),
               '与拍摄一致的走位驱动遍历场景，覆盖真实机位路径。'),
