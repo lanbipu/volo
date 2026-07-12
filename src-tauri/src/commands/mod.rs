@@ -3,6 +3,7 @@ pub mod bootstrap;
 pub mod consistency;
 pub mod credentials;
 pub mod deploy;
+pub mod ddc_channels;
 pub mod ddc_pak;
 pub mod discovery;
 pub mod env_vars;

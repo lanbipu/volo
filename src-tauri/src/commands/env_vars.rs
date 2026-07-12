@@ -5,7 +5,7 @@ use cache_core::data::{machines as data_machines, Db};
 use cache_core::error::{VoloError, VoloResult};
 use tauri::State;
 
-fn ip_for(db: &Db, machine_id: i64) -> VoloResult<String> {
+pub(crate) fn ip_for(db: &Db, machine_id: i64) -> VoloResult<String> {
     Ok(data_machines::find_by_id(db, machine_id)?
         .ok_or_else(|| VoloError::InvalidInput(format!("machine {} not found", machine_id)))?
         .ip)
