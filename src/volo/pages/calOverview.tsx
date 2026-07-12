@@ -175,6 +175,9 @@ import { loadProjectYaml, listRuns } from "../api/meshCommands";
     if (proj.loading) return h('div', { className: 'dash' }, h('div', { style: { padding: 20, fontSize: 12, color: 'var(--chrome-faint)' } }, '加载中…'));
     if (!proj.path) return h(Empty, { s, proj });
     return h('div', { className: 'dash' },
+      h('div', { className: 'cal2-ov-back' },
+        h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'arrowl', size: 15 }),
+          onPress: () => { CX.closeProject(); s.pushLog({ lv: 'info', cat: 'project', msg: '返回项目总览' }); } }, '返回项目总览')),
       h(ProjectSwitcher, { s, proj }),
       h(ProjectSummary, { s, proj }));
   }

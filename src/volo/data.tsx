@@ -76,6 +76,7 @@ const ICON_PATHS = {
   sliders:  '<path d="M3 6h7M14 6h3M3 14h3M10 14h7"/><circle cx="12" cy="6" r="1.9"/><circle cx="8" cy="14" r="1.9"/>',
   copy:     '<rect x="6.5" y="6.5" width="9" height="9" rx="1.4"/><path d="M4.5 11.5v-6A1 1 0 0 1 5.5 4.5h6"/>',
   arrowr:   '<path d="M4 10h11M11 6l4 4-4 4"/>',
+  arrowl:   '<path d="M16 10H5M9 6l-4 4 4 4"/>',
   server:   '<rect x="3" y="4" width="14" height="5" rx="1.3"/><rect x="3" y="11" width="14" height="5" rx="1.3"/><circle cx="6" cy="6.5" r=".9" fill="currentColor" stroke="none"/><circle cx="6" cy="13.5" r=".9" fill="currentColor" stroke="none"/>',
   external: '<path d="M11 4h5v5M16 4l-7 7M13.5 11.5V15A1.5 1.5 0 0 1 12 16.5H5A1.5 1.5 0 0 1 3.5 15V8A1.5 1.5 0 0 1 5 6.5h3.5"/>',
 };

@@ -123,6 +123,7 @@
 .cal2-switch-hint { display: flex; align-items: center; gap: 7px; margin-top: 12px; font-size: 11.5px; color: var(--chrome-faint); }
 
 /* 概览 · 项目概览模块 */
+.cal2-ov-back { margin-bottom: 4px; }
 .cal2-ov-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 13px; }
 .cal2-ov-stat { background: var(--wash-3); border: 1px solid var(--chrome-line); border-radius: 9px; padding: 10px 13px; display: flex; align-items: baseline; gap: 9px; }
 .cal2-ov-stat .n { font-size: 22px; font-weight: 800; color: var(--chrome-text); font-variant-numeric: tabular-nums; }

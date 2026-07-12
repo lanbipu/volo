@@ -83,15 +83,26 @@ import {
   }
   const scr = (s) => { const list = deriveScreens(projStore.get().config); return list.find((x) => x.id === s.calScreen) || list[0] || { id: '', name: '—', cols: 1, rows: 1, shape_mode: 'rectangular' }; };
 
+  /* 打开新项目 / 返回总览共用的「清空派生视图态」——每次都建新对象，避免多次
+     patch 共享同一个 runs: [] 数组引用。 */
+  const derivedResetFields = () => ({
+    measured: null, surveyReport: null, measurementsAbsPath: null, reconstruction: null, runs: [],
+  });
+
   async function openProjectPath(absPath, s) {
     const config = await loadProjectYaml(absPath);
     try { localStorage.setItem(PROJ_LS_KEY, absPath); } catch (e) {}
     const screenIds = Object.keys(config.screens);
     const screenId = screenIds.includes(s.calScreen) ? s.calScreen : screenIds[0];
     if (screenId && screenId !== s.calScreen) s.setCalScreen(screenId);
-    projStore.patch({ path: absPath, config, error: null,
-      measured: null, surveyReport: null, measurementsAbsPath: null, reconstruction: null, runs: [] });
+    projStore.patch({ path: absPath, config, error: null, ...derivedResetFields() });
     return config;
+  }
+
+  /* 「返回项目总览」：回到未打开项目时的着陆页（Empty），只清视图态，不动
+     PROJ_LS_KEY —— 下次启动仍自动续开最近项目，这里不是"关闭/遗忘项目"。 */
+  function closeProject() {
+    projStore.patch({ path: null, config: null, error: null, ...derivedResetFields() });
   }
 
   /* 刷新当前项目/屏幕的重建历史，并把最新一条 run 的完整报告（含真实顶点/quality_metrics）
@@ -330,7 +341,7 @@ import {
   /* 共享给 leaf 页：状态原子 + 项目基础设施 */
   window.VOLO_CAL2 = Object.assign(window.VOLO_CAL2 || {}, {
     Pill, rmsBadge, confBadge, statusPill, inspEmpty, scr,
-    useProj, projStore, deriveScreens, openProjectPath, reloadRuns,
+    useProj, projStore, deriveScreens, openProjectPath, closeProject, reloadRuns,
     pickAndOpenProject, pickAndSeedExample, rebuildMesh, viewRunInPreview, PROJ_LS_KEY,
   });
   window.VOLO_PAGES = window.VOLO_PAGES || {};
