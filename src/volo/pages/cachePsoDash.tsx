@@ -251,7 +251,9 @@ import { useProjectThumbs } from "./cacheProjectThumbs";
      真实 {jobId,parentJobId}，供运行态卡的取消按钮 / 事件过滤白名单使用；不传则只走
      runStreamingCmd 自带的任务抽屉 + 控制台流（复验场景不需要这层实时可视化）。 */
   const launchWarmupOne = (s, p, nodes, opts, jobsRef) => {
-    const settings = settingsOf(s, p.id);
+    /* opts.settings：刚保存、React setState 尚未落地时，调用方传入服务端返回的 settings，
+       避免 settingsOf(s) 仍读到旧配置 → 误报「未配置 nDisplay」且后端零启动。 */
+    const settings = (opts && opts.settings) || settingsOf(s, p.id);
     const dcPath = settings ? cfgDcPath(settings) : null;
     if (!dcPath) return Promise.reject(new Error(p.name + ' 未配置 nDisplay 配置来源，请先在「设置」中配置'));
     /* dc_node 是 nDisplay 集群节点 id（-dc_node/-StageFriendlyName），必须与 dc_cfg 指向的
@@ -440,7 +442,9 @@ import { useProjectThumbs } from "./cacheProjectThumbs";
       savePromise().then((saved2) => {
         const pairs = cfgTargetIds(saved2).map((mid) => ({ projId: Number(projId), machineId: mid }));
         close();
-        onPrerun(pairs, saved2.offscreen !== false ? '后台' : '窗口');
+        /* 把刚保存的 settings 显式传入：setPsoSettingsByProject 是 React setState，
+           同步 onPrerun→launchWarmupOne 时 settingsOf 仍可能是旧值。 */
+        onPrerun(pairs, saved2.offscreen !== false ? '后台' : '窗口', { [Number(projId)]: saved2 });
       }, (err) => s.pushLog({ lv: 'err', cat: 'pso', ch: 'ssh', msg: '保存失败 · ' + (err && err.message ? err.message : err) }));
     };
 
@@ -1258,17 +1262,19 @@ import { useProjectThumbs } from "./cacheProjectThumbs";
        mode 是 '后台' | '窗口' | null：非空时对本批全部工程强制该启动形态（PrerunConfirm 里
        用户显式选的场景，蓄意覆盖）；传 null 表示不强制，按各工程自己保存的 offscreen 设置分别
        决定 headless（ScanPanel 批量按钮场景——不该把已经手动关掉 headless 的工程悄悄压成后台）。 */
-    const startRun = (pairs, mode) => {
+    const startRun = (pairs, mode, settingsOverrideByProj) => {
       if (run || !pairs.length) return;
+      const settingsOfPid = (pid) =>
+        (settingsOverrideByProj && settingsOverrideByProj[pid]) || settingsOf(s, pid);
       const projIds = Array.from(new Set(pairs.map((x) => x.projId)));
-      const anyTraversal = projIds.some((pid) => { const st = settingsOf(s, pid); return st && st.map_path && st.map_path.trim(); });
+      const anyTraversal = projIds.some((pid) => { const st = settingsOfPid(pid); return st && st.map_path && st.map_path.trim(); });
       const batchId = 'b' + Date.now();
       jobsRef.current = [];
       setRun({ __batchId: batchId, proj: projIds, mode: mode || '按各工程设置', traversal: anyTraversal,
         nodes: pairs.map(({ projId, machineId }) => {
           const n = PNODES().find((x) => x.machineId === machineId);
           return { projId, id: n ? n.id : String(machineId), machineId, stage: 0, startedAt: Date.now(),
-            limit: (settingsOf(s, projId) || {}).max_minutes || 20, done: false };
+            limit: (settingsOfPid(projId) || {}).max_minutes || 20, done: false };
         }),
         hitch: [0], growth: [0], converged: { hitch: false, growth: false } });
       const byProj = {};
@@ -1276,12 +1282,18 @@ import { useProjectThumbs } from "./cacheProjectThumbs";
       Promise.allSettled(Object.keys(byProj).map((pid) => {
         const p = PROJ(pid); if (!p) return Promise.reject(new Error('工程不存在'));
         const nodes = byProj[pid].map((mid) => PNODES().find((n) => n.machineId === mid)).filter(Boolean);
-        const headless = mode == null ? (settingsOf(s, pid) || {}).offscreen !== false : mode !== '窗口';
-        return launchWarmupOne(s, p, nodes, { headless }, jobsRef);
+        if (!nodes.length) return Promise.reject(new Error(p.name + ' 预跑节点不在线或不在渲染节点列表中'));
+        const settings = settingsOfPid(pid);
+        const headless = mode == null ? (settings || {}).offscreen !== false : mode !== '窗口';
+        return launchWarmupOne(s, p, nodes, { headless, settings }, jobsRef);
       })).then((rs) => {
         const anyOk = rs.some((r) => r.status === 'fulfilled');
         if (!anyOk) {
-          s.pushLog({ lv: 'err', cat: 'pso', ch: 'ssh', msg: '预跑并验证全部启动失败，详见控制台日志' });
+          const firstErr = rs.find((r) => r.status === 'rejected');
+          const detail = firstErr && firstErr.reason
+            ? (firstErr.reason.message || String(firstErr.reason)) : '';
+          s.pushLog({ lv: 'err', cat: 'pso', ch: 'ssh',
+            msg: '预跑并验证全部启动失败' + (detail ? (' · ' + detail) : '，详见控制台日志') });
           setRun(null);
         }
       });
