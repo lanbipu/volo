@@ -297,6 +297,37 @@ import {
     const [joinPending, setJoinPending] = useState({});       /* 节点 id -> 'join' | 'leave' */
     const [joinTarget, setJoinTarget] = useState(null);       /* 选中要加入哪个共享服务器（share id）*/
     const [commonLocalDir, setCommonLocalDir] = useState('D:\\UE_DDC\\Local');
+    /* ③ 本地 DDC · 每台机器的「DDC 配置通道详情」（ini/命令行/注册表/环境变量四条通道）
+       + 展开 / 刷新态。chanData：节点 id -> channelsFor() 结果（键不存在=从未拉取过；
+       null=离线或拉取失败；否则为四通道数据）。chanLoadingIds 是「首次展开自动拉取」的
+       单机 loading 态（未刷新过就展开也该显示 skeleton，而不是误报「离线」）；
+       chanRefreshing 是模块头部「刷新状态」批量刷新的全局 loading 态，两者在 ChanPanel
+       里合并成一个 loading 布尔。 */
+    const CHAN = window.VOLO_DDC_CHAN;
+    const [chanExpanded, setChanExpanded] = useState(() => new Set());
+    const [chanData, setChanData] = useState({});
+    const [chanLoadingIds, setChanLoadingIds] = useState(() => new Set());
+    const [chanRefreshing, setChanRefreshing] = useState(false);
+    /* 节点 id -> 代次令牌：每次为该节点起一次读（单机首展开 / 批量刷新）或成功提交一次
+       编辑都会 bump；读取 resolve 时若代次已被更晚的读或编辑抢先，直接丢弃（同 readStatus
+       的 readGenRef 手法，按节点粒度）——否则「刷新状态」批量读的旧快照可能在编辑提交
+       之后才 resolve，把刚保存的值覆盖回旧值。 */
+    const chanGenRef = useRef({});
+    const bumpChanGen = (id) => { chanGenRef.current[id] = (chanGenRef.current[id] || 0) + 1; return chanGenRef.current[id]; };
+    const fetchChanOne = (n) => {
+      const gen = bumpChanGen(n.id);
+      setChanLoadingIds((prev) => { const s = new Set(prev); s.add(n.id); return s; });
+      return CHAN.channelsFor(n)
+        .then((ch) => ch, () => null)
+        .then((ch) => {
+          if (chanGenRef.current[n.id] === gen) setChanData((prev) => Object.assign({}, prev, { [n.id]: ch }));
+          setChanLoadingIds((prev) => { const s = new Set(prev); s.delete(n.id); return s; });
+        });
+    };
+    const toggleChan = (n) => {
+      setChanExpanded((prev) => { const s = new Set(prev); s.has(n.id) ? s.delete(n.id) : s.add(n.id); return s; });
+      if (!chanExpanded.has(n.id) && !(n.id in chanData) && !chanLoadingIds.has(n.id)) fetchChanOne(n);
+    };
     /* 共享创建（create_share）表单：share_name + local_path + mode。 */
     const [shareName, setShareName] = useState('Volo_DDC');
     const [shareLocal, setShareLocal] = useState('D:\\Volo\\DDC');
@@ -733,17 +764,58 @@ import {
     const selDeployedNodes = selNodes.filter((n) => localDeployed.includes(n.id));
     const selUndeployedNodes = selNodes.filter((n) => !localDeployed.includes(n.id));
 
+    /* 刷新状态（模块头部按钮）：readStatus 已有的「已部署/已加入」env-var fan-out 之外，
+       并发拉取全部机器的四条配置通道详情。两个 fan-out 各自失败互不影响；chanRefreshing
+       驱动按钮「读取中…」禁用态和已展开面板的 skeleton。 */
+    const refreshChanAll = () => {
+      if (chanRefreshing) return;
+      setChanRefreshing(true);
+      readStatus();
+      const gens = {};
+      IP_SORTED_NODES.forEach((n) => { gens[n.id] = bumpChanGen(n.id); });
+      Promise.allSettled(IP_SORTED_NODES.map((n) =>
+        CHAN.channelsFor(n).then((ch) => ({ id: n.id, ch }), () => ({ id: n.id, ch: null }))))
+        .then((rs) => {
+          setChanData((prev) => {
+            const next = Object.assign({}, prev);
+            rs.forEach((r) => {
+              if (r.status === 'fulfilled' && chanGenRef.current[r.value.id] === gens[r.value.id]) next[r.value.id] = r.value.ch;
+            });
+            return next;
+          });
+          setChanRefreshing(false);
+        });
+    };
+    /* 通道就地编辑「保存/清除」→ 真实写入对应后端（env var / 注册表 / ini），成功后
+       乐观更新本地 chanData（不必整台机器重新拉取四路）、并 bump 该节点代次令牌
+       （让任何更早起、更晚 resolve 的批量刷新读丢弃自己的旧快照，不覆盖回刚保存的值）。
+       返回 Promise 供 ChanPanel 展示 commit 中 / 失败态。value === '' 视为清除——「保存」
+       和「清除」走的是同一个函数，空值统一按清除处理，不做「保存空框=什么都不做」的
+       特例（那会让用户以为清空生效了，实际值原封不动）。 */
+    const applyChanEdit = (n, key, sub, value) => CHAN.writeChannel(n, key, sub, value).then(() => {
+      bumpChanGen(n.id);
+      setChanData((prev) => {
+        const nd = Object.assign({}, prev[n.id]);
+        const field = value ? { v: value, st: 'set' } : { v: null, st: 'unset' };
+        if (key === 'ini') { nd.ini = Object.assign({}, nd.ini, { [sub]: field }); } else { nd[key] = field; }
+        return Object.assign({}, prev, { [n.id]: nd });
+      });
+    });
+    const onSetChan = (n, key, sub, val) => applyChanEdit(n, key, sub, val);
+    const onClearChan = (n, key, sub) => applyChanEdit(n, key, sub, '');
+
     const localRow = (n) => {
       const dep = localDeployed.includes(n.id);
       const off = n.status === 'offline';
       const isSel = selLocal.includes(n.id);
       const pend = localPending[n.id];
-      return h('div', { key: n.id, className: 'cli-row local' + (off ? ' off' : '') + (isSel ? ' sel' : (dep ? ' on' : '')) },
+      const open = chanExpanded.has(n.id);
+      const row = h('div', { className: 'cli-row local' + (off ? ' off' : '') + (isSel ? ' sel' : (dep ? ' on' : '')) },
         off ? h('span', { className: 'lcheck dis' }, h('span', { className: 'proj-mck dis' }))
           : h('button', { className: 'lcheck', title: isSel ? '取消选择' : '选择', onClick: () => toggleLocalSel(n.id) },
               h('span', { className: 'proj-mck' + (isSel ? ' on' : '') }, isSel ? h(Icon, { name: 'check', size: 12 }) : null)),
         CX.dot(NODE_STATUS[n.status].visual),
-        h('div', { className: 'cli-meta' },
+        h('div', { className: 'cli-meta clk', title: open ? '收起配置通道' : '展开配置通道', onClick: () => toggleChan(n) },
           h('div', { className: 'cli-host mono' }, n.host),
           h('div', { className: 'cli-sub' }, n.ip + ' · ' + n.role)),
         h('div', { className: 'pathio cli-pathio' },
@@ -762,7 +834,12 @@ import {
             : dep ? h(React.Fragment, null,
                 h('button', { className: 'mini-btn', onClick: () => deployLocalOne(n) }, h(Icon, { name: 'sync', size: 12 }), '重新部署'),
                 h('button', { className: 'mini-btn danger', onClick: () => undeployLocalOne(n) }, h(Icon, { name: 'trash', size: 12 }), '取消部署'))
-              : h('button', { className: 'mini-btn', onClick: () => deployLocalOne(n) }, h(Icon, { name: 'bolt', size: 12 }), '部署')));
+              : h('button', { className: 'mini-btn', onClick: () => deployLocalOne(n) }, h(Icon, { name: 'bolt', size: 12 }), '部署'),
+          h('button', { className: 'lrow-chev' + (open ? ' on' : ''), title: open ? '收起配置通道' : '展开配置通道',
+            'aria-expanded': open, onClick: () => toggleChan(n) }, h(Icon, { name: 'chevd', size: 16 }))));
+      return h('div', { key: n.id, className: 'lcli' + (open ? ' open' : '') },
+        row,
+        open ? h(CHAN.ChanPanel, { node: n, ch: chanData[n.id], loading: chanRefreshing || chanLoadingIds.has(n.id), onSet: onSetChan, onClear: onClearChan }) : null);
     };
 
     return h('div', { className: 'res ddc' },
@@ -803,9 +880,13 @@ import {
                 h('div', { className: 'cli-list' }, joinCandidates.map(joinRow)))) : null),
           /* 右列：③ 本地 DDC */
           h('div', { className: 'zen-col' },
-            h('div', { className: 'ddc-sec-h' },
+            h('div', { className: 'ddc-sec-h chan-sech' },
               h('span', null, '③ 本地 DDC'),
-              h('span', { className: 'dim' }, localDeployed.length + ' / ' + RENDER_NODES.length + ' 已部署 · 可逐台设置，或用上方统一路径一键应用到全部')),
+              h('div', { className: 'chan-sech-r' },
+                h('span', { className: 'dim' }, localDeployed.length + ' / ' + RENDER_NODES.length + ' 已部署 · 可逐台设置，或用上方统一路径一键应用到全部'),
+                h('button', { className: 'chan-refresh', disabled: chanRefreshing, onClick: refreshChanAll,
+                  title: '回读部署状态与四条配置通道详情' },
+                  h(Icon, { name: 'sync', size: 12 }), chanRefreshing ? '读取中…' : '刷新状态'))),
             h('div', { className: 'cli-panel' },
               h('div', { className: 'cli-top' },
                 h('div', { className: 'local-hint' }, h(Icon, { name: 'server', size: 15 }), '逐台本地缓存回退层 · 命中链路兜底'),

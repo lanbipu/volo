@@ -10,7 +10,7 @@
      🔌 ui-sim —— 前端有对应 UI 入口（按钮/面板/流程），当前 runTask 模拟或读 mock，
                   待接真实 invoke（wire-target）
      📝 no-ui  —— 当前设计无对应 UI 承载点（后端-only 能力）；附原因，不强造 UI
-   现状汇总：✅ 62 · 🔌 0 · 📝 38 = 100。 */
+   现状汇总（按本文件实际 marker 行数逐条数出，非估算）：✅ 91 · 🔌 0 · 📝 40 = 131。 */
 import { call } from "./invoke";
 import type {
   Machine, MachineDetail, UeRuntimeUserRow, WinrmBootstrapResult, PackageBootstrapResult, EchoResult,
@@ -125,6 +125,24 @@ export const setMachineEnvVarWithCredential = (machineId: number, name: string, 
 // 📝 no-ui: 凭据变体，无 UI 入口
 export const getMachineEnvVarWithCredential = (machineId: number, name: string, credentialAlias: string) =>
   call<string | null>("get_machine_env_var_with_credential", { machineId, name, credentialAlias });
+
+/* ----------------------------- ddc config channels (③ 本地 DDC · DDC 配置通道详情) ----------------------------- */
+// ✅ wired: cacheDdcChan ChanPanel ① EditorSettings ini 通道 → getDdcIniOverrides
+// （[/Script/UnrealEd.EditorSettings] LocalDerivedDataCache/SharedDerivedDataCache，
+// 文件位于 %APPDATA%\Unreal Engine\<major.minor>\Config\Windows\EditorSettings.ini）
+export const getDdcIniOverrides = (machineId: number) =>
+  call<{ machine_id: number; ue_runtime_user: string; ue_version: string; found: boolean; local_path: string | null; shared_path: string | null }>(
+    "get_ddc_ini_overrides", { machineId });
+// ✅ wired: cacheDdcChan ChanPanel ① ini 字段「修改/清除/设置」→ setDdcIniPath（field: 'local'|'shared'，value 空串=清除）
+export const setDdcIniPath = (machineId: number, field: "local" | "shared", value: string) =>
+  call<{ machine_id: number; field: string; value: string | null }>("set_ddc_ini_path", { machineId, field, value });
+// ✅ wired: cacheDdcChan ChanPanel ③ 注册表字段「修改/清除/设置」→ setDdcRegistryLocalPath（value 空串=清除；只写 UE-LocalDataCachePath，不动环境变量）
+export const setDdcRegistryLocalPath = (machineId: number, value: string) =>
+  call<{ machine_id: number; value: string | null; message: string }>("set_ddc_registry_local_path", { machineId, value });
+// ✅ wired: cacheDdcChan ChanPanel ② 命令行参数通道（只读）→ scanCommandLineArgs（扫快捷方式/bat/服务）
+export const scanCommandLineArgs = (machineId: number) =>
+  call<Array<{ source: string; name: string | null; path: string; cmd: string | null; matches: Record<string, string> }>>(
+    "scan_command_line_args", { machineId });
 
 /* ----------------------------- local cache ----------------------------- */
 // ✅ wired: cacheDdc 本地 DDC 部署（单机/批量）→ createLocalCache 远端建目录+ACL，再 set UE-LocalDataCachePath
