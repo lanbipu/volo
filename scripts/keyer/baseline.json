@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "source": "numpy-ref-v2 (aligned to WGSL single-pass); replace with GPU baseline after native calibration gate",
+  "source": "GPU M3 Max WKWebView WebGPU (aligned v2; ref-calibrated — MAD/grad within check_report tol, edge is a record-only metric-band artifact)",
   "tolerances": {
     "mad": 0.002,
     "grad": 0.004,
@@ -11,17 +11,17 @@
     "flicker": 0.003
   },
   "cases": [
-    {"id":"case01_disc","mad":0.000518,"grad":0.000903,"edge":0.048574,"fgErr":0.000080,"bgResidue":0.000000,"coreLeak":0.000000,"flicker":0.000000},
-    {"id":"case02_hair","mad":0.001463,"grad":0.003581,"edge":0.024054,"fgErr":0.000281,"bgResidue":0.000308,"coreLeak":0.000034,"flicker":0.000000},
-    {"id":"case03_bottle","mad":0.002982,"grad":0.000536,"edge":0.049806,"fgErr":0.000516,"bgResidue":0.000000,"coreLeak":0.000007,"flicker":0.000000},
-    {"id":"case04_uneven","mad":0.001280,"grad":0.003233,"edge":0.021699,"fgErr":0.000256,"bgResidue":0.000206,"coreLeak":0.000050,"flicker":0.000000},
-    {"id":"case05_noise","mad":0.002294,"grad":0.005751,"edge":0.038115,"fgErr":0.000598,"bgResidue":0.000414,"coreLeak":0.001656,"flicker":0.000991},
-    {"id":"case06_spill","mad":0.002492,"grad":0.005965,"edge":0.040372,"fgErr":0.000300,"bgResidue":0.000308,"coreLeak":0.000067,"flicker":0.000000},
-    {"id":"case07_motion","mad":0.006340,"grad":0.001110,"edge":0.137854,"fgErr":0.000955,"bgResidue":0.000009,"coreLeak":0.000001,"flicker":0.008808},
-    {"id":"case08_blonde","mad":0.007474,"grad":0.010061,"edge":0.083045,"fgErr":0.001920,"bgResidue":0.000007,"coreLeak":0.055102,"flicker":0.000000},
-    {"id":"case09_glass","mad":0.004040,"grad":0.001896,"edge":0.031644,"fgErr":0.001310,"bgResidue":0.000000,"coreLeak":0.000000,"flicker":0.000000},
-    {"id":"case10_pan","mad":0.000771,"grad":0.001610,"edge":0.068334,"fgErr":0.000225,"bgResidue":0.000048,"coreLeak":0.000000,"flicker":0.000118},
-    {"id":"case11_chroma420","mad":0.010058,"grad":0.021354,"edge":0.156946,"fgErr":0.001231,"bgResidue":0.005169,"coreLeak":0.001222,"flicker":0.000000},
-    {"id":"case12_greenish","mad":0.044749,"grad":0.004597,"edge":0.233941,"fgErr":0.007861,"bgResidue":0.000000,"coreLeak":0.306318,"flicker":0.000000}
+    {"id":"case01_disc","mad":0.001036,"grad":0.002665,"edge":0.001364,"fgErr":0.000100,"bgResidue":0.000000,"coreLeak":0.000000,"flicker":0.000000},
+    {"id":"case02_hair","mad":0.001985,"grad":0.005325,"edge":0.002497,"fgErr":0.000285,"bgResidue":0.000316,"coreLeak":0.000045,"flicker":0.000000},
+    {"id":"case03_bottle","mad":0.003516,"grad":0.002331,"edge":0.004294,"fgErr":0.000508,"bgResidue":0.000000,"coreLeak":0.000142,"flicker":0.000000},
+    {"id":"case04_uneven","mad":0.001806,"grad":0.004985,"edge":0.002269,"fgErr":0.000259,"bgResidue":0.000210,"coreLeak":0.000053,"flicker":0.000000},
+    {"id":"case05_noise","mad":0.002807,"grad":0.007478,"edge":0.003549,"fgErr":0.000597,"bgResidue":0.000427,"coreLeak":0.001625,"flicker":0.000789},
+    {"id":"case06_spill","mad":0.003010,"grad":0.007703,"edge":0.003807,"fgErr":0.000303,"bgResidue":0.000313,"coreLeak":0.000074,"flicker":0.000000},
+    {"id":"case07_motion","mad":0.006865,"grad":0.002926,"edge":0.008523,"fgErr":0.000952,"bgResidue":0.000009,"coreLeak":0.000001,"flicker":0.009144},
+    {"id":"case08_blonde","mad":0.007942,"grad":0.011780,"edge":0.007008,"fgErr":0.001920,"bgResidue":0.000007,"coreLeak":0.055387,"flicker":0.000000},
+    {"id":"case09_glass","mad":0.004497,"grad":0.003739,"edge":0.005399,"fgErr":0.001305,"bgResidue":0.000000,"coreLeak":0.000000,"flicker":0.000000},
+    {"id":"case10_pan","mad":0.001314,"grad":0.003435,"edge":0.001704,"fgErr":0.000244,"bgResidue":0.000046,"coreLeak":0.000000,"flicker":0.000111},
+    {"id":"case11_chroma420","mad":0.010557,"grad":0.023125,"edge":0.013418,"fgErr":0.001234,"bgResidue":0.005201,"coreLeak":0.001285,"flicker":0.000000},
+    {"id":"case12_greenish","mad":0.045127,"grad":0.006276,"edge":0.004266,"fgErr":0.007861,"bgResidue":0.000000,"coreLeak":0.306283,"flicker":0.000000}
   ]
 }

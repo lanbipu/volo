@@ -82,7 +82,7 @@ The v2 gate checks every case independently for:
 - Core Leakage;
 - alpha flicker after subtracting intentional GT frame change.
 
-`baseline.json` currently records the NumPy reference baseline and says so in `source`. Replace it with two bit-identical native GPU bench runs before using the numbers as a release claim.
+`baseline.json` now records the native **GPU** bench (M3 Max WKWebView WebGPU) and says so in `source`. It was ref-calibrated: MAD/grad agree with the NumPy reference within `check_report` tolerance on all 12 cases; the near-zero relative gaps on tiny-value cases are the documented fp16/bilinear/8-bit-PNG floor, not divergence.
 
 In development builds, **自动加载测试集** uses the generated manifest and bypasses the file dialog. Manual loading still accepts selecting all fixture PNGs. Bench image decoding always sets `colorSpaceConversion: "none"`.
 
@@ -111,6 +111,8 @@ python3 scripts/keyer/gen_video.py | ffmpeg -y \
 HEVC/ProRes files from v1 are intentionally not regenerated and must be labelled as v1-physics codec fixtures.
 
 Performance acceptance remains native-app 1080p60 HUD `>=58fps`. If dynamic plate misses budget, degrade in this order: update plate every other frame, then keep conditional refine disabled. Never reintroduce per-frame texture allocation.
+
+Measured (M3 Max, WKWebView WebGPU dev build): static/estimated plate hits **58.6 fps (17.1 ms)**; per-frame **dynamic** plate settles at **~48–54 fps (18–21 ms)** with brief dips to ~30 fps while the plate EMA re-converges after `自动 Key`. The dynamic per-frame pull-push (~24 small passes) is the ~2–3 ms that pushes the dynamic case just over the 16.7 ms budget, so it is the first degradation lever (update every other frame); note that changing that cadence also shifts `case10_pan`, so keep the NumPy reference in sync when applying it. This is a dev-lab figure — the production real-time host is UE (native Metal/D3D), where per-pass overhead is far lower.
 
 ## 8. Build verification
 

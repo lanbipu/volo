@@ -145,7 +145,7 @@ Metrics are MAD, gradient error, Edge-band SAD, premult scene-linear `fgErr`, Ba
 
 ## ⑥ Known boundaries / backlog
 
-- Current `baseline.json` is transparently marked `numpy-ref-v2`; native GPU automation was unavailable when v2 was authored. Replace it with the reproducible GPU report before claiming production quality parity.
+- `baseline.json` now holds the ref-calibrated **GPU** bench (M3 Max WKWebView WebGPU): MAD and grad match the NumPy ref within `check_report` tolerance on all 12 cases (worst |Δ| MAD 0.0005, grad 0.0018), and coreLeak/fgErr/bgResidue/flicker are near-identical — confirming the WGSL matches the reference. `edge` reads ~16× lower on GPU: a record-only metric-band artifact (bilinear-sampled GPU edges sit closer to the antialiased GT), not a matte divergence, so it is not a calibration gate.
 - Dynamic plate is image-based. Long-lived occlusion is inferred/frozen, not ground truth; tracked 3D Cyclorama projection remains phase two.
 - `case12_greenish` remains a documented weakness: the same-color guard was re-scanned across three thresholds and rejected each time (fixes only `case12`, regresses 10–11 other cases). A global guard cannot solve it; a per-region gate is the open path.
 - Transparent foregrounds (`case03_bottle`, `case09_glass`) are a documented refine boundary: the two-pass re-solve that fixes opaque-core cases destroys their partial-alpha gradients, so refine is not globally safe and stays disabled.
