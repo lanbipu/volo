@@ -23,7 +23,7 @@
                       （仅在「工程预跑设置」模态的冷启动确认门里展示影响范围，不再单列驱动缓存卡片）
      HIST_SEED     → list_pso_warmup_runs 按工程 fan-out 存 s.psoRunsByProject，跨工程合并时间倒序
      CFG_SEED      → get/set_pso_project_settings 按工程持久化（pso_project_settings 表）
-     NDC_ASSETS    → discover_ndisplay_assets（SSH 递归扫 .ndisplay，打开设置模态时按需触发）
+     NDC_ASSETS    → discover_ndisplay_assets（打开设置模态时按需触发）
      常用地址收藏   → 纯前端 localStorage（volo.psoFavRoots），与 DDC PAK 的 volo.pakFavRoots 独立
 
    遍历引擎（RC WebSocket 驱动舞台扫场 + 收敛判定）设计稿标「只读」，但 TraversalRequest.map_path
@@ -378,7 +378,6 @@ import { useProjectThumbs } from "./cacheProjectThumbs";
     const set = (patch) => setForm((f) => Object.assign({}, f, patch));
     const dirty = JSON.stringify(form) !== JSON.stringify(saved);
 
-    /* nDisplay 资产发现：打开模态时对该工程的主机器（primary，回退任一在线机）SSH 扫一次。 */
     useEffect(() => {
       if (!proj) return;
       const nodeId = proj.primary || (proj.machines || [])[0];
@@ -467,10 +466,10 @@ import { useProjectThumbs } from "./cacheProjectThumbs";
       h('div', { className: 'pset-group-b' }, kids));
 
     const assetControl = assetsLoading
-      ? h('div', { className: 'pset-noasset' }, h('span', { className: 'spin' }, h(Icon, { name: 'sync', size: 13 })), '正在扫描工程内 .ndisplay 资产…')
+      ? h('div', { className: 'pset-noasset' }, h('span', { className: 'spin' }, h(Icon, { name: 'sync', size: 13 })), '正在扫描工程内 nDisplay 配置…')
       : assets.length
         ? h(Selector, { kpre: '配置资产', value: form.dc_cfg_asset || assets[0], options: assets.map((a) => ({ id: a, label: a.split(/[\\/]/).pop() })), width: 300, align: 'left', onChange: (v) => set({ dc_cfg_asset: v }) })
-        : h('div', { className: 'pset-noasset' }, h(Icon, { name: 'alert', size: 13 }), '工程内未发现 nDisplay 配置资产');
+        : h('div', { className: 'pset-noasset' }, h(Icon, { name: 'alert', size: 13 }), '工程内未发现 nDisplay 配置（*.ndisplay / Content/nDisplay_*.uasset）');
     const manualControl = h('input', { className: 'dp-input mono pset-path', placeholder: '例如 D:\\Projects\\Helios\\Config\\Stage.ndisplay',
       value: form.dc_cfg_manual_path || '', spellCheck: false, onChange: (e) => set({ dc_cfg_manual_path: e.target.value }) });
     const radioRow = (val, label, subControl) => h('div', { className: 'pset-rrow' + (form.dc_cfg_source === val ? ' on' : '') },
