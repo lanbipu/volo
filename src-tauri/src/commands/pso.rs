@@ -10,8 +10,8 @@ use cache_core::core::{
 };
 use cache_core::data::{
     driver_cache_snapshots, machine_ue_installs, machines as data_machines, project_locations,
-    pso_project_settings, pso_warmup_runs, Db, DriverCacheSnapshot, PsoProjectSettings,
-    PsoWarmupRun, WarmupStatus,
+    projects as data_projects, pso_project_settings, pso_warmup_runs, Db, DriverCacheSnapshot,
+    PsoProjectSettings, PsoWarmupRun, WarmupStatus,
 };
 use cache_core::error::{VoloError, VoloResult};
 use serde::{Deserialize, Serialize};
@@ -27,6 +27,32 @@ fn now_millis() -> u128 {
         .unwrap_or_default()
 }
 
+/// Parse `5.5` / `5.5.4` → (5, 5) so install rows and EngineAssociation align.
+fn ue_version_key(version: &str) -> Option<(u32, u32)> {
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
+}
+
+/// Request pin → project EngineAssociation (major.minor) → machine primary.
+fn resolve_warmup_ue_version(
+    db: &Db,
+    project_id: i64,
+    request_ue_version: Option<&str>,
+) -> VoloResult<Option<String>> {
+    if let Some(v) = request_ue_version.map(str::trim).filter(|s| !s.is_empty()) {
+        return Ok(Some(v.to_string()));
+    }
+    let project = data_projects::get(db, project_id)?.ok_or_else(|| {
+        VoloError::InvalidInput(format!("project {} not found", project_id))
+    })?;
+    match (project.ue_version_major, project.ue_version_minor) {
+        (Some(maj), Some(min)) => Ok(Some(format!("{}.{}", maj, min))),
+        _ => Ok(None),
+    }
+}
+
 fn resolve_engine_path(
     db: &Db,
     machine_id: i64,
@@ -40,9 +66,13 @@ fn resolve_engine_path(
         )));
     }
     if let Some(version) = preferred_version {
+        let want = ue_version_key(version);
         let install = installs
             .into_iter()
-            .find(|install| install.version == version)
+            .find(|install| {
+                install.version == version
+                    || want.is_some() && ue_version_key(&install.version) == want
+            })
             .ok_or_else(|| {
                 VoloError::InvalidInput(format!("UE {} not on machine {}", version, machine_id))
             })?;
@@ -83,8 +113,9 @@ pub struct StartPsoWarmupRequest {
     /// 启用 RC 遍历（预跑/验证两段都驱动舞台扫场）；None = 固定机位。
     #[serde(default)]
     pub traversal: Option<TraversalRequest>,
-    /// Pin the UE version used on every node; None = each node's primary
-    /// install (risky when a node's primary differs from the project version).
+    /// Pin the UE version used on every node. None = project's
+    /// EngineAssociation (`ue_version_major.minor`); if the project has no
+    /// parsed version, fall back to each node's primary install.
     #[serde(default)]
     pub ue_version: Option<String>,
 }
@@ -372,6 +403,9 @@ pub async fn start_pso_warmup(
         return Err(VoloError::InvalidInput("verify_minutes must be >= 1".into()));
     }
 
+    let preferred_ue =
+        resolve_warmup_ue_version(&db, request.project_id, request.ue_version.as_deref())?;
+
     // Validate ALL targets up front — reject the whole request on any gap so a
     // partial fan-out never leaves half the farm silently unwarmed.
     struct Target {
@@ -392,7 +426,7 @@ pub async fn start_pso_warmup(
                         request.project_id, machine_id
                     ))
                 })?;
-        let engine_path = resolve_engine_path(&db, *machine_id, request.ue_version.as_deref())?;
+        let engine_path = resolve_engine_path(&db, *machine_id, preferred_ue.as_deref())?;
         targets.push(Target {
             machine_id: *machine_id,
             ip: machine.ip,
@@ -715,6 +749,9 @@ pub async fn start_pso_coldtest(
         return Err(VoloError::InvalidInput("max_minutes must be >= 1".into()));
     }
 
+    let preferred_ue =
+        resolve_warmup_ue_version(&db, request.project_id, request.ue_version.as_deref())?;
+
     struct Target {
         machine_id: i64,
         ip: String,
@@ -733,7 +770,7 @@ pub async fn start_pso_coldtest(
                         request.project_id, machine_id
                     ))
                 })?;
-        let engine_path = resolve_engine_path(&db, *machine_id, request.ue_version.as_deref())?;
+        let engine_path = resolve_engine_path(&db, *machine_id, preferred_ue.as_deref())?;
         targets.push(Target {
             machine_id: *machine_id,
             ip: machine.ip,

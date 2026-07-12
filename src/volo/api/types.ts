@@ -465,7 +465,7 @@ export interface StartPsoWarmupRequest {
   verify_minutes?: number;
   /** 启用 RC 遍历（两段都驱动舞台扫场）；省略/null = 固定机位。 */
   traversal?: TraversalRequest | null;
-  /** 钉死各节点用的 UE 版本；省略 = 各节点 primary 安装（与工程版本不符时有风险）。 */
+  /** 钉死各节点用的 UE 版本；省略 = 工程 EngineAssociation（major.minor）；工程无版本时才回退节点 primary。 */
   ue_version?: string | null;
 }
 
