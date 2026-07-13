@@ -864,6 +864,7 @@ mod tests {
             yaw_deg: 0.0,
             height_offset_mm: 0.0,
             normal_flip: false,
+            origin_aligned: false,
         }
     }
 

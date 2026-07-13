@@ -175,13 +175,24 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
     return { boxes, seams, cols, rows, cwM, chM, place };
   }
 
+  function applyScreenTransform(p, m) {
+    const pos = m.position_m || [0, 0, 0];
+    const yawRad = ((m.yaw_deg || 0) * Math.PI) / 180;
+    const cy = Math.cos(yawRad), sy = Math.sin(yawRad);
+    return {
+      x: p.x * cy + p.y * sy + (pos[0] || 0),
+      y: -p.x * sy + p.y * cy + (pos[1] || 0),
+      z: p.z + (pos[2] || 0) + (m.height_offset_mm || 0) / 1000,
+    };
+  }
+
   /* ---------- 已重建几何：读真实 ReconstructedSurface ---------- */
-  function buildRealBoxes(surface) {
+  function buildRealBoxes(surface, m) {
     const cols = surface.topology.cols, rows = surface.topology.rows;
     const verts = surface.vertices;
     const prov = surface.vertex_provenance || [];
     const vi = (c, r) => r * (cols + 1) + c;
-    const at = (c, r) => { const v = verts[vi(c, r)]; return { x: v[0], y: v[1], z: v[2] }; };
+    const at = (c, r) => { const v = verts[vi(c, r)]; return applyScreenTransform({ x: v[0], y: v[1], z: v[2] }, m); };
     const provAt = (c, r) => prov.length ? prov[vi(c, r)] : null;
     const boxes = [];
     for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
@@ -303,7 +314,7 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       const report = s.calScreenReports && s.calScreenReports[id];
       const built = !!report;
       const version = built ? s.calMeshVersion : 'original';
-      const g = (version === 'rebuilt' || version === 'overlay') ? buildRealBoxes(report.surface) : buildNominalBoxes(cfg);
+      const g = (version === 'rebuilt' || version === 'overlay') ? buildRealBoxes(report.surface, cfg) : buildNominalBoxes(cfg);
       const ghost = version === 'overlay' ? buildNominalBoxes(cfg) : null;
       return { id, cfg, isActive, g, ghost, built, version };
     });
@@ -363,7 +374,10 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       const role = s.calRefRole;
       const name = pointName(s.calActiveScreen, c, r);
       const nextCoord = Object.assign({}, coord, { [role + '_point']: name });
-      const nextConfig = Object.assign({}, proj_.config, { coordinate_system: nextCoord });
+      const nextScreens = role === 'origin'
+        ? Object.assign({}, proj_.config.screens, { [s.calActiveScreen]: Object.assign({}, m, { origin_aligned: false }) })
+        : proj_.config.screens;
+      const nextConfig = Object.assign({}, proj_.config, { screens: nextScreens, coordinate_system: nextCoord });
       s.runCmd({ domain: 'calibrate', action: '指派参考点', target: name, chan: 'local' },
         () => saveProjectYaml(proj_.path, nextConfig),
         { okMsg: () => `已指派 ${ROLE[role].label} → ${name}` })
@@ -566,22 +580,13 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       objOutline.push(h('polygon', { className: 'gw-obj-outline', points: pstr(ring.filter(Boolean).map((p) => proj(p, view))) }));
     }
 
-    const origin = proj({ x: 0, y: 0, z: 0 }, view);
-    const cursor = h('g', { className: 'gw-cursor' },
-      h('circle', { cx: origin[0], cy: origin[1], r: 9, fill: 'none', stroke: '#f4f4f4', strokeWidth: 1.6, strokeDasharray: '3.2 3.2' }),
-      h('circle', { cx: origin[0], cy: origin[1], r: 9, fill: 'none', stroke: '#e23b2e', strokeWidth: 1.6, strokeDasharray: '3.2 3.2', strokeDashoffset: 3.2 }),
-      [[-14, -6, 0], [6, 14, 1]].flatMap(([a, b, i]) => [
-        h('line', { key: 'ch-' + i, x1: origin[0] + a, y1: origin[1], x2: origin[0] + b, y2: origin[1], stroke: i ? '#e23b2e' : '#f4f4f4', strokeWidth: 1.4 }),
-        h('line', { key: 'cv-' + i, x1: origin[0], y1: origin[1] + a, x2: origin[0], y2: origin[1] + b, stroke: i ? '#e23b2e' : '#f4f4f4', strokeWidth: 1.4 }),
-      ]));
-
     return h('svg', { className: 'gw-svp', ref: stageRef, viewBox: '0 0 1000 700', preserveAspectRatio: 'xMidYMid meet', onMouseDown: onBg, onContextMenu: (e) => e.preventDefault() },
       h('defs', null, patternDefs),
       /* 缩放以视口中心 (500,350) 为基准，直接烘进 translate（不依赖各引擎对 SVG
          transform-origin 的实现差异）。 */
       h('g', { ref: innerRef, transform: 'translate(' + (pan.x + 500 * (1 - zoom)) + ',' + (pan.y + 350 * (1 - zoom)) + ') scale(' + zoom + ')' },
         h('g', { className: 'gw-ground' }, ground),
-        axes, ghost, boxEls, objOutline, labels, points, refPoints, normals, cursor, refMarks),
+        axes, ghost, boxEls, objOutline, labels, points, refPoints, normals, refMarks),
       marquee ? (function () {
         const [x0, y0] = toLocal(stageRef.current, marquee.cx0, marquee.cy0);
         const [x1, y1] = toLocal(stageRef.current, marquee.cx1, marquee.cy1);
@@ -699,6 +704,42 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
     const tool = s.calBoxTool;
     const rectScreen = m.shape_mode !== 'irregular';
     const coord = proj_.config && proj_.config.coordinate_system;
+    const originVertex = coord && parsePointName(coord.origin_point, s.calActiveScreen);
+    const alignOrigin = async () => {
+      if (!originVertex || !proj_.path || !proj_.config) {
+        s.setCalReceipt({ tone: 'notice', text: '请先指派 origin 参考点' });
+        return;
+      }
+      const report = s.calScreenReports && s.calScreenReports[s.calActiveScreen];
+      const useRebuilt = report && s.calMeshVersion !== 'original';
+      const geometry = useRebuilt ? buildRealBoxes(report.surface, m) : buildNominalBoxes(m);
+      const vertices = new Map();
+      geometry.boxes.forEach((b) => {
+        [[b.c, b.r, b.corners[0]], [b.c + 1, b.r, b.corners[1]], [b.c + 1, b.r + 1, b.corners[2]], [b.c, b.r + 1, b.corners[3]]]
+          .forEach(([c, r, p]) => vertices.set(c + ',' + r, p));
+      });
+      const world = vertices.get(originVertex.c + ',' + originVertex.r);
+      if (!world) {
+        s.setCalReceipt({ tone: 'notice', text: '请先指派 origin 参考点' });
+        return;
+      }
+      const pos = m.position_m || [0, 0, 0];
+      const clean = (v) => Math.abs(v) < 1e-9 ? 0 : +v.toFixed(9);
+      const nextScreen = Object.assign({}, m, {
+        position_m: [clean(pos[0] - world.x), clean(pos[1] - world.y), clean(pos[2] - world.z)],
+        origin_aligned: true,
+      });
+      const nextConfig = Object.assign({}, proj_.config, {
+        screens: Object.assign({}, proj_.config.screens, { [s.calActiveScreen]: nextScreen }),
+      });
+      try {
+        await s.runCmd({ domain: 'calibrate', action: '对齐原点', target: coord.origin_point, chan: 'local' },
+          () => saveProjectYaml(proj_.path, nextConfig),
+          { okMsg: () => '已将 origin 对齐到世界坐标原点 (0,0,0)' });
+        await CX.openProjectPath(proj_.path, s);
+        s.setCalReceipt({ tone: 'ok', text: '已将 origin 对齐到世界坐标原点 (0,0,0)' });
+      } catch (e) { /* runCmd 已记录失败 */ }
+    };
     const T = (id, label, key, icon) => h('button', { className: 'tbtn' + (tool === id ? ' on' : ''), onClick: () => s.setCalBoxTool(id), title: label + ' (' + key + ')' },
       h(Icon, { name: icon, size: 14 }), h('span', null, label), h('kbd', null, key));
     return h('div', { className: 'gw-glass gw-boxbar' },
@@ -714,7 +755,15 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
             h('span', { className: 'dot', style: { background: ROLE[rk].color } }),
             ROLE[rk].short, h('span', { className: 'num' }, i + 1),
             assigned ? h('span', { className: 'done' }, h(Icon, { name: 'check', size: 11 })) : null);
-        }))) : null);
+        })),
+        h('div', { className: 'sep' }),
+        h('button', {
+          className: 'tbtn gw-alignorigin' + (m.origin_aligned ? ' on' : ''),
+          disabled: !originVertex,
+          style: !originVertex ? { opacity: .45 } : null,
+          title: originVertex ? '对齐原点 — 将 origin 参考点平移至世界坐标原点 (0,0,0)' : '请先指派 origin 参考点',
+          onClick: alignOrigin,
+        }, h(Icon, { name: m.origin_aligned ? 'check' : 'target', size: 14 }))) : null);
   }
 
   function Coords() {

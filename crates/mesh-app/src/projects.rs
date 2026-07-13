@@ -163,6 +163,7 @@ mod project_yaml_method_tests {
                 yaw_deg: 0.0,
                 height_offset_mm: 0.0,
                 normal_flip: false,
+                origin_aligned: false,
             },
         );
         ProjectConfig {
@@ -191,10 +192,12 @@ mod project_yaml_method_tests {
         let dir = tempdir().unwrap();
         let mut cfg = minimal_config(Some(SurveyMethod::M1));
         cfg.screens.get_mut("MAIN").unwrap().normal_flip = true;
+        cfg.screens.get_mut("MAIN").unwrap().origin_aligned = true;
         save_project_yaml_to_path(dir.path(), &cfg).unwrap();
         let loaded = load_project_yaml_from_path(dir.path()).unwrap();
         assert_eq!(loaded.project.method, Some(SurveyMethod::M1));
         assert!(loaded.screens["MAIN"].normal_flip);
+        assert!(loaded.screens["MAIN"].origin_aligned);
     }
 
     #[test]
@@ -235,5 +238,6 @@ output:
         let loaded = load_project_yaml_from_path(dir.path()).unwrap();
         assert_eq!(loaded.project.method, None);
         assert!(!loaded.screens["MAIN"].normal_flip);
+        assert!(!loaded.screens["MAIN"].origin_aligned);
     }
 }

@@ -502,7 +502,6 @@
 .gw-box.is-ref { stroke-width: 1.5; }
 .gw-box-pat { pointer-events: none; opacity: .5; }
 .gw-obj-outline { fill: none; stroke: #e07b1a; stroke-width: 1.1; stroke-linejoin: round; pointer-events: none; }
-.gw-cursor { pointer-events: none; }
 .gw-ghost { fill: none; stroke: rgba(120,180,255,.5); stroke-width: 1; stroke-dasharray: 2 2; pointer-events: none; }
 .gw-pt { fill: #46c882; stroke: #0c0c10; stroke-width: .3; opacity: .78; }
 .gw-pt--pick { fill: #5ff0a0; opacity: 1; stroke-width: .5; }

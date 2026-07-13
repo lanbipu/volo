@@ -1407,6 +1407,8 @@ export interface ScreenConfig {
   height_offset_mm?: number;
   /** Reverse the screen presentation-side normal; false on legacy project files. */
   normal_flip?: boolean;
+  /** True after the assigned origin vertex has been translated to world (0,0,0). */
+  origin_aligned?: boolean;
 }
 
 export type ShapePriorConfig =

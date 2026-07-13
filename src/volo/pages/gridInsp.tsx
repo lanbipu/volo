@@ -102,6 +102,7 @@ import { listen } from "@tauri-apps/api/event";
         cabinet_count: [8, 3], cabinet_size_mm: [500, 500], pixels_per_cabinet: [176, 176],
         shape_prior: { type: 'flat' }, shape_mode: 'rectangle', irregular_mask: [], bottom_completion: null,
         position_m: [Object.keys(proj.config.screens).length * 3.2, 0, 0], yaw_deg: 0, height_offset_mm: 0,
+        origin_aligned: false,
       };
       const nextConfig = Object.assign({}, proj.config, { screens: Object.assign({}, proj.config.screens, { [id]: cfg }) });
       try {
@@ -151,7 +152,11 @@ import { listen } from "@tauri-apps/api/event";
     if (!real) return null;
     const m = s.calDraftScreen || real;
     const dirty = !!s.calDraftScreen;
-    const set = (patch) => s.setCalDraftScreen(Object.assign({}, m, patch));
+    const set = (patch) => {
+      const invalidatesAlignment = ['position_m', 'yaw_deg', 'height_offset_mm', 'shape_prior', 'cabinet_count', 'cabinet_size_mm']
+        .some((key) => Object.prototype.hasOwnProperty.call(patch, key));
+      s.setCalDraftScreen(Object.assign({}, m, invalidatesAlignment ? { origin_aligned: false } : {}, patch));
+    };
     const setShape = (patch) => set({ shape_prior: Object.assign({}, m.shape_prior, patch) });
     const cols = m.cabinet_count[0], rows = m.cabinet_count[1];
     const totalCols = cols;
@@ -336,7 +341,13 @@ import { listen } from "@tauri-apps/api/event";
           const coord = proj.config.coordinate_system;
           if (!coord) return;
           const field = role === 'origin' ? 'origin_point' : role === 'x_axis' ? 'x_axis_point' : 'xy_plane_point';
-          const nextConfig = Object.assign({}, proj.config, { coordinate_system: Object.assign({}, coord, { [field]: '' }) });
+          const nextScreens = role === 'origin'
+            ? Object.assign({}, proj.config.screens, { [screenId]: Object.assign({}, m, { origin_aligned: false }) })
+            : proj.config.screens;
+          const nextConfig = Object.assign({}, proj.config, {
+            screens: nextScreens,
+            coordinate_system: Object.assign({}, coord, { [field]: '' }),
+          });
           try {
             await s.runCmd({ domain: 'calibrate', action: '清除参考点', target: (ROLE[role] || {}).label || role, chan: 'local' },
               () => saveProjectYaml(proj.path, nextConfig), { okMsg: () => `已清除 ${(ROLE[role] || {}).label}，请在视口重新指派` });

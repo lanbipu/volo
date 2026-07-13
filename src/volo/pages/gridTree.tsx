@@ -50,7 +50,7 @@ import { listen } from "@tauri-apps/api/event";
     const base = {
       cabinet_count: [8, 3], cabinet_size_mm: [500, 500], pixels_per_cabinet: [176, 176],
       shape_mode: 'rectangle', irregular_mask: [], bottom_completion: null,
-      position_m: [0, 0, 0], yaw_deg: 0,
+      position_m: [0, 0, 0], yaw_deg: 0, origin_aligned: false,
     };
     const t = (GRID_SCREEN_TYPES.find((x) => x.id === kind) || GRID_SCREEN_TYPES[0]).shape;
     const shapes = {

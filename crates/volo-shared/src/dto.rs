@@ -64,6 +64,10 @@ pub struct ScreenConfig {
     /// Calibrate viewport and persisted with the rest of the screen design.
     #[serde(default)]
     pub normal_flip: bool,
+    /// True after the authored origin reference vertex has been translated to
+    /// the world-space origin. Legacy projects default to false.
+    #[serde(default)]
+    pub origin_aligned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -626,6 +630,7 @@ shape_mode: rectangle
         let cfg: ScreenConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.position_m, [0.0, 0.0, 0.0]);
         assert_eq!(cfg.yaw_deg, 0.0);
+        assert!(!cfg.origin_aligned);
     }
 
     #[test]
