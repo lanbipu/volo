@@ -7,7 +7,7 @@
 //!
 //! 单位约定见 adapter `MeasuredPointDto::into_ir`(IPC 用米,IR 用毫米/毫米²)。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tokio::sync::{mpsc, oneshot};
 
@@ -176,6 +176,195 @@ fn load_screen<'a>(
     cfg.screens
         .get(screen_id)
         .ok_or_else(|| VoloError::NotFound(format!("screen '{screen_id}' not in project")))
+}
+
+/// Normalize the Calibrate UI's "photo folder" into the sidecar's durable
+/// `capture_manifest.json` contract. Existing manifests pass through; a plain
+/// image directory (including vpcal's `captures/normal` session layout) gets a
+/// generated manifest plus a uniform screen mapping derived from project.yaml.
+pub fn prepare_capture_manifest(
+    project_path: &Path,
+    screen_id: &str,
+    input: &Path,
+) -> VoloResult<PathBuf> {
+    if input.is_file() {
+        return Ok(input.to_path_buf());
+    }
+    if !input.is_dir() {
+        return Err(VoloError::NotFound(format!(
+            "capture photo folder not found: {}",
+            input.display()
+        )));
+    }
+    let existing = input.join("capture_manifest.json");
+    if existing.is_file() {
+        return Ok(existing);
+    }
+
+    let cfg = load_project_yaml_from_path(project_path)?;
+    let screen = load_screen(&cfg, screen_id)?;
+    let [cols, rows] = screen.cabinet_count;
+    let [px_w, px_h] = screen.pixels_per_cabinet.ok_or_else(|| {
+        VoloError::InvalidInput(format!(
+            "screen '{screen_id}' has no pixels_per_cabinet; required for photo-folder import"
+        ))
+    })?;
+    let [mm_w, mm_h] = screen.cabinet_size_mm;
+
+    let pattern_meta = project_path
+        .join("patterns")
+        .join(screen_id)
+        .join("pattern_meta.json");
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&pattern_meta).map_err(|e| {
+            VoloError::NotFound(format!(
+                "generated pattern metadata unreadable at {}: {e}",
+                pattern_meta.display()
+            ))
+        })?)?;
+    let method = match meta.get("schema_version") {
+        Some(serde_json::Value::String(v)) if v.starts_with("vpqsp") => "vpqsp",
+        Some(serde_json::Value::Number(_)) => "charuco",
+        _ if meta
+            .get("cabinets")
+            .and_then(|v| v.as_array())
+            .is_some_and(|cabs| {
+                cabs.first()
+                    .is_some_and(|cab| cab.get("markers_x").is_some())
+            }) =>
+        {
+            "vpqsp"
+        }
+        _ => {
+            return Err(VoloError::InvalidInput(format!(
+                "cannot determine pattern method from {}",
+                pattern_meta.display()
+            )))
+        }
+    };
+
+    let image_root = if input.join("captures/normal").is_dir() {
+        input.join("captures/normal")
+    } else {
+        input.to_path_buf()
+    };
+    let mut images = std::fs::read_dir(&image_root)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| {
+                        matches!(ext.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg")
+                    })
+        })
+        .collect::<Vec<_>>();
+    images.sort();
+    if images.is_empty() {
+        return Err(VoloError::InvalidInput(format!(
+            "no PNG/JPEG photos found in {}",
+            image_root.display()
+        )));
+    }
+
+    let generated_dir = project_path.join("measurements").join("capture_imports");
+    std::fs::create_dir_all(&generated_dir)?;
+    let mapping_path = generated_dir.join(format!("{screen_id}_screen_mapping.json"));
+    let absent = |col: u32, row: u32| {
+        use volo_shared::dto::ShapeMode;
+        matches!(screen.shape_mode, ShapeMode::Irregular)
+            && screen.irregular_mask.contains(&[col, row])
+    };
+    let mut cabinets = Vec::new();
+    for row in 0..rows {
+        for col in 0..cols {
+            if absent(col, row) {
+                continue;
+            }
+            cabinets.push(serde_json::json!({
+                "cabinet_id": format!("V{col:03}_R{row:03}"),
+                "resolution_px": [px_w, px_h],
+                "active_size_mm": [mm_w, mm_h],
+                "pixel_pitch_mm": [mm_w / f64::from(px_w), mm_h / f64::from(px_h)],
+                "active_origin": "center",
+                "input_rect_px": [col * px_w, row * px_h, px_w, px_h],
+                "rotation": 0,
+                "mirror_x": false,
+                "mirror_y": false
+            }));
+        }
+    }
+    std::fs::write(
+        &mapping_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "screen_id": screen_id,
+            "cabinets": cabinets,
+            "expected_pattern_hash": null
+        }))?,
+    )?;
+
+    let views = images
+        .iter()
+        .enumerate()
+        .map(|(index, path)| {
+            serde_json::json!({
+                "view_id": format!("view_{:04}", index + 1),
+                "images": [path]
+            })
+        })
+        .collect::<Vec<_>>();
+    let manifest_path = generated_dir.join(format!("{screen_id}_capture_manifest.json"));
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "method": method,
+            "intrinsics": null,
+            "pattern_meta": pattern_meta,
+            "screen_mapping": mapping_path,
+            "views": views
+        }))?,
+    )?;
+    Ok(manifest_path)
+}
+
+/// Resolve the UI's method-agnostic "automatic calibration" choice against
+/// the selected manifest. VP-QSP supports inline self-calibration; ChArUco
+/// must either carry an intrinsics reference in its manifest or use an explicit
+/// file selected by the operator.
+pub fn normalize_reconstruct_intrinsics(
+    manifest_path: &Path,
+    requested: Option<&str>,
+) -> VoloResult<Option<String>> {
+    if requested != Some("auto") {
+        return Ok(requested.map(str::to_string));
+    }
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path).map_err(|e| {
+            VoloError::InvalidInput(format!(
+                "capture manifest unreadable at {}: {e}",
+                manifest_path.display()
+            ))
+        })?)?;
+    match manifest.get("method").and_then(|value| value.as_str()) {
+        Some("vpqsp") => Ok(Some("auto".into())),
+        Some("charuco")
+            if manifest
+                .get("intrinsics")
+                .and_then(|value| value.as_str())
+                .is_some() =>
+        {
+            Ok(None)
+        }
+        Some("charuco") => Err(VoloError::InvalidInput(
+            "ChArUco capture has no intrinsics; choose '从文件导入' or regenerate the test pattern as VP-QSP for automatic calibration".into(),
+        )),
+        other => Err(VoloError::InvalidInput(format!(
+            "automatic calibration is unsupported for capture method {}",
+            other.unwrap_or("unknown")
+        ))),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1435,6 +1624,91 @@ output:
   triangulate: true
 "#;
         std::fs::write(dir.join("project.yaml"), project_yaml).unwrap();
+    }
+
+    #[test]
+    fn prepare_capture_manifest_builds_vpqsp_manifest_from_photo_folder() {
+        let dir = tempdir().unwrap();
+        seed_project(dir.path());
+        let pattern_dir = dir.path().join("patterns/MAIN");
+        std::fs::create_dir_all(&pattern_dir).unwrap();
+        std::fs::write(
+            pattern_dir.join("pattern_meta.json"),
+            r#"{"schema_version":"vpqsp.v1","cabinets":[{"markers_x":3}]}"#,
+        )
+        .unwrap();
+        let photos = dir.path().join("photos");
+        std::fs::create_dir_all(&photos).unwrap();
+        std::fs::write(photos.join("pose-01.png"), b"png").unwrap();
+        std::fs::write(photos.join("pose-02.jpg"), b"jpg").unwrap();
+
+        let manifest = prepare_capture_manifest(dir.path(), "MAIN", &photos).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(manifest).unwrap()).unwrap();
+        assert_eq!(value["method"], "vpqsp");
+        assert_eq!(value["views"].as_array().unwrap().len(), 2);
+
+        let mapping_path = value["screen_mapping"].as_str().unwrap();
+        let mapping: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(mapping_path).unwrap()).unwrap();
+        assert_eq!(mapping["cabinets"].as_array().unwrap().len(), 8);
+    }
+
+    #[test]
+    fn prepare_capture_manifest_uses_vpcal_normal_capture_folder() {
+        let dir = tempdir().unwrap();
+        seed_project(dir.path());
+        let pattern_dir = dir.path().join("patterns/MAIN");
+        std::fs::create_dir_all(&pattern_dir).unwrap();
+        std::fs::write(
+            pattern_dir.join("pattern_meta.json"),
+            r#"{"schema_version":"vpqsp.v1","cabinets":[{"markers_x":3}]}"#,
+        )
+        .unwrap();
+        let session = dir.path().join("session");
+        std::fs::create_dir_all(session.join("captures/normal")).unwrap();
+        std::fs::write(session.join("captures/normal/pose-01.png"), b"png").unwrap();
+        std::fs::write(session.join("debug.png"), b"debug").unwrap();
+
+        let manifest = prepare_capture_manifest(dir.path(), "MAIN", &session).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(manifest).unwrap()).unwrap();
+        assert_eq!(value["views"].as_array().unwrap().len(), 1);
+        assert!(value["views"][0]["images"][0]
+            .as_str()
+            .unwrap()
+            .contains("captures/normal/pose-01.png"));
+    }
+
+    #[test]
+    fn automatic_intrinsics_uses_vpqsp_self_cal_and_charuco_manifest_file() {
+        let dir = tempdir().unwrap();
+        let vpqsp = dir.path().join("vpqsp.json");
+        std::fs::write(&vpqsp, r#"{"method":"vpqsp","intrinsics":null}"#).unwrap();
+        assert_eq!(
+            normalize_reconstruct_intrinsics(&vpqsp, Some("auto")).unwrap(),
+            Some("auto".into())
+        );
+
+        let charuco = dir.path().join("charuco.json");
+        std::fs::write(
+            &charuco,
+            r#"{"method":"charuco","intrinsics":"camera.json"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            normalize_reconstruct_intrinsics(&charuco, Some("auto")).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn automatic_intrinsics_rejects_charuco_without_intrinsics() {
+        let dir = tempdir().unwrap();
+        let manifest = dir.path().join("charuco.json");
+        std::fs::write(&manifest, r#"{"method":"charuco","intrinsics":null}"#).unwrap();
+        let error = normalize_reconstruct_intrinsics(&manifest, Some("auto")).unwrap_err();
+        assert!(format!("{error}").contains("从文件导入"));
     }
 
     #[test]

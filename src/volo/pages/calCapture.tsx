@@ -137,7 +137,7 @@ import { listCaptureProfiles, saveCaptureProfiles } from "../api/captureProfiles
         h('span', { className: 'cap-lbl' }, '配置名'),
         h('input', { className: 'cap-tf', value: form.name, placeholder: '如：现场 · UVC 主机位', autoFocus: true, onChange: (e) => set('name', e.target.value) })),
       h(window.VoloVideoSource.VideoSourceCard, { form, set }),
-      h(window.VoloTrackingSource.TrackingSourceCard, { form, set }),
+      /* 追踪源已移至独立「追踪源信号接入」模块。 */
       h('div', { className: 'cap-card' },
         h('button', { className: 'cap-adv-h', style: { width: '100%' }, onClick: () => setAdvOpen((v) => !v) },
           h(Icon, { name: 'chevr', size: 13, style: { transform: advOpen ? 'rotate(90deg)' : 'none', transition: 'transform .15s' } }),

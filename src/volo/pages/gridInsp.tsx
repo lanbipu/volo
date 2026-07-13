@@ -8,9 +8,10 @@
    箱体选中/run 质量指标/阶段动作面板同样只读写真实数据，无自造 mock。 */
 import * as React from "react";
 import { saveProjectYaml, setRunCurrent, getRunReport, exportObj } from "../api/meshCommands";
-import { meshVisualGeneratePattern } from "../api/meshVisualCommands";
-import { revealPath } from "../api/commands";
+import { meshVisualGeneratePattern, meshVisualReconstruct } from "../api/meshVisualCommands";
+import { pickDirectory, pickFile, revealPath } from "../api/commands";
 import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern, playerClear } from "../api/player";
+import { listen } from "@tauri-apps/api/event";
 
 (function () {
   const { Button, Switch } = window.Spectrum2DesignSystem_b6d1b3;
@@ -415,7 +416,7 @@ import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern,
   function usePattern(s) {
     const proj = CX.useProj();
     const screenId = s.calActiveScreen;
-    const [scheme, setScheme] = useState('charuco');
+    const [scheme, setScheme] = useState('vpqsp');
     const [busy, setBusy] = useState(false);
     const [playing, setPlaying] = useState(false);
     const res = proj.patternGenByScreen && proj.patternGenByScreen[screenId];
@@ -501,9 +502,20 @@ import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern,
     const m = proj.config && proj.config.screens[screenId];
     const built = s.calScreenReports && !!s.calScreenReports[screenId];
     const [method, setMethod] = useState('visual'); /* handoff 默认视觉校正 */
+    const [capMode, setCapMode] = useState('offline');
+    const [captureDirs, setCaptureDirs] = useState({});
+    const [intr, setIntr] = useState('auto');
+    const [intrFile, setIntrFile] = useState('');
+    const [baState, setBaState] = useState('idle');
+    const [baPct, setBaPct] = useState(0);
+    const [baStage, setBaStage] = useState('');
+    const [baErr, setBaErr] = useState('');
+    const visualJobRef = useRef(null);
     const isTS = method === 'totalstation';
     const newShapeVisualBlocked = m && GRID_MEAS_TYPES.find((x) => x.id === 'visual').disabledForShapes.includes(m.shape_prior.type);
-    const measured = isTS ? !!proj.measurementsAbsPath : !!(proj.visualSession && proj.visualSession.screenId === screenId);
+    const captureDir = captureDirs[screenId] || '';
+    const visualCapturePath = captureDir || (proj.visualSession && proj.visualSession.screenId === screenId && proj.visualSession.sessionDir) || '';
+    const measured = isTS ? !!proj.measurementsAbsPath : !!visualCapturePath;
     const runs = (proj.runs || []);
     const curRun = runs.find((r) => r.is_current) || runs[0] || null;
 
@@ -514,6 +526,65 @@ import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern,
     const [target, setTarget] = useState('disguise');
     const [expPath, setExpPath] = useState('');
     const [expDone, setExpDone] = useState(null);
+    useEffect(() => {
+      let alive = true;
+      const cleanups = [];
+      const add = (fn) => { if (alive) cleanups.push(fn); else fn(); };
+      listen('mesh-visual-progress', (event) => {
+        const payload = event.payload;
+        if (!payload || payload.job_id !== visualJobRef.current) return;
+        const detail = payload.event || {};
+        if (detail.event === 'progress') {
+          setBaPct(Math.max(0, Math.min(100, detail.percent || 0)));
+          setBaStage(detail.stage || '');
+        }
+      }).then(add);
+      listen('mesh-visual-reconstruct-done', (event) => {
+        const payload = event.payload;
+        if (!payload || payload.job_id !== visualJobRef.current) return;
+        visualJobRef.current = null;
+        if (payload.result) {
+          const result = payload.result;
+          setBaState('done'); setBaPct(100); setBaErr('');
+          CX.projStore.patch({ visualSession: { screenId, poses: (result.cabinets || []).length || 1, posePath: result.pose_report_path, sessionDir: visualCapturePath } });
+          s.setCalReceipt({ tone: 'ok', text: `视觉重建完成 · BA RMS ${result.ba_rms_px.toFixed(2)} px` });
+          s.pushLog({ lv: 'ok', cat: 'survey', msg: `视觉重建完成 · ba_rms <b>${result.ba_rms_px.toFixed(2)} px</b>` });
+        } else {
+          const msg = payload.error || '视觉重建失败';
+          setBaState('idle'); setBaErr(msg);
+          s.pushLog({ lv: 'err', cat: 'survey', msg: `视觉重建失败 · ${msg}` });
+        }
+      }).then(add);
+      return () => { alive = false; cleanups.forEach((fn) => fn()); };
+    }, [screenId, visualCapturePath]);
+    const pickCaptureDir = async () => {
+      try {
+        const dir = await pickDirectory();
+        if (dir) setCaptureDirs((current) => Object.assign({}, current, { [screenId]: dir }));
+      } catch (e) {
+        s.pushLog({ lv: 'err', cat: 'survey', msg: `选择照片文件夹失败 · ${e && e.message ? e.message : e}` });
+      }
+    };
+    const pickIntrinsics = async () => {
+      try {
+        const path = await pickFile('相机内参 (JSON)', ['json']);
+        if (path) { setIntrFile(path); setIntr('file'); }
+      } catch (e) {
+        s.pushLog({ lv: 'err', cat: 'survey', msg: `选择内参文件失败 · ${e && e.message ? e.message : e}` });
+      }
+    };
+    const runVisualReconstruct = async () => {
+      if (!visualCapturePath || (intr === 'file' && !intrFile)) return;
+      setBaState('running'); setBaPct(0); setBaStage(''); setBaErr('');
+      try {
+        const response = await meshVisualReconstruct(proj.path, screenId, visualCapturePath, intr === 'auto' ? 'auto' : intrFile, null);
+        visualJobRef.current = response.job_id;
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        setBaState('idle'); setBaErr(msg);
+        s.pushLog({ lv: 'err', cat: 'survey', msg: `视觉重建启动失败 · ${msg}` });
+      }
+    };
     const doExport = async () => {
       if (!curRun) return;
       try {
@@ -537,7 +608,7 @@ import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern,
       /* ① 测试图 —— 仅视觉校正需要 */
       !isTS ? h(Fold, { label: '测试图', defOpen: false },
         h('div', { className: 'gw-stage-badge' }, patternBadge(p.gen, p.stale)),
-        Field('图案方案', h(Sel, { value: p.scheme, options: PATTERN_SCHEMES, onChange: p.setScheme, w: 150 })),
+        Field('图案方案', h(Sel, { value: p.scheme, options: PATTERN_SCHEMES, onChange: (scheme) => { p.setScheme(scheme); if (scheme === 'charuco' && intr === 'auto') setIntr('file'); }, w: 150 })),
         Field('屏幕标识码', h('input', { className: 'gw-txt', value: String(SCREEN_ID_CODE), readOnly: true, style: { width: 70, textAlign: 'center' } })),
         Field('目标屏幕', h('span', { style: { fontSize: 12.5, color: 'var(--chrome-text)', fontFamily: 'var(--font-code)' } }, screenId)),
         p.busy
@@ -547,13 +618,37 @@ import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern,
           h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'eye', size: 13 }), onPress: () => s.setCalDisplay(Object.assign({}, s.calDisplay, { pattern: true })) }, '视口预览'),
           h(Button, { variant: p.playing ? 'negative' : 'secondary', size: 'S', isDisabled: !p.res, icon: h(Icon, { name: p.playing ? 'pause' : 'play', size: 13 }), onPress: p.togglePlayer }, p.playing ? '停止播放' : '发送到播放器')) : null) : null,
       h(Fold, { label: '测量导入', defOpen: false },
-        isTS ? (window.VOLO_GRID.flows ? window.VOLO_GRID.flows.total(s) : null) : (window.VOLO_GRID.flows ? window.VOLO_GRID.flows.visual(s) : null)),
+        isTS
+          ? (window.VOLO_GRID.flows ? window.VOLO_GRID.flows.total(s) : null)
+          : h(React.Fragment, null,
+              Field('采集方式', h(Sel, { value: capMode, options: [{ id: 'offline', label: '离线照片' }, { id: 'live', label: '现场实时采集' }], onChange: setCapMode, w: 150 })),
+              capMode === 'offline'
+                ? (captureDir
+                    ? h('div', { className: 'gw-fileref' },
+                        h('span', { className: 'ic' }, h(Icon, { name: 'folder', size: 14 })),
+                        h('div', { className: 'm' }, h('div', { className: 'n' }, captureDir.split(/[\\/]/).pop()), h('div', { className: 'd' }, captureDir)),
+                        h(Button, { variant: 'secondary', size: 'S', onPress: pickCaptureDir }, '更换'))
+                    : h('div', { className: 'gw-drop', onClick: pickCaptureDir }, h(Icon, { name: 'folder', size: 20 }), h('div', null, '选择照片文件夹')))
+                : h(Button, { variant: 'accent', size: 'S', icon: h(Icon, { name: 'camera', size: 14 }), onPress: () => s.setModal({ render: ({ close }) => window.VOLO_GRID_MODALS.liveCapture(s, close, (sessionDir) => { setCaptureDirs((current) => Object.assign({}, current, { [screenId]: sessionDir })); setCapMode('offline'); }) }) }, '接入摄影机…'),
+              (captureDir || (proj.visualSession && proj.visualSession.screenId === screenId))
+                ? h('div', { className: 'cal2-switch-ok', style: { marginTop: 8 } }, h(Icon, { name: 'check', size: 14 }), h('span', null, '已采集 · 采集会话'))
+                : null,
+              h('div', { style: { marginTop: 10 } }, Field('内参', h(Sel, { value: intr, options: [{ id: 'auto', label: '自动标定' }, { id: 'file', label: '从文件导入' }], onChange: setIntr, w: 150 }))),
+              intr === 'auto'
+                ? h('div', { className: 'gw-method-note', style: { marginTop: 2 } }, '默认随本次采集自动估计内参，无需设置。')
+                : h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'download', size: 13 }), onPress: pickIntrinsics }, intrFile ? intrFile.split(/[\\/]/).pop() : '选择内参文件…'))),
       h(Fold, { label: '重建', defOpen: false },
         Field('方法', h('span', { style: { fontSize: 12.5, color: 'var(--chrome-text)', fontWeight: 700 } }, isTS ? '全站仪导入' : '视觉校正')),
         Field('数据源', h('span', { style: { fontSize: 12, color: 'var(--chrome-dim)', fontFamily: 'var(--font-code)' } },
-          isTS ? (proj.measured && proj.measured.points ? proj.measured.points.length + ' 点' : '—') : (proj.visualSession && proj.visualSession.screenId === screenId ? '采集会话' : '—'))),
+          isTS ? (proj.measured && proj.measured.points ? proj.measured.points.length + ' 点' : '—') : (visualCapturePath ? visualCapturePath.split(/[\\/]/).pop() : '—'))),
         !measured ? h('div', { className: 'gw-stage-warn' }, h(Icon, { name: 'alert', size: 13 }), isTS ? '需先导入全站仪数据' : '需先完成视觉采集') : null,
-        h(Button, { variant: 'accent', size: 'M', isDisabled: !measured, icon: h(Icon, { name: 'cube3', size: 15 }), onPress: () => s.setModal({ render: ({ close }) => window.VOLO_GRID_MODALS.reconstruct(s, close) }) }, '开始重建'),
+        !isTS && intr === 'file' && !intrFile ? h('div', { className: 'gw-stage-warn' }, h(Icon, { name: 'alert', size: 13 }), '请选择内参文件') : null,
+        baErr && !isTS ? h('div', { className: 'gw-stage-warn' }, h(Icon, { name: 'alert', size: 13 }), baErr) : null,
+        !isTS && baState === 'running'
+          ? h('div', null,
+              h('div', { style: { fontSize: 11.5, color: 'var(--chrome-dim)', marginBottom: 6 } }, (baStage || '视觉重建中') + ' · ' + Math.round(baPct) + '%'),
+              h('div', { className: 'vmeter vmeter--accent' }, h('div', { className: 'vmeter__fill', style: { width: baPct + '%' } })))
+          : h(Button, { variant: 'accent', size: 'M', isDisabled: !measured || (!isTS && intr === 'file' && !intrFile), icon: h(Icon, { name: 'cube3', size: 15 }), onPress: isTS ? () => s.setModal({ render: ({ close }) => window.VOLO_GRID_MODALS.reconstruct(s, close) }) : runVisualReconstruct }, baState === 'done' && !isTS ? '重新重建' : '开始重建'),
         built && curRun ? h('div', { className: 'gw-fileref', style: { marginTop: 8 } }, h('span', { className: 'ic' }, h(Icon, { name: 'cube3', size: 14 })),
           h('div', { className: 'm' },
             h('div', { className: 'n' }, 'run #' + curRun.id + (curRun.output_obj_path ? ' · ' + curRun.output_obj_path.split(/[\\/]/).pop() : '')),

@@ -92,6 +92,15 @@ pub async fn mesh_visual_reconstruct(
     intrinsics: Option<String>,
     intrinsics_crosscheck: Option<String>,
 ) -> VoloResult<MeshVisualJobResponse> {
+    let capture_manifest = mesh_app::visual::prepare_capture_manifest(
+        Path::new(&project_path),
+        &screen_id,
+        Path::new(&capture_manifest),
+    )?;
+    let intrinsics = mesh_app::visual::normalize_reconstruct_intrinsics(
+        &capture_manifest,
+        intrinsics.as_deref(),
+    )?;
     let job_id = format!("mesh-visual-reconstruct-{screen_id}-{}", now_millis());
 
     let (cancel_tx, cancel_rx) = oneshot::channel();
@@ -121,7 +130,7 @@ pub async fn mesh_visual_reconstruct(
         let outcome = mesh_app::visual::run_reconstruct_streaming(
             Path::new(&project_path),
             &screen_id,
-            Path::new(&capture_manifest),
+            &capture_manifest,
             intrinsics.as_deref(),
             intrinsics_crosscheck.as_deref(),
             Some(progress_tx),

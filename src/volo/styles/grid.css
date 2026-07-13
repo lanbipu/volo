@@ -187,8 +187,11 @@
 .gw-ver .kbd { font-family: var(--font-code); font-size: 9.5px; background: rgba(0,0,0,.3); border-radius: 3px; padding: 0 4px; opacity: .8; }
 .gw-ver .sep { width: 1px; height: 18px; background: rgba(255,255,255,.14); }
 
-/* BL 操作提示 + 图例 */
-.gw-hint { display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; font-size: 11.5px; color: #c4c8d0; }
+/* BC 操作提示（版本切换器正上方）+ BL 图例 */
+.gw-hint { position: absolute; bottom: calc(100% + 8px); left: 50%; white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; font-size: 11.5px; color: #c4c8d0;
+  opacity: 0; pointer-events: none; transform: translate(-50%, 6px); transition: opacity .25s ease, transform .25s ease; }
+.gw-hint.show { opacity: 1; transform: translate(-50%, 0); }
 .gw-hint kbd { font-family: var(--font-code); font-size: 10px; background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.14);
   border-radius: 4px; padding: 1px 5px; color: #fff; }
 .gw-hint .sep { color: #676b73; }

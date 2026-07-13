@@ -347,14 +347,14 @@ const GRID_STAGE_ACTIONS = [
 /* 两种测量方式（术语硬约束：只叫「全站仪导入」「视觉校正」）；reqDisabledShapes 对齐
    crates/mesh-adapter-visual-ba 的已知边界（M2 sidecar 尚不支持新曲率，见 G14）。 */
 const GRID_MEAS_TYPES = [
-  { id: 'totalstation', label: '全站仪导入', icon: 'target',
-    desc: '全站仪实测箱体角点，毫米级绝对精度。',
-    fit: '适合已架设全站仪、需要绝对尺度基准与最高精度的场景。' },
   { id: 'visual', label: '视觉校正', icon: 'camera',
     desc: '屏幕显示测试图 + 摄影机多角度拍摄，自动稠密重建。',
     fit: '适合无全站仪、追求快速稠密重建的场景。',
     disabledForShapes: ['arc', 'l_shape', 'u_shape', 'custom_segments'],
     disabledMsg: '新曲率类型（对称弧/L 形/U 形/自定义分段）暂仅支持全站仪导入' },
+  { id: 'totalstation', label: '全站仪导入', icon: 'target',
+    desc: '全站仪实测箱体角点，毫米级绝对精度。',
+    fit: '适合已架设全站仪、需要绝对尺度基准与最高精度的场景。' },
 ];
 /* 重建进度阶段（统一长任务规格，与 mesh-visual-progress 事件的 stage 文案对齐） */
 const GRID_RECON_STAGES = ['载入', '检测', '精化', '平差', '对齐', '输出'];

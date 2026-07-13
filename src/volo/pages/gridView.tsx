@@ -188,6 +188,9 @@ import { readGeneratedPatternAsDataUrl } from "../api/meshVisualCommands";
   }
 
   /* ---------- 视口 SVG ---------- */
+  const VIEWPORT_MIN_ZOOM = 0.5;
+  const VIEWPORT_MAX_ZOOM = 16;
+
   function Viewport({ s }) {
     const proj_ = CX.useProj();
     const screens = proj_.config ? Object.keys(proj_.config.screens) : [];
@@ -239,7 +242,7 @@ import { readGeneratedPatternAsDataUrl } from "../api/meshVisualCommands";
     const reset = useCallback(() => { touchedRef.current = false; setZoom(1); setPan({ x: 0, y: 0 }); setOrbit({ az: 30, el: 22 }); }, []);
     useEffect(() => {
       const onReset = () => reset();
-      const onFocus = () => setZoom((z) => Math.min(3.2, z + 0.5));
+      const onFocus = () => setZoom((z) => Math.min(VIEWPORT_MAX_ZOOM, z + 0.5));
       window.addEventListener('volo-gw-reset', onReset);
       window.addEventListener('volo-gw-focus', onFocus);
       return () => { window.removeEventListener('volo-gw-reset', onReset); window.removeEventListener('volo-gw-focus', onFocus); };
@@ -247,7 +250,14 @@ import { readGeneratedPatternAsDataUrl } from "../api/meshVisualCommands";
 
     useEffect(() => {
       const el = stageRef.current; if (!el) return undefined;
-      const onWheel = (e) => { e.preventDefault(); touchedRef.current = true; setZoom((z) => Math.max(0.5, Math.min(3.2, +(z - Math.sign(e.deltaY) * 0.12).toFixed(2)))); };
+      const onWheel = (e) => {
+        e.preventDefault();
+        touchedRef.current = true;
+        setZoom((z) => {
+          const step = z > 3 ? 0.24 : 0.12;
+          return Math.max(VIEWPORT_MIN_ZOOM, Math.min(VIEWPORT_MAX_ZOOM, +(z - Math.sign(e.deltaY) * step).toFixed(2)));
+        });
+      };
       el.addEventListener('wheel', onWheel, { passive: false });
       const move = (e) => {
         if (marqueeRef.current) { marqueeRef.current = Object.assign({}, marqueeRef.current, { cx1: e.clientX, cy1: e.clientY }); setMarquee(marqueeRef.current); return; }
@@ -302,7 +312,7 @@ import { readGeneratedPatternAsDataUrl } from "../api/meshVisualCommands";
     TARGET = bboxMin ? { x: (bboxMin.x + bboxMax.x) / 2, y: (bboxMin.y + bboxMax.y) / 2, z: (bboxMin.z + bboxMax.z) / 2 } : { x: 0, y: 0, z: 0 };
     /* 内容对角线（米）→ 期望占视口宽 ~55%（1000 单位 · S=72/米），夹在滚轮缩放范围内。 */
     const diagM = bboxMin ? Math.max(0.5, Math.hypot(bboxMax.x - bboxMin.x, bboxMax.y - bboxMin.y, bboxMax.z - bboxMin.z)) : 4;
-    const fitZoom = Math.max(0.5, Math.min(3.2, +(550 / (diagM * 72)).toFixed(2)));
+    const fitZoom = Math.max(VIEWPORT_MIN_ZOOM, Math.min(VIEWPORT_MAX_ZOOM, +(550 / (diagM * 72)).toFixed(2)));
     /* 渲染期校正（非 hook，规避早退分支的 Hooks 顺序问题）：用户未手动缩放/旋转/平移
        前，跟随内容自动取景。 */
     if (!touchedRef.current && Math.abs(zoom - fitZoom) > 0.01) setZoom(fitZoom);
@@ -553,12 +563,35 @@ import { readGeneratedPatternAsDataUrl } from "../api/meshVisualCommands";
   function HintBar({ s }) {
     const cabinet = s.calMode === 'cabinet';
     const tool = s.calBoxTool;
+    const [show, setShow] = useState(false);
+    const timeoutRef = useRef(null);
+    useEffect(() => {
+      const stage = document.querySelector('.gw-stage');
+      if (!stage) return undefined;
+      const ping = () => {
+        setShow(true);
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        timeoutRef.current = setTimeout(() => setShow(false), 1800);
+      };
+      const onMove = (e) => { if (e.buttons) ping(); };
+      stage.addEventListener('mousedown', ping);
+      stage.addEventListener('wheel', ping, { passive: true });
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('keydown', ping);
+      return () => {
+        stage.removeEventListener('mousedown', ping);
+        stage.removeEventListener('wheel', ping);
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('keydown', ping);
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      };
+    }, []);
     let hint;
     if (!cabinet) hint = [['Tab', '箱体编辑'], ['左键', '旋转'], ['右键', '平移'], ['滚轮', '缩放']];
     else if (tool === 'mask') hint = [['单击/拖刷', '切换镂空'], ['Tab', '退出']];
     else if (tool === 'refs') hint = [['单击角点', '指派角色'], ['1/2/3', '切角色']];
     else hint = [['单击', '选箱体'], ['Shift', '加选'], ['Shift+拖动', '框选多选']];
-    return h('div', { className: 'gw-glass gw-hint' }, hint.flatMap(([k, v], i) => [
+    return h('div', { className: 'gw-glass gw-hint' + (show ? ' show' : '') }, hint.flatMap(([k, v], i) => [
       i > 0 ? h('span', { className: 'sep', key: 's' + i }, '·') : null,
       h('kbd', { key: 'k' + i }, k), h('span', { key: 'v' + i }, v),
     ]));
@@ -647,8 +680,8 @@ import { readGeneratedPatternAsDataUrl } from "../api/meshVisualCommands";
         cabinet ? h(BoxBar, { s }) : null,
         h('div', { className: 'gw-ov gw-ov--tl' }, h(CtxCard, { s }), h(Coords)),
         h('div', { className: 'gw-ov gw-ov--tr' }, h(DisplayToggles, { s })),
-        h('div', { className: 'gw-ov gw-ov--bc' }, h(VersionSwitcher, { s })),
-        h('div', { className: 'gw-ov gw-ov--bl' }, h(HintBar, { s }), h(Legend, { s })),
+        h('div', { className: 'gw-ov gw-ov--bc' }, h(HintBar, { s }), h(VersionSwitcher, { s })),
+        h('div', { className: 'gw-ov gw-ov--bl' }, h(Legend, { s })),
         h('div', { className: 'gw-ov gw-ov--br' }, h(Receipt, { s }))));
   }
 

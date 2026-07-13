@@ -340,7 +340,7 @@ import { listen } from "@tauri-apps/api/event";
     const genPattern = async () => {
       if (!hasBackend) return;
       try {
-        const r = await meshVisualGeneratePattern(proj.path, screenId, 'charuco', 1, null);
+        const r = await meshVisualGeneratePattern(proj.path, screenId, 'vpqsp', 1, null);
         /* 存完整结果对象（与 gridInsp usePattern 一致），否则检查器里「发送到播放器/打开输出文件夹」拿不到 output_dir */
         CX.projStore.patch({
           patternGenByScreen: Object.assign({}, proj.patternGenByScreen, { [screenId]: r }),
@@ -362,7 +362,7 @@ import { listen } from "@tauri-apps/api/event";
       if (!manifestPath) { await pickManifest(); return; }
       setBaErr(null); setBaState('running'); setBaPct(0);
       try {
-        const resp = await meshVisualReconstruct(proj.path, screenId, manifestPath, intr === 'auto' ? null : intr, null);
+        const resp = await meshVisualReconstruct(proj.path, screenId, manifestPath, intr === 'auto' ? 'auto' : intr, null);
         jobRef.current = resp.job_id;
       } catch (e) {
         setBaState('idle'); setBaErr(e && e.message ? e.message : String(e));
@@ -391,7 +391,7 @@ import { listen } from "@tauri-apps/api/event";
         desc: '内参来源，无需操作即可继续。' },
         h('div', { className: 'gw-tabs2' },
           h('button', { className: intr === 'auto' ? 'on' : '', onClick: () => setIntr('auto') }, '自动标定'),
-          h('button', { className: intr !== 'auto' ? 'on' : '', onClick: async () => { try { const p = await pickFile('相机内参 (YAML)', ['yaml', 'yml']); if (p) setIntr(p); } catch (e) {} } }, '外部内参'))),
+          h('button', { className: intr !== 'auto' ? 'on' : '', onClick: async () => { try { const p = await pickFile('相机内参 (JSON)', ['json']); if (p) setIntr(p); } catch (e) {} } }, '外部内参'))),
       h(Step, { n: 4, active: true, title: '重建',
         desc: '开始视觉重建，完成后可在视口比对。' },
         baErr ? h('div', { style: { fontSize: 11.5, color: 'var(--negative-visual)', marginBottom: 8 } }, baErr) : null,
