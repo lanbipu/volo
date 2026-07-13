@@ -60,6 +60,10 @@ pub struct ScreenConfig {
     /// defaults to 0 so pre-existing `project.yaml` files keep loading unchanged.
     #[serde(default)]
     pub height_offset_mm: f64,
+    /// Reverse the screen's presentation-side normal. This is authored by the
+    /// Calibrate viewport and persisted with the rest of the screen design.
+    #[serde(default)]
+    pub normal_flip: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

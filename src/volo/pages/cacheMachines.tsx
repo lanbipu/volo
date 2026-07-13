@@ -215,7 +215,7 @@ import { deleteMachine, scanNetwork, addDiscoveredMachine, refreshMachine } from
     const [machView, setMachView] = useState('grid');   /* 'list' | 'grid' */
     const [selected, setSelected] = useState([]);       /* 勾选待删除的机器 id */
     const [removed, setRemoved] = useState([]);          /* 已批量删除的机器 id（本会话内移除） */
-    const open = (id) => { s.setDrawer({ kind: 'machine', id }); CX.showInspector(s); };
+    const open = (id) => { s.setDrawer({ kind: 'machine', id }); };
     const isDeployed = (n) => n.env !== 'pending' || (s.enrolled || []).includes(n.id);
 
     /* 排序：主机名按「前缀 + 数字后缀」数字升序；纯 IP 按点分数值升序。numeric localeCompare
@@ -284,7 +284,7 @@ import { deleteMachine, scanNetwork, addDiscoveredMachine, refreshMachine } from
       isSel(n) ? h(Icon, { name: 'check', size: 12 }) : null);
 
     /* 获取入网脚本 = get_winrm_bootstrap_script（SSH key 现场入网，不再远程推送），打开脚本面板 */
-    const getScript = (n) => { s.setDrawer({ kind: 'script', id: n.id }); CX.showInspector(s); };
+    const getScript = (n) => { s.setDrawer({ kind: 'script', id: n.id }); };
 
     const envCell = (n) => {
       if (n.status === 'offline') return h('span', { className: 'env-cell' }, h('span', { className: 'env-dash' }, '—'));
@@ -313,7 +313,7 @@ import { deleteMachine, scanNetwork, addDiscoveredMachine, refreshMachine } from
           /* 制作入网 U 盘：全局动作（包与机器无关，做一次入网所有节点）。仅 Windows 可用——
              打包器是 PowerShell sidecar，非 Win 时禁用并解释。span 包裹让禁用态仍显 title。 */
           h('span', { title: s.platform === 'win' ? '生成全局通用的 SSH 入网 U 盘包' : '该功能仅 Windows 可用（打包依赖 PowerShell）', style: { display: 'inline-flex' } },
-            h(Button, { variant: 'secondary', size: 'S', isDisabled: s.platform !== 'win', icon: h(Icon, { name: 'usb', size: 14 }), onPress: () => { s.setDrawer({ kind: 'usb' }); CX.showInspector(s); } }, '制作入网 U 盘')),
+            h(Button, { variant: 'secondary', size: 'S', isDisabled: s.platform !== 'win', icon: h(Icon, { name: 'usb', size: 14 }), onPress: () => { s.setDrawer({ kind: 'usb' }); } }, '制作入网 U 盘')),
           h(Button, { variant: 'accent', size: 'S', icon: h(Icon, { name: 'search', size: 14 }), onPress: onScan }, '扫描网段…'))),
       h('div', { className: 'mlist' },
         machView === 'list'

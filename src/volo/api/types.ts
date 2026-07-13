@@ -1405,6 +1405,8 @@ export interface ScreenConfig {
   yaw_deg: number;
   /** Bottom-edge height off the ground, mm. Extra world-Z translation; 0 on screens saved before this field existed. */
   height_offset_mm?: number;
+  /** Reverse the screen presentation-side normal; false on legacy project files. */
+  normal_flip?: boolean;
 }
 
 export type ShapePriorConfig =

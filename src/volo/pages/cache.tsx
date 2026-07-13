@@ -87,8 +87,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
   }
 
   /* open the preview→confirm→execute overlay (pattern 5.1) */
-  function showInspector(s) { if (s.setRightCollapsed) s.setRightCollapsed(false); }
-  function openPreview(s, spec) { showInspector(s); s.setDrawer(Object.assign({ kind: 'preview' }, spec)); }
+  function openPreview(s, spec) { s.setDrawer(Object.assign({ kind: 'preview' }, spec)); }
   /* same spec, but as a centered modal dialog (preview → 实时进度 → 成功/失败) instead of
      the inspector drawer. 部署 / 修复 / 巡检类操作走此（见 ModalPreview）。 */
   function openModalPreview(s, spec) { s.setModal(Object.assign({ kind: 'preview' }, spec)); }
@@ -622,7 +621,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
         n.env === 'pending' && !(s.enrolled || []).includes(n.id) ? h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '入网'),
           h('div', { className: 'deploy-block' },
             h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'doc', size: 14 }),
-              onPress: () => { s.setDrawer({ kind: 'script', id: n.id }); showInspector(s); } }, '获取入网脚本'),
+              onPress: () => { s.setDrawer({ kind: 'script', id: n.id }); } }, '获取入网脚本'),
             h('div', { className: 'deploy-ok-note' }, 'SSH key 现场入网 · 拷到目标机运行后回来刷新'))) : null,
         h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '① 身份'),
           KV('IP 地址', n.ip, true), KV('角色', n.role), KV('最后在线', n.last),
@@ -1200,7 +1199,7 @@ import { saveCredential, deleteCredential, deleteMachine, refreshMachine,
 
   /* shared helpers for the playbook + resource files */
   Object.assign(CX, { dot, StatusPill, SevPill, ChannelTag, SEV, healthVisual, ringStyle, node,
-    MachineSelector, predict, showInspector, openPreview, openModalPreview, refreshScan, taskVis, taskIcon, TaskCard });
+    MachineSelector, predict, openPreview, openModalPreview, refreshScan, taskVis, taskIcon, TaskCard });
 
   window.VOLO_CACHE = { isCacheNav, left, ctx, actions, center, inspector, drawer, modalLayer: (s) => h(ModalLayer, { s }) };
 })();

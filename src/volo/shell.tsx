@@ -537,8 +537,8 @@ function App() {
   const [rightW, setRightW] = useState(typeof persisted.rightW === 'number' ? persisted.rightW : 372);
   const [leftCollapsed, setLeftCollapsed] = useState(!!persisted.leftCollapsed);
   /* 检查器（右栏）每次打开 App 都从收起状态开始 —— 不做"记住上次开合"的持久化。
-     Cache 页：不因选中目标 / 切子页自动展开，只在用户点击「检查器」按钮或页内显式打开
-     详情/预览/脚本的入口时展开；取消选择时仍自动收起。其它顶层页保持「选中即展开」。 */
+     所有页面都只允许用户点击顶栏「检查器」按钮展开；选中目标、切换阶段或打开详情/
+     预览只更新检查器内容，不改变开合状态。 */
   const [rightCollapsed, setRightCollapsed] = useState(true);
   const [logH, setLogH] = useState(typeof persisted.logH === 'number' ? persisted.logH : 150);
   const [page, setPage] = useState(() => PAGES.some((p) => p.id === persisted.page) ? persisted.page : 'tools');
@@ -956,17 +956,11 @@ function App() {
 
   const cluster = deriveCluster(machines, healthChecks, healthRunAt);
 
-  /* 检查器（右栏）自动展开 / 收起：非 Cache 页在选中目标时展开、取消时收起。
-     Cache 页只随取消选择收起，不随选中 / 切子页自动展开（由页内显式入口或「检查器」按钮打开）。 */
+  /* 检查器不随目标出现自动展开；目标消失时仍自动收起，避免留下与当前选择无关的旧内容。 */
   const inspectorHasTargetRef = useRef(false);
   useEffect(() => {
     const hasTarget = !!drawer || !!psoSel || !!calSel;
-    if (page === 'cache') {
-      if (!hasTarget && inspectorHasTargetRef.current) setRightCollapsed(true);
-      inspectorHasTargetRef.current = hasTarget;
-      return;
-    }
-    if (hasTarget !== inspectorHasTargetRef.current) setRightCollapsed(!hasTarget);
+    if (!hasTarget && inspectorHasTargetRef.current) setRightCollapsed(true);
     inspectorHasTargetRef.current = hasTarget;
   }, [drawer, psoSel, calSel, page]);
 
@@ -985,7 +979,7 @@ function App() {
 
   /* 切顶层页面：检查器目标都是页面私有的（工具页: drawer/psoSel · 校正页: calSel），
      离开即失效——全部清空并收起右栏（点到与检查器无关的页面时自动隐藏）；同样对齐 ref
-     吞掉 effect 下降沿。回到原页面后重新选中对象即可再次展开。 */
+     吞掉 effect 下降沿。回到原页面后重新选中对象，再由用户点击检查器查看。 */
   const goPage = (v) => {
     if (v !== page) {
       setDrawer(null); setPsoSel(null); setCalSel(null);

@@ -162,6 +162,7 @@ mod project_yaml_method_tests {
                 position_m: [0.0, 0.0, 0.0],
                 yaw_deg: 0.0,
                 height_offset_mm: 0.0,
+                normal_flip: false,
             },
         );
         ProjectConfig {
@@ -188,10 +189,12 @@ mod project_yaml_method_tests {
     #[test]
     fn load_save_roundtrip_with_method_m1() {
         let dir = tempdir().unwrap();
-        let cfg = minimal_config(Some(SurveyMethod::M1));
+        let mut cfg = minimal_config(Some(SurveyMethod::M1));
+        cfg.screens.get_mut("MAIN").unwrap().normal_flip = true;
         save_project_yaml_to_path(dir.path(), &cfg).unwrap();
         let loaded = load_project_yaml_from_path(dir.path()).unwrap();
         assert_eq!(loaded.project.method, Some(SurveyMethod::M1));
+        assert!(loaded.screens["MAIN"].normal_flip);
     }
 
     #[test]
@@ -231,5 +234,6 @@ output:
         std::fs::write(dir.path().join("project.yaml"), legacy).unwrap();
         let loaded = load_project_yaml_from_path(dir.path()).unwrap();
         assert_eq!(loaded.project.method, None);
+        assert!(!loaded.screens["MAIN"].normal_flip);
     }
 }

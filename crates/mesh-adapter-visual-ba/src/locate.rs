@@ -9,6 +9,7 @@
 //!      (off by default — protects against PATH-injection of an attacker-
 //!      controlled `lmt-vba-sidecar`).
 
+use std::collections::HashSet;
 use std::env;
 use std::path::PathBuf;
 
@@ -64,6 +65,30 @@ fn workspace_targets_from_compile_time() -> Vec<PathBuf> {
     out
 }
 
+/// Runtime workspace target resolution. Cargo caches `env!("CARGO_MANIFEST_DIR")`
+/// inside the compiled crate, so a shared `CARGO_TARGET_DIR` can leave the
+/// compile-time path pointing at a deleted worktree. Walk up from the running
+/// executable as well: dev binaries live below `<workspace>/target/`, including
+/// the temporary `.app` wrappers used for native Tauri E2E.
+fn workspace_targets_from_current_exe() -> Vec<PathBuf> {
+    let Some(exe) = env::current_exe().ok() else {
+        return Vec::new();
+    };
+    exe.ancestors()
+        .filter(|path| path.file_name().is_some_and(|name| name == "target"))
+        .map(PathBuf::from)
+        .collect()
+}
+
+fn workspace_targets() -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    workspace_targets_from_compile_time()
+        .into_iter()
+        .chain(workspace_targets_from_current_exe())
+        .filter(|path| seen.insert(path.clone()))
+        .collect()
+}
+
 /// In packaged runtimes (Tauri bundle), the sidecar lives next to the host
 /// binary under `sidecar-vendor/<platform>/`.
 fn sidecar_next_to_exe() -> Option<PathBuf> {
@@ -107,7 +132,7 @@ pub fn locate_sidecar() -> VbaResult<PathBuf> {
     // possibly-stale vendored bundle. Both are fixed workspace-relative paths
     // (NOT a PATH search), so no PATH-injection risk; both are absent in packaged
     // installs, where this whole block falls through to the exe-relative lookup.
-    for target in workspace_targets_from_compile_time() {
+    for target in workspace_targets() {
         // venv console scripts live in `Scripts` on Windows, `bin` elsewhere.
         if let Some(workspace) = target.parent() {
             let venv_bin = if cfg!(windows) { "Scripts" } else { "bin" };
@@ -156,4 +181,20 @@ pub fn locate_sidecar() -> VbaResult<PathBuf> {
     }
 
     Err(VbaError::SidecarNotFound { tried })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::workspace_targets_from_current_exe;
+
+    #[test]
+    fn runtime_target_walk_finds_cargo_target_ancestor() {
+        let targets = workspace_targets_from_current_exe();
+        assert!(
+            targets
+                .iter()
+                .any(|path| path.file_name().is_some_and(|name| name == "target")),
+            "test executable should run below a Cargo target directory: {targets:?}"
+        );
+    }
 }

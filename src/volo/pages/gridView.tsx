@@ -23,7 +23,7 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
   const ROLE = {
     origin: { short: 'O', label: 'origin', color: '#3ddc84' },
     x_axis: { short: 'X', label: 'x_axis', color: '#ff5a4d' },
-    xy_plane: { short: 'XY', label: 'xy_plane', color: '#5aa2ff' },
+    xy_plane: { short: 'Y', label: 'xy_plane', color: '#5aa2ff' },
   };
   const PROV = {
     measured: { color: '#46c882', label: 'measured 实测' },
@@ -42,6 +42,13 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
     if (coord.x_axis_point === name) return 'x_axis';
     if (coord.xy_plane_point === name) return 'xy_plane';
     return null;
+  }
+  function parsePointName(name, screenId) {
+    const prefix = screenId + '_V';
+    const raw = String(name || '');
+    if (!raw.startsWith(prefix)) return null;
+    const m = raw.slice(prefix.length).match(/^(\d+)_R(\d+)$/);
+    return m ? { c: Number(m[1]) - 1, r: Number(m[2]) - 1 } : null;
   }
 
   /* ---------- 投影（模型 Z=竖直/行，Y=弯曲深度，X=列） ---------- */
@@ -274,15 +281,16 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       return () => { el.removeEventListener('wheel', onWheel); window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
     }, [pan]);
 
+    const startPan = (e) => { touchedRef.current = true; panRef.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y }; stageRef.current.classList.add('is-panning'); };
+    const startOrbit = (e) => { touchedRef.current = true; orbitRef.current = { x: e.clientX, y: e.clientY, az: orbit.az, el: orbit.el }; stageRef.current.classList.add('is-orbiting'); };
     const onBg = (e) => {
       if (e.target.closest && e.target.closest('.gw-box')) return;
-      if (e.button === 2) { touchedRef.current = true; panRef.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y }; stageRef.current.classList.add('is-panning'); return; }
+      if (e.button === 2) { startPan(e); return; }
       if (e.button === 0) {
         /* 箱体模式·选择工具：Shift+左拖 = 框选多选；纯左拖恒为轨道旋转（传统 DCC 习惯）。 */
         if (cabinet && s.calBoxTool === 'select' && e.shiftKey) { marqueeRef.current = { cx0: e.clientX, cy0: e.clientY, cx1: e.clientX, cy1: e.clientY }; setMarquee(marqueeRef.current); return; }
         if (!cabinet) s.setCalSel(null);
-        touchedRef.current = true;
-        orbitRef.current = { x: e.clientX, y: e.clientY, az: orbit.az, el: orbit.el }; stageRef.current.classList.add('is-orbiting');
+        startOrbit(e);
       }
     };
 
@@ -341,15 +349,8 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
         paintRef.current = { to: nowMasked }; /* 拖刷：后续划过的箱体统一设为首格的新状态 */
         s.setCalSel({ type: 'cabinet', c: b.c, r: b.r });
       } else if (tool === 'refs') {
-        const role = s.calRefRole;
-        const name = pointName(s.calActiveScreen, b.c, b.r);
-        const nextCoord = Object.assign({}, coord, { [role + '_point']: name });
-        const nextConfig = Object.assign({}, proj_.config, { coordinate_system: nextCoord });
-        s.runCmd({ domain: 'calibrate', action: '指派参考点', target: name, chan: 'local' },
-          () => saveProjectYaml(proj_.path, nextConfig),
-          { okMsg: () => `已指派 ${ROLE[role].label} → ${name}` })
-          .then(() => CX.openProjectPath(proj_.path, s)).catch(() => {});
         s.setCalSel({ type: 'cabinet', c: b.c, r: b.r });
+        s.setCalReceipt({ tone: 'notice', text: '请点击屏幕接缝处的绿色角点指派参考点' });
       } else {
         s.setCalSel(e.shiftKey && s.calSel && s.calSel.type === 'cabinetMulti'
           ? Object.assign({}, s.calSel, { keys: [...new Set([...(s.calSel.keys || []), b.key])] })
@@ -357,43 +358,72 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       }
     };
 
-    /* 地面网格 + 坐标轴
-       网格以内容中心（吸附 0.5m 步进）为中心铺开——设计稿原型的几何居中在原点，
-       网格因此围绕内容对称；接真实数据后内容不在原点，网格须跟着内容走。 */
+    const assignReferenceVertex = (c, r, e) => {
+      e.stopPropagation();
+      const role = s.calRefRole;
+      const name = pointName(s.calActiveScreen, c, r);
+      const nextCoord = Object.assign({}, coord, { [role + '_point']: name });
+      const nextConfig = Object.assign({}, proj_.config, { coordinate_system: nextCoord });
+      s.runCmd({ domain: 'calibrate', action: '指派参考点', target: name, chan: 'local' },
+        () => saveProjectYaml(proj_.path, nextConfig),
+        { okMsg: () => `已指派 ${ROLE[role].label} → ${name}` })
+        .then(() => CX.openProjectPath(proj_.path, s)).catch(() => {});
+    };
+
+    /* Blender-style 地面细网格：0.5m 次要线、1m 主要线，世界原点轴线另绘。 */
     const ground = [];
     if (disp.ground) {
-      const G = 5, step = 0.5;
-      const gcx = Math.round(TARGET.x / step) * step, gcy = Math.round(TARGET.y / step) * step;
+      const G = 8, step = 0.5;
       for (let i = -G; i <= G; i += step) {
-        ground.push(h('line', { key: 'gx' + i, className: 'gw-grid-l', x1: proj({ x: gcx + i, y: gcy - G, z: 0 }, view)[0], y1: proj({ x: gcx + i, y: gcy - G, z: 0 }, view)[1], x2: proj({ x: gcx + i, y: gcy + G, z: 0 }, view)[0], y2: proj({ x: gcx + i, y: gcy + G, z: 0 }, view)[1] }));
-        ground.push(h('line', { key: 'gz' + i, className: 'gw-grid-l', x1: proj({ x: gcx - G, y: gcy + i, z: 0 }, view)[0], y1: proj({ x: gcx - G, y: gcy + i, z: 0 }, view)[1], x2: proj({ x: gcx + G, y: gcy + i, z: 0 }, view)[0], y2: proj({ x: gcx + G, y: gcy + i, z: 0 }, view)[1] }));
+        if (Math.abs(i) < 1e-6) continue;
+        const cls = 'gw-grid-l' + (Math.abs(i % 1) < 1e-6 ? ' maj' : '');
+        ground.push(h('line', { key: 'gx' + i, className: cls, x1: proj({ x: i, y: -G, z: 0 }, view)[0], y1: proj({ x: i, y: -G, z: 0 }, view)[1], x2: proj({ x: i, y: G, z: 0 }, view)[0], y2: proj({ x: i, y: G, z: 0 }, view)[1] }));
+        ground.push(h('line', { key: 'gz' + i, className: cls, x1: proj({ x: -G, y: i, z: 0 }, view)[0], y1: proj({ x: -G, y: i, z: 0 }, view)[1], x2: proj({ x: G, y: i, z: 0 }, view)[0], y2: proj({ x: G, y: i, z: 0 }, view)[1] }));
       }
     }
-    /* 轴 gizmo 按 Claude Design 的显示约定标注（DCC 习惯 Y-up）：
-       显示 X（红）= stage X · 显示 Y（绿，向上）= stage Z · 显示 Z（蓝，纵深）= stage Y。
-       数据/导出仍是 RH Z-up，这里只是视口展示层的换名。 */
+    /* 显示 X（红）= stage X；显示 Z（蓝）= stage Y；显示 Y（绿向上）= stage Z。 */
     const axes = [];
     if (disp.ground) {
-      const O = proj({ x: 0, y: 0, z: 0 }, view);
-      [['x', 1.6, 0, 0, '#ff5a4d', 'X'], ['y', 0, 0, 1.6, '#3ddc84', 'Y'], ['z', 0, 1.6, 0, '#5aa2ff', 'Z']].forEach(([id, x, y, z, col, lb]) => {
-        const P = proj({ x, y, z }, view);
-        axes.push(h('line', { key: 'a' + id, x1: O[0], y1: O[1], x2: P[0], y2: P[1], stroke: col, strokeWidth: 2, strokeLinecap: 'round', opacity: 0.9 }));
-        axes.push(h('text', { key: 't' + id, x: P[0], y: P[1] - 3, fill: col, fontSize: 12, fontWeight: 700, textAnchor: 'middle' }, lb));
-      });
+      const G = 8;
+      const axis = (id, a, b, color) => { const p0 = proj(a, view), p1 = proj(b, view); axes.push(h('line', { key: id, x1: p0[0], y1: p0[1], x2: p1[0], y2: p1[1], stroke: color, strokeWidth: 1, strokeLinecap: 'round', opacity: .8 })); };
+      axis('axis-x', { x: -G, y: 0, z: 0 }, { x: G, y: 0, z: 0 }, '#c74436');
+      axis('axis-z', { x: 0, y: -G, z: 0 }, { x: 0, y: G, z: 0 }, '#3f74c4');
+      axis('axis-y', { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 2 }, '#3f9c46');
     }
 
     const onBoxDown = (b, entry, e) => {
+      e.stopPropagation();
+      if (e.button === 2) { startPan(e); return; }
+      if (e.button !== 0) return;
+      if (!cabinet || s.calBoxTool === 'select') startOrbit(e);
       if (entry.isActive) { clickBox(b, e); return; }
-      e.stopPropagation(); s.setCalActiveScreen(entry.id); s.setCalDraftScreen(null); s.setCalMode('object'); s.setCalSel({ type: 'screen' });
+      s.setCalActiveScreen(entry.id); s.setCalDraftScreen(null); s.setCalMode('object'); s.setCalSel({ type: 'screen' });
     };
     const paintEnter = (b, entry) => {
       if (!entry.isActive || !cabinet || s.calBoxTool !== 'mask' || !paintRef.current) return;
       if (m.shape_mode !== 'irregular') return;
       setBoxMask(b, paintRef.current.to);
     };
+    const cameraToViewer = (() => {
+      if (view === 'front') return { x: 0, y: 1, z: 0 };
+      if (view === 'top') return { x: 0, y: 0, z: 1 };
+      if (view === 'side') return { x: 1, y: 0, z: 0 };
+      const a = orbit.az * Math.PI / 180, e = orbit.el * Math.PI / 180;
+      return { x: Math.sin(a) * Math.cos(e), y: Math.cos(a) * Math.cos(e), z: Math.sin(e) };
+    })();
+    const boxCenter = (b) => b.corners.reduce((p, q) => ({ x: p.x + q.x / 4, y: p.y + q.y / 4, z: p.z + q.z / 4 }), { x: 0, y: 0, z: 0 });
+    const boxNormal = (b, entry) => {
+      const dx = b.corners[1].x - b.corners[0].x, dy = b.corners[1].y - b.corners[0].y;
+      const len = Math.hypot(dx, dy) || 1, sign = entry.cfg.normal_flip ? -1 : 1;
+      return { x: sign * -dy / len, y: sign * dx / len, z: 0 };
+    };
+    const faceToCamera = (b, entry) => {
+      const n = boxNormal(b, entry);
+      return n.x * cameraToViewer.x + n.y * cameraToViewer.y + n.z * cameraToViewer.z > 1e-6;
+    };
     const patternDefs = [];
     const patternForBox = (b, entry, projected) => {
-      if (!disp.pattern || !patternImage || patternImage.path !== patternPath || !entry.isActive || b.masked) return null;
+      if (!disp.pattern || !patternImage || patternImage.path !== patternPath || !entry.isActive || b.masked || !faceToCamera(b, entry)) return null;
       const ppc = entry.cfg.pixels_per_cabinet;
       if (!ppc || !ppc[0] || !ppc[1]) return null;
       const sx0 = b.c * ppc[0], sx1 = sx0 + ppc[0];
@@ -425,24 +455,22 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       const projected = b.corners.map((p) => proj(p, view));
       const pts = pstr(projected);
       if (b.masked && disp.maskStyle === 'cutout' && !(isActive && cabinet)) return h('polygon', { key: entry.id + b.key, className: 'gw-box gw-box--cut' + (isActive ? '' : ' gw-box--dim'), points: pts, onMouseDown: (e) => onBoxDown(b, entry, e), onMouseEnter: () => paintEnter(b, entry) });
-      let fill = '#39485a';
+      let fill = '#45464a';
       if (disp.provenance && b.prov) fill = PROV[b.prov].color;
       if (b.masked) fill = 'rgba(120,124,134,0.28)';
-      const role = coord ? roleAtCabinet(coord, entry.id, b.c, b.r) : null;
       let cls = 'gw-box' + (b.masked ? ' gw-box--masked' : '') + (isActive ? '' : ' gw-box--dim');
       if (isActive && (b.key === selKey || (multiKeys && multiKeys.has(b.key)))) cls += ' is-sel';
-      if (role) cls += ' is-ref';
       const pattern = patternForBox(b, entry, projected);
       return h('g', { key: entry.id + b.key },
-        h('polygon', { className: cls, points: pts, style: { fill, stroke: role ? ROLE[role].color : undefined }, onMouseDown: (e) => onBoxDown(b, entry, e), onMouseEnter: () => paintEnter(b, entry), title: entry.id + ' V' + String(b.c + 1).padStart(2, '0') + '_R' + String(b.r + 1).padStart(2, '0') }),
+        h('polygon', { className: cls, points: pts, style: { fill }, onMouseDown: (e) => onBoxDown(b, entry, e), onMouseEnter: () => paintEnter(b, entry), title: entry.id + ' V' + String(b.c + 1).padStart(2, '0') + '_R' + String(b.r + 1).padStart(2, '0') }),
         pattern,
-        pattern ? h('polygon', { className: cls, points: pts, style: { fill: 'none', pointerEvents: 'none', stroke: role ? ROLE[role].color : undefined } }) : null,
-        role ? (function () { const cn = proj(b.corners[0], view); return h('g', null, h('circle', { cx: cn[0], cy: cn[1], r: 8, fill: ROLE[role].color, stroke: '#0c0c10', strokeWidth: 1.5 }), h('text', { x: cn[0], y: cn[1] + 3.2, fill: '#0c0c10', fontSize: 8.5, fontWeight: 800, textAnchor: 'middle' }, ROLE[role].short)); })() : null);
+        pattern ? h('polygon', { className: cls, points: pts, style: { fill: 'none', pointerEvents: 'none' } }) : null);
     };
 
     let allBoxes = [];
     sbuilt.forEach((entry) => entry.g.boxes.forEach((b) => allBoxes.push({ b, entry })));
-    allBoxes.sort((x, y) => (view === 'top' ? x.b.corners[0].y - y.b.corners[0].y : y.b.depth - x.b.depth));
+    const cameraDepth = (b) => { const p = boxCenter(b); return p.x * cameraToViewer.x + p.y * cameraToViewer.y + p.z * cameraToViewer.z; };
+    allBoxes.sort((x, y) => cameraDepth(x.b) - cameraDepth(y.b));
     const boxEls = allBoxes.map(({ b, entry }) => mkBox(b, entry));
 
     /* 框选命中：外层 SVG 坐标 → 反演 pan/zoom（内层 transform 以 (500,350) 为原点）
@@ -487,13 +515,73 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       });
     }
 
+    const vertexMap = new Map();
+    if (activeEntry) activeEntry.g.boxes.forEach((b) => {
+      [[b.c, b.r, b.corners[0]], [b.c + 1, b.r, b.corners[1]], [b.c + 1, b.r + 1, b.corners[2]], [b.c, b.r + 1, b.corners[3]]]
+        .forEach(([c, r, p]) => vertexMap.set(c + ',' + r, p));
+    });
+
+    /* 参考点工具：所有 seam vertex 以绿色角点呈现；O/X/Y badge 最后绘制。 */
+    const refPoints = [], refMarks = [];
+    const refsActive = cabinet && s.calBoxTool === 'refs' && activeEntry;
+    if (refsActive) vertexMap.forEach((v, key) => {
+      const [c, r] = key.split(',').map(Number), p = proj(v, view);
+      refPoints.push(h('circle', { key: 'rv-' + key, cx: p[0], cy: p[1], r: 2, className: 'gw-pt gw-pt--pick' }));
+      refPoints.push(h('circle', { key: 'rh-' + key, cx: p[0], cy: p[1], r: 8, fill: 'transparent', className: 'gw-pt-hit', style: { pointerEvents: 'all' }, onMouseDown: (e) => { e.stopPropagation(); }, onClick: (e) => assignReferenceVertex(c, r, e) }));
+    });
+    if (activeEntry && coord) Object.entries({ origin: coord.origin_point, x_axis: coord.x_axis_point, xy_plane: coord.xy_plane_point }).forEach(([role, name]) => {
+      const at = parsePointName(name, activeEntry.id); if (!at) return;
+      const v = vertexMap.get(at.c + ',' + at.r); if (!v) return;
+      const p = proj(v, view), meta = ROLE[role];
+      refMarks.push(h('g', { key: 'ref-' + role },
+        h('circle', { cx: p[0], cy: p[1], r: 5.5, fill: meta.color, stroke: '#0c0c10', strokeWidth: .8 }),
+        h('text', { x: p[0], y: p[1] + 2.4, fill: '#0c0c10', fontSize: 6.5, fontWeight: 800, textAnchor: 'middle' }, meta.short)));
+    });
+
+    /* 激活屏箱体外法线；镂空块始终跳过。 */
+    const normals = [];
+    if (disp.normals && activeEntry) {
+      const masked = new Set((activeEntry.cfg.irregular_mask || []).map(([c, r]) => c + ',' + r));
+      activeEntry.g.boxes.forEach((b) => {
+        if (b.masked || masked.has(b.key)) return;
+        const center = boxCenter(b), n = boxNormal(b, activeEntry), tip = { x: center.x + n.x * .24, y: center.y + n.y * .24, z: center.z };
+        const p0 = proj(center, view), p1 = proj(tip, view), ang = Math.atan2(p1[1] - p0[1], p1[0] - p0[0]);
+        const hl = 4.5, hw = .5;
+        const a1 = [p1[0] - hl * Math.cos(ang - hw), p1[1] - hl * Math.sin(ang - hw)];
+        const a2 = [p1[0] - hl * Math.cos(ang + hw), p1[1] - hl * Math.sin(ang + hw)];
+        normals.push(h('g', { key: 'normal-' + b.key, className: 'gw-normal' },
+          h('line', { x1: p0[0], y1: p0[1], x2: p1[0], y2: p1[1] }),
+          h('polygon', { className: 'gw-normal-h', points: pstr([p1, a1, a2]) })));
+      });
+    }
+
+    /* 仅 screen selection 显示整屏橙色轮廓。 */
+    const objOutline = [];
+    if (activeEntry && s.calSel && s.calSel.type === 'screen') {
+      const cols = activeEntry.g.cols, rows = activeEntry.g.rows, ring = [];
+      for (let c = 0; c <= cols; c++) ring.push(vertexMap.get(c + ',0'));
+      for (let r = 1; r <= rows; r++) ring.push(vertexMap.get(cols + ',' + r));
+      for (let c = cols - 1; c >= 0; c--) ring.push(vertexMap.get(c + ',' + rows));
+      for (let r = rows - 1; r > 0; r--) ring.push(vertexMap.get('0,' + r));
+      objOutline.push(h('polygon', { className: 'gw-obj-outline', points: pstr(ring.filter(Boolean).map((p) => proj(p, view))) }));
+    }
+
+    const origin = proj({ x: 0, y: 0, z: 0 }, view);
+    const cursor = h('g', { className: 'gw-cursor' },
+      h('circle', { cx: origin[0], cy: origin[1], r: 9, fill: 'none', stroke: '#f4f4f4', strokeWidth: 1.6, strokeDasharray: '3.2 3.2' }),
+      h('circle', { cx: origin[0], cy: origin[1], r: 9, fill: 'none', stroke: '#e23b2e', strokeWidth: 1.6, strokeDasharray: '3.2 3.2', strokeDashoffset: 3.2 }),
+      [[-14, -6, 0], [6, 14, 1]].flatMap(([a, b, i]) => [
+        h('line', { key: 'ch-' + i, x1: origin[0] + a, y1: origin[1], x2: origin[0] + b, y2: origin[1], stroke: i ? '#e23b2e' : '#f4f4f4', strokeWidth: 1.4 }),
+        h('line', { key: 'cv-' + i, x1: origin[0], y1: origin[1] + a, x2: origin[0], y2: origin[1] + b, stroke: i ? '#e23b2e' : '#f4f4f4', strokeWidth: 1.4 }),
+      ]));
+
     return h('svg', { className: 'gw-svp', ref: stageRef, viewBox: '0 0 1000 700', preserveAspectRatio: 'xMidYMid meet', onMouseDown: onBg, onContextMenu: (e) => e.preventDefault() },
       h('defs', null, patternDefs),
       /* 缩放以视口中心 (500,350) 为基准，直接烘进 translate（不依赖各引擎对 SVG
          transform-origin 的实现差异）。 */
       h('g', { ref: innerRef, transform: 'translate(' + (pan.x + 500 * (1 - zoom)) + ',' + (pan.y + 350 * (1 - zoom)) + ') scale(' + zoom + ')' },
         h('g', { className: 'gw-ground' }, ground),
-        axes, ghost, boxEls, labels, points),
+        axes, ghost, boxEls, objOutline, labels, points, refPoints, normals, cursor, refMarks),
       marquee ? (function () {
         const [x0, y0] = toLocal(stageRef.current, marquee.cx0, marquee.cy0);
         const [x1, y1] = toLocal(stageRef.current, marquee.cx1, marquee.cy1);
@@ -624,7 +712,7 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
           const assigned = coord && (coord.origin_point + coord.x_axis_point + coord.xy_plane_point).includes(rk === 'origin' ? coord.origin_point : rk === 'x_axis' ? coord.x_axis_point : coord.xy_plane_point);
           return h('button', { key: rk, className: s.calRefRole === rk ? 'on' : '', onClick: () => s.setCalRefRole(rk), title: ROLE[rk].label },
             h('span', { className: 'dot', style: { background: ROLE[rk].color } }),
-            ROLE[rk].label, h('span', { className: 'num' }, i + 1),
+            ROLE[rk].short, h('span', { className: 'num' }, i + 1),
             assigned ? h('span', { className: 'done' }, h(Icon, { name: 'check', size: 11 })) : null);
         }))) : null);
   }
@@ -672,7 +760,7 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
 
   function Center({ s }) {
     useHotkeys(s);
-    useEffect(() => { s.setLeftCollapsed(false); s.setRightCollapsed(false); }, []);
+    useEffect(() => { s.setLeftCollapsed(false); }, []);
     const cabinet = s.calMode === 'cabinet';
     return h('div', { className: 'gw-center' },
       h('div', { className: 'gw-stage' },

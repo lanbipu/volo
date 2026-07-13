@@ -322,13 +322,14 @@ const GRID_CAB_PRESETS = [
 ];
 /* 视口显示开关（右上叠加）默认值 + 定义 */
 const GRID_DISPLAY_DEFAULT = {
-  points: true, pointLabels: false, pattern: false, provenance: false,
+  points: true, pointLabels: false, pattern: false, provenance: false, normals: false,
   ground: true, maskStyle: 'cutout',
 };
 const GRID_DISPLAY_ITEMS = [
   { k: 'points', label: '测量点', icon: 'pin', child: 'pointLabels', childLabel: '点名标签' },
   { k: 'pattern', label: '测试图贴合预览', icon: 'grid' },
   { k: 'provenance', label: '来源着色', icon: 'layers' },
+  { k: 'normals', label: '法线朝向', icon: 'arrowr' },
   { k: 'ground', label: '地面网格与坐标轴', icon: 'cube' },
 ];
 const GRID_VIEWS = [

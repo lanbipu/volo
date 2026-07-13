@@ -212,6 +212,7 @@ mod tests {
             position_m: [0.0, 0.0, 0.0],
             yaw_deg: 0.0,
             height_offset_mm: 0.0,
+            normal_flip: false,
         }
     }
 

@@ -2479,3 +2479,14 @@ html, body {
 .log-copyall:hover { background: var(--wash-2); color: var(--chrome-text); border-color: var(--chrome-line-2); }
 .log-copyall:disabled { opacity: .45; cursor: default; }
 .log-copyall.done { color: var(--positive-visual); border-color: color-mix(in srgb, var(--positive-visual) 40%, transparent); background: color-mix(in srgb, var(--positive-visual) 12%, transparent); }
+
+/* 全局指针：统一箭头；保留 text、resize、move、crosshair、disabled 语义。 */
+* { cursor: default !important; }
+input:not([type=button]):not([type=submit]):not([type=reset]):not([type=checkbox]):not([type=radio]):not([type=range]),
+textarea, [contenteditable="true"] { cursor: text !important; }
+.resizer--col { cursor: col-resize !important; }
+.resizer--row { cursor: row-resize !important; }
+.twk-num-lbl { cursor: ew-resize !important; }
+.twk-hd { cursor: move !important; }
+.cabstage.marquee { cursor: crosshair !important; }
+:disabled, [disabled], .is-blocked, .is-disabled, .disabled, .dis, .lock, .off, .cap-be.off { cursor: not-allowed !important; }
