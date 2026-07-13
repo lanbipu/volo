@@ -221,6 +221,19 @@ impl Reconstructor for SurfaceFitReconstructor {
                     "folded prior not supported in scatter mode".into(),
                 ));
             }
+            // Piecewise/faceted priors have no closed-form primitive (plane or
+            // cylinder) to fit against in scatter mode — same treatment as
+            // Folded above, not a gap specific to these variants.
+            ShapePrior::Arc { .. }
+            | ShapePrior::LShape { .. }
+            | ShapePrior::UShape { .. }
+            | ShapePrior::CustomSegments { .. } => {
+                return Err(CoreError::Reconstruction(
+                    "arc/l_shape/u_shape/custom_segments priors are not supported in scatter mode \
+                     (no plane/cylinder primitive to fit) — use grid sampling instead"
+                        .into(),
+                ));
+            }
         };
 
         let ratio = inliers.len() as f64 / raw.len() as f64;

@@ -117,4 +117,34 @@ pub enum ShapePrior {
     Folded {
         fold_seam_columns: Vec<u32>,
     },
+    /// Symmetric arc: a flat center span, then a constant per-column turn
+    /// angle accumulating outward on both sides.
+    Arc {
+        center_flat_cols: u32,
+        angle_per_col_deg: f64,
+    },
+    /// Two straight legs meeting at one corner. The second leg's length is
+    /// derived (`total_cols - left_cols - soften_cols`), not stored here.
+    LShape {
+        left_cols: u32,
+        soften_cols: u32,
+        corner_angle_deg: f64,
+    },
+    /// Two symmetric corners (a center span flanked by two equal wings).
+    UShape {
+        wing_cols: u32,
+        soften_cols: u32,
+        corner_angle_deg: f64,
+    },
+    /// Explicit column-run segments; segment `cols` must sum to the
+    /// screen's total column count.
+    CustomSegments {
+        segments: Vec<ShapeSegment>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShapeSegment {
+    pub cols: u32,
+    pub cum_angle_deg: f64,
 }

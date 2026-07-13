@@ -55,6 +55,8 @@ export const listRuns = (projectPath: string, screenId?: string | null) =>
   call<ReconstructionRun[]>("list_runs", { projectPath, screenId: screenId ?? null });
 // ✅ wired: Runs 步行展开 → getRunReport（异步加载完整 JSON report）
 export const getRunReport = (runId: number) => call<ReconstructionReport>("get_run_report", { runId });
+// ✅ wired: run 详情「设为当前」→ setRunCurrent（同屏其余 run 自动取消置位）
+export const setRunCurrent = (runId: number) => call<void>("set_run_current", { runId });
 
 /* ----------------------------- export ----------------------------- */
 // ✅ wired: 左侧「导出」→ exportObj（target: disguise/unreal/neutral）

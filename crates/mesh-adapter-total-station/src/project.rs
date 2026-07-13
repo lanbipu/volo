@@ -66,6 +66,88 @@ impl ScreenConfig {
                 }
             }
             ShapePriorConfig::Flat => {}
+            ShapePriorConfig::Arc { center_flat_cols, angle_per_col_deg } => {
+                if !angle_per_col_deg.is_finite() {
+                    return Err(AdapterError::InvalidInput(format!(
+                        "screen {screen_id}: arc angle_per_col_deg must be finite; got {angle_per_col_deg}"
+                    )));
+                }
+                if *center_flat_cols > cols {
+                    return Err(AdapterError::InvalidInput(format!(
+                        "screen {screen_id}: arc center_flat_cols={center_flat_cols} exceeds total columns {cols}"
+                    )));
+                }
+            }
+            ShapePriorConfig::LShape { left_cols, soften_cols, corner_angle_deg } => {
+                if !corner_angle_deg.is_finite() {
+                    return Err(AdapterError::InvalidInput(format!(
+                        "screen {screen_id}: l_shape corner_angle_deg must be finite; got {corner_angle_deg}"
+                    )));
+                }
+                if *left_cols == 0 {
+                    return Err(AdapterError::InvalidInput(format!(
+                        "screen {screen_id}: l_shape left_cols must be > 0"
+                    )));
+                }
+                if left_cols.checked_add(*soften_cols).is_none_or(|sum| sum >= cols) {
+                    return Err(AdapterError::InvalidInput(format!(
+                        "screen {screen_id}: l_shape left_cols({left_cols}) + soften_cols({soften_cols}) \
+                         must leave at least 1 column for the right leg (total {cols})"
+                    )));
+                }
+            }
+            ShapePriorConfig::UShape { wing_cols, soften_cols, corner_angle_deg } => {
+                if !corner_angle_deg.is_finite() {
+                    return Err(AdapterError::InvalidInput(format!(
+                        "screen {screen_id}: u_shape corner_angle_deg must be finite; got {corner_angle_deg}"
+                    )));
+                }
+                if *wing_cols == 0 {
+                    return Err(AdapterError::InvalidInput(format!(
+                        "screen {screen_id}: u_shape wing_cols must be > 0"
+                    )));
+                }
+                let both_wings = wing_cols
+                    .checked_add(*soften_cols)
+                    .and_then(|half| half.checked_mul(2));
+                if both_wings.is_none_or(|sum| sum >= cols) {
+                    return Err(AdapterError::InvalidInput(format!(
+                        "screen {screen_id}: u_shape wing_cols({wing_cols}) + soften_cols({soften_cols}) on \
+                         both sides must leave at least 1 center column (total {cols})"
+                    )));
+                }
+            }
+            ShapePriorConfig::CustomSegments { segments } => {
+                if segments.is_empty() {
+                    return Err(AdapterError::InvalidInput(format!(
+                        "screen {screen_id}: custom_segments must have at least 1 segment"
+                    )));
+                }
+                let mut sum = 0u32;
+                for seg in segments {
+                    if seg.cols == 0 {
+                        return Err(AdapterError::InvalidInput(format!(
+                            "screen {screen_id}: custom_segments entry has cols=0"
+                        )));
+                    }
+                    if !seg.cum_angle_deg.is_finite() {
+                        return Err(AdapterError::InvalidInput(format!(
+                            "screen {screen_id}: custom_segments cum_angle_deg must be finite; got {}",
+                            seg.cum_angle_deg
+                        )));
+                    }
+                    sum = sum.checked_add(seg.cols).ok_or_else(|| {
+                        AdapterError::InvalidInput(format!(
+                            "screen {screen_id}: custom_segments cols overflow u32 while summing"
+                        ))
+                    })?;
+                }
+                if sum != cols {
+                    return Err(AdapterError::InvalidInput(format!(
+                        "screen {screen_id}: custom_segments cols sum to {sum}, must equal total columns {cols}"
+                    )));
+                }
+            }
         }
         if let Some(bc) = &self.bottom_completion {
             if bc.lowest_measurable_row == 0 || bc.lowest_measurable_row > rows + 1 {
@@ -142,6 +224,23 @@ pub enum ShapePriorConfig {
     Flat,
     Curved { radius_mm: f64 },
     Folded { fold_seam_columns: Vec<u32> },
+    /// Symmetric arc: a flat center span, then a constant per-column turn
+    /// angle accumulating outward on both sides.
+    Arc { center_flat_cols: u32, angle_per_col_deg: f64 },
+    /// Two straight legs meeting at one corner. The second leg's length is
+    /// derived (`total_cols - left_cols - soften_cols`), not stored here.
+    LShape { left_cols: u32, soften_cols: u32, corner_angle_deg: f64 },
+    /// Two symmetric corners (a center span flanked by two equal wings).
+    UShape { wing_cols: u32, soften_cols: u32, corner_angle_deg: f64 },
+    /// Explicit column-run segments; segment `cols` must sum to the
+    /// screen's total column count.
+    CustomSegments { segments: Vec<ShapeSegment> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShapeSegment {
+    pub cols: u32,
+    pub cum_angle_deg: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

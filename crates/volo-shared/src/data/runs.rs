@@ -65,7 +65,7 @@ pub fn list_by_project(
     screen_id: Option<&str>,
 ) -> VoloResult<Vec<ReconstructionRun>> {
     let mut sql = String::from(
-        "SELECT id, screen_id, method, estimated_rms_mm, vertex_count, target, output_obj_path, created_at
+        "SELECT id, screen_id, method, estimated_rms_mm, vertex_count, target, output_obj_path, created_at, is_current
          FROM reconstruction_runs WHERE project_path = ?1",
     );
     if screen_id.is_some() {
@@ -83,6 +83,7 @@ pub fn list_by_project(
             target: r.get(5)?,
             output_obj_path: r.get(6)?,
             created_at: r.get(7)?,
+            is_current: r.get::<_, i64>(8)? != 0,
         })
     };
     let rows: Vec<_> = if let Some(s) = screen_id {
@@ -93,6 +94,27 @@ pub fn list_by_project(
             .collect::<rusqlite::Result<Vec<_>>>()?
     };
     Ok(rows)
+}
+
+/// Pin `run_id` as the current run for its (project_path, screen_id) pair,
+/// unpinning any other run in that same scope.
+pub fn set_current(conn: &Connection, run_id: i64) -> VoloResult<()> {
+    let (project_path, screen_id): (String, String) = conn
+        .query_row(
+            "SELECT project_path, screen_id FROM reconstruction_runs WHERE id = ?1",
+            [run_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|_| crate::error::VoloError::NotFound(format!("run id {run_id}")))?;
+    conn.execute(
+        "UPDATE reconstruction_runs SET is_current = 0 WHERE project_path = ?1 AND screen_id = ?2",
+        params![project_path, screen_id],
+    )?;
+    conn.execute(
+        "UPDATE reconstruction_runs SET is_current = 1 WHERE id = ?1",
+        params![run_id],
+    )?;
+    Ok(())
 }
 
 pub fn get_report_path(conn: &Connection, run_id: i64) -> VoloResult<(String, String)> {
@@ -154,6 +176,57 @@ mod tests {
         }
         let conn = db.lock().unwrap();
         let err = update_export(&conn, 9999, "disguise", "x.obj").unwrap_err();
+        assert!(matches!(err, crate::error::VoloError::NotFound(_)));
+    }
+
+    #[test]
+    fn set_current_pins_one_run_per_screen() {
+        let db = open_in_memory().unwrap();
+        {
+            let mut conn = db.lock().unwrap();
+            schema::migrate(&mut conn).unwrap();
+        }
+        let conn = db.lock().unwrap();
+        let new_run = |screen: &str| NewRun {
+            project_path: "/p".into(),
+            screen_id: screen.into(),
+            measurements_path: "m.yaml".into(),
+            method: "direct_link".into(),
+            measured_count: 10,
+            expected_count: 10,
+            estimated_rms_mm: Some(1.0),
+            estimated_p95_mm: Some(2.0),
+            vertex_count: 20,
+            report_json_path: "r.json".into(),
+            warnings_json: "[]".into(),
+        };
+        let a = insert(&conn, &new_run("MAIN")).unwrap();
+        let b = insert(&conn, &new_run("MAIN")).unwrap();
+        let other_screen = insert(&conn, &new_run("CEIL")).unwrap();
+
+        set_current(&conn, a).unwrap();
+        let runs = list_by_project(&conn, "/p", Some("MAIN")).unwrap();
+        assert!(runs.iter().find(|r| r.id == a).unwrap().is_current);
+        assert!(!runs.iter().find(|r| r.id == b).unwrap().is_current);
+
+        // Pinning b unpins a, but never touches the other screen's run.
+        set_current(&conn, b).unwrap();
+        let runs = list_by_project(&conn, "/p", Some("MAIN")).unwrap();
+        assert!(!runs.iter().find(|r| r.id == a).unwrap().is_current);
+        assert!(runs.iter().find(|r| r.id == b).unwrap().is_current);
+        let ceil_runs = list_by_project(&conn, "/p", Some("CEIL")).unwrap();
+        assert!(!ceil_runs.iter().find(|r| r.id == other_screen).unwrap().is_current);
+    }
+
+    #[test]
+    fn set_current_missing_run() {
+        let db = open_in_memory().unwrap();
+        {
+            let mut conn = db.lock().unwrap();
+            schema::migrate(&mut conn).unwrap();
+        }
+        let conn = db.lock().unwrap();
+        let err = set_current(&conn, 9999).unwrap_err();
         assert!(matches!(err, crate::error::VoloError::NotFound(_)));
     }
 

@@ -142,6 +142,32 @@ pub fn build_screen_measured_points_with_outcome(
         crate::project::ShapePriorConfig::Folded { fold_seam_columns } => ShapePrior::Folded {
             fold_seam_columns: fold_seam_columns.clone(),
         },
+        crate::project::ShapePriorConfig::Arc { center_flat_cols, angle_per_col_deg } => {
+            ShapePrior::Arc {
+                center_flat_cols: *center_flat_cols,
+                angle_per_col_deg: *angle_per_col_deg,
+            }
+        }
+        crate::project::ShapePriorConfig::LShape { left_cols, soften_cols, corner_angle_deg } => {
+            ShapePrior::LShape {
+                left_cols: *left_cols,
+                soften_cols: *soften_cols,
+                corner_angle_deg: *corner_angle_deg,
+            }
+        }
+        crate::project::ShapePriorConfig::UShape { wing_cols, soften_cols, corner_angle_deg } => {
+            ShapePrior::UShape {
+                wing_cols: *wing_cols,
+                soften_cols: *soften_cols,
+                corner_angle_deg: *corner_angle_deg,
+            }
+        }
+        crate::project::ShapePriorConfig::CustomSegments { segments } => ShapePrior::CustomSegments {
+            segments: segments
+                .iter()
+                .map(|s| mesh_core::shape::ShapeSegment { cols: s.cols, cum_angle_deg: s.cum_angle_deg })
+                .collect(),
+        },
     };
 
     let mp = MeasuredPoints {

@@ -1,21 +1,18 @@
 // @ts-nocheck
-/* Volo — Calibrate page shell（重构 · 新 IA）
-   1:1 port of the Claude Design handoff `src/cal2_pages.jsx`.
-   概览 / 网格校正折叠组[屏幕与设计·测量导入·重建与预览·历史与导出] / 镜头校正。
-   仪表盘语言沿用缓存页（land-status / dash-card / kpi / diag / spill 三通道）。
-
-   本文件是「骨架」：ctx 栏 · 左栏导航 · center/inspector 路由 · 共享原子（挂 window.VOLO_CAL2）。
-   同时保留旧 pages/calibrate.tsx 的全部真实后端接线基础设施（projStore / CalController /
-   deriveScreens / openProjectPath / reloadRuns / pickAndOpenProject / pickAndSeedExample /
-   rebuildMesh）——各 leaf 页（calOverview/calDesign/calSurvey/calPreview/calHistory）通过
-   window.VOLO_CAL2 取用，而不是各自重新发明一套项目状态管理。 */
+/* Volo — Calibrate page shared infra（网格校正新 IA · 2026-07）
+   本文件不再自己装配 ctx/left/center/inspector——那份路由现在归 gridPages.tsx
+   （在 index.tsx 里排在本文件之后加载，覆盖 window.VOLO_PAGES.calibrate）。
+   这里只保留真实后端接线基础设施（projStore / CalController / openProjectPath /
+   reloadRuns / pickAndOpenProject / pickAndSeedExample / rebuildMesh /
+   setRunCurrentAction），挂在 window.VOLO_CAL2 上供 gridView/gridTree/gridInsp/
+   gridModals/gridOverview 以及未受本轮影响的 calLens.tsx/calLensDialogs.tsx 取用。 */
 import * as React from "react";
 import "../ds";
 import { pickFile, pickDirectory } from "../api/commands";
 import { isTauri } from "../api/invoke";
 import {
   loadProjectYaml, listRecentProjects, addRecentProject, seedExampleProject,
-  reconstructSurface, listRuns, getRunReport,
+  reconstructSurface, listRuns, getRunReport, setRunCurrent,
 } from "../api/meshCommands";
 
 (function () {
@@ -71,30 +68,21 @@ import {
   })();
   function useProj() { return useSyncExternalStore(projStore.subscribe, projStore.get); }
 
-  /* ScreenConfig.cabinet_count = [cols, rows]（cabinet 网格；顶点网格是 (cols+1)×(rows+1)）。
-     screen 无独立显示名字段 —— 用 screen_id 本身当 name（无 Volume 分组概念）。 */
-  function deriveScreens(config) {
-    if (!config) return [];
-    return Object.keys(config.screens).map((id) => {
-      const sc = config.screens[id];
-      const cols = sc.cabinet_count[0], rows = sc.cabinet_count[1];
-      return { id, name: id, cols, rows, panels: cols * rows, shape_mode: sc.shape_mode };
-    });
-  }
-  const scr = (s) => { const list = deriveScreens(projStore.get().config); return list.find((x) => x.id === s.calScreen) || list[0] || { id: '', name: '—', cols: 1, rows: 1, shape_mode: 'rectangular' }; };
-
   /* 打开新项目 / 返回总览共用的「清空派生视图态」——每次都建新对象，避免多次
-     patch 共享同一个 runs: [] 数组引用。 */
+     patch 共享同一个 runs: [] 数组引用。patternGenByScreen/visualSession 同
+     measured/surveyReport 一样是会话内临时结果缓存（无对应 project.yaml 持久
+     字段，见 pages/gridTree.tsx 顶部注释），切项目时一并清空。 */
   const derivedResetFields = () => ({
     measured: null, surveyReport: null, measurementsAbsPath: null, reconstruction: null, runs: [],
+    patternGenByScreen: {}, visualSession: null,
   });
 
   async function openProjectPath(absPath, s) {
     const config = await loadProjectYaml(absPath);
     try { localStorage.setItem(PROJ_LS_KEY, absPath); } catch (e) {}
     const screenIds = Object.keys(config.screens);
-    const screenId = screenIds.includes(s.calScreen) ? s.calScreen : screenIds[0];
-    if (screenId && screenId !== s.calScreen) s.setCalScreen(screenId);
+    const screenId = screenIds.includes(s.calActiveScreen) ? s.calActiveScreen : screenIds[0];
+    if (screenId && screenId !== s.calActiveScreen) s.setCalActiveScreen(screenId);
     projStore.patch({ path: absPath, config, error: null, ...derivedResetFields() });
     return config;
   }
@@ -111,9 +99,10 @@ import {
     const runs = await listRuns(projectPath, screenId);
     projStore.patch({ runs });
     if (runs.length) {
+      const run = runs.find((r) => r.is_current) || runs[0];
       try {
-        const report = await getRunReport(runs[0].id);
-        projStore.patch({ reconstruction: { run_id: runs[0].id, surface: report.surface, quality_metrics: report.quality_metrics } });
+        const report = await getRunReport(run.id);
+        projStore.patch({ reconstruction: { run_id: run.id, surface: report.surface, quality_metrics: report.quality_metrics } });
       } catch (e) { projStore.patch({ reconstruction: null }); /* 历史 report_json 可能已被移动/删除 */ }
     } else {
       projStore.patch({ reconstruction: null });
@@ -157,7 +146,7 @@ import {
      用户选中的这条 run 的完整报告 patch 进去，否则 Preview 显示的是错误的网格。 */
   async function viewRunInPreview(s, proj, runId) {
     s.setCalSel({ type: 'run', id: runId });
-    s.setCalNav('preview');
+    s.setCalSection('rebuild');
     if (proj.reconstruction && proj.reconstruction.run_id === runId) return;
     try {
       const report = await getRunReport(runId);
@@ -169,7 +158,7 @@ import {
      成功后把 surface 直接写入 store，再 reloadRuns 刷新历史。 */
   async function rebuildMesh(s, proj) {
     if (!proj.path || proj.rebuilding) return;
-    const screenId = s.calScreen;
+    const screenId = s.calActiveScreen;
     if (!proj.measurementsAbsPath) { s.pushLog({ lv: 'warn', cat: 'calibrate', msg: '重建失败 · 请先在测量导入中导入数据' }); return; }
     projStore.patch({ rebuilding: true });
     try {
@@ -177,13 +166,51 @@ import {
         const result = await reconstructSurface(proj.path, screenId, proj.measurementsAbsPath);
         projStore.patch({ reconstruction: { run_id: result.run_id, surface: result.surface, quality_metrics: result.surface.quality_metrics } });
         await reloadRuns(proj.path, screenId);
+        await reloadScreenReports(proj.path, proj.config, s);
         return result;
       }, { okMsg: (r) => `重建收敛 · run #${r.run_id} · estimated RMS ${r.surface.quality_metrics.estimated_rms_mm == null ? 'n/a' : r.surface.quality_metrics.estimated_rms_mm.toFixed(2) + ' mm'}` });
     } catch (e) { /* runCmd 已记录失败 */ } finally { projStore.patch({ rebuilding: false }); }
   }
 
-  /* 常驻控制器：随 center() 挂载（不随 calNav 切换卸载/重挂），负责首次自动打开
-     最近项目 + 项目/屏幕变化时刷新 runs 列表。渲染 null，无可见 UI。 */
+  /* 「设为当前」（gridInsp.tsx 的 RunInsp / gridTree.tsx 的 run 节点菜单共用）：
+     写库 + 刷新该屏的 runs 列表 + 刷新多屏视口摘要（is_current 变了）。 */
+  async function setRunCurrentAction(s, proj, runId) {
+    await s.runCmd({ domain: 'calibrate', action: '设为当前 run', target: 'run #' + runId, chan: 'local' },
+      () => setRunCurrent(runId), { okMsg: () => `run #${runId} 已设为当前` });
+    await reloadRuns(proj.path, s.calActiveScreen);
+    await reloadScreenReports(proj.path, proj.config, s);
+  }
+
+  /* 多屏视口同时渲染需要"每块屏幕各自的最新重建"，不止当前激活屏
+     （区别于上面按 calActiveScreen 单屏刷新的 reloadRuns/proj.reconstruction，
+     后者供检查器/历史用）。按屏幕 fan-out listRuns，取 is_current（无显式当前
+     指针时退回最新一条，同 list_runs 的既定排序语义），再各拉一次完整 report。 */
+  async function reloadScreenReports(projectPath, config, s) {
+    if (!config) { s.setCalScreenReports({}); return; }
+    const screenIds = Object.keys(config.screens);
+    const st = projStore.get();
+    /* 激活屏若刚被同一 projectPath 下的 reloadRuns 拉过，直接复用其 reconstruction，
+       省一次重复的 listRuns+getRunReport 往返（rebuildMesh/setRunCurrentAction 总是
+       紧接着 reloadRuns 调用这里）。 */
+    const entries = await Promise.all(screenIds.map(async (id) => {
+      if (id === s.calActiveScreen && st.path === projectPath && st.reconstruction) {
+        return [id, { surface: st.reconstruction.surface, quality_metrics: st.reconstruction.quality_metrics }];
+      }
+      try {
+        const runs = await listRuns(projectPath, id);
+        if (!runs.length) return [id, null];
+        const run = runs.find((r) => r.is_current) || runs[0];
+        const report = await getRunReport(run.id);
+        return [id, report];
+      } catch (e) { return [id, null]; }
+    }));
+    const next = {};
+    entries.forEach(([id, report]) => { if (report) next[id] = report; });
+    s.setCalScreenReports(next);
+  }
+
+  /* 常驻控制器：随 center() 挂载（不随 calSection 切换卸载/重挂），负责首次自动打开
+     最近项目 + 项目/屏幕变化时刷新 runs 列表 + 多屏视口摘要。渲染 null，无可见 UI。 */
   function CalController({ s }) {
     const proj = useProj();
     useEffect(() => {
@@ -200,150 +227,28 @@ import {
     useEffect(() => {
       if (!proj.path) return;
       projStore.patch({ measured: null, surveyReport: null, measurementsAbsPath: null });
-      reloadRuns(proj.path, s.calScreen).catch((e) => {
+      reloadRuns(proj.path, s.calActiveScreen).catch((e) => {
         s.pushLog({ lv: 'err', cat: 'calibrate', msg: `加载重建记录失败 · ${e && e.message ? e.message : e}` });
       });
-    }, [proj.path, s.calScreen]);
+    }, [proj.path, s.calActiveScreen]);
+    useEffect(() => {
+      if (!proj.path || !proj.config) return;
+      reloadScreenReports(proj.path, proj.config, s).catch((e) => {
+        s.pushLog({ lv: 'err', cat: 'calibrate', msg: `加载多屏重建摘要失败 · ${e && e.message ? e.message : e}` });
+      });
+    }, [proj.path, proj.config]);
     return null;
   }
 
   /* 导航项「阻断」判定 —— 唯一真实作用是给 nav-i 加 is-blocked 样式 + 禁用点击；
-     设计稿里区分 done/ready 的三色 NavDot 组件从未被 left() 实际调用（失效代码），
-     故这里只需要算出「是否阻断」，不必伪造 done/ready 的精细语义。 */
-  function navBlocked(proj) {
-    const open = !!proj.path;
-    return {
-      overview: false, design: !open, survey: !open, preview: !open, history: !open, lens: !open,
-    };
-  }
+     设计稿里区分 done/ready 的三色 NavDot 组件从未被任何页面实际调用（失效代码），
+     ctx/left/center/inspector 路由本身也已随新 IA 移交 gridPages.tsx（见文件头注释），
+     这里不再定义。 */
 
-  /* =================== ctx 栏 =================== */
-  function ctx(s) {
-    const ar = s.calStageType === 'ar';
-    const stTabs = [{ id: 'led', label: 'LED', icon: 'panel' }, { id: 'ar', label: 'AR', icon: 'cube' }];
-    const seg = h('div', { className: 'ctxnav cal2-stageseg', style: { flex: '0 0 auto' } },
-      stTabs.map((c) => {
-        const on = (ar ? 'ar' : 'led') === c.id;
-        return h('div', {
-          key: c.id, className: 'ctxnav-i' + (on ? ' on' : ''),
-          title: on ? (s.leftCollapsed ? '展开左侧导航' : '收起左侧导航') : undefined,
-          onClick: () => {
-            if (!on) { s.setCalStageType(c.id); s.setLeftCollapsed(false); }
-            else { s.setLeftCollapsed((v) => !v); }
-          },
-        },
-          h('span', { className: 'ctxnav-ico' }, h(Icon, { name: c.icon, size: 16 })),
-          h('span', null, c.label),
-          c.id === 'ar' ? h('span', { className: 'cal2-stageseg-wip' }, 'WIP') : null,
-          on ? h('span', { className: 'ctxnav-caret', style: { transform: s.leftCollapsed ? 'none' : 'rotate(180deg)' } }, h(Icon, { name: 'chevr', size: 12 })) : null);
-      }));
-    return h(React.Fragment, null,
-      seg,
-      h('div', { className: 'ctx-div' }),
-      h('div', { style: { flex: 1 } }),
-      h('button', { className: 'paneltgl cal2-capbtn2', onClick: () => window.VOLO_CAL2.openCaptureModal(s), title: '命名采集配置（Profile）' },
-        h(Icon, { name: 'camera', size: 15 }), h('span', null, '采集设置')));
-  }
-
-  /* =================== 左栏 · 新 IA =================== */
-  function left(s) {
-    const proj = useProj();
-    /* 同 inspector(s) 里的 arWs 写法：window.VOLO_CAL_AR.left 是纯函数（不在内部
-       调用 hook），arWs 必须在分支判断之前无条件调用一次拿到快照再传下去。 */
-    const arWs = window.VOLO_CAL_AR.useArWorkspace();
-    if (s.calStageType === 'ar') return arLeft(s, arWs);
-    const blocked = navBlocked(proj);
-    const leaf = (id, icon, label, sub) => h('div', {
-      key: id, className: 'nav-i nav-mod cal2-nav' + (s.calNav === id ? ' on' : '') + (blocked[id] ? ' is-blocked' : ''),
-      onClick: () => { if (!blocked[id]) s.setCalNav(id); },
-    },
-      h('span', { className: 'nav-ico' }, h(Icon, { name: icon, size: 17 })),
-      h('span', { className: 'nav-lbl' }, label),
-      sub ? h('span', { className: 'nav-sub' }, sub) : null);
-    const child = (id, icon, label) => h('div', {
-      key: id, className: 'nav-i nav-child cal2-nav' + (s.calNav === id ? ' on' : '') + (blocked[id] ? ' is-blocked' : ''),
-      onClick: () => { if (!blocked[id]) s.setCalNav(id); },
-    },
-      h('span', { className: 'nav-ico' }, h(Icon, { name: icon, size: 15 })),
-      h('span', { className: 'nav-lbl' }, label));
-    const meshBuilt = !!proj.reconstruction;
-    return h(React.Fragment, null,
-      h('div', { className: 'sect' },
-        h('div', { className: 'sect-h' }, h('span', { className: 't' }, 'LED · 校正')),
-        leaf('overview', 'grid', '概览', 'LED'),
-        h('div', { className: 'nav-i nav-mod nav-head cal2-grouphd', onClick: () => s.setCalGridOpen((v) => !v) },
-          h('span', { className: 'nav-ico' }, h(Icon, { name: 'cube', size: 17 })),
-          h('span', { className: 'nav-lbl' }, '网格校正'),
-          h('span', { className: 'cal2-caret', style: { transform: s.calGridOpen ? 'none' : 'rotate(-90deg)' } }, h(Icon, { name: 'chevd', size: 14 }))),
-        s.calGridOpen ? h('div', { className: 'nav-children' },
-          child('design', 'panel', '屏幕与设计'),
-          child('survey', 'pin', '测量导入'),
-          child('preview', 'cube3', '重建与预览'),
-          child('history', 'list', '历史与导出')) : null,
-        leaf('lens', 'camera', '镜头校正', 'Lens')),
-      proj.path ? h('div', { className: 'sect', style: { marginTop: 'auto' } },
-        h('div', { className: 'farm-roll' },
-          h('div', { className: 'top' }, h('span', null, '网格重建'), h('span', null, meshBuilt ? '已重建' : '未重建')),
-          h('div', { className: 'vmeter vmeter--' + (meshBuilt ? 'positive' : 'neutral') }, h('div', { className: 'vmeter__fill', style: { width: meshBuilt ? '100%' : '0%' } })),
-          h('div', { className: 'top', style: { marginTop: 10 } }, h('span', null, '镜头校正'), h('span', null, s.calLensState === 'done' ? '已校正' : s.calLensState === 'running' ? '运行中' : '未运行')),
-          h('div', { className: 'vmeter vmeter--' + (s.calLensState === 'done' ? 'positive' : 'neutral') }, h('div', { className: 'vmeter__fill', style: { width: s.calLensState === 'done' ? '100%' : s.calLensState === 'running' ? '50%' : '0%' } })))) : null);
-  }
-
-  /* AR 分支左栏 —— 委托 window.VOLO_CAL_AR（真实接线，见 pages/calAr.tsx） */
-  function arLeft(s, ws) {
-    return (window.VOLO_CAL_AR && window.VOLO_CAL_AR.left) ? window.VOLO_CAL_AR.left(s, ws) : null;
-  }
-
-  /* =================== center 路由 =================== */
-  function center(s) {
-    const CAL2 = window.VOLO_CAL2 || {};
-    const proj = useProj();
-    if (s.calStageType === 'ar') return h(React.Fragment, null, h(CalController, { s }), arCenter(s));
-    if (!proj.path) return h(React.Fragment, null, h(CalController, { s }), CAL2.Overview ? h(CAL2.Overview, { s }) : null);
-    let body;
-    switch (s.calNav) {
-      case 'design':  body = CAL2.Design ? h(CAL2.Design, { s }) : null; break;
-      case 'survey':  body = CAL2.Survey ? h(CAL2.Survey, { s }) : null; break;
-      case 'preview': body = CAL2.Preview ? h(CAL2.Preview, { s }) : null; break;
-      case 'history': body = CAL2.History ? h(CAL2.History, { s }) : null; break;
-      case 'lens':    body = CAL2.Lens ? h(CAL2.Lens, { s }) : null; break;
-      default:        body = CAL2.Overview ? h(CAL2.Overview, { s }) : null;
-    }
-    return h(React.Fragment, null, h(CalController, { s }), body);
-  }
-  /* AR 分支 center —— 委托 window.VOLO_CAL_AR（真实接线，见 pages/calAr.tsx） */
-  function arCenter(s) {
-    return (window.VOLO_CAL_AR && window.VOLO_CAL_AR.center) ? window.VOLO_CAL_AR.center(s) : null;
-  }
-
-  /* =================== inspector 路由 =================== */
-  function inspector(s) {
-    const CAL2 = window.VOLO_CAL2 || {};
-    const proj = useProj();
-    /* 无条件调用（同 useProj）：lensInspector 是纯函数，不在内部调用 hook —— Lens
-       画面（calLens.tsx）与这里是外壳里两棵独立 Slot fiber，互不共享 hooks，实时数据
-       靠这个模块级 store 快照跨 fiber 传递。放在 calNav 分支判断之前，任何 render
-       都固定调用一次，Rules of Hooks 意义上等价于上面的 useProj()。 */
-    const lensLive = CAL2.useLensLive();
-    /* 同上：window.VOLO_CAL_AR.inspector 内部把 verify 详情委托给纯函数 verifyInspector，
-       它自己不调用 hook —— arWs 必须在分支判断之前无条件调用一次拿到快照再传下去，
-       否则 useArWorkspace() 只在 AR 态渲染时执行，切 LED/AR 会改变 Slot 的 hook 调用次序。 */
-    const arWs = window.VOLO_CAL_AR.useArWorkspace();
-    if (s.calStageType === 'ar') return window.VOLO_CAL_AR.inspector(s, arWs);
-    if (!proj.path) return inspEmpty('打开项目后可查看细节');
-    if (s.calNav === 'design' && CAL2.designInspector) return CAL2.designInspector(s);
-    if (s.calNav === 'survey' && CAL2.surveyInspector) return CAL2.surveyInspector(s, proj);
-    if (s.calNav === 'history' && CAL2.historyInspector) return CAL2.historyInspector(s, proj);
-    if (s.calNav === 'lens' && CAL2.lensInspector) return CAL2.lensInspector(s, lensLive);
-    return inspEmpty('选择对象查看细节');
-  }
-
-  /* 共享给 leaf 页：状态原子 + 项目基础设施 */
+  /* 共享给各 grid_*.tsx / calLens.tsx/calLensDialogs.tsx：状态原子 + 项目基础设施 */
   window.VOLO_CAL2 = Object.assign(window.VOLO_CAL2 || {}, {
-    Pill, rmsBadge, confBadge, statusPill, inspEmpty, scr,
-    useProj, projStore, deriveScreens, openProjectPath, closeProject, reloadRuns,
-    pickAndOpenProject, pickAndSeedExample, rebuildMesh, viewRunInPreview, PROJ_LS_KEY,
+    Pill, rmsBadge, confBadge, statusPill, inspEmpty, CalController,
+    useProj, projStore, openProjectPath, closeProject, reloadRuns, reloadScreenReports,
+    pickAndOpenProject, pickAndSeedExample, rebuildMesh, viewRunInPreview, setRunCurrentAction, PROJ_LS_KEY,
   });
-  window.VOLO_PAGES = window.VOLO_PAGES || {};
-  window.VOLO_PAGES.calibrate = { ctx, left, center, inspector };
 })();

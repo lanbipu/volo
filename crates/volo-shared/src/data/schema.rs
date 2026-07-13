@@ -79,6 +79,16 @@ const MIGRATIONS: &[(&str, &str)] = &[
             ON reconstruction_runs(project_path, screen_id, created_at DESC);
         "#,
     ),
+    (
+        // 网格校正新 IA：run 列表需要一个显式「设为当前」指针，而不是永远
+        // 隐式等于 created_at 最新一条（用户可能想把视口钉在某个旧 run 上
+        // 对比）。0/1 用 INTEGER 而不是 BOOLEAN —— rusqlite 对 SQLite 的
+        // NUMERIC 亲和类型习惯用 i64。
+        "004_run_is_current",
+        r#"
+        ALTER TABLE reconstruction_runs ADD COLUMN is_current INTEGER NOT NULL DEFAULT 0;
+        "#,
+    ),
 ];
 
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {

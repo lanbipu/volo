@@ -124,6 +124,89 @@ coordinate_system:
 }
 
 #[test]
+fn validate_rejects_l_shape_leaving_no_room_for_right_leg() {
+    let cfg = parse(
+        r#"
+project: { name: bad }
+screens:
+  MAIN:
+    cabinet_count: [4, 2]
+    cabinet_size_mm: [500, 500]
+    shape_prior: { type: l_shape, left_cols: 4, soften_cols: 0, corner_angle_deg: 90 }
+coordinate_system:
+  origin_grid_name: MAIN_V001_R001
+  x_axis_grid_name: MAIN_V005_R001
+  xy_plane_grid_name: MAIN_V001_R003
+"#,
+    );
+    let err = cfg.validate().unwrap_err();
+    assert!(format!("{err}").contains("right leg"));
+}
+
+#[test]
+fn validate_rejects_u_shape_leaving_no_center_column() {
+    let cfg = parse(
+        r#"
+project: { name: bad }
+screens:
+  MAIN:
+    cabinet_count: [4, 2]
+    cabinet_size_mm: [500, 500]
+    shape_prior: { type: u_shape, wing_cols: 2, soften_cols: 0, corner_angle_deg: 90 }
+coordinate_system:
+  origin_grid_name: MAIN_V001_R001
+  x_axis_grid_name: MAIN_V005_R001
+  xy_plane_grid_name: MAIN_V001_R003
+"#,
+    );
+    let err = cfg.validate().unwrap_err();
+    assert!(format!("{err}").contains("center column"));
+}
+
+#[test]
+fn validate_rejects_custom_segments_column_mismatch() {
+    let cfg = parse(
+        r#"
+project: { name: bad }
+screens:
+  MAIN:
+    cabinet_count: [4, 2]
+    cabinet_size_mm: [500, 500]
+    shape_prior:
+      type: custom_segments
+      segments:
+        - { cols: 2, cum_angle_deg: 0 }
+        - { cols: 3, cum_angle_deg: 45 }
+coordinate_system:
+  origin_grid_name: MAIN_V001_R001
+  x_axis_grid_name: MAIN_V005_R001
+  xy_plane_grid_name: MAIN_V001_R003
+"#,
+    );
+    let err = cfg.validate().unwrap_err();
+    assert!(format!("{err}").contains("cols sum to 5"));
+}
+
+#[test]
+fn validate_accepts_valid_arc() {
+    let cfg = parse(
+        r#"
+project: { name: ok }
+screens:
+  MAIN:
+    cabinet_count: [8, 2]
+    cabinet_size_mm: [500, 500]
+    shape_prior: { type: arc, center_flat_cols: 2, angle_per_col_deg: 9 }
+coordinate_system:
+  origin_grid_name: MAIN_V001_R001
+  x_axis_grid_name: MAIN_V009_R001
+  xy_plane_grid_name: MAIN_V001_R003
+"#,
+    );
+    cfg.validate().unwrap();
+}
+
+#[test]
 fn validate_rejects_lowest_row_out_of_range() {
     let cfg = parse(
         r#"

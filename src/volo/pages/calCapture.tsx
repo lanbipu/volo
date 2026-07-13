@@ -29,14 +29,16 @@ import * as React from "react";
   function saveProfiles(list) { try { localStorage.setItem(LS_KEY, JSON.stringify(list)); } catch (e) {} }
 
   const VIDEO_BACKENDS = [
-    { id: 'uvc', label: 'UVC 摄像头', avail: true, note: '即插即用' },
-    { id: 'ndi', label: 'NDI', avail: false, note: '需 NDI SDK' },
-    { id: 'decklink', label: 'DeckLink SDI', avail: false, note: '需 DeckLink SDK' },
-    { id: 'synthetic', label: '合成测试源', avail: true, note: '内置图案，无需硬件' },
+    { id: 'uvc', label: 'UVC 摄像头' },
+    { id: 'ndi', label: 'NDI' },
+    { id: 'decklink', label: 'DeckLink SDI' },
+    { id: 'synthetic', label: '合成测试源' },
   ];
   const backendLabel = (id) => (VIDEO_BACKENDS.find((b) => b.id === id) || {}).label || id;
   const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
-  const blankForm = () => ({ name: '', videoBackend: 'uvc', device: '设备0', trackProtocol: 'freed', trackPort: 6301,
+  const blankForm = () => ({ name: '', videoBackend: 'uvc', device: '0', trackProtocol: 'freed', trackPort: 6301,
+    trackHost: '0.0.0.0', trackCameraId: null,
+    fmtMode: 'auto', width: '', height: '', fps: '', transferFunction: 'sdr',
     poses: 8, settleMs: 300, burst: 5, inverted: true, graycodeSync: true, lensPath: '', outputRoot: '' });
 
   function CaptureModal({ s, close }) {
@@ -114,25 +116,8 @@ import * as React from "react";
       h('div', { className: 'cal2-cap-name' },
         h('span', { className: 'cap-lbl' }, '配置名'),
         h('input', { className: 'cap-tf', value: form.name, placeholder: '如：现场 · UVC 主机位', autoFocus: true, onChange: (e) => set('name', e.target.value) })),
-      h('div', { className: 'cap-card' },
-        h('div', { className: 'cap-card-h' }, h(Icon, { name: 'camera', size: 15 }), '视频源'),
-        h('div', { className: 'cap-backend-list' }, VIDEO_BACKENDS.map((b) => h('div', {
-          key: b.id, className: 'cap-be' + (b.avail ? '' : ' off') + (b.id === form.videoBackend ? ' on' : ''),
-          onClick: () => b.avail && set('videoBackend', b.id) },
-          h('span', { className: 'sdot bg-' + (b.avail ? (b.id === form.videoBackend ? 'positive' : 'neutral') : 'neutral') }),
-          b.label, b.avail ? null : h('span', { className: 'cap-be-x' }, '需 SDK')))),
-        h('div', { className: 'cap-field', style: { marginTop: 10 } },
-          h('span', { className: 'cap-lbl' }, 'device'),
-          h('input', { className: 'cap-tf', value: form.device, onChange: (e) => set('device', e.target.value) }))),
-      h('div', { className: 'cap-card' },
-        h('div', { className: 'cap-card-h' }, h(Icon, { name: 'net', size: 15 }), '追踪源'),
-        h('div', { className: 'cap-field' },
-          h('span', { className: 'cap-lbl' }, 'protocol'),
-          h('div', { className: 'cap-seg' }, [['freed', 'FreeD'], ['opentrackio', 'OpenTrackIO']].map(([k, l]) =>
-            h('button', { key: k, className: form.trackProtocol === k ? 'on' : '', onClick: () => set('trackProtocol', k) }, l)))),
-        h('div', { className: 'cap-field' },
-          h('span', { className: 'cap-lbl' }, 'trackPort'),
-          h('input', { className: 'cap-tf', type: 'number', value: form.trackPort, onChange: (e) => set('trackPort', e.target.value) }))),
+      h(window.VoloVideoSource.VideoSourceCard, { form, set }),
+      h(window.VoloTrackingSource.TrackingSourceCard, { form, set }),
       h('div', { className: 'cap-card' },
         h('button', { className: 'cap-adv-h', style: { width: '100%' }, onClick: () => setAdvOpen((v) => !v) },
           h(Icon, { name: 'chevr', size: 13, style: { transform: advOpen ? 'rotate(90deg)' : 'none', transition: 'transform .15s' } }),

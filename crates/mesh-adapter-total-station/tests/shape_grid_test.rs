@@ -110,6 +110,125 @@ fn bottom_completion_does_not_change_grid_size() {
     assert_eq!(grid.len(), (4 + 1) * (10 + 1));
 }
 
+fn arc_screen(cols: u32, rows: u32, center_flat_cols: u32, angle_per_col_deg: f64) -> ScreenConfig {
+    ScreenConfig {
+        cabinet_count: [cols, rows],
+        cabinet_size_mm: [500.0, 500.0],
+        shape_prior: ShapePriorConfig::Arc { center_flat_cols, angle_per_col_deg },
+        bottom_completion: None,
+        absent_cells: vec![],
+    }
+}
+
+#[test]
+fn arc_zero_angle_matches_flat() {
+    let arc = expected_grid_positions("MAIN", &arc_screen(4, 2, 0, 0.0)).unwrap();
+    let flat = expected_grid_positions("MAIN", &flat_screen(4, 2)).unwrap();
+    for g in &arc {
+        let f = flat.iter().find(|x| x.name == g.name).unwrap();
+        assert!((g.model_position - f.model_position).norm() < 1e-9, "{} diverged", g.name);
+    }
+}
+
+#[test]
+fn arc_anchors_v001_r001_at_origin() {
+    let grid = expected_grid_positions("MAIN", &arc_screen(4, 2, 0, 10.0)).unwrap();
+    let bl = grid.iter().find(|g| g.name == "MAIN_V001_R001").unwrap();
+    assert!(bl.model_position.norm() < 1e-9, "got {:?}", bl.model_position);
+}
+
+#[test]
+fn arc_bows_the_chord_shorter_than_flat_width() {
+    // Symmetric arc, no flat center: the wall bows away from the straight
+    // chord, so the V001->V005 distance should be < the flat 4×0.5m width.
+    let grid = expected_grid_positions("MAIN", &arc_screen(4, 1, 0, 10.0)).unwrap();
+    let v1 = grid.iter().find(|g| g.name == "MAIN_V001_R001").unwrap();
+    let v5 = grid.iter().find(|g| g.name == "MAIN_V005_R001").unwrap();
+    let chord = (v5.model_position - v1.model_position).norm();
+    assert!(chord < 2.0, "expected bowed chord < flat width 2.0, got {chord}");
+}
+
+fn l_shape_screen(cols: u32, rows: u32, left_cols: u32, soften_cols: u32, corner_angle_deg: f64) -> ScreenConfig {
+    ScreenConfig {
+        cabinet_count: [cols, rows],
+        cabinet_size_mm: [500.0, 500.0],
+        shape_prior: ShapePriorConfig::LShape { left_cols, soften_cols, corner_angle_deg },
+        bottom_completion: None,
+        absent_cells: vec![],
+    }
+}
+
+#[test]
+fn l_shape_hard_corner_is_perpendicular() {
+    // 2 left + 2 right cols, hard 90° corner (no soften): the corner seam
+    // (V003, at the leg boundary) splits the wall into two perpendicular runs.
+    let grid = expected_grid_positions("MAIN", &l_shape_screen(4, 1, 2, 0, 90.0)).unwrap();
+    let v1 = grid.iter().find(|g| g.name == "MAIN_V001_R001").unwrap().model_position;
+    let v3 = grid.iter().find(|g| g.name == "MAIN_V003_R001").unwrap().model_position;
+    let v5 = grid.iter().find(|g| g.name == "MAIN_V005_R001").unwrap().model_position;
+    assert!(v1.norm() < 1e-9, "V001_R001 should anchor the origin, got {v1:?}");
+    let left_leg = v3 - v1;
+    let right_leg = v5 - v3;
+    assert!(left_leg.dot(&right_leg).abs() < 1e-9, "legs should be perpendicular: {left_leg:?} · {right_leg:?}");
+    assert!((left_leg.norm() - 1.0).abs() < 1e-9, "left leg should span 2 cabinets = 1.0m, got {}", left_leg.norm());
+    assert!((right_leg.norm() - 1.0).abs() < 1e-9, "right leg should span 2 cabinets = 1.0m, got {}", right_leg.norm());
+}
+
+fn u_shape_screen(cols: u32, rows: u32, wing_cols: u32, soften_cols: u32, corner_angle_deg: f64) -> ScreenConfig {
+    ScreenConfig {
+        cabinet_count: [cols, rows],
+        cabinet_size_mm: [500.0, 500.0],
+        shape_prior: ShapePriorConfig::UShape { wing_cols, soften_cols, corner_angle_deg },
+        bottom_completion: None,
+        absent_cells: vec![],
+    }
+}
+
+#[test]
+fn u_shape_symmetric_wings_return_to_the_same_depth() {
+    // 1-col wings folding 90° each way around a 1-col center: the wall
+    // starts and ends at the same "depth" (Y) — a defining U-shape property.
+    let grid = expected_grid_positions("MAIN", &u_shape_screen(3, 1, 1, 0, 90.0)).unwrap();
+    let v1 = grid.iter().find(|g| g.name == "MAIN_V001_R001").unwrap().model_position;
+    let v4 = grid.iter().find(|g| g.name == "MAIN_V004_R001").unwrap().model_position;
+    assert!(v1.norm() < 1e-9, "V001_R001 should anchor the origin, got {v1:?}");
+    assert!((v1.y - v4.y).abs() < 1e-9, "wings should return to the same depth: {v1:?} vs {v4:?}");
+}
+
+fn custom_segments_screen(cols: u32, rows: u32, segments: Vec<(u32, f64)>) -> ScreenConfig {
+    ScreenConfig {
+        cabinet_count: [cols, rows],
+        cabinet_size_mm: [500.0, 500.0],
+        shape_prior: ShapePriorConfig::CustomSegments {
+            segments: segments
+                .into_iter()
+                .map(|(cols, cum_angle_deg)| mesh_adapter_total_station::project::ShapeSegment { cols, cum_angle_deg })
+                .collect(),
+        },
+        bottom_completion: None,
+        absent_cells: vec![],
+    }
+}
+
+#[test]
+fn custom_segments_hold_a_straight_run_within_each_segment() {
+    // Segment 1 (cols 0-1) flat, segment 2 (cols 2-3) at 45° — within a
+    // segment, consecutive seam-to-seam vectors must be parallel (straight).
+    let grid = expected_grid_positions(
+        "MAIN",
+        &custom_segments_screen(4, 1, vec![(2, 0.0), (2, 45.0)]),
+    )
+    .unwrap();
+    let v3 = grid.iter().find(|g| g.name == "MAIN_V003_R001").unwrap().model_position;
+    let v4 = grid.iter().find(|g| g.name == "MAIN_V004_R001").unwrap().model_position;
+    let v5 = grid.iter().find(|g| g.name == "MAIN_V005_R001").unwrap().model_position;
+    let a = v4 - v3;
+    let b = v5 - v4;
+    // Parallel same-direction vectors of equal length have a cross product
+    // of ~0 and a dot product of ~|a||b|.
+    assert!(a.cross(&b).norm() < 1e-9, "segment 2 should be a straight run: {a:?} vs {b:?}");
+}
+
 // Silence unused-import lint if the type is only referenced through methods.
 #[allow(dead_code)]
 fn _type_check(g: GridExpected) -> GridExpected {

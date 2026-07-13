@@ -34,6 +34,32 @@ pub fn build_shape_prior(
         ShapePriorConfig::Folded { fold_seams_at_columns } => mesh_core::shape::ShapePrior::Folded {
             fold_seam_columns: fold_seams_at_columns.clone(),
         },
+        ShapePriorConfig::Arc { center_flat_cols, angle_per_col_deg } => {
+            mesh_core::shape::ShapePrior::Arc {
+                center_flat_cols: *center_flat_cols,
+                angle_per_col_deg: *angle_per_col_deg,
+            }
+        }
+        ShapePriorConfig::LShape { left_cols, soften_cols, corner_angle_deg } => {
+            mesh_core::shape::ShapePrior::LShape {
+                left_cols: *left_cols,
+                soften_cols: *soften_cols,
+                corner_angle_deg: *corner_angle_deg,
+            }
+        }
+        ShapePriorConfig::UShape { wing_cols, soften_cols, corner_angle_deg } => {
+            mesh_core::shape::ShapePrior::UShape {
+                wing_cols: *wing_cols,
+                soften_cols: *soften_cols,
+                corner_angle_deg: *corner_angle_deg,
+            }
+        }
+        ShapePriorConfig::CustomSegments { segments } => mesh_core::shape::ShapePrior::CustomSegments {
+            segments: segments
+                .iter()
+                .map(|s| mesh_core::shape::ShapeSegment { cols: s.cols, cum_angle_deg: s.cum_angle_deg })
+                .collect(),
+        },
     })
 }
 
@@ -53,6 +79,29 @@ pub fn build_cabinet_array(screen_cfg: &volo_shared::dto::ScreenConfig) -> VoloR
     }
 }
 
+/// Rotate (about world +Y, `yaw_deg`) then translate (`position_m`) every
+/// vertex in place. Identity when both fields are default (0), which is
+/// every `project.yaml` written before these fields existed.
+fn apply_world_transform(vertices: &mut [Vector3<f64>], screen_cfg: &volo_shared::dto::ScreenConfig) {
+    if screen_cfg.yaw_deg == 0.0 && screen_cfg.position_m == [0.0, 0.0, 0.0] {
+        return;
+    }
+    // Model-frame Z is the row axis (the one shape_grid.rs's expected_grid_positions
+    // and CoordinateFrame::from_three_points_m01 leave invariant across columns —
+    // see the frame's `[b0, b2, -b1]` permutation), i.e. the wall's own "up" —
+    // not world Y. Yaw therefore rotates the X-Y (column/bow) plane and leaves Z
+    // untouched, so a screen spins in place around its own vertical axis.
+    let theta = screen_cfg.yaw_deg.to_radians();
+    let (s, c) = theta.sin_cos();
+    let [tx, ty, tz] = screen_cfg.position_m;
+    for v in vertices.iter_mut() {
+        let (x, y) = (v.x, v.y);
+        v.x = x * c + y * s + tx;
+        v.y = -x * s + y * c + ty;
+        v.z += tz;
+    }
+}
+
 pub fn run_export(
     db: Db,
     run_id: i64,
@@ -68,7 +117,21 @@ pub fn run_export(
 
     let project_root = PathBuf::from(&project_path);
     let report_abs = project_root.join(&report_rel);
-    let report: ReconstructionReport = serde_json::from_slice(&std::fs::read(&report_abs)?)?;
+    let mut report: ReconstructionReport = serde_json::from_slice(&std::fs::read(&report_abs)?)?;
+
+    // World-space placement (`ScreenConfig.position_m`/`yaw_deg`) is a
+    // presentation-layer transform, not a reconstruction input — unlike
+    // weld_tolerance/cabinet_array below (frozen in the report so re-exports
+    // stay reproducible), this reads the *current* project.yaml so moving a
+    // screen after reconstruction is reflected without re-running it. A
+    // missing/unreadable project.yaml or a since-renamed screen id just
+    // falls back to identity — this is a placement nicety, not something
+    // that should fail the export.
+    if let Ok(config) = crate::projects::load_project_yaml_from_path(&project_root) {
+        if let Some(screen_cfg) = config.screens.get(&report.surface.screen_id) {
+            apply_world_transform(&mut report.surface.vertices, screen_cfg);
+        }
+    }
 
     // Use snapshotted values from the report — no re-read of project.yaml.
     let weld_m = report.weld_tolerance_mm / 1000.0;
@@ -782,6 +845,44 @@ pub fn lookup_run_paths(db: Db, run_id: i64) -> VoloResult<(String, String)> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+    use volo_shared::dto::{ScreenConfig, ShapeMode, ShapePriorConfig};
+
+    fn default_screen_cfg() -> ScreenConfig {
+        ScreenConfig {
+            cabinet_count: [1, 1],
+            cabinet_size_mm: [500.0, 500.0],
+            pixels_per_cabinet: None,
+            shape_prior: ShapePriorConfig::Flat,
+            shape_mode: ShapeMode::Rectangle,
+            irregular_mask: vec![],
+            bottom_completion: None,
+            position_m: [0.0, 0.0, 0.0],
+            yaw_deg: 0.0,
+        }
+    }
+
+    #[test]
+    fn apply_world_transform_identity_is_noop() {
+        let cfg = default_screen_cfg();
+        let mut verts = vec![Vector3::new(1.0, 2.0, 3.0)];
+        apply_world_transform(&mut verts, &cfg);
+        assert_eq!(verts[0], Vector3::new(1.0, 2.0, 3.0));
+    }
+
+    #[test]
+    fn apply_world_transform_rotates_about_z_then_translates() {
+        let mut cfg = default_screen_cfg();
+        cfg.yaw_deg = 90.0;
+        cfg.position_m = [10.0, 0.0, 0.0];
+        // +X axis point, yawed 90° about +Z (x' = x·c + y·s, y' = -x·s + y·c)
+        // → lands on -Y, then offset by position_m. Z (the row/vertical axis)
+        // is untouched by yaw.
+        let mut verts = vec![Vector3::new(1.0, 0.0, 5.0)];
+        apply_world_transform(&mut verts, &cfg);
+        assert!((verts[0].x - 10.0).abs() < 1e-9, "got {:?}", verts[0]);
+        assert!((verts[0].y - (-1.0)).abs() < 1e-9, "got {:?}", verts[0]);
+        assert!((verts[0].z - 5.0).abs() < 1e-9, "row axis should be unaffected by yaw, got {:?}", verts[0]);
+    }
 
     fn panel(col: u32, row: u32, corners: [[f64; 3]; 4]) -> (String, u32, u32, [[f64; 3]; 4]) {
         (format!("V{col:03}_R{row:03}"), col, row, corners)

@@ -46,6 +46,15 @@ pub struct ScreenConfig {
     pub irregular_mask: Vec<[u32; 2]>,
     #[serde(default)]
     pub bottom_completion: Option<BottomCompletionConfig>,
+    /// World-space placement for multi-screen stages. Defaults to the origin
+    /// with no rotation so pre-existing `project.yaml` files (no such field)
+    /// keep loading unchanged.
+    #[serde(default)]
+    pub position_m: [f64; 3],
+    /// Rotation about the model-frame Z axis (the wall's own "up", i.e. the row
+    /// axis — not world Y), in degrees. See `mesh_app::export::apply_world_transform`.
+    #[serde(default)]
+    pub yaw_deg: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -60,6 +69,38 @@ pub enum ShapePriorConfig {
     Folded {
         fold_seams_at_columns: Vec<u32>,
     },
+    /// Symmetric arc: a flat center span, then a constant per-column turn
+    /// angle accumulating outward on both sides.
+    Arc {
+        center_flat_cols: u32,
+        angle_per_col_deg: f64,
+    },
+    /// Two straight legs meeting at one corner. `right_cols` (the second
+    /// leg's length) is derived as `total_cols - left_cols - soften_cols`
+    /// by the geometry generator, not stored here.
+    LShape {
+        left_cols: u32,
+        #[serde(default)]
+        soften_cols: u32,
+        corner_angle_deg: f64,
+    },
+    /// Two symmetric corners (a center span flanked by two equal wings).
+    UShape {
+        wing_cols: u32,
+        #[serde(default)]
+        soften_cols: u32,
+        corner_angle_deg: f64,
+    },
+    /// Explicit column-run segments, each carrying the cumulative turn
+    /// angle in effect for that run. Segment `cols` must sum to the
+    /// screen's total column count.
+    CustomSegments { segments: Vec<ShapeSegment> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ShapeSegment {
+    pub cols: u32,
+    pub cum_angle_deg: f64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
@@ -195,6 +236,12 @@ pub struct ReconstructionRun {
     pub target: Option<String>,
     pub output_obj_path: Option<String>,
     pub created_at: String,
+    /// Explicit "pinned as current" flag (§ set_current_run). When no run
+    /// for a (project_path, screen_id) pair has this set, callers fall back
+    /// to the most recent by `created_at` — same as before this field
+    /// existed, so older DBs need no backfill.
+    #[serde(default)]
+    pub is_current: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -526,6 +573,50 @@ mod tests {
             "cabinet_poses":[]}"#;
         let r: CabinetPoseReportFile = serde_json::from_str(s).unwrap();
         assert_eq!(r.frame.gauge_strategy, PoseReportGauge::AlignToNominal);
+    }
+
+    #[test]
+    fn new_shape_prior_variants_match_frontend_wire_format() {
+        // { type: "arc"|"l_shape"|"u_shape"|"custom_segments", ... } — must match
+        // src/volo/api/types.ts's discriminated union exactly (tag = "type").
+        let arc = ShapePriorConfig::Arc { center_flat_cols: 2, angle_per_col_deg: 9.0 };
+        let json = serde_json::to_string(&arc).unwrap();
+        assert_eq!(json, r#"{"type":"arc","center_flat_cols":2,"angle_per_col_deg":9.0}"#);
+
+        let l = ShapePriorConfig::LShape { left_cols: 4, soften_cols: 1, corner_angle_deg: 90.0 };
+        let json = serde_json::to_string(&l).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"l_shape","left_cols":4,"soften_cols":1,"corner_angle_deg":90.0}"#
+        );
+
+        let u = ShapePriorConfig::UShape { wing_cols: 3, soften_cols: 1, corner_angle_deg: 90.0 };
+        let json = serde_json::to_string(&u).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"u_shape","wing_cols":3,"soften_cols":1,"corner_angle_deg":90.0}"#
+        );
+
+        let custom = ShapePriorConfig::CustomSegments {
+            segments: vec![ShapeSegment { cols: 3, cum_angle_deg: 0.0 }],
+        };
+        let json = serde_json::to_string(&custom).unwrap();
+        let back: ShapePriorConfig = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, ShapePriorConfig::CustomSegments { segments } if segments.len() == 1));
+    }
+
+    #[test]
+    fn screen_config_defaults_position_and_yaw_when_absent_from_yaml() {
+        // Screens saved before position_m/yaw_deg existed must still load.
+        let yaml = r#"
+cabinet_count: [4, 2]
+cabinet_size_mm: [500.0, 500.0]
+shape_prior: { type: flat }
+shape_mode: rectangle
+"#;
+        let cfg: ScreenConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.position_m, [0.0, 0.0, 0.0]);
+        assert_eq!(cfg.yaw_deg, 0.0);
     }
 
     #[test]

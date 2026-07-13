@@ -122,9 +122,16 @@ fn ipc_cabinet_array(screen_cfg: &volo_shared::dto::ScreenConfig) -> ipc::Cabine
 }
 
 /// Convert volo-shared `ShapePriorConfig` → the adapter's `ipc::ShapePrior`.
-fn ipc_shape_prior(screen_cfg: &volo_shared::dto::ScreenConfig) -> ipc::ShapePrior {
+///
+/// The visual-BA sidecar (`sidecars/mesh-vba`) only understands flat/curved/
+/// folded — arc/l_shape/u_shape/custom_segments are total-station-only for
+/// now (no sidecar-side nominal-grid support yet). Reject rather than
+/// silently downgrading to a shape the sidecar wasn't asked for; the UI
+/// gates "视觉校正" for these shapes so this should only fire from stale
+/// callers (CLI, old client).
+fn ipc_shape_prior(screen_cfg: &volo_shared::dto::ScreenConfig) -> VoloResult<ipc::ShapePrior> {
     use volo_shared::dto::ShapePriorConfig;
-    match &screen_cfg.shape_prior {
+    Ok(match &screen_cfg.shape_prior {
         ShapePriorConfig::Flat => ipc::ShapePrior::Flat(ipc::FlatTag::Flat),
         ShapePriorConfig::Curved { radius_mm, .. } => ipc::ShapePrior::Curved {
             curved: ipc::CurvedShape {
@@ -138,6 +145,26 @@ fn ipc_shape_prior(screen_cfg: &volo_shared::dto::ScreenConfig) -> ipc::ShapePri
                 fold_seam_columns: fold_seams_at_columns.clone(),
             },
         },
+        other => {
+            return Err(VoloError::InvalidInput(format!(
+                "visual reconstruction (M2) does not yet support shape '{}' — \
+                 use total-station import (M1) for arc/l_shape/u_shape/custom_segments screens",
+                shape_prior_type_name(other)
+            )))
+        }
+    })
+}
+
+fn shape_prior_type_name(p: &volo_shared::dto::ShapePriorConfig) -> &'static str {
+    use volo_shared::dto::ShapePriorConfig;
+    match p {
+        ShapePriorConfig::Flat => "flat",
+        ShapePriorConfig::Curved { .. } => "curved",
+        ShapePriorConfig::Folded { .. } => "folded",
+        ShapePriorConfig::Arc { .. } => "arc",
+        ShapePriorConfig::LShape { .. } => "l_shape",
+        ShapePriorConfig::UShape { .. } => "u_shape",
+        ShapePriorConfig::CustomSegments { .. } => "custom_segments",
     }
 }
 
@@ -182,7 +209,7 @@ fn build_reconstruct_args(
     let project = ipc::ReconstructProject {
         screen_id: screen_id.to_string(),
         cabinet_array: ipc_cabinet_array(screen_cfg),
-        shape_prior: ipc_shape_prior(screen_cfg),
+        shape_prior: ipc_shape_prior(screen_cfg)?,
     };
 
     // The sidecar writes the cabinet pose report here; the adapter reads it back
@@ -303,7 +330,7 @@ pub fn run_reconstruct_structured_light(
     let project = ipc::ReconstructProject {
         screen_id: screen_id.to_string(),
         cabinet_array: ipc_cabinet_array(screen_cfg),
-        shape_prior: ipc_shape_prior(screen_cfg),
+        shape_prior: ipc_shape_prior(screen_cfg)?,
     };
 
     let measurements_dir = project_path.join("measurements");
@@ -349,7 +376,7 @@ pub fn run_calibrate_structured_light(
     let project = ipc::ReconstructProject {
         screen_id: screen_id.to_string(),
         cabinet_array: ipc_cabinet_array(screen_cfg),
-        shape_prior: ipc_shape_prior(screen_cfg),
+        shape_prior: ipc_shape_prior(screen_cfg)?,
     };
 
     let calibration_dir = project_path.join("calibration");
@@ -927,7 +954,7 @@ pub fn run_plan_capture(
     let project = ipc::ReconstructProject {
         screen_id: screen_id.to_string(),
         cabinet_array: ipc_cabinet_array(screen_cfg),
-        shape_prior: ipc_shape_prior(screen_cfg),
+        shape_prior: ipc_shape_prior(screen_cfg)?,
     };
 
     let args = PlanCaptureArgs {

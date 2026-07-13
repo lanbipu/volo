@@ -1,6 +1,6 @@
 //! Mesh (LMT) reconstruction Tauri command shims. Business logic in `mesh_app`.
 
-pub use mesh_app::reconstruct::{list_runs_for, read_run_report, run_reconstruction};
+pub use mesh_app::reconstruct::{list_runs_for, read_run_report, run_reconstruction, set_current_run};
 
 use crate::commands::mesh::MeshDb;
 use std::path::Path;
@@ -37,4 +37,9 @@ pub fn get_run_report(
     run_id: i64,
 ) -> VoloResult<serde_json::Value> {
     read_run_report(state.0.clone(), run_id)
+}
+
+#[tauri::command]
+pub fn set_run_current(state: tauri::State<'_, MeshDb>, run_id: i64) -> VoloResult<()> {
+    set_current_run(state.0.clone(), run_id)
 }

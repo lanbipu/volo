@@ -535,21 +535,22 @@ Calibrate（LED）
 | # | 缺口 | 涉及 UX | 说明 |
 |---|---|---|---|
 | G1 | **GPU 三维视口** | §3.2 全部 | 现状是手写 SVG 投影（仅重建面预览）。本规范的舞台级视口（多屏、纹理贴图、gizmo、逐箱体拾取、来源着色）需引入 WebGL 渲染库（如 react-three-fiber）。这是整个重设计的前端地基。 |
-| G2 | **曲率模型扩展** | §4.2-④ | 后端 `shape_prior` 仅 flat / curved{radius} / folded{折缝列}。对称弧（平区+逐列折角）、L 形、U 形、自定义分段需扩展 schema 与名义网格生成（可参考 lbe_tool `wallgeom` 的分段算法）。落地前 UX 可先只放开 平直/弧（半径）/弯折 三档，其余置灰标"即将支持"。 |
-| G3 | **屏幕世界变换** | §3.2 gizmo、§4.2-⑤ | `ScreenConfig` 无位置/朝向字段；多屏舞台摆放需新增（并影响导出坐标）。单屏场景可先不暴露变换组。 |
-| G4 | **多屏流水线** | §3.4、§4.1 | 数据模型支持多屏（`screens` Record），但全站仪 adapter 现仅单屏；地屏类型无先例。多屏 UX 已按目标态设计，adapter 需跟进。 |
+| G2 | **曲率模型扩展**（全站仪路径已完成） | §4.2-④ | `shape_prior` 已新增 arc（平区+逐列折角）/ l_shape / u_shape / custom_segments，落在全站仪 adapter（`crates/mesh-adapter-total-station/src/shape_grid.rs`，统一"逐列朝向角累加"几何算法）+ 前端建模表单/视口铺列。视觉重建（M2 BA）路径未跟进新曲率类型，见 G14。 |
+| G3 | **屏幕世界变换**（已完成） | §3.2 gizmo、§4.2-⑤ | `ScreenConfig` 已新增 `position_m`/`yaw_deg`（`#[serde(default)]` 向后兼容），导出时由 `mesh-app/src/export.rs::apply_world_transform` 烘焙进顶点坐标（绕模型系 Z 轴，即屏幕自身"上"方向，非世界 Y）。 |
+| G4 | **多屏流水线** | §3.4、§4.1 | 数据模型支持多屏（`screens` Record），但全站仪 adapter 现仅单屏（`check_import_no_screen_conflict` 强制同一项目同时只有一屏的 `measured.yaml`）；地屏类型无先例。M2 视觉重建路径按屏命名 pose report，天然支持多屏并存。多屏 UX 已按目标态设计，全站仪 adapter 仍需跟进。 |
 | G5 | **离线照片文件夹 → 采集清单** | §6.3.2-A | `mesh_visual_reconstruct` 现收 capture manifest 文件；「选文件夹 → 扫描 → 自动生成 manifest」需新增一个轻量命令（或前端扫描 + 落 manifest）。 |
 | G6 | **测试图三维贴合预览** | §5.3 | 拼合 PNG 已有；把它作为纹理贴到模型是纯前端能力，依赖 G1。 |
-| G7 | **参考点角色 / 基线落盘** | §4.4-3、§4.2-⑦ | 现 UI 中参考点角色与基线是本地预览不落盘（coordinate_system 只读回显）。本规范要求箱体模式的参考点指派**回写 project.yaml 的 coordinate_system**（顶点名），底部补全同理。 |
-| G8 | **箱体预设库** | §4.2-② | 厂商箱体预设（尺寸/像素库）现不存在，首版可只留「自定义」。 |
+| G7 | **参考点角色 / 基线落盘**（参考点角色已完成） | §4.4-3、§4.2-⑦ | 网格视口箱体参考点工具（`gridView.tsx`）选定角色即算点名、即时调 `save_project_yaml` 写回 `coordinate_system`（不经草稿/保存流程，是有意的即时写入设计）。底部补全（bottom_completion）落盘未受本轮改动，沿用既有表单。 |
+| G8 | **箱体预设库**（已完成，纯前端） | §4.2-② | 已在前端补齐静态表（`src/volo/data.tsx` 的 `GRID_CAB_PRESETS`，厂商尺寸/像素），不涉及后端；仍保留「自定义」选项。 |
 | G9 | **测量点视口叠加** | §6.2.3、§8.3 | 测量点已有坐标数据，渲染到三维视口依赖 G1；点 ↔ 表联动为新前端逻辑。 |
-| G10 | **run「设为当前」与导出记录** | §8.2、§9.3 | run 表无"当前"指针与导出历史字段，需在 SQLite/报告 JSON 里补充（或前端项目级持久化）。 |
+| G10 | **run「设为当前」与导出记录**（"设为当前"已完成，导出记录仍缺） | §8.2、§9.3 | `reconstruction_runs` 已新增 `is_current` 列 + `set_current_run` 命令，重建成功自动设为当前（§7.2）。导出历史仍未做：`export_obj` 仍是单槽覆盖（`runs::update_export` 直接 UPDATE `target`/`output_obj_path`），没有导出记录表/JSON 字段，多次导出会互相覆盖，留痕需求出现时再补。 |
 | G11 | **实测/推测逐点标识** | §6.2.3 | 后端无逐点字段，现靠 σ 阈值(5.0mm)推断。UX 按"类别"呈现不变，长期宜由 adapter 直接输出类别。 |
 | G12 | **采集配置持久化** | §6.4.4 | Profile 现存 localStorage；如需跨机使用应迁入项目/应用配置文件（不阻塞 UX）。 |
 | G13 | **视觉采集会话登记** | §3.4、§6.3.2 | "采集会话"作为大纲实体（时间/张数/覆盖度）需要一个轻量登记机制（现只有散落的输出目录）。 |
+| G14 | **新曲率类型的视觉重建支持** | §4.2-④ | `shape_prior` 新增 arc/l_shape/u_shape/custom_segments（全站仪路径已实现，见 `mesh-adapter-total-station/src/shape_grid.rs`）后，视觉校正（M2 BA）路径仍只认 flat/curved/folded——名义网格生成在独立 Python 包 `sidecars/mesh-vba`（`nominal.py`/`reconstruct.py`/`capture_planner/geometry.py`），未跟进新曲率类型。UI 已在测量类型选择器里为这些形状禁用「视觉校正」卡片。补齐属独立后续任务：需要把 `mesh-adapter-total-station/src/shape_grid.rs` 的「逐列朝向角累加」算法移植到 `sidecars/mesh-vba` 侧并保持两边数学一致。 |
 
 ### A.3 分期建议（非承诺）
 
-1. **第一期（地基）**：G1 视口 + 现有单屏流程全量迁入新 IA（G5、G6、G7、G9 随迁）。
-2. **第二期（建模）**：G2 曲率扩展 + G3 变换 + G8 预设库。
-3. **第三期（多屏与治理）**：G4 多屏 / 地屏 + G10 + G11 + G12 + G13。
+1. **第一期（地基）**：G1 视口 + 现有单屏流程全量迁入新 IA（G5、G6、G7、G9 随迁）。**现状**：G1 视口仍是手写 SVG 投影（未引入 WebGL/react-three-fiber，见 G1 本身描述），单屏流程迁移已完成；随迁项里 G7 的参考点角色落盘已完成（见上表），G5/G6/G9 未动。
+2. **第二期（建模）**：G2 曲率扩展 + G3 变换 + G8 预设库。**现状**：三项均已完成（见上表），提前于原定分期落地。
+3. **第三期（多屏与治理）**：G4 多屏 / 地屏 + G10 + G11 + G12 + G13。**现状**：G10 的"设为当前"半已完成，导出记录半仍缺；G4/G11/G12/G13 未动。

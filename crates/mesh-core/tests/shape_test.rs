@@ -82,6 +82,76 @@ fn folded_prior_carries_seam_columns() {
 }
 
 #[test]
+fn arc_prior_round_trips() {
+    let p = ShapePrior::Arc { center_flat_cols: 2, angle_per_col_deg: 9.0 };
+    let s = serde_yaml::to_string(&p).unwrap();
+    assert!(s.contains("arc"));
+    let back: ShapePrior = serde_yaml::from_str(&s).unwrap();
+    match back {
+        ShapePrior::Arc { center_flat_cols, angle_per_col_deg } => {
+            assert_eq!(center_flat_cols, 2);
+            assert_eq!(angle_per_col_deg, 9.0);
+        }
+        _ => panic!("expected Arc variant"),
+    }
+}
+
+#[test]
+fn l_shape_prior_round_trips() {
+    let p = ShapePrior::LShape { left_cols: 4, soften_cols: 1, corner_angle_deg: 90.0 };
+    let s = serde_yaml::to_string(&p).unwrap();
+    assert!(s.contains("l_shape"));
+    let back: ShapePrior = serde_yaml::from_str(&s).unwrap();
+    match back {
+        ShapePrior::LShape { left_cols, soften_cols, corner_angle_deg } => {
+            assert_eq!(left_cols, 4);
+            assert_eq!(soften_cols, 1);
+            assert_eq!(corner_angle_deg, 90.0);
+        }
+        _ => panic!("expected LShape variant"),
+    }
+}
+
+#[test]
+fn u_shape_prior_round_trips() {
+    let p = ShapePrior::UShape { wing_cols: 3, soften_cols: 1, corner_angle_deg: 90.0 };
+    let s = serde_yaml::to_string(&p).unwrap();
+    assert!(s.contains("u_shape"));
+    let back: ShapePrior = serde_yaml::from_str(&s).unwrap();
+    match back {
+        ShapePrior::UShape { wing_cols, soften_cols, corner_angle_deg } => {
+            assert_eq!(wing_cols, 3);
+            assert_eq!(soften_cols, 1);
+            assert_eq!(corner_angle_deg, 90.0);
+        }
+        _ => panic!("expected UShape variant"),
+    }
+}
+
+#[test]
+fn custom_segments_prior_round_trips() {
+    use mesh_core::shape::ShapeSegment;
+    let p = ShapePrior::CustomSegments {
+        segments: vec![
+            ShapeSegment { cols: 3, cum_angle_deg: 0.0 },
+            ShapeSegment { cols: 2, cum_angle_deg: 30.0 },
+            ShapeSegment { cols: 3, cum_angle_deg: 60.0 },
+        ],
+    };
+    let s = serde_yaml::to_string(&p).unwrap();
+    assert!(s.contains("custom_segments"));
+    let back: ShapePrior = serde_yaml::from_str(&s).unwrap();
+    match back {
+        ShapePrior::CustomSegments { segments } => {
+            assert_eq!(segments.len(), 3);
+            assert_eq!(segments[1].cols, 2);
+            assert_eq!(segments[1].cum_angle_deg, 30.0);
+        }
+        _ => panic!("expected CustomSegments variant"),
+    }
+}
+
+#[test]
 fn deserialize_rejects_cabinet_array_exceeding_max_grid_dim() {
     let yaml = "cols: 20000\nrows: 100\ncabinet_size_mm: [500.0, 500.0]\n";
     let result: Result<CabinetArray, _> = serde_yaml::from_str(yaml);

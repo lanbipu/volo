@@ -79,6 +79,8 @@ const ICON_PATHS = {
   arrowl:   '<path d="M16 10H5M9 6l-4 4 4 4"/>',
   server:   '<rect x="3" y="4" width="14" height="5" rx="1.3"/><rect x="3" y="11" width="14" height="5" rx="1.3"/><circle cx="6" cy="6.5" r=".9" fill="currentColor" stroke="none"/><circle cx="6" cy="13.5" r=".9" fill="currentColor" stroke="none"/>',
   external: '<path d="M11 4h5v5M16 4l-7 7M13.5 11.5V15A1.5 1.5 0 0 1 12 16.5H5A1.5 1.5 0 0 1 3.5 15V8A1.5 1.5 0 0 1 5 6.5h3.5"/>',
+  /* --- added for capture 采集设置 视频源卡片重设计 --- */
+  usb:      '<rect x="5.5" y="7.5" width="9" height="6" rx="1.3"/><path d="M8.5 7.5V4a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v3.5"/><path d="M10 13.5v2.7M7.5 16.2h5"/>',
 };
 
 function Icon({ name, size = 18, stroke = 1.6, style }) {
@@ -271,7 +273,101 @@ const AR_WS_STATUS = {
   checked: { label: '校验通过', tone: 'positive',    icon: 'check' },
 };
 
+/* ============================================================
+   GRID — 网格校正单一工作区（新 IA）· 纯展示态数据
+   真实工程状态（屏幕/测量/重建）经 calibrate.tsx 的 projStore 由真实 Tauri
+   command 提供，此处只放跟后端 schema 对齐、但本身不含工程数据的静态表：
+   形状档位定义、箱体预设库（后端无此能力，见 CALIBRATE-UX.md 附录 A G8）、
+   测量类型卡片文案、导出目标文案、显示开关定义、重建阶段流水文案。 */
+
+/* 屏幕曲率档位 —— 与 crates/volo-shared/src/dto.rs::ShapePriorConfig 的 7 个
+   变体一一对应（tag=type，snake_case），fields 驱动检查器表单生成。 */
+const GRID_SHAPES = [
+  { id: 'flat', label: '平直', icon: 'panel', fields: [] },
+  { id: 'curved', label: '曲面', icon: 'wave',
+    fields: [ { k: 'radius_mm', label: '半径', min: 100, step: 10, unit: 'mm' } ] },
+  { id: 'folded', label: '折叠', icon: 'grid',
+    fields: [], seams: true /* 折缝列表用专门的分段编辑器（复用自定义分段的列表 UI） */ },
+  { id: 'arc', label: '对称弧', icon: 'wave',
+    fields: [ { k: 'center_flat_cols', label: '中心平直列数', min: 0, max: 60, unit: '列' },
+              { k: 'angle_per_col_deg', label: '每列折角', min: -20, max: 20, step: 0.5, unit: '°' } ] },
+  { id: 'l_shape', label: 'L 形', icon: 'grid',
+    fields: [ { k: 'left_cols', label: '左面列数', min: 1, max: 120, unit: '列' },
+              { k: 'soften_cols', label: '转角软化列数', min: 0, max: 8, unit: '列' },
+              { k: 'corner_angle_deg', label: '转角角度', min: -170, max: 170, unit: '°' } ],
+    derived: '右面列数' },
+  { id: 'u_shape', label: 'U 形', icon: 'reg',
+    fields: [ { k: 'wing_cols', label: '每翼列数', min: 1, max: 60, unit: '列' },
+              { k: 'soften_cols', label: '每角软化列数', min: 0, max: 8, unit: '列' },
+              { k: 'corner_angle_deg', label: '每角角度', min: -170, max: 170, unit: '°' } ],
+    derived: '中段列数' },
+  { id: 'custom_segments', label: '自定义分段', icon: 'sliders', fields: [] },
+];
+/* 新建屏幕类型菜单 —— 场景树底部「新建屏幕」，选中即生成对应 shape_prior 默认值 */
+const GRID_SCREEN_TYPES = [
+  { id: 'flat', label: '平面墙', icon: 'panel', shape: 'flat' },
+  { id: 'arc', label: '弧形墙', icon: 'wave', shape: 'arc' },
+  { id: 'l_shape', label: 'L 形墙', icon: 'grid', shape: 'l_shape' },
+  { id: 'u_shape', label: 'U 形墙', icon: 'reg', shape: 'u_shape' },
+  { id: 'custom_segments', label: '自定义分段墙', icon: 'sliders', shape: 'custom_segments' },
+];
+/* 箱体预设库（厂商尺寸/像素）—— 后端无此能力（CALIBRATE-UX.md G8），纯前端静态表，
+   选中即回填 cabinet_size_mm / pixels_per_cabinet，改回「自定义」解锁手填。 */
+const GRID_CAB_PRESETS = [
+  { id: 'roe_bp2', label: 'ROE Black Pearl BP2', w: 500, h: 500, px: 176, pxh: 176 },
+  { id: 'roe_rb15', label: 'ROE Ruby RB1.5', w: 600, h: 337.5, px: 384, pxh: 216 },
+  { id: 'absen_p2', label: 'Absen PL2.5 Pro', w: 500, h: 500, px: 192, pxh: 192 },
+  { id: 'unilumin', label: 'Unilumin Upad III', w: 500, h: 500, px: 208, pxh: 208 },
+  { id: 'custom', label: '自定义', w: 500, h: 500, px: 176, pxh: 176 },
+];
+/* 视口显示开关（右上叠加）默认值 + 定义 */
+const GRID_DISPLAY_DEFAULT = {
+  points: true, pointLabels: false, pattern: false, provenance: false,
+  ground: true, maskStyle: 'cutout',
+};
+const GRID_DISPLAY_ITEMS = [
+  { k: 'points', label: '测量点', icon: 'pin', child: 'pointLabels', childLabel: '点名标签' },
+  { k: 'pattern', label: '测试图贴合预览', icon: 'grid' },
+  { k: 'provenance', label: '来源着色', icon: 'layers' },
+  { k: 'ground', label: '地面网格与坐标轴', icon: 'cube' },
+];
+const GRID_VIEWS = [
+  { id: 'persp', label: '自由', icon: 'cube3' },
+  { id: 'front', label: '正', icon: 'panel' },
+  { id: 'top', label: '顶', icon: 'grid' },
+  { id: 'side', label: '侧', icon: 'reg' },
+];
+/* 顶部工具栏「阶段动作」四主流程 —— 始终可见，前置条件不满足则禁用不隐藏 */
+const GRID_STAGE_ACTIONS = [
+  { id: 'pattern', label: '测试图', icon: 'grid', need: null },
+  { id: 'measure', label: '测量导入', icon: 'download', need: null },
+  { id: 'rebuild', label: '重建', icon: 'cube3', need: 'measure', blockedMsg: '需先导入测量数据（全站仪导入或视觉校正）' },
+  { id: 'export', label: '导出', icon: 'external', need: 'rebuilt', blockedMsg: '需先完成一次重建，产生新建网格' },
+];
+/* 两种测量方式（术语硬约束：只叫「全站仪导入」「视觉校正」）；reqDisabledShapes 对齐
+   crates/mesh-adapter-visual-ba 的已知边界（M2 sidecar 尚不支持新曲率，见 G14）。 */
+const GRID_MEAS_TYPES = [
+  { id: 'totalstation', label: '全站仪导入', icon: 'target',
+    desc: '全站仪实测箱体角点，毫米级绝对精度。',
+    fit: '适合已架设全站仪、需要绝对尺度基准与最高精度的场景。' },
+  { id: 'visual', label: '视觉校正', icon: 'camera',
+    desc: '屏幕显示测试图 + 摄影机多角度拍摄，自动稠密重建。',
+    fit: '适合无全站仪、追求快速稠密重建的场景。',
+    disabledForShapes: ['arc', 'l_shape', 'u_shape', 'custom_segments'],
+    disabledMsg: '新曲率类型（对称弧/L 形/U 形/自定义分段）暂仅支持全站仪导入' },
+];
+/* 重建进度阶段（统一长任务规格，与 mesh-visual-progress 事件的 stage 文案对齐） */
+const GRID_RECON_STAGES = ['载入', '检测', '精化', '平差', '对齐', '输出'];
+/* 导出目标（各附一句差异说明） */
+const GRID_EXPORT_TARGETS = [
+  { id: 'disguise', label: 'Disguise', desc: '毫米单位 · Y 向上 · 适配 d3 空间对齐工作流' },
+  { id: 'unreal', label: 'Unreal', desc: '厘米单位 · Z 向上 · 左手坐标系，直接导入 nDisplay' },
+  { id: 'neutral', label: '中性', desc: '米单位 · 不做引擎特定转换，通用交换' },
+];
+
 Object.assign(window, {
+  GRID_SHAPES, GRID_SCREEN_TYPES, GRID_CAB_PRESETS, GRID_DISPLAY_DEFAULT, GRID_DISPLAY_ITEMS,
+  GRID_VIEWS, GRID_STAGE_ACTIONS, GRID_MEAS_TYPES, GRID_RECON_STAGES, GRID_EXPORT_TARGETS,
   Icon, STAGES, PAGES,
   /* machines / creds / shares / projects are loaded from the backend by the
      shell and mirrored onto window.{RENDER_NODES,CREDS,SHARES,UE_PROJECTS};

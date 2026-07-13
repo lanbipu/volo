@@ -1,0 +1,205 @@
+/* ============================================================
+   视频源卡片 · 重设计（采集设置 → Profile 新建/编辑表单）
+   backend 段选 → 枚举设备选择器 → 信号预览验证 → 高级格式覆盖
+   状态一律三通道（颜色 + 图标 + 文字）。沿用 --chrome-* / *-visual 令牌，暗/亮双主题自动适配。
+   1:1 port of the Claude Design handoff `src/vsrc.css`.
+   ============================================================ */
+
+/* ---------- backend 段选择（2×2 卡格） ---------- */
+.vs-backends { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.vs-be { position: relative; display: flex; align-items: center; gap: 9px; padding: 9px 11px; border-radius: 9px;
+  border: 1px solid var(--chrome-line-2); background: var(--wash); color: var(--chrome-dim); cursor: pointer; text-align: left;
+  font-size: 12.5px; font-weight: 600; transition: background .12s, border-color .12s, color .12s; }
+.vs-be:hover { background: var(--wash-2); }
+.vs-be-ic { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; flex: 0 0 auto;
+  background: var(--sunken); color: var(--chrome-dim); }
+.vs-be-tx { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.vs-be-tx b { font-size: 12.5px; font-weight: 700; color: var(--chrome-text); line-height: 1.25; }
+.vs-be-tx span { font-size: 10.5px; color: var(--chrome-faint); font-weight: 500; }
+.vs-be.on { background: var(--highlight-selected); border-color: color-mix(in srgb, var(--volo-700) 45%, transparent); }
+.vs-be.on .vs-be-ic { background: color-mix(in srgb, var(--volo-500) 22%, transparent); color: var(--volo-400); }
+.vs-be.on .vs-be-tx b { color: var(--volo-400); }
+.vs-be.on::after { content: ''; position: absolute; right: 9px; top: 9px; width: 6px; height: 6px; border-radius: 50%; background: var(--volo-500); }
+.vs-be.off { cursor: default; }
+.vs-be.off .vs-be-ic, .vs-be.off .vs-be-tx b, .vs-be.off .vs-be-tx span { opacity: .52; }
+/* "需 SDK" 徽标 = popover 触发器 */
+.vs-sdk { margin-left: auto; flex: 0 0 auto; }
+.vs-sdk-btn { all: unset; display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 700; font-family: var(--font-code);
+  color: var(--notice-visual); background: color-mix(in srgb, var(--notice-visual) 15%, transparent); padding: 2px 7px; border-radius: 999px; cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--notice-visual) 32%, transparent); }
+.vs-sdk-btn:hover { background: color-mix(in srgb, var(--notice-visual) 24%, transparent); }
+
+/* SDK 说明 popover */
+.vs-pop-wrap { position: relative; }
+.vs-pop { position: absolute; z-index: 40; top: calc(100% + 7px); right: 0; width: 306px; padding: 13px 14px;
+  background: var(--chrome-panel-2); border: 1px solid var(--chrome-line-2); border-radius: 11px; box-shadow: var(--shadow-dragged); }
+.vs-pop-h { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 800; color: var(--chrome-text); margin-bottom: 8px; }
+.vs-pop-h svg { color: var(--notice-visual); }
+.vs-pop-sec { margin-top: 9px; }
+.vs-pop-k { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--chrome-faint); font-weight: 700; margin-bottom: 4px; }
+.vs-pop-v { font-size: 11.5px; line-height: 1.55; color: var(--chrome-dim); }
+.vs-pop-v code { font-family: var(--font-code); font-size: 11px; color: var(--chrome-text); background: var(--sunken); padding: 1px 5px; border-radius: 4px; }
+.vs-pop-alt { display: flex; align-items: flex-start; gap: 8px; margin-top: 11px; padding: 9px 11px; border-radius: 9px;
+  background: color-mix(in srgb, var(--positive-visual) 12%, transparent); border: 1px solid color-mix(in srgb, var(--positive-visual) 26%, transparent); }
+.vs-pop-alt svg { flex: 0 0 auto; color: var(--positive-visual); margin-top: 1px; }
+.vs-pop-alt-t { font-size: 11.5px; line-height: 1.5; color: var(--chrome-dim); }
+.vs-pop-alt-t b { color: var(--positive-visual); font-weight: 700; }
+
+/* ---------- section 标题 ---------- */
+.vs-sub { display: flex; align-items: center; gap: 8px; font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--chrome-faint); font-weight: 700; margin: 14px 0 8px; }
+.vs-sub .u { font-family: var(--font-code); text-transform: none; letter-spacing: 0; color: var(--chrome-faint); font-weight: 500; margin-left: auto; }
+
+/* ---------- 设备选择器 ---------- */
+.vs-devrow { display: flex; align-items: stretch; gap: 7px; }
+.vs-select-wrap { position: relative; flex: 1; min-width: 0; }
+.vs-select { all: unset; box-sizing: border-box; width: 100%; display: flex; align-items: center; gap: 9px; padding: 8px 11px;
+  background: var(--wash); border: 1px solid var(--chrome-line-2); border-radius: 8px; cursor: pointer; color: var(--chrome-text); }
+.vs-select:hover { background: var(--wash-2); }
+.vs-select.open { border-color: var(--volo-600); }
+.vs-select.placeholder .vs-sel-main { color: var(--chrome-faint); }
+.vs-sel-ic { color: var(--chrome-dim); flex: 0 0 auto; display: grid; place-items: center; }
+.vs-sel-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; overflow: hidden; }
+.vs-sel-main .idx { font-family: var(--font-code); font-size: 11.5px; color: var(--chrome-dim); font-weight: 700; }
+.vs-sel-main .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vs-sel-chev { color: var(--chrome-faint); flex: 0 0 auto; transition: transform .15s; }
+.vs-select.open .vs-sel-chev { transform: rotate(180deg); }
+
+.vs-menu { position: absolute; z-index: 30; top: calc(100% + 5px); left: 0; right: 0; max-height: 244px; overflow-y: auto;
+  background: var(--chrome-panel-2); border: 1px solid var(--chrome-line-2); border-radius: 10px; box-shadow: var(--shadow-dragged); padding: 5px; }
+.vs-opt { display: flex; align-items: center; gap: 9px; padding: 8px 9px; border-radius: 7px; cursor: pointer; }
+.vs-opt:hover { background: var(--wash-2); }
+.vs-opt.on { background: var(--highlight-selected); }
+.vs-opt-ic { color: var(--chrome-dim); flex: 0 0 auto; display: grid; place-items: center; }
+.vs-opt.on .vs-opt-ic { color: var(--volo-400); }
+.vs-opt-meta { flex: 1; min-width: 0; }
+.vs-opt-n { font-size: 12.5px; font-weight: 600; color: var(--chrome-text); display: flex; align-items: center; gap: 7px; }
+.vs-opt-n .idx { font-family: var(--font-code); font-size: 11px; color: var(--chrome-dim); font-weight: 700; }
+.vs-opt-s { font-size: 10.5px; color: var(--chrome-faint); margin-top: 2px; font-family: var(--font-code); }
+.vs-opt-check { color: var(--volo-400); flex: 0 0 auto; }
+.vs-opt-warn { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; font-size: 9.5px; font-weight: 700;
+  color: var(--notice-visual); background: color-mix(in srgb, var(--notice-visual) 15%, transparent); padding: 2px 7px; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--notice-visual) 30%, transparent); white-space: nowrap; }
+.vs-menu-foot { border-top: 1px solid var(--chrome-line); margin-top: 5px; padding-top: 5px; }
+.vs-menu-manual { all: unset; display: flex; align-items: center; gap: 8px; width: 100%; box-sizing: border-box; padding: 8px 9px; border-radius: 7px;
+  cursor: pointer; font-size: 12px; font-weight: 600; color: var(--chrome-dim); }
+.vs-menu-manual:hover { background: var(--wash-2); color: var(--chrome-text); }
+.vs-menu-manual svg { color: var(--chrome-faint); }
+
+.vs-icbtn { all: unset; flex: 0 0 auto; display: grid; place-items: center; width: 36px; border-radius: 8px;
+  border: 1px solid var(--chrome-line-2); background: var(--wash); color: var(--chrome-dim); cursor: pointer; }
+.vs-icbtn:hover { background: var(--wash-2); color: var(--chrome-text); }
+.vs-icbtn.spin svg { animation: vsSpin 1s linear infinite; }
+@keyframes vsSpin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .vs-icbtn.spin svg { animation: none; } }
+
+/* 手动输入兜底 */
+.vs-manual { display: flex; align-items: center; gap: 7px; margin-top: 7px; }
+.vs-manual .cap-tf { font-family: var(--font-code); }
+.vs-manual-x { all: unset; flex: 0 0 auto; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 7px;
+  color: var(--chrome-faint); cursor: pointer; }
+.vs-manual-x:hover { background: var(--wash-2); color: var(--chrome-text); }
+
+/* DeckLink 两级 */
+.vs-two { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.vs-two-lbl { font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: var(--chrome-faint); font-weight: 700; margin-bottom: 5px; }
+.vs-two-col { min-width: 0; }
+
+/* ---------- 枚举 加载 / 空态 ---------- */
+.vs-enum-state { display: flex; align-items: center; gap: 10px; padding: 13px 13px; border-radius: 9px;
+  border: 1px dashed var(--chrome-line-2); background: var(--wash); }
+.vs-enum-ic { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; flex: 0 0 auto;
+  background: var(--sunken); color: var(--chrome-dim); }
+.vs-enum-ic.spin svg { animation: vsSpin 1s linear infinite; }
+.vs-enum-tx { flex: 1; min-width: 0; }
+.vs-enum-t { font-size: 12.5px; font-weight: 700; color: var(--chrome-text); }
+.vs-enum-d { font-size: 11px; color: var(--chrome-faint); margin-top: 2px; }
+.vs-enum-acts { display: flex; gap: 7px; flex: 0 0 auto; }
+
+/* ---------- 信号预览区 ---------- */
+.vs-preview { position: relative; aspect-ratio: 16 / 9; border-radius: 11px; overflow: hidden; background: #0c0d11;
+  border: 1px solid var(--chrome-line-2); margin-top: 8px; }
+.vs-preview svg.vs-frame { display: block; width: 100%; height: 100%; }
+.vs-preview.state-nosignal, .vs-preview.state-waiting { background: #08090c; }
+.vs-badge { position: absolute; left: 10px; top: 10px; z-index: 2; }
+.vs-badge .cap-pill { box-shadow: 0 1px 6px rgba(0,0,0,.45); backdrop-filter: blur(3px); }
+.vs-livedot { position: absolute; right: 10px; top: 10px; z-index: 2; display: inline-flex; align-items: center; gap: 5px;
+  font-size: 9.5px; font-weight: 800; letter-spacing: .07em; color: #fff; background: rgba(0,0,0,.5); padding: 3px 8px; border-radius: 6px;
+  border: 1px solid rgba(255,255,255,.14); font-family: var(--font-code); }
+.vs-livedot i { width: 6px; height: 6px; border-radius: 50%; background: var(--positive-visual); animation: vsPulse 1.3s ease-in-out infinite; }
+@keyframes vsPulse { 0%,100% { opacity: .4; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .vs-livedot i { animation: none; } }
+.vs-preview-mid { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; z-index: 1; }
+.vs-preview-mid .ring { width: 30px; height: 30px; border-radius: 50%; border: 3px solid rgba(255,255,255,.22); border-top-color: rgba(255,255,255,.7);
+  animation: vsSpin 1s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .vs-preview-mid .ring { animation: none; } }
+.vs-preview-mid .msg { font-size: 12px; font-weight: 600; color: rgba(255,255,255,.62); }
+.vs-preview-mid .msg.neg { color: color-mix(in srgb, var(--negative-visual) 78%, #fff); }
+.vs-frozen-tag { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 2; font-family: var(--font-code);
+  font-size: 10px; color: rgba(255,255,255,.72); background: rgba(0,0,0,.5); padding: 2px 8px; border-radius: 5px; }
+
+/* 信号信息条（自动读取） */
+.vs-sigbar { display: flex; align-items: center; gap: 10px; margin-top: 7px; padding: 8px 11px; border-radius: 9px;
+  background: var(--sunken); border: 1px solid var(--chrome-line); }
+.vs-sig-read { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font-family: var(--font-code); font-size: 12px;
+  color: var(--chrome-text); font-weight: 600; flex-wrap: wrap; }
+.vs-sig-read .sep { color: var(--chrome-faint); }
+.vs-sig-read .dim { color: var(--chrome-dim); font-weight: 500; }
+.vs-sig-auto { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 700; color: var(--chrome-faint);
+  text-transform: uppercase; letter-spacing: .05em; }
+.vs-sig-auto svg { color: var(--positive-visual); }
+
+/* 预览下方警示条（HX / 冻结） */
+.vs-warnstrip { display: flex; align-items: flex-start; gap: 8px; margin-top: 7px; padding: 9px 11px; border-radius: 9px; font-size: 11.5px; line-height: 1.5; }
+.vs-warnstrip svg { flex: 0 0 auto; margin-top: 1px; }
+.vs-warnstrip b { font-weight: 700; }
+.vs-warnstrip.notice { color: var(--notice-visual); background: color-mix(in srgb, var(--notice-visual) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--notice-visual) 28%, transparent); }
+.vs-warnstrip.negative { color: var(--negative-visual); background: color-mix(in srgb, var(--negative-visual) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--negative-visual) 28%, transparent); }
+
+/* 合成测试源提示 */
+.vs-synth { display: flex; align-items: center; gap: 11px; padding: 13px; border-radius: 10px;
+  background: var(--wash); border: 1px solid var(--chrome-line-2); }
+.vs-synth-ic { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; flex: 0 0 auto;
+  background: color-mix(in srgb, var(--volo-500) 16%, transparent); color: var(--volo-400); }
+.vs-synth-t { font-size: 12.5px; font-weight: 700; color: var(--chrome-text); }
+.vs-synth-d { font-size: 11px; color: var(--chrome-faint); margin-top: 2px; }
+
+/* ---------- 高级折叠区 ---------- */
+.vs-adv { margin-top: 12px; border-top: 1px solid var(--chrome-line); padding-top: 11px; }
+.vs-adv-body { margin-top: 12px; display: flex; flex-direction: column; gap: 14px; }
+.vs-fmt-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.vs-fmt-lbl { font-size: 11.5px; font-weight: 700; color: var(--chrome-text); }
+.vs-fmt-lbl .n { font-size: 10.5px; font-weight: 500; color: var(--chrome-faint); margin-left: 6px; }
+.vs-fmt-inputs { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.vs-fmt-num { display: inline-flex; align-items: center; gap: 5px; }
+.vs-fmt-num label { font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: var(--chrome-faint); font-weight: 700; }
+.vs-fmt-num input { width: 66px; background: var(--wash); border: 1px solid var(--chrome-line-2); border-radius: 7px; padding: 5px 8px;
+  color: var(--chrome-text); font-size: 12px; font-family: var(--font-code); }
+.vs-fmt-num input:focus { outline: 2px solid var(--volo-600); outline-offset: 1px; }
+.vs-fmt-x { font-size: 12px; color: var(--chrome-faint); }
+.vs-tf-note { font-size: 11px; color: var(--chrome-faint); margin-top: 6px; line-height: 1.5; }
+
+/* ---------- 常驻提示行 ---------- */
+.vs-hint { display: flex; align-items: flex-start; gap: 8px; margin-top: 13px; padding: 9px 11px; border-radius: 9px; font-size: 11.5px; line-height: 1.55;
+  color: var(--informative-visual); background: color-mix(in srgb, var(--informative-visual) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--informative-visual) 24%, transparent); }
+.vs-hint svg { flex: 0 0 auto; margin-top: 1px; }
+.vs-hint b { font-weight: 700; color: var(--chrome-text); }
+
+/* ---------- 演示控制条（非配置项，仅供设计走查切换状态） ---------- */
+.vs-demo { margin-top: 13px; border-radius: 10px; border: 1px dashed var(--chrome-line-2); background: var(--wash-3); padding: 10px 12px; }
+.vs-demo-h { display: flex; align-items: center; gap: 6px; font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--chrome-faint); font-weight: 700; margin-bottom: 9px; }
+.vs-demo-h svg { color: var(--chrome-faint); }
+.vs-demo-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+.vs-demo-row:first-of-type { margin-top: 0; }
+.vs-demo-k { font-size: 11px; color: var(--chrome-dim); font-weight: 600; width: 58px; flex: 0 0 auto; }
+.vs-demo-seg { display: flex; gap: 3px; flex-wrap: wrap; }
+.vs-demo-seg button { all: unset; font-size: 11px; font-weight: 600; color: var(--chrome-dim); padding: 4px 10px; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--chrome-line-2); display: inline-flex; align-items: center; gap: 5px; }
+.vs-demo-seg button:hover { background: var(--wash); }
+.vs-demo-seg button.on { background: var(--volo-700); color: #fff; border-color: var(--volo-700); }
+.vs-demo-seg button.on .dot { background: #fff; }
+.vs-demo-seg .dot { width: 7px; height: 7px; border-radius: 50%; }

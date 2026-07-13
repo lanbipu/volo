@@ -104,7 +104,7 @@ pub fn run_reconstruction(
 
     let run_id = {
         let conn = db.lock().unwrap();
-        runs::insert(
+        let id = runs::insert(
             &conn,
             &runs::NewRun {
                 project_path: project_path.display().to_string(),
@@ -119,7 +119,12 @@ pub fn run_reconstruction(
                 report_json_path: report_rel.display().to_string(),
                 warnings_json,
             },
-        )?
+        )?;
+        // 一次成功的重建应当自动成为该屏的"当前" run（CALIBRATE-UX.md §7.2：
+        // "新增 run 节点并自动设为当前"），覆盖掉之前手动"设为当前"钉住的旧 run，
+        // 而不是要求用户重建后再手动切换。
+        runs::set_current(&conn, id)?;
+        id
     };
 
     Ok(ReconstructionResult {
@@ -156,6 +161,15 @@ pub fn list_runs_for(
         }
     }
     Ok(rows)
+}
+
+/// Pin `run_id` as the current run for its screen, unpinning any sibling run.
+/// Callers with no explicit pin should keep falling back to the newest run
+/// by `created_at` (see `list_runs_for`'s ordering) — this only overrides
+/// that default when the user has actually clicked "设为当前".
+pub fn set_current_run(db: Db, run_id: i64) -> VoloResult<()> {
+    let conn = db.lock().unwrap();
+    runs::set_current(&conn, run_id)
 }
 
 pub fn read_run_report(db: Db, run_id: i64) -> VoloResult<serde_json::Value> {

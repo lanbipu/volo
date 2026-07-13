@@ -338,6 +338,7 @@ pub fn run() {
             commands::mesh_reconstruct::reconstruct_surface,
             commands::mesh_reconstruct::list_runs,
             commands::mesh_reconstruct::get_run_report,
+            commands::mesh_reconstruct::set_run_current,
             commands::vpcal_runs::list_ar_runs,
             commands::vpcal_runs::list_lens_sessions,
             commands::vpcal_runs::read_image_as_data_url,

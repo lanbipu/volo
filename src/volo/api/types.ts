@@ -1399,12 +1399,29 @@ export interface ScreenConfig {
   /** Cabinet-indexed [col, row] pairs explicitly absent from the array. */
   irregular_mask: [number, number][];
   bottom_completion?: BottomCompletionConfig | null;
+  /** World-space placement for multi-screen stages. [0,0,0] on screens saved before this field existed. */
+  position_m: [number, number, number];
+  /** Rotation about the world Y (up) axis, in degrees. 0 on screens saved before this field existed. */
+  yaw_deg: number;
 }
 
 export type ShapePriorConfig =
   | { type: "flat" }
   | { type: "curved"; radius_mm: number; fold_seams_at_columns: number[] }
-  | { type: "folded"; fold_seams_at_columns: number[] };
+  | { type: "folded"; fold_seams_at_columns: number[] }
+  /** Symmetric arc: a flat center span, then a constant per-column turn angle accumulating outward on both sides. */
+  | { type: "arc"; center_flat_cols: number; angle_per_col_deg: number }
+  /** Two straight legs meeting at one corner; right_cols = total_cols - left_cols - soften_cols (derived, not stored). */
+  | { type: "l_shape"; left_cols: number; soften_cols: number; corner_angle_deg: number }
+  /** Two symmetric corners (a center span flanked by two equal wings). */
+  | { type: "u_shape"; wing_cols: number; soften_cols: number; corner_angle_deg: number }
+  /** Explicit column-run segments; segment `cols` must sum to the screen's total column count. */
+  | { type: "custom_segments"; segments: ShapeSegment[] };
+
+export interface ShapeSegment {
+  cols: number;
+  cum_angle_deg: number;
+}
 
 export type ShapeMode = "rectangle" | "irregular";
 
@@ -1445,6 +1462,8 @@ export interface ReconstructionRun {
   target: string | null;
   output_obj_path: string | null;
   created_at: string;
+  /** Explicit "pinned as current" flag; absent/false → caller falls back to newest by created_at. */
+  is_current: boolean;
 }
 
 export interface ReconstructionReport {

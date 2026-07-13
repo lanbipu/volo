@@ -612,21 +612,45 @@ function App() {
   const [conTab, setConTab] = useState('stream');
   const [logSearch, setLogSearch] = useState('');
   const [logPaused, setLogPaused] = useState(false);
-  /* calibrate（重构 · 新 IA：概览 / 网格校正折叠组[屏幕与设计·测量导入·重建与预览·历史与导出] / 镜头校正）。
+  /* calibrate（网格校正新 IA · 2026-07：概览 / 单一三维工作区[重建] / 镜头校正三页扁平导航，
+     取代旧 calNav 的 5 页折叠结构，见 docs/design/CALIBRATE-UX.md）。
      旧 calStep/calArStep/calArMap 随 AR 六步页 + 旧 step-based 布局一起移除；
      「网格已重建」不再是独立持久 state —— 直接派生自 projStore 的 proj.reconstruction（真实数据），
      避免出现一份可能与后端脱节的影子布尔值（旧 calMeshState 定义了但从未被任何页面读取，见此次重构前审计）。 */
-  const CAL_NAVS = ['overview', 'design', 'survey', 'preview', 'history', 'lens'];
-  const [calNav, setCalNav] = useState(CAL_NAVS.includes(persisted.calNav) ? persisted.calNav : 'overview');
-  const [calScreen, setCalScreen] = useState(persisted.calScreen || 'main');
-  const [calMethod, setCalMethod] = useState(persisted.calMethod || 'm1');
+  const CAL_SECTIONS = ['overview', 'rebuild', 'lens'];
+  const [calSection, setCalSection] = useState(CAL_SECTIONS.includes(persisted.calSection) ? persisted.calSection : 'overview');
+  /* 当前激活屏幕（工作区视口高亮项 · 检查器/流程面板作用目标）。真实屏幕列表来自
+     proj.config.screens（见 pages/calibrate.tsx 的 projStore），此处只存 id。 */
+  const [calActiveScreen, setCalActiveScreen] = useState(persisted.calActiveScreen || 'main');
   /* calSel 不持久化：检查器初始必收起（见上方 rightCollapsed 注释），若挂载时恢复选中，
      详情会卡在 0 宽列里不可见，且重点同一对象不产生上升沿、弹不开。 */
   const [calSel, setCalSel] = useState(null);
   const [calStageType, setCalStageType] = useState(persisted.calStageType === 'ar' ? 'ar' : 'led');
-  /* 左栏「网格校正」折叠组的展开状态 —— 纯 UI 偏好，与 ddcOpen 同类持久化模式 */
-  const [calGridOpen, setCalGridOpen] = useState(persisted.calGridOpen != null ? persisted.calGridOpen : true);
-  /* AR 板块左栏导航 + 「空间校正」折叠组展开状态 —— 与上面 calNav/calGridOpen 同一持久化模式 */
+  /* 视口交互态：object/cabinet 两级拾取模式（Tab 切换）；箱体模式子工具
+     select/mask/refs（V/M/R 快捷键）；refs 工具当前指派角色。 */
+  const [calMode, setCalMode] = useState(persisted.calMode === 'cabinet' ? 'cabinet' : 'object');
+  const [calBoxTool, setCalBoxTool] = useState('select');
+  const [calRefRole, setCalRefRole] = useState('origin');
+  /* 网格版本切换器（视口底部中央）：original ⇄ rebuilt，overlay 叠加幽灵线框对比。 */
+  const [calMeshVersion, setCalMeshVersion] = useState(persisted.calMeshVersion === 'overlay' || persisted.calMeshVersion === 'original' ? persisted.calMeshVersion : 'rebuilt');
+  const [calView, setCalView] = useState(persisted.calView || 'persp');
+  const [calDisplay, setCalDisplay] = useState(() => Object.assign({}, GRID_DISPLAY_DEFAULT));
+  /* 测量导入流程面板：null=大纲态 · 'totalstation'/'visual'=对应流程激活（占左栏停靠位）。 */
+  const [calFlow, setCalFlow] = useState(null);
+  /* 检查器里「与另一 run 比对」临时选中的第二个 run（退出后清空，不持久化）。 */
+  const [calSurveyRun, setCalSurveyRun] = useState(null);
+  /* 屏幕设计表单的未保存草稿（gridInsp.tsx 的 ScreenForm 拥有），供 gridView.tsx
+     视口做「改参数即时预览」；null = 未编辑（视口读 proj.config.screens 的已保存值）。
+     只覆盖当前激活屏幕——同一时刻只编辑一块屏幕，其余屏幕视口一律读已保存值。 */
+  const [calDraftScreen, setCalDraftScreen] = useState(null);
+  /* 多屏视口同时渲染需要每块屏幕各自的「最新重建」摘要（非仅当前激活屏）。
+     Record<screenId, ReconstructionReport | null>，由 gridPages.tsx 的
+     controller 在 proj.config 变化时按屏幕 fan-out listRuns+getRunReport 填充；
+     与 projStore.reconstruction（历史/检查器用，仍只挂当前屏）是两条独立读路径。 */
+  const [calScreenReports, setCalScreenReports] = useState({});
+  /* 视口右下角操作回执（自动消隐），不持久化。 */
+  const [calReceipt, setCalReceipt] = useState(null);
+  /* AR 板块左栏导航 + 「空间校正」折叠组展开状态 —— 与上面 calSection 同一持久化模式 */
   const CAL_AR_NAVS = ['overview', 'markers', 'lens', 'spatial', 'delay', 'verify', 'runs'];
   const [calArNav, setCalArNav] = useState(CAL_AR_NAVS.includes(persisted.calArNav) ? persisted.calArNav : 'overview');
   const [calArToolsOpen, setCalArToolsOpen] = useState(persisted.calArToolsOpen != null ? persisted.calArToolsOpen : true);
@@ -672,10 +696,10 @@ function App() {
   useEffect(() => {
     clearTimeout(persistTimer.current);
     persistTimer.current = setTimeout(() => {
-      try { localStorage.setItem('volo2', JSON.stringify({ page, selNode, cacheNav, ddcOpen, calNav, calScreen, calMethod, calStageType, calGridOpen, calArNav, calArToolsOpen, calLensState, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed })); } catch (e) {}
+      try { localStorage.setItem('volo2', JSON.stringify({ page, selNode, cacheNav, ddcOpen, calSection, calActiveScreen, calStageType, calMode, calMeshVersion, calView, calArNav, calArToolsOpen, calLensState, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed })); } catch (e) {}
     }, 150);
     return () => clearTimeout(persistTimer.current);
-  }, [page, selNode, cacheNav, ddcOpen, calNav, calScreen, calMethod, calStageType, calGridOpen, calArNav, calArToolsOpen, calLensState, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed]);
+  }, [page, selNode, cacheNav, ddcOpen, calSection, calActiveScreen, calStageType, calMode, calMeshVersion, calView, calArNav, calArToolsOpen, calLensState, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed]);
 
   /* 禁掉桌面 WebView 的右键菜单（reload / 检查）；calibrate 画布另有本地 preventDefault */
   useEffect(() => {
@@ -983,8 +1007,11 @@ function App() {
     freshSetup, setFreshSetup, machinesAdded, setMachinesAdded,
     enrolled, setEnrolled, creds, setCreds,
     tasks, setTasks, runTask, runCmd, runStreamingCmd, cancelTask, suppressRunPop, conTab, setConTab, logSearch, setLogSearch, logPaused, setLogPaused,
-    calNav, setCalNav, calScreen, setCalScreen, calMethod, setCalMethod, calSel, setCalSel,
-    calStageType, setCalStageType, calGridOpen, setCalGridOpen,
+    calSection, setCalSection, calActiveScreen, setCalActiveScreen, calSel, setCalSel,
+    calStageType, setCalStageType, calMode, setCalMode, calBoxTool, setCalBoxTool, calRefRole, setCalRefRole,
+    calMeshVersion, setCalMeshVersion, calView, setCalView, calDisplay, setCalDisplay,
+    calFlow, setCalFlow, calSurveyRun, setCalSurveyRun, calReceipt, setCalReceipt,
+    calDraftScreen, setCalDraftScreen, calScreenReports, setCalScreenReports,
     calArNav, setCalArNav, calArToolsOpen, setCalArToolsOpen,
     calLensState, setCalLensState,
     leftCollapsed, setLeftCollapsed, rightCollapsed, setRightCollapsed, maximized,

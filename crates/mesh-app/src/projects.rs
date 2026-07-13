@@ -159,6 +159,8 @@ mod project_yaml_method_tests {
                 shape_mode: ShapeMode::Rectangle,
                 irregular_mask: vec![],
                 bottom_completion: None,
+                position_m: [0.0, 0.0, 0.0],
+                yaw_deg: 0.0,
             },
         );
         ProjectConfig {

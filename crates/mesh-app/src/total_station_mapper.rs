@@ -128,6 +128,32 @@ fn map_screen(s: &dto::ScreenConfig) -> VoloResult<m1::ScreenConfig> {
         } => m1::ShapePriorConfig::Folded {
             fold_seam_columns: fold_seams_at_columns.clone(),
         },
+        dto::ShapePriorConfig::Arc { center_flat_cols, angle_per_col_deg } => {
+            m1::ShapePriorConfig::Arc {
+                center_flat_cols: *center_flat_cols,
+                angle_per_col_deg: *angle_per_col_deg,
+            }
+        }
+        dto::ShapePriorConfig::LShape { left_cols, soften_cols, corner_angle_deg } => {
+            m1::ShapePriorConfig::LShape {
+                left_cols: *left_cols,
+                soften_cols: *soften_cols,
+                corner_angle_deg: *corner_angle_deg,
+            }
+        }
+        dto::ShapePriorConfig::UShape { wing_cols, soften_cols, corner_angle_deg } => {
+            m1::ShapePriorConfig::UShape {
+                wing_cols: *wing_cols,
+                soften_cols: *soften_cols,
+                corner_angle_deg: *corner_angle_deg,
+            }
+        }
+        dto::ShapePriorConfig::CustomSegments { segments } => m1::ShapePriorConfig::CustomSegments {
+            segments: segments
+                .iter()
+                .map(|s| m1::ShapeSegment { cols: s.cols, cum_angle_deg: s.cum_angle_deg })
+                .collect(),
+        },
     };
 
     let bottom_completion = s
@@ -183,6 +209,8 @@ mod tests {
             shape_mode: dto::ShapeMode::Rectangle,
             irregular_mask: vec![],
             bottom_completion: None,
+            position_m: [0.0, 0.0, 0.0],
+            yaw_deg: 0.0,
         }
     }
 
