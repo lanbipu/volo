@@ -83,7 +83,10 @@ pub fn build_cabinet_array(screen_cfg: &volo_shared::dto::ScreenConfig) -> VoloR
 /// vertex in place. Identity when both fields are default (0), which is
 /// every `project.yaml` written before these fields existed.
 fn apply_world_transform(vertices: &mut [Vector3<f64>], screen_cfg: &volo_shared::dto::ScreenConfig) {
-    if screen_cfg.yaw_deg == 0.0 && screen_cfg.position_m == [0.0, 0.0, 0.0] {
+    if screen_cfg.yaw_deg == 0.0
+        && screen_cfg.position_m == [0.0, 0.0, 0.0]
+        && screen_cfg.height_offset_mm == 0.0
+    {
         return;
     }
     // Model-frame Z is the row axis (the one shape_grid.rs's expected_grid_positions
@@ -94,6 +97,7 @@ fn apply_world_transform(vertices: &mut [Vector3<f64>], screen_cfg: &volo_shared
     let theta = screen_cfg.yaw_deg.to_radians();
     let (s, c) = theta.sin_cos();
     let [tx, ty, tz] = screen_cfg.position_m;
+    let tz = tz + screen_cfg.height_offset_mm / 1000.0;
     for v in vertices.iter_mut() {
         let (x, y) = (v.x, v.y);
         v.x = x * c + y * s + tx;
@@ -858,6 +862,7 @@ mod tests {
             bottom_completion: None,
             position_m: [0.0, 0.0, 0.0],
             yaw_deg: 0.0,
+            height_offset_mm: 0.0,
         }
     }
 

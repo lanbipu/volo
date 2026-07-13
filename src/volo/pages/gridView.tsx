@@ -51,8 +51,11 @@ import { saveProjectYaml } from "../api/meshCommands";
     side: { S: 96, ox: 500, oy: 415 },
   };
   let ORBIT = { az: 30, el: 22 };
+  /* 轨道目标点：场景内容（全部屏幕箱体）包围盒中心。相机绕它旋转、视口以它取景，
+     与传统三维软件的 turntable 相机一致；设计稿原型把几何居中到原点等效于此。 */
+  let TARGET = { x: 0, y: 0, z: 0 };
   function proj(p, view) {
-    const x = p.x, y = p.y, z = p.z;
+    const x = p.x - TARGET.x, y = p.y - TARGET.y, z = p.z - TARGET.z;
     let u, v;
     if (view === 'front') { u = x; v = -z; }
     else if (view === 'top') { u = x; v = y; }
@@ -128,7 +131,8 @@ import { saveProjectYaml } from "../api/meshCommands";
     const cols = Math.max(1, m.cabinet_count[0] | 0), rows = Math.max(1, m.cabinet_count[1] | 0);
     const cwM = (m.cabinet_size_mm[0] || 500) / 1000, chM = (m.cabinet_size_mm[1] || 500) / 1000;
     const seams = wallSeamsXY(m, cols, cwM);
-    const posX = (m.position_m && m.position_m[0]) || 0, posY = (m.position_m && m.position_m[1]) || 0, posZ = (m.position_m && m.position_m[2]) || 0;
+    const posX = (m.position_m && m.position_m[0]) || 0, posY = (m.position_m && m.position_m[1]) || 0,
+      posZ = ((m.position_m && m.position_m[2]) || 0) + (m.height_offset_mm || 0) / 1000;
     const yawRad = ((m.yaw_deg || 0) * Math.PI) / 180;
     const cy = Math.cos(yawRad), sy = Math.sin(yawRad);
     /* apply_world_transform 一致：yaw 绕竖直轴 Z 旋转 X/Y 弯曲平面。 */
@@ -175,12 +179,30 @@ import { saveProjectYaml } from "../api/meshCommands";
     const [zoom, setZoom] = useState(1);
     const [pan, setPan] = useState({ x: 0, y: 0 });
     const [orbit, setOrbit] = useState({ az: 30, el: 22 });
+    const [marquee, setMarquee] = useState(null); /* {x0,y0,x1,y1} SVG 外层坐标 */
     const panRef = useRef(null);
     const orbitRef = useRef(null);
     const stageRef = useRef(null);
+    const marqueeRef = useRef(null); /* {cx0,cy0,cx1,cy1} client 坐标 */
+    const marqueeFinalizeRef = useRef(null); /* 每次渲染更新，up 时用当前几何做框选命中 */
+    const paintRef = useRef(null); /* 遮罩拖刷：{ to: boolean } */
+    const innerRef = useRef(null); /* 内层 pan/zoom <g>，命中转换用其真实 CTM */
+    const touchedRef = useRef(false); /* 用户手动操作过视口后停用自动取景 */
     ORBIT = orbit;
 
-    const reset = useCallback(() => { setZoom(1); setPan({ x: 0, y: 0 }); setOrbit({ az: 30, el: 22 }); }, []);
+    /* client 坐标 → 指定元素（外层 svg / 内层 g）局部坐标，走引擎 CTM，
+       避免手写反演与 transform-origin 实现差异打架。 */
+    const toLocal = (el, cx, cyv) => {
+      const svg = stageRef.current;
+      if (!svg || !svg.createSVGPoint || !el) return [0, 0];
+      const pt = svg.createSVGPoint(); pt.x = cx; pt.y = cyv;
+      const ctm = el.getScreenCTM();
+      if (!ctm) return [0, 0];
+      const p = pt.matrixTransform(ctm.inverse());
+      return [p.x, p.y];
+    };
+
+    const reset = useCallback(() => { touchedRef.current = false; setZoom(1); setPan({ x: 0, y: 0 }); setOrbit({ az: 30, el: 22 }); }, []);
     useEffect(() => {
       const onReset = () => reset();
       const onFocus = () => setZoom((z) => Math.min(3.2, z + 0.5));
@@ -191,21 +213,33 @@ import { saveProjectYaml } from "../api/meshCommands";
 
     useEffect(() => {
       const el = stageRef.current; if (!el) return undefined;
-      const onWheel = (e) => { e.preventDefault(); setZoom((z) => Math.max(0.5, Math.min(3.2, +(z - Math.sign(e.deltaY) * 0.12).toFixed(2)))); };
+      const onWheel = (e) => { e.preventDefault(); touchedRef.current = true; setZoom((z) => Math.max(0.5, Math.min(3.2, +(z - Math.sign(e.deltaY) * 0.12).toFixed(2)))); };
       el.addEventListener('wheel', onWheel, { passive: false });
       const move = (e) => {
+        if (marqueeRef.current) { marqueeRef.current = Object.assign({}, marqueeRef.current, { cx1: e.clientX, cy1: e.clientY }); setMarquee(marqueeRef.current); return; }
         if (orbitRef.current) { const o = orbitRef.current; setOrbit({ az: o.az - (e.clientX - o.x) * 0.3, el: Math.max(-15, Math.min(88, o.el + (e.clientY - o.y) * 0.3)) }); return; }
         if (!panRef.current) return; setPan({ x: panRef.current.px + (e.clientX - panRef.current.x), y: panRef.current.py + (e.clientY - panRef.current.y) });
       };
-      const up = () => { if (panRef.current) { el.classList.remove('is-panning'); panRef.current = null; } if (orbitRef.current) { el.classList.remove('is-orbiting'); orbitRef.current = null; } };
+      const up = () => {
+        if (marqueeRef.current) { const r = marqueeRef.current; marqueeRef.current = null; setMarquee(null); if (marqueeFinalizeRef.current) marqueeFinalizeRef.current(r); }
+        if (paintRef.current) paintRef.current = null;
+        if (panRef.current) { el.classList.remove('is-panning'); panRef.current = null; }
+        if (orbitRef.current) { el.classList.remove('is-orbiting'); orbitRef.current = null; }
+      };
       window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
       return () => { el.removeEventListener('wheel', onWheel); window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
     }, [pan]);
 
     const onBg = (e) => {
       if (e.target.closest && e.target.closest('.gw-box')) return;
-      if (e.button === 2) { panRef.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y }; stageRef.current.classList.add('is-panning'); return; }
-      if (e.button === 0) { if (!cabinet) s.setCalSel(null); orbitRef.current = { x: e.clientX, y: e.clientY, az: orbit.az, el: orbit.el }; stageRef.current.classList.add('is-orbiting'); }
+      if (e.button === 2) { touchedRef.current = true; panRef.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y }; stageRef.current.classList.add('is-panning'); return; }
+      if (e.button === 0) {
+        /* 箱体模式·选择工具：Shift+左拖 = 框选多选；纯左拖恒为轨道旋转（传统 DCC 习惯）。 */
+        if (cabinet && s.calBoxTool === 'select' && e.shiftKey) { marqueeRef.current = { cx0: e.clientX, cy0: e.clientY, cx1: e.clientX, cy1: e.clientY }; setMarquee(marqueeRef.current); return; }
+        if (!cabinet) s.setCalSel(null);
+        touchedRef.current = true;
+        orbitRef.current = { x: e.clientX, y: e.clientY, az: orbit.az, el: orbit.el }; stageRef.current.classList.add('is-orbiting');
+      }
     };
 
     if (!proj_.config) return h('svg', { className: 'gw-svp', ref: stageRef, viewBox: '0 0 1000 700' });
@@ -222,22 +256,45 @@ import { saveProjectYaml } from "../api/meshCommands";
       return { id, cfg, isActive, g, ghost, built, version };
     });
 
+    /* 轨道目标 + 自动取景：内容包围盒中心为旋转枢轴；未手动操作视口时按内容尺度取景。 */
+    let bboxMin = null, bboxMax = null;
+    sbuilt.forEach((entry) => entry.g.boxes.forEach((b) => b.corners.forEach((p) => {
+      if (!bboxMin) { bboxMin = { x: p.x, y: p.y, z: p.z }; bboxMax = { x: p.x, y: p.y, z: p.z }; }
+      else {
+        bboxMin.x = Math.min(bboxMin.x, p.x); bboxMin.y = Math.min(bboxMin.y, p.y); bboxMin.z = Math.min(bboxMin.z, p.z);
+        bboxMax.x = Math.max(bboxMax.x, p.x); bboxMax.y = Math.max(bboxMax.y, p.y); bboxMax.z = Math.max(bboxMax.z, p.z);
+      }
+    })));
+    TARGET = bboxMin ? { x: (bboxMin.x + bboxMax.x) / 2, y: (bboxMin.y + bboxMax.y) / 2, z: (bboxMin.z + bboxMax.z) / 2 } : { x: 0, y: 0, z: 0 };
+    /* 内容对角线（米）→ 期望占视口宽 ~55%（1000 单位 · S=72/米），夹在滚轮缩放范围内。 */
+    const diagM = bboxMin ? Math.max(0.5, Math.hypot(bboxMax.x - bboxMin.x, bboxMax.y - bboxMin.y, bboxMax.z - bboxMin.z)) : 4;
+    const fitZoom = Math.max(0.5, Math.min(3.2, +(550 / (diagM * 72)).toFixed(2)));
+    /* 渲染期校正（非 hook，规避早退分支的 Hooks 顺序问题）：用户未手动缩放/旋转/平移
+       前，跟随内容自动取景。 */
+    if (!touchedRef.current && Math.abs(zoom - fitZoom) > 0.01) setZoom(fitZoom);
+
     const activeEntry = sbuilt.find((x) => x.isActive) || sbuilt[0];
     const m = activeEntry ? activeEntry.cfg : null;
     const coord = proj_.config.coordinate_system;
     const selKey = s.calSel && s.calSel.type === 'cabinet' ? s.calSel.c + ',' + s.calSel.r : null;
     const multiKeys = s.calSel && s.calSel.type === 'cabinetMulti' ? new Set(s.calSel.keys || []) : null;
 
+    const setBoxMask = (b, to) => {
+      const cur = s.calDraftScreen || m;
+      const set = new Set((cur.irregular_mask || []).map(([c, r]) => c + ',' + r));
+      if (to == null) set.has(b.key) ? set.delete(b.key) : set.add(b.key);
+      else if (to) set.add(b.key); else set.delete(b.key);
+      s.setCalDraftScreen(Object.assign({}, cur, { irregular_mask: [...set].map((k) => k.split(',').map(Number)) }));
+      return set.has(b.key);
+    };
     const clickBox = (b, e) => {
       e.stopPropagation();
       if (!cabinet) { s.setCalSel({ type: 'screen' }); return; }
       const tool = s.calBoxTool;
       if (tool === 'mask') {
         if (m.shape_mode !== 'irregular') { s.setCalReceipt({ tone: 'notice', text: '矩形屏不支持遮罩，仅异形屏可镂空' }); return; }
-        const cur = s.calDraftScreen || m;
-        const set = new Set((cur.irregular_mask || []).map(([c, r]) => c + ',' + r));
-        set.has(b.key) ? set.delete(b.key) : set.add(b.key);
-        s.setCalDraftScreen(Object.assign({}, cur, { irregular_mask: [...set].map((k) => k.split(',').map(Number)) }));
+        const nowMasked = setBoxMask(b, null);
+        paintRef.current = { to: nowMasked }; /* 拖刷：后续划过的箱体统一设为首格的新状态 */
         s.setCalSel({ type: 'cabinet', c: b.c, r: b.r });
       } else if (tool === 'refs') {
         const role = s.calRefRole;
@@ -256,19 +313,25 @@ import { saveProjectYaml } from "../api/meshCommands";
       }
     };
 
-    /* 地面网格 + 坐标轴 */
+    /* 地面网格 + 坐标轴
+       网格以内容中心（吸附 0.5m 步进）为中心铺开——设计稿原型的几何居中在原点，
+       网格因此围绕内容对称；接真实数据后内容不在原点，网格须跟着内容走。 */
     const ground = [];
     if (disp.ground) {
       const G = 5, step = 0.5;
+      const gcx = Math.round(TARGET.x / step) * step, gcy = Math.round(TARGET.y / step) * step;
       for (let i = -G; i <= G; i += step) {
-        ground.push(h('line', { key: 'gx' + i, className: 'gw-grid-l', x1: proj({ x: i, y: 0, z: -G }, view)[0], y1: proj({ x: i, y: 0, z: -G }, view)[1], x2: proj({ x: i, y: 0, z: G }, view)[0], y2: proj({ x: i, y: 0, z: G }, view)[1] }));
-        ground.push(h('line', { key: 'gz' + i, className: 'gw-grid-l', x1: proj({ x: -G, y: 0, z: i }, view)[0], y1: proj({ x: -G, y: 0, z: i }, view)[1], x2: proj({ x: G, y: 0, z: i }, view)[0], y2: proj({ x: G, y: 0, z: i }, view)[1] }));
+        ground.push(h('line', { key: 'gx' + i, className: 'gw-grid-l', x1: proj({ x: gcx + i, y: gcy - G, z: 0 }, view)[0], y1: proj({ x: gcx + i, y: gcy - G, z: 0 }, view)[1], x2: proj({ x: gcx + i, y: gcy + G, z: 0 }, view)[0], y2: proj({ x: gcx + i, y: gcy + G, z: 0 }, view)[1] }));
+        ground.push(h('line', { key: 'gz' + i, className: 'gw-grid-l', x1: proj({ x: gcx - G, y: gcy + i, z: 0 }, view)[0], y1: proj({ x: gcx - G, y: gcy + i, z: 0 }, view)[1], x2: proj({ x: gcx + G, y: gcy + i, z: 0 }, view)[0], y2: proj({ x: gcx + G, y: gcy + i, z: 0 }, view)[1] }));
       }
     }
+    /* 轴 gizmo 按 Claude Design 的显示约定标注（DCC 习惯 Y-up）：
+       显示 X（红）= stage X · 显示 Y（绿，向上）= stage Z · 显示 Z（蓝，纵深）= stage Y。
+       数据/导出仍是 RH Z-up，这里只是视口展示层的换名。 */
     const axes = [];
     if (disp.ground) {
       const O = proj({ x: 0, y: 0, z: 0 }, view);
-      [['x', 1.6, 0, 0, '#ff5a4d', 'X'], ['y', 0, 1.6, 0, '#5aa2ff', 'Y'], ['z', 0, 0, 1.6, '#3ddc84', 'Z']].forEach(([id, x, y, z, col, lb]) => {
+      [['x', 1.6, 0, 0, '#ff5a4d', 'X'], ['y', 0, 0, 1.6, '#3ddc84', 'Y'], ['z', 0, 1.6, 0, '#5aa2ff', 'Z']].forEach(([id, x, y, z, col, lb]) => {
         const P = proj({ x, y, z }, view);
         axes.push(h('line', { key: 'a' + id, x1: O[0], y1: O[1], x2: P[0], y2: P[1], stroke: col, strokeWidth: 2, strokeLinecap: 'round', opacity: 0.9 }));
         axes.push(h('text', { key: 't' + id, x: P[0], y: P[1] - 3, fill: col, fontSize: 12, fontWeight: 700, textAnchor: 'middle' }, lb));
@@ -279,10 +342,15 @@ import { saveProjectYaml } from "../api/meshCommands";
       if (entry.isActive) { clickBox(b, e); return; }
       e.stopPropagation(); s.setCalActiveScreen(entry.id); s.setCalDraftScreen(null); s.setCalMode('object'); s.setCalSel({ type: 'screen' });
     };
+    const paintEnter = (b, entry) => {
+      if (!entry.isActive || !cabinet || s.calBoxTool !== 'mask' || !paintRef.current) return;
+      if (m.shape_mode !== 'irregular') return;
+      setBoxMask(b, paintRef.current.to);
+    };
     const mkBox = (b, entry) => {
       const isActive = entry.isActive;
       const pts = pstr(b.corners.map((p) => proj(p, view)));
-      if (b.masked && disp.maskStyle === 'cutout' && !(isActive && cabinet)) return h('polygon', { key: entry.id + b.key, className: 'gw-box gw-box--cut' + (isActive ? '' : ' gw-box--dim'), points: pts, onMouseDown: (e) => onBoxDown(b, entry, e) });
+      if (b.masked && disp.maskStyle === 'cutout' && !(isActive && cabinet)) return h('polygon', { key: entry.id + b.key, className: 'gw-box gw-box--cut' + (isActive ? '' : ' gw-box--dim'), points: pts, onMouseDown: (e) => onBoxDown(b, entry, e), onMouseEnter: () => paintEnter(b, entry) });
       let fill = '#39485a';
       if (disp.provenance && b.prov) fill = PROV[b.prov].color;
       if (b.masked) fill = 'rgba(120,124,134,0.28)';
@@ -291,7 +359,7 @@ import { saveProjectYaml } from "../api/meshCommands";
       if (isActive && (b.key === selKey || (multiKeys && multiKeys.has(b.key)))) cls += ' is-sel';
       if (role) cls += ' is-ref';
       return h('g', { key: entry.id + b.key },
-        h('polygon', { className: cls, points: pts, style: { fill, stroke: role ? ROLE[role].color : undefined }, onMouseDown: (e) => onBoxDown(b, entry, e), title: entry.id + ' V' + String(b.c + 1).padStart(2, '0') + '_R' + String(b.r + 1).padStart(2, '0') }),
+        h('polygon', { className: cls, points: pts, style: { fill, stroke: role ? ROLE[role].color : undefined }, onMouseDown: (e) => onBoxDown(b, entry, e), onMouseEnter: () => paintEnter(b, entry), title: entry.id + ' V' + String(b.c + 1).padStart(2, '0') + '_R' + String(b.r + 1).padStart(2, '0') }),
         role ? (function () { const cn = proj(b.corners[0], view); return h('g', null, h('circle', { cx: cn[0], cy: cn[1], r: 8, fill: ROLE[role].color, stroke: '#0c0c10', strokeWidth: 1.5 }), h('text', { x: cn[0], y: cn[1] + 3.2, fill: '#0c0c10', fontSize: 8.5, fontWeight: 800, textAnchor: 'middle' }, ROLE[role].short)); })() : null);
     };
 
@@ -299,6 +367,25 @@ import { saveProjectYaml } from "../api/meshCommands";
     sbuilt.forEach((entry) => entry.g.boxes.forEach((b) => allBoxes.push({ b, entry })));
     allBoxes.sort((x, y) => (view === 'top' ? x.b.corners[0].y - y.b.corners[0].y : y.b.depth - x.b.depth));
     const boxEls = allBoxes.map(({ b, entry }) => mkBox(b, entry));
+
+    /* 框选命中：外层 SVG 坐标 → 反演 pan/zoom（内层 transform 以 (500,350) 为原点）
+       后与激活屏各箱体的投影质心比较。 */
+    marqueeFinalizeRef.current = (r) => {
+      const w = Math.abs(r.cx1 - r.cx0), hgt = Math.abs(r.cy1 - r.cy0);
+      if (w < 4 && hgt < 4) { s.setCalSel(null); return; } /* 视为空点击 */
+      const g = innerRef.current;
+      const [ax0, ay0] = toLocal(g, Math.min(r.cx0, r.cx1), Math.min(r.cy0, r.cy1));
+      const [bx0, by0] = toLocal(g, Math.max(r.cx0, r.cx1), Math.max(r.cy0, r.cy1));
+      const ax = Math.min(ax0, bx0), bx = Math.max(ax0, bx0), ay = Math.min(ay0, by0), by = Math.max(ay0, by0);
+      const keys = [];
+      if (activeEntry) activeEntry.g.boxes.forEach((b) => {
+        const c = b.corners.reduce((acc, p) => { const q = proj(p, view); return [acc[0] + q[0] / 4, acc[1] + q[1] / 4]; }, [0, 0]);
+        if (c[0] >= ax && c[0] <= bx && c[1] >= ay && c[1] <= by) keys.push(b.key);
+      });
+      if (keys.length > 1) { s.setCalSel({ type: 'cabinetMulti', keys }); s.setCalReceipt({ tone: 'ok', text: '框选 ' + keys.length + ' 个箱体' }); }
+      else if (keys.length === 1) { const [c, r2] = keys[0].split(',').map(Number); s.setCalSel({ type: 'cabinet', c, r: r2 }); }
+      else s.setCalSel(null);
+    };
 
     const ghost = [];
     sbuilt.forEach((entry) => { if (entry.ghost) entry.ghost.boxes.forEach((b) => ghost.push(h('polygon', { key: 'gh' + entry.id + b.key, className: 'gw-ghost', points: pstr(b.corners.map((p) => proj(p, view))) }))); });
@@ -329,9 +416,20 @@ import { saveProjectYaml } from "../api/meshCommands";
           h('rect', { width: 7, height: 7, fill: 'none' }),
           h('rect', { width: 3.5, height: 3.5, fill: 'rgba(255,255,255,.55)' }),
           h('rect', { x: 3.5, y: 3.5, width: 3.5, height: 3.5, fill: 'rgba(255,255,255,.55)' }))),
-      h('g', { transform: 'translate(' + pan.x + ',' + pan.y + ') scale(' + zoom + ')', style: { transformOrigin: '500px 350px' } },
+      /* 缩放以视口中心 (500,350) 为基准，直接烘进 translate（不依赖各引擎对 SVG
+         transform-origin 的实现差异）。 */
+      h('g', { ref: innerRef, transform: 'translate(' + (pan.x + 500 * (1 - zoom)) + ',' + (pan.y + 350 * (1 - zoom)) + ') scale(' + zoom + ')' },
         h('g', { className: 'gw-ground' }, ground),
-        axes, ghost, boxEls, labels, points));
+        axes, ghost, boxEls, labels, points),
+      marquee ? (function () {
+        const [x0, y0] = toLocal(stageRef.current, marquee.cx0, marquee.cy0);
+        const [x1, y1] = toLocal(stageRef.current, marquee.cx1, marquee.cy1);
+        return h('rect', {
+          x: Math.min(x0, x1), y: Math.min(y0, y1),
+          width: Math.abs(x1 - x0), height: Math.abs(y1 - y0),
+          fill: 'rgba(214,84,45,0.10)', stroke: 'var(--volo-500)', strokeWidth: 1, strokeDasharray: '4 3', pointerEvents: 'none',
+        });
+      })() : null);
   }
 
   /* ================= 四角叠加 + 工具条 + 状态栏 ================= */
@@ -394,9 +492,9 @@ import { saveProjectYaml } from "../api/meshCommands";
     const tool = s.calBoxTool;
     let hint;
     if (!cabinet) hint = [['Tab', '箱体编辑'], ['左键', '旋转'], ['右键', '平移'], ['滚轮', '缩放']];
-    else if (tool === 'mask') hint = [['单击', '切换镂空'], ['Tab', '退出']];
+    else if (tool === 'mask') hint = [['单击/拖刷', '切换镂空'], ['Tab', '退出']];
     else if (tool === 'refs') hint = [['单击角点', '指派角色'], ['1/2/3', '切角色']];
-    else hint = [['单击', '选箱体'], ['Shift', '加选']];
+    else hint = [['单击', '选箱体'], ['Shift', '加选'], ['Shift+拖动', '框选多选']];
     return h('div', { className: 'gw-glass gw-hint' }, hint.flatMap(([k, v], i) => [
       i > 0 ? h('span', { className: 'sep', key: 's' + i }, '·') : null,
       h('kbd', { key: 'k' + i }, k), h('span', { key: 'v' + i }, v),

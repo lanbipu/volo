@@ -7,8 +7,10 @@
    s.calDraftScreen 非 null = 有未保存改动，保存走 saveProjectYaml + 回读校验）。
    箱体选中/run 质量指标/阶段动作面板同样只读写真实数据，无自造 mock。 */
 import * as React from "react";
-import { saveProjectYaml, setRunCurrent, getRunReport } from "../api/meshCommands";
+import { saveProjectYaml, setRunCurrent, getRunReport, exportObj } from "../api/meshCommands";
 import { meshVisualGeneratePattern } from "../api/meshVisualCommands";
+import { revealPath } from "../api/commands";
+import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern, playerClear } from "../api/player";
 
 (function () {
   const { Button, Switch } = window.Spectrum2DesignSystem_b6d1b3;
@@ -53,6 +55,80 @@ import { meshVisualGeneratePattern } from "../api/meshVisualCommands";
     h('div', { className: 'gw-insp-tt' }, h('h2', null, title), sub ? h('div', { className: 'sub' }, sub) : null),
     pill || null);
 
+  /* ================= 屏幕预设（多屏列表 · 切换/重命名/删除/新建） ================= */
+  function ScreenPresets({ s, proj, editingId, setEditingId }) {
+    const screens = Object.keys(proj.config.screens);
+    const active = s.calActiveScreen;
+    const switchTo = (id) => { s.setCalActiveScreen(id); s.setCalDraftScreen(null); s.setCalSel({ type: 'screen' }); };
+    const renameScreen = async (oldId, rawName) => {
+      const name = (rawName || '').trim();
+      setEditingId(null);
+      if (!name || name === oldId) return;
+      if (proj.config.screens[name]) { s.setCalReceipt({ tone: 'notice', text: '已存在同名屏幕 · ' + name }); return; }
+      const nextScreens = {};
+      Object.entries(proj.config.screens).forEach(([k, v]) => { nextScreens[k === oldId ? name : k] = v; });
+      /* 参考点名以 <screenId>_Vxxx_Rxxx 编码，重命名须同步改写 coordinate_system。 */
+      const ren = (p) => (p && p.indexOf(oldId + '_') === 0) ? name + p.slice(oldId.length) : p;
+      const coord = proj.config.coordinate_system;
+      const nextConfig = Object.assign({}, proj.config, { screens: nextScreens },
+        coord ? { coordinate_system: Object.assign({}, coord, { origin_point: ren(coord.origin_point), x_axis_point: ren(coord.x_axis_point), xy_plane_point: ren(coord.xy_plane_point) }) } : null);
+      try {
+        await s.runCmd({ domain: 'calibrate', action: '重命名屏幕', target: oldId + ' → ' + name, chan: 'local' },
+          () => saveProjectYaml(proj.path, nextConfig), { okMsg: () => `已重命名屏幕 <b>${oldId}</b> → <b>${name}</b>` });
+        await CX.openProjectPath(proj.path, s);
+        if (s.calActiveScreen === oldId) s.setCalActiveScreen(name);
+        s.setCalDraftScreen(null);
+      } catch (e) { /* runCmd 已记录失败 */ }
+    };
+    const delScreen = async (id) => {
+      if (screens.length <= 1) { s.setCalReceipt({ tone: 'notice', text: '至少保留一块屏幕' }); return; }
+      const nextScreens = Object.assign({}, proj.config.screens);
+      delete nextScreens[id];
+      const nextId = Object.keys(nextScreens)[0];
+      try {
+        await s.runCmd({ domain: 'calibrate', action: '删除屏幕', target: id, chan: 'local' },
+          () => saveProjectYaml(proj.path, Object.assign({}, proj.config, { screens: nextScreens })),
+          { okMsg: () => `已删除屏幕 <b>${id}</b>` });
+        await CX.openProjectPath(proj.path, s);
+        if (s.calActiveScreen === id) s.setCalActiveScreen(nextId);
+        s.setCalDraftScreen(null);
+      } catch (e) { /* runCmd 已记录失败 */ }
+    };
+    const createScreen = async () => {
+      let id = 'SCREEN'; let n = 1;
+      while (proj.config.screens[id]) { n += 1; id = 'SCREEN' + n; }
+      const cfg = {
+        cabinet_count: [8, 3], cabinet_size_mm: [500, 500], pixels_per_cabinet: [176, 176],
+        shape_prior: { type: 'flat' }, shape_mode: 'rectangle', irregular_mask: [], bottom_completion: null,
+        position_m: [Object.keys(proj.config.screens).length * 3.2, 0, 0], yaw_deg: 0, height_offset_mm: 0,
+      };
+      const nextConfig = Object.assign({}, proj.config, { screens: Object.assign({}, proj.config.screens, { [id]: cfg }) });
+      try {
+        await s.runCmd({ domain: 'calibrate', action: '新建屏幕', target: id, chan: 'local' },
+          () => saveProjectYaml(proj.path, nextConfig), { okMsg: () => `已新建屏幕 <b>${id}</b>` });
+        await CX.openProjectPath(proj.path, s);
+        s.setCalActiveScreen(id); s.setCalDraftScreen(null); s.setCalSel({ type: 'screen' });
+        s.setCalReceipt({ tone: 'ok', text: '已新建屏幕预设 · ' + id });
+        setEditingId(id);
+      } catch (e) { /* runCmd 已记录失败 */ }
+    };
+    return h('div', { className: 'gw-parent' },
+      h('div', { className: 'gw-parent-h' }, h(Icon, { name: 'panel', size: 14 }), '屏幕预设'),
+      h('div', { className: 'gw-presets' }, screens.map((id) => {
+        const sc = proj.config.screens[id];
+        return h('div', { key: id, className: 'gw-preset' + (id === active ? ' on' : ''), onClick: () => switchTo(id), onDoubleClick: () => setEditingId(id) },
+          h('span', { className: 'ic' }, h(Icon, { name: 'panel', size: 14 })),
+          editingId === id
+            ? h('input', { className: 'gw-preset-edit', autoFocus: true, defaultValue: id, onClick: (e) => e.stopPropagation(),
+                onKeyDown: (e) => { if (e.key === 'Enter') renameScreen(id, e.target.value); else if (e.key === 'Escape') setEditingId(null); },
+                onBlur: (e) => renameScreen(id, e.target.value) })
+            : h('span', { className: 'nm', title: '双击或 F2 重命名' }, id),
+          h('span', { className: 'mt' }, sc.cabinet_count[0] + '×' + sc.cabinet_count[1]),
+          screens.length > 1 ? h('button', { className: 'rm', title: '删除预设', onClick: (e) => { e.stopPropagation(); delScreen(id); } }, h(Icon, { name: 'trash', size: 12 })) : null);
+      })),
+      h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'plus', size: 13 }), onPress: createScreen }, '新建预设'));
+  }
+
   /* ================= 屏幕建模参数表单 ================= */
   function ScreenForm({ s, noHead }) {
     const proj = CX.useProj();
@@ -61,6 +137,16 @@ import { meshVisualGeneratePattern } from "../api/meshVisualCommands";
     /* 草稿在切屏 / 保存回读后清空（proj.config 引用变化即视为"已同步"）。 */
     useEffect(() => { s.setCalDraftScreen(null); }, [screenId, proj.config]);
     const [saving, setSaving] = useState(false);
+    const [editingId, setEditingId] = useState(null);
+    useEffect(() => {
+      const onKey = (e) => {
+        if (e.key !== 'F2') return;
+        const tn = (e.target || {}).tagName || '';
+        if (!/^(INPUT|TEXTAREA)$/.test(tn)) { e.preventDefault(); setEditingId(s.calActiveScreen); }
+      };
+      window.addEventListener('keydown', onKey);
+      return () => window.removeEventListener('keydown', onKey);
+    }, [s.calActiveScreen]);
     if (!real) return null;
     const m = s.calDraftScreen || real;
     const dirty = !!s.calDraftScreen;
@@ -78,6 +164,10 @@ import { meshVisualGeneratePattern } from "../api/meshVisualCommands";
         const nextConfig = Object.assign({}, proj.config, { screens: Object.assign({}, proj.config.screens, { [screenId]: m }) });
         await s.runCmd({ domain: 'calibrate', action: '保存屏幕设计', target: screenId, chan: 'local' },
           () => saveProjectYaml(proj.path, nextConfig), { okMsg: () => `已保存 <b>${screenId}</b> 的设计改动` });
+        /* 屏幕参数变更 → 已生成的测试图标记「已过期」（只标注，不删除产物）。 */
+        if (proj.patternGenByScreen && proj.patternGenByScreen[screenId]) {
+          CX.projStore.patch({ patternStaleByScreen: Object.assign({}, CX.projStore.get().patternStaleByScreen, { [screenId]: true }) });
+        }
         await CX.openProjectPath(proj.path, s);
       } catch (e) { /* runCmd 已记录失败 */ } finally { setSaving(false); }
     };
@@ -102,9 +192,8 @@ import { meshVisualGeneratePattern } from "../api/meshVisualCommands";
 
     return h(React.Fragment, null,
       noHead ? null : head('panel', screenId, cols + '×' + rows, h('span', { className: 'spill spill--informative' }, h(Icon, { name: 'check', size: 12 }), '对象')),
-      h(Fold, { n: '①', label: '标识' },
-        Field('屏幕名', h('span', { className: 'gw-unit', style: { fontFamily: 'var(--font-code)', fontSize: 12.5, color: 'var(--chrome-text)' } }, screenId), { hint: '重命名请在场景树右键屏幕节点' })),
-      h(Fold, { n: '②', label: '箱体预设' },
+      h(ScreenPresets, { s, proj, editingId, setEditingId }),
+      h(Fold, { n: '①', label: '箱体' },
         Field('预设', h(Sel, {
           value: m.__cabPreset || 'custom',
           options: GRID_CAB_PRESETS.map((p) => ({ id: p.id, label: p.label })),
@@ -113,27 +202,45 @@ import { meshVisualGeneratePattern } from "../api/meshVisualCommands";
         })),
         Field('尺寸', h(Dual, { a: m.cabinet_size_mm[0], b: m.cabinet_size_mm[1], oa: (v) => set({ cabinet_size_mm: [v, m.cabinet_size_mm[1]] }), ob: (v) => set({ cabinet_size_mm: [m.cabinet_size_mm[0], v] }), unit: 'mm' })),
         Field('像素', h(Dual, { a: pxW, b: pxH, oa: (v) => set({ pixels_per_cabinet: [v, pxH] }), ob: (v) => set({ pixels_per_cabinet: [pxW, v] }), unit: 'px' }))),
-      h(Fold, { n: '③', label: '布局' },
+      h(Fold, { n: '②', label: '布局' },
         Field('列数', h(NumInput, { value: cols, onChange: (v) => set({ cabinet_count: [Math.max(1, v), rows] }), min: 1, max: 200 })),
-        Field('行数', h(NumInput, { value: rows, onChange: (v) => set({ cabinet_count: [cols, Math.max(1, v)] }), min: 1, max: 100 }))),
-      h(Fold, { n: '④', label: '形状' },
-        h('div', { className: 'gw-shape-grid' }, GRID_SHAPES.map((sh) => h('button', { key: sh.id, className: 'gw-shape' + (shapeId === sh.id ? ' on' : ''), onClick: () => set({ shape_prior: defaultShapeFor(sh.id) }) },
+        Field('行数', h(NumInput, { value: rows, onChange: (v) => set({ cabinet_count: [cols, Math.max(1, v)] }), min: 1, max: 100 })),
+        Field('离地高度', h('span', { className: 'gw-dual' }, h(NumInput, { value: m.height_offset_mm || 0, onChange: (v) => set({ height_offset_mm: v }), min: 0, max: 5000, step: 10 }), h('span', { className: 'gw-unit' }, 'mm')))),
+      h(Fold, { n: '③', label: '形状' },
+        /* 设计稿形状档为 5 档（平直/对称弧/L 形/U 形/自定义分段）；curved/folded 是
+           后端 shape_prior 的历史变体，仅当当前屏幕已是该形状时才显示（否则隐藏）。 */
+        h('div', { className: 'gw-shape-grid' }, GRID_SHAPES.filter((sh) => (sh.id !== 'curved' && sh.id !== 'folded') || shapeId === sh.id).map((sh) => h('button', { key: sh.id, className: 'gw-shape' + (shapeId === sh.id ? ' on' : ''), onClick: () => set({ shape_prior: defaultShapeFor(sh.id) }) },
           h(Icon, { name: sh.icon, size: 18 }), h('span', { className: 't' }, sh.label)))),
         shapeFields.length ? h('div', { style: { marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 } }, shapeFields) : null,
         derivedNote,
-        shapeId === 'custom_segments' ? h(SegEditor, { s, m, set, totalCols }) : null,
-        shapeId === 'folded' ? h(FoldSeamEditor, { m, setShape, totalCols }) : null),
-      h(Fold, { n: '⑤', label: '变换' },
+        shapeId === 'custom_segments' ? h(SegEditor, { s, m, set, totalCols }) : null),
+      h(Fold, { n: '④', label: '变换' },
         Field('位置 X', h('span', { className: 'gw-dual' }, h(NumInput, { value: m.position_m[0], onChange: (v) => set({ position_m: [v, m.position_m[1], m.position_m[2]] }), step: 0.1 }), h('span', { className: 'gw-unit' }, 'm'))),
         Field('位置 Y', h('span', { className: 'gw-dual' }, h(NumInput, { value: m.position_m[1], onChange: (v) => set({ position_m: [m.position_m[0], v, m.position_m[2]] }), step: 0.1 }), h('span', { className: 'gw-unit' }, 'm'))),
         Field('位置 Z', h('span', { className: 'gw-dual' }, h(NumInput, { value: m.position_m[2], onChange: (v) => set({ position_m: [m.position_m[0], m.position_m[1], v] }), step: 0.1 }), h('span', { className: 'gw-unit' }, 'm'))),
         Field('朝向角', h('span', { className: 'gw-dual' }, h(NumInput, { value: m.yaw_deg, onChange: (v) => set({ yaw_deg: v }), min: -180, max: 180 }), h('span', { className: 'gw-unit' }, '°')))),
-      h(Fold, { n: '⑥', label: '派生信息 · 只读', defOpen: false },
+      h(Fold, { n: '⑤', label: '派生信息 · 只读', defOpen: false },
         h('div', { className: 'gw-derived' },
           h('div', { className: 'gw-dcell' }, h('div', { className: 'k' }, '整屏尺寸'), h('div', { className: 'v' }, wM.toFixed(2) + ' × ' + hM.toFixed(2), h('span', { className: 'u' }, 'm'))),
           h('div', { className: 'gw-dcell' }, h('div', { className: 'k' }, '像素画布'), h('div', { className: 'v', style: { fontSize: 12.5 } }, (cols * pxW) + ' × ' + (rows * pxH))),
           h('div', { className: 'gw-dcell' }, h('div', { className: 'k' }, '箱体总数'), h('div', { className: 'v' }, cabTotal, maskedN ? h('span', { className: 'u' }, '（遮罩 ' + maskedN + '）') : null)),
           h('div', { className: 'gw-dcell' }, h('div', { className: 'k' }, '顶点网格规模'), h('div', { className: 'v', style: { fontSize: 13 } }, (cols + 1) + ' × ' + (rows + 1))))),
+      h(Fold, { n: '⑥', label: '高级', defOpen: false },
+        /* 弯折缝列：schema 上是逐列多值（fold_seams_at_columns），仅曲面/折叠形状支持。 */
+        h('div', { className: 'gw-field stack' },
+          h('span', { className: 'lb' }, '弯折缝列', h('span', { className: 'hint' }, '在指定列插入弯折缝')),
+          (shapeId === 'folded' || shapeId === 'curved')
+            ? h(FoldSeamEditor, { m, setShape, totalCols })
+            : h('div', { style: { fontSize: 11, color: 'var(--chrome-faint)' } }, '当前形状不支持弯折缝（仅「曲面 / 折叠」形状可用）。')),
+        h('div', { className: 'cap-toggle-row', style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingTop: 4 } },
+          h('div', null,
+            h('div', { style: { fontSize: 12.5, color: 'var(--chrome-dim)' } }, '底部补全'),
+            h('div', { style: { fontSize: 10.5, color: 'var(--chrome-faint)' } }, '异形屏底部空缺自动补齐')),
+          h(Switch, { isSelected: !!m.bottom_completion, onChange: (v) => set({ bottom_completion: v ? { lowest_measurable_row: 2, fallback_method: 'vertical', assumed_height_mm: m.cabinet_size_mm[1] } : null }) })),
+        m.bottom_completion ? h('div', { style: { marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 } },
+          Field('最低可测行', h(NumInput, { value: m.bottom_completion.lowest_measurable_row, onChange: (v) => set({ bottom_completion: Object.assign({}, m.bottom_completion, { lowest_measurable_row: Math.max(1, v) }) }), min: 1, max: rows })),
+          Field('假定高度', h('span', { className: 'gw-dual' }, h(NumInput, { value: m.bottom_completion.assumed_height_mm, onChange: (v) => set({ bottom_completion: Object.assign({}, m.bottom_completion, { assumed_height_mm: v }) }), min: 0, step: 10 }), h('span', { className: 'gw-unit' }, 'mm'))),
+          Field('补全方式', h('span', { className: 'gw-unit', style: { fontFamily: 'var(--font-code)', fontSize: 12.5, color: 'var(--chrome-text)' } }, 'vertical'))) : null),
       h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, padding: '10px 2px 4px', borderTop: '1px solid var(--chrome-line)' } },
         dirty ? h('span', { style: { fontSize: 11, color: 'var(--notice-visual)', display: 'flex', alignItems: 'center', gap: 5 } }, h('span', { className: 'gw-dcell', style: { width: 6, height: 6, borderRadius: '50%', padding: 0, background: 'var(--notice-visual)' } }), '未保存') : null,
         h('div', { style: { flex: 1 } }),
@@ -157,8 +264,16 @@ import { meshVisualGeneratePattern } from "../api/meshVisualCommands";
     const segOk = segSum === totalCols;
     const setSegs = (segments) => set({ shape_prior: Object.assign({}, m.shape_prior, { segments }) });
     const upd = (i, k, v) => setSegs(segs.map((g, j) => j === i ? Object.assign({}, g, { [k]: v }) : g));
+    const dragFrom = useRef(null);
+    const reorder = (from, to) => { if (from == null || to == null || from === to) return; const nx = segs.slice(); const [g] = nx.splice(from, 1); nx.splice(to, 0, g); setSegs(nx); };
     return h('div', { style: { marginTop: 8 } },
-      h('div', { className: 'gw-seg-list' }, segs.map((g, i) => h('div', { key: i, className: 'gw-seg-row' },
+      h('div', { className: 'gw-seg-list' }, segs.map((g, i) => h('div', {
+        key: i, className: 'gw-seg-row',
+        onDragOver: (e) => e.preventDefault(),
+        onDrop: (e) => { e.preventDefault(); reorder(dragFrom.current, i); dragFrom.current = null; },
+      },
+        h('span', { className: 'drag', title: '拖拽排序', draggable: true, style: { cursor: 'grab' },
+          onDragStart: (e) => { dragFrom.current = i; e.dataTransfer.effectAllowed = 'move'; } }, h(Icon, { name: 'more', size: 14 })),
         h('div', { className: 'fx' }, h('span', { className: 'k' }, '列数'), h(NumInput, { value: g.cols, onChange: (v) => upd(i, 'cols', v), w: 52, min: 1 })),
         h('div', { className: 'fx' }, h('span', { className: 'k' }, '累计转角°'), h(NumInput, { value: g.cum_angle_deg, onChange: (v) => upd(i, 'cum_angle_deg', v), w: 58 })),
         h('button', { className: 'rm', onClick: () => setSegs(segs.filter((_, j) => j !== i)), title: '删除段' }, h(Icon, { name: 'trash', size: 13 }))))),
@@ -206,10 +321,23 @@ import { meshVisualGeneratePattern } from "../api/meshVisualCommands";
           h('div', null, h('div', { style: { fontSize: 12.5, color: 'var(--chrome-dim)' } }, '遮罩此格'), h('div', { style: { fontSize: 10.5, color: 'var(--chrome-faint)' } }, isMasked ? '不参与重建' : '参与重建')),
           h(Switch, { isSelected: isMasked, isDisabled: rect, onChange: setMask })),
         rect ? h('div', { style: { fontSize: 11, color: 'var(--chrome-faint)', marginTop: 6 } }, '规则矩形屏遮罩不生效，需先在「形状」把「屏幕类别」相关 shape_mode 切到异形（此仓设计上 shape_mode 与遮罩联动，见箱体工具条提示）。') : null) : null,
-      role ? h(Fold, { label: '坐标系角色 · coordinate_system' },
+      role ? h(Fold, { label: '坐标系角色 · 只读' },
         h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 } },
           h('span', { style: { width: 11, height: 11, borderRadius: '50%', background: (ROLE[role] || {}).color } }),
-          h('b', { style: { fontFamily: 'var(--font-code)', fontSize: 13 } }, (ROLE[role] || {}).label))) : null);
+          h('b', { style: { fontFamily: 'var(--font-code)', fontSize: 13 } }, (ROLE[role] || {}).label)),
+        h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'x', size: 13 }), onPress: async () => {
+          /* 清空该角色点名并切到参考点工具重指（三点未齐前重建校验会拦截，允许中间态）。 */
+          const coord = proj.config.coordinate_system;
+          if (!coord) return;
+          const field = role === 'origin' ? 'origin_point' : role === 'x_axis' ? 'x_axis_point' : 'xy_plane_point';
+          const nextConfig = Object.assign({}, proj.config, { coordinate_system: Object.assign({}, coord, { [field]: '' }) });
+          try {
+            await s.runCmd({ domain: 'calibrate', action: '清除参考点', target: (ROLE[role] || {}).label || role, chan: 'local' },
+              () => saveProjectYaml(proj.path, nextConfig), { okMsg: () => `已清除 ${(ROLE[role] || {}).label}，请在视口重新指派` });
+            await CX.openProjectPath(proj.path, s);
+            s.setCalBoxTool('refs'); s.setCalRefRole(role);
+          } catch (e) { /* runCmd 已记录失败 */ }
+        } }, '清除并重指')) : null);
   }
 
   function BoxMulti({ s }) {
@@ -280,34 +408,77 @@ import { meshVisualGeneratePattern } from "../api/meshVisualCommands";
             h(Button, { variant: 'accent', size: 'S', icon: h(Icon, { name: 'external', size: 13 }), onPress: () => s.setModal({ wide: true, render: ({ close }) => window.VOLO_GRID_MODALS.exportDlg(s, close) }) }, '导出')))));
   }
 
-  /* ================= 测试图面板 ================= */
-  function PatternPanel({ s }) {
+  /* ================= 测试图（共享状态：PatternPanel 与 StagePanel「测试图」折叠共用） ================= */
+  const SCREEN_ID_CODE = 1; /* 单屏采集会话固定标识码，与 meshVisualGeneratePattern 调用一致 */
+  function usePattern(s) {
     const proj = CX.useProj();
     const screenId = s.calActiveScreen;
     const [scheme, setScheme] = useState('charuco');
-    const [prog, setProg] = useState(0);
-    const hasPattern = !!(proj.patternGenByScreen && proj.patternGenByScreen[screenId]);
+    const [busy, setBusy] = useState(false);
+    const [playing, setPlaying] = useState(false);
+    const res = proj.patternGenByScreen && proj.patternGenByScreen[screenId];
+    const gen = !!res;
+    const stale = !!(gen && proj.patternStaleByScreen && proj.patternStaleByScreen[screenId]);
     const runGen = async () => {
-      setProg(1);
+      if (busy) return;
+      setBusy(true);
       try {
-        const r = await meshVisualGeneratePattern(proj.path, screenId, scheme, 1, null);
-        CX.projStore.patch({ patternGenByScreen: Object.assign({}, proj.patternGenByScreen, { [screenId]: true }) });
+        const r = await meshVisualGeneratePattern(proj.path, screenId, scheme, SCREEN_ID_CODE, null);
+        CX.projStore.patch({
+          patternGenByScreen: Object.assign({}, proj.patternGenByScreen, { [screenId]: r }),
+          patternStaleByScreen: Object.assign({}, proj.patternStaleByScreen, { [screenId]: false }),
+        });
         s.setCalReceipt({ tone: 'ok', text: `已生成测试图 · ${r.cabinet_count} 箱体` });
-        setProg(100);
-      } catch (e) { s.pushLog({ lv: 'err', cat: 'calibrate', msg: `测试图生成失败 · ${e && e.message ? e.message : e}` }); setProg(0); }
+      } catch (e) { s.pushLog({ lv: 'err', cat: 'calibrate', msg: `测试图生成失败 · ${e && e.message ? e.message : e}` }); }
+      finally { setBusy(false); }
     };
+    const togglePlayer = async () => {
+      if (playing) {
+        try { await playerClear(); await closePatternPlayer(); } catch (e) { /* 播放器可能已被手动关闭 */ }
+        setPlaying(false); s.setCalReceipt({ tone: 'ok', text: '已停止播放' });
+        return;
+      }
+      if (!res || typeof res !== 'object' || !res.output_dir) return;
+      try {
+        const mons = await listMonitors();
+        const mon = mons.length > 1 ? mons[mons.length - 1] : mons[0];
+        await openPatternPlayer(mon ? mon.index : 0);
+        await playerShowPattern(res.output_dir + '/full_screen.png', 'full_screen');
+        setPlaying(true); s.setCalReceipt({ tone: 'ok', text: '已发送到播放器' });
+      } catch (e) { s.pushLog({ lv: 'err', cat: 'calibrate', msg: `发送到播放器失败 · ${e && e.message ? e.message : e}` }); }
+    };
+    const openFolder = () => { if (res && typeof res === 'object' && res.output_dir) revealPath(res.output_dir).catch(() => {}); };
+    return { proj, screenId, scheme, setScheme, busy, runGen, gen, stale, res: (res && typeof res === 'object') ? res : null, playing, togglePlayer, openFolder };
+  }
+  function patternBadge(gen, stale) {
+    if (!gen) return h('span', { className: 'spill spill--neutral' }, h('span', { style: { fontWeight: 700 } }, '—'), '未生成');
+    if (stale) return h('span', { className: 'spill spill--notice' }, h(Icon, { name: 'alert', size: 12 }), '已过期');
+    return h('span', { className: 'spill spill--positive' }, h(Icon, { name: 'check', size: 12 }), '已生成');
+  }
+
+  function PatternPanel({ s }) {
+    const p = usePattern(s);
     return h(React.Fragment, null,
-      head('grid', '测试图', 'ChArUco 校正图案',
-        hasPattern ? h('span', { className: 'spill spill--positive' }, h(Icon, { name: 'check', size: 12 }), '已生成') : null),
+      head('grid', '测试图', 'ChArUco 校正图案', p.gen ? patternBadge(p.gen, p.stale) : null),
       h(Fold, { label: '参数' },
-        Field('图案方案', h(Sel, { value: scheme, options: [{ id: 'charuco', label: 'ChArUco' }, { id: 'dense', label: '密集编码点' }], onChange: setScheme, w: 150 })),
-        Field('目标屏幕', h('span', { style: { fontSize: 12.5, color: 'var(--chrome-text)', fontFamily: 'var(--font-code)' } }, screenId))),
-      prog > 0 && prog < 100
-        ? h('div', { className: 'gw-grp-body' }, h('div', { style: { fontSize: 11.5, color: 'var(--chrome-dim)', marginBottom: 6 } }, '生成中…'))
-        : h('div', { className: 'gw-grp-body' }, h(Button, { variant: hasPattern ? 'secondary' : 'accent', size: 'M', icon: h(Icon, { name: hasPattern ? 'sync' : 'grid', size: 15 }), onPress: runGen }, hasPattern ? '重新生成测试图' : '生成测试图')),
-      hasPattern ? h(Fold, { label: '去向' },
+        Field('图案方案', h(Sel, { value: p.scheme, options: [{ id: 'charuco', label: 'ChArUco' }, { id: 'dense', label: '密集编码点' }], onChange: p.setScheme, w: 150 })),
+        Field('屏幕标识码', h('input', { className: 'gw-txt', value: String(SCREEN_ID_CODE), readOnly: true, style: { width: 70, textAlign: 'center' } })),
+        Field('目标屏幕', h('span', { style: { fontSize: 12.5, color: 'var(--chrome-text)', fontFamily: 'var(--font-code)' } }, p.screenId))),
+      p.busy
+        ? h('div', { className: 'gw-grp-body' }, h('div', { style: { fontSize: 11.5, color: 'var(--chrome-dim)', marginBottom: 6 } }, '生成中…'),
+            h('div', { className: 'vmeter vmeter--accent ar-indeterminate' }, h('div', { className: 'vmeter__fill' })))
+        : h('div', { className: 'gw-grp-body' }, h(Button, { variant: p.gen ? 'secondary' : 'accent', size: 'M', icon: h(Icon, { name: p.gen ? 'sync' : 'grid', size: 15 }), onPress: p.runGen }, p.gen ? '重新生成测试图' : '生成测试图')),
+      p.res ? h(Fold, { label: '完成摘要' },
+        h('div', { className: 'gw-derived' },
+          h('div', { className: 'gw-dcell' }, h('div', { className: 'k' }, '覆盖箱体'), h('div', { className: 'v' }, p.res.cabinet_count)),
+          h('div', { className: 'gw-dcell' }, h('div', { className: 'k' }, '标记总数'), h('div', { className: 'v' }, p.res.total_markers))),
+        h('div', { className: 'gw-fileref', style: { marginTop: 8 } }, h('span', { className: 'ic' }, h(Icon, { name: 'folder', size: 14 })),
+          h('div', { className: 'm' }, h('div', { className: 'n' }, p.res.output_dir.split(/[\\/]/).pop() + '/'), h('div', { className: 'd' }, p.res.output_dir)))) : null,
+      p.gen ? h(Fold, { label: '去向' },
         h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
-          h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'eye', size: 13 }), onPress: () => s.setCalDisplay(Object.assign({}, s.calDisplay, { pattern: true })) }, '在视口中预览'))) : null);
+          h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'eye', size: 13 }), onPress: () => s.setCalDisplay(Object.assign({}, s.calDisplay, { pattern: true })) }, '在视口中预览'),
+          h(Button, { variant: p.playing ? 'negative' : 'secondary', size: 'S', isDisabled: !p.res, icon: h(Icon, { name: p.playing ? 'pause' : 'play', size: 13 }), onPress: p.togglePlayer }, p.playing ? '停止播放' : '发送到播放器'),
+          h(Button, { variant: 'secondary', size: 'S', isDisabled: !p.res, icon: h(Icon, { name: 'external', size: 13 }), onPress: p.openFolder }, '打开输出文件夹'))) : null);
   }
 
   /* ================= 全局校正细节选项（无选中默认） ================= */
@@ -327,7 +498,25 @@ import { meshVisualGeneratePattern } from "../api/meshVisualCommands";
     const isTS = method === 'totalstation';
     const newShapeVisualBlocked = m && GRID_MEAS_TYPES.find((x) => x.id === 'visual').disabledForShapes.includes(m.shape_prior.type);
     const measured = isTS ? !!proj.measurementsAbsPath : !!(proj.visualSession && proj.visualSession.screenId === screenId);
+    const runs = (proj.runs || []);
+    const curRun = runs.find((r) => r.is_current) || runs[0] || null;
+
+    /* 测试图（仅视觉法） */
+    const p = usePattern(s);
+
+    /* 导出（内联，同 exportDlg 的真实 exportObj） */
     const [target, setTarget] = useState('disguise');
+    const [expPath, setExpPath] = useState('');
+    const [expDone, setExpDone] = useState(null);
+    const doExport = async () => {
+      if (!curRun) return;
+      try {
+        const out = await s.runCmd({ domain: 'calibrate', action: '导出 OBJ', target: 'run #' + curRun.id, chan: 'local' },
+          () => exportObj(curRun.id, target, expPath.trim() || null), { okMsg: (path) => `已导出 <b>${path}</b>` });
+        setExpDone(out);
+        await CX.reloadRuns(proj.path, screenId);
+      } catch (e) { /* runCmd 已记录失败 */ }
+    };
 
     return h('div', { className: 'gw-stages' },
       h('div', { className: 'gw-method' },
@@ -339,15 +528,43 @@ import { meshVisualGeneratePattern } from "../api/meshVisualCommands";
       ),
       h('div', { className: 'gw-stages-h' }, h(Icon, { name: 'bolt', size: 13 }), '阶段动作'),
       h(Fold, { label: '屏幕设计', defOpen: false }, h(ScreenForm, { s, noHead: true })),
+      /* ① 测试图 —— 仅视觉校正需要 */
+      !isTS ? h(Fold, { label: '测试图', defOpen: false },
+        h('div', { className: 'gw-stage-badge' }, patternBadge(p.gen, p.stale)),
+        Field('图案方案', h(Sel, { value: p.scheme, options: [{ id: 'charuco', label: 'ChArUco' }, { id: 'dense', label: '密集编码点' }], onChange: p.setScheme, w: 150 })),
+        Field('屏幕标识码', h('input', { className: 'gw-txt', value: String(SCREEN_ID_CODE), readOnly: true, style: { width: 70, textAlign: 'center' } })),
+        Field('目标屏幕', h('span', { style: { fontSize: 12.5, color: 'var(--chrome-text)', fontFamily: 'var(--font-code)' } }, screenId)),
+        p.busy
+          ? h('div', null, h('div', { style: { fontSize: 11.5, color: 'var(--chrome-dim)', marginBottom: 6 } }, '生成中…'), h('div', { className: 'vmeter vmeter--accent ar-indeterminate' }, h('div', { className: 'vmeter__fill' })))
+          : h(Button, { variant: p.gen ? 'secondary' : 'accent', size: 'S', icon: h(Icon, { name: p.gen ? 'sync' : 'grid', size: 14 }), onPress: p.runGen }, p.gen ? '重新生成' : '生成测试图'),
+        p.gen ? h('div', { className: 'gw-stage-acts' },
+          h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'eye', size: 13 }), onPress: () => s.setCalDisplay(Object.assign({}, s.calDisplay, { pattern: true })) }, '视口预览'),
+          h(Button, { variant: p.playing ? 'negative' : 'secondary', size: 'S', isDisabled: !p.res, icon: h(Icon, { name: p.playing ? 'pause' : 'play', size: 13 }), onPress: p.togglePlayer }, p.playing ? '停止播放' : '发送到播放器')) : null) : null,
       h(Fold, { label: '测量导入', defOpen: false },
         isTS ? (window.VOLO_GRID.flows ? window.VOLO_GRID.flows.total(s) : null) : (window.VOLO_GRID.flows ? window.VOLO_GRID.flows.visual(s) : null)),
       h(Fold, { label: '重建', defOpen: false },
         Field('方法', h('span', { style: { fontSize: 12.5, color: 'var(--chrome-text)', fontWeight: 700 } }, isTS ? '全站仪导入' : '视觉校正')),
+        Field('数据源', h('span', { style: { fontSize: 12, color: 'var(--chrome-dim)', fontFamily: 'var(--font-code)' } },
+          isTS ? (proj.measured && proj.measured.points ? proj.measured.points.length + ' 点' : '—') : (proj.visualSession && proj.visualSession.screenId === screenId ? '采集会话' : '—'))),
         !measured ? h('div', { className: 'gw-stage-warn' }, h(Icon, { name: 'alert', size: 13 }), isTS ? '需先导入全站仪数据' : '需先完成视觉采集') : null,
-        h(Button, { variant: 'accent', size: 'M', isDisabled: !measured, icon: h(Icon, { name: 'cube3', size: 15 }), onPress: () => s.setModal({ render: ({ close }) => window.VOLO_GRID_MODALS.reconstruct(s, close) }) }, '开始重建')),
+        h(Button, { variant: 'accent', size: 'M', isDisabled: !measured, icon: h(Icon, { name: 'cube3', size: 15 }), onPress: () => s.setModal({ render: ({ close }) => window.VOLO_GRID_MODALS.reconstruct(s, close) }) }, '开始重建'),
+        built && curRun ? h('div', { className: 'gw-fileref', style: { marginTop: 8 } }, h('span', { className: 'ic' }, h(Icon, { name: 'cube3', size: 14 })),
+          h('div', { className: 'm' },
+            h('div', { className: 'n' }, 'run #' + curRun.id + (curRun.output_obj_path ? ' · ' + curRun.output_obj_path.split(/[\\/]/).pop() : '')),
+            h('div', { className: 'd' }, (curRun.estimated_rms_mm == null ? 'RMS n/a' : 'RMS ' + curRun.estimated_rms_mm.toFixed(2) + ' mm') + (curRun.is_current ? ' · 当前' : '')))) : null),
       h(Fold, { label: '导出', defOpen: false },
         !built ? h('div', { className: 'gw-stage-warn' }, h(Icon, { name: 'alert', size: 13 }), '需先完成一次重建') : null,
-        h(Button, { variant: 'accent', size: 'S', isDisabled: !built, icon: h(Icon, { name: 'external', size: 13 }), onPress: () => s.setModal({ wide: true, render: ({ close }) => window.VOLO_GRID_MODALS.exportDlg(s, close) }) }, '导出…')));
+        expDone
+          ? h('div', { className: 'cal2-switch-ok', style: { marginTop: 0 } }, h(Icon, { name: 'check', size: 14 }),
+              h('span', null, '已导出 ', h('b', null, String(expDone).split(/[\\/]/).pop()), ' → ', (GRID_EXPORT_TARGETS.find((t) => t.id === target) || {}).label))
+          : h(React.Fragment, null,
+              h('div', { className: 'gw-export-targets', style: { opacity: built ? 1 : .5, pointerEvents: built ? 'auto' : 'none' } }, GRID_EXPORT_TARGETS.map((t) => h('button', { key: t.id, className: 'gw-etarget' + (t.id === target ? ' on' : ''), onClick: () => setTarget(t.id) },
+                h('span', { className: 'rd' }), h('div', { className: 'm' }, h('b', null, t.label), h('span', null, t.desc))))),
+              h('div', { className: 'gw-field stack', style: { marginTop: 8 } }, h('span', { className: 'lb' }, '输出路径', h('span', { className: 'hint' }, '留空 = 项目默认输出位置')),
+                h('input', { className: 'gw-txt', value: expPath, placeholder: '默认输出到项目 output 配置', onChange: (e) => setExpPath(e.target.value) })),
+              h('div', { className: 'gw-stage-acts' },
+                h(Button, { variant: 'accent', size: 'S', isDisabled: !built || !curRun, icon: h(Icon, { name: 'download', size: 13 }), onPress: doExport }, '导出 OBJ'),
+                h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'doc', size: 13 }), onPress: () => s.setModal({ render: ({ close }) => window.VOLO_GRID_MODALS.guideCard(s, close) }) }, '指导卡 PDF')))));
   }
   function t_isTsNote() { return '全站仪实测箱体角点，毫米级绝对精度；无需测试图。'; }
 

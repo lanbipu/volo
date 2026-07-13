@@ -1403,6 +1403,8 @@ export interface ScreenConfig {
   position_m: [number, number, number];
   /** Rotation about the world Y (up) axis, in degrees. 0 on screens saved before this field existed. */
   yaw_deg: number;
+  /** Bottom-edge height off the ground, mm. Extra world-Z translation; 0 on screens saved before this field existed. */
+  height_offset_mm?: number;
 }
 
 export type ShapePriorConfig =

@@ -74,7 +74,7 @@ import {
      字段，见 pages/gridTree.tsx 顶部注释），切项目时一并清空。 */
   const derivedResetFields = () => ({
     measured: null, surveyReport: null, measurementsAbsPath: null, reconstruction: null, runs: [],
-    patternGenByScreen: {}, visualSession: null,
+    patternGenByScreen: {}, patternStaleByScreen: {}, visualSession: null,
   });
 
   async function openProjectPath(absPath, s) {
@@ -83,7 +83,10 @@ import {
     const screenIds = Object.keys(config.screens);
     const screenId = screenIds.includes(s.calActiveScreen) ? s.calActiveScreen : screenIds[0];
     if (screenId && screenId !== s.calActiveScreen) s.setCalActiveScreen(screenId);
-    projStore.patch({ path: absPath, config, error: null, ...derivedResetFields() });
+    /* 同一项目内的「保存后回读」不清会话内派生缓存（测试图/测量/runs），
+       否则每次保存屏幕设计都会丢测试图状态；只有真正切换项目才全量重置。 */
+    const samePath = projStore.get().path === absPath;
+    projStore.patch({ path: absPath, config, error: null, ...(samePath ? {} : derivedResetFields()) });
     return config;
   }
 

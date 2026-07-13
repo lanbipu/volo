@@ -6,11 +6,11 @@
    load_project_yaml/list_runs 聚合」手法（useProjectSummaries），无新 mock；镜头状态
    同样没有持久化信号，如实标「未跟踪」，不编造。 */
 import * as React from "react";
-import { loadProjectYaml, listRuns } from "../api/meshCommands";
+import { loadProjectYaml, listRuns, removeRecentProject } from "../api/meshCommands";
 
 (function () {
   const { Button } = window.Spectrum2DesignSystem_b6d1b3;
-  const { useState, useEffect, useMemo } = React;
+  const { useState, useEffect, useMemo, useRef } = React;
   const h = React.createElement;
   const CX = window.VOLO_CAL2;
 
@@ -66,6 +66,33 @@ import { loadProjectYaml, listRuns } from "../api/meshCommands";
     return h('span', { className: 'spill spill--' + m.tone }, m.icon === 'minus' ? h('span', { style: { fontWeight: 700 } }, '—') : h(Icon, { name: m.icon, size: 12 }), m.label);
   }
 
+  /* ---------- 「切换项目」下拉（已打开态页头，Claude Design grid_overview Drop/ProjDrop） ---------- */
+  function Drop({ btn, children, width }) {
+    const [open, setOpen] = useState(false);
+    const ref = useRef(null);
+    useEffect(() => { if (!open) return undefined; const fn = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }; document.addEventListener('mousedown', fn); return () => document.removeEventListener('mousedown', fn); }, [open]);
+    return h('div', { ref, style: { position: 'relative' } },
+      h('button', { className: 'gw-projbtn', onClick: () => setOpen((v) => !v) }, btn, h(Icon, { name: 'chevd', size: 14 })),
+      open ? h('div', { className: 'popover', style: { left: 0, top: 'calc(100% + 6px)', minWidth: width || 300 } }, children(() => setOpen(false))) : null);
+  }
+  function ProjDrop({ s, proj, close }) {
+    const recent = proj.recent || [];
+    const switchTo = (r) => {
+      close();
+      if (r.abs_path === proj.path) return;
+      CX.openProjectPath(r.abs_path, s)
+        .then(() => s.pushLog({ lv: 'ok', cat: 'project', msg: '切换项目 <b>' + r.display_name + '</b>' }))
+        .catch((e) => CX.projStore.patch({ error: e && e.message ? e.message : String(e) }));
+    };
+    return h('div', null,
+      h('div', { className: 'cpp-h' }, '最近项目'),
+      recent.length ? recent.map((r) => h('div', { key: r.id, className: 'pop-i' + (r.abs_path === proj.path ? ' on' : ''), onClick: () => switchTo(r) },
+        h('div', { style: { display: 'flex', flexDirection: 'column', lineHeight: 1.4, minWidth: 0 } },
+          h('span', { className: 'pop-l' }, r.display_name), h('span', { className: 'pop-s' }, r.abs_path)),
+        r.abs_path === proj.path ? h('span', { style: { marginLeft: 'auto', color: 'var(--volo-500)', display: 'flex' } }, h(Icon, { name: 'check', size: 15 })) : null))
+        : h('div', { className: 'pop-i', style: { opacity: .6 } }, h('span', { className: 'pop-l' }, '暂无最近项目')));
+  }
+
   function enterWorkspace(s, absPath) {
     const go = () => {
       s.setCalSection('rebuild');
@@ -103,7 +130,13 @@ import { loadProjectYaml, listRuns } from "../api/meshCommands";
                 h('div', { className: 'ce-recent-main' },
                   h('div', { className: 'ce-recent-name' }, p.name),
                   h('div', { className: 'ce-recent-path' }, p.path + (p.screenId ? ' · ' + p.screenId : '') + (p.done ? ' · 已重建 RMS ' + (p.rms == null ? 'n/a' : p.rms.toFixed(2) + ' mm') : ' · 进行中'))),
-                h('span', { className: 'ce-recent-meta' }, timeAgo(p.last_opened_at))))))));
+                h('span', { className: 'ce-recent-meta' }, timeAgo(p.last_opened_at)),
+                h('button', { className: 'gw-tinline', style: { marginLeft: 8 }, title: '从最近列表移除（不删除磁盘文件）', onClick: (e) => {
+                  e.stopPropagation();
+                  removeRecentProject(p.id)
+                    .then(() => CX.projStore.patch({ recent: (CX.projStore.get().recent || []).filter((r) => r.id !== p.id) }))
+                    .catch((err) => s.pushLog({ lv: 'err', cat: 'project', msg: '移除最近项目失败 · ' + (err && err.message ? err.message : err) }));
+                } }, h(Icon, { name: 'x', size: 12 }), '移除')))))));
   }
 
   /* ---------- 已打开态 ---------- */
@@ -118,6 +151,7 @@ import { loadProjectYaml, listRuns } from "../api/meshCommands";
             h('div', { className: 'cal2-projhdr-t' }, name),
             h('div', { className: 'cal2-projhdr-s' }, proj.path))),
         h('div', { className: 'cal2-projhdr-acts', style: { alignItems: 'center' } },
+          h(Drop, { btn: h('span', { className: 'col' }, h('span', { className: 'k' }, '切换项目'), h('span', { className: 'v' }, name)), children: (close) => h(ProjDrop, { s, proj, close }) }),
           h(Button, { variant: 'secondary', size: 'M', onPress: () => { CX.closeProject(); s.pushLog({ lv: 'info', cat: 'project', msg: '关闭项目' }); } }, '关闭项目'),
           h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'arrowr', size: 15 }), onPress: () => enterWorkspace(s, proj.path) }, '进入工作区'))),
       h('div', { className: 'dash-card' },

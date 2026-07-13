@@ -161,6 +161,7 @@ mod project_yaml_method_tests {
                 bottom_completion: None,
                 position_m: [0.0, 0.0, 0.0],
                 yaw_deg: 0.0,
+                height_offset_mm: 0.0,
             },
         );
         ProjectConfig {

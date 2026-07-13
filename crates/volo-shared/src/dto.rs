@@ -55,6 +55,11 @@ pub struct ScreenConfig {
     /// axis — not world Y), in degrees. See `mesh_app::export::apply_world_transform`.
     #[serde(default)]
     pub yaw_deg: f64,
+    /// Bottom-edge height off the ground, in millimetres. Applied as an extra
+    /// world-Z translation alongside `position_m` (see `apply_world_transform`);
+    /// defaults to 0 so pre-existing `project.yaml` files keep loading unchanged.
+    #[serde(default)]
+    pub height_offset_mm: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

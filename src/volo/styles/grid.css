@@ -271,6 +271,9 @@
   background: var(--wash-3); border: 1.5px solid var(--chrome-line-2); border-radius: 7px; padding: 5px 9px; text-align: right; }
 .gw-txt { text-align: left; font-family: var(--font-sans); width: 100%; }
 .gw-num { width: 68px; }
+/* WKWebView 对 all:unset 的 number input 仍绘制步进箭头（Chrome 原型下不绘制），
+   显式去掉以对齐设计稿视觉。 */
+.gw-num::-webkit-inner-spin-button, .gw-num::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 .gw-num:focus, .gw-txt:focus { border-color: var(--volo-600); background: var(--chrome-card); }
 .gw-dual { display: inline-flex; align-items: center; gap: 6px; }
 .gw-dual .x { color: var(--chrome-faint); font-size: 11px; }

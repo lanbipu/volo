@@ -79,7 +79,9 @@ import * as React from "react";
     const proj = CX.useProj();
     if (s.calStageType === 'ar') return window.VOLO_CAL_AR.left(s, arWs);
     if (!proj.path) return null;
-    if (s.calSection === 'rebuild') return G.left(s);
+    /* 设计稿（grid_pages.jsx）：重建页左栏保持三页扁平导航，仅当测量导入流程
+       进行中（calFlow 非空）才切到 gridTree 的流程面板；场景树不再作为常驻左栏。 */
+    if (s.calSection === 'rebuild' && s.calFlow) return G.left(s);
     return h(NavList, { s });
   }
 
