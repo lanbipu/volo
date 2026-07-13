@@ -8,7 +8,7 @@
    箱体选中/run 质量指标/阶段动作面板同样只读写真实数据，无自造 mock。 */
 import * as React from "react";
 import { saveProjectYaml, setRunCurrent, getRunReport, exportObj } from "../api/meshCommands";
-import { meshVisualGeneratePattern } from "../api/meshVisualCommands";
+import { generatedPatternImagePath, meshVisualGeneratePattern } from "../api/meshVisualCommands";
 import { revealPath } from "../api/commands";
 import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern, playerClear } from "../api/player";
 
@@ -449,7 +449,7 @@ import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern,
         const mons = await listMonitors();
         const mon = mons.length > 1 ? mons[mons.length - 1] : mons[0];
         await openPatternPlayer(mon ? mon.index : 0);
-        await playerShowPattern(res.output_dir + '/full_screen.png', 'full_screen');
+        await playerShowPattern(generatedPatternImagePath(res.output_dir), 'full_screen');
         setPlaying(true); s.setCalReceipt({ tone: 'ok', text: '已发送到播放器' });
       } catch (e) { s.pushLog({ lv: 'err', cat: 'calibrate', msg: `发送到播放器失败 · ${e && e.message ? e.message : e}` }); }
     };

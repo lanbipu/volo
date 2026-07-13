@@ -51,6 +51,15 @@ export const meshVisualGeneratePattern = (
     screenMappingPath: screenMappingPath ?? null,
   });
 
+/**
+ * Build the generated composite-image path without corrupting Windows verbatim
+ * paths (`\\?\C:\...`). Those paths reject a `/` appended by string concatenation.
+ */
+export const generatedPatternImagePath = (outputDir: string) => {
+  const separator = outputDir.includes("\\") ? "\\" : "/";
+  return `${outputDir.replace(/[\\/]+$/, "")}${separator}full_screen.png`;
+};
+
 /** Read the exact generated PNG through the backend's Rust-owned-path allowlist. */
 export const readGeneratedPatternAsDataUrl = (path: string) =>
   call<string>("read_image_as_data_url", { path });
