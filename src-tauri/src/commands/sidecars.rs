@@ -16,6 +16,7 @@
 //!   3. workspace `target/sidecar-vendor/<platform>/<cli>` (PyInstaller vendor)
 //!   4. `current_exe()`-relative `sidecar-vendor/<platform>/<cli>` (packaged)
 
+use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -173,6 +174,22 @@ pub(crate) fn locate_by_name(name: &str) -> VoloResult<PathBuf> {
     locate(Sidecar::parse(name)?)
 }
 
+/// Build a sidecar process command with the environment and Windows process
+/// flags required by every argv-based vpcal/tracksim invocation.
+pub(crate) fn sidecar_command(exe: impl AsRef<OsStr>) -> Command {
+    let mut command = Command::new(exe);
+    command.env("PYTHONUTF8", "1");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        // Tauri is a GUI process, so inheriting the console subsystem from a
+        // Python console-script executable would flash a terminal window.
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    command
+}
+
 /// Result of running a sidecar once: its exit code plus captured streams.
 #[derive(Serialize)]
 pub struct SidecarOutput {
@@ -191,7 +208,7 @@ pub fn spawn_sidecar(name: String, args: Vec<String>) -> VoloResult<SidecarOutpu
     let sidecar = Sidecar::parse(&name)?;
     let exe = locate(sidecar)?;
 
-    let output = Command::new(&exe)
+    let output = sidecar_command(&exe)
         .args(&args)
         .output()
         .map_err(|e| VoloError::Io(format!("failed to spawn {}: {e}", exe.display())))?;
@@ -217,6 +234,14 @@ mod tests {
         ));
         assert!(Sidecar::parse("vpcal").is_ok());
         assert!(Sidecar::parse("tracksim").is_ok());
+    }
+
+    #[test]
+    fn sidecar_command_forces_python_utf8() {
+        let command = sidecar_command("vpcal");
+        assert!(command
+            .get_envs()
+            .any(|(key, value)| key == "PYTHONUTF8" && value == Some(OsStr::new("1"))));
     }
 
     #[test]

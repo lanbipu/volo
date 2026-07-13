@@ -3,7 +3,7 @@
 //! Profiles are transport configuration consumed by `vpcal capture session`,
 //! so they belong in the native app data directory rather than WebView storage.
 
-use std::{fs, path::PathBuf, process::Command};
+use std::{fs, path::PathBuf};
 
 use base64::Engine;
 use serde::Serialize;
@@ -151,7 +151,7 @@ pub async fn enumerate_video_sources(
     let exe = super::sidecars::locate_by_name("vpcal").map_err(|e| e.to_string())?;
     let backend_task = backend.clone();
     let output = tokio::task::spawn_blocking(move || {
-        Command::new(exe)
+        super::sidecars::sidecar_command(exe)
             .args([
                 "capture",
                 "enumerate",
@@ -241,7 +241,7 @@ pub async fn probe_video_source(
         if let Some(v) = fps {
             args.extend(["--fps".into(), v.to_string()]);
         }
-        Command::new(exe).args(args).output()
+        super::sidecars::sidecar_command(exe).args(args).output()
     })
     .await
     .map_err(|e| format!("视频探测任务失败: {e}"))?
@@ -312,7 +312,7 @@ pub async fn probe_tracking_source(
             "--output".into(),
             "json".into(),
         ];
-        Command::new(exe).args(args).output()
+        super::sidecars::sidecar_command(exe).args(args).output()
     })
     .await
     .map_err(|e| format!("追踪探测任务失败: {e}"))?

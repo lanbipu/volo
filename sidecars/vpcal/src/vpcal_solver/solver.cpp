@@ -118,7 +118,8 @@ SolverResult solve(const std::vector<Observation>& observations,
             double cov_ts[3 * 3];
             covariance.GetCovarianceBlockInTangentSpace(qs, qs, cov_qs);
             covariance.GetCovarianceBlock(ts, ts, cov_ts);
-            const double rad2deg = 180.0 / M_PI;
+            constexpr double kPi = 3.14159265358979323846;
+            const double rad2deg = 180.0 / kPi;
             result.tracker_to_stage_covariance[0] = std::sqrt(std::abs(cov_ts[0]));
             result.tracker_to_stage_covariance[1] = std::sqrt(std::abs(cov_ts[4]));
             result.tracker_to_stage_covariance[2] = std::sqrt(std::abs(cov_ts[8]));

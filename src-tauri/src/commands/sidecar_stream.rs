@@ -29,7 +29,7 @@ use tokio::sync::{mpsc, Mutex as TokioMutex};
 
 use volo_shared::error::{VoloError, VoloResult};
 
-use super::sidecars::locate_by_name;
+use super::sidecars::{locate_by_name, sidecar_command};
 
 /// How long a cancelled task gets to exit after stdin is closed before we
 /// escalate to a hard kill. Conservative default: no `SIGTERM`-then-`SIGKILL`
@@ -375,7 +375,7 @@ pub async fn spawn_sidecar_streaming(
     let (control_tx, control_rx) = mpsc::unbounded_channel();
     registry.insert(task_id.clone(), control_tx).await;
 
-    let mut cmd = Command::new(exe);
+    let mut cmd = Command::from(sidecar_command(exe));
     cmd.args(&args);
 
     let sink = TauriEventSink {
