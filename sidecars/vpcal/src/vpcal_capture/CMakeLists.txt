@@ -43,11 +43,43 @@ if(WIN32)
   find_program(MIDL_EXECUTABLE midl
     PATHS "$ENV{WindowsSdkVerBinPath}x64" "$ENV{WindowsSdkVerBinPath}x86")
   if(NOT MIDL_EXECUTABLE)
+    # scikit-build-core / Ninja can activate cl.exe without exporting
+    # WindowsSdkVerBinPath, leaving midl.exe off PATH. Fall back to the
+    # installed Windows SDK bin directories (newest version first).
+    file(GLOB _wk_sdk_dirs
+      "C:/Program Files (x86)/Windows Kits/10/bin/10.*"
+      "C:/Program Files/Windows Kits/10/bin/10.*")
+    list(SORT _wk_sdk_dirs ORDER DESCENDING)
+    set(_midl_hints)
+    foreach(_wk ${_wk_sdk_dirs})
+      list(APPEND _midl_hints "${_wk}/x64" "${_wk}/x86")
+    endforeach()
+    find_program(MIDL_EXECUTABLE midl PATHS ${_midl_hints})
+  endif()
+  if(NOT MIDL_EXECUTABLE)
     message(FATAL_ERROR
       "vpcal_capture: midl.exe not found. Build from a Developer Command Prompt "
       "(run vcvars64.bat first) or install the Windows SDK, or pass "
       "-DMIDL_EXECUTABLE=<path-to-midl.exe>.")
   endif()
+  message(STATUS "vpcal_capture: using MIDL at ${MIDL_EXECUTABLE}")
+  # DeckLinkAPI.idl `import "unknwn.idl"` (a Windows SDK system idl). midl finds
+  # it via the INCLUDE env, which a non-vcvars build (e.g. scikit-build-core,
+  # which activates cl but not the full SDK env) leaves unset. Derive the SDK
+  # include dirs from the midl path and pass them explicitly so the build works
+  # without a Developer Command Prompt.
+  set(_midl_sys_includes)
+  get_filename_component(_midl_arch_dir "${MIDL_EXECUTABLE}" DIRECTORY)   # bin/<ver>/x64
+  get_filename_component(_midl_ver_dir "${_midl_arch_dir}" DIRECTORY)      # bin/<ver>
+  get_filename_component(_sdk_ver "${_midl_ver_dir}" NAME)                 # <ver>
+  get_filename_component(_wk_bin_dir "${_midl_ver_dir}" DIRECTORY)         # bin
+  get_filename_component(_wk_root "${_wk_bin_dir}" DIRECTORY)              # Windows Kits/10
+  set(_sdk_inc_root "${_wk_root}/Include/${_sdk_ver}")
+  foreach(_sub shared um winrt)
+    if(EXISTS "${_sdk_inc_root}/${_sub}")
+      list(APPEND _midl_sys_includes /I "${_sdk_inc_root}/${_sub}")
+    endif()
+  endforeach()
   set(_idl_out_dir "${CMAKE_CURRENT_BINARY_DIR}/decklink_idl")
   file(MAKE_DIRECTORY "${_idl_out_dir}")
   set(_idl_header "${_idl_out_dir}/DeckLinkAPI_h.h")
@@ -55,7 +87,7 @@ if(WIN32)
   add_custom_command(
     OUTPUT "${_idl_header}" "${_idl_iid}"
     COMMAND "${MIDL_EXECUTABLE}" /nologo /env x64 /notlb
-            /I "${_decklink_sdk}"
+            /I "${_decklink_sdk}" ${_midl_sys_includes}
             /h DeckLinkAPI_h.h /iid DeckLinkAPI_i.c
             "${_decklink_sdk}/DeckLinkAPI.idl"
     WORKING_DIRECTORY "${_idl_out_dir}"
