@@ -18,6 +18,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+ndi = [
+    "cyndilib>=0.1.1",
+]
 dev = [
     "pytest",
     "pytest-cov",

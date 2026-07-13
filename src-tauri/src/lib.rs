@@ -346,6 +346,7 @@ pub fn run() {
             commands::capture_profiles::save_capture_profiles,
             commands::capture_profiles::probe_tracking_source,
             commands::capture_profiles::probe_video_source,
+            commands::capture_profiles::enumerate_video_sources,
             commands::mesh_export::export_obj,
             commands::mesh_total_station::import_total_station_csv,
             commands::mesh_total_station::generate_instruction_card,

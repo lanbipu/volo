@@ -257,6 +257,13 @@ def build_manifest() -> ContractManifest:
             exit_codes=[0, 1, 2, 5, 6],
         ),
         _op(
+            "capture.enumerate",
+            "Enumerate discoverable video sources for a supported backend.",
+            "vpcal capture enumerate",
+            tool_name="capture_enumerate",
+            exit_codes=[0, 1, 2, 6],
+        ),
+        _op(
             "capture.video",
             "Capture a video stream via a backend (synthetic / uvc / ndi / decklink).",
             "vpcal capture video",

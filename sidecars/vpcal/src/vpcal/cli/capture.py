@@ -115,8 +115,33 @@ def _make_preview(preview_port, emitter: StreamEmitter):
     return sink, server
 
 
+@capture.command(name="enumerate")
+@click.option("--backend", type=click.Choice(["ndi", "synthetic"]), required=True,
+              help="Video-source backend to enumerate.")
+@click.option("--timeout", "timeout_s", type=click.FloatRange(min=0.0), default=3.0,
+              show_default=True, help="NDI discovery window in seconds.")
+@common_options
+@click.pass_context
+def enumerate_video_sources(ctx, backend, timeout_s, **flags) -> None:
+    """Enumerate discoverable video sources for a supported backend."""
+
+    def body() -> OperationOutput:
+        if backend == "synthetic":
+            sources = [{"name": "synthetic"}]
+        else:
+            from vpcal.core.ndi import enumerate_sources
+
+            sources = enumerate_sources(timeout_s)
+        data = {"backend": backend, "timeout_s": timeout_s, "sources": sources}
+        return OperationOutput(data=data, text=f"Found {len(sources)} {backend} source(s)")
+
+    run_operation("capture.enumerate", body, **flags)
+
+
 @capture.command(name="video")
 @_backend_options
+@click.option("--allow-hx", is_flag=True,
+              help="Allow NDI|HX for preview/probing only; calibration sessions still reject it.")
 @click.option("--duration", "duration_s", type=float, default=10.0, show_default=True,
               help="Capture duration (seconds); 0 = until the source ends or the "
                    "process is cancelled (e.g. Volo bridge kill).")
@@ -126,7 +151,7 @@ def _make_preview(preview_port, emitter: StreamEmitter):
 @common_options
 @click.pass_context
 def video(ctx, backend, device, width, height, fps, transfer_function, preview_port,
-          duration_s, max_frames, out_dir, **flags) -> None:
+          allow_hx, duration_s, max_frames, out_dir, **flags) -> None:
     """[C1.2] Capture a video stream (synthetic / uvc / ndi / decklink)."""
 
     def body(emitter: StreamEmitter) -> OperationOutput:
@@ -140,17 +165,29 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
                                        "duration_s": duration_s, "out": out_dir}},
                 text="Dry run OK.")
         cfg = CaptureConfig(backend=backend, device=device, width=width, height=height,
-                            fps=fps, transfer_function=transfer_function)
+                            fps=fps, transfer_function=transfer_function,
+                            extra={"allow_hx": allow_hx})
         src = open_backend(cfg)
         sink, server = _make_preview(preview_port, emitter)
         out = Path(out_dir) if out_dir else None
         if out:
             out.mkdir(parents=True, exist_ok=True)
         n = 0
+        source_info = None
         t0 = time.monotonic()
         last_report = t0
         try:
             for frame in src.frames():
+                if source_info is None:
+                    source_info = {
+                        "width": int(frame.gray.shape[1]),
+                        "height": int(frame.gray.shape[0]),
+                        "fps": frame.meta.get("frame_rate", fps),
+                        "fourcc": frame.meta.get("fourcc"),
+                        "bit_depth": frame.meta.get("bit_depth", int(frame.gray.dtype.itemsize * 8)),
+                        "is_hx": frame.meta.get("is_hx", False),
+                        "transfer_function": frame.meta.get("transfer_function", transfer_function),
+                    }
                 if sink is not None:
                     sink.publish(frame.bgr if frame.bgr is not None else frame.gray)
                 if out:
@@ -174,7 +211,7 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
         elapsed = time.monotonic() - t0
         data = {"backend": backend, "frames": n, "elapsed_s": round(elapsed, 2),
                 "mean_fps": round(n / elapsed, 2) if elapsed > 0 else 0.0,
-                "out_dir": str(out) if out else None}
+                "out_dir": str(out) if out else None, "source": source_info}
         return OperationOutput(data=data, text=f"Captured {n} frames in {elapsed:.1f}s "
                                                f"({data['mean_fps']} fps)")
 

@@ -64,7 +64,16 @@ def test_open_backend_unknown_name():
         open_backend(CaptureConfig(backend="st2110"))
 
 
-def test_ndi_backend_guides_installation():
+def test_ndi_backend_guides_installation(monkeypatch):
+    from vpcal.core import ndi
+
+    def missing():
+        raise PreconditionError(
+            "NDI backend requires cyndilib",
+            details={"backend": "ndi", "missing": "cyndilib"},
+        )
+
+    monkeypatch.setattr(ndi, "load_cyndilib", missing)
     with pytest.raises(PreconditionError, match="cyndilib"):
         open_backend(CaptureConfig(backend="ndi"))
 

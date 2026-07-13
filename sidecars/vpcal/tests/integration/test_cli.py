@@ -77,7 +77,21 @@ def test_manifest_operation_ids():
         "marker_map.create", "marker_map.validate", "marker_map.board",
         "marker_map.cube", "marker_map.rebase", "verify.mapping", "verify.overlay",
         "capture.delay_cal",
-        "capture.track", "capture.video", "capture.session", "capture.playback",
+        "capture.track", "capture.enumerate", "capture.video", "capture.session",
+        "capture.playback",
+    }
+
+
+def test_capture_enumerate_synthetic_json_envelope():
+    r = _run("capture", "enumerate", "--backend", "synthetic", "--output", "json")
+    assert r.returncode == 0
+    env = json.loads(r.stdout)
+    assert env["status"] == "ok"
+    assert env["operation_id"] == "capture.enumerate"
+    assert env["data"] == {
+        "backend": "synthetic",
+        "timeout_s": 3.0,
+        "sources": [{"name": "synthetic"}],
     }
 
 

@@ -10,6 +10,31 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
+fn last_json_line(output: &str) -> Option<Value> {
+    output
+        .lines()
+        .rev()
+        .find_map(|line| serde_json::from_str(line).ok())
+}
+
+fn structured_error(stdout: &str, stderr: &str) -> String {
+    if let Some(error) = last_json_line(stdout).and_then(|value| value.get("error").cloned()) {
+        if let Ok(json) = serde_json::to_string(&error) {
+            return json;
+        }
+    }
+    let detail = if stderr.trim().is_empty() {
+        stdout.trim()
+    } else {
+        stderr.trim()
+    };
+    if detail.is_empty() {
+        "vpcal operation failed".into()
+    } else {
+        detail.into()
+    }
+}
+
 fn profiles_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
@@ -101,6 +126,68 @@ pub struct VideoProbeResult {
     pub frames: u64,
     pub mean_fps: f64,
     pub preview_data_url: Option<String>,
+    pub source: Option<Value>,
+}
+
+#[derive(Serialize)]
+pub struct VideoSourceList {
+    pub backend: String,
+    pub timeout_s: f64,
+    pub sources: Vec<Value>,
+}
+
+#[tauri::command]
+pub async fn enumerate_video_sources(
+    backend: String,
+    timeout_s: Option<f64>,
+) -> Result<VideoSourceList, String> {
+    if !["ndi", "synthetic"].contains(&backend.as_str()) {
+        return Err(format!("不支持枚举的视频 backend: {backend}"));
+    }
+    let timeout_s = timeout_s.unwrap_or(3.0);
+    if !timeout_s.is_finite() || !(0.0..=30.0).contains(&timeout_s) {
+        return Err("视频源枚举 timeout_s 必须在 0 到 30 秒之间".into());
+    }
+    let exe = super::sidecars::locate_by_name("vpcal").map_err(|e| e.to_string())?;
+    let backend_task = backend.clone();
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(exe)
+            .args([
+                "capture",
+                "enumerate",
+                "--backend",
+                &backend_task,
+                "--timeout",
+                &timeout_s.to_string(),
+                "--output",
+                "json",
+            ])
+            .output()
+    })
+    .await
+    .map_err(|e| format!("视频源枚举任务失败: {e}"))?
+    .map_err(|e| format!("启动 vpcal 视频源枚举失败: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        return Err(structured_error(&stdout, &stderr));
+    }
+    let envelope =
+        last_json_line(&stdout).ok_or_else(|| "vpcal 视频源枚举未返回 JSON".to_string())?;
+    let data = envelope.get("data").unwrap_or(&envelope);
+    let sources = data
+        .get("sources")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    Ok(VideoSourceList {
+        backend,
+        timeout_s: data
+            .get("timeout_s")
+            .and_then(Value::as_f64)
+            .unwrap_or(timeout_s),
+        sources,
+    })
 }
 
 #[tauri::command]
@@ -137,6 +224,7 @@ pub async fn probe_video_source(
             "1".into(),
             "--max-frames".into(),
             "5".into(),
+            "--allow-hx".into(),
             "--transfer-function".into(),
             transfer_function,
             "--output".into(),
@@ -161,22 +249,12 @@ pub async fn probe_video_source(
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
-        let detail = if stderr.trim().is_empty() {
-            stdout.trim()
-        } else {
-            stderr.trim()
-        };
-        return Err(if detail.is_empty() {
-            "视频源无法打开".into()
-        } else {
-            detail.into()
-        });
+        let error = structured_error(&stdout, &stderr);
+        let _ = fs::remove_dir_all(&probe_dir);
+        return Err(error);
     }
-    let envelope: Value = stdout
-        .lines()
-        .rev()
-        .find_map(|line| serde_json::from_str(line).ok())
-        .ok_or_else(|| "vpcal 视频探测未返回 JSON".to_string())?;
+    let envelope: Value =
+        last_json_line(&stdout).ok_or_else(|| "vpcal 视频探测未返回 JSON".to_string())?;
     let data = envelope.get("data").unwrap_or(&envelope);
     let preview_data_url = fs::read(probe_dir.join("000000.png")).ok().map(|bytes| {
         format!(
@@ -189,6 +267,7 @@ pub async fn probe_video_source(
         frames: data.get("frames").and_then(Value::as_u64).unwrap_or(0),
         mean_fps: data.get("mean_fps").and_then(Value::as_f64).unwrap_or(0.0),
         preview_data_url,
+        source: data.get("source").filter(|value| !value.is_null()).cloned(),
     })
 }
 
@@ -295,5 +374,23 @@ mod tests {
         save_to_path(&path, &[serde_json::json!({"id":"new"})]).unwrap();
         assert_eq!(load_from_path(&path).unwrap().profiles[0]["id"], "new");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reads_last_ndjson_envelope() {
+        let output = "{\"type\":\"start\"}\n{\"type\":\"result\",\"data\":{\"frames\":5}}\n";
+        assert_eq!(last_json_line(output).unwrap()["data"]["frames"], 5);
+    }
+
+    #[test]
+    fn extracts_structured_sidecar_error() {
+        let stdout = concat!(
+            "{\"type\":\"start\"}\n",
+            "{\"type\":\"error\",\"error\":{\"code\":\"PRECONDITION_FAILED\",",
+            "\"message\":\"source missing\",\"details\":{\"reason\":\"source_not_found\"}}}\n",
+        );
+        let error: Value = serde_json::from_str(&structured_error(stdout, "warning")).unwrap();
+        assert_eq!(error["code"], "PRECONDITION_FAILED");
+        assert_eq!(error["details"]["reason"], "source_not_found");
     }
 }

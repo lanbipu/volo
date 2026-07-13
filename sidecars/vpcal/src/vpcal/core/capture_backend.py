@@ -11,8 +11,8 @@ Backends
 ``synthetic``  procedurally generated moving test card — dev/CI, zero hardware.
 ``uvc``        ``cv2.VideoCapture`` — webcams and SDI/HDMI→USB3 converters
                (AJA U-TAP class devices), the field-proven no-driver path.
-``ndi``        NDI receive via the optional ``cyndilib`` binding (spike; raises
-               a guided PreconditionError when the binding/SDK is missing).
+``ndi``        NDI SDK discovery/receive via the optional ``cyndilib`` binding;
+               preserves full-NDI P216 luma at 16-bit and rejects NDI|HX for calibration.
 ``decklink``   Blackmagic DeckLink via the optional ``vpcal_capture`` C++
                module (Phase 2; raises a guided PreconditionError when the
                module was not built against a local DeckLink SDK).
@@ -238,16 +238,166 @@ class UvcBackend:
 
 
 class NdiBackend:
-    """NDI receive via ``cyndilib`` (optional dependency, spike per plan risk #2)."""
+    """NDI SDK receive through the optional ``cyndilib`` binding.
+
+    cyndilib 0.1.1 direct receive does not deliver frames with the current macOS
+    NDI runtime, while its SDK FrameSync path does. FrameSync is paced at the
+    negotiated source rate; static NDI senders may intentionally repeat a frame.
+    """
 
     def __init__(self) -> None:
-        raise PreconditionError(
-            "NDI backend requires the optional 'cyndilib' binding and the NDI "
-            "runtime. Install with `pip install cyndilib` and the NDI SDK/Tools "
-            "from https://ndi.video/ — then re-run. If unavailable, use an "
-            "SDI/HDMI→USB3 converter with --backend uvc instead.",
-            details={"backend": "ndi", "missing": "cyndilib", "status": "spike-pending"},
-        )
+        from vpcal.core.ndi import load_cyndilib
+
+        self._api = load_cyndilib()
+        self._receiver = None
+        self._video_frame = None
+        self._config: CaptureConfig | None = None
+
+    def open(self, config: CaptureConfig) -> None:
+        timeout_s = float(config.extra.get("connect_timeout_s", 3.0))
+        finder = self._api.Finder()
+        finder.open()
+        try:
+            finder.wait_for_sources(max(0.0, timeout_s))
+            names = finder.get_source_names()
+            if config.device not in names:
+                raise PreconditionError(
+                    f"NDI source not found: {config.device}",
+                    details={
+                        "backend": "ndi",
+                        "reason": "source_not_found",
+                        "source_name": config.device,
+                        "available": names,
+                    },
+                )
+            source = finder.get_source(config.device)
+            video_frame = self._api.VideoFrameSync()
+            receiver = self._api.Receiver(
+                color_format=self._api.RecvColorFormat.best,
+                bandwidth=self._api.RecvBandwidth.highest,
+                allow_video_fields=True,
+                recv_name="vpcal",
+            )
+            receiver.frame_sync.set_video_frame(video_frame)
+            try:
+                receiver.connect_to(source)
+            except Exception:
+                receiver.disconnect()
+                raise
+        finally:
+            finder.close()
+        self._receiver = receiver
+        self._video_frame = video_frame
+        self._config = config
+
+    def close(self) -> None:
+        if self._receiver is not None:
+            self._receiver.disconnect()
+        self._receiver = None
+        self._video_frame = None
+        self._config = None
+
+    @staticmethod
+    def _fourcc_name(value: Any) -> str:
+        name = getattr(value, "name", None)
+        return str(name if name is not None else value).split(".")[-1].upper()
+
+    def frames(self) -> Iterator[CapturedFrame]:
+        if self._receiver is None or self._video_frame is None or self._config is None:
+            raise PreconditionError("NDI backend not opened")
+        from vpcal.core.ndi import p216_luma16, uyvy_luma
+
+        receiver = self._receiver
+        video_frame = self._video_frame
+        config = self._config
+        idle_timeout_s = float(config.extra.get("idle_timeout_s", 5.0))
+        poll_interval_s = float(config.extra.get("poll_interval_s", 1.0 / 120.0))
+        started_waiting = time.monotonic()
+        disconnected_since: float | None = None
+        last_yield = 0.0
+        idx = 0
+
+        while self._receiver is receiver:
+            receiver.frame_sync.capture_video(self._api.FrameFormat.progressive)
+            now = time.monotonic()
+            width, height = video_frame.get_resolution()
+            if width <= 0 or height <= 0:
+                if now - started_waiting >= idle_timeout_s:
+                    raise PreconditionError(
+                        f"no video frames from NDI source: {config.device}",
+                        details={"backend": "ndi", "reason": "no_signal",
+                                 "source_name": config.device},
+                    )
+                if poll_interval_s > 0:
+                    time.sleep(poll_interval_s)
+                continue
+
+            timestamp_s = float(video_frame.get_timestamp_posix())
+            timecode_s = float(video_frame.get_timecode_posix())
+            connections = receiver.get_num_connections() if hasattr(
+                receiver, "get_num_connections"
+            ) else 1
+            if connections <= 0:
+                disconnected_since = disconnected_since or now
+                if now - disconnected_since >= idle_timeout_s:
+                    raise PreconditionError(
+                        f"NDI source disconnected: {config.device}",
+                        details={"backend": "ndi", "reason": "no_signal",
+                                 "source_name": config.device},
+                    )
+            else:
+                disconnected_since = None
+
+            fourcc = self._fourcc_name(video_frame.get_fourcc())
+            stride = int(video_frame.get_line_stride())
+            data = video_frame.get_array()
+            if fourcc in {"P216", "PA16"}:
+                gray = p216_luma16(data, width, height, stride)
+                bit_depth = 16
+                is_hx = False
+            elif fourcc == "UYVY":
+                is_hx = True
+                if not config.extra.get("allow_hx", False):
+                    raise PreconditionError(
+                        NDI_HX_REFUSAL,
+                        details={"backend": "ndi", "reason": "ndi_hx",
+                                 "source_name": config.device, "fourcc": fourcc},
+                    )
+                gray = uyvy_luma(data, width, height, stride)
+                bit_depth = 8
+            else:
+                raise PreconditionError(
+                    f"unsupported NDI video format: {fourcc}",
+                    details={"backend": "ndi", "reason": "unsupported_format",
+                             "source_name": config.device, "fourcc": fourcc},
+                )
+
+            frame_rate = float(video_frame.get_frame_rate())
+            interval_s = 1.0 / frame_rate if frame_rate > 0 else 1.0 / 30.0
+            remaining_s = interval_s - (now - last_yield) if last_yield else 0.0
+            if remaining_s > 0:
+                time.sleep(remaining_s)
+                now = time.monotonic()
+            last_yield = now
+            yield CapturedFrame(
+                gray=gray,
+                recv_ts=now,
+                timecode=f"{timecode_s:.7f}" if timecode_s > 0 else None,
+                frame_index=idx,
+                meta={
+                    "backend": "ndi",
+                    "source_name": config.device,
+                    "width": width,
+                    "height": height,
+                    "frame_rate": frame_rate,
+                    "fourcc": fourcc,
+                    "is_hx": is_hx,
+                    "bit_depth": bit_depth,
+                    "timestamp_s": timestamp_s,
+                    "transfer_function": config.transfer_function,
+                },
+            )
+            idx += 1
 
 
 # ── decklink (Phase 2 gate) ──────────────────────────────────────────

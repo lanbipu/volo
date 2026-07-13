@@ -1,11 +1,15 @@
 // @ts-nocheck
-import { probeVideoSource } from "../api/captureProfiles";
+import {
+  enumerateVideoSources,
+  parseSidecarError,
+  probeVideoSource,
+} from "../api/captureProfiles";
 /* Volo — 视频源卡片（重设计）
    采集设置 → Profile 新建/编辑表单中的「视频源」模块。
    Device→Line/Source 枚举选择 + 选中即预览验证 + 格式从信号自动读取。
    字段以真实后端为准：backend / device(uvc=index|url · ndi=源名 · decklink=card:line)
    / width / height / fps / transfer_function(sdr|log) / pixel_format(后端提示)。
-   演示数据 mock，控件结构不引入这些字段之外的配置项。 */
+   NDI 通过 vpcal + NDI SDK 真实发现/探测；UVC/DeckLink 枚举仍保留演示数据。 */
 (function () {
   const { useState, useRef, useEffect } = React;
   const h = React.createElement;
@@ -18,16 +22,11 @@ import { probeVideoSource } from "../api/captureProfiles";
     { id: 'synthetic', label: '合成测试源',   sub: '内置图案',      icon: 'grid' },
   ];
 
-  /* ---------- mock 枚举数据 ---------- */
+  /* ---------- 尚未接入真实枚举的 backend 演示数据 ---------- */
   const UVC_DEVS = [
     { id: '0', name: 'AJA U-TAP HDMI',            fmt: { w: 1920, h: 1080, fps: '29.97', pix: 'UYVY 8-bit', tf: 'SDR' } },
     { id: '1', name: 'Blackmagic UltraStudio Mini', fmt: { w: 1920, h: 1080, fps: '25.00', pix: 'UYVY 8-bit', tf: 'SDR' } },
     { id: '2', name: 'Elgato Cam Link 4K',        fmt: { w: 3840, h: 2160, fps: '29.97', pix: 'NV12 8-bit',  tf: 'SDR' } },
-  ];
-  const NDI_SRCS = [
-    { id: 'ndi0', name: 'STAGE-CAM-01 (VIZ-A)',    hx: false, fmt: { w: 1920, h: 1080, fps: '29.97', pix: 'UYVY 8-bit', tf: 'SDR' } },
-    { id: 'ndi1', name: 'STAGE-CAM-02 (VIZ-B)',    hx: false, fmt: { w: 1920, h: 1080, fps: '50.00', pix: 'UYVY 8-bit', tf: 'SDR' } },
-    { id: 'ndi2', name: 'PTZ-DOME (NDI|HX Camera)', hx: true,  fmt: { w: 1920, h: 1080, fps: '25.00', pix: 'H.264 长GOP', tf: 'SDR' } },
   ];
   const DL_CARDS = [
     { id: 'dl0', name: 'DeckLink Quad HDMI Recorder', lines: [
@@ -108,10 +107,14 @@ import { probeVideoSource } from "../api/captureProfiles";
     const [enumSt, setEnumSt] = useState('ready');      /* ready | loading | empty */
     const [sig, setSig] = useState('waiting');           /* ok | waiting | nosignal | frozen */
     const [previewUrl, setPreviewUrl] = useState(null);
+    const [ndiSrcs, setNdiSrcs] = useState([]);
+    const [ndiAvail, setNdiAvail] = useState('unknown'); /* unknown | ok | missing */
+    const [ndiError, setNdiError] = useState(null);
+    const [ndiFmt, setNdiFmt] = useState(null);
 
     /* 选择态 */
     const [uvcSel, setUvcSel] = useState('0');
-    const [ndiSel, setNdiSel] = useState(null);
+    const [ndiSel, setNdiSel] = useState(backend === 'ndi' ? (form.device || null) : null);
     const [dlCard, setDlCard] = useState(null);
     const [dlLine, setDlLine] = useState(null);
     const [manual, setManual] = useState(false);
@@ -125,7 +128,36 @@ import { probeVideoSource } from "../api/captureProfiles";
     const fmtMode = form.fmtMode || 'auto';
     const tf = form.transferFunction || 'sdr';
 
-    const avail = (id) => id === 'uvc' || id === 'synthetic' || sdkAll;
+    const avail = (id) => id === 'uvc' || id === 'synthetic'
+      || (id === 'ndi' ? ndiAvail !== 'missing' : sdkAll);
+
+    /* enumerate 在途中用户可能改选源——「已选源是否消失」须读最新值，不能用闭包里的 ndiSel */
+    const ndiSelRef = useRef(ndiSel);
+    ndiSelRef.current = ndiSel;
+    const discoverNdi = async () => {
+      setEnumSt('loading'); setNdiError(null);
+      try {
+        const result = await enumerateVideoSources('ndi', 3);
+        const sources = result.sources || [];
+        setNdiSrcs(sources); setNdiAvail('ok');
+        setEnumSt(sources.length ? 'ready' : 'empty');
+        const selected = ndiSelRef.current;
+        if (selected && !sources.some((source) => source.name === selected)) {
+          setNdiSel(null); setNdiFmt(null); setPreviewUrl(null);
+        }
+      } catch (error) {
+        const parsed = parseSidecarError(error);
+        setNdiError(parsed);
+        if (parsed.details && parsed.details.missing) setNdiAvail('missing');
+        else setNdiAvail('ok');
+        setNdiSrcs([]); setEnumSt('empty'); setPreviewUrl(null);
+      }
+    };
+
+    useEffect(() => {
+      if (backend === 'ndi' && ndiAvail === 'unknown') void discoverNdi();
+    }, [backend, ndiAvail]);
+
     const refresh = async (deviceOverride) => {
       if (backend === 'synthetic') return;
       setEnumSt('loading'); setSig('waiting');
@@ -136,18 +168,34 @@ import { probeVideoSource } from "../api/captureProfiles";
           height: manualFmt && form.height ? Number(form.height) : null,
           fps: manualFmt && form.fps ? Number(form.fps) : null,
           transferFunction: form.transferFunction || 'sdr' });
-        setPreviewUrl(r.preview_data_url || null); setEnumSt('ready'); setSig(r.frames > 0 ? 'ok' : 'nosignal');
-      } catch (e) { setPreviewUrl(null); setEnumSt('ready'); setSig('nosignal'); }
+        if (backend === 'ndi' && r.source) {
+          setNdiFmt({
+            w: r.source.width, h: r.source.height,
+            fps: r.source.fps == null ? '—' : Number(r.source.fps).toFixed(2),
+            pix: (r.source.fourcc || 'Unknown') + ' ' + r.source.bit_depth + '-bit',
+            tf: (r.source.transfer_function || form.transferFunction || 'sdr').toUpperCase(),
+            is_hx: !!r.source.is_hx,
+          });
+        }
+        setPreviewUrl(r.preview_data_url || null); setEnumSt('ready');
+        setSig(r.frames > 0 ? (r.source && r.source.is_hx ? 'hx' : 'ok') : 'nosignal');
+      } catch (error) {
+        const parsed = parseSidecarError(error);
+        if (backend === 'ndi' && parsed.details && parsed.details.missing) {
+          setNdiAvail('missing'); setNdiError(parsed);
+        }
+        setPreviewUrl(null); setEnumSt('ready'); setSig('nosignal');
+      }
     };
 
     /* 当前选中设备的 fmt（信号信息条来源） */
     const curFmt = (() => {
       if (backend === 'uvc') { const d = UVC_DEVS.find((x) => x.id === uvcSel); return d && d.fmt; }
-      if (backend === 'ndi') { const d = NDI_SRCS.find((x) => x.id === ndiSel); return d && d.fmt; }
+      if (backend === 'ndi') return ndiFmt;
       if (backend === 'decklink') { const c = DL_CARDS.find((x) => x.id === dlCard); const l = c && c.lines.find((x) => x.id === dlLine); return l && l.fmt; }
       return null;
     })();
-    const ndiIsHx = backend === 'ndi' && (NDI_SRCS.find((x) => x.id === ndiSel) || {}).hx;
+    const ndiIsHx = backend === 'ndi' && !!(ndiFmt && ndiFmt.is_hx);
     const effSig = ndiIsHx ? 'hx' : sig;
     const hasDevice = backend === 'uvc' ? true /* 默认已选 */
       : backend === 'ndi' ? !!ndiSel
@@ -165,7 +213,8 @@ import { probeVideoSource } from "../api/captureProfiles";
       },
         h('span', { className: 'vs-be-ic' }, h(Icon, { name: b.icon, size: 15 })),
         h('span', { className: 'vs-be-tx' }, h('b', null, b.label), h('span', null, b.sub)),
-        off ? h(SdkPop, { backend: b.id, onUseUvc: () => { setSdkAll(false); set('videoBackend', 'uvc'); } }) : null);
+        off ? h(SdkPop, { backend: b.id, message: b.id === 'ndi' && ndiError ? ndiError.message : null,
+          onUseUvc: () => { setSdkAll(false); set('videoBackend', 'uvc'); } }) : null);
     }));
 
     /* ------- 设备选择器 ------- */
@@ -182,7 +231,7 @@ import { probeVideoSource } from "../api/captureProfiles";
           h('div', { className: 'vs-enum-tx' }, h('div', { className: 'vs-enum-t' }, '未发现设备'),
             h('div', { className: 'vs-enum-d' }, backend === 'ndi' ? '本网络内没有可见的 NDI 源' : '没有枚举到采集设备，检查连线后刷新')),
           h('div', { className: 'vs-enum-acts' },
-            h('button', { className: 'vs-icbtn', title: '刷新', onClick: refresh }, h(Icon, { name: 'sync', size: 15 })),
+            h('button', { className: 'vs-icbtn', title: '刷新', onClick: backend === 'ndi' ? discoverNdi : refresh }, h(Icon, { name: 'sync', size: 15 })),
             h('button', { className: 'vs-icbtn', style: { width: 'auto', padding: '0 10px', fontSize: 11.5, fontWeight: 700, gap: 6 }, onClick: () => setManual(true) },
               h(Icon, { name: 'sliders', size: 13 }), '手动输入')));
       } else if (backend === 'decklink') {
@@ -221,18 +270,17 @@ import { probeVideoSource } from "../api/captureProfiles";
           }),
           h('button', { className: 'vs-icbtn', title: '刷新设备列表', onClick: refresh }, h(Icon, { name: 'sync', size: 15 })));
       } else { /* ndi */
-        const d = NDI_SRCS.find((x) => x.id === ndiSel);
+        const d = ndiSrcs.find((x) => x.name === ndiSel);
         selector = h('div', { className: 'vs-devrow' },
           h(Select, {
             open: ndiOpen, setOpen: setNdiOpen, icon: 'net', placeholder: '选择 NDI 源…', grow: true,
-            value: d ? h(React.Fragment, null, h('span', { className: 'nm' }, d.name), d.hx ? h('span', { className: 'vs-opt-warn' }, h(Icon, { name: 'alert', size: 10 }), 'HX') : null) : null,
-            options: NDI_SRCS.map((x) => ({ id: x.id, warn: x.hx, node: h('div', { className: 'vs-opt-meta' },
-              h('div', { className: 'vs-opt-n' }, x.name), h('div', { className: 'vs-opt-s' }, x.fmt.w + '×' + x.fmt.h + ' · ' + x.fmt.fps + 'fps')),
-              warnNode: x.hx ? h('span', { className: 'vs-opt-warn' }, h(Icon, { name: 'alert', size: 10 }), '仅可预览 · 不可标定') : null })),
-            selId: ndiSel, onPick: (id) => { const name = (NDI_SRCS.find((x) => x.id === id) || {}).name || ''; setNdiSel(id); set('device', name); refresh(name); },
+            value: d ? h(React.Fragment, null, h('span', { className: 'nm' }, d.name), ndiIsHx ? h('span', { className: 'vs-opt-warn' }, h(Icon, { name: 'alert', size: 10 }), 'HX') : null) : null,
+            options: ndiSrcs.map((x) => ({ id: x.name, node: h('div', { className: 'vs-opt-meta' },
+              h('div', { className: 'vs-opt-n' }, x.name), h('div', { className: 'vs-opt-s' }, '通过 NDI SDK 网络发现')) })),
+            selId: ndiSel, onPick: (name) => { setNdiSel(name); setNdiFmt(null); set('device', name); refresh(name); },
             manualLabel: '手动输入 NDI 源名…', onManual: () => setManual(true),
           }),
-          h('button', { className: 'vs-icbtn', title: '重新发现', onClick: refresh }, h(Icon, { name: 'sync', size: 15 })));
+          h('button', { className: 'vs-icbtn', title: '重新发现', onClick: discoverNdi }, h(Icon, { name: 'sync', size: 15 })));
       }
     }
 
@@ -369,10 +417,10 @@ import { probeVideoSource } from "../api/captureProfiles";
   }
 
   /* ---------- 不可用 backend 的 "需 SDK" 说明浮层 ---------- */
-  function SdkPop({ backend, onUseUvc }) {
+  function SdkPop({ backend, message, onUseUvc }) {
     const meta = backend === 'ndi'
-      ? { title: 'NDI 后端不可用', need: h(React.Fragment, null, '缺少 ', h('code', null, 'cyndilib'), ' 与本机 ', h('code', null, 'NDI SDK / Runtime'), '。'),
-          how: '安装 NewTek NDI Runtime（或 SDK），并让 Volo 后端能加载到动态库后重启。' }
+      ? { title: 'NDI 后端不可用', need: message || h(React.Fragment, null, 'vpcal sidecar 缺少 ', h('code', null, 'cyndilib / NDI Runtime'), '。'),
+          how: '重新安装包含 vpcal[ndi] 的 Volo sidecar 后重启。cyndilib 的受支持 wheel 已内置 NDI Runtime。' }
       : { title: 'DeckLink 后端不可用', need: h(React.Fragment, null, '需要本地 ', h('code', null, 'DeckLink SDK'), ' 编译的采集后端（Desktop Video 运行时）。'),
           how: '安装 Blackmagic Desktop Video，并用本地 DeckLink SDK 编译对应后端后重启。' };
     return h('span', { className: 'vs-sdk' },
