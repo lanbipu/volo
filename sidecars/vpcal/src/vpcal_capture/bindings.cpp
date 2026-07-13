@@ -2,8 +2,11 @@
 //
 // Python contract consumed by core/capture_backend.py::DecklinkBackend:
 //
-//   vpcal._vpcal_capture.list_devices() -> [{"index": int, "name": str}, ...]
-//   inp = vpcal._vpcal_capture.DeckLinkInput(device_index)
+//   vpcal._vpcal_capture.list_devices()
+//       -> [{"index": int, "name": str, "connectors": [str, ...]}, ...]
+//       connectors are stable ids ("sdi"/"hdmi"/…); empty for output-only cards.
+//   inp = vpcal._vpcal_capture.DeckLinkInput(device_index, connector="")
+//       connector selects an input line (session-scoped); "" keeps the current.
 //   inp.start(); raw = inp.next_frame()  # None on stop/timeout
 //   raw.data / raw.width / raw.height / raw.row_bytes / raw.pixel_format
 //   raw.timecode ("" → None handled Python-side) / raw.hardware_time_s
@@ -43,13 +46,15 @@ PYBIND11_MODULE(_vpcal_capture, m) {
       py::dict item;
       item["index"] = d.index;
       item["name"] = d.name;
+      item["connectors"] = d.connectors;
       out.append(std::move(item));
     }
     return out;
   });
 
   py::class_<DeckLinkInput>(m, "DeckLinkInput")
-      .def(py::init<int32_t>(), py::arg("device_index"))
+      .def(py::init<int32_t, const std::string&>(), py::arg("device_index"),
+           py::arg("connector") = "")
       .def("start", &DeckLinkInput::start)
       .def("stop", &DeckLinkInput::stop)
       .def(

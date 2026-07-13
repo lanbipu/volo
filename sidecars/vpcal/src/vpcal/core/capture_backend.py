@@ -402,6 +402,73 @@ class NdiBackend:
 
 # ── decklink (Phase 2 gate) ──────────────────────────────────────────
 
+# Capture-capable connector ids (a subset of BMDVideoConnection; matches the
+# C++ shim's connector map). Used for a fast offline validation of a device
+# spec — the shim re-validates against the real card's advertised connectors.
+DECKLINK_CONNECTORS = ("sdi", "hdmi", "optical_sdi", "component", "composite", "svideo")
+
+_DECKLINK_MISSING_MODULE = (
+    "DeckLink backend requires the vpcal._vpcal_capture native module, which is "
+    "only built when a local Blackmagic DeckLink SDK is present. Download the "
+    "SDK from https://www.blackmagicdesign.com/developer/, set DECKLINK_SDK_DIR "
+    "to its include path, and reinstall vpcal (pip install -e .)."
+)
+
+
+def _import_vpcal_capture():
+    """Import the native shim or raise the shared guided PreconditionError."""
+    try:
+        from vpcal import _vpcal_capture
+    except ImportError:
+        raise PreconditionError(
+            _DECKLINK_MISSING_MODULE,
+            details={"backend": "decklink", "missing": "vpcal._vpcal_capture",
+                     "hint": "set DECKLINK_SDK_DIR and reinstall"},
+        ) from None
+    return _vpcal_capture
+
+
+def parse_decklink_device(device: str) -> tuple[int, str]:
+    """Parse a DeckLink device spec into ``(index, connector)``.
+
+    Accepts ``"0"`` (index only), or ``"0:sdi"`` / ``"1:hdmi"`` (index + input
+    connector). The index must be an integer; the connector is lower-cased and
+    ``-``→``_`` normalised, and must be one of :data:`DECKLINK_CONNECTORS`.
+    A missing connector returns ``""`` (the card's current input is kept).
+
+    Pure function — no native module needed, so it is unit-testable on any host.
+    """
+    raw = str(device).strip()
+    index_part, sep, connector_part = raw.partition(":")
+    try:
+        index = int(index_part)
+    except ValueError:
+        raise ArgumentError(
+            f"invalid DeckLink device {device!r}: the index must be an integer "
+            "(examples: '0', '0:sdi', '1:hdmi')",
+            details={"backend": "decklink", "device": device},
+        ) from None
+    if not sep:
+        return index, ""
+    connector = connector_part.strip().lower().replace("-", "_")
+    if connector not in DECKLINK_CONNECTORS:
+        raise ArgumentError(
+            f"invalid DeckLink connector {connector_part!r}: expected one of "
+            f"{DECKLINK_CONNECTORS} (examples: '0:sdi', '1:hdmi')",
+            details={"backend": "decklink", "device": device,
+                     "connector": connector_part},
+        )
+    return index, connector
+
+
+def list_decklink_devices() -> list[dict[str, Any]]:
+    """Enumerate attached DeckLink devices with their input connectors.
+
+    Each entry is ``{"index": int, "name": str, "connectors": [str, ...]}``.
+    Raises the guided PreconditionError when the native module was not built.
+    """
+    return _import_vpcal_capture().list_devices()
+
 
 class DecklinkBackend:
     """Blackmagic DeckLink via the optional ``vpcal._vpcal_capture`` C++ module.
@@ -413,27 +480,24 @@ class DecklinkBackend:
     """
 
     def __init__(self) -> None:
-        try:
-            from vpcal import _vpcal_capture  # noqa: F401
-        except ImportError:
-            raise PreconditionError(
-                "DeckLink backend requires the vpcal._vpcal_capture native "
-                "module, which is only built when a local Blackmagic DeckLink "
-                "SDK is present. Download the SDK from "
-                "https://www.blackmagicdesign.com/developer/, set "
-                "DECKLINK_SDK_DIR to its include path, and reinstall vpcal "
-                "(pip install -e .).",
-                details={"backend": "decklink", "missing": "vpcal._vpcal_capture",
-                         "hint": "set DECKLINK_SDK_DIR and reinstall"},
-            ) from None
+        _import_vpcal_capture()  # fail fast with the guided error if unbuilt
         self._impl = None
         self._config: CaptureConfig | None = None
 
     def open(self, config: CaptureConfig) -> None:
-        from vpcal import _vpcal_capture
-
-        self._impl = _vpcal_capture.DeckLinkInput(int(config.device))
-        self._impl.start()
+        vpcal_capture = _import_vpcal_capture()
+        index, connector = parse_decklink_device(config.device)
+        try:
+            self._impl = vpcal_capture.DeckLinkInput(index, connector)
+            self._impl.start()
+        except RuntimeError as exc:
+            # The C++ shim throws std::runtime_error (→ RuntimeError) for
+            # out-of-range index, output-only cards, and connector/select
+            # failures — surface them as guided preconditions.
+            raise PreconditionError(
+                str(exc),
+                details={"backend": "decklink", "device": config.device},
+            ) from exc
         self._config = config
 
     def close(self) -> None:
@@ -447,16 +511,37 @@ class DecklinkBackend:
         from vpcal.core.v210 import v210_to_gray16
 
         idx = 0
+        misses = 0
         while self._impl is not None:
-            raw = self._impl.next_frame()  # blocking; None on stop
+            raw = self._impl.next_frame()  # blocking; None on stop/timeout
             recv_ts = time.monotonic()
             if raw is None:
-                return
+                # A momentary signal drop (unplug, source pause) yields None per
+                # timeout; keep the stream alive across a few misses so a brief
+                # glitch doesn't kill a pull/session. A real stop() drains
+                # immediately, so these misses pass in quick succession.
+                misses += 1
+                if misses >= 5:
+                    return
+                continue
+            misses = 0
             if raw.pixel_format == "v210":
                 gray = v210_to_gray16(raw.data, raw.width, raw.height, raw.row_bytes)
-            else:  # 8-bit UYVY: luma is every second byte starting at offset 1
+            elif raw.pixel_format == "uyvy":
+                # 8-bit UYVY: luma is every second byte starting at offset 1.
                 buf = np.frombuffer(raw.data, dtype=np.uint8)
                 gray = buf.reshape(raw.height, raw.row_bytes)[:, 1:raw.width * 2:2].copy()
+            else:
+                # r210 (RGB444) / unknown: the calibration chain only unpacks
+                # YCbCr. An RGB signal (common on HDMI from laptops/players)
+                # would be silently misread — refuse with source guidance.
+                raise PreconditionError(
+                    f"DeckLink source pixel format {raw.pixel_format!r} is not "
+                    "supported for calibration capture. Set the source to YCbCr "
+                    "(YUV) output, or feed the signal over SDI.",
+                    details={"backend": "decklink", "pixel_format": raw.pixel_format,
+                             "reason": "unsupported_format"},
+                )
             yield CapturedFrame(
                 gray=gray,
                 recv_ts=recv_ts,
@@ -493,6 +578,7 @@ def open_backend(config: CaptureConfig) -> CaptureBackend:
 
 __all__ = [
     "BACKENDS",
+    "DECKLINK_CONNECTORS",
     "NDI_HX_REFUSAL",
     "CaptureConfig",
     "CapturedFrame",
@@ -501,6 +587,8 @@ __all__ = [
     "UvcBackend",
     "NdiBackend",
     "DecklinkBackend",
+    "list_decklink_devices",
+    "parse_decklink_device",
     "open_backend",
     "to_gray",
 ]

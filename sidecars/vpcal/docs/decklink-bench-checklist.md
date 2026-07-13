@@ -8,17 +8,33 @@
 ## 前置
 
 - [ ] 安装 Blackmagic Desktop Video 驱动 + Desktop Video Setup。
-- [ ] 下载 DeckLink SDK，设置 `DECKLINK_SDK_DIR=<SDK>/Win|Mac|Linux/include`。
+- [ ] **macOS**：Desktop Video 首次安装需在「系统设置 → 隐私与安全性」批准
+      Blackmagic 系统扩展并**重启**，否则 `list_devices()` 恒空。
+- [ ] 下载 DeckLink SDK 16.0，放到固定无空格路径（内层原名带空格，MIDL/CMake
+      对空格路径脆弱）。本仓约定 `~/AIWorkspace/vp/sdk/decklink-16.0/{Mac,Win,Linux}`。
+- [ ] 设置 `DECKLINK_SDK_DIR=<SDK>/{Mac|Win|Linux}/include`。
+      **Windows**：`DECKLINK_SDK_DIR=C:\SDKs\DeckLink16\Win\include`——该目录只有
+      `DeckLinkAPI.idl`（无 `.h`）；构建时 CMake 自动用 MIDL 编成 `DeckLinkAPI_h.h`
+      / `DeckLinkAPI_i.c`（落 build 目录，不写 SDK）。需在 Developer Command
+      Prompt（先跑 `vcvars64.bat`）或装好 Windows SDK 里构建，否则 `midl.exe` 找不到。
 - [ ] `pip install -e .` 重装 vpcal，确认 CMake 输出
       `vpcal_capture: building against DeckLink SDK at …`（模块装为 `vpcal._vpcal_capture`）。
+      改了 C++（`src/vpcal_capture/*`）必须重跑此命令——scikit-build-core 不自动重编。
 - [ ] `python -c "from vpcal import _vpcal_capture as c; print(c.list_devices())"`
-      列出全部板卡。
+      列出全部板卡（每项含 `connectors`，如 `["sdi","hdmi"]`）。
 
 ## 1. 设备枚举与打开
 
 - [ ] `list_devices()` 与 Desktop Video Setup 显示的设备一致（多卡机逐一核对 index）。
 - [ ] 对 output-only 卡（如 Mini Monitor）构造 `DeckLinkInput` 报
       "no capture interface"，不崩溃。
+- [ ] **connector 选口**（UltraStudio 4K Mini：SDI + HDMI 双口）：
+      `vpcal capture video --backend decklink --device 0:sdi --max-frames 5` 与
+      `--device 0:hdmi` 各跑一遍，各自出对应输入口的真帧；`--device 0:xxx`（不存在的
+      口）报 "connector 'xxx' not available on this device (have: …)"。
+- [ ] connector 选口是**会话级**（`IDeckLinkConfiguration::SetInt`，不调
+      `WriteConfigurationToPreferences`）：跑完 `0:hdmi` 后，Desktop Video Setup
+      面板里的持久 input 选择**不应**被改写——两者并存互不写。
 
 ## 2. 模式协商（TODO(bench) capture.cpp）
 

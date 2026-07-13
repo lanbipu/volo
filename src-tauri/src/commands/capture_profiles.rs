@@ -141,7 +141,7 @@ pub async fn enumerate_video_sources(
     backend: String,
     timeout_s: Option<f64>,
 ) -> Result<VideoSourceList, String> {
-    if !["ndi", "synthetic"].contains(&backend.as_str()) {
+    if !["ndi", "decklink", "synthetic"].contains(&backend.as_str()) {
         return Err(format!("不支持枚举的视频 backend: {backend}"));
     }
     let timeout_s = timeout_s.unwrap_or(3.0);
@@ -211,41 +211,51 @@ pub async fn probe_video_source(
         .join(format!("video-probe-{}", std::process::id()));
     let _ = fs::remove_dir_all(&probe_dir);
     fs::create_dir_all(&probe_dir).map_err(|e| format!("创建视频探测目录失败: {e}"))?;
-    let probe_dir_task = probe_dir.clone();
-    let output = tokio::task::spawn_blocking(move || {
-        let mut args = vec![
-            "capture".into(),
-            "video".into(),
-            "--backend".into(),
-            backend,
-            "--device".into(),
-            device,
-            "--duration".into(),
-            "1".into(),
-            "--max-frames".into(),
-            "5".into(),
-            "--allow-hx".into(),
-            "--transfer-function".into(),
-            transfer_function,
-            "--output".into(),
-            "json".into(),
-            "--out".into(),
-            probe_dir_task.to_string_lossy().into_owned(),
-        ];
-        if let Some(v) = width {
-            args.extend(["--width".into(), v.to_string()]);
-        }
-        if let Some(v) = height {
-            args.extend(["--height".into(), v.to_string()]);
-        }
-        if let Some(v) = fps {
-            args.extend(["--fps".into(), v.to_string()]);
-        }
-        super::sidecars::sidecar_command(exe).args(args).output()
-    })
+    let mut args: Vec<String> = vec![
+        "capture".into(),
+        "video".into(),
+        "--backend".into(),
+        backend,
+        "--device".into(),
+        device,
+        "--duration".into(),
+        "1".into(),
+        "--max-frames".into(),
+        "5".into(),
+        "--allow-hx".into(),
+        "--transfer-function".into(),
+        transfer_function,
+        "--output".into(),
+        "json".into(),
+        "--out".into(),
+        probe_dir.to_string_lossy().into_owned(),
+    ];
+    if let Some(v) = width {
+        args.extend(["--width".into(), v.to_string()]);
+    }
+    if let Some(v) = height {
+        args.extend(["--height".into(), v.to_string()]);
+    }
+    if let Some(v) = fps {
+        args.extend(["--fps".into(), v.to_string()]);
+    }
+    // A wedged/occupied device (driver hang, contended card) can make `capture
+    // video` block indefinitely; bound the probe so the UI never hangs. On
+    // timeout `kill_on_drop` reaps the child when the future is dropped.
+    let mut command = tokio::process::Command::from(super::sidecars::sidecar_command(exe));
+    command.args(&args).kill_on_drop(true);
+    let output = match tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        command.output(),
+    )
     .await
-    .map_err(|e| format!("视频探测任务失败: {e}"))?
-    .map_err(|e| format!("启动 vpcal 视频探测失败: {e}"))?;
+    {
+        Ok(result) => result.map_err(|e| format!("启动 vpcal 视频探测失败: {e}"))?,
+        Err(_) => {
+            let _ = fs::remove_dir_all(&probe_dir);
+            return Err("视频探测超时（设备可能被其他程序占用或驱动无响应）".into());
+        }
+    };
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {

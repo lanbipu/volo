@@ -9,8 +9,10 @@ import pytest
 
 from vpcal.core.capture_backend import (
     CaptureConfig,
+    DecklinkBackend,
     SyntheticBackend,
     open_backend,
+    parse_decklink_device,
 )
 from vpcal.core.errors import ArgumentError, PreconditionError
 
@@ -79,9 +81,81 @@ def test_ndi_backend_guides_installation(monkeypatch):
 
 
 def test_decklink_backend_guides_sdk_setup():
-    # No vpcal_capture module in the test venv → guided precondition error.
+    # The native shim's presence is environmental (built only against a local
+    # SDK). When it is built, opening reaches the driver rather than the guided
+    # error, so this regression only applies when the module is absent.
+    try:
+        from vpcal import _vpcal_capture  # noqa: F401
+    except ImportError:
+        pass
+    else:
+        pytest.skip("vpcal._vpcal_capture is built in this environment")
     with pytest.raises(PreconditionError, match="DECKLINK_SDK_DIR"):
         open_backend(CaptureConfig(backend="decklink"))
+
+
+@pytest.mark.parametrize(
+    "device,expected",
+    [
+        ("0", (0, "")),
+        ("0:sdi", (0, "sdi")),
+        ("1:hdmi", (1, "hdmi")),
+        ("2:optical-sdi", (2, "optical_sdi")),
+        (" 3 : HDMI ", (3, "hdmi")),
+    ],
+)
+def test_parse_decklink_device_valid(device, expected):
+    assert parse_decklink_device(device) == expected
+
+
+@pytest.mark.parametrize("device", ["abc", "0:", "1:usb", "x:sdi", "0:ethernet"])
+def test_parse_decklink_device_invalid(device):
+    with pytest.raises(ArgumentError):
+        parse_decklink_device(device)
+
+
+class _FakeRaw:
+    def __init__(self, pixel_format, width=4, height=2, row_bytes=8):
+        self.pixel_format = pixel_format
+        self.width = width
+        self.height = height
+        self.row_bytes = row_bytes
+        self.data = b"\x00" * (row_bytes * height)
+        self.timecode = ""
+
+
+class _FakeImpl:
+    """Minimal stand-in for _vpcal_capture.DeckLinkInput."""
+
+    def __init__(self, frames):
+        self._frames = list(frames)
+
+    def next_frame(self):
+        return self._frames.pop(0) if self._frames else None
+
+    def stop(self):
+        pass
+
+
+def _decklink_with_impl(impl):
+    b = DecklinkBackend.__new__(DecklinkBackend)  # bypass the native import guard
+    b._impl = impl
+    b._config = CaptureConfig(backend="decklink", device="0")
+    return b
+
+
+@pytest.mark.parametrize("pixel_format", ["r210", "unknown"])
+def test_decklink_frames_reject_non_yuv(pixel_format):
+    b = _decklink_with_impl(_FakeImpl([_FakeRaw(pixel_format)]))
+    with pytest.raises(PreconditionError, match="not supported for calibration"):
+        list(b.frames())
+
+
+def test_decklink_frames_accept_uyvy():
+    b = _decklink_with_impl(_FakeImpl([_FakeRaw("uyvy")]))
+    frames = _take(b, 1)
+    assert frames[0].gray.shape == (2, 4)
+    assert frames[0].meta["pixel_format"] == "uyvy"
 
 
 def test_uvc_backend_bad_device_raises():
