@@ -8,17 +8,15 @@
    的左栏已不再有「实时采集」步骤，ctx 栏「采集设置」按钮打开的是这里 —— 一个纯粹
    的命名配置（Profile）管理模态，本身不发起任何采集。
 
-   持久化：设计稿的 Profile 列表是纯 React state（刷新页面就清空，连设计稿自己都
-   没接任何保存动作）。真实 app 里让「保存」按钮完全没有持久效果会显得功能是坏的，
-   所以这里用 localStorage 落盘（与 shell.tsx 里 leftW/rightW 等轻量 UI 状态同类做法）；
-   没有为一个尚无消费方的功能新建 sqlite 表 —— 等未来批次真正接上「用某个 Profile
-   启动采集」的流程时，再按那时的真实需要决定是否升级到后端持久化。
-   首次使用默认空列表（不预置假示例数据），如实展示「还没有采集配置」空态。 */
+   持久化：Profile 由 Rust 写入 app data；localStorage 仅作为同步 cache，供现有同步式
+   Lens 页面在同一 WebView 内立即读取。首次使用不预置假数据。 */
 import * as React from "react";
+import { pickDirectory, pickFile } from "../api/commands";
+import { listCaptureProfiles, saveCaptureProfiles } from "../api/captureProfiles";
 
 (function () {
   const { Button, Switch } = window.Spectrum2DesignSystem_b6d1b3;
-  const { useState } = React;
+  const { useEffect, useRef, useState } = React;
   const h = React.createElement;
 
   const LS_KEY = 'volo-cal-capture-profiles';
@@ -43,22 +41,41 @@ import * as React from "react";
 
   function CaptureModal({ s, close }) {
     const [profiles, setProfiles] = useState(() => loadProfiles());
-    const [mode, setMode] = useState(() => (loadProfiles().length ? 'list' : 'empty')); /* list | new | empty */
+    const [mode, setMode] = useState('loading'); /* loading | list | new | empty */
     const [form, setForm] = useState(blankForm);
     const [advOpen, setAdvOpen] = useState(false);
     const [editId, setEditId] = useState(null);
+    const [saving, setSaving] = useState(false);
+    const savingRef = useRef(false);
 
-    const commit = (next) => { setProfiles(next); saveProfiles(next); };
+    useEffect(() => { listCaptureProfiles().then(async (state) => {
+      const legacy = loadProfiles();
+      const next = !state.initialized && legacy.length ? legacy : state.profiles;
+      if (!state.initialized) await saveCaptureProfiles(next);
+      setProfiles(next); saveProfiles(next); setMode(next.length ? 'list' : 'empty');
+    })
+      .catch((e) => { const fallback = loadProfiles(); setProfiles(fallback); setMode(fallback.length ? 'list' : 'empty'); s.pushLog({ lv: 'err', cat: 'capture', msg: `读取采集配置失败 · ${e.message || e}` }); }); }, []);
+    const commit = async (next) => {
+      if (savingRef.current) return false;
+      const previous = profiles;
+      savingRef.current = true; setSaving(true); setProfiles(next); saveProfiles(next);
+      try { await saveCaptureProfiles(next); return true; }
+      catch (e) { setProfiles(previous); saveProfiles(previous); s.pushLog({ lv: 'err', cat: 'capture', msg: `保存采集配置失败 · ${e.message || e}` }); return false; }
+      finally { savingRef.current = false; setSaving(false); }
+    };
     const startNew = () => { setForm(blankForm()); setEditId(null); setAdvOpen(false); setMode('new'); };
     const startEdit = (p) => { setForm(Object.assign(blankForm(), p)); setEditId(p.id); setAdvOpen(true); setMode('new'); };
-    const dup = (p) => { const c = Object.assign({}, p, { id: 'pf_' + Math.random().toString(36).slice(2), name: p.name + ' 副本', lastUsed: '刚刚' });
-      commit(profiles.concat([c])); s.pushLog({ lv: 'ok', cat: 'capture', msg: `复制采集配置 <b>${c.name}</b>` }); };
-    const del = (p) => { const nx = profiles.filter((x) => x.id !== p.id); commit(nx); if (!nx.length) setMode('empty');
-      s.pushLog({ lv: 'warn', cat: 'capture', msg: `删除采集配置 <b>${p.name}</b>` }); };
-    const save = () => {
+    const dup = async (p) => { const c = Object.assign({}, p, { id: 'pf_' + Math.random().toString(36).slice(2), name: p.name + ' 副本', lastUsed: '刚刚' });
+      if (await commit(profiles.concat([c]))) s.pushLog({ lv: 'ok', cat: 'capture', msg: `复制采集配置 <b>${c.name}</b>` }); };
+    const del = async (p) => { const nx = profiles.filter((x) => x.id !== p.id); if (await commit(nx)) { if (!nx.length) setMode('empty');
+      s.pushLog({ lv: 'warn', cat: 'capture', msg: `删除采集配置 <b>${p.name}</b>` }); } };
+    const save = async () => {
       const nm = form.name.trim() || '未命名配置';
-      if (editId) { commit(profiles.map((x) => x.id === editId ? Object.assign({}, form, { id: editId, name: nm, lastUsed: '刚刚' }) : x)); s.pushLog({ lv: 'ok', cat: 'capture', msg: `保存采集配置 <b>${nm}</b>` }); }
-      else { commit(profiles.concat([Object.assign({}, form, { id: 'pf_' + Math.random().toString(36).slice(2), name: nm, lastUsed: '刚刚' })])); s.pushLog({ lv: 'ok', cat: 'capture', msg: `新建采集配置 <b>${nm}</b>` }); }
+      const next = editId
+        ? profiles.map((x) => x.id === editId ? Object.assign({}, form, { id: editId, name: nm, lastUsed: '刚刚' }) : x)
+        : profiles.concat([Object.assign({}, form, { id: 'pf_' + Math.random().toString(36).slice(2), name: nm, lastUsed: '刚刚' })]);
+      if (!await commit(next)) return;
+      s.pushLog({ lv: 'ok', cat: 'capture', msg: `${editId ? '保存' : '新建'}采集配置 <b>${nm}</b>` });
       setMode('list');
     };
 
@@ -70,6 +87,9 @@ import * as React from "react";
         h('div', { className: 'sub' }, h('span', { className: 'cli-pill' }, 'capture profiles'),
           h('span', null, mode === 'new' ? (editId ? ' · 编辑配置' : ' · 新建配置') : ' · 命名采集配置'))),
       h('button', { className: 'iconbtn x', onClick: close }, h(Icon, { name: 'x', size: 16 })));
+
+    if (mode === 'loading') return h('div', { className: 'drawer drawer--cal2cap' }, head,
+      h('div', { className: 'drawer-b' }, h('div', { className: 'cal2-cap-empty' }, h('div', { className: 'ce-t' }, '正在读取采集配置…'))));
 
     /* ---------- 空态 ---------- */
     if (mode === 'empty') {
@@ -96,12 +116,12 @@ import * as React from "react";
                 h('span', { className: 'cal2-pf-tag' }, p.trackProtocol + ':' + p.trackPort),
                 h('span', { className: 'cal2-pf-time' }, '最近 ' + p.lastUsed))),
             h('div', { className: 'cal2-pf-acts' },
-              h('button', { className: 'iconbtn', title: '编辑', onClick: () => startEdit(p) }, h(Icon, { name: 'sliders', size: 15 })),
-              h('button', { className: 'iconbtn', title: '复制', onClick: () => dup(p) }, h(Icon, { name: 'copy', size: 15 })),
-              h('button', { className: 'iconbtn', title: '删除', onClick: () => del(p) }, h(Icon, { name: 'trash', size: 15 }))))))),
+              h('button', { className: 'iconbtn', title: '编辑', disabled: saving, onClick: () => startEdit(p) }, h(Icon, { name: 'sliders', size: 15 })),
+              h('button', { className: 'iconbtn', title: '复制', disabled: saving, onClick: () => dup(p) }, h(Icon, { name: 'copy', size: 15 })),
+              h('button', { className: 'iconbtn', title: '删除', disabled: saving, onClick: () => del(p) }, h(Icon, { name: 'trash', size: 15 }))))))),
         h('div', { className: 'drawer-f between' },
           h('span', { className: 'cal2-pf-count' }, profiles.length + ' 个配置'),
-          h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'plus', size: 15 }), onPress: startNew }, '新建配置')));
+          h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'plus', size: 15 }), isDisabled: saving, onPress: startNew }, '新建配置')));
     }
 
     /* ---------- 新建 / 编辑表单 ---------- */
@@ -142,7 +162,7 @@ import * as React from "react";
           h('div', { className: 'cap-lens', style: { marginTop: 12 } },
             h('label', null, 'lensPath'),
             h('div', { className: 'cap-lens-pick' },
-              h('button', { className: 'cap-file-btn', onClick: () => set('lensPath', form.lensPath ? '' : 'lens_master_35mm.json') },
+              h('button', { className: 'cap-file-btn', onClick: async () => { if (form.lensPath) set('lensPath', ''); else { const p = await pickFile('Lens profile', ['json']); if (p) set('lensPath', p); } } },
                 h(Icon, { name: 'folder', size: 14 }), form.lensPath || '选择文件…'),
               form.lensPath ? h('span', { className: 'cap-pill cap-pill--positive' }, h(Icon, { name: 'check', size: 12 }), '已选') : null))) : null),
       h('div', { className: 'cap-card' },
@@ -150,13 +170,13 @@ import * as React from "react";
         h('div', { className: 'cap-lens' },
           h('label', null, 'outputRoot（可空）'),
           h('div', { className: 'cap-lens-pick' },
-            h('button', { className: 'cap-file-btn', onClick: () => set('outputRoot', form.outputRoot ? '' : 'D:\\Volo\\sessions') },
+            h('button', { className: 'cap-file-btn', onClick: async () => { if (form.outputRoot) set('outputRoot', ''); else { const p = await pickDirectory(); if (p) set('outputRoot', p); } } },
               h(Icon, { name: 'folder', size: 14 }), form.outputRoot || '选择目录…（留空则用默认）')))));
 
     return h('div', { className: 'drawer drawer--cal2cap' }, head, body,
       h('div', { className: 'drawer-f' },
-        h(Button, { variant: 'secondary', size: 'M', onPress: () => setMode(profiles.length ? 'list' : 'empty') }, '取消'),
-        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'check', size: 15 }), onPress: save }, editId ? '保存修改' : '保存配置')));
+        h(Button, { variant: 'secondary', size: 'M', isDisabled: saving, onPress: () => setMode(profiles.length ? 'list' : 'empty') }, '取消'),
+        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'check', size: 15 }), isDisabled: saving, onPress: save }, saving ? '正在保存…' : (editId ? '保存修改' : '保存配置'))));
   }
 
   function openCaptureModal(s) {
