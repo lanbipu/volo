@@ -95,6 +95,21 @@ def test_capture_enumerate_synthetic_json_envelope():
     }
 
 
+def test_capture_video_streams_source_info_before_result():
+    # Synthetic backend needs no hardware; --max-frames keeps it short.
+    r = _run("capture", "video", "--backend", "synthetic", "--max-frames", "3",
+             "--output", "ndjson")
+    assert r.returncode == 0, r.stderr
+    lines = [json.loads(ln) for ln in r.stdout.strip().splitlines()]
+    types = [ln["type"] for ln in lines]
+    assert "source_info" in types
+    info = next(ln for ln in lines if ln["type"] == "source_info")
+    for key in ("width", "height", "fourcc", "is_hx"):
+        assert key in info
+    # source_info must arrive before the terminal result event.
+    assert types.index("source_info") < types.index("result")
+
+
 def test_schema_json():
     r = _run("schema", "--output", "json")
     assert r.returncode == 0

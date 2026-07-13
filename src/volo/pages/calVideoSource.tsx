@@ -4,6 +4,11 @@ import {
   parseSidecarError,
   probeVideoSource,
 } from "../api/captureProfiles";
+import {
+  cancelSidecarTask,
+  spawnSidecarStreaming,
+  useSidecarStream,
+} from "../api/sidecarStream";
 /* Volo — 视频源卡片（重设计）
    采集设置 → Profile 新建/编辑表单中的「视频源」模块。
    Device→Line/Source 枚举选择 + 选中即预览验证 + 格式从信号自动读取。
@@ -106,7 +111,8 @@ import {
     const [sdkAll, setSdkAll] = useState(false);       /* false = 仅 UVC（真实默认） */
     const [enumSt, setEnumSt] = useState('ready');      /* ready | loading | empty */
     const [sig, setSig] = useState('waiting');           /* ok | waiting | nosignal | frozen */
-    const [previewUrl, setPreviewUrl] = useState(null);
+    const [liveTask, setLiveTask] = useState(null);      /* 常驻监看流 task_id */
+    const [liveUrl, setLiveUrl] = useState(null);        /* MJPEG 流地址（preview_ready） */
     const [ndiSrcs, setNdiSrcs] = useState([]);
     const [ndiAvail, setNdiAvail] = useState('unknown'); /* unknown | ok | missing */
     const [ndiError, setNdiError] = useState(null);
@@ -131,6 +137,79 @@ import {
     const avail = (id) => id === 'uvc' || id === 'synthetic'
       || (id === 'ndi' ? ndiAvail !== 'missing' : sdkAll);
 
+    /* ---------- 常驻监看流（连续 MJPEG 预览） ---------- */
+    const liveStream = useSidecarStream(liveTask);
+    const liveTaskRef = useRef(liveTask);
+    liveTaskRef.current = liveTask;
+
+    /* 选中源即起 `vpcal capture video --preview-port 0 --duration 0` 常驻进程，
+       <img> 直接消费其 localhost MJPEG 流。切源/切 backend/卸载时取消旧任务。 */
+    const startMonitor = async (device) => {
+      if (liveTaskRef.current) void cancelSidecarTask(liveTaskRef.current);
+      setSig('waiting'); setLiveUrl(null); setNdiFmt(null);
+      const manualFmt = fmtMode === 'manual';
+      const args = ['capture', 'video', '--backend', backend, '--device', device,
+        '--allow-hx', '--preview-port', '0', '--duration', '0', '--output', 'json'];
+      if (manualFmt && form.width) args.push('--width', String(form.width));
+      if (manualFmt && form.height) args.push('--height', String(form.height));
+      if (manualFmt && form.fps) args.push('--fps', String(form.fps));
+      args.push('--transfer-function', form.transferFunction || 'sdr');
+      try {
+        const resp = await spawnSidecarStreaming('vpcal', args);
+        setLiveTask(resp.task_id);
+      } catch (error) {
+        const parsed = parseSidecarError(error);
+        if (backend === 'ndi' && parsed.details && parsed.details.missing) {
+          setNdiAvail('missing'); setNdiError(parsed);
+        }
+        setSig('nosignal'); setLiveUrl(null);
+      }
+    };
+
+    /* 流事件消费：preview_ready → 流地址；source_info → 格式信息条 + 信号态 */
+    useEffect(() => {
+      const parsed = liveStream.state.lines
+        .map((l) => l.parsed)
+        .filter((p) => p && typeof p.type === 'string');
+      const preview = [...parsed].reverse().find((p) => p.type === 'preview_ready');
+      if (preview && preview.mjpeg_url) setLiveUrl(preview.mjpeg_url);
+      const info = [...parsed].reverse().find((p) => p.type === 'source_info');
+      if (info) {
+        setNdiFmt({
+          w: info.width, h: info.height,
+          fps: info.fps == null ? '—' : Number(info.fps).toFixed(2),
+          pix: (info.fourcc || 'Unknown') + ' ' + info.bit_depth + '-bit',
+          tf: (info.transfer_function || form.transferFunction || 'sdr').toUpperCase(),
+          is_hx: !!info.is_hx,
+        });
+        setSig(info.is_hx ? 'hx' : 'ok');
+      }
+    }, [liveStream.state.lines]);
+
+    /* 进程退出：cancel 触发的静默；fatal 时从流里取最后一条 error 事件报错。 */
+    useEffect(() => {
+      const exit = liveStream.state.exit;
+      if (!exit || exit.cancelled) return;
+      if (exit.fatal) {
+        const errLine = [...liveStream.state.lines].reverse()
+          .map((l) => l.parsed)
+          .find((p) => p && p.type === 'error' && p.error);
+        const err = errLine && errLine.error;
+        if (err && err.details && err.details.missing) {
+          setNdiAvail('missing');
+          setNdiError({ code: err.code, message: err.message, details: err.details });
+        }
+        setSig('nosignal'); setLiveUrl(null);
+      }
+    }, [liveStream.state.exit]);
+
+    /* backend 切换：拆掉当前监看流。卸载时同样取消（读 ref 避免 stale）。 */
+    useEffect(() => {
+      if (liveTaskRef.current) { void cancelSidecarTask(liveTaskRef.current); setLiveTask(null); }
+      setLiveUrl(null);
+    }, [backend]);
+    useEffect(() => () => { if (liveTaskRef.current) void cancelSidecarTask(liveTaskRef.current); }, []);
+
     /* enumerate 在途中用户可能改选源——「已选源是否消失」须读最新值，不能用闭包里的 ndiSel */
     const ndiSelRef = useRef(ndiSel);
     ndiSelRef.current = ndiSel;
@@ -143,14 +222,15 @@ import {
         setEnumSt(sources.length ? 'ready' : 'empty');
         const selected = ndiSelRef.current;
         if (selected && !sources.some((source) => source.name === selected)) {
-          setNdiSel(null); setNdiFmt(null); setPreviewUrl(null);
+          setNdiSel(null); setNdiFmt(null); setLiveUrl(null);
+          if (liveTaskRef.current) { void cancelSidecarTask(liveTaskRef.current); setLiveTask(null); }
         }
       } catch (error) {
         const parsed = parseSidecarError(error);
         setNdiError(parsed);
         if (parsed.details && parsed.details.missing) setNdiAvail('missing');
         else setNdiAvail('ok');
-        setNdiSrcs([]); setEnumSt('empty'); setPreviewUrl(null);
+        setNdiSrcs([]); setEnumSt('empty'); setLiveUrl(null);
       }
     };
 
@@ -177,14 +257,14 @@ import {
             is_hx: !!r.source.is_hx,
           });
         }
-        setPreviewUrl(r.preview_data_url || null); setEnumSt('ready');
+        setEnumSt('ready');
         setSig(r.frames > 0 ? (r.source && r.source.is_hx ? 'hx' : 'ok') : 'nosignal');
       } catch (error) {
         const parsed = parseSidecarError(error);
         if (backend === 'ndi' && parsed.details && parsed.details.missing) {
           setNdiAvail('missing'); setNdiError(parsed);
         }
-        setPreviewUrl(null); setEnumSt('ready'); setSig('nosignal');
+        setEnumSt('ready'); setSig('nosignal');
       }
     };
 
@@ -265,7 +345,7 @@ import {
             options: UVC_DEVS.map((x) => ({ id: x.id, node: h('div', { className: 'vs-opt-meta' },
               h('div', { className: 'vs-opt-n' }, x.name, h('span', { className: 'idx' }, '#' + x.id)),
               h('div', { className: 'vs-opt-s' }, x.fmt.w + '×' + x.fmt.h + ' · ' + x.fmt.pix)) })),
-            selId: uvcSel, onPick: (id) => { setUvcSel(id); set('device', id); refresh(id); },
+            selId: uvcSel, onPick: (id) => { setUvcSel(id); set('device', id); void startMonitor(id); },
             manualLabel: '手动输入索引 / URL / 路径…', onManual: () => setManual(true),
           }),
           h('button', { className: 'vs-icbtn', title: '刷新设备列表', onClick: refresh }, h(Icon, { name: 'sync', size: 15 })));
@@ -277,7 +357,7 @@ import {
             value: d ? h(React.Fragment, null, h('span', { className: 'nm' }, d.name), ndiIsHx ? h('span', { className: 'vs-opt-warn' }, h(Icon, { name: 'alert', size: 10 }), 'HX') : null) : null,
             options: ndiSrcs.map((x) => ({ id: x.name, node: h('div', { className: 'vs-opt-meta' },
               h('div', { className: 'vs-opt-n' }, x.name), h('div', { className: 'vs-opt-s' }, '通过 NDI SDK 网络发现')) })),
-            selId: ndiSel, onPick: (name) => { setNdiSel(name); setNdiFmt(null); set('device', name); refresh(name); },
+            selId: ndiSel, onPick: (name) => { setNdiSel(name); setNdiFmt(null); set('device', name); void startMonitor(name); },
             manualLabel: '手动输入 NDI 源名…', onManual: () => setManual(true),
           }),
           h('button', { className: 'vs-icbtn', title: '重新发现', onClick: discoverNdi }, h(Icon, { name: 'sync', size: 15 })));
@@ -302,7 +382,7 @@ import {
         h('div', { className: 'vs-preview state-' + effSig },
           h('div', { className: 'vs-badge' }, h(StatusPill, { st: effSig })),
           (effSig === 'ok' || effSig === 'hx') ? h('span', { className: 'vs-livedot' }, h('i', null), 'LIVE') : null,
-          previewUrl ? h('img', { className: 'vs-frame', src: previewUrl, alt: '视频源实际探测帧' }) : h(Frame, { state: effSig === 'hx' ? 'ok' : effSig }),
+          liveUrl ? h('img', { className: 'vs-frame', src: liveUrl, alt: '视频源实时监看帧' }) : h(Frame, { state: effSig === 'hx' ? 'ok' : effSig }),
           effSig === 'waiting' ? h('div', { className: 'vs-preview-mid' }, h('span', { className: 'ring' }), h('span', { className: 'msg' }, '等待首帧…')) : null,
           effSig === 'nosignal' ? h('div', { className: 'vs-preview-mid' }, h(Icon, { name: 'alert', size: 26, style: { color: 'color-mix(in srgb, var(--negative-visual) 80%, #fff)' } }), h('span', { className: 'msg neg' }, '设备无法打开 / 断流')) : null,
           effSig === 'frozen' ? h('span', { className: 'vs-frozen-tag' }, '最后一帧 · 已 4.2s 未更新') : null),

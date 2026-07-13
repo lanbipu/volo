@@ -188,6 +188,7 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
                         "is_hx": frame.meta.get("is_hx", False),
                         "transfer_function": frame.meta.get("transfer_function", transfer_function),
                     }
+                    emitter.emit("source_info", dict(source_info))
                 if sink is not None:
                     sink.publish(frame.bgr if frame.bgr is not None else frame.gray)
                 if out:
