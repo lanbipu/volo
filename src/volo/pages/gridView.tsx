@@ -360,6 +360,7 @@ import { saveProjectYaml } from "../api/meshCommands";
       if (role) cls += ' is-ref';
       return h('g', { key: entry.id + b.key },
         h('polygon', { className: cls, points: pts, style: { fill, stroke: role ? ROLE[role].color : undefined }, onMouseDown: (e) => onBoxDown(b, entry, e), onMouseEnter: () => paintEnter(b, entry), title: entry.id + ' V' + String(b.c + 1).padStart(2, '0') + '_R' + String(b.r + 1).padStart(2, '0') }),
+        disp.pattern && !b.masked && isActive ? h('polygon', { className: 'gw-box-pat', points: pts, style: { fill: 'url(#gwPat)' } }) : null,
         role ? (function () { const cn = proj(b.corners[0], view); return h('g', null, h('circle', { cx: cn[0], cy: cn[1], r: 8, fill: ROLE[role].color, stroke: '#0c0c10', strokeWidth: 1.5 }), h('text', { x: cn[0], y: cn[1] + 3.2, fill: '#0c0c10', fontSize: 8.5, fontWeight: 800, textAnchor: 'middle' }, ROLE[role].short)); })() : null);
     };
 
@@ -546,10 +547,11 @@ import { saveProjectYaml } from "../api/meshCommands";
       h('span', { className: 'xyz' }, 'X ', c[0], '  Y ', c[1], '  Z ', c[2]));
   }
   function Receipt({ s }) {
-    useEffect(() => { if (!s.calReceipt) return undefined; const t = setTimeout(() => s.setCalReceipt(null), 4200); return () => clearTimeout(t); }, [s.calReceipt]);
+    useEffect(() => { if (!s.calReceipt) return undefined; const t = setTimeout(() => s.setCalReceipt(null), s.calReceipt.tone === 'err' ? 8000 : 4200); return () => clearTimeout(t); }, [s.calReceipt]);
     if (!s.calReceipt) return null;
-    return h('div', { className: 'gw-glass gw-receipt gw-receipt--' + (s.calReceipt.tone === 'notice' ? 'notice' : 'ok') },
-      h(Icon, { name: s.calReceipt.tone === 'notice' ? 'alert' : 'check', size: 13 }), s.calReceipt.text);
+    const tone = s.calReceipt.tone === 'notice' ? 'notice' : s.calReceipt.tone === 'err' ? 'err' : 'ok';
+    return h('div', { className: 'gw-glass gw-receipt gw-receipt--' + tone },
+      h(Icon, { name: tone === 'ok' ? 'check' : 'alert', size: 13 }), s.calReceipt.text);
   }
 
   function useHotkeys(s) {

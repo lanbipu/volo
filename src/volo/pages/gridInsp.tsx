@@ -410,6 +410,8 @@ import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern,
 
   /* ================= 测试图（共享状态：PatternPanel 与 StagePanel「测试图」折叠共用） ================= */
   const SCREEN_ID_CODE = 1; /* 单屏采集会话固定标识码，与 meshVisualGeneratePattern 调用一致 */
+  /* 后端 run_generate_pattern 只认 charuco | vpqsp；handoff 里的「密集编码点」即 VP-QSP */
+  const PATTERN_SCHEMES = [{ id: 'charuco', label: 'ChArUco' }, { id: 'vpqsp', label: '密集编码点' }];
   function usePattern(s) {
     const proj = CX.useProj();
     const screenId = s.calActiveScreen;
@@ -429,7 +431,11 @@ import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern,
           patternStaleByScreen: Object.assign({}, proj.patternStaleByScreen, { [screenId]: false }),
         });
         s.setCalReceipt({ tone: 'ok', text: `已生成测试图 · ${r.cabinet_count} 箱体` });
-      } catch (e) { s.pushLog({ lv: 'err', cat: 'calibrate', msg: `测试图生成失败 · ${e && e.message ? e.message : e}` }); }
+      } catch (e) {
+        const msg = `测试图生成失败 · ${e && e.message ? e.message : e}`;
+        s.pushLog({ lv: 'err', cat: 'calibrate', msg });
+        s.setCalReceipt({ tone: 'err', text: msg.length > 120 ? msg.slice(0, 120) + '…（详见控制台）' : msg });
+      }
       finally { setBusy(false); }
     };
     const togglePlayer = async () => {
@@ -461,7 +467,7 @@ import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern,
     return h(React.Fragment, null,
       head('grid', '测试图', 'ChArUco 校正图案', p.gen ? patternBadge(p.gen, p.stale) : null),
       h(Fold, { label: '参数' },
-        Field('图案方案', h(Sel, { value: p.scheme, options: [{ id: 'charuco', label: 'ChArUco' }, { id: 'dense', label: '密集编码点' }], onChange: p.setScheme, w: 150 })),
+        Field('图案方案', h(Sel, { value: p.scheme, options: PATTERN_SCHEMES, onChange: p.setScheme, w: 150 })),
         Field('屏幕标识码', h('input', { className: 'gw-txt', value: String(SCREEN_ID_CODE), readOnly: true, style: { width: 70, textAlign: 'center' } })),
         Field('目标屏幕', h('span', { style: { fontSize: 12.5, color: 'var(--chrome-text)', fontFamily: 'var(--font-code)' } }, p.screenId))),
       p.busy
@@ -494,7 +500,7 @@ import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern,
     const screenId = s.calActiveScreen;
     const m = proj.config && proj.config.screens[screenId];
     const built = s.calScreenReports && !!s.calScreenReports[screenId];
-    const [method, setMethod] = useState('totalstation');
+    const [method, setMethod] = useState('visual'); /* handoff 默认视觉校正 */
     const isTS = method === 'totalstation';
     const newShapeVisualBlocked = m && GRID_MEAS_TYPES.find((x) => x.id === 'visual').disabledForShapes.includes(m.shape_prior.type);
     const measured = isTS ? !!proj.measurementsAbsPath : !!(proj.visualSession && proj.visualSession.screenId === screenId);
@@ -531,7 +537,7 @@ import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern,
       /* ① 测试图 —— 仅视觉校正需要 */
       !isTS ? h(Fold, { label: '测试图', defOpen: false },
         h('div', { className: 'gw-stage-badge' }, patternBadge(p.gen, p.stale)),
-        Field('图案方案', h(Sel, { value: p.scheme, options: [{ id: 'charuco', label: 'ChArUco' }, { id: 'dense', label: '密集编码点' }], onChange: p.setScheme, w: 150 })),
+        Field('图案方案', h(Sel, { value: p.scheme, options: PATTERN_SCHEMES, onChange: p.setScheme, w: 150 })),
         Field('屏幕标识码', h('input', { className: 'gw-txt', value: String(SCREEN_ID_CODE), readOnly: true, style: { width: 70, textAlign: 'center' } })),
         Field('目标屏幕', h('span', { style: { fontSize: 12.5, color: 'var(--chrome-text)', fontFamily: 'var(--font-code)' } }, screenId)),
         p.busy

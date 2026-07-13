@@ -27,27 +27,16 @@ fn make_executable_fake(path: &std::path::Path) {
     }
 }
 
-/// Mirror locate.rs's compile-time vendor path resolution so the test can
-/// assert on the exact path the locator prefers (workspace target dir, walking
-/// up from CARGO_MANIFEST_DIR to the first `target/` dir).
-fn compile_time_vendor_path() -> Option<PathBuf> {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let mut dir = PathBuf::from(manifest);
-    let target = loop {
-        if !dir.pop() {
-            return None;
-        }
-        let candidate = dir.join("target");
-        if candidate.is_dir() {
-            break candidate;
-        }
-    };
-    let filename = if cfg!(windows) {
+fn binary_filename() -> &'static str {
+    if cfg!(windows) {
         "lmt-vba-sidecar.exe"
     } else {
         "lmt-vba-sidecar"
-    };
-    let platform = if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+    }
+}
+
+fn platform_dir() -> &'static str {
+    if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
         "windows-x86_64"
     } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         "darwin-arm64"
@@ -55,39 +44,36 @@ fn compile_time_vendor_path() -> Option<PathBuf> {
         "darwin-x86_64"
     } else {
         "linux-x86_64"
-    };
-    Some(target.join("sidecar-vendor").join(platform).join(filename))
+    }
 }
 
-/// Mirror locate.rs's dev venv-sidecar path (workspace root + sidecars/mesh-vba/
-/// .venv/bin/<bin>). locate_sidecar prefers this editable install over the
-/// vendored bundle, so fallback tests must stash it (like the vendor binary)
-/// to exercise the lower-precedence branches deterministically.
-fn compile_time_venv_path() -> Option<PathBuf> {
+/// Mirror locate.rs's compile-time workspace resolution: ALL ancestor `target/`
+/// dirs (nearest first — a git worktree nested in the main repo yields several),
+/// each contributing a (venv sidecar, vendored sidecar) candidate pair in the
+/// order locate_sidecar checks them.
+fn compile_time_candidate_pairs() -> Vec<(PathBuf, PathBuf)> {
     let manifest = env!("CARGO_MANIFEST_DIR");
     let mut dir = PathBuf::from(manifest);
-    let workspace = loop {
-        if !dir.pop() {
-            return None;
+    let mut out = Vec::new();
+    while dir.pop() {
+        let target = dir.join("target");
+        if !target.is_dir() {
+            continue;
         }
-        if dir.join("target").is_dir() {
-            break dir.clone();
-        }
-    };
-    let filename = if cfg!(windows) {
-        "lmt-vba-sidecar.exe"
-    } else {
-        "lmt-vba-sidecar"
-    };
-    let venv_bin = if cfg!(windows) { "Scripts" } else { "bin" };
-    Some(
-        workspace
+        let venv_bin = if cfg!(windows) { "Scripts" } else { "bin" };
+        let venv = dir
             .join("sidecars")
             .join("mesh-vba")
             .join(".venv")
             .join(venv_bin)
-            .join(filename),
-    )
+            .join(binary_filename());
+        let vendored = target
+            .join("sidecar-vendor")
+            .join(platform_dir())
+            .join(binary_filename());
+        out.push((venv, vendored));
+    }
+    out
 }
 
 /// Rename `path` → `path.stashed` if it exists; returns the stashed path so the
@@ -108,6 +94,25 @@ fn unstash(path: &std::path::Path, stashed: Option<PathBuf>) {
     }
 }
 
+/// Stash every workspace sidecar candidate (all ancestors' venv + vendored) so
+/// the locator genuinely has nothing to resolve from the dev tree.
+fn stash_all(
+    pairs: &[(PathBuf, PathBuf)],
+) -> Vec<(PathBuf, Option<PathBuf>)> {
+    let mut out = Vec::new();
+    for (venv, vendored) in pairs {
+        out.push((venv.clone(), stash(venv)));
+        out.push((vendored.clone(), stash(vendored)));
+    }
+    out
+}
+
+fn unstash_all(stashes: Vec<(PathBuf, Option<PathBuf>)>) {
+    for (path, stashed) in stashes {
+        unstash(&path, stashed);
+    }
+}
+
 #[test]
 fn env_var_override_takes_precedence() {
     let _guard = env_lock();
@@ -124,15 +129,12 @@ fn env_var_override_takes_precedence() {
 fn missing_sidecar_returns_error_when_path_disabled() {
     let _guard = env_lock();
 
-    // Temporarily stash any real workspace vendor binary (e.g. one produced by
-    // build_exe.sh) so the locator genuinely has nothing to resolve and must
-    // hit the error path. Without this, a dev tree that ran the build would
-    // silently skip the regression check. env_lock serializes env-mutating
-    // tests, so no concurrent test sees the binary missing.
-    let vendor = compile_time_vendor_path().expect("workspace target dir not found");
-    let venv = compile_time_venv_path().expect("workspace not found");
-    let vendor_stash = stash(&vendor);
-    let venv_stash = stash(&venv);
+    // Temporarily stash every real workspace sidecar candidate (all ancestor
+    // workspaces' venv + vendored — a worktree nested in the main repo has
+    // several) so the locator genuinely has nothing to resolve and must hit
+    // the error path. env_lock serializes env-mutating tests, so no concurrent
+    // test sees the binaries missing.
+    let stashes = stash_all(&compile_time_candidate_pairs());
 
     env::remove_var("LMT_VBA_SIDECAR_PATH");
     env::remove_var("LMT_VBA_ALLOW_PATH");
@@ -140,8 +142,7 @@ fn missing_sidecar_returns_error_when_path_disabled() {
 
     // Restore the binaries BEFORE asserting, so a failed assertion never leaves
     // a half-stashed dev tree.
-    unstash(&vendor, vendor_stash);
-    unstash(&venv, venv_stash);
+    unstash_all(stashes);
 
     let err_str = format!(
         "{:?}",
@@ -159,21 +160,14 @@ fn missing_sidecar_returns_error_when_path_disabled() {
 fn path_fallback_opt_in_finds_binary() {
     let _guard = env_lock();
     let tmp = tempdir().unwrap();
-    let fake = tmp.path().join(if cfg!(windows) {
-        "lmt-vba-sidecar.exe"
-    } else {
-        "lmt-vba-sidecar"
-    });
+    let fake = tmp.path().join(binary_filename());
     make_executable_fake(&fake);
 
-    // Stash any real workspace sidecar (vendor + dev venv) so the locator can't
-    // short-circuit on them (both are checked before PATH). This forces the
-    // opt-in PATH branch to fire deterministically whether or not the dev tree
-    // ran a build / has a venv.
-    let vendor = compile_time_vendor_path().expect("workspace target dir not found");
-    let venv = compile_time_venv_path().expect("workspace not found");
-    let vendor_stash = stash(&vendor);
-    let venv_stash = stash(&venv);
+    // Stash every real workspace sidecar (all ancestors' vendor + dev venv) so
+    // the locator can't short-circuit on them (all are checked before PATH).
+    // This forces the opt-in PATH branch to fire deterministically whether or
+    // not the dev tree ran a build / has a venv.
+    let stashes = stash_all(&compile_time_candidate_pairs());
 
     env::remove_var("LMT_VBA_SIDECAR_PATH");
     let saved = env::var_os("PATH");
@@ -188,8 +182,7 @@ fn path_fallback_opt_in_finds_binary() {
         env::set_var("PATH", p);
     }
     env::remove_var("LMT_VBA_ALLOW_PATH");
-    unstash(&vendor, vendor_stash);
-    unstash(&venv, venv_stash);
+    unstash_all(stashes);
 
     let resolved = result.unwrap();
     assert_eq!(resolved, fake);
@@ -199,11 +192,12 @@ fn path_fallback_opt_in_finds_binary() {
 fn vendor_path_preferred_over_path() {
     let _guard = env_lock();
 
-    // Ensure a binary exists at the compile-time workspace vendor path. If a
-    // real PyInstaller build produced one, reuse it; otherwise drop a fake so
-    // the test is self-contained. Track whether we created it so we only clean
-    // up our own mess (never delete a real built binary).
-    let vendor = compile_time_vendor_path().expect("workspace target dir not found");
+    // Ensure a binary exists at the NEAREST workspace's vendor path (first
+    // candidate pair). If a real PyInstaller build produced one, reuse it;
+    // otherwise drop a fake so the test is self-contained. Track whether we
+    // created it so we only clean up our own mess.
+    let pairs = compile_time_candidate_pairs();
+    let (venv, vendor) = pairs.first().expect("workspace target dir not found").clone();
     let mut created_vendor = false;
     if !vendor.is_file() {
         fs::create_dir_all(vendor.parent().unwrap()).unwrap();
@@ -213,18 +207,13 @@ fn vendor_path_preferred_over_path() {
     // Stage a competing binary on PATH and opt PATH lookup in. The vendor path
     // is checked before PATH, so it must win.
     let tmp = tempdir().unwrap();
-    let path_fake = tmp.path().join(if cfg!(windows) {
-        "lmt-vba-sidecar.exe"
-    } else {
-        "lmt-vba-sidecar"
-    });
+    let path_fake = tmp.path().join(binary_filename());
     make_executable_fake(&path_fake);
 
-    // The dev venv is preferred over vendored, so stash it to assert the
-    // vendored-over-PATH precedence specifically. Stash AFTER the panic-prone
-    // tempdir/make_executable_fake setup above so an early panic can never strand
-    // the developer's real (editable) venv binary renamed to `.stashed`.
-    let venv = compile_time_venv_path().expect("workspace not found");
+    // The same-workspace dev venv is preferred over vendored, so stash it to
+    // assert the vendored-over-PATH precedence specifically. Stash AFTER the
+    // panic-prone tempdir/make_executable_fake setup above so an early panic
+    // can never strand the developer's real venv binary renamed to `.stashed`.
     let venv_stash = stash(&venv);
 
     env::remove_var("LMT_VBA_SIDECAR_PATH");
@@ -253,15 +242,23 @@ fn vendor_path_preferred_over_path() {
 #[test]
 fn venv_preferred_over_vendor() {
     let _guard = env_lock();
-    // Dev-only behavior: requires the editable venv sidecar to exist.
-    let venv = compile_time_venv_path().expect("workspace not found");
-    if !venv.is_file() {
-        eprintln!("skipping venv_preferred_over_vendor: no dev venv sidecar present");
-        return;
-    }
-    // Ensure a vendored binary also exists so we're genuinely testing precedence
-    // (venv is checked before the vendored bundle). Clean up only our own fake.
-    let vendor = compile_time_vendor_path().expect("workspace target dir not found");
+    // Dev-only behavior: requires an editable venv sidecar to exist in some
+    // ancestor workspace. Candidates before it (closer ancestors) must be
+    // stashed so they can't win first.
+    let pairs = compile_time_candidate_pairs();
+    let venv_idx = match pairs.iter().position(|(venv, _)| venv.is_file()) {
+        Some(i) => i,
+        None => {
+            eprintln!("skipping venv_preferred_over_vendor: no dev venv sidecar present");
+            return;
+        }
+    };
+    let earlier_stashes = stash_all(&pairs[..venv_idx]);
+    let (venv, vendor) = pairs[venv_idx].clone();
+
+    // Ensure a vendored binary also exists in the SAME workspace so we're
+    // genuinely testing precedence (venv is checked before the vendored
+    // bundle of the same ancestor). Clean up only our own fake.
     let mut created_vendor = false;
     if !vendor.is_file() {
         fs::create_dir_all(vendor.parent().unwrap()).unwrap();
@@ -275,6 +272,7 @@ fn venv_preferred_over_vendor() {
     if created_vendor {
         let _ = fs::remove_file(&vendor);
     }
+    unstash_all(earlier_stashes);
     assert_eq!(
         result.unwrap(),
         venv,

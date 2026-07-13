@@ -484,6 +484,7 @@
 .gw-receipt { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; font-size: 11.5px; }
 .gw-receipt--ok, .gw-receipt--ok svg { color: var(--positive-visual); }
 .gw-receipt--notice, .gw-receipt--notice svg { color: var(--notice-visual); }
+.gw-receipt--err, .gw-receipt--err svg { color: var(--negative-visual); }
 .gw-svp { cursor: grab; }
 .gw-grid-l { stroke: rgba(255,255,255,.07); stroke-width: 1; }
 .gw-ground line:nth-child(21) { stroke: rgba(255,255,255,.16); } /* 中心线略亮 */
