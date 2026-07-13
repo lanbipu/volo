@@ -494,7 +494,7 @@
 .gw-box--cut { fill: transparent; stroke: rgba(255,255,255,.14); stroke-width: 1; stroke-dasharray: 2 3; cursor: pointer; }
 .gw-box.is-sel { stroke: var(--volo-500); stroke-width: 2.4; }
 .gw-box.is-ref { stroke-width: 2.4; }
-.gw-box-pat { pointer-events: none; opacity: .5; }
+.gw-box-pat { pointer-events: none; }
 .gw-ghost { fill: none; stroke: rgba(120,180,255,.5); stroke-width: 1; stroke-dasharray: 2 2; pointer-events: none; }
 .gw-pt { fill: #46c882; stroke: #0c0c10; stroke-width: .8; }
 .gw-pt--out { fill: #ff9628; }

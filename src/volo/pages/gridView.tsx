@@ -13,6 +13,7 @@
      视口据此把 Z 当"上"来摆相机，不是设计稿原型的 Y-up 摆法。 */
 import * as React from "react";
 import { saveProjectYaml } from "../api/meshCommands";
+import { readGeneratedPatternAsDataUrl } from "../api/meshVisualCommands";
 
 (function () {
   const { useState, useRef, useEffect, useMemo, useCallback } = React;
@@ -73,6 +74,23 @@ import { saveProjectYaml } from "../api/meshCommands";
     return [c.ox + u * c.S, c.oy + v * c.S];
   }
   const pstr = (pts) => pts.map((p) => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+
+  /* Map one source-image triangle to one projected triangle. Splitting every
+     cabinet into two triangles keeps the real PNG exact even when a rebuilt
+     cabinet projects to a non-parallelogram quad. */
+  function affineFromTriangles(src, dst) {
+    const [p0, p1, p2] = src, [q0, q1, q2] = dst;
+    const det = p0[0] * (p1[1] - p2[1]) + p1[0] * (p2[1] - p0[1]) + p2[0] * (p0[1] - p1[1]);
+    if (Math.abs(det) < 1e-9) return null;
+    const solve = (v0, v1, v2) => {
+      const a = (v0 * (p1[1] - p2[1]) + v1 * (p2[1] - p0[1]) + v2 * (p0[1] - p1[1])) / det;
+      const c = (v0 * (p2[0] - p1[0]) + v1 * (p0[0] - p2[0]) + v2 * (p1[0] - p0[0])) / det;
+      const e = (v0 * (p1[0] * p2[1] - p2[0] * p1[1]) + v1 * (p2[0] * p0[1] - p0[0] * p2[1]) + v2 * (p0[0] * p1[1] - p1[0] * p0[1])) / det;
+      return [a, c, e];
+    };
+    const x = solve(q0[0], q1[0], q2[0]), y = solve(q0[1], q1[1], q2[1]);
+    return `matrix(${x[0]} ${y[0]} ${x[1]} ${y[1]} ${x[2]} ${y[2]})`;
+  }
 
   /* ---------- 名义（未重建）几何：镜像 shape_grid.rs 的逐列朝向角骨架 ---------- */
   function columnHeadingsDeg(m, cols) {
@@ -188,7 +206,23 @@ import { saveProjectYaml } from "../api/meshCommands";
     const paintRef = useRef(null); /* 遮罩拖刷：{ to: boolean } */
     const innerRef = useRef(null); /* 内层 pan/zoom <g>，命中转换用其真实 CTM */
     const touchedRef = useRef(false); /* 用户手动操作过视口后停用自动取景 */
+    const patternResult = proj_.patternGenByScreen && proj_.patternGenByScreen[s.calActiveScreen];
+    const patternPath = patternResult && patternResult.output_dir ? patternResult.output_dir + '/full_screen.png' : null;
+    const [patternImage, setPatternImage] = useState(null); /* { path, dataUrl } */
     ORBIT = orbit;
+
+    useEffect(() => {
+      let active = true;
+      if (!disp.pattern || !patternPath) { setPatternImage(null); return () => { active = false; }; }
+      readGeneratedPatternAsDataUrl(patternPath)
+        .then((dataUrl) => { if (active) setPatternImage({ path: patternPath, dataUrl }); })
+        .catch((e) => {
+          if (!active) return;
+          setPatternImage(null);
+          s.pushLog({ lv: 'err', cat: 'calibrate', msg: `测试图预览读取失败 · ${e && e.message ? e.message : e}` });
+        });
+      return () => { active = false; };
+    }, [disp.pattern, patternPath]);
 
     /* client 坐标 → 指定元素（外层 svg / 内层 g）局部坐标，走引擎 CTM，
        避免手写反演与 transform-origin 实现差异打架。 */
@@ -347,9 +381,39 @@ import { saveProjectYaml } from "../api/meshCommands";
       if (m.shape_mode !== 'irregular') return;
       setBoxMask(b, paintRef.current.to);
     };
+    const patternDefs = [];
+    const patternForBox = (b, entry, projected) => {
+      if (!disp.pattern || !patternImage || patternImage.path !== patternPath || !entry.isActive || b.masked) return null;
+      const ppc = entry.cfg.pixels_per_cabinet;
+      if (!ppc || !ppc[0] || !ppc[1]) return null;
+      const sx0 = b.c * ppc[0], sx1 = sx0 + ppc[0];
+      /* Generator canvas uses row 0 at wall TOP; viewport geometry uses row 0
+         at wall BOTTOM. This conversion is required for physical orientation. */
+      const canvasRow = entry.g.rows - 1 - b.r;
+      const sy0 = canvasRow * ppc[1], sy1 = sy0 + ppc[1];
+      const [pBL, pBR, pTR, pTL] = projected;
+      const triangles = [
+        { src: [[sx0, sy0], [sx1, sy0], [sx1, sy1]], dst: [pTL, pTR, pBR] },
+        { src: [[sx0, sy0], [sx1, sy1], [sx0, sy1]], dst: [pTL, pBR, pBL] },
+      ];
+      const safeId = entry.id.replace(/[^a-zA-Z0-9_-]/g, '_');
+      return triangles.map((tri, i) => {
+        const clipId = `gw-pat-${safeId}-${b.c}-${b.r}-${i}`;
+        patternDefs.push(h('clipPath', { id: clipId, key: clipId }, h('polygon', { points: pstr(tri.dst) })));
+        const transform = affineFromTriangles(tri.src, tri.dst);
+        return transform ? h('g', { key: clipId + '-group', clipPath: `url(#${clipId})` },
+          h('image', {
+            className: 'gw-box-pat', href: patternImage.dataUrl,
+            x: 0, y: 0,
+            width: ppc[0] * entry.g.cols, height: ppc[1] * entry.g.rows,
+            preserveAspectRatio: 'none', transform,
+          })) : null;
+      });
+    };
     const mkBox = (b, entry) => {
       const isActive = entry.isActive;
-      const pts = pstr(b.corners.map((p) => proj(p, view)));
+      const projected = b.corners.map((p) => proj(p, view));
+      const pts = pstr(projected);
       if (b.masked && disp.maskStyle === 'cutout' && !(isActive && cabinet)) return h('polygon', { key: entry.id + b.key, className: 'gw-box gw-box--cut' + (isActive ? '' : ' gw-box--dim'), points: pts, onMouseDown: (e) => onBoxDown(b, entry, e), onMouseEnter: () => paintEnter(b, entry) });
       let fill = '#39485a';
       if (disp.provenance && b.prov) fill = PROV[b.prov].color;
@@ -358,9 +422,11 @@ import { saveProjectYaml } from "../api/meshCommands";
       let cls = 'gw-box' + (b.masked ? ' gw-box--masked' : '') + (isActive ? '' : ' gw-box--dim');
       if (isActive && (b.key === selKey || (multiKeys && multiKeys.has(b.key)))) cls += ' is-sel';
       if (role) cls += ' is-ref';
+      const pattern = patternForBox(b, entry, projected);
       return h('g', { key: entry.id + b.key },
         h('polygon', { className: cls, points: pts, style: { fill, stroke: role ? ROLE[role].color : undefined }, onMouseDown: (e) => onBoxDown(b, entry, e), onMouseEnter: () => paintEnter(b, entry), title: entry.id + ' V' + String(b.c + 1).padStart(2, '0') + '_R' + String(b.r + 1).padStart(2, '0') }),
-        disp.pattern && !b.masked && isActive ? h('polygon', { className: 'gw-box-pat', points: pts, style: { fill: 'url(#gwPat)' } }) : null,
+        pattern,
+        pattern ? h('polygon', { className: cls, points: pts, style: { fill: 'none', pointerEvents: 'none', stroke: role ? ROLE[role].color : undefined } }) : null,
         role ? (function () { const cn = proj(b.corners[0], view); return h('g', null, h('circle', { cx: cn[0], cy: cn[1], r: 8, fill: ROLE[role].color, stroke: '#0c0c10', strokeWidth: 1.5 }), h('text', { x: cn[0], y: cn[1] + 3.2, fill: '#0c0c10', fontSize: 8.5, fontWeight: 800, textAnchor: 'middle' }, ROLE[role].short)); })() : null);
     };
 
@@ -412,11 +478,7 @@ import { saveProjectYaml } from "../api/meshCommands";
     }
 
     return h('svg', { className: 'gw-svp', ref: stageRef, viewBox: '0 0 1000 700', preserveAspectRatio: 'xMidYMid meet', onMouseDown: onBg, onContextMenu: (e) => e.preventDefault() },
-      h('defs', null,
-        h('pattern', { id: 'gwPat', width: 7, height: 7, patternUnits: 'userSpaceOnUse' },
-          h('rect', { width: 7, height: 7, fill: 'none' }),
-          h('rect', { width: 3.5, height: 3.5, fill: 'rgba(255,255,255,.55)' }),
-          h('rect', { x: 3.5, y: 3.5, width: 3.5, height: 3.5, fill: 'rgba(255,255,255,.55)' }))),
+      h('defs', null, patternDefs),
       /* 缩放以视口中心 (500,350) 为基准，直接烘进 translate（不依赖各引擎对 SVG
          transform-origin 的实现差异）。 */
       h('g', { ref: innerRef, transform: 'translate(' + (pan.x + 500 * (1 - zoom)) + ',' + (pan.y + 350 * (1 - zoom)) + ') scale(' + zoom + ')' },

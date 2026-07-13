@@ -173,19 +173,27 @@ pub async fn mesh_visual_cancel(
 
 #[tauri::command]
 pub fn mesh_visual_generate_pattern(
+    app: AppHandle,
     project_path: String,
     screen_id: String,
     method: String,
     screen_id_code: u8,
     screen_mapping_path: Option<String>,
 ) -> VoloResult<GeneratePatternResult> {
-    mesh_app::visual::run_generate_pattern(
+    let result = mesh_app::visual::run_generate_pattern(
         Path::new(&project_path),
         &screen_id,
         &method,
         screen_id_code,
         screen_mapping_path.as_deref().map(Path::new),
-    )
+    )?;
+    // The preview reader is allowlist-backed: only approve the exact PNG path
+    // returned by the successful Rust-owned generation flow.
+    crate::commands::sidecar_stream::approve_image_path(
+        &app,
+        &Path::new(&result.output_dir).join("full_screen.png"),
+    )?;
+    Ok(result)
 }
 
 #[tauri::command]

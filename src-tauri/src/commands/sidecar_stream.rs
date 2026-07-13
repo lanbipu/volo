@@ -15,6 +15,7 @@
 //! can reach the running task.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -26,7 +27,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, Mutex as TokioMutex};
 
-use volo_shared::error::VoloResult;
+use volo_shared::error::{VoloError, VoloResult};
 
 use super::sidecars::locate_by_name;
 
@@ -108,14 +109,33 @@ impl SidecarEventSink for TauriEventSink {
 /// "read any file on disk" primitive reachable from the webview. A
 /// caller-supplied "base directory" doesn't help — the caller controls both
 /// the path and the claimed base, so it can always pick one that contains
-/// the other. The only signal a compromised renderer can't forge is content
-/// Rust itself observed in a real subprocess's stdout, so every streamed
-/// line that parses as `{..., data: {annotated_images: [...]}}` — today only
-/// `verify overlay`, but this stays intentionally protocol-name-agnostic —
-/// has its image paths canonicalized and added to this session's allowlist.
+/// the other. The only signals a compromised renderer can't forge are paths
+/// Rust observed in real subprocess output or produced through a Rust-owned
+/// generator. Streamed `{..., data: {annotated_images: [...]}}` paths and
+/// synchronous generator artifacts are canonicalized into this allowlist.
 /// `read_image_as_data_url` then only serves paths present in this set.
 #[derive(Default)]
 pub struct ApprovedImagePaths(pub(crate) StdMutex<std::collections::HashSet<std::path::PathBuf>>);
+
+/// Approve an image path that Rust itself produced or observed. Besides streamed
+/// vpcal overlays, synchronous generators use this for their own image artifacts
+/// so the renderer can preview them without receiving arbitrary filesystem read
+/// access.
+pub(crate) fn approve_image_path(app: &AppHandle, path: &Path) -> VoloResult<()> {
+    let canon = path.canonicalize().map_err(|e| {
+        VoloError::Io(format!(
+            "failed to resolve generated image {}: {e}",
+            path.display()
+        ))
+    })?;
+    let registry = app.state::<ApprovedImagePaths>();
+    let mut approved = registry
+        .0
+        .lock()
+        .map_err(|e| VoloError::Io(format!("approved-image registry poisoned: {e}")))?;
+    approved.insert(canon);
+    Ok(())
+}
 
 fn register_approved_images(app: &AppHandle, envelope: &serde_json::Value) {
     let Some(images) = envelope
@@ -131,7 +151,7 @@ fn register_approved_images(app: &AppHandle, envelope: &serde_json::Value) {
     };
     for image in images {
         if let Some(raw) = image.as_str() {
-            if let Ok(canon) = std::path::Path::new(raw).canonicalize() {
+            if let Ok(canon) = Path::new(raw).canonicalize() {
                 approved.insert(canon);
             }
         }

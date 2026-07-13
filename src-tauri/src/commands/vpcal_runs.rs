@@ -186,9 +186,9 @@ pub fn list_lens_sessions(sessions_root: String) -> VoloResult<Vec<LensSessionSu
 /// isn't known at build time, so a static capability scope pattern wouldn't
 /// cover them.
 ///
-/// `path` must be one Rust itself already saw in a real subprocess's parsed
-/// stdout (`sidecar_stream::ApprovedImagePaths`, populated as
-/// `data.annotated_images[]` entries stream past `TauriEventSink::emit`).
+/// `path` must be one Rust itself already saw or produced: either a real
+/// subprocess image reported through parsed stdout, or an image artifact from
+/// a Rust-owned generator such as `mesh_visual_generate_pattern`.
 /// A caller-supplied "base directory" was tried first and rejected in
 /// review: the caller controls both the path and the claimed base, so it
 /// could always pick a base that contains whatever path it wanted — that
@@ -227,7 +227,7 @@ pub fn read_image_as_data_url(
             .map_err(|e| VoloError::Io(format!("approved-image registry poisoned: {e}")))?;
         if !allowed.contains(&canon_path) {
             return Err(VoloError::InvalidInput(format!(
-                "{path} was not reported by a real vpcal invocation this session"
+                "{path} was not approved by a Rust-owned image workflow this session"
             )));
         }
     }

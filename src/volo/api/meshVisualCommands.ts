@@ -50,6 +50,10 @@ export const meshVisualGeneratePattern = (
     projectPath, screenId, method, screenIdCode,
     screenMappingPath: screenMappingPath ?? null,
   });
+
+/** Read the exact generated PNG through the backend's Rust-owned-path allowlist. */
+export const readGeneratedPatternAsDataUrl = (path: string) =>
+  call<string>("read_image_as_data_url", { path });
 // 📝 no-ui: 结构光点阵序列生成
 export const meshVisualGenerateStructuredLight = (
   projectPath: string,
