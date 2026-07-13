@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { probeVideoSource } from "../api/captureProfiles";
 /* Volo — 视频源卡片（重设计）
    采集设置 → Profile 新建/编辑表单中的「视频源」模块。
    Device→Line/Source 枚举选择 + 选中即预览验证 + 格式从信号自动读取。
@@ -105,7 +106,8 @@
     /* 演示控制（非配置项）：sdk 可用性 / 枚举态 / 信号态 */
     const [sdkAll, setSdkAll] = useState(false);       /* false = 仅 UVC（真实默认） */
     const [enumSt, setEnumSt] = useState('ready');      /* ready | loading | empty */
-    const [sig, setSig] = useState('ok');               /* ok | waiting | nosignal | frozen */
+    const [sig, setSig] = useState('waiting');           /* ok | waiting | nosignal | frozen */
+    const [previewUrl, setPreviewUrl] = useState(null);
 
     /* 选择态 */
     const [uvcSel, setUvcSel] = useState('0');
@@ -124,7 +126,19 @@
     const tf = form.transferFunction || 'sdr';
 
     const avail = (id) => id === 'uvc' || id === 'synthetic' || sdkAll;
-    const refresh = () => { setEnumSt('loading'); setTimeout(() => setEnumSt('ready'), 1100); };
+    const refresh = async (deviceOverride) => {
+      if (backend === 'synthetic') return;
+      setEnumSt('loading'); setSig('waiting');
+      try {
+        const manualFmt = fmtMode === 'manual';
+        const r = await probeVideoSource({ backend, device: typeof deviceOverride === 'string' ? deviceOverride : (form.device || '0'),
+          width: manualFmt && form.width ? Number(form.width) : null,
+          height: manualFmt && form.height ? Number(form.height) : null,
+          fps: manualFmt && form.fps ? Number(form.fps) : null,
+          transferFunction: form.transferFunction || 'sdr' });
+        setPreviewUrl(r.preview_data_url || null); setEnumSt('ready'); setSig(r.frames > 0 ? 'ok' : 'nosignal');
+      } catch (e) { setPreviewUrl(null); setEnumSt('ready'); setSig('nosignal'); }
+    };
 
     /* 当前选中设备的 fmt（信号信息条来源） */
     const curFmt = (() => {
@@ -191,7 +205,7 @@
               value: (() => { const l = card && card.lines.find((x) => x.id === dlLine); return l ? h('span', { className: 'nm' }, l.name) : null; })(),
               options: (card ? card.lines : []).map((l) => ({ id: l.id, node: h('div', { className: 'vs-opt-meta' },
                 h('div', { className: 'vs-opt-n' }, l.name), h('div', { className: 'vs-opt-s' }, l.fmt.w + '×' + l.fmt.h + ' · ' + l.fmt.fps + 'fps')) })),
-              selId: dlLine, onPick: (id) => setDlLine(id),
+              selId: dlLine, onPick: (id) => { const dev = dlCard + ':' + id; setDlLine(id); set('device', dev); refresh(dev); },
             })));
       } else if (backend === 'uvc') {
         const d = UVC_DEVS.find((x) => x.id === uvcSel);
@@ -202,7 +216,7 @@
             options: UVC_DEVS.map((x) => ({ id: x.id, node: h('div', { className: 'vs-opt-meta' },
               h('div', { className: 'vs-opt-n' }, x.name, h('span', { className: 'idx' }, '#' + x.id)),
               h('div', { className: 'vs-opt-s' }, x.fmt.w + '×' + x.fmt.h + ' · ' + x.fmt.pix)) })),
-            selId: uvcSel, onPick: (id) => { setUvcSel(id); set('device', id); },
+            selId: uvcSel, onPick: (id) => { setUvcSel(id); set('device', id); refresh(id); },
             manualLabel: '手动输入索引 / URL / 路径…', onManual: () => setManual(true),
           }),
           h('button', { className: 'vs-icbtn', title: '刷新设备列表', onClick: refresh }, h(Icon, { name: 'sync', size: 15 })));
@@ -215,7 +229,7 @@
             options: NDI_SRCS.map((x) => ({ id: x.id, warn: x.hx, node: h('div', { className: 'vs-opt-meta' },
               h('div', { className: 'vs-opt-n' }, x.name), h('div', { className: 'vs-opt-s' }, x.fmt.w + '×' + x.fmt.h + ' · ' + x.fmt.fps + 'fps')),
               warnNode: x.hx ? h('span', { className: 'vs-opt-warn' }, h(Icon, { name: 'alert', size: 10 }), '仅可预览 · 不可标定') : null })),
-            selId: ndiSel, onPick: (id) => { setNdiSel(id); set('device', (NDI_SRCS.find((x) => x.id === id) || {}).name || ''); },
+            selId: ndiSel, onPick: (id) => { const name = (NDI_SRCS.find((x) => x.id === id) || {}).name || ''; setNdiSel(id); set('device', name); refresh(name); },
             manualLabel: '手动输入 NDI 源名…', onManual: () => setManual(true),
           }),
           h('button', { className: 'vs-icbtn', title: '重新发现', onClick: refresh }, h(Icon, { name: 'sync', size: 15 })));
@@ -240,7 +254,7 @@
         h('div', { className: 'vs-preview state-' + effSig },
           h('div', { className: 'vs-badge' }, h(StatusPill, { st: effSig })),
           (effSig === 'ok' || effSig === 'hx') ? h('span', { className: 'vs-livedot' }, h('i', null), 'LIVE') : null,
-          h(Frame, { state: effSig === 'hx' ? 'ok' : effSig }),
+          previewUrl ? h('img', { className: 'vs-frame', src: previewUrl, alt: '视频源实际探测帧' }) : h(Frame, { state: effSig === 'hx' ? 'ok' : effSig }),
           effSig === 'waiting' ? h('div', { className: 'vs-preview-mid' }, h('span', { className: 'ring' }), h('span', { className: 'msg' }, '等待首帧…')) : null,
           effSig === 'nosignal' ? h('div', { className: 'vs-preview-mid' }, h(Icon, { name: 'alert', size: 26, style: { color: 'color-mix(in srgb, var(--negative-visual) 80%, #fff)' } }), h('span', { className: 'msg neg' }, '设备无法打开 / 断流')) : null,
           effSig === 'frozen' ? h('span', { className: 'vs-frozen-tag' }, '最后一帧 · 已 4.2s 未更新') : null),
@@ -323,8 +337,7 @@
       /* 常驻提示行 */
       h('div', { className: 'vs-hint' }, h(Icon, { name: 'info', size: 15 }),
         h('div', null, h('b', null, '标定必须使用相机原始信号'), '（未经去畸变 / 裁切 / 缩放 / 合成）。信号处理会破坏几何一致性，导致内外参估计不可靠。')),
-      /* 演示切换 */
-      demo);
+      null);
   }
 
   /* ---------- 通用下拉选择器 ---------- */

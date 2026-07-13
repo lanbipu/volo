@@ -344,6 +344,8 @@ pub fn run() {
             commands::vpcal_runs::read_image_as_data_url,
             commands::capture_profiles::list_capture_profiles,
             commands::capture_profiles::save_capture_profiles,
+            commands::capture_profiles::probe_tracking_source,
+            commands::capture_profiles::probe_video_source,
             commands::mesh_export::export_obj,
             commands::mesh_total_station::import_total_station_csv,
             commands::mesh_total_station::generate_instruction_card,

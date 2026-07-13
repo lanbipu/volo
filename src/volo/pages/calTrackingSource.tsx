@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { probeTrackingSource } from "../api/captureProfiles";
 /* Volo — 追踪源卡片（重设计）+ 独立「追踪源信号接入」二级界面
    采集设置 → Profile 追踪源模块。与「视频源」卡片对偶：
    选协议 → 定端口/绑定 → 监听验证数据（监听测试区 ↔ 信号预览区）。
@@ -45,7 +46,7 @@
   /* ============================================================
      追踪源卡片主组件  props: form, set
      ============================================================ */
-  function TrackingSourceCard({ form, set }) {
+  function TrackingSourceCard({ form, set, onVerified }) {
     const protocol = form.trackProtocol || 'freed';
     const proto = PROTOCOLS.find((p) => p.id === protocol) || PROTOCOLS[0];
 
@@ -55,22 +56,22 @@
     const [multiCam, setMultiCam] = useState(false);   /* 演示：FreeD 多机位 */
     const [vals, setVals] = useState(BASE);
     const [tick, setTick] = useState(0);
+    const [probeError, setProbeError] = useState(null);
 
-    const live = listening && sig === 'normal';
+    const live = false;
     const dataPresent = listening && (sig === 'normal' || sig === 'frozen');
 
-    useEffect(() => {
-      if (!live) return undefined;
-      const t = setInterval(() => {
-        setVals((v) => ({
-          x: jit(v.x, 1.6), y: jit(v.y, 1.2), z: jit(v.z, 1.4),
-          pan: jit(v.pan, 0.28), tilt: jit(v.tilt, 0.18), roll: jit(v.roll, 0.05),
-          zoom: Math.round(jit(v.zoom, 900)), focus: Math.round(jit(v.focus, 640)),
-        }));
-        setTick((n) => n + 1);
-      }, 480);
-      return () => clearInterval(t);
-    }, [live]);
+    const startProbe = async () => {
+      setListening(true); setSig('nodata'); setProbeError(null);
+      try {
+        const r = await probeTrackingSource(protocol, form.trackHost || '0.0.0.0', Number(form.trackPort));
+        if (!r.frames || !r.latest) { setSig('nodata'); onVerified && onVerified(false); return; }
+        const p = r.latest.position || [0, 0, 0];
+        const rot = (r.latest.rotation && r.latest.rotation.values) || [0, 0, 0];
+        setVals({ x: p[0], y: p[1], z: p[2], pan: rot[0], tilt: rot[1], roll: rot[2], zoom: r.latest.zoom || 0, focus: r.latest.focus || 0 });
+        setTick(r.frames); setSig('normal'); onVerified && onVerified(true);
+      } catch (e) { setSig('fail'); onVerified && onVerified(false); setProbeError(e && e.message ? e.message : String(e)); }
+    };
 
     /* camera id（FreeD 且有数据时） */
     const camIds = proto.id === 'freed' && dataPresent ? (multiCam ? [1, 3] : [1]) : [];
@@ -89,7 +90,7 @@
     const protoGrid = h('div', { className: 'vs-backends' }, PROTOCOLS.map((p) => {
       const on = p.id === protocol;
       return h('div', { key: p.id, className: 'vs-be' + (on ? ' on' : ''),
-        onClick: () => { set('trackProtocol', p.id); } },
+        onClick: () => { set('trackProtocol', p.id); onVerified && onVerified(false); } },
         h('span', { className: 'vs-be-ic' }, h(Icon, { name: p.icon, size: 15 })),
         h('span', { className: 'vs-be-tx' }, h('b', null, p.label), h('span', null, p.sub)));
     }));
@@ -116,7 +117,7 @@
         h('div', { className: 'ts-idle-tx' },
           h('div', { className: 'ts-idle-t' }, '点「开始监听」验证追踪数据链路'),
           h('div', { className: 'ts-idle-d' }, '绑定 ' + (form.trackHost || '0.0.0.0') + ':' + (form.trackPort || '—') + ' 接收 ' + proto.label + ' 包，实时确认位姿/编码器值——保存前先确保值在更新。')),
-        h('button', { className: 'ts-listen-btn start', onClick: () => { setListening(true); setVals(BASE); } },
+        h('button', { className: 'ts-listen-btn start', onClick: startProbe },
           h(Icon, { name: 'play', size: 14 }), '开始监听'));
     } else {
       /* 指标 */
@@ -136,7 +137,7 @@
         const otherLabel = protocol === 'freed' ? 'OpenTrackIO' : 'FreeD';
         body = h('div', { className: 'ts-nodata' },
           h('div', { className: 'msg neg' }, '收到包，但按 ' + proto.label + ' 解不出来'),
-          h('div', { className: 'sub' }, '对方发送的可能不是 ' + proto.label + '。这是现场高频错误——'),
+          h('div', { className: 'sub' }, probeError || ('对方发送的可能不是 ' + proto.label + '。这是现场高频错误——')),
           h('button', { className: 'ts-listen-btn stop', style: { marginTop: 11 }, onClick: () => set('trackProtocol', other) },
             h(Icon, { name: 'sync', size: 13 }), '试试切换为 ' + otherLabel));
       } else {
@@ -181,7 +182,7 @@
     const advBody = advOpen ? h('div', { className: 'vs-adv-body' },
       h('div', { className: 'cap-field', style: { marginBottom: 0 } },
         h('span', { className: 'cap-lbl' }, '绑定地址'),
-        h('select', { className: 'ar-select', value: form.trackHost || '0.0.0.0', onChange: (e) => set('trackHost', e.target.value) },
+        h('select', { className: 'ar-select', value: form.trackHost || '0.0.0.0', onChange: (e) => { set('trackHost', e.target.value); onVerified && onVerified(false); } },
           BIND_ADDRS.map((a) => h('option', { key: a.id, value: a.id }, a.label)))),
       h('div', { className: 'vs-tf-note' }, '默认监听全部网卡。多网卡机器上，绑定到追踪系统所在网段可避免串扰。')) : null;
 
@@ -207,7 +208,7 @@
       h('div', { className: 'vs-sub' }, '连接参数'),
       h('div', { className: 'cap-field', style: { marginBottom: 0 } },
         h('span', { className: 'cap-lbl' }, 'UDP 端口'),
-        h('input', { className: 'cap-tf', type: 'number', style: { maxWidth: 140, flex: '0 0 auto' }, value: form.trackPort, onChange: (e) => set('trackPort', e.target.value) }),
+        h('input', { className: 'cap-tf', type: 'number', style: { maxWidth: 140, flex: '0 0 auto' }, value: form.trackPort, onChange: (e) => { set('trackPort', e.target.value); onVerified && onVerified(false); } }),
         h('span', { style: { fontSize: 10.5, color: 'var(--chrome-faint)' } }, '必填 · 与追踪系统输出一致')),
       h('div', { className: 'vs-adv' },
         h('button', { className: 'cap-adv-h', style: { width: '100%' }, onClick: () => setAdvOpen((v) => !v) },
@@ -225,7 +226,7 @@
       /* 常驻提示 */
       h('div', { className: 'vs-hint' }, h(Icon, { name: 'info', size: 15 }),
         h('div', null, h('b', null, '值不更新就不要开始采集。'), ' 端口填错 / 防火墙拦截 / 协议选错都会让追踪静默失败，务必先在上方监听区确认位姿在实时变化。')),
-      demo);
+      null);
   }
 
   /* ============================================================
@@ -233,6 +234,7 @@
      ============================================================ */
   function TrackingModal({ s, close }) {
     const [form, setForm] = useState({ trackProtocol: 'freed', trackPort: 6301, trackHost: '0.0.0.0', trackCameraId: null });
+    const [verified, setVerified] = useState(false);
     const set = (k, v) => setForm((f) => Object.assign({}, f, { [k]: v }));
     return h('div', { className: 'drawer drawer--cal2cap' },
       h('div', { className: 'drawer-h' },
@@ -241,10 +243,10 @@
           h('h2', null, '追踪源信号接入'),
           h('div', { className: 'sub' }, h('span', { className: 'cli-pill' }, 'tracking ingest'), h('span', null, ' · 接入并验证追踪数据'))),
         h('button', { className: 'iconbtn x', onClick: close }, h(Icon, { name: 'x', size: 16 }))),
-      h('div', { className: 'drawer-b' }, h(TrackingSourceCard, { form, set })),
+      h('div', { className: 'drawer-b' }, h(TrackingSourceCard, { form, set, onVerified: setVerified })),
       h('div', { className: 'drawer-f' },
         h(Button, { variant: 'secondary', size: 'M', onPress: close }, '关闭'),
-        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'check', size: 15 }),
+        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'check', size: 15 }), isDisabled: !verified,
           onPress: () => { s.pushLog && s.pushLog({ lv: 'ok', cat: 'capture', msg: '追踪源已验证 · <b>' + (form.trackProtocol === 'freed' ? 'FreeD' : 'OpenTrackIO') + ' :' + form.trackPort + '</b>' }); close(); } }, '用于采集配置')));
   }
 

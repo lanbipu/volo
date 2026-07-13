@@ -360,9 +360,13 @@ import { useCaptureSession } from "./devCapture";
       s.pushLog({ lv: 'info', cat: 'lens', msg: '开始实时采集 · 配置 <b>' + profile.name + '</b> · 目标 ' + profile.poses + ' pose' });
       session.start({
         screenPath: live.screenPath, outDir, backend: profile.videoBackend, device: profile.device,
-        trackProtocol: profile.trackProtocol, trackPort: profile.trackPort, poses: profile.poses,
+        trackProtocol: profile.trackProtocol, trackPort: profile.trackPort, trackHost: profile.trackHost, poses: profile.poses,
         inverted: !!profile.inverted, graycodeSync: !!profile.graycodeSync, lensPath: profile.lensPath || '',
         settleMs: profile.settleMs, burst: profile.burst,
+        width: profile.fmtMode === 'manual' ? profile.width : null,
+        height: profile.fmtMode === 'manual' ? profile.height : null,
+        fps: profile.fmtMode === 'manual' ? profile.fps : null,
+        transferFunction: profile.transferFunction || 'sdr',
       });
     };
     const finishCapture = () => session.sendCmd({ cmd: 'finish' });

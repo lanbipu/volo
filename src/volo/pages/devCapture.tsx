@@ -54,12 +54,17 @@ export interface CaptureSessionOptions {
   device: string;
   trackProtocol: string;
   trackPort: number;
+  trackHost?: string;
   poses: number;
   inverted: boolean;
   graycodeSync: boolean;
   lensPath: string;
   settleMs: number;
   burst: number;
+  width?: number | string | null;
+  height?: number | string | null;
+  fps?: number | string | null;
+  transferFunction?: string;
 }
 
 export function buildSessionArgs(o: CaptureSessionOptions): string[] {
@@ -71,12 +76,17 @@ export function buildSessionArgs(o: CaptureSessionOptions): string[] {
     "--device", o.device,
     "--track-protocol", o.trackProtocol,
     "--track-port", String(o.trackPort),
+    "--track-host", o.trackHost || "0.0.0.0",
     "--poses", String(o.poses),
     "--settle-ms", String(o.settleMs),
     "--burst", String(o.burst),
     "--preview-port", "0",
     "--output", "ndjson",
   ];
+  if (o.width) args.push("--width", String(o.width));
+  if (o.height) args.push("--height", String(o.height));
+  if (o.fps) args.push("--fps", String(o.fps));
+  if (o.transferFunction) args.push("--transfer-function", o.transferFunction);
   if (o.inverted) args.push("--inverted");
   if (o.graycodeSync) args.push("--graycode-sync");
   if (o.lensPath) args.push("--lens", o.lensPath);
