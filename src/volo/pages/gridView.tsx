@@ -13,7 +13,7 @@
      视口据此把 Z 当"上"来摆相机，不是设计稿原型的 Y-up 摆法。 */
 import * as React from "react";
 import { saveProjectYaml } from "../api/meshCommands";
-import { readGeneratedPatternAsDataUrl } from "../api/meshVisualCommands";
+import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api/meshVisualCommands";
 
 (function () {
   const { useState, useRef, useEffect, useMemo, useCallback } = React;
@@ -210,7 +210,7 @@ import { readGeneratedPatternAsDataUrl } from "../api/meshVisualCommands";
     const innerRef = useRef(null); /* 内层 pan/zoom <g>，命中转换用其真实 CTM */
     const touchedRef = useRef(false); /* 用户手动操作过视口后停用自动取景 */
     const patternResult = proj_.patternGenByScreen && proj_.patternGenByScreen[s.calActiveScreen];
-    const patternPath = patternResult && patternResult.output_dir ? patternResult.output_dir + '/full_screen.png' : null;
+    const patternPath = patternResult && patternResult.output_dir ? generatedPatternImagePath(patternResult.output_dir) : null;
     const [patternImage, setPatternImage] = useState(null); /* { path, dataUrl } */
     ORBIT = orbit;
 
@@ -225,7 +225,7 @@ import { readGeneratedPatternAsDataUrl } from "../api/meshVisualCommands";
           s.pushLog({ lv: 'err', cat: 'calibrate', msg: `测试图预览读取失败 · ${e && e.message ? e.message : e}` });
         });
       return () => { active = false; };
-    }, [disp.pattern, patternPath]);
+    }, [disp.pattern, patternPath, patternResult]);
 
     /* client 坐标 → 指定元素（外层 svg / 内层 g）局部坐标，走引擎 CTM，
        避免手写反演与 transform-origin 实现差异打架。 */
