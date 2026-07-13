@@ -11,7 +11,8 @@
 # UNVERIFIED on macOS — exercised by Windows CI (Task 3.5).
 $ErrorActionPreference = 'Stop'
 
-$root = Resolve-Path "$PSScriptRoot/.."
+# Workspace root = two levels up from sidecars/mesh-vba.
+$root = Resolve-Path "$PSScriptRoot/../.."
 $venv = "$PSScriptRoot/.venv"
 $pyinstaller = Join-Path $venv 'Scripts/pyinstaller.exe'
 
