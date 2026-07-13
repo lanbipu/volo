@@ -546,10 +546,11 @@ import { saveProjectYaml } from "../api/meshCommands";
       h('span', { className: 'xyz' }, 'X ', c[0], '  Y ', c[1], '  Z ', c[2]));
   }
   function Receipt({ s }) {
-    useEffect(() => { if (!s.calReceipt) return undefined; const t = setTimeout(() => s.setCalReceipt(null), 4200); return () => clearTimeout(t); }, [s.calReceipt]);
+    useEffect(() => { if (!s.calReceipt) return undefined; const t = setTimeout(() => s.setCalReceipt(null), s.calReceipt.tone === 'err' ? 8000 : 4200); return () => clearTimeout(t); }, [s.calReceipt]);
     if (!s.calReceipt) return null;
-    return h('div', { className: 'gw-glass gw-receipt gw-receipt--' + (s.calReceipt.tone === 'notice' ? 'notice' : 'ok') },
-      h(Icon, { name: s.calReceipt.tone === 'notice' ? 'alert' : 'check', size: 13 }), s.calReceipt.text);
+    const tone = s.calReceipt.tone === 'notice' ? 'notice' : s.calReceipt.tone === 'err' ? 'err' : 'ok';
+    return h('div', { className: 'gw-glass gw-receipt gw-receipt--' + tone },
+      h(Icon, { name: tone === 'ok' ? 'check' : 'alert', size: 13 }), s.calReceipt.text);
   }
 
   function useHotkeys(s) {

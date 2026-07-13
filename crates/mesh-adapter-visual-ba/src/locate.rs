@@ -47,16 +47,21 @@ fn binary_filename() -> &'static str {
 
 /// Compile-time workspace target dir resolution. `env!` is evaluated when
 /// this crate is built, so the path is baked in regardless of runtime env.
-fn workspace_target_from_compile_time() -> Option<PathBuf> {
+/// Returns ALL ancestor `target` dirs (nearest first): a git worktree nested
+/// inside the main repo (`<repo>/.claude/worktrees/<x>`) can carry a stray
+/// empty `target/` with no sidecar next to it — the walk must be able to
+/// continue up to the main repo instead of stopping at the first hit.
+fn workspace_targets_from_compile_time() -> Vec<PathBuf> {
     let manifest = env!("CARGO_MANIFEST_DIR");
     let mut dir = PathBuf::from(manifest);
+    let mut out = Vec::new();
     while dir.pop() {
         let candidate = dir.join("target");
         if candidate.is_dir() {
-            return Some(candidate);
+            out.push(candidate);
         }
     }
-    None
+    out
 }
 
 /// In packaged runtimes (Tauri bundle), the sidecar lives next to the host
@@ -102,7 +107,7 @@ pub fn locate_sidecar() -> VbaResult<PathBuf> {
     // possibly-stale vendored bundle. Both are fixed workspace-relative paths
     // (NOT a PATH search), so no PATH-injection risk; both are absent in packaged
     // installs, where this whole block falls through to the exe-relative lookup.
-    if let Some(target) = workspace_target_from_compile_time() {
+    for target in workspace_targets_from_compile_time() {
         // venv console scripts live in `Scripts` on Windows, `bin` elsewhere.
         if let Some(workspace) = target.parent() {
             let venv_bin = if cfg!(windows) { "Scripts" } else { "bin" };

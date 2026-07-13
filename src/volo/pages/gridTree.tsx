@@ -341,10 +341,18 @@ import { listen } from "@tauri-apps/api/event";
       if (!hasBackend) return;
       try {
         const r = await meshVisualGeneratePattern(proj.path, screenId, 'charuco', 1, null);
-        CX.projStore.patch({ patternGenByScreen: Object.assign({}, proj.patternGenByScreen, { [screenId]: true }) });
+        /* 存完整结果对象（与 gridInsp usePattern 一致），否则检查器里「发送到播放器/打开输出文件夹」拿不到 output_dir */
+        CX.projStore.patch({
+          patternGenByScreen: Object.assign({}, proj.patternGenByScreen, { [screenId]: r }),
+          patternStaleByScreen: Object.assign({}, proj.patternStaleByScreen, { [screenId]: false }),
+        });
         s.setCalReceipt({ tone: 'ok', text: `已生成测试图 · ${r.cabinet_count} 箱体` });
         s.pushLog({ lv: 'ok', cat: 'survey', msg: `pattern 生成 · ${r.cabinet_count} 箱体 · ${r.total_markers} markers` });
-      } catch (e) { s.pushLog({ lv: 'err', cat: 'survey', msg: `pattern 生成失败 · ${e && e.message ? e.message : e}` }); }
+      } catch (e) {
+        const msg = `测试图生成失败 · ${e && e.message ? e.message : e}`;
+        s.pushLog({ lv: 'err', cat: 'survey', msg });
+        s.setCalReceipt({ tone: 'err', text: msg.length > 120 ? msg.slice(0, 120) + '…（详见控制台）' : msg });
+      }
     };
     const pickManifest = async () => {
       try { const p = await pickFile('capture manifest (JSON/YAML)', ['json', 'yaml', 'yml']); if (p) { setManifestPath(p); setTab('offline'); } }
