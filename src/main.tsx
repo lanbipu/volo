@@ -29,18 +29,9 @@ if (route.startsWith("#/pattern-player")) {
 
 function bootShell(App: React.ComponentType) {
 
-// The standalone Volo app has no Claude Design edit-mode host. The Tweaks panel
-// announces `__edit_mode_available` once it has registered its message listener;
-// reply with `__activate_edit_mode` to reveal it (platform / density / theme
-// controls). Registering this listener before render makes activation race-free.
-window.addEventListener("message", (e: MessageEvent) => {
-  if (e && e.data && e.data.type === "__edit_mode_available") {
-    window.postMessage({ type: "__activate_edit_mode" }, "*");
-  }
-});
-
-// The panel's message listener stays mounted for the session, so re-posting
-// `__activate_edit_mode` reveals it again after the user dismisses it (✕).
+// The standalone Volo app has no Claude Design edit-mode host, and the Tweaks
+// panel stays hidden until it receives `__activate_edit_mode`. It is no longer
+// auto-activated on startup; the shortcut below reveals it on demand.
 // Bound to Cmd/Ctrl+Shift+. — ignored while typing in a field.
 window.addEventListener("keydown", (e: KeyboardEvent) => {
   const typing =
