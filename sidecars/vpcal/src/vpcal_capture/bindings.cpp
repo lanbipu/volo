@@ -10,6 +10,7 @@
 //   inp.start(); raw = inp.next_frame()  # None on stop/timeout
 //   raw.data / raw.width / raw.height / raw.row_bytes / raw.pixel_format
 //   raw.timecode ("" → None handled Python-side) / raw.hardware_time_s
+//   raw.frame_rate (detected signal fps; 0.0 until the mode is known)
 //   inp.frames_seen / inp.frames_dropped / inp.timecode_present
 //   inp.stop()
 
@@ -38,7 +39,8 @@ PYBIND11_MODULE(_vpcal_capture, m) {
       .def_readonly("row_bytes", &RawFrame::row_bytes)
       .def_readonly("pixel_format", &RawFrame::pixel_format)
       .def_readonly("timecode", &RawFrame::timecode)
-      .def_readonly("hardware_time_s", &RawFrame::hardware_time_s);
+      .def_readonly("hardware_time_s", &RawFrame::hardware_time_s)
+      .def_readonly("frame_rate", &RawFrame::frame_rate);
 
   m.def("list_devices", [] {
     py::list out;

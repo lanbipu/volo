@@ -29,16 +29,6 @@ from vpcal.core.errors import PreconditionError
 
 _BACKEND_CHOICES = ["uvc", "ndi", "decklink", "synthetic"]
 
-# Connector id → display name for `capture enumerate --backend decklink`.
-_DECKLINK_CONNECTOR_NAMES = {
-    "sdi": "SDI",
-    "hdmi": "HDMI",
-    "optical_sdi": "Optical SDI",
-    "component": "Component",
-    "composite": "Composite",
-    "svideo": "S-Video",
-}
-
 
 @click.group()
 @click.pass_context
@@ -139,14 +129,17 @@ def enumerate_video_sources(ctx, backend, timeout_s, **flags) -> None:
         if backend == "synthetic":
             sources = [{"name": "synthetic"}]
         elif backend == "decklink":
-            from vpcal.core.capture_backend import list_decklink_devices
+            from vpcal.core.capture_backend import (
+                DECKLINK_CONNECTOR_LABELS,
+                list_decklink_devices,
+            )
 
             sources = [
                 {
                     "index": d["index"],
                     "name": d["name"],
                     "connectors": [
-                        {"id": c, "name": _DECKLINK_CONNECTOR_NAMES.get(c, c.upper())}
+                        {"id": c, "name": DECKLINK_CONNECTOR_LABELS.get(c, c.upper())}
                         for c in d.get("connectors", [])
                     ],
                 }

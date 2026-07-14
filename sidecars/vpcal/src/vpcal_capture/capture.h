@@ -43,6 +43,7 @@ struct RawFrame {
   std::string pixel_format;  // "v210" | "uyvy"
   std::string timecode;      // RP188/VITC "HH:MM:SS[:;]FF", empty if absent
   double hardware_time_s = 0.0;  // card hardware reference clock, seconds
+  double frame_rate = 0.0;   // detected signal fps (0 until the mode is known)
 };
 
 struct DeviceInfo {
@@ -102,6 +103,7 @@ class DeckLinkInput final : public IDeckLinkInputCallback {
   IDeckLinkInput* input_ = nullptr;
   IDeckLinkConfiguration* config_ = nullptr;  // held when a connector is selected
   BMDPixelFormat pixel_format_ = bmdFormat10BitYUV;
+  std::atomic<double> frame_rate_{0.0};  // detected mode fps, updated on format change
 
   std::mutex mutex_;
   std::condition_variable cv_;

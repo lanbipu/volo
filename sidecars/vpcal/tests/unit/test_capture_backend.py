@@ -115,13 +115,14 @@ def test_parse_decklink_device_invalid(device):
 
 
 class _FakeRaw:
-    def __init__(self, pixel_format, width=4, height=2, row_bytes=8):
+    def __init__(self, pixel_format, width=4, height=2, row_bytes=8, frame_rate=0.0):
         self.pixel_format = pixel_format
         self.width = width
         self.height = height
         self.row_bytes = row_bytes
         self.data = b"\x00" * (row_bytes * height)
         self.timecode = ""
+        self.frame_rate = frame_rate
 
 
 class _FakeImpl:
@@ -156,6 +157,14 @@ def test_decklink_frames_accept_uyvy():
     frames = _take(b, 1)
     assert frames[0].gray.shape == (2, 4)
     assert frames[0].meta["pixel_format"] == "uyvy"
+    # No detected rate yet (0.0) → no frame_rate key, so the CLI fps fallback holds.
+    assert "frame_rate" not in frames[0].meta
+
+
+def test_decklink_frames_surface_detected_frame_rate():
+    b = _decklink_with_impl(_FakeImpl([_FakeRaw("uyvy", frame_rate=59.94)]))
+    frames = _take(b, 1)
+    assert frames[0].meta["frame_rate"] == 59.94
 
 
 def test_uvc_backend_bad_device_raises():

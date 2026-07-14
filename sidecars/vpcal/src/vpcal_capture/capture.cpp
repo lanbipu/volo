@@ -316,6 +316,14 @@ HRESULT DeckLinkInput::VideoInputFormatChanged(BMDVideoInputFormatChangedEvents,
   // Renegotiate to the detected mode; prefer 10-bit when the signal is YUV.
   pixel_format_ = (flags & bmdDetectedVideoInputRGB444) ? bmdFormat10BitRGB
                                                         : bmdFormat10BitYUV;
+  // Cache the detected frame rate (fps = timeScale / frameDuration) so the
+  // capture reports the real signal rate — the auto-detect path starts at
+  // 1080p25 and only knows the true rate once the mode is detected here.
+  BMDTimeValue frame_duration = 0;
+  BMDTimeScale time_scale = 0;
+  if (mode->GetFrameRate(&frame_duration, &time_scale) == S_OK && frame_duration > 0) {
+    frame_rate_.store(static_cast<double>(time_scale) / static_cast<double>(frame_duration));
+  }
   input_->PauseStreams();
   input_->EnableVideoInput(mode->GetDisplayMode(), pixel_format_,
                            bmdVideoInputEnableFormatDetection);
@@ -334,6 +342,7 @@ HRESULT DeckLinkInput::VideoInputFrameArrived(IDeckLinkVideoInputFrame* video,
   frame->height = static_cast<int32_t>(video->GetHeight());
   frame->row_bytes = static_cast<int32_t>(video->GetRowBytes());
   frame->pixel_format = pixel_format_id(video->GetPixelFormat());
+  frame->frame_rate = frame_rate_.load();
 
   // SDK 16.0 (14.3+) removed IDeckLinkVideoFrame::GetBytes; frame memory is now
   // reached through IDeckLinkVideoBuffer inside an explicit access window. Any

@@ -407,6 +407,16 @@ class NdiBackend:
 # spec — the shim re-validates against the real card's advertised connectors.
 DECKLINK_CONNECTORS = ("sdi", "hdmi", "optical_sdi", "component", "composite", "svideo")
 
+# Connector id → human display name. Keyed off DECKLINK_CONNECTORS so validation
+# (this module) and display (the CLI `enumerate`) can never drift apart — adding
+# a connector to the tuple above surfaces here as a KeyError, not a silent ugly
+# fallback label in the UI.
+_DECKLINK_CONNECTOR_LABELS = {
+    "sdi": "SDI", "hdmi": "HDMI", "optical_sdi": "Optical SDI",
+    "component": "Component", "composite": "Composite", "svideo": "S-Video",
+}
+DECKLINK_CONNECTOR_LABELS = {c: _DECKLINK_CONNECTOR_LABELS[c] for c in DECKLINK_CONNECTORS}
+
 _DECKLINK_MISSING_MODULE = (
     "DeckLink backend requires the vpcal._vpcal_capture native module, which is "
     "only built when a local Blackmagic DeckLink SDK is present. Download the "
@@ -512,6 +522,7 @@ class DecklinkBackend:
 
         idx = 0
         misses = 0
+        seen_first = False
         while self._impl is not None:
             raw = self._impl.next_frame()  # blocking; None on stop/timeout
             recv_ts = time.monotonic()
@@ -520,11 +531,19 @@ class DecklinkBackend:
                 # timeout; keep the stream alive across a few misses so a brief
                 # glitch doesn't kill a pull/session. A real stop() drains
                 # immediately, so these misses pass in quick succession.
+                #
+                # Before the first frame, tolerate a longer wait: locking a 4K /
+                # high-frame-rate signal drives a PauseStreams→EnableVideoInput→
+                # StartStreams renegotiation (VideoInputFormatChanged) that can
+                # take several seconds, so a 5-miss (~5s) cap here would report a
+                # genuinely-connected source as "nosignal". Once frames flow, a
+                # >5s gap is a real drop. (The Rust probe caps total wall-clock.)
                 misses += 1
-                if misses >= 5:
+                if misses >= (5 if seen_first else 15):
                     return
                 continue
             misses = 0
+            seen_first = True
             if raw.pixel_format == "v210":
                 gray = v210_to_gray16(raw.data, raw.width, raw.height, raw.row_bytes)
             elif raw.pixel_format == "uyvy":
@@ -542,16 +561,22 @@ class DecklinkBackend:
                     details={"backend": "decklink", "pixel_format": raw.pixel_format,
                              "reason": "unsupported_format"},
                 )
+            meta = {
+                "backend": "decklink",
+                "pixel_format": raw.pixel_format,
+                "transfer_function": self._config.transfer_function,
+            }
+            # Only surface a real detected rate — the C++ shim reports 0.0 until
+            # VideoInputFormatChanged fires, and a 0.0 key would clobber the CLI's
+            # `meta.get("frame_rate", fps)` fallback with a bogus fps.
+            if raw.frame_rate > 0:
+                meta["frame_rate"] = raw.frame_rate
             yield CapturedFrame(
                 gray=gray,
                 recv_ts=recv_ts,
                 timecode=raw.timecode or None,
                 frame_index=idx,
-                meta={
-                    "backend": "decklink",
-                    "pixel_format": raw.pixel_format,
-                    "transfer_function": self._config.transfer_function,
-                },
+                meta=meta,
             )
             idx += 1
 
@@ -579,6 +604,7 @@ def open_backend(config: CaptureConfig) -> CaptureBackend:
 __all__ = [
     "BACKENDS",
     "DECKLINK_CONNECTORS",
+    "DECKLINK_CONNECTOR_LABELS",
     "NDI_HX_REFUSAL",
     "CaptureConfig",
     "CapturedFrame",

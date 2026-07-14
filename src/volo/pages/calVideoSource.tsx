@@ -259,10 +259,14 @@ import {
           h('div', { className: 'vs-enum-tx' }, h('div', { className: 'vs-enum-t' }, '正在扫描设备…'),
             h('div', { className: 'vs-enum-d' }, backend === 'ndi' ? '在本地网络发现 NDI 源' : '枚举本机采集设备')));
       } else if (enumSt === 'empty') {
+        /* decklink 枚举真的报错（驱动/COM 失败，非「未装模块」）时，dlAvail 仍是
+           'ok'（tile 不 off，SdkPop 不渲染），得在这里把真实错误露出来，否则用户
+           只看到笼统的「未发现设备」而错过真正原因。 */
+        const dlErrored = backend === 'decklink' && dlAvail === 'ok' && dlError && dlError.message;
         selector = h('div', { className: 'vs-enum-state' },
           h('span', { className: 'vs-enum-ic' }, h(Icon, { name: 'alert', size: 15 })),
-          h('div', { className: 'vs-enum-tx' }, h('div', { className: 'vs-enum-t' }, '未发现设备'),
-            h('div', { className: 'vs-enum-d' }, backend === 'ndi' ? '本网络内没有可见的 NDI 源' : '没有枚举到采集设备，检查连线后刷新')),
+          h('div', { className: 'vs-enum-tx' }, h('div', { className: 'vs-enum-t' }, dlErrored ? '枚举失败' : '未发现设备'),
+            h('div', { className: 'vs-enum-d' }, dlErrored ? dlError.message : (backend === 'ndi' ? '本网络内没有可见的 NDI 源' : '没有枚举到采集设备，检查连线后刷新'))),
           h('div', { className: 'vs-enum-acts' },
             h('button', { className: 'vs-icbtn', title: '刷新', onClick: backend === 'ndi' ? discoverNdi : backend === 'decklink' ? discoverDecklink : refresh }, h(Icon, { name: 'sync', size: 15 })),
             h('button', { className: 'vs-icbtn', style: { width: 'auto', padding: '0 10px', fontSize: 11.5, fontWeight: 700, gap: 6 }, onClick: () => setManual(true) },
