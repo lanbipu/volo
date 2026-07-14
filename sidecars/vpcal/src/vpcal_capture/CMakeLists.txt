@@ -87,6 +87,10 @@ if(WIN32)
   add_custom_command(
     OUTPUT "${_idl_header}" "${_idl_iid}"
     COMMAND "${MIDL_EXECUTABLE}" /nologo /env x64 /notlb
+            # midl shells out to the C preprocessor (default: bare "cl"). Under
+            # Ninja/scikit-build, cl.exe is invoked by full path and is not on
+            # PATH, so point midl at the compiler CMake already located.
+            /cpp_cmd "${CMAKE_CXX_COMPILER}"
             /I "${_decklink_sdk}" ${_midl_sys_includes}
             /h DeckLinkAPI_h.h /iid DeckLinkAPI_i.c
             "${_decklink_sdk}/DeckLinkAPI.idl"
@@ -94,6 +98,12 @@ if(WIN32)
     DEPENDS "${_decklink_sdk}/DeckLinkAPI.idl"
     COMMENT "MIDL-compiling DeckLinkAPI.idl → DeckLinkAPI_h.h + DeckLinkAPI_i.c"
     VERBATIM)
+  # The generated IID table is a .c file. This project enables only CXX, so
+  # CMake cannot deduce a language for the .c and would silently drop it from
+  # the target as a non-compiled source (no error) — leaving the COM IID/CLSID
+  # symbols undefined at link (LNK2001). Force it through the C++ compiler; a
+  # midl /iid table is plain GUID definitions that compile cleanly as C++.
+  set_source_files_properties("${_idl_iid}" PROPERTIES LANGUAGE CXX)
   list(APPEND _capture_sources "${_idl_iid}")
   list(APPEND _capture_extra_includes "${_idl_out_dir}")
 elseif(EXISTS "${_decklink_sdk}/DeckLinkAPIDispatch.cpp")

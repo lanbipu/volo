@@ -68,7 +68,9 @@ class DeckLinkInput final : public IDeckLinkInputCallback {
   // and selected for this session via IDeckLinkConfiguration (session-scoped —
   // never written to Desktop Video Setup preferences).
   explicit DeckLinkInput(int32_t device_index, const std::string& connector = "");
-  ~DeckLinkInput() override;
+  // Not `override`: the COM base (IDeckLinkInputCallback → IUnknown) declares no
+  // virtual destructor, so MSVC (correctly) rejects an overriding destructor.
+  ~DeckLinkInput();
 
   void start();
   void stop();
