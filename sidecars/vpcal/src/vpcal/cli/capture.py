@@ -116,10 +116,10 @@ def _make_preview(preview_port, emitter: StreamEmitter):
 
 
 @capture.command(name="enumerate")
-@click.option("--backend", type=click.Choice(["ndi", "synthetic"]), required=True,
+@click.option("--backend", type=click.Choice(["ndi", "decklink", "synthetic"]), required=True,
               help="Video-source backend to enumerate.")
 @click.option("--timeout", "timeout_s", type=click.FloatRange(min=0.0), default=3.0,
-              show_default=True, help="NDI discovery window in seconds.")
+              show_default=True, help="NDI discovery window in seconds (ignored for decklink).")
 @common_options
 @click.pass_context
 def enumerate_video_sources(ctx, backend, timeout_s, **flags) -> None:
@@ -128,6 +128,23 @@ def enumerate_video_sources(ctx, backend, timeout_s, **flags) -> None:
     def body() -> OperationOutput:
         if backend == "synthetic":
             sources = [{"name": "synthetic"}]
+        elif backend == "decklink":
+            from vpcal.core.capture_backend import (
+                DECKLINK_CONNECTOR_LABELS,
+                list_decklink_devices,
+            )
+
+            sources = [
+                {
+                    "index": d["index"],
+                    "name": d["name"],
+                    "connectors": [
+                        {"id": c, "name": DECKLINK_CONNECTOR_LABELS.get(c, c.upper())}
+                        for c in d.get("connectors", [])
+                    ],
+                }
+                for d in list_decklink_devices()
+            ]
         else:
             from vpcal.core.ndi import enumerate_sources
 
@@ -178,16 +195,22 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
         last_report = t0
         try:
             for frame in src.frames():
-                if source_info is None:
-                    source_info = {
-                        "width": int(frame.gray.shape[1]),
-                        "height": int(frame.gray.shape[0]),
-                        "fps": frame.meta.get("frame_rate", fps),
-                        "fourcc": frame.meta.get("fourcc"),
-                        "bit_depth": frame.meta.get("bit_depth", int(frame.gray.dtype.itemsize * 8)),
-                        "is_hx": frame.meta.get("is_hx", False),
-                        "transfer_function": frame.meta.get("transfer_function", transfer_function),
-                    }
+                # Refresh each frame so the reported format reflects the final
+                # frame — DeckLink/NDI may renegotiate resolution/format mid-run
+                # (format auto-detection), and the last frame is authoritative.
+                first_info = source_info is None
+                source_info = {
+                    "width": int(frame.gray.shape[1]),
+                    "height": int(frame.gray.shape[0]),
+                    "fps": frame.meta.get("frame_rate", fps),
+                    "fourcc": frame.meta.get("fourcc"),
+                    "pixel_format": frame.meta.get("pixel_format"),
+                    "bit_depth": frame.meta.get("bit_depth", int(frame.gray.dtype.itemsize * 8)),
+                    "is_hx": frame.meta.get("is_hx", False),
+                    "transfer_function": frame.meta.get("transfer_function", transfer_function),
+                }
+                if first_info:
+                    # Push the format to the live monitor as soon as it is known.
                     emitter.emit("source_info", dict(source_info))
                 if sink is not None:
                     sink.publish(frame.bgr if frame.bgr is not None else frame.gray)

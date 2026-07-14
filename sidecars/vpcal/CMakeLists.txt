@@ -9,6 +9,25 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # configure under CMake >= 4 (which otherwise rejects compatibility < 3.5).
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
 
+# Skip the native Ceres solver (Eigen/Ceres FetchContent + _vpcal_solver) and
+# rely on the pure-Python scipy fallback at runtime. Useful on machines where
+# the Ceres git clone/build is network-flaky or unwanted (e.g. a DeckLink
+# capture-only bench) — the calibration path still works via scipy. Default OFF
+# keeps the compiled solver on every normal build.
+option(VPCAL_SKIP_SOLVER "Skip the native Ceres solver (scipy fallback)" OFF)
+
+# ---------------------------------------------------------------------------
+# pybind11 — provided by the build env (scikit-build-core requires pybind11).
+# Both native modules (solver + capture) need it, so resolve it unconditionally.
+# ---------------------------------------------------------------------------
+find_package(pybind11 CONFIG REQUIRED)
+
+if(VPCAL_SKIP_SOLVER)
+  message(STATUS
+    "vpcal: VPCAL_SKIP_SOLVER=ON — skipping Ceres/_vpcal_solver; the scipy "
+    "backend is used at runtime.")
+else()
+
 # ---------------------------------------------------------------------------
 # FetchContent: pin every dependency to an exact git tag for reproducibility.
 # Ceres is built with MINIGLOG (its bundled mini-logger), so neither glog nor
@@ -51,14 +70,11 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(ceres-solver)
 
 # ---------------------------------------------------------------------------
-# pybind11 — provided by the build env (scikit-build-core requires pybind11).
-# ---------------------------------------------------------------------------
-find_package(pybind11 CONFIG REQUIRED)
-
-# ---------------------------------------------------------------------------
 # Solver module
 # ---------------------------------------------------------------------------
 add_subdirectory(src/vpcal_solver)
+
+endif()  # VPCAL_SKIP_SOLVER
 
 # ---------------------------------------------------------------------------
 # DeckLink capture shim (Phase 2a) — builds ONLY when DECKLINK_SDK_DIR points

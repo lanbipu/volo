@@ -210,3 +210,35 @@ def test_capture_tracking_udp_writes_stream(tmp_path):
 def test_unknown_protocol_raises():
     with pytest.raises(ValueError, match="unknown protocol"):
         record_packets([], "bogus")
+
+
+# ── capture enumerate --backend decklink ─────────────────────────────
+
+
+def test_cli_enumerate_decklink_guided_or_empty():
+    """Absent native module → guided precondition; built module → source list.
+
+    The native shim is built only against a local DeckLink SDK, so behaviour
+    branches on its presence (matches the DecklinkBackend unit-test pattern).
+    """
+    from click.testing import CliRunner
+
+    from vpcal.cli.main import cli
+
+    result = CliRunner().invoke(
+        cli, ["capture", "enumerate", "--backend", "decklink", "--output", "json"]
+    )
+    envelope = json.loads(result.output.strip().splitlines()[-1])
+
+    try:
+        from vpcal import _vpcal_capture  # noqa: F401
+        built = True
+    except ImportError:
+        built = False
+
+    if built:
+        assert result.exit_code == 0, result.output
+        assert isinstance(envelope["data"]["sources"], list)
+    else:
+        assert result.exit_code != 0, result.output
+        assert envelope["error"]["details"]["missing"] == "vpcal._vpcal_capture"

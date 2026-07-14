@@ -35,6 +35,47 @@ fn structured_error(stdout: &str, stderr: &str) -> String {
     }
 }
 
+/// Run a sidecar command with a wall-clock bound, killing the entire process
+/// tree on timeout. The packaged vpcal is a PyInstaller `--onefile` bootloader
+/// whose real Python worker runs as a *child*; terminating only the immediate
+/// process (`kill_on_drop`) would orphan that worker — and a capture probe's
+/// worker still holds the DeckLink card open, so the card would stay occupied
+/// until it is killed by hand or the machine reboots. On Windows we walk the
+/// tree with `taskkill /T`; `kill_on_drop` remains a backstop for the immediate
+/// child on every platform.
+async fn run_sidecar_bounded(
+    mut base: std::process::Command,
+    timeout: std::time::Duration,
+    timeout_msg: &str,
+) -> Result<std::process::Output, String> {
+    base.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut command = tokio::process::Command::from(base);
+    command.kill_on_drop(true);
+    let child = command
+        .spawn()
+        .map_err(|e| format!("启动 vpcal 失败: {e}"))?;
+    let pid = child.id();
+    tokio::select! {
+        result = child.wait_with_output() => {
+            result.map_err(|e| format!("等待 vpcal 结束失败: {e}"))
+        }
+        _ = tokio::time::sleep(timeout) => {
+            // The wait_with_output future is not dropped until this arm returns,
+            // so the bootloader (the taskkill parent PID) is still alive here.
+            #[cfg(windows)]
+            if let Some(pid) = pid {
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/F", "/T", "/PID", &pid.to_string()])
+                    .output();
+            }
+            #[cfg(not(windows))]
+            let _ = pid;
+            Err(timeout_msg.to_string())
+        }
+    }
+}
+
 fn profiles_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
@@ -141,7 +182,7 @@ pub async fn enumerate_video_sources(
     backend: String,
     timeout_s: Option<f64>,
 ) -> Result<VideoSourceList, String> {
-    if !["ndi", "synthetic"].contains(&backend.as_str()) {
+    if !["ndi", "decklink", "synthetic"].contains(&backend.as_str()) {
         return Err(format!("不支持枚举的视频 backend: {backend}"));
     }
     let timeout_s = timeout_s.unwrap_or(3.0);
@@ -149,24 +190,27 @@ pub async fn enumerate_video_sources(
         return Err("视频源枚举 timeout_s 必须在 0 到 30 秒之间".into());
     }
     let exe = super::sidecars::locate_by_name("vpcal").map_err(|e| e.to_string())?;
-    let backend_task = backend.clone();
-    let output = tokio::task::spawn_blocking(move || {
-        super::sidecars::sidecar_command(exe)
-            .args([
-                "capture",
-                "enumerate",
-                "--backend",
-                &backend_task,
-                "--timeout",
-                &timeout_s.to_string(),
-                "--output",
-                "json",
-            ])
-            .output()
-    })
-    .await
-    .map_err(|e| format!("视频源枚举任务失败: {e}"))?
-    .map_err(|e| format!("启动 vpcal 视频源枚举失败: {e}"))?;
+    let timeout_arg = timeout_s.to_string();
+    let mut base = super::sidecars::sidecar_command(exe);
+    base.args([
+        "capture",
+        "enumerate",
+        "--backend",
+        backend.as_str(),
+        "--timeout",
+        &timeout_arg,
+        "--output",
+        "json",
+    ]);
+    // Bound the enumeration like the probe: a wedged/contended DeckLink driver
+    // can make list_devices() block forever, hanging the UI's scan spinner with
+    // no way to recover. Allow vpcal's own --timeout to fire first, then cut it.
+    let output = run_sidecar_bounded(
+        base,
+        std::time::Duration::from_secs_f64(timeout_s + 10.0),
+        "视频源枚举超时（采集卡驱动无响应，请检查 Desktop Video 驱动状态）",
+    )
+    .await?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
@@ -211,41 +255,53 @@ pub async fn probe_video_source(
         .join(format!("video-probe-{}", std::process::id()));
     let _ = fs::remove_dir_all(&probe_dir);
     fs::create_dir_all(&probe_dir).map_err(|e| format!("创建视频探测目录失败: {e}"))?;
-    let probe_dir_task = probe_dir.clone();
-    let output = tokio::task::spawn_blocking(move || {
-        let mut args = vec![
-            "capture".into(),
-            "video".into(),
-            "--backend".into(),
-            backend,
-            "--device".into(),
-            device,
-            "--duration".into(),
-            "1".into(),
-            "--max-frames".into(),
-            "5".into(),
-            "--allow-hx".into(),
-            "--transfer-function".into(),
-            transfer_function,
-            "--output".into(),
-            "json".into(),
-            "--out".into(),
-            probe_dir_task.to_string_lossy().into_owned(),
-        ];
-        if let Some(v) = width {
-            args.extend(["--width".into(), v.to_string()]);
-        }
-        if let Some(v) = height {
-            args.extend(["--height".into(), v.to_string()]);
-        }
-        if let Some(v) = fps {
-            args.extend(["--fps".into(), v.to_string()]);
-        }
-        super::sidecars::sidecar_command(exe).args(args).output()
-    })
+    let mut args: Vec<String> = vec![
+        "capture".into(),
+        "video".into(),
+        "--backend".into(),
+        backend,
+        "--device".into(),
+        device,
+        "--duration".into(),
+        "1".into(),
+        "--max-frames".into(),
+        "5".into(),
+        "--allow-hx".into(),
+        "--transfer-function".into(),
+        transfer_function,
+        "--output".into(),
+        "json".into(),
+        "--out".into(),
+        probe_dir.to_string_lossy().into_owned(),
+    ];
+    if let Some(v) = width {
+        args.extend(["--width".into(), v.to_string()]);
+    }
+    if let Some(v) = height {
+        args.extend(["--height".into(), v.to_string()]);
+    }
+    if let Some(v) = fps {
+        args.extend(["--fps".into(), v.to_string()]);
+    }
+    // A wedged/occupied device (driver hang, contended card) can make `capture
+    // video` block indefinitely; bound the probe so the UI never hangs. On
+    // timeout the whole process tree is killed (see run_sidecar_bounded) so the
+    // DeckLink card is freed rather than left occupied by an orphaned worker.
+    let mut base = super::sidecars::sidecar_command(exe);
+    base.args(&args);
+    let output = match run_sidecar_bounded(
+        base,
+        std::time::Duration::from_secs(20),
+        "视频探测超时（设备可能被其他程序占用或驱动无响应）",
+    )
     .await
-    .map_err(|e| format!("视频探测任务失败: {e}"))?
-    .map_err(|e| format!("启动 vpcal 视频探测失败: {e}"))?;
+    {
+        Ok(output) => output,
+        Err(msg) => {
+            let _ = fs::remove_dir_all(&probe_dir);
+            return Err(msg);
+        }
+    };
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {

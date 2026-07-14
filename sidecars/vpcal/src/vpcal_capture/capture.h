@@ -22,7 +22,14 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+// Windows has no shipped DeckLinkAPI.h — the SDK ships only DeckLinkAPI.idl,
+// which MIDL compiles into DeckLinkAPI_h.h (+ DeckLinkAPI_i.c) at build time
+// (see CMakeLists.txt). Mac/Linux use the header directly.
+#include "DeckLinkAPI_h.h"
+#else
 #include "DeckLinkAPI.h"
+#endif
 
 namespace vpcal_capture {
 
@@ -36,11 +43,16 @@ struct RawFrame {
   std::string pixel_format;  // "v210" | "uyvy"
   std::string timecode;      // RP188/VITC "HH:MM:SS[:;]FF", empty if absent
   double hardware_time_s = 0.0;  // card hardware reference clock, seconds
+  double frame_rate = 0.0;   // detected signal fps (0 until the mode is known)
 };
 
 struct DeviceInfo {
   int32_t index = 0;
   std::string name;
+  // Available input connectors, as stable ids: "sdi" | "hdmi" | "optical_sdi" |
+  // "component" | "composite" | "svideo". Empty for output-only cards (or when
+  // the attribute query is unsupported) — never an error.
+  std::vector<std::string> connectors;
 };
 
 // Enumerate attached DeckLink devices (empty when the driver is absent).
@@ -52,8 +64,14 @@ std::vector<DeviceInfo> list_devices();
 // state machine only ever wants the freshest frame anyway).
 class DeckLinkInput final : public IDeckLinkInputCallback {
  public:
-  explicit DeckLinkInput(int32_t device_index);
-  ~DeckLinkInput() override;
+  // connector (optional): one of the ids from DeviceInfo::connectors. When
+  // non-empty it is validated against the card's advertised input connections
+  // and selected for this session via IDeckLinkConfiguration (session-scoped —
+  // never written to Desktop Video Setup preferences).
+  explicit DeckLinkInput(int32_t device_index, const std::string& connector = "");
+  // Not `override`: the COM base (IDeckLinkInputCallback → IUnknown) declares no
+  // virtual destructor, so MSVC (correctly) rejects an overriding destructor.
+  ~DeckLinkInput();
 
   void start();
   void stop();
@@ -83,7 +101,9 @@ class DeckLinkInput final : public IDeckLinkInputCallback {
 
   IDeckLink* device_ = nullptr;
   IDeckLinkInput* input_ = nullptr;
+  IDeckLinkConfiguration* config_ = nullptr;  // held when a connector is selected
   BMDPixelFormat pixel_format_ = bmdFormat10BitYUV;
+  std::atomic<double> frame_rate_{0.0};  // detected mode fps, updated on format change
 
   std::mutex mutex_;
   std::condition_variable cv_;

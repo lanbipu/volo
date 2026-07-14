@@ -50,15 +50,27 @@ export interface VideoSourceInfo {
   height: number;
   fps: number | null;
   fourcc: string | null;
+  pixel_format?: string | null;
   bit_depth: number;
   is_hx: boolean;
   transfer_function?: string;
 }
 
+export interface DecklinkConnector {
+  id: string;
+  name: string;
+}
+/** NDI source: `{ name }`. DeckLink device: `{ index, name, connectors }`. */
+export interface VideoSourceEntry {
+  name: string;
+  index?: number;
+  connectors?: DecklinkConnector[];
+}
+
 export interface VideoSourceList {
   backend: string;
   timeout_s: number;
-  sources: Array<{ name: string }>;
+  sources: VideoSourceEntry[];
 }
 
 export const enumerateVideoSources = (backend: string, timeoutS = 3) =>

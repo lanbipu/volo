@@ -14,7 +14,7 @@ import {
    Device→Line/Source 枚举选择 + 选中即预览验证 + 格式从信号自动读取。
    字段以真实后端为准：backend / device(uvc=index|url · ndi=源名 · decklink=card:line)
    / width / height / fps / transfer_function(sdr|log) / pixel_format(后端提示)。
-   NDI 通过 vpcal + NDI SDK 真实发现/探测；UVC/DeckLink 枚举仍保留演示数据。 */
+   NDI / DeckLink 通过 vpcal 真实发现/探测；UVC 枚举仍保留演示数据。 */
 (function () {
   const { useState, useRef, useEffect } = React;
   const h = React.createElement;
@@ -33,19 +33,6 @@ import {
     { id: '1', name: 'Blackmagic UltraStudio Mini', fmt: { w: 1920, h: 1080, fps: '25.00', pix: 'UYVY 8-bit', tf: 'SDR' } },
     { id: '2', name: 'Elgato Cam Link 4K',        fmt: { w: 3840, h: 2160, fps: '29.97', pix: 'NV12 8-bit',  tf: 'SDR' } },
   ];
-  const DL_CARDS = [
-    { id: 'dl0', name: 'DeckLink Quad HDMI Recorder', lines: [
-      { id: 'in1', name: 'HDMI 1', fmt: { w: 1920, h: 1080, fps: '29.97', pix: 'v210 10-bit', tf: 'SDR' } },
-      { id: 'in2', name: 'HDMI 2', fmt: { w: 1920, h: 1080, fps: '29.97', pix: 'v210 10-bit', tf: 'SDR' } },
-      { id: 'in3', name: 'HDMI 3', fmt: { w: 3840, h: 2160, fps: '23.98', pix: 'v210 10-bit', tf: 'Log' } },
-      { id: 'in4', name: 'HDMI 4', fmt: { w: 1920, h: 1080, fps: '59.94', pix: 'v210 10-bit', tf: 'SDR' } },
-    ] },
-    { id: 'dl1', name: 'DeckLink Duo 2', lines: [
-      { id: 'sdi1', name: 'SDI 1', fmt: { w: 1920, h: 1080, fps: '25.00', pix: 'v210 10-bit', tf: 'SDR' } },
-      { id: 'sdi2', name: 'SDI 2', fmt: { w: 1920, h: 1080, fps: '25.00', pix: 'v210 10-bit', tf: 'SDR' } },
-    ] },
-  ];
-
   /* ---------- 信号状态 · 三通道（颜色 + 图标 + 文字） ---------- */
   const SIGNAL = {
     ok:       { tone: 'positive',    icon: 'check', text: '信号正常' },
@@ -118,9 +105,16 @@ import {
     const [ndiError, setNdiError] = useState(null);
     const [ndiFmt, setNdiFmt] = useState(null);
 
+    /* DeckLink 真实枚举态（镜像 NDI） */
+    const [dlDevs, setDlDevs] = useState([]);            /* [{index,name,connectors:[{id,name}]}] */
+    const [dlAvail, setDlAvail] = useState('unknown');   /* unknown | ok | missing */
+    const [dlError, setDlError] = useState(null);
+    const [dlFmt, setDlFmt] = useState(null);            /* 探测返回的真实格式 */
+
     /* 选择态 */
     const [uvcSel, setUvcSel] = useState('0');
     const [ndiSel, setNdiSel] = useState(backend === 'ndi' ? (form.device || null) : null);
+    /* dlCard = 卡 index（字符串）; dlLine = connector id（sdi/hdmi/…） */
     const [dlCard, setDlCard] = useState(null);
     const [dlLine, setDlLine] = useState(null);
     const [manual, setManual] = useState(false);
@@ -135,7 +129,9 @@ import {
     const tf = form.transferFunction || 'sdr';
 
     const avail = (id) => id === 'uvc' || id === 'synthetic'
-      || (id === 'ndi' ? ndiAvail !== 'missing' : sdkAll);
+      || (id === 'ndi' ? ndiAvail !== 'missing'
+        : id === 'decklink' ? dlAvail !== 'missing'
+        : sdkAll);
 
     /* ---------- 常驻监看流（连续 MJPEG 预览） ---------- */
     const liveStream = useSidecarStream(liveTask);
@@ -234,9 +230,34 @@ import {
       }
     };
 
+    /* 已选卡/口在途重枚举后可能消失——读最新值判断 */
+    const dlSelRef = useRef({ card: dlCard, line: dlLine });
+    dlSelRef.current = { card: dlCard, line: dlLine };
+    const discoverDecklink = async () => {
+      setEnumSt('loading'); setDlError(null);
+      try {
+        const result = await enumerateVideoSources('decklink');
+        const devs = result.sources || [];
+        setDlDevs(devs); setDlAvail('ok');
+        setEnumSt(devs.length ? 'ready' : 'empty');
+        const sel = dlSelRef.current;
+        const card = sel.card != null ? devs.find((d) => String(d.index) === sel.card) : null;
+        if (sel.card != null && !card) {
+          setDlCard(null); setDlLine(null); setDlFmt(null); setPreviewUrl(null);
+        }
+      } catch (error) {
+        const parsed = parseSidecarError(error);
+        setDlError(parsed);
+        if (parsed.details && parsed.details.missing) setDlAvail('missing');
+        else setDlAvail('ok');
+        setDlDevs([]); setEnumSt('empty'); setPreviewUrl(null);
+      }
+    };
+
     useEffect(() => {
       if (backend === 'ndi' && ndiAvail === 'unknown') void discoverNdi();
-    }, [backend, ndiAvail]);
+      if (backend === 'decklink' && dlAvail === 'unknown') void discoverDecklink();
+    }, [backend, ndiAvail, dlAvail]);
 
     const refresh = async (deviceOverride) => {
       if (backend === 'synthetic') return;
@@ -257,7 +278,22 @@ import {
             is_hx: !!r.source.is_hx,
           });
         }
-        setEnumSt('ready');
+        if (backend === 'decklink' && r.source) {
+          const pf = r.source.pixel_format;
+          const pixLabel = pf === 'v210' ? 'v210 10-bit'
+            : pf === 'uyvy' ? 'UYVY 8-bit'
+            : pf ? pf : (r.source.bit_depth + '-bit');
+          setDlFmt({
+            w: r.source.width, h: r.source.height,
+            fps: r.source.fps == null ? '—' : Number(r.source.fps).toFixed(2),
+            pix: pixLabel,
+            tf: (r.source.transfer_function || form.transferFunction || 'sdr').toUpperCase(),
+          });
+        }
+        // DeckLink keeps the one-shot probe + static preview frame; NDI/UVC use
+        // the persistent MJPEG monitor (liveUrl). The render falls back to this
+        // previewUrl when no live stream is running.
+        setPreviewUrl(r.preview_data_url || null); setEnumSt('ready');
         setSig(r.frames > 0 ? (r.source && r.source.is_hx ? 'hx' : 'ok') : 'nosignal');
       } catch (error) {
         const parsed = parseSidecarError(error);
@@ -272,7 +308,7 @@ import {
     const curFmt = (() => {
       if (backend === 'uvc') { const d = UVC_DEVS.find((x) => x.id === uvcSel); return d && d.fmt; }
       if (backend === 'ndi') return ndiFmt;
-      if (backend === 'decklink') { const c = DL_CARDS.find((x) => x.id === dlCard); const l = c && c.lines.find((x) => x.id === dlLine); return l && l.fmt; }
+      if (backend === 'decklink') return dlFmt;
       return null;
     })();
     const ndiIsHx = backend === 'ndi' && !!(ndiFmt && ndiFmt.is_hx);
@@ -293,7 +329,7 @@ import {
       },
         h('span', { className: 'vs-be-ic' }, h(Icon, { name: b.icon, size: 15 })),
         h('span', { className: 'vs-be-tx' }, h('b', null, b.label), h('span', null, b.sub)),
-        off ? h(SdkPop, { backend: b.id, message: b.id === 'ndi' && ndiError ? ndiError.message : null,
+        off ? h(SdkPop, { backend: b.id, message: b.id === 'ndi' && ndiError ? ndiError.message : b.id === 'decklink' && dlError ? dlError.message : null,
           onUseUvc: () => { setSdkAll(false); set('videoBackend', 'uvc'); } }) : null);
     }));
 
@@ -306,35 +342,55 @@ import {
           h('div', { className: 'vs-enum-tx' }, h('div', { className: 'vs-enum-t' }, '正在扫描设备…'),
             h('div', { className: 'vs-enum-d' }, backend === 'ndi' ? '在本地网络发现 NDI 源' : '枚举本机采集设备')));
       } else if (enumSt === 'empty') {
+        /* decklink 枚举真的报错（驱动/COM 失败，非「未装模块」）时，dlAvail 仍是
+           'ok'（tile 不 off，SdkPop 不渲染），得在这里把真实错误露出来，否则用户
+           只看到笼统的「未发现设备」而错过真正原因。 */
+        const dlErrored = backend === 'decklink' && dlAvail === 'ok' && dlError && dlError.message;
         selector = h('div', { className: 'vs-enum-state' },
           h('span', { className: 'vs-enum-ic' }, h(Icon, { name: 'alert', size: 15 })),
-          h('div', { className: 'vs-enum-tx' }, h('div', { className: 'vs-enum-t' }, '未发现设备'),
-            h('div', { className: 'vs-enum-d' }, backend === 'ndi' ? '本网络内没有可见的 NDI 源' : '没有枚举到采集设备，检查连线后刷新')),
+          h('div', { className: 'vs-enum-tx' }, h('div', { className: 'vs-enum-t' }, dlErrored ? '枚举失败' : '未发现设备'),
+            h('div', { className: 'vs-enum-d' }, dlErrored ? dlError.message : (backend === 'ndi' ? '本网络内没有可见的 NDI 源' : '没有枚举到采集设备，检查连线后刷新'))),
           h('div', { className: 'vs-enum-acts' },
-            h('button', { className: 'vs-icbtn', title: '刷新', onClick: backend === 'ndi' ? discoverNdi : refresh }, h(Icon, { name: 'sync', size: 15 })),
+            h('button', { className: 'vs-icbtn', title: '刷新', onClick: backend === 'ndi' ? discoverNdi : backend === 'decklink' ? discoverDecklink : refresh }, h(Icon, { name: 'sync', size: 15 })),
             h('button', { className: 'vs-icbtn', style: { width: 'auto', padding: '0 10px', fontSize: 11.5, fontWeight: 700, gap: 6 }, onClick: () => setManual(true) },
               h(Icon, { name: 'sliders', size: 13 }), '手动输入')));
       } else if (backend === 'decklink') {
-        const card = DL_CARDS.find((x) => x.id === dlCard);
+        const card = dlDevs.find((x) => String(x.index) === dlCard);
+        const conns = (card && card.connectors) || [];
+        /* 选卡：单口自动选中并直接探测；多口留待用户选 */
+        const pickCard = (id) => {
+          const dev = dlDevs.find((x) => String(x.index) === id);
+          const cs = (dev && dev.connectors) || [];
+          setDlCard(id); setDlFmt(null); setPreviewUrl(null);
+          if (cs.length === 1) {
+            const only = cs[0].id; const d = id + ':' + only;
+            setDlLine(only); set('device', d); refresh(d);
+          } else {
+            setDlLine(null);
+            /* 无 connector 信息（少见）：仍可仅按 index 探测 */
+            if (cs.length === 0) { set('device', id); refresh(id); }
+          }
+        };
         selector = h('div', { className: 'vs-two' },
           h('div', { className: 'vs-two-col' },
             h('div', { className: 'vs-two-lbl' }, '① 采集卡'),
             h(Select, {
               open: dlCardOpen, setOpen: setDlCardOpen, icon: 'cpu', placeholder: '选择采集卡…',
-              value: card ? h('span', { className: 'nm' }, card.name) : null,
-              options: DL_CARDS.map((c) => ({ id: c.id, node: h('div', { className: 'vs-opt-meta' },
-                h('div', { className: 'vs-opt-n' }, c.name), h('div', { className: 'vs-opt-s' }, c.lines.length + ' 路输入')) })),
-              selId: dlCard, onPick: (id) => { setDlCard(id); setDlLine(null); },
+              value: card ? h(React.Fragment, null, h('span', { className: 'nm' }, card.name), h('span', { className: 'idx' }, '#' + card.index)) : null,
+              options: dlDevs.map((c) => ({ id: String(c.index), node: h('div', { className: 'vs-opt-meta' },
+                h('div', { className: 'vs-opt-n' }, c.name, h('span', { className: 'idx' }, '#' + c.index)),
+                h('div', { className: 'vs-opt-s' }, ((c.connectors && c.connectors.length) || 0) + ' 路输入')) })),
+              selId: dlCard, onPick: pickCard,
             })),
           h('div', { className: 'vs-two-col' },
-            h('div', { className: 'vs-two-lbl' }, '② 输入口 (line)'),
+            h('div', { className: 'vs-two-lbl' }, '② 输入口 (connector)'),
             h(Select, {
-              open: dlLineOpen, setOpen: setDlLineOpen, icon: 'arrowr', placeholder: card ? '选择输入口…' : '先选采集卡',
-              disabled: !card,
-              value: (() => { const l = card && card.lines.find((x) => x.id === dlLine); return l ? h('span', { className: 'nm' }, l.name) : null; })(),
-              options: (card ? card.lines : []).map((l) => ({ id: l.id, node: h('div', { className: 'vs-opt-meta' },
-                h('div', { className: 'vs-opt-n' }, l.name), h('div', { className: 'vs-opt-s' }, l.fmt.w + '×' + l.fmt.h + ' · ' + l.fmt.fps + 'fps')) })),
-              selId: dlLine, onPick: (id) => { const dev = dlCard + ':' + id; setDlLine(id); set('device', dev); refresh(dev); },
+              open: dlLineOpen, setOpen: setDlLineOpen, icon: 'arrowr', placeholder: card ? (conns.length ? '选择输入口…' : '该卡无可选输入口') : '先选采集卡',
+              disabled: !card || conns.length === 0,
+              value: (() => { const l = conns.find((x) => x.id === dlLine); return l ? h('span', { className: 'nm' }, l.name) : null; })(),
+              options: conns.map((l) => ({ id: l.id, node: h('div', { className: 'vs-opt-meta' },
+                h('div', { className: 'vs-opt-n' }, l.name), h('div', { className: 'vs-opt-s' }, l.id)) })),
+              selId: dlLine, onPick: (id) => { const dev = dlCard + ':' + id; setDlLine(id); setDlFmt(null); set('device', dev); refresh(dev); },
             })));
       } else if (backend === 'uvc') {
         const d = UVC_DEVS.find((x) => x.id === uvcSel);
@@ -365,7 +421,7 @@ import {
     }
 
     const manualRow = manual && backend !== 'synthetic' && enumSt !== 'loading' ? h('div', { className: 'vs-manual' },
-      h('input', { className: 'cap-tf', autoFocus: true, placeholder: backend === 'ndi' ? '机器名 (源名)' : backend === 'decklink' ? 'card:line' : '设备索引 / URL / 路径',
+      h('input', { className: 'cap-tf', autoFocus: true, placeholder: backend === 'ndi' ? '机器名 (源名)' : backend === 'decklink' ? 'index[:connector] 如 0:sdi' : '设备索引 / URL / 路径',
         value: form.device || '', onChange: (e) => set('device', e.target.value) }),
       h('button', { className: 'vs-manual-x', title: '取消手动输入', onClick: () => setManual(false) }, h(Icon, { name: 'x', size: 14 }))) : null;
 
@@ -382,7 +438,7 @@ import {
         h('div', { className: 'vs-preview state-' + effSig },
           h('div', { className: 'vs-badge' }, h(StatusPill, { st: effSig })),
           (effSig === 'ok' || effSig === 'hx') ? h('span', { className: 'vs-livedot' }, h('i', null), 'LIVE') : null,
-          liveUrl ? h('img', { className: 'vs-frame', src: liveUrl, alt: '视频源实时监看帧' }) : h(Frame, { state: effSig === 'hx' ? 'ok' : effSig }),
+          (liveUrl || previewUrl) ? h('img', { className: 'vs-frame', src: liveUrl || previewUrl, alt: liveUrl ? '视频源实时监看帧' : '视频源探测帧' }) : h(Frame, { state: effSig === 'hx' ? 'ok' : effSig }),
           effSig === 'waiting' ? h('div', { className: 'vs-preview-mid' }, h('span', { className: 'ring' }), h('span', { className: 'msg' }, '等待首帧…')) : null,
           effSig === 'nosignal' ? h('div', { className: 'vs-preview-mid' }, h(Icon, { name: 'alert', size: 26, style: { color: 'color-mix(in srgb, var(--negative-visual) 80%, #fff)' } }), h('span', { className: 'msg neg' }, '设备无法打开 / 断流')) : null,
           effSig === 'frozen' ? h('span', { className: 'vs-frozen-tag' }, '最后一帧 · 已 4.2s 未更新') : null),
