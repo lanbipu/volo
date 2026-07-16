@@ -20,12 +20,16 @@ import {
   const { useState, useRef, useEffect, useSyncExternalStore } = React;
   const h = React.createElement;
 
+  const RMS_THRESHOLDS = Object.freeze({ mm: [3, 8], px: [1, 2] });
+  function rmsTone(rms, unit) {
+    if (rms == null) return 'neutral';
+    const lim = RMS_THRESHOLDS[unit || 'mm'] || RMS_THRESHOLDS.mm;
+    return rms < lim[0] ? 'positive' : rms < lim[1] ? 'notice' : 'negative';
+  }
   function rmsBadge(rms, unit) {
     unit = unit || 'mm';
     if (rms == null) return h(Badge, { variant: 'neutral', size: 'S' }, 'n/a');
-    const lim = unit === 'px' ? [1, 2] : [3, 8];
-    const v = rms < lim[0] ? 'positive' : rms < lim[1] ? 'notice' : 'negative';
-    return h(Badge, { variant: v, size: 'S' }, rms.toFixed(2) + ' ' + unit);
+    return h(Badge, { variant: rmsTone(rms, unit), size: 'S' }, rms.toFixed(2) + ' ' + unit);
   }
   function confBadge(c) {
     const m = CAL_CONF[c] || CAL_CONF.medium;
@@ -250,7 +254,7 @@ import {
 
   /* 共享给各 grid_*.tsx / calLens.tsx/calLensDialogs.tsx：状态原子 + 项目基础设施 */
   window.VOLO_CAL2 = Object.assign(window.VOLO_CAL2 || {}, {
-    Pill, rmsBadge, confBadge, statusPill, inspEmpty, CalController,
+    Pill, RMS_THRESHOLDS, rmsTone, rmsBadge, confBadge, statusPill, inspEmpty, CalController,
     useProj, projStore, openProjectPath, closeProject, reloadRuns, reloadScreenReports,
     pickAndOpenProject, pickAndSeedExample, rebuildMesh, viewRunInPreview, setRunCurrentAction, PROJ_LS_KEY,
   });

@@ -70,3 +70,13 @@ export const generateInstructionCard = (projectAbsPath: string, screenId: string
 // ✅ wired: 指导卡预览「另存为 PDF」→ saveInstructionPdf
 export const saveInstructionPdf = (projectAbsPath: string, screenId: string, dstPdfPath: string) =>
   call<string>("save_instruction_pdf", { projectAbsPath, screenId, dstPdfPath });
+
+export interface VpcalScreenExport {
+  path: string;
+  fingerprint: string;
+}
+// Shared contract: Lens imports this wrapper rather than duplicating an invoke.
+export const exportVpcalScreen = (projectPath: string, screenId: string, outPath?: string | null) =>
+  call<VpcalScreenExport>("export_vpcal_screen", {
+    projectPath, screenId, outPath: outPath ?? null,
+  });

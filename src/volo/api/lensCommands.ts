@@ -26,3 +26,39 @@ export const listLensSessions = (sessionsRoot: string) =>
 // annotated_images 白名单里，见 vpcal_runs.rs / sidecar_stream.rs 的注释）
 export const readImageAsDataUrl = (path: string) =>
   call<string>("read_image_as_data_url", { path });
+
+export interface LensQaPose {
+  frame_id: number;
+  rms_px: number;
+  num_observations: number;
+  quality: string;
+}
+export interface LensQaOutlier {
+  frame_id: number;
+  marker_id: Record<string, unknown> | null;
+  error_px: number;
+  pixel_detected: [number, number];
+}
+export interface LensQaReport {
+  global_rms_px: number;
+  global_mean_px: number;
+  global_max_px: number;
+  per_pose: LensQaPose[];
+  outliers_top10: LensQaOutlier[];
+  lens_residual_check: {
+    radial_pattern_detected: boolean;
+    description: string;
+  };
+}
+
+// Contract owned by commands/vpcal_runs.rs. `runDir` is the quick-run output
+// directory; Rust resolves only its qa/reprojection.json child.
+export const readLensQaReport = (runDir: string) =>
+  call<LensQaReport>("read_lens_qa_report", { runDir });
+
+export interface NetInterface {
+  name: string;
+  ipv4: string;
+}
+export const listNetInterfaces = () =>
+  call<NetInterface[]>("list_net_interfaces");

@@ -9,10 +9,10 @@
    导出（exportObj，沿用 ExportBlock 真实接线）。 */
 import * as React from "react";
 import { pickFile, pickDirectory, revealPath } from "../api/commands";
-import { generateInstructionCard, saveInstructionPdf, exportObj, listRuns } from "../api/meshCommands";
+import { generateInstructionCard, saveInstructionPdf, exportObj, listRuns, exportVpcalScreen } from "../api/meshCommands";
 import { meshFuseRun } from "../api/meshFuseCommands";
 import { useCaptureSession } from "./devCapture";
-import { listMonitors, openPatternPlayer, playerShowPattern, playerClear } from "../api/player";
+import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern, playerClear } from "../api/player";
 
 (function () {
   const { Button, Switch } = window.Spectrum2DesignSystem_b6d1b3;
@@ -91,16 +91,12 @@ import { listMonitors, openPatternPlayer, playerShowPattern, playerClear } from 
   function Reconstruct({ s, close }) {
     const proj = CX.useProj();
     const [phase, setPhase] = useState('run');
-    const [idx, setIdx] = useState(0);
-    const stages = GRID_RECON_STAGES;
     const doneRef = useRef(null);
     useEffect(() => {
       let alive = true;
-      const timer = setInterval(() => setIdx((i) => Math.min(stages.length - 1, i + 1)), 500);
       CX.rebuildMesh(s, proj).then(() => { if (alive) { doneRef.current = { ok: true }; setPhase('done'); } })
-        .catch(() => { if (alive) { doneRef.current = { ok: false }; setPhase('done'); } })
-        .finally(() => clearInterval(timer));
-      return () => { alive = false; clearInterval(timer); };
+        .catch(() => { if (alive) { doneRef.current = { ok: false }; setPhase('done'); } });
+      return () => { alive = false; };
     }, []);
     if (phase === 'done' && doneRef.current && doneRef.current.ok) {
       const qm = proj.reconstruction && proj.reconstruction.quality_metrics;
@@ -124,10 +120,12 @@ import { listMonitors, openPatternPlayer, playerShowPattern, playerClear } from 
     return h('div', { className: 'drawer drawer--preview' },
       dhead('cube3', 'info', '网格重建中', '统一长任务规格', null),
       h('div', { className: 'drawer-b' },
-        h('div', { className: 'gw-pipe' }, stages.map((st, i) => h('div', { key: st, className: 'gw-pipe-st' + (i < idx ? ' done' : i === idx ? ' active' : '') },
-          h('div', { className: 'gw-pipe-dot' }, i < idx ? h(Icon, { name: 'check', size: 12 }) : (i + 1)),
-          h('div', { className: 'gw-pipe-lb' }, st)))),
-        h('div', { style: { fontSize: 12, color: 'var(--chrome-dim)' } }, '当前阶段：', h('b', { style: { color: 'var(--chrome-text)' } }, stages[idx]))),
+        h('div', { className: 'gw-pipe' },
+          h('div', { className: 'gw-pipe-st active' },
+            h('div', { className: 'gw-pipe-dot' }, h(Icon, { name: 'refresh', size: 12 })),
+            h('div', { className: 'gw-pipe-lb' }, '后端重建执行中'))),
+        h('div', { style: { fontSize: 12, color: 'var(--chrome-dim)' } },
+          '当前 mesh-core 未提供阶段百分比或取消 hook；此处显示真实 indeterminate 状态。')),
       h('div', { className: 'drawer-f' },
         h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'minus', size: 15 }), onPress: close }, '最小化（后台继续）')));
   }
@@ -139,7 +137,12 @@ import { listMonitors, openPatternPlayer, playerShowPattern, playerClear } from 
     const screenId = s.calActiveScreen;
     const [screenPath, setScreenPath] = useState('');
     const [outDir, setOutDir] = useState('');
+    const profiles = CX.loadProfiles ? CX.loadProfiles() : [];
+    const [profileId, setProfileId] = useState(profiles[0] ? profiles[0].id : null);
+    const profile = profiles.find((p) => p.id === profileId) || null;
+    const [sourceNote, setSourceNote] = useState(null);
     const session = useCaptureSession();
+    const handledPatterns = useRef(new Set());
     const running = session.taskId !== null && session.state.exit === null;
     const preview = session.latest('preview_ready');
     const coverage = session.latest('coverage_update');
@@ -149,13 +152,40 @@ import { listMonitors, openPatternPlayer, playerShowPattern, playerClear } from 
     const conn = running ? (preview && preview.mjpeg_url ? 'on' : 'wait') : (session.spawnError ? 'off' : 'wait');
 
     const pickScreen = async () => { try { const p = await pickFile('屏幕定义 (screen.json)', ['json']); if (p) setScreenPath(p); } catch (e) {} };
+    const generateScreen = async () => { try { const r = await exportVpcalScreen(proj.path, screenId, null); setScreenPath(r.path); setSourceNote('fingerprint ' + r.fingerprint); } catch (e) { setSourceNote('生成失败 · ' + (e && e.message ? e.message : e)); } };
     const pickOut = async () => { try { const p = await pickDirectory(); if (p) setOutDir(p); } catch (e) {} };
     const start = () => {
       if (!screenPath || !outDir) return;
-      session.start({ screenPath, outDir, backend: 'uvc', device: '0', trackProtocol: 'freed', trackPort: 6301, poses: 8, inverted: true, graycodeSync: true, lensPath: '', settleMs: 300, burst: 5 });
+      if (!profile) return;
+      const canInvert = !!(profile.inverted && profile.patternsDir);
+      if (profile.inverted && !profile.patternsDir) setSourceNote('该 legacy Profile 缺 patternsDir：本次已禁用 inverted / graycode，不会假回执。');
+      handledPatterns.current.clear();
+      if (canInvert) listMonitors().then((ms) => openPatternPlayer(ms.length ? ms[ms.length - 1].index : 0)).catch((e) => setSourceNote('打开图案播放器失败 · ' + (e && e.message ? e.message : e)));
+      session.start({ screenPath, outDir, backend: profile.videoBackend, device: profile.device,
+        trackProtocol: profile.trackProtocol, trackPort: Number(profile.trackPort), trackHost: profile.trackHost || '0.0.0.0',
+        poses: Number(profile.poses || 8), inverted: canInvert, graycodeSync: canInvert && !!profile.graycodeSync,
+        lensPath: profile.lensPath || '', settleMs: Number(profile.settleMs || 300), burst: Number(profile.burst || 5),
+        width: profile.fmtMode === 'manual' ? profile.width : null, height: profile.fmtMode === 'manual' ? profile.height : null,
+        fps: profile.fmtMode === 'manual' ? profile.fps : null, transferFunction: profile.transferFunction || 'sdr' });
     };
     const finish = () => session.sendCmd({ cmd: 'finish' });
     const skip = () => session.sendCmd({ cmd: 'skip_pose' });
+    useEffect(() => {
+      for (const ev of session.events) {
+        if (ev.type !== 'request_pattern' || typeof ev.sequence !== 'number' || handledPatterns.current.has(ev.sequence)) continue;
+        handledPatterns.current.add(ev.sequence);
+        if (!profile || !profile.patternsDir) { setSourceNote('收到 request_pattern，但 Profile 无 patternsDir；未发送假 pattern_ready。'); continue; }
+        const pattern = String(ev.pattern || 'normal'); const sep = String(profile.patternsDir).includes('\\') ? '\\' : '/';
+        playerShowPattern(String(profile.patternsDir).replace(/[\\/]+$/, '') + sep + pattern + '.png', pattern, ev.frame_index == null ? null : ev.frame_index)
+          .then(() => session.sendCmd({ cmd: 'pattern_ready', pattern })).catch((e) => setSourceNote('播放器切图失败 · ' + (e && e.message ? e.message : e)));
+      }
+    }, [session.events]);
+    useEffect(() => () => { closePatternPlayer().catch(() => {}); }, []);
+    const confirmAbort = () => s.setModal({ destructive: true, render: ({ close: closeConfirm }) => h('div', { className: 'drawer drawer--confirm' },
+      dhead('alert', 'danger', '中止实时采集', '默认保留已拍姿位', closeConfirm),
+      h('div', { className: 'drawer-b' }, h('p', { className: 'lens-confirm-tx' }, '中止会终止当前进程；已增量落盘的 poses.jsonl / session.partial.json 将保留，可稍后 finalize 恢复。')),
+      h('div', { className: 'drawer-f' }, h(Button, { variant: 'secondary', onPress: closeConfirm }, '继续采集'),
+        h(Button, { variant: 'negative', onPress: async () => { closeConfirm(); await session.cancel(); await closePatternPlayer().catch(() => {}); close(); s.setCalReceipt({ tone: 'notice', text: '采集已中止 · 已拍姿位保留' }); } }, '中止并保留已拍姿位'))) });
 
     if (result && result.data) {
       const poses = result.data.poses_captured || 0;
@@ -184,11 +214,17 @@ import { listMonitors, openPatternPlayer, playerShowPattern, playerClear } from 
 
     const idlePanel = h('div', { className: 'drawer-b' },
       h('div', { className: 'gw-field stack' },
+        h('span', { className: 'lb' }, 'Capture Profile'),
+        h('select', { className: 'ar-select', value: profileId || '', onChange: (e) => setProfileId(e.target.value || null) },
+          profiles.length ? profiles.map((p) => h('option', { key: p.id, value: p.id }, p.name + ' · ' + p.videoBackend + '/' + p.device)) : h('option', { value: '' }, '尚无 Profile'))),
+      h('div', { className: 'gw-field stack', style: { marginTop: 10 } },
         h('span', { className: 'lb' }, 'screen.json'),
         h('div', { className: 'gw-fileref' },
           h('span', { className: 'ic' }, h(Icon, { name: 'doc', size: 14 })),
           h('div', { className: 'm' }, h('div', { className: 'n' }, screenPath ? screenPath.split(/[\\/]/).pop() : '尚未选择')),
+          h(Button, { variant: 'secondary', size: 'S', onPress: generateScreen }, '从当前屏幕生成'),
           h(Button, { variant: 'secondary', size: 'S', onPress: pickScreen }, '选择'))),
+      sourceNote ? h('div', { className: 'lens-nanote' }, sourceNote) : null,
       h('div', { className: 'gw-field stack', style: { marginTop: 10 } },
         h('span', { className: 'lb' }, '输出目录'),
         h('div', { className: 'gw-fileref' },
@@ -197,7 +233,7 @@ import { listMonitors, openPatternPlayer, playerShowPattern, playerClear } from 
           h(Button, { variant: 'secondary', size: 'S', onPress: pickOut }, '选择'))),
       session.spawnError ? h('div', { style: { fontSize: 11.5, color: 'var(--negative-visual)', marginTop: 8 } }, session.spawnError) : null,
       h('div', { style: { marginTop: 14 } },
-        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'camera', size: 15 }), isDisabled: !screenPath || !outDir, onPress: start }, '开始采集')));
+        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'camera', size: 15 }), isDisabled: !profile || !screenPath || !outDir, onPress: start }, '开始采集')));
 
     const capMain = h('div', { className: 'gw-capmain' },
       h('div', { className: 'gw-capfeed' },
@@ -224,7 +260,7 @@ import { listMonitors, openPatternPlayer, playerShowPattern, playerClear } from 
       h(Button, { variant: 'secondary', size: 'M', onPress: skip }, '跳过此姿位'),
       h('div', { style: { flex: 1 } }),
       h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'check', size: 15 }), onPress: finish }, '完成'),
-      h(Button, { variant: 'negative', size: 'M', onPress: () => { session.cancel(); close(); } }, '中止'));
+      h(Button, { variant: 'negative', size: 'M', onPress: confirmAbort }, '中止'));
 
     const capturingPanel = h('div', { className: 'gw-capdlg' }, capMain, capSide, capFoot);
 

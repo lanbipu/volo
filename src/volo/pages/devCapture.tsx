@@ -43,6 +43,19 @@ interface CoverageSummary {
   screen_coverage_pct: number;
   pose_spatial_spread_mm: number;
   suggestions: string[];
+  angular_spread_deg?: number;
+  edge_obs_fraction?: number;
+  corners_present?: number;
+  center_present?: boolean;
+  rotation_axis_spread?: number;
+  gate_checklist?: Array<{
+    key: string;
+    label: string;
+    ok: boolean;
+    value: unknown;
+    target: unknown;
+    hint?: string;
+  }>;
 }
 
 /* ---------------- capture session data layer (reusable by the real panel) ---------------- */
@@ -182,7 +195,7 @@ export function DevCapture(): React.ReactElement {
       handledSeq.current.add(ev.sequence);
       const pattern = String(ev.pattern ?? "normal");
       if (!patternDir) {
-        void session.sendCmd({ cmd: "pattern_ready", pattern }); // 无播放接线时直接放行
+        setPlayerNote(`✗ 后端请求 ${pattern}，但未配置 pattern 目录；未发送 pattern_ready`);
         continue;
       }
       void playerShowPattern(`${patternDir}/${pattern}.png`, pattern)
@@ -309,6 +322,14 @@ export function DevCapture(): React.ReactElement {
                 {coverage.sensor_missing_regions.length ? `（缺：${coverage.sensor_missing_regions.join("、")}）` : ""}</span>
               <span>屏幕 marker：{coverage.screen_markers_seen}/{coverage.screen_markers_total}（{Math.round(coverage.screen_coverage_pct * 100)}%）</span>
               <span>pose 空间跨度：{coverage.pose_spatial_spread_mm} mm</span>
+              {coverage.angular_spread_deg == null ? null : <span>角度跨度：{coverage.angular_spread_deg.toFixed(1)}°</span>}
+              {coverage.edge_obs_fraction == null ? null : <span>边缘观测占比：{Math.round(coverage.edge_obs_fraction * 100)}%</span>}
+              {coverage.gate_checklist?.map((gate) => (
+                <span key={gate.key} style={{ color: gate.ok ? "#72c98b" : "#e8c268" }}>
+                  {gate.ok ? "✓" : "○"} {gate.label}：{String(gate.value ?? "—")} / {String(gate.target ?? "—")}
+                  {!gate.ok && gate.hint ? ` · ${gate.hint}` : ""}
+                </span>
+              ))}
               {coverage.suggestions.map((s, i) => (
                 <span key={i} style={{ color: "#e8c268" }}>→ {s}</span>
               ))}

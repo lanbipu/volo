@@ -6,6 +6,7 @@ import {
 } from "../api/captureProfiles";
 import {
   cancelSidecarTask,
+  spawnSidecar,
   spawnSidecarStreaming,
   useSidecarStream,
 } from "../api/sidecarStream";
@@ -14,7 +15,7 @@ import {
    Device→Line/Source 枚举选择 + 选中即预览验证 + 格式从信号自动读取。
    字段以真实后端为准：backend / device(uvc=index|url · ndi=源名 · decklink=card:line)
    / width / height / fps / transfer_function(sdr|log) / pixel_format(后端提示)。
-   NDI / DeckLink 通过 vpcal 真实发现/探测；UVC 枚举仍保留演示数据。 */
+   NDI / DeckLink 通过 vpcal 真实发现/探测；UVC 使用 list-devices 真探测。 */
 (function () {
   const { useState, useRef, useEffect } = React;
   const h = React.createElement;
@@ -27,12 +28,13 @@ import {
     { id: 'synthetic', label: '合成测试源',   sub: '内置图案',      icon: 'grid' },
   ];
 
-  /* ---------- 尚未接入真实枚举的 backend 演示数据 ---------- */
-  const UVC_DEVS = [
-    { id: '0', name: 'AJA U-TAP HDMI',            fmt: { w: 1920, h: 1080, fps: '29.97', pix: 'UYVY 8-bit', tf: 'SDR' } },
-    { id: '1', name: 'Blackmagic UltraStudio Mini', fmt: { w: 1920, h: 1080, fps: '25.00', pix: 'UYVY 8-bit', tf: 'SDR' } },
-    { id: '2', name: 'Elgato Cam Link 4K',        fmt: { w: 3840, h: 2160, fps: '29.97', pix: 'NV12 8-bit',  tf: 'SDR' } },
-  ];
+  function parseEnvelope(stdout) {
+    const lines = String(stdout || '').trim().split(/\r?\n/).filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try { const v = JSON.parse(lines[i]); if (v && typeof v === 'object') return v; } catch (e) {}
+    }
+    return null;
+  }
   /* ---------- 信号状态 · 三通道（颜色 + 图标 + 文字） ---------- */
   const SIGNAL = {
     ok:       { tone: 'positive',    icon: 'check', text: '信号正常' },
@@ -63,7 +65,8 @@ import {
     const dim = state === 'frozen' ? 0.62 : 1;
     if (state === 'nosignal') {
       return h('svg', { className: 'vs-frame', viewBox: '0 0 160 90', preserveAspectRatio: 'none' },
-        h('rect', { width: 160, height: 90, fill: '#08090c' }));
+        h('rect', { width: 160, height: 90, fill: '#08090c' }),
+        h('text', { x: 80, y: 48, textAnchor: 'middle', fill: '#737884', fontSize: 8 }, '无信号'));
     }
     if (state === 'waiting') {
       return h('svg', { className: 'vs-frame', viewBox: '0 0 160 90', preserveAspectRatio: 'none' },
@@ -75,7 +78,9 @@ import {
       h('rect', { x: 0, y: 76, width: 160, height: 14, fill: '#0f141b' }),
       /* 中央十字 + 圆，模拟对焦标记 */
       h('circle', { cx: 80, cy: 32, r: 15, fill: 'none', stroke: 'rgba(255,255,255,.32)', strokeWidth: 0.8 }),
-      h('path', { d: 'M80 20v24M68 32h24', stroke: 'rgba(255,255,255,.32)', strokeWidth: 0.8 }));
+      h('path', { d: 'M80 20v24M68 32h24', stroke: 'rgba(255,255,255,.32)', strokeWidth: 0.8 }),
+      h('rect', { x: 43, y: 72, width: 74, height: 12, rx: 2, fill: 'rgba(0,0,0,.72)' }),
+      h('text', { x: 80, y: 80.5, textAnchor: 'middle', fill: '#c6cad2', fontSize: 7 }, '示意图（无真实预览）'));
   }
 
   function StatusPill({ st, lg }) {
@@ -95,7 +100,6 @@ import {
     const backend = form.videoBackend || 'uvc';
 
     /* 演示控制（非配置项）：sdk 可用性 / 枚举态 / 信号态 */
-    const [sdkAll, setSdkAll] = useState(false);       /* false = 仅 UVC（真实默认） */
     const [enumSt, setEnumSt] = useState('ready');      /* ready | loading | empty */
     const [sig, setSig] = useState('waiting');           /* ok | waiting | nosignal | frozen */
     const [sigErr, setSigErr] = useState(null);          /* 无信号时的真实后端报错文案 */
@@ -106,6 +110,8 @@ import {
     const [ndiAvail, setNdiAvail] = useState('unknown'); /* unknown | ok | missing */
     const [ndiError, setNdiError] = useState(null);
     const [ndiFmt, setNdiFmt] = useState(null);
+    const [uvcDevs, setUvcDevs] = useState([]);
+    const [uvcError, setUvcError] = useState(null);
 
     /* DeckLink 真实枚举态（镜像 NDI） */
     const [dlDevs, setDlDevs] = useState([]);            /* [{index,name,connectors:[{id,name}]}] */
@@ -133,7 +139,7 @@ import {
     const avail = (id) => id === 'uvc' || id === 'synthetic'
       || (id === 'ndi' ? ndiAvail !== 'missing'
         : id === 'decklink' ? dlAvail !== 'missing'
-        : sdkAll);
+        : false);
 
     /* ---------- 常驻监看流（连续 MJPEG 预览） ---------- */
     const liveStream = useSidecarStream(liveTask);
@@ -234,6 +240,26 @@ import {
       }
     };
 
+    const discoverUvc = async () => {
+      setEnumSt('loading'); setUvcError(null);
+      try {
+        const out = await spawnSidecar('vpcal', ['capture', 'list-devices', '--backend', 'uvc', '--output', 'json']);
+        const env = parseEnvelope(out.stdout);
+        if (out.exit_code !== 0 || (env && env.status === 'error')) throw new Error((env && env.error && env.error.message) || out.stderr || ('exit ' + out.exit_code));
+        const data = env && env.data != null ? env.data : env;
+        const rows = Array.isArray(data) ? data : ((data && (data.devices || data.sources)) || []);
+        const devs = rows.filter((d) => d && d.available !== false).map((d) => ({
+          id: String(d.index), index: d.index, width: d.width, height: d.height, fps: d.fps,
+        }));
+        setUvcDevs(devs); setEnumSt(devs.length ? 'ready' : 'empty');
+        if (devs.length && !devs.some((d) => d.id === String(form.device))) {
+          setUvcSel(devs[0].id); set('device', devs[0].id);
+        }
+      } catch (e) {
+        setUvcDevs([]); setEnumSt('empty'); setUvcError(e && e.message ? e.message : String(e));
+      }
+    };
+
     /* 已选卡/口在途重枚举后可能消失——读最新值判断 */
     const dlSelRef = useRef({ card: dlCard, line: dlLine });
     dlSelRef.current = { card: dlCard, line: dlLine };
@@ -259,6 +285,7 @@ import {
     };
 
     useEffect(() => {
+      if (backend === 'uvc' && !uvcDevs.length && !uvcError) void discoverUvc();
       if (backend === 'ndi' && ndiAvail === 'unknown') void discoverNdi();
       if (backend === 'decklink' && dlAvail === 'unknown') void discoverDecklink();
     }, [backend, ndiAvail, dlAvail]);
@@ -310,14 +337,14 @@ import {
 
     /* 当前选中设备的 fmt（信号信息条来源） */
     const curFmt = (() => {
-      if (backend === 'uvc') { const d = UVC_DEVS.find((x) => x.id === uvcSel); return d && d.fmt; }
+      if (backend === 'uvc') return ndiFmt;
       if (backend === 'ndi') return ndiFmt;
       if (backend === 'decklink') return dlFmt;
       return null;
     })();
     const ndiIsHx = backend === 'ndi' && !!(ndiFmt && ndiFmt.is_hx);
     const effSig = ndiIsHx ? 'hx' : sig;
-    const hasDevice = backend === 'uvc' ? true /* 默认已选 */
+    const hasDevice = backend === 'uvc' ? !!String(form.device || '')
       : backend === 'ndi' ? !!ndiSel
       : backend === 'decklink' ? (!!dlCard && !!dlLine)
       : false;
@@ -350,12 +377,13 @@ import {
            'ok'（tile 不 off，SdkPop 不渲染），得在这里把真实错误露出来，否则用户
            只看到笼统的「未发现设备」而错过真正原因。 */
         const dlErrored = backend === 'decklink' && dlAvail === 'ok' && dlError && dlError.message;
+        const enumError = backend === 'uvc' ? uvcError : dlErrored ? dlError.message : null;
         selector = h('div', { className: 'vs-enum-state' },
           h('span', { className: 'vs-enum-ic' }, h(Icon, { name: 'alert', size: 15 })),
-          h('div', { className: 'vs-enum-tx' }, h('div', { className: 'vs-enum-t' }, dlErrored ? '枚举失败' : '未发现设备'),
-            h('div', { className: 'vs-enum-d' }, dlErrored ? dlError.message : (backend === 'ndi' ? '本网络内没有可见的 NDI 源' : '没有枚举到采集设备，检查连线后刷新'))),
+          h('div', { className: 'vs-enum-tx' }, h('div', { className: 'vs-enum-t' }, enumError ? '枚举失败' : '未发现设备'),
+            h('div', { className: 'vs-enum-d' }, enumError || (backend === 'ndi' ? '本网络内没有可见的 NDI 源' : '没有探测到可打开的采集设备；可刷新或手动输入 index'))),
           h('div', { className: 'vs-enum-acts' },
-            h('button', { className: 'vs-icbtn', title: '刷新', onClick: backend === 'ndi' ? discoverNdi : backend === 'decklink' ? discoverDecklink : refresh }, h(Icon, { name: 'sync', size: 15 })),
+            h('button', { className: 'vs-icbtn', title: '刷新', onClick: backend === 'ndi' ? discoverNdi : backend === 'decklink' ? discoverDecklink : discoverUvc }, h(Icon, { name: 'sync', size: 15 })),
             h('button', { className: 'vs-icbtn', style: { width: 'auto', padding: '0 10px', fontSize: 11.5, fontWeight: 700, gap: 6 }, onClick: () => setManual(true) },
               h(Icon, { name: 'sliders', size: 13 }), '手动输入')));
       } else if (backend === 'decklink') {
@@ -397,18 +425,18 @@ import {
               selId: dlLine, onPick: (id) => { const dev = dlCard + ':' + id; setDlLine(id); setDlFmt(null); set('device', dev); refresh(dev); },
             })));
       } else if (backend === 'uvc') {
-        const d = UVC_DEVS.find((x) => x.id === uvcSel);
+        const d = uvcDevs.find((x) => x.id === uvcSel);
         selector = h('div', { className: 'vs-devrow' },
           h(Select, {
             open: uvcOpen, setOpen: setUvcOpen, icon: 'camera', placeholder: '选择摄像头…', grow: true,
-            value: d ? h(React.Fragment, null, h('span', { className: 'nm' }, d.name), h('span', { className: 'idx' }, '#' + d.id)) : null,
-            options: UVC_DEVS.map((x) => ({ id: x.id, node: h('div', { className: 'vs-opt-meta' },
-              h('div', { className: 'vs-opt-n' }, x.name, h('span', { className: 'idx' }, '#' + x.id)),
-              h('div', { className: 'vs-opt-s' }, x.fmt.w + '×' + x.fmt.h + ' · ' + x.fmt.pix)) })),
+            value: d ? h(React.Fragment, null, h('span', { className: 'nm' }, '设备名不可用（探测模式）'), h('span', { className: 'idx' }, '#' + d.id)) : null,
+            options: uvcDevs.map((x) => ({ id: x.id, node: h('div', { className: 'vs-opt-meta' },
+              h('div', { className: 'vs-opt-n' }, '设备名不可用（探测模式）', h('span', { className: 'idx' }, '#' + x.id)),
+              h('div', { className: 'vs-opt-s' }, (x.width || '—') + '×' + (x.height || '—') + ' · ' + (x.fps == null ? 'fps n/a' : Number(x.fps).toFixed(2) + ' fps'))) })),
             selId: uvcSel, onPick: (id) => { setUvcSel(id); set('device', id); void startMonitor(id); },
             manualLabel: '手动输入索引 / URL / 路径…', onManual: () => setManual(true),
           }),
-          h('button', { className: 'vs-icbtn', title: '刷新设备列表', onClick: refresh }, h(Icon, { name: 'sync', size: 15 })));
+          h('button', { className: 'vs-icbtn', title: '重新真探测', onClick: discoverUvc }, h(Icon, { name: 'sync', size: 15 })));
       } else { /* ndi */
         const d = ndiSrcs.find((x) => x.name === ndiSel);
         selector = h('div', { className: 'vs-devrow' },
@@ -486,24 +514,6 @@ import {
             h('button', { key: k, className: tf === k ? 'on' : '', onClick: () => set('transferFunction', k) }, l)))),
         h('div', { className: 'vs-tf-note' }, '声明制：仅标记信号是否为 Log 曲线，后端不做色彩转换。')))
       : null;
-
-    /* ------- 演示控制条 ------- */
-    const demo = h('div', { className: 'vs-demo' },
-      h('div', { className: 'vs-demo-h' }, h(Icon, { name: 'sliders', size: 12 }), '演示状态切换 · 非配置项'),
-      h('div', { className: 'vs-demo-row' },
-        h('span', { className: 'vs-demo-k' }, 'SDK'),
-        h('div', { className: 'vs-demo-seg' }, [['uvc', '仅 UVC（默认）'], ['all', '全部可用']].map(([k, l]) =>
-          h('button', { key: k, className: (sdkAll ? 'all' : 'uvc') === k ? 'on' : '', onClick: () => setSdkAll(k === 'all') }, l)))),
-      h('div', { className: 'vs-demo-row' },
-        h('span', { className: 'vs-demo-k' }, '枚举'),
-        h('div', { className: 'vs-demo-seg' }, [['ready', '就绪'], ['loading', '扫描中'], ['empty', '空']].map(([k, l]) =>
-          h('button', { key: k, className: enumSt === k ? 'on' : '', onClick: () => setEnumSt(k) }, l)))),
-      backend !== 'synthetic' ? h('div', { className: 'vs-demo-row' },
-        h('span', { className: 'vs-demo-k' }, '信号'),
-        h('div', { className: 'vs-demo-seg' }, [['ok', 'positive'], ['waiting', 'neutral'], ['nosignal', 'negative'], ['frozen', 'notice']].map(([k, tone]) =>
-          h('button', { key: k, className: sig === k ? 'on' : '', onClick: () => setSig(k), disabled: ndiIsHx },
-            h('span', { className: 'dot bg-' + tone }), SIGNAL[k].text.replace('…', '').replace('画面疑似', '')))),
-        ndiIsHx ? h('span', { style: { fontSize: 10.5, color: 'var(--chrome-faint)' } }, 'HX 源锁定为「仅可预览」') : null) : null);
 
     /* ------- 卡片 ------- */
     return h('div', { className: 'cap-card' },

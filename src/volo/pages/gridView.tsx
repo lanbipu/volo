@@ -750,7 +750,8 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       tool === 'refs' ? h(React.Fragment, null,
         h('div', { className: 'sep' }),
         h('div', { className: 'gw-roleseg' }, ['origin', 'x_axis', 'xy_plane'].map((rk, i) => {
-          const assigned = coord && (coord.origin_point + coord.x_axis_point + coord.xy_plane_point).includes(rk === 'origin' ? coord.origin_point : rk === 'x_axis' ? coord.x_axis_point : coord.xy_plane_point);
+          const field = rk === 'origin' ? 'origin_point' : rk === 'x_axis' ? 'x_axis_point' : 'xy_plane_point';
+          const assigned = !!(coord && coord[field] && parsePointName(coord[field], s.calActiveScreen));
           return h('button', { key: rk, className: s.calRefRole === rk ? 'on' : '', onClick: () => s.setCalRefRole(rk), title: ROLE[rk].label },
             h('span', { className: 'dot', style: { background: ROLE[rk].color } }),
             ROLE[rk].short, h('span', { className: 'num' }, i + 1),
@@ -767,16 +768,16 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
   }
 
   function Coords() {
-    const [c, setC] = useState([0, 0, 0]);
+    const [c, setC] = useState([0, 0]);
     useEffect(() => {
       const el = document.querySelector('.gw-stage'); if (!el) return undefined;
-      const onMove = (e) => { const r = el.getBoundingClientRect(); const nx = (e.clientX - r.left) / r.width - 0.5, ny = (e.clientY - r.top) / r.height - 0.5; setC([+(nx * 8).toFixed(3), +(-ny * 4).toFixed(3), +(nx * 3 + 1.5).toFixed(3)]); };
+      const onMove = (e) => { const r = el.getBoundingClientRect(); setC([Math.round(e.clientX - r.left), Math.round(e.clientY - r.top)]); };
       el.addEventListener('mousemove', onMove);
       return () => el.removeEventListener('mousemove', onMove);
     }, []);
     return h('div', { className: 'gw-glass gw-coords' },
-      h('span', { className: 'u' }, '单位'), h('b', null, 'm'),
-      h('span', { className: 'xyz' }, 'X ', c[0], '  Y ', c[1], '  Z ', c[2]));
+      h('span', { className: 'u' }, '视口坐标'),
+      h('span', { className: 'xyz' }, 'x ', c[0], ' px  y ', c[1], ' px'));
   }
   function Receipt({ s }) {
     useEffect(() => { if (!s.calReceipt) return undefined; const t = setTimeout(() => s.setCalReceipt(null), s.calReceipt.tone === 'err' ? 8000 : 4200); return () => clearTimeout(t); }, [s.calReceipt]);

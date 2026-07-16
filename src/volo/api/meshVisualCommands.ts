@@ -4,10 +4,11 @@
    (`Option<T>`) are passed as explicit `null` when omitted. See ./types for the
    DTO shapes; ./invoke for the transport.
 
-   UI 接入状态：M2 UI 待 Claude Design 交付（本仓 WIREFRAMES.md 只覆盖 Cache /
-   Calibrate 现有稿），本文件全部命令暂无承载页面：
-     📝 no-ui —— 后端已就绪，UI 落地时把 wire-target 记在这里。
-   现状汇总：📝 15（reconstruct 走流式 + cancel，其余同步）。
+   UI 接入状态：
+     ✅ wired —— meshVisualReconstruct / meshVisualGeneratePattern 已由
+       pages/gridTree.tsx 与 pages/gridInsp.tsx 承载。
+     📝 no-ui —— 后端已就绪但当前没有产品 UI wire-target。
+   取消命令仍未接 UI；其余同步命令维持下方逐项台账。
 
    `mesh_visual_reconstruct` 是唯一的流式命令：kickoff 立即返回 job_id，
    进度经 Tauri event `mesh-visual-progress`（payload: MeshVisualProgressPayload），
@@ -21,7 +22,7 @@ import type {
 } from "./types";
 
 /* ----------------------------- reconstruct (streaming) + cancel ----------------------------- */
-// 📝 no-ui: kickoff 返回 job_id；进度/完成经 mesh-visual-progress / mesh-visual-reconstruct-done 事件监听
+// ✅ wired: gridTree.tsx + gridInsp.tsx；进度/完成经 mesh-visual-progress / mesh-visual-reconstruct-done
 export const meshVisualReconstruct = (
   projectPath: string,
   screenId: string,
@@ -38,7 +39,7 @@ export const meshVisualReconstruct = (
 export const meshVisualCancel = (jobId: string) => call<boolean>("mesh_visual_cancel", { jobId });
 
 /* ----------------------------- pattern / structured-light generation ----------------------------- */
-// 📝 no-ui: ChArUco/VP-QSP 标定图案生成
+// ✅ wired: gridTree.tsx + gridInsp.tsx 的视觉标定图案步骤
 export const meshVisualGeneratePattern = (
   projectPath: string,
   screenId: string,

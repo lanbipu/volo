@@ -37,7 +37,8 @@ import { listCaptureProfiles, saveCaptureProfiles } from "../api/captureProfiles
   const blankForm = () => ({ name: '', videoBackend: 'uvc', device: '0', trackProtocol: 'freed', trackPort: 6301,
     trackHost: '0.0.0.0', trackCameraId: null,
     fmtMode: 'auto', width: '', height: '', fps: '', transferFunction: 'sdr',
-    poses: 8, settleMs: 300, burst: 5, inverted: true, graycodeSync: true, lensPath: '', outputRoot: '' });
+    poses: 8, settleMs: 300, burst: 5, inverted: true, graycodeSync: true,
+    patternsDir: '', lensPath: '', outputRoot: '' });
 
   function CaptureModal({ s, close }) {
     const [profiles, setProfiles] = useState(() => loadProfiles());
@@ -70,6 +71,10 @@ import { listCaptureProfiles, saveCaptureProfiles } from "../api/captureProfiles
     const del = async (p) => { const nx = profiles.filter((x) => x.id !== p.id); if (await commit(nx)) { if (!nx.length) setMode('empty');
       s.pushLog({ lv: 'warn', cat: 'capture', msg: `删除采集配置 <b>${p.name}</b>` }); } };
     const save = async () => {
+      if (form.inverted && !String(form.patternsDir || '').trim()) {
+        s.pushLog({ lv: 'warn', cat: 'capture', msg: '保存采集配置失败 · inverted 模式必须设置 <b>patternsDir</b>' });
+        return;
+      }
       const nm = form.name.trim() || '未命名配置';
       const next = editId
         ? profiles.map((x) => x.id === editId ? Object.assign({}, form, { id: editId, name: nm, lastUsed: '刚刚' }) : x)
@@ -160,6 +165,16 @@ import { listCaptureProfiles, saveCaptureProfiles } from "../api/captureProfiles
               h('div', null, h('div', { className: 'cap-tg-t' }, 'graycodeSync'), h('div', { className: 'cap-tg-s' }, '用 Gray code 确认图案序号')),
               h(Switch, { isSelected: !!form.graycodeSync, onChange: (v) => set('graycodeSync', v) }))),
           h('div', { className: 'cap-lens', style: { marginTop: 12 } },
+            h('label', null, 'patternsDir' + (form.inverted ? '（必填）' : '（可选）')),
+            h('div', { className: 'cap-lens-pick' },
+              h('button', { className: 'cap-file-btn', onClick: async () => {
+                if (form.patternsDir) set('patternsDir', '');
+                else { const p = await pickDirectory(); if (p) set('patternsDir', p); }
+              } }, h(Icon, { name: 'folder', size: 14 }), form.patternsDir || '选择 normal.png / inverted.png 所在目录…'),
+              form.patternsDir ? h('span', { className: 'cap-pill cap-pill--positive' }, h(Icon, { name: 'check', size: 12 }), '已选') : null)),
+          form.inverted && !form.patternsDir ? h('div', { className: 'vs-tf-note', style: { color: 'var(--notice-visual)' } },
+            'inverted=true 需要真实图案播放器闭环；未设置 patternsDir 时不能保存或开始采集。') : null,
+          h('div', { className: 'cap-lens', style: { marginTop: 12 } },
             h('label', null, 'lensPath'),
             h('div', { className: 'cap-lens-pick' },
               h('button', { className: 'cap-file-btn', onClick: async () => { if (form.lensPath) set('lensPath', ''); else { const p = await pickFile('Lens profile', ['json']); if (p) set('lensPath', p); } } },
@@ -176,7 +191,7 @@ import { listCaptureProfiles, saveCaptureProfiles } from "../api/captureProfiles
     return h('div', { className: 'drawer drawer--cal2cap' }, head, body,
       h('div', { className: 'drawer-f' },
         h(Button, { variant: 'secondary', size: 'M', isDisabled: saving, onPress: () => setMode(profiles.length ? 'list' : 'empty') }, '取消'),
-        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'check', size: 15 }), isDisabled: saving, onPress: save }, saving ? '正在保存…' : (editId ? '保存修改' : '保存配置'))));
+        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'check', size: 15 }), isDisabled: saving || (!!form.inverted && !form.patternsDir), onPress: save }, saving ? '正在保存…' : (editId ? '保存修改' : '保存配置'))));
   }
 
   function openCaptureModal(s) {

@@ -170,7 +170,7 @@ import { listen } from "@tauri-apps/api/event";
     const runNode = (r) => h('div', { key: r.id, className: 'gw-tnode' + (selType === 'run' && sel.id === r.id ? ' on' : ''), onClick: () => { s.setCalSurveyRun(r.id); s.setCalSel({ type: 'run', id: r.id }); } },
       caret(false, null, true), h('span', { className: 'gw-tico' }, h(Icon, { name: 'cube3', size: 14 })),
       h('span', { className: 'gw-tlabel' }, 'run #' + r.id),
-      r.is_current ? h('span', { className: 'gw-tcur' }, '当前') : h('span', { className: 'gw-tmeta' }, r.estimated_rms_mm == null ? 'n/a' : r.estimated_rms_mm.toFixed(2) + 'mm'),
+      r.is_current ? h('span', { className: 'gw-tcur' }, '当前') : h('span', { className: 'gw-tmeta' }, CX.rmsBadge(r.estimated_rms_mm, 'mm')),
       h('span', { className: 'gw-tacts' }, h(NodeMenu, { items: runMenuItems(r) })));
     const runsEmptyNode = h('div', { className: 'gw-tnode is-muted' },
       caret(false, null, true), h('span', { className: 'gw-tico' }, h(Icon, { name: 'cube3', size: 14 })),
@@ -265,9 +265,14 @@ import { listen } from "@tauri-apps/api/event";
     const screenId = s.calActiveScreen;
     const refsSet = coord && [coord.origin_point, coord.x_axis_point, coord.xy_plane_point].every((n) => n && n.startsWith(screenId + '_V'));
     const [statFilter, setStatFilter] = useState(null);
+    const [importing, setImporting] = useState(false);
     const rep = proj.surveyReport;
-    const step = rep ? 3 : proj.measurementsAbsPath ? 3 : 1;
+    const step = rep ? 3 : refsSet ? 2 : 1;
     const points = (proj.measured && proj.measured.points) || [];
+    const pointSigma = (p) => p.uncertainty && p.uncertainty.isotropic != null ? Number(p.uncertainty.isotropic) : null;
+    const visiblePoints = statFilter === 'outlier' ? points.filter((p) => (pointSigma(p) || 0) > 5)
+      : statFilter === 'fabricated' || statFilter === 'missing' ? [] : points.filter((p) => statFilter !== 'measured' || (pointSigma(p) == null || pointSigma(p) <= 5));
+    const importCsv = async () => { setImporting(true); try { await doImportCsv(s, proj, screenId); } finally { setImporting(false); } };
     const tiles = rep ? [
       { k: 'measured', label: '实测', n: rep.measuredCount, tone: 'positive', icon: 'check' },
       { k: 'fabricated', label: '制造', n: rep.fabricatedCount, tone: 'neutral', icon: 'wave' },
@@ -285,8 +290,9 @@ import { listen } from "@tauri-apps/api/event";
         h('div', { className: 'gw-mrow', style: { marginTop: 8, gap: 8 } },
           h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'doc', size: 13 }), onPress: () => s.setModal({ render: ({ close }) => window.VOLO_GRID_MODALS.guideCard(s, close) }) }, '生成指导卡'))),
       h(Step, { n: 2, done: step > 2, active: step === 2, title: '导入 CSV',
-        desc: '选择全站仪导出的 CSV。' },
-        h('div', { className: 'gw-drop', onClick: () => doImportCsv(s, proj, screenId) }, h(Icon, { name: 'download', size: 20 }), h('div', null, '点击选择 CSV 文件'))),
+        desc: importing ? '正在解析 CSV、建立点表并写入 measurements.yaml…' : '选择全站仪导出的 CSV；完成前不会提前标记成功。' },
+        importing ? h('div', { className: 'cal2-progbox' }, h('div', { className: 'cal2-prog-top' }, h('span', { className: 'cal2-prog-stage' }, '导入与校验'), h('span', { className: 'cal2-prog-pct' }, '进行中')), h('div', { className: 'vmeter vmeter--accent ar-indeterminate' }, h('div', { className: 'vmeter__fill' })))
+          : h('div', { className: 'gw-drop', onClick: importCsv }, h(Icon, { name: 'download', size: 20 }), h('div', null, rep ? '重新选择 CSV 文件' : '点击选择 CSV 文件'))),
       h(Step, { n: 3, active: step === 3, title: '结果与检查',
         desc: rep ? '点击统计块筛选点表；主按钮开始重建。' : '导入完成后显示统计与点表。' },
         rep ? h('div', { className: 'gw-stat4', style: { marginBottom: 10 } },
@@ -294,6 +300,13 @@ import { listen } from "@tauri-apps/api/event";
             h('div', { className: 'n s-' + st.tone }, st.n),
             h('div', { className: 'l' }, h(Icon, { name: st.icon, size: 12 }), st.label)))) : null,
         rep && rep.warnings.length ? rep.warnings.map((w, i) => h('div', { key: i, style: { fontSize: 11.5, color: 'var(--notice-visual)', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 } }, h(Icon, { name: 'alert', size: 13 }), w)) : null,
+        rep ? h('div', { className: 'lens-mon-table', style: { marginBottom: 10 } },
+          h('div', { className: 'lens-mon-head', style: { gridTemplateColumns: '1.4fr repeat(4,1fr)' } }, h('span', null, '点名'), h('span', null, 'X m'), h('span', null, 'Y m'), h('span', null, 'Z m'), h('span', null, 'σ mm')),
+          visiblePoints.slice(0, 200).map((p) => h('div', { key: p.name, className: 'lens-mon-row', style: { gridTemplateColumns: '1.4fr repeat(4,1fr)' } },
+            h('span', { className: 'mono' }, p.name), p.position.map((v, i) => h('span', { key: i, className: 'mono dim' }, Number(v).toFixed(4))), h('span', { className: 'mono' }, pointSigma(p) == null ? 'n/a' : pointSigma(p).toFixed(2)))),
+          !visiblePoints.length ? h('div', { className: 'lens-nanote' }, statFilter === 'fabricated' || statFilter === 'missing'
+            ? 'import report 只提供该类别计数，未提供逐点 identity；不能伪造筛选行。' : '当前筛选无点。') : null,
+          visiblePoints.length > 200 ? h('div', { className: 'lens-nanote' }, '仅显示前 200 点，共 ' + visiblePoints.length + ' 点。') : null) : null,
         h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'cube3', size: 15 }), isDisabled: !proj.measurementsAbsPath, onPress: () => s.setModal({ render: ({ close }) => window.VOLO_GRID_MODALS.reconstruct(s, close) }) }, '重建'))));
   }
 

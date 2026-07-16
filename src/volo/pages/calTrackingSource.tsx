@@ -1,5 +1,6 @@
 // @ts-nocheck
-import { probeTrackingSource } from "../api/captureProfiles";
+import { listNetInterfaces } from "../api/lensCommands";
+import { spawnSidecarStreaming, useSidecarStream } from "../api/sidecarStream";
 /* Volo — 追踪源卡片（重设计）+ 独立「追踪源信号接入」二级界面
    采集设置 → Profile 追踪源模块。与「视频源」卡片对偶：
    选协议 → 定端口/绑定 → 监听验证数据（监听测试区 ↔ 信号预览区）。
@@ -17,11 +18,6 @@ import { probeTrackingSource } from "../api/captureProfiles";
     { id: 'opentrackio', label: 'OpenTrackIO', sub: '位姿 · 镜头可选',   icon: 'live', caps: ['pos', 'rot'] /* 本样本缺镜头 */ },
   ];
   const CAP_LABEL = { pos: '位置', rot: '旋转', zoom: 'Zoom', focus: 'Focus' };
-  const BIND_ADDRS = [
-    { id: '0.0.0.0', label: '0.0.0.0 · 全部网卡' },
-    { id: '192.168.10.24', label: '192.168.10.24 · 以太网' },
-    { id: '10.0.0.5', label: '10.0.0.5 · Wi-Fi' },
-  ];
 
   /* 接收状态 · 三通道 */
   const RECV = {
@@ -30,9 +26,6 @@ import { probeTrackingSource } from "../api/captureProfiles";
     fail:   { tone: 'negative', icon: 'alert', text: '解码失败' },
     frozen: { tone: 'notice',   icon: 'alert', text: '数值冻结' },
   };
-
-  const BASE = { x: -1240.5, y: 820.3, z: 1650.8, pan: 34.82, tilt: -2.15, roll: 0.04, zoom: 8421376, focus: 12093184 };
-  const jit = (v, d) => v + (Math.random() - 0.5) * d;
 
   function RecvPill({ st }) {
     const m = RECV[st];
@@ -52,29 +45,59 @@ import { probeTrackingSource } from "../api/captureProfiles";
 
     const [listening, setListening] = useState(false);
     const [advOpen, setAdvOpen] = useState(false);
-    const [sig, setSig] = useState('normal');         /* normal | nodata | fail | frozen */
-    const [multiCam, setMultiCam] = useState(false);   /* 演示：FreeD 多机位 */
-    const [vals, setVals] = useState(BASE);
-    const [tick, setTick] = useState(0);
+    const [sig, setSig] = useState('nodata');
+    const [taskId, setTaskId] = useState(null);
     const [probeError, setProbeError] = useState(null);
+    const [bindAddrs, setBindAddrs] = useState([{ id: '0.0.0.0', label: '0.0.0.0 · 全部网卡' }]);
+    const [manualBind, setManualBind] = useState(false);
+    const stream = useSidecarStream(taskId);
 
-    const live = false;
-    const dataPresent = listening && (sig === 'normal' || sig === 'frozen');
+    const monitors = stream.state.lines.map((l) => l.parsed).filter((p) => p && p.type === 'monitor');
+    const latest = monitors[monitors.length - 1] || null;
+    const pose = (latest && latest.pose) || {};
+    const pos = pose.position || pose.translation || [0, 0, 0];
+    const rot = (pose.rotation && pose.rotation.values) || pose.rotation || pose.euler_deg || [0, 0, 0];
+    const vals = { x: Number(pos[0] || 0), y: Number(pos[1] || 0), z: Number(pos[2] || 0),
+      pan: Number(rot[0] || 0), tilt: Number(rot[1] || 0), roll: Number(rot[2] || 0),
+      zoom: pose.zoom_raw ?? latest?.zoom_raw ?? null, focus: pose.focus_raw ?? latest?.focus_raw ?? null };
+    const tick = latest ? latest.total : 0;
+    const live = !!latest;
+    const dataPresent = listening && !!latest;
+
+    useEffect(() => {
+      listNetInterfaces().then((rows) => setBindAddrs([{ id: '0.0.0.0', label: '0.0.0.0 · 全部网卡' }].concat(
+        (rows || []).map((r) => ({ id: r.ipv4, label: r.ipv4 + ' · ' + r.name }))
+      ))).catch(() => {});
+    }, []);
+
+    useEffect(() => {
+      if (!listening) return;
+      if (latest) { setSig('normal'); onVerified && onVerified(true); }
+      else setSig('nodata');
+    }, [latest && latest.total, listening]);
+
+    useEffect(() => {
+      const exit = stream.state.exit;
+      if (!exit || exit.cancelled) return;
+      if (exit.fatal) { setSig('fail'); setProbeError(exit.stderr_tail || ('exit ' + exit.exit_code)); onVerified && onVerified(false); }
+      setListening(false); setTaskId(null);
+    }, [stream.state.exit]);
+    useEffect(() => () => { if (taskId) void stream.cancel(); }, [taskId]);
 
     const startProbe = async () => {
       setListening(true); setSig('nodata'); setProbeError(null);
       try {
-        const r = await probeTrackingSource(protocol, form.trackHost || '0.0.0.0', Number(form.trackPort));
-        if (!r.frames || !r.latest) { setSig('nodata'); onVerified && onVerified(false); return; }
-        const p = r.latest.position || [0, 0, 0];
-        const rot = (r.latest.rotation && r.latest.rotation.values) || [0, 0, 0];
-        setVals({ x: p[0], y: p[1], z: p[2], pan: rot[0], tilt: rot[1], roll: rot[2], zoom: r.latest.zoom || 0, focus: r.latest.focus || 0 });
-        setTick(r.frames); setSig('normal'); onVerified && onVerified(true);
+        const r = await spawnSidecarStreaming('vpcal', ['capture', 'track', '--monitor', '--protocol', protocol,
+          '--host', form.trackHost || '0.0.0.0', '--port', String(form.trackPort), '--output', 'ndjson']);
+        setTaskId(r.task_id);
       } catch (e) { setSig('fail'); onVerified && onVerified(false); setProbeError(e && e.message ? e.message : String(e)); }
+    };
+    const stopProbe = async () => {
+      await stream.cancel(); setTaskId(null); setListening(false); setSig('nodata'); onVerified && onVerified(false);
     };
 
     /* camera id（FreeD 且有数据时） */
-    const camIds = proto.id === 'freed' && dataPresent ? (multiCam ? [1, 3] : [1]) : [];
+    const camIds = proto.id === 'freed' && dataPresent ? (latest.camera_ids || []) : [];
     const needPick = camIds.length > 1;
     const camSel = form.trackCameraId;
     /* 单机位时自动选中，供 Profile 存储 */
@@ -84,7 +107,7 @@ import { probeTrackingSource } from "../api/captureProfiles";
     }); // eslint-disable-line
 
     const hasCap = (c) => proto.caps.indexOf(c) >= 0;
-    const missingLens = dataPresent && (!hasCap('zoom') || !hasCap('focus'));
+    const missingLens = dataPresent && (vals.zoom == null || vals.focus == null);
 
     /* ---------- 协议段（2 卡格，对偶 backend 段） ---------- */
     const protoGrid = h('div', { className: 'vs-backends' }, PROTOCOLS.map((p) => {
@@ -121,7 +144,7 @@ import { probeTrackingSource } from "../api/captureProfiles";
           h(Icon, { name: 'play', size: 14 }), '开始监听'));
     } else {
       /* 指标 */
-      const pkt = sig === 'nodata' ? '0' : String(58 + (tick % 5));
+      const pkt = sig === 'nodata' ? '0' : String(latest && latest.pkt_s != null ? Number(latest.pkt_s).toFixed(1) : '—');
       const metrics = h('div', { className: 'ts-metrics' },
         h('div', { className: 'ts-metric' }, h('span', { className: 'v' + (sig === 'nodata' ? ' dim' : '') }, pkt), h('span', { className: 'k' }, 'pkt/s')),
         h('div', { className: 'ts-metric' }, h('span', { className: 'k' }, '解码'),
@@ -149,8 +172,8 @@ import { probeTrackingSource } from "../api/captureProfiles";
             h('div', { className: 'ts-grp-h' }, '姿态', h('span', { className: 'unit' }, 'deg')),
             h('div', { className: 'ts-row3' }, Val('pan', 'Pan', vals.pan.toFixed(2)), Val('tilt', 'Tilt', vals.tilt.toFixed(2)), Val('roll', 'Roll', vals.roll.toFixed(2)))),
           h('div', { className: 'ts-grp ts-grp-lens' },
-            Val('zoom', 'Zoom', String(vals.zoom), { raw: true, lens: true, dead: !hasCap('zoom') }),
-            Val('focus', 'Focus', String(vals.focus), { raw: true, lens: true, dead: !hasCap('focus') })));
+            Val('zoom', 'Zoom', String(vals.zoom ?? '—'), { raw: true, lens: true, dead: vals.zoom == null }),
+            Val('focus', 'Focus', String(vals.focus ?? '—'), { raw: true, lens: true, dead: vals.focus == null })));
       }
 
       const camRow = proto.id === 'freed' && dataPresent ? h('div', { className: 'ts-cams' },
@@ -166,38 +189,31 @@ import { probeTrackingSource } from "../api/captureProfiles";
         h('div', { className: 'ts-panel-top' }, h(RecvPill, { st: sig }), metrics),
         body, camRow,
         h('div', { className: 'ts-panel-foot' },
-          h('button', { className: 'ts-listen-btn stop', onClick: () => setListening(false) }, h(Icon, { name: 'power', size: 13 }), '停止监听'),
+          h('button', { className: 'ts-listen-btn stop', onClick: stopProbe }, h(Icon, { name: 'power', size: 13 }), '停止监听'),
           h('span', { className: 'ts-panel-note' }, '监听仅验证链路，不产生采集数据')));
     }
 
     /* ---------- 数据完备性行 ---------- */
     const compBadge = (c) => {
-      const state = !dataPresent ? 'unknown' : (hasCap(c) ? 'on' : 'absent');
+      const present = c === 'zoom' ? vals.zoom != null : c === 'focus' ? vals.focus != null : hasCap(c);
+      const state = !dataPresent ? 'unknown' : (present ? 'on' : 'absent');
       return h('span', { key: c, className: 'ts-cap' + (state === 'on' ? ' on' : state === 'absent' ? ' absent' : '') },
         h(Icon, { name: state === 'on' ? 'check' : state === 'absent' ? 'x' : 'more', size: 12 }),
         CAP_LABEL[c], state === 'absent' ? h('span', { className: 'miss' }, '· 此源未提供') : null);
     };
 
     /* ---------- 高级折叠 ---------- */
+    const bindControl = manualBind
+      ? h('input', { className: 'cap-tf', value: form.trackHost || '', placeholder: 'IPv4 bind address', onChange: (e) => { set('trackHost', e.target.value); onVerified && onVerified(false); } })
+      : h('select', { className: 'ar-select', value: form.trackHost || '0.0.0.0', onChange: (e) => { if (e.target.value === '__manual') setManualBind(true); else { set('trackHost', e.target.value); onVerified && onVerified(false); } } },
+          bindAddrs.map((a) => h('option', { key: a.id, value: a.id }, a.label)),
+          h('option', { value: '__manual' }, '手动输入…'));
     const advBody = advOpen ? h('div', { className: 'vs-adv-body' },
       h('div', { className: 'cap-field', style: { marginBottom: 0 } },
         h('span', { className: 'cap-lbl' }, '绑定地址'),
-        h('select', { className: 'ar-select', value: form.trackHost || '0.0.0.0', onChange: (e) => { set('trackHost', e.target.value); onVerified && onVerified(false); } },
-          BIND_ADDRS.map((a) => h('option', { key: a.id, value: a.id }, a.label)))),
+        bindControl,
+        manualBind ? h('button', { className: 'vs-icbtn', onClick: () => setManualBind(false), title: '返回网卡列表' }, h(Icon, { name: 'list', size: 14 })) : null),
       h('div', { className: 'vs-tf-note' }, '默认监听全部网卡。多网卡机器上，绑定到追踪系统所在网段可避免串扰。')) : null;
-
-    /* ---------- 演示控制条 ---------- */
-    const demo = h('div', { className: 'vs-demo' },
-      h('div', { className: 'vs-demo-h' }, h(Icon, { name: 'sliders', size: 12 }), '演示状态切换 · 非配置项'),
-      h('div', { className: 'vs-demo-row' },
-        h('span', { className: 'vs-demo-k' }, '监听'),
-        h('div', { className: 'vs-demo-seg' }, [['normal', 'positive', '数据正常'], ['nodata', 'neutral', '无数据'], ['fail', 'negative', '解码失败'], ['frozen', 'notice', '数值冻结']].map(([k, tone, lbl]) =>
-          h('button', { key: k, className: sig === k ? 'on' : '', disabled: !listening, onClick: () => setSig(k) },
-            h('span', { className: 'dot bg-' + tone }), lbl)))),
-      proto.id === 'freed' ? h('div', { className: 'vs-demo-row' },
-        h('span', { className: 'vs-demo-k' }, '机位'),
-        h('div', { className: 'vs-demo-seg' }, [['single', '单机位'], ['multi', '多机位']].map(([k, lbl]) =>
-          h('button', { key: k, className: (multiCam ? 'multi' : 'single') === k ? 'on' : '', onClick: () => { setMultiCam(k === 'multi'); set('trackCameraId', null); } }, lbl)))) : null);
 
     /* ---------- 卡片 ---------- */
     return h('div', { className: 'cap-card' },

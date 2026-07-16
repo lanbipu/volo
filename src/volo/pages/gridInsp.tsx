@@ -386,6 +386,7 @@ import { listen } from "@tauri-apps/api/event";
     const proj = CX.useProj();
     const r = (proj.runs || []).find((x) => x.id === s.calSel.id);
     const [report, setReport] = useState(null);
+    const [compareId, setCompareId] = useState(null);
     useEffect(() => {
       if (!s.calSel || s.calSel.type !== 'run') return undefined;
       let alive = true;
@@ -397,7 +398,9 @@ import { listen } from "@tauri-apps/api/event";
     const metric = (k, v, unit, exp, tone) => h('div', { className: 'gw-metric' },
       h('div', { className: 'k' }, k), h('div', { className: 'v', style: tone ? { color: 'var(--' + tone + '-visual)' } : null }, v, unit ? h('span', { style: { fontSize: 11, color: 'var(--chrome-faint)', marginLeft: 3 } }, unit) : null), h('div', { className: 'exp' }, exp));
     const rms = r.estimated_rms_mm;
-    const rtone = rms == null ? null : rms < 1 ? 'positive' : rms < 3 ? 'notice' : 'negative';
+    const rtone = rms == null ? null : CX.rmsTone(rms, 'mm');
+    const compare = (proj.runs || []).find((x) => x.id === Number(compareId));
+    const delta = (a, b, digits) => a == null || b == null ? 'n/a' : ((a - b) >= 0 ? '+' : '') + (a - b).toFixed(digits == null ? 2 : digits);
     const KV = (k, v) => h('div', { className: 'gw-field', style: { minHeight: 24 } }, h('span', { className: 'lb', style: { fontFamily: 'var(--font-code)', fontSize: 11.5 } }, k), h('span', { style: { fontSize: 12, color: 'var(--chrome-text)', fontFamily: 'var(--font-code)', textAlign: 'right' } }, v));
     const setCurrent = async () => {
       try {
@@ -415,6 +418,15 @@ import { listen } from "@tauri-apps/api/event";
           metric('measured/expected', qm.measured_count + '/' + qm.expected_count, null, '实测/期望点数占比')) : h('div', { style: { fontSize: 11.5, color: 'var(--chrome-faint)' } }, '加载中…')),
       h(Fold, { label: '元信息' },
         KV('method', r.method), KV('screen', r.screen_id), KV('时间', r.created_at), KV('产物', r.output_obj_path || '未导出')),
+      h(Fold, { label: 'Run A/B 指标对比' },
+        h('div', { className: 'lens-nanote' }, h(Icon, { name: 'info', size: 13 }), '仅比较 run 质量指标与产物状态，不是几何叠加对比。'),
+        h('div', { className: 'cap-field' }, h('span', { className: 'cap-lbl' }, 'Run B'),
+          h('select', { className: 'ar-select', value: compareId || '', onChange: (e) => setCompareId(e.target.value || null) },
+            h('option', { value: '' }, '选择另一 run…'), (proj.runs || []).filter((x) => x.id !== r.id).map((x) => h('option', { key: x.id, value: x.id }, 'run #' + x.id)))),
+        compare ? h('div', { className: 'lens-mon-table' },
+          h('div', { className: 'lens-mon-head', style: { gridTemplateColumns: '1fr repeat(3,80px)' } }, h('span', null, '指标'), h('span', null, 'Run A'), h('span', null, 'Run B'), h('span', null, 'A−B')),
+          [['RMS mm', r.estimated_rms_mm, compare.estimated_rms_mm, 2], ['vertices', r.vertex_count, compare.vertex_count, 0]].map(([k, a, b, d]) => h('div', { key: k, className: 'lens-mon-row', style: { gridTemplateColumns: '1fr repeat(3,80px)' } }, h('span', null, k), h('span', { className: 'mono' }, a == null ? 'n/a' : Number(a).toFixed(d)), h('span', { className: 'mono' }, b == null ? 'n/a' : Number(b).toFixed(d)), h('span', { className: 'mono' }, delta(a, b, d)))),
+          h('div', { className: 'lens-mon-row', style: { gridTemplateColumns: '1fr repeat(3,80px)' } }, h('span', null, 'OBJ'), h('span', null, r.output_obj_path ? '有' : '无'), h('span', null, compare.output_obj_path ? '有' : '无'), h('span', null, '—'))) : null),
       h(Fold, { label: '动作' },
         h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
           h('div', { style: { display: 'flex', gap: 8 } },

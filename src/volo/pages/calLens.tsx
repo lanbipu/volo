@@ -21,6 +21,8 @@ import * as React from "react";
 import { pickFile, pickDirectory } from "../api/commands";
 import { spawnSidecarStreaming, useSidecarStream } from "../api/sidecarStream";
 import { useCaptureSession } from "./devCapture";
+import { playerShowPattern } from "../api/player";
+import { exportVpcalScreen } from "../api/meshCommands";
 
 (function () {
   const { Button, Badge } = window.Spectrum2DesignSystem_b6d1b3;
@@ -42,6 +44,9 @@ import { useCaptureSession } from "./devCapture";
       sessionPathForSolve: null, /* 采集完成后本页「立即求解」用的 session.json 路径 */
       solveResult: null,   /* 已求解：见 buildSolveResult() */
       solveError: null,    /* 求解失败：{exitCode, title, msg} */
+      estimateLens: false,
+      screenFingerprint: null,
+      screenSourceSnapshot: null,
     };
     const listeners = new Set();
     const notify = () => listeners.forEach((l) => l());
@@ -107,6 +112,7 @@ import { useCaptureSession } from "./devCapture";
       euler_deg: quatToEulerDeg(t2.rotation),
       quality: rr.quality,
       solver_backend: env.data.solver_backend || (rr.solver_diagnostics && rr.solver_diagnostics.solver_backend) || null,
+      degraded_backend: !!(env.data.degraded_backend || (rr.solver_diagnostics && rr.solver_diagnostics.degraded_backend)),
       timestamp: rr.timestamp,
       session_path: sessionPath,
       result_path: resultPath,
@@ -131,10 +137,13 @@ import { useCaptureSession } from "./devCapture";
     const [busy, setBusy] = useState(false);
     const [launchError, setLaunchError] = useState(null);
     const { state, cancel: cancelStream } = useSidecarStream(taskId);
-    const run = async (sessionJsonPath) => {
+    const run = async (sessionJsonPath, estimateLens) => {
       setLaunchError(null); setBusy(true);
       try {
-        const resp = await spawnSidecarStreaming('vpcal', ['quick', 'run', '--config', sessionJsonPath, '--output', 'json']);
+        const args = ['quick', 'run', '--config', sessionJsonPath];
+        if (estimateLens) args.push('--estimate-lens');
+        args.push('--output', 'json');
+        const resp = await spawnSidecarStreaming('vpcal', args);
         setTaskId(resp.task_id);
       } catch (e) { setBusy(false); setLaunchError(e && e.message ? e.message : String(e)); }
     };
@@ -206,18 +215,12 @@ import { useCaptureSession } from "./devCapture";
         h('rect', { x: 4, y: 12, width: 4, height: 6, fill: '#c9d4e4' }),
         h('rect', { x: 13, y: 13, width: 5, height: 5, fill: '#c9d4e4' }));
     });
-    const dets = [];
-    if (detect) {
-      const pts = [[0.16, 0.2], [0.5, 0.16], [0.84, 0.21], [0.32, 0.5], [0.66, 0.52], [0.2, 0.82], [0.52, 0.86], [0.82, 0.83]];
-      pts.forEach((uv, i) => { const p = bilerp(uv[0], uv[1]); dets.push(h('g', { key: 'd' + i, className: 'lens-det' + (live ? ' pulse' : '') },
-        h('circle', { cx: p[0], cy: p[1], r: 8, fill: 'none', stroke: 'var(--positive-visual)', strokeWidth: 1.4 }),
-        h('line', { x1: p[0] - 12, y1: p[1], x2: p[0] + 12, y2: p[1], stroke: 'var(--positive-visual)', strokeWidth: 1 }),
-        h('line', { x1: p[0], y1: p[1] - 12, x2: p[0], y2: p[1] + 12, stroke: 'var(--positive-visual)', strokeWidth: 1 }))); });
-    }
     return h('svg', { className: 'lens-feed', viewBox: '0 0 960 540', preserveAspectRatio: 'xMidYMid slice' },
       h('rect', { width: 960, height: 540, fill: '#06070b' }),
       h('polygon', { points: [TL, TR, BR, BL].map((p) => p.join(',')).join(' '), fill: '#0a0e16', stroke: 'rgba(140,170,210,.4)', strokeWidth: 1.5 }),
-      h('g', null, bands), h('g', null, rows), h('g', null, tags), h('g', null, dets));
+      h('g', null, bands), h('g', null, rows), h('g', null, tags),
+      h('rect', { x: 354, y: 472, width: 252, height: 34, rx: 6, fill: 'rgba(0,0,0,.78)' }),
+      h('text', { x: 480, y: 494, textAnchor: 'middle', fill: '#bfc4ce', fontSize: 15 }, '示意图（无真实预览信号）'));
   }
 
   /* 五态采集横幅标签（progress.state 枚举的 UI 文案，非工程数据，可放心照抄设计稿） */
@@ -272,6 +275,7 @@ import { useCaptureSession } from "./devCapture";
       screenPct: cov ? Math.round((cov.screen_coverage_pct || 0) * 100) : 0,
       missingRegions: cov ? (cov.sensor_missing_regions || []) : [],
       suggestions: cov ? (cov.suggestions || []).map((m) => ({ tone: 'notice', msg: m })) : [],
+      gateChecklist: cov && Array.isArray(cov.gate_checklist) ? cov.gate_checklist : null,
       detections, warnings,
     };
   }
@@ -286,6 +290,8 @@ import { useCaptureSession } from "./devCapture";
     const [profiles, setProfiles] = useState(() => (CX.loadProfiles ? CX.loadProfiles() : []));
     const profile = profiles.find((p) => p.id === live.profileId) || null;
     const [previewUrl, setPreviewUrl] = useState(null);
+    const [patternError, setPatternError] = useState(null);
+    const [screenExportBusy, setScreenExportBusy] = useState(false);
     const patternAckSeq = useRef(new Set());
 
     /* 每次打开页面刷新一次 profile 列表（管理弹窗关闭后可能已增删） */
@@ -299,13 +305,18 @@ import { useCaptureSession } from "./devCapture";
       lensStore.patch({ live: recomputeLive(session, profile ? profile.poses : 8) });
       const pr = session.latest('preview_ready');
       if (pr && pr.mjpeg_url) setPreviewUrl(pr.mjpeg_url);
-      /* request_pattern → pattern_ready：本页未接图案播放器（无 patternDir 上下文，见「播放器
-         自检」弹窗），照 devCapture.tsx 的兜底策略直接放行回执，避免会话卡死。 */
+      /* request_pattern → 真实播放器切图成功后才回执。严格 graycode 模式不再假 ack。 */
       for (const ev of session.events) {
         if (ev.type !== 'request_pattern' || typeof ev.sequence !== 'number') continue;
         if (patternAckSeq.current.has(ev.sequence)) continue;
         patternAckSeq.current.add(ev.sequence);
-        session.sendCmd({ cmd: 'pattern_ready', pattern: String(ev.pattern || 'normal') });
+        const pattern = String(ev.pattern || 'normal');
+        if (!profile || !profile.patternsDir) { setPatternError('未设置 patternsDir，无法切换真实图案'); continue; }
+        const sep = String(profile.patternsDir).includes('\\') ? '\\' : '/';
+        const path = String(profile.patternsDir).replace(/[\\/]+$/, '') + sep + pattern + '.png';
+        playerShowPattern(path, pattern, ev.frame_index == null ? null : ev.frame_index)
+          .then(() => session.sendCmd({ cmd: 'pattern_ready', pattern }))
+          .catch((e) => setPatternError(e && e.message ? e.message : String(e)));
       }
     }, [phase, session.events]);
 
@@ -349,12 +360,13 @@ import { useCaptureSession } from "./devCapture";
         if (!outDir) return;
       }
       lensStore.patch({ phase: 'capturing', profileId: profile.id, captureResult: null, solveResult: null, solveError: null,
-        live: { bannerId: 'wait_tracking', poseCount: 0, targetPoses: profile.poses, sensorPct: 0, screenPct: 0, missingRegions: [], suggestions: [], detections: [], warnings: [] } });
+        live: { bannerId: 'wait_tracking', poseCount: 0, targetPoses: profile.poses, sensorPct: 0, screenPct: 0, missingRegions: [], suggestions: [], gateChecklist: null, detections: [], warnings: [] } });
       setPreviewUrl(null);
       /* 每个 vpcal 子进程的 request_pattern.sequence 从 0 重新计数（sidecars/vpcal/src/vpcal/cli/_common.py
          Emitter._sequence = 0）；不清空这个 Set 的话，同一页面第二次采集的 sequence 会被误判成
          「已处理过」而跳过 pattern_ready 回执，导致差分帧永远等不到确认。 */
       patternAckSeq.current.clear();
+      setPatternError(null);
       s.setCalLensState('running');
       s.setLogOpen(true);
       s.pushLog({ lv: 'info', cat: 'lens', msg: '开始实时采集 · 配置 <b>' + profile.name + '</b> · 目标 ' + profile.poses + ' pose' });
@@ -384,9 +396,24 @@ import { useCaptureSession } from "./devCapture";
       if (!sp || (cur.captureResult && !cur.captureResult.lens_ready)) return;
       lensStore.patch({ phase: 'solving' });
       s.pushLog({ lv: 'info', cat: 'lens', msg: '开始求解镜头外参 · <b>vpcal quick run</b>' });
-      solve.run(sp);
+      solve.run(sp, !!cur.estimateLens);
     };
     const cancelSolve = () => { solve.cancel(); lensStore.patch({ phase: 'captured' }); s.pushLog({ lv: 'warn', cat: 'lens', msg: '求解已取消 · 后台进程已终止' }); };
+
+    const sourceSnapshot = proj.config && proj.config.screens && proj.config.screens[s.calActiveScreen]
+      ? JSON.stringify(proj.config.screens[s.calActiveScreen]) : null;
+    const sourceChanged = !!(live.screenSourceSnapshot && sourceSnapshot && live.screenSourceSnapshot !== sourceSnapshot);
+    const generateScreen = async () => {
+      if (!proj.path || !s.calActiveScreen || screenExportBusy) return;
+      setScreenExportBusy(true);
+      try {
+        const out = await exportVpcalScreen(proj.path, s.calActiveScreen, null);
+        lensStore.patch({ screenPath: out.path, screenFingerprint: out.fingerprint, screenSourceSnapshot: sourceSnapshot });
+        saveScreenPath(proj.path, out.path);
+        s.pushLog({ lv: 'ok', cat: 'lens', msg: '已从当前项目屏幕生成 <b>screen.json</b> · fingerprint ' + out.fingerprint });
+      } catch (e) { s.pushLog({ lv: 'err', cat: 'lens', msg: '生成 screen.json 失败 · ' + (e && e.message ? e.message : e) }); }
+      finally { setScreenExportBusy(false); }
+    };
 
     /* 求解结果落地（Lens 页「立即求解」与 dialogs 里的「从已有 session 求解」共用同一 hook，
        但各自在调用处消费 outcome —— 这里只处理本页发起的求解） */
@@ -442,7 +469,11 @@ import { useCaptureSession } from "./devCapture";
                 ? h(React.Fragment, null,
                     h('div', { className: 'lens-sj-row' }, h('span', { className: 'k' }, '文件'), h('span', { className: 'v mono' }, baseName(live.screenPath))),
                     h('div', { className: 'lens-sj-row' }, h('span', { className: 'k' }, '目录'), h('span', { className: 'v mono dim' }, dirName(live.screenPath))))
-                : h('div', { style: { fontSize: 12, color: 'var(--chrome-faint)' } }, '尚未设置，vpcal 采集/求解均需要此文件（由 vpcal screen create/import 生成）')),
+                : h('div', { style: { fontSize: 12, color: 'var(--chrome-faint)' } }, '尚未设置，vpcal 采集/求解均需要此文件。'),
+              live.screenFingerprint ? h('div', { className: 'lens-sj-row' }, h('span', { className: 'k' }, 'fingerprint'), h('span', { className: 'v mono dim' }, live.screenFingerprint)) : null,
+              sourceChanged ? h('div', { className: 'lens-nanote', style: { color: 'var(--notice-visual)' } }, h(Icon, { name: 'alert', size: 13 }), '项目屏幕源已变更，建议重新生成。') : null),
+            h('button', { className: 'lens-pop-manage', disabled: screenExportBusy || !proj.path, onClick: () => { void generateScreen(); close(); } },
+              h(Icon, { name: 'sync', size: 14 }), screenExportBusy ? '生成中…' : '从当前项目屏幕生成 screen.json'),
             h('button', { className: 'lens-pop-manage', onClick: pick },
               h(Icon, { name: 'folder', size: 14 }), '浏览选择 screen.json…'));
         }),
@@ -499,6 +530,9 @@ import { useCaptureSession } from "./devCapture";
             /* SessionConfig.lens 是必填字段（models/session.py:243）——没有 lens 的 session
                求解必然 validation fail，禁用按钮而不是让用户点了才看到必然失败的报错。 */
             !live.captureResult.lens_ready ? h('div', { className: 'lens-ov-note', style: { color: 'var(--notice-visual)' } }, '缺 lens profile，需先在采集配置里补上 lensPath 才能求解。') : null,
+            h('label', { className: 'cap-toggle-row', style: { marginTop: 10 } },
+              h('input', { type: 'checkbox', checked: !!live.estimateLens, onChange: (e) => lensStore.patch({ estimateLens: e.target.checked }) }),
+              h('div', null, h('div', { className: 'cap-tg-t' }, '联合估计镜头（QLE）'), h('div', { className: 'cap-tg-s' }, '传入 --estimate-lens；结果仅绑定本 session，不是 master lens'))),
             h(Button, { variant: 'accent', size: 'L', icon: h(Icon, { name: 'target', size: 16 }), isDisabled: !live.captureResult.lens_ready, onPress: solveNow }, live.solveError ? '重新求解' : '立即求解'))) : null,
         phase === 'solving' ? h('div', { className: 'lens-overlay' },
           h('div', { className: 'lens-ov-card lens-ov-card--solving' },
@@ -514,7 +548,9 @@ import { useCaptureSession } from "./devCapture";
               live.solveResult.quality.validation_rms_px != null ? h('span', { className: 'u' }, 'px') : null,
               h('span', { className: 'lb' }, 'validation_rms')),
             CX.confBadge(live.solveResult.quality.confidence)),
-          h('button', { className: 'lens-result-btn', onClick: () => CX.openReport(s) }, h(Icon, { name: 'doc', size: 13 }), '查看完整报告')) : null);
+          live.solveResult.degraded_backend ? h('div', { className: 'lens-nanote', style: { color: 'var(--notice-visual)' } }, h(Icon, { name: 'alert', size: 13 }), '已降级 scipy 后端（无协方差）') : null,
+          h('button', { className: 'lens-result-btn', onClick: () => CX.openReport(s) }, h(Icon, { name: 'doc', size: 13 }), '查看完整报告')) : null,
+        patternError ? h('div', { className: 'lens-banner lens-banner--negative' }, h(Icon, { name: 'alert', size: 16 }), h('div', { className: 'lens-banner-tx' }, h('b', null, '图案播放器失败'), h('span', null, patternError))) : null);
     }
 
     /* ---------- 底部动作条 ---------- */
@@ -527,7 +563,8 @@ import { useCaptureSession } from "./devCapture";
         h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'check', size: 15 }), onPress: finishCapture }, '完成采集'));
     } else {
       const solved = phase === 'solved';
-      const reason = !profile ? '未选择采集配置' : !live.screenPath ? '未设置 screen.json' : null;
+      const reason = !profile ? '未选择采集配置' : !live.screenPath ? '未设置 screen.json'
+        : profile.inverted && !profile.patternsDir ? 'inverted 模式未设置 patternsDir' : null;
       actions = h('div', { className: 'lens-actionbar' },
         h('div', { className: 'lens-start-wrap' },
           h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'camera', size: 15 }), isDisabled: !!reason || phase === 'solving', onPress: startCapture }, '开始采集'),
@@ -572,6 +609,10 @@ import { useCaptureSession } from "./devCapture";
         h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '覆盖建议'),
           cv.suggestions.length === 0 ? h('span', { className: 'dim', style: { fontSize: 12 } }, '暂无') : cv.suggestions.map((sg, i) => h('div', { key: i, className: 'lens-sug lens-sug--' + sg.tone },
             h(Icon, { name: sg.tone === 'positive' ? 'check' : 'alert', size: 13 }), h('span', null, sg.msg)))),
+        cv.gateChecklist ? h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, 'QLE gate checklist'),
+          cv.gateChecklist.map((g) => h('div', { key: g.key, className: 'lens-sug lens-sug--' + (g.ok ? 'positive' : 'notice') },
+            h(Icon, { name: g.ok ? 'check' : 'alert', size: 13 }),
+            h('span', null, g.label + ' · ' + String(g.value ?? 'n/a') + ' / ' + String(g.target ?? 'n/a'), !g.ok && g.hint ? h('small', { style: { display: 'block' } }, g.hint) : null)))) : null,
         h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '缺失区域 · sensor_missing_regions'),
           h('div', { className: 'lens-missing' }, cv.missingRegions.length
             ? cv.missingRegions.map((r, i) => h('span', { key: i, className: 'lens-miss-chip' }, h(Icon, { name: 'target', size: 11 }), r))
@@ -582,6 +623,7 @@ import { useCaptureSession } from "./devCapture";
     }
     if (phase === 'solved' && live.solveResult) {
       const R = live.solveResult, q = R.quality;
+      const le = q.lens_estimate;
       return h(React.Fragment, null,
         h('div', { className: 'insp-head' },
           h('div', { style: { display: 'flex', alignItems: 'center', gap: 9, marginBottom: 6 } },
@@ -600,12 +642,18 @@ import { useCaptureSession } from "./devCapture";
           KV('inlier_observations', q.inlier_observations.toLocaleString(), true),
           KV('num_poses', String(q.num_poses), true),
           h('div', { className: 'kv' }, h('span', { className: 'k' }, 'confidence'), h('span', { className: 'v' }, CX.confBadge(q.confidence)))),
-        q.lens_estimate ? h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, 'QLE'),
+        R.degraded_backend ? h('div', { className: 'lens-warn' }, h(Icon, { name: 'alert', size: 12 }), h('span', null, '已降级 scipy 后端（无协方差）')) : null,
+        le ? h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, 'QLE · session-coupled'),
           h('div', { className: 'lens-qle' }, h('span', { className: 'spill spill--informative' }, h(Icon, { name: 'bolt', size: 12 }), 'quick lens estimate'),
-            h('p', { className: 'lens-qle-note' }, '随本次 session 耦合估计的镜头参数，仅供本会话使用 —— 非独立镜头档案（lens profile）。'))) : null,
+            h('p', { className: 'lens-qle-note' }, '随本次 session 耦合估计，仅供本会话使用；非 master lens。'),
+            KV('confidence', le.confidence || 'low', true),
+            KV('RMS', Number(le.spatial_only_rms_px).toFixed(3) + ' → ' + Number(le.refined_rms_px).toFixed(3) + ' px', true),
+            ['focal_length_mm', 'distortion_k1', 'distortion_k2'].map((k) => le[k] ? KV(k, le[k].observable ? String(le[k].value) + (le[k].std == null ? '' : ' ± ' + le[k].std) : 'reverted · ' + (le[k].locked_reason || 'gate'), true) : null),
+            (le.identifiability_flags || []).map((flag, i) => h('div', { key: i, className: 'lens-warn' }, h(Icon, { name: 'alert', size: 12 }), h('span', null, flag))))) : null,
         h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '功能入口'),
           h('div', { className: 'lens-entry-list' },
             entryBtn('doc', '求解结果报告', () => CX.openReport(s)),
+            entryBtn('live', '实时回填验证（verify live）', () => CX.openLiveVerify(s)),
             entryBtn('download', '导出 OpenTrackIO', () => CX.openExport(s)),
             entryBtn('panel', '播放器自检', () => CX.openPlayerCheck(s)))));
     }
