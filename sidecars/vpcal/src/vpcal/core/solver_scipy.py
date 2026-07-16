@@ -274,11 +274,22 @@ def solve(
 
     lens_values = lens_std = lens_corr = None
     lens_corr_available = False
+    covariance = _scaled_covariance(sol)
     if free_names:
         lens_values = {n: float(sol.x[n_spatial + i]) for i, n in enumerate(free_names)}
         lens_std, lens_corr, lens_corr_available = _lens_covariance(
-            sol, n_spatial, free_names
+            covariance, n_spatial, free_names
         )
+
+    covariance_std = None
+    if covariance is not None and covariance.shape[0] >= 6:
+        diag = np.sqrt(np.clip(np.diag(covariance), 0.0, None))
+        covariance_std = {
+            "tx_mm": float(diag[3]), "ty_mm": float(diag[4]), "tz_mm": float(diag[5]),
+            "rx_deg": float(np.degrees(diag[0])),
+            "ry_deg": float(np.degrees(diag[1])),
+            "rz_deg": float(np.degrees(diag[2])),
+        }
 
     try:
         # Scale-invariant conditioning: normalise Jacobian columns to unit norm
@@ -301,13 +312,17 @@ def solve(
         camera_from_tracker_t=tuple(T_C[:3, 3]),
         initial_cost=initial_cost,
         final_cost=float(sol.cost),
-        num_iterations=int(sol.nfev),
+        # scipy exposes no trust-region iteration count. njev is the closest
+        # stable iteration proxy; nfev is retained only when finite differences
+        # did not report Jacobian evaluations.
+        num_iterations=int(sol.njev if sol.njev is not None else sol.nfev),
         num_inliers=int(len(observations) - num_outliers),
         num_outliers=num_outliers,
         termination_type=termination,
         termination_message=sol.message,
         solver_backend="scipy",
         residuals_px=[float(r) for r in per_obs],
+        covariance_std=covariance_std,
         lens_values=lens_values,
         lens_std=lens_std,
         lens_corr=lens_corr,
@@ -316,8 +331,19 @@ def solve(
     )
 
 
+def _scaled_covariance(sol) -> Array | None:
+    """Return ``s² (JᵀJ)⁺`` with ``s² = 2 cost / (m-n)``."""
+    try:
+        J = np.asarray(sol.jac, dtype=np.float64)
+        dof = max(int(J.shape[0] - J.shape[1]), 1)
+        s2 = 2.0 * float(sol.cost) / dof
+        return np.linalg.pinv(J.T @ J) * s2
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _lens_covariance(
-    sol, n_spatial: int, free_names: list[str]
+    cov: Array | None, n_spatial: int, free_names: list[str]
 ) -> tuple[dict[str, float] | None, dict[str, float] | None, bool]:
     """Per-param std + max |ρ| vs free spatial params from the solution Jacobian.
 
@@ -327,8 +353,8 @@ def _lens_covariance(
     ``JᵀJ`` yields ``available=False`` (gate then fails closed, §5.6).
     """
     try:
-        J = np.asarray(sol.jac, dtype=np.float64)
-        cov = np.linalg.pinv(J.T @ J)
+        if cov is None:
+            return None, None, False
         d = np.sqrt(np.clip(np.diag(cov), 0.0, None))
         std: dict[str, float] = {}
         corr: dict[str, float] = {}

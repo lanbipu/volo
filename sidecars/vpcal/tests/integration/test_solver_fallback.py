@@ -34,6 +34,13 @@ def test_scipy_fallback_recovers_ground_truth():
     assert np.allclose(result.tracker_to_stage_t, gt.tracker_to_stage_t, atol=0.5)
 
 
+def test_scipy_reports_scaled_covariance():
+    obs, _gt = _observations(noise_px=0.3)
+    result = solve_calibration(obs, INTR, prefer_cpp=False)
+    assert result.covariance_std is not None
+    assert result.covariance_std["tx_mm"] > 0
+
+
 @pytest.mark.skipif(not cpp_available(), reason="C++ solver not built")
 def test_cpp_and_scipy_agree():
     obs, _gt = _observations(noise_px=0.3)

@@ -2,6 +2,7 @@
 
 #include <ceres/ceres.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <vector>
@@ -120,12 +121,17 @@ SolverResult solve(const std::vector<Observation>& observations,
             covariance.GetCovarianceBlock(ts, ts, cov_ts);
             constexpr double kPi = 3.14159265358979323846;
             const double rad2deg = 180.0 / kPi;
-            result.tracker_to_stage_covariance[0] = std::sqrt(std::abs(cov_ts[0]));
-            result.tracker_to_stage_covariance[1] = std::sqrt(std::abs(cov_ts[4]));
-            result.tracker_to_stage_covariance[2] = std::sqrt(std::abs(cov_ts[8]));
-            result.tracker_to_stage_covariance[3] = std::sqrt(std::abs(cov_qs[0])) * rad2deg;
-            result.tracker_to_stage_covariance[4] = std::sqrt(std::abs(cov_qs[4])) * rad2deg;
-            result.tracker_to_stage_covariance[5] = std::sqrt(std::abs(cov_qs[8])) * rad2deg;
+            const int residual_count = static_cast<int>(observations.size() * 2)
+                + (config.refine_tracker_to_camera ? 6 : 0);
+            const int parameter_count = config.refine_tracker_to_camera ? 12 : 6;
+            const int dof = std::max(residual_count - parameter_count, 1);
+            const double sigma = std::sqrt(std::max(2.0 * summary.final_cost / dof, 0.0));
+            result.tracker_to_stage_covariance[0] = sigma * std::sqrt(std::abs(cov_ts[0]));
+            result.tracker_to_stage_covariance[1] = sigma * std::sqrt(std::abs(cov_ts[4]));
+            result.tracker_to_stage_covariance[2] = sigma * std::sqrt(std::abs(cov_ts[8]));
+            result.tracker_to_stage_covariance[3] = sigma * std::sqrt(std::abs(cov_qs[0])) * rad2deg;
+            result.tracker_to_stage_covariance[4] = sigma * std::sqrt(std::abs(cov_qs[4])) * rad2deg;
+            result.tracker_to_stage_covariance[5] = sigma * std::sqrt(std::abs(cov_qs[8])) * rad2deg;
             result.covariance_available = true;
         }
     } catch (...) {
