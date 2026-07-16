@@ -76,6 +76,10 @@ class PreviewSink:
             self._closed = True
             self._cond.notify_all()
 
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
     def wait_next(self, last_seq: int, timeout: float = 5.0):
         """Block until a frame newer than ``last_seq`` → ``(jpeg, seq, ts)`` or None."""
         with self._cond:
@@ -193,7 +197,9 @@ class _Handler(BaseHTTPRequestHandler):
             while True:
                 nxt = self.sink.wait_next(last)
                 if nxt is None:
-                    return
+                    if self.sink.closed:
+                        return
+                    continue  # idle (signal drop): keep the stream open
                 jpeg, last, ts = nxt
                 part = (f"--{_BOUNDARY}\r\nContent-Type: image/jpeg\r\n"
                         f"Content-Length: {len(jpeg)}\r\nX-Timestamp: {ts:.6f}\r\n\r\n"
@@ -225,7 +231,9 @@ class _Handler(BaseHTTPRequestHandler):
             while not stop.is_set():
                 nxt = self.sink.wait_next(last)
                 if nxt is None:
-                    return
+                    if self.sink.closed:
+                        return
+                    continue  # idle (signal drop): keep the socket open
                 jpeg, last, ts = nxt
                 payload = struct.pack("<d", ts) + jpeg
                 self.wfile.write(_ws_frame(payload))

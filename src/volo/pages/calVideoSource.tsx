@@ -148,11 +148,15 @@ import {
     const liveStream = useSidecarStream(liveTask);
     const liveTaskRef = useRef(liveTask);
     liveTaskRef.current = liveTask;
+    /* 帧活性：monitor 进程出帧时每秒发 progress；据此在断流/恢复间翻转信号态 */
+    const lastFrameEvt = useRef(0);
+    const frameEvtCount = useRef(0);
 
     /* 选中源即起 `vpcal capture video --preview-port 0 --duration 0` 常驻进程，
        <img> 直接消费其 localhost MJPEG 流。切源/切 backend/卸载时取消旧任务。 */
     const startMonitor = async (device) => {
       if (liveTaskRef.current) void cancelSidecarTask(liveTaskRef.current);
+      lastFrameEvt.current = 0; frameEvtCount.current = 0;
       setSig('waiting'); setLiveUrl(null); setNdiFmt(null); setDlFmt(null); setSigErr(null);
       const manualFmt = fmtMode === 'manual';
       const args = ['capture', 'video', '--backend', backend, '--device', device,
@@ -181,6 +185,11 @@ import {
         .filter((p) => p && typeof p.type === 'string');
       const preview = [...parsed].reverse().find((p) => p.type === 'preview_ready');
       if (preview && preview.mjpeg_url) setLiveUrl(preview.mjpeg_url);
+      const frameEvts = parsed.filter((p) => p.type === 'progress' || p.type === 'source_info').length;
+      if (frameEvts > frameEvtCount.current) {
+        frameEvtCount.current = frameEvts;
+        lastFrameEvt.current = Date.now();
+      }
       const info = [...parsed].reverse().find((p) => p.type === 'source_info');
       if (info) {
         const tf = (info.transfer_function || form.transferFunction || 'sdr').toUpperCase();
@@ -204,6 +213,21 @@ import {
         setSig(info.is_hx ? 'hx' : 'ok');
       }
     }, [liveStream.state.lines, backend]);
+
+    /* 帧活性看门狗：进程活着但 >4s 无帧事件（信号中断）→ 等待态；恢复出帧 → 正常。
+       只在 ok/waiting 间翻转，不碰 nosignal/hx（各自有独立来源）。 */
+    useEffect(() => {
+      if (!liveTask) return undefined;
+      const t = setInterval(() => {
+        const age = Date.now() - lastFrameEvt.current;
+        setSig((s) => {
+          if (s === 'ok' && age > 4000) return 'waiting';
+          if (s === 'waiting' && lastFrameEvt.current > 0 && age < 2500) return 'ok';
+          return s;
+        });
+      }, 1000);
+      return () => clearInterval(t);
+    }, [liveTask]);
 
     /* 进程退出：cancel 触发的静默；fatal 时从流里取最后一条 error 事件报错。
        其余情况（断流终止、设备暂时打不开）在设备仍选中时 3s 后自动重连监看流。 */
