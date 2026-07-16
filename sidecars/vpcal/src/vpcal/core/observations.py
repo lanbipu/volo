@@ -98,6 +98,7 @@ class Detection:
     pixel_v: float
     confidence: float = 1.0
     differenced: bool = False
+    saturated: bool = False
 
 
 @dataclass

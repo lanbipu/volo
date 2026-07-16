@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import time
 
 import numpy as np
 from numpy.typing import NDArray
@@ -162,7 +163,7 @@ def solve_calibration(
     init_S: tuple[Array, Array] | None = None,
     init_C: tuple[Array, Array] | None = None,
     refine_C: bool = False,
-    robust_scale: float = 1.0,
+    robust_scale: float | str = 1.0,
     robust_loss: str = "huber",
     prior_weight_rotation: float = 820.7,
     prior_weight_translation: float = 0.01,
@@ -170,6 +171,7 @@ def solve_calibration(
     timeout_seconds: float | None = None,
     prefer_cpp: bool = True,
     lens_free: LensFreedom | None = None,
+    diagnose_scale: bool = False,
 ) -> SolverResult:
     """Solve the calibration, preferring the C++ backend with scipy fallback.
 
@@ -188,6 +190,36 @@ def solve_calibration(
     if init_S is None:
         init_S = pnp_initial_tracker_to_stage(observations, intr, init_C)
 
+    if robust_scale == "auto":
+        first = solve_calibration(
+            observations, intr, init_S=init_S, init_C=init_C,
+            refine_C=refine_C, robust_scale=1.0, robust_loss=robust_loss,
+            prior_weight_rotation=prior_weight_rotation,
+            prior_weight_translation=prior_weight_translation,
+            max_iterations=max_iterations, timeout_seconds=timeout_seconds,
+            prefer_cpp=False, lens_free=lens_free, diagnose_scale=False,
+        )
+        residuals = np.asarray(first.residuals_px, dtype=float)
+        median = float(np.median(residuals)) if residuals.size else 0.0
+        mad = float(np.median(np.abs(residuals - median))) if residuals.size else 0.0
+        adaptive_scale = max(1.4826 * mad, 0.1)
+        _log.info("auto robust scale resolved to %.4f px", adaptive_scale)
+        return solve_calibration(
+            observations, intr,
+            init_S=(np.asarray(first.tracker_to_stage_q), np.asarray(first.tracker_to_stage_t)),
+            init_C=(np.asarray(first.camera_from_tracker_q), np.asarray(first.camera_from_tracker_t)),
+            refine_C=refine_C, robust_scale=adaptive_scale, robust_loss=robust_loss,
+            prior_weight_rotation=prior_weight_rotation,
+            prior_weight_translation=prior_weight_translation,
+            max_iterations=max_iterations, timeout_seconds=timeout_seconds,
+            prefer_cpp=False, lens_free=lens_free, diagnose_scale=diagnose_scale,
+        )
+
+    if diagnose_scale and prefer_cpp:
+        _log.info("tracking scale diagnostic requires scipy; bypassing Ceres")
+        prefer_cpp = False
+
+    degraded = False
     if prefer_cpp and cpp_available():
         try:
             return _solve_cpp(
@@ -199,8 +231,12 @@ def solve_calibration(
             raise
         except Exception as exc:  # noqa: BLE001
             _log.warning("C++ solver failed (%s); falling back to scipy", exc)
+            degraded = True
+    elif prefer_cpp:
+        _log.warning("C++ solver unavailable; using degraded scipy backend")
+        degraded = True
 
-    return solver_scipy.solve(
+    result = solver_scipy.solve(
         observations,
         intr,
         init_S=init_S,
@@ -213,7 +249,10 @@ def solve_calibration(
         max_iterations=max_iterations,
         timeout_seconds=timeout_seconds,
         lens_free=lens_free,
+        diagnose_scale=diagnose_scale,
     )
+    result.degraded_backend = degraded
+    return result
 
 
 def _solve_cpp(
@@ -286,6 +325,7 @@ def _solve_cpp(
         ) from None
     init_S7 = [*init_S[0], *init_S[1]]
     init_C7 = [*init_C[0], *init_C[1]]
+    started = time.monotonic()
     with _suppress_c_stderr():
         if want_lens:
             lf = cpp.LensFree(
@@ -298,6 +338,12 @@ def _solve_cpp(
             r = cpp.solve(obs, lens, cfg, init_S7, init_C7, lf)
         else:
             r = cpp.solve(obs, lens, cfg, init_S7, init_C7)
+    elapsed = time.monotonic() - started
+    if r.termination_type_name == "NO_CONVERGENCE" and elapsed >= timeout * 0.9:
+        raise SolverTimeoutError(
+            f"solver exceeded timeout_seconds={timeout}",
+            details={"timeout_seconds": timeout, "elapsed_seconds": elapsed},
+        )
 
     lens_values = lens_std = lens_corr = None
     lens_corr_available = False

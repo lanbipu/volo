@@ -16,6 +16,7 @@ from vpcal.models.lens import LensProfile
 CoordinateSystem = Literal["unreal", "optitrack", "vicon", "freeDEuler", "opentrackio", "custom"]
 FrameMatching = Literal["frame_id", "line_number", "timestamp"]
 RobustLoss = Literal["huber", "cauchy", "none"]
+RobustScale = float | Literal["auto"]
 LensParam = Literal["k1", "k2", "cx", "cy"]
 
 
@@ -62,6 +63,8 @@ class MarkerMapConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     path: str
+    fingerprint: Optional[str] = None
+    """Optional sha256 of the map embedded when the session was captured."""
     ground_tolerance_mm: float = Field(default=5.0, gt=0)
     """Ground-plane offset warning threshold (Phase B2)."""
     ground_tolerance_deg: float = Field(default=0.2, gt=0)
@@ -168,9 +171,15 @@ class SolverConfig(BaseModel):
     for old session files.
     """
     robust_loss: RobustLoss = "huber"
-    robust_loss_scale: float = Field(default=1.0, gt=0)
+    robust_loss_scale: RobustScale = 1.0
+    """Robust scale in px, or ``auto`` for a MAD-derived second solve."""
     max_iterations: int = Field(default=200, gt=0)
     timeout_seconds: float = Field(default=300.0, gt=0)
+    timing_delay_bound_ms: float = Field(default=66.0, gt=0)
+    handeye_deviation_warn_mm: float = Field(default=5.0, gt=0)
+    handeye_deviation_warn_deg: float = Field(default=2.0, gt=0)
+    diagnose_scale: bool = False
+    marker_uncertainty_weighting: bool = False
     lens_estimate: LensEstimateConfig = Field(default_factory=LensEstimateConfig)
 
     @model_validator(mode="after")
@@ -182,6 +191,8 @@ class SolverConfig(BaseModel):
                 self.prior_weight_rotation = self.tracker_to_camera_prior_weight
             if "prior_weight_translation" not in self.model_fields_set:
                 self.prior_weight_translation = self.tracker_to_camera_prior_weight
+        if self.robust_loss_scale != "auto" and self.robust_loss_scale <= 0:
+            raise ValueError("solver.robust_loss_scale must be > 0 or 'auto'")
         return self
 
 

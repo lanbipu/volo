@@ -12,7 +12,7 @@ With an inverted frame, cell sampling and the sub-pixel centroid run on the
 **signed** difference ``int16(normal) − int16(inverted)`` — ambient-light
 gradients cancel exactly instead of biasing the intensity-weighted centroid
 (remediation A2.2); a saturating ``cv2.subtract`` would clip the negative half.
-When the global Otsu threshold yields zero detections, the detector retries
+When the global Otsu threshold yields too few detections, the detector retries
 with a block-wise adaptive threshold (remediation A2.4).
 """
 
@@ -44,6 +44,7 @@ class DetectorConfig:
     topology_neighbors: int = 6
     topology_max_residual_px: float = 8.0
     enable_topology: bool = True
+    detect_fallback_min: int = 4
 
 
 def _order_corners(pts: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -218,7 +219,10 @@ def _topology_filter(dets: list[Detection], cfg: DetectorConfig) -> list[Detecti
             continue
         residual = float(np.linalg.norm(pred - pix[i]))
         conf = d.confidence if residual <= cfg.topology_max_residual_px else d.confidence * 0.5
-        out.append(Detection(d.frame_id, d.marker_id, d.pixel_u, d.pixel_v, conf, d.differenced))
+        out.append(Detection(
+            d.frame_id, d.marker_id, d.pixel_u, d.pixel_v,
+            conf, d.differenced, d.saturated,
+        ))
     return out
 
 
@@ -251,10 +255,16 @@ def detect_markers(
         sample_src = gray.astype(np.float32)
 
     dets = _detect_pass(_threshold(seg_src), sample_src, frame_id, differenced, cfg)
-    if not dets:
-        # Global Otsu found nothing (e.g. a bright region dominates the
-        # histogram) — retry with a block-wise adaptive threshold (A2.4).
-        dets = _detect_pass(_threshold_adaptive(seg_src), sample_src, frame_id, differenced, cfg)
+    if len(dets) < cfg.detect_fallback_min:
+        adaptive = _detect_pass(
+            _threshold_adaptive(seg_src), sample_src, frame_id, differenced, cfg
+        )
+        for candidate in adaptive:
+            if all(
+                np.hypot(candidate.pixel_u - d.pixel_u, candidate.pixel_v - d.pixel_v) > 3.0
+                for d in dets
+            ):
+                dets.append(candidate)
 
     return _topology_filter(dets, cfg)
 
@@ -288,5 +298,11 @@ def _detect_pass(
         if marker is None:
             continue
         u, v = _subpixel_center(sample_src, corners)
-        dets.append(Detection(frame_id, marker, u, v, 1.0, differenced))
+        x0, y0 = np.floor(corners.min(axis=0)).astype(int)
+        x1, y1 = np.ceil(corners.max(axis=0)).astype(int)
+        x0, y0 = max(x0, 0), max(y0, 0)
+        x1, y1 = min(x1, sample_src.shape[1] - 1), min(y1, sample_src.shape[0] - 1)
+        roi = sample_src[y0:y1 + 1, x0:x1 + 1]
+        saturated = bool(roi.size and np.mean(roi >= 250) > 0.01)
+        dets.append(Detection(frame_id, marker, u, v, 1.0, differenced, saturated))
     return dets

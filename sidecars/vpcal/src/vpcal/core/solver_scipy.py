@@ -102,6 +102,8 @@ class SolverResult:
     lens_corr_available: bool = False
     condition_number: float | None = None
     """κ of the normal equations JᵀJ at the solution (None if not computable)."""
+    degraded_backend: bool = False
+    scale_estimate: float | None = None
 
 
 # ── so(3) <-> quaternion ─────────────────────────────────────────────
@@ -173,6 +175,7 @@ def solve(
     max_iterations: int = 200,
     timeout_seconds: float | None = None,
     lens_free: LensFreedom | None = None,
+    diagnose_scale: bool = False,
 ) -> SolverResult:
     """Solve for ``T_S_from_O`` (and optional ``T_C_from_B`` delta + lens params).
 
@@ -193,7 +196,9 @@ def solve(
 
     lf = lens_free or LensFreedom()
     free_names = lf.free_names
-    n_spatial = 12 if refine_C else 6
+    base_spatial = 12 if refine_C else 6
+    scale_idx = base_spatial if diagnose_scale else None
+    n_spatial = base_spatial + (1 if diagnose_scale else 0)
     lens_init = {"focal_scale": 1.0, "cx": intr.cx, "cy": intr.cy, "k1": intr.k1, "k2": intr.k2}
 
     def _intr_for(x: Array) -> CameraIntrinsics:
@@ -210,6 +215,17 @@ def solve(
 
     deadline = time.monotonic() + timeout_seconds if timeout_seconds else None
 
+    def _poses_for(x: Array) -> Array:
+        if scale_idx is None:
+            return inv_sdk
+        scale = float(x[scale_idx])
+        scaled = np.zeros_like(inv_sdk)
+        for i, o in enumerate(observations):
+            scaled[i] = invert_transform(
+                make_transform(np.asarray(o.track_q), np.asarray(o.track_t) * scale)
+            )
+        return scaled
+
     def residuals(x: Array, reprojection_weights: Array | None = None) -> Array:
         if deadline is not None and time.monotonic() > deadline:
             raise SolverTimeoutError(
@@ -218,7 +234,7 @@ def solve(
             )
         T_S = _transform_from_params(x[:6])
         T_C = _transform_from_params(x[6:12]) if refine_C else T_C_fixed
-        pred = _reproject(world_h, inv_sdk, T_S, T_C, _intr_for(x))
+        pred = _reproject(world_h, _poses_for(x), T_S, T_C, _intr_for(x))
         reproj = (pred - pixels) / sigma
         if reprojection_weights is not None:
             reproj = reproj * reprojection_weights[:, None]
@@ -238,6 +254,8 @@ def solve(
         return np.nan_to_num(res, nan=1.0e6, posinf=1.0e6, neginf=-1.0e6)
 
     x0_spatial = p_S0.copy() if not refine_C else np.concatenate([p_S0, p_C0])
+    if diagnose_scale:
+        x0_spatial = np.concatenate([x0_spatial, [1.0]])
     if free_names:
         x0 = np.concatenate([x0_spatial, [lens_init[n] for n in free_names]])
     else:
@@ -248,9 +266,11 @@ def solve(
     if robust_loss not in _LOSS_MAP:
         raise ValueError(f"unsupported robust_loss: {robust_loss!r} (expected huber/cauchy/none)")
     ls_kwargs: dict = dict(method="trf", loss="linear")
-    if free_names:
+    if free_names or diagnose_scale:
         lo = np.full(len(x0), -np.inf)
         hi = np.full(len(x0), np.inf)
+        if scale_idx is not None:
+            lo[scale_idx], hi[scale_idx] = 0.95, 1.05
         for i, n in enumerate(free_names):
             gi = n_spatial + i
             if n == "focal_scale":
@@ -266,7 +286,7 @@ def solve(
     def _irls_weights(x: Array) -> Array:
         T_S = _transform_from_params(x[:6])
         T_C = _transform_from_params(x[6:12]) if refine_C else T_C_fixed
-        pred = _reproject(world_h, inv_sdk, T_S, T_C, _intr_for(x))
+        pred = _reproject(world_h, _poses_for(x), T_S, T_C, _intr_for(x))
         norms = np.linalg.norm((pred - pixels) / sigma, axis=1)
         if robust_loss == "none":
             return np.ones(len(norms))
@@ -295,7 +315,7 @@ def solve(
 
     T_S = _transform_from_params(sol.x[:6])
     T_C = _transform_from_params(sol.x[6:12]) if refine_C else T_C_fixed
-    pred = _reproject(world_h, inv_sdk, T_S, T_C, _intr_for(sol.x))
+    pred = _reproject(world_h, _poses_for(sol.x), T_S, T_C, _intr_for(sol.x))
     per_obs = np.nan_to_num(np.linalg.norm(pred - pixels, axis=1), nan=1.0e6, posinf=1.0e6)
     outlier_thresh = max(3.0 * robust_scale, 1e-6)
     num_outliers = int(np.sum(per_obs > outlier_thresh))
@@ -356,6 +376,7 @@ def solve(
         lens_corr=lens_corr,
         lens_corr_available=lens_corr_available,
         condition_number=condition_number,
+        scale_estimate=(float(sol.x[scale_idx]) if scale_idx is not None else None),
     )
 
 

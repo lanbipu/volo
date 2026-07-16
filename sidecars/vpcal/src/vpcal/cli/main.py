@@ -17,6 +17,7 @@ from vpcal.cli.export import export
 from vpcal.cli.marker_map import marker_map
 from vpcal.cli.pattern import pattern
 from vpcal.cli.capture import capture
+from vpcal.cli.doctor import doctor
 from vpcal.cli.quick import quick
 from vpcal.cli.report import report
 from vpcal.cli.screen import screen
@@ -63,6 +64,7 @@ cli.add_command(tracker_free)
 cli.add_command(capture)
 cli.add_command(marker_map)
 cli.add_command(verify)
+cli.add_command(doctor)
 
 
 # ── Self-describe / meta commands ────────────────────────────────────

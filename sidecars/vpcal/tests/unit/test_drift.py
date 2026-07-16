@@ -103,3 +103,13 @@ def test_rot_drift_antipodal_quaternion_is_zero():
     # q and -q are the same rotation → zero drift.
     q = [np.cos(0.3), np.sin(0.3), 0, 0]
     assert _rot_drift_deg(q, [-x for x in q]) < 1e-9
+
+
+def test_delay_profile_diff_alerts_over_two_ms():
+    r = _result([0, 0, 0], [1, 0, 0, 0])
+    a = {"cameras": [{"id": "cam-a", "delay_ms": 10.0}]}
+    b = {"cameras": [{"id": "cam-a", "delay_ms": 12.5}]}
+    diff = compare_results(r, r, delay_a=a, delay_b=b)
+    assert diff["delay"]["cam-a"]["delta_ms"] == 2.5
+    assert diff["delay"]["cam-a"]["alert"] is True
+    assert diff["any_alert"] is True

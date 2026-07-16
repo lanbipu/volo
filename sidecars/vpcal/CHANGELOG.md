@@ -21,6 +21,11 @@
 
 ### Added
 
+- **Calibrate FPR additive schema fields**：`LensProfile.image_domain` 声明标定像素域，
+  `LensProfile.lens_table` 预留 FIZ sample/interpolation 模型；`SolverConfig` 新增 staticity、
+  hand-eye、scale diagnostic 与 marker uncertainty gates。旧 session 仍可读取，缺失像素域按
+  `unknown` 处理并发出一次 QA warning。
+
 - **Quick Lens Estimate（Level 2）**（`f53bcf4`）：`vpcal quick run --estimate-lens` 在无 master
   镜头时联合估计 lens + 空间配准，由 `qa/observability.py` 的可观测性 gate（κ / 协方差 / 相关性 /
   cross-subset）门控，pre/post gate + revert，产出带强制 identifiability 警告的 session-coupled 估计。

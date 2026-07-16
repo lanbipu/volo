@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -39,6 +41,16 @@ def test_scipy_reports_scaled_covariance():
     result = solve_calibration(obs, INTR, prefer_cpp=False)
     assert result.covariance_std is not None
     assert result.covariance_std["tx_mm"] > 0
+
+
+def test_scale_diagnostic_detects_half_percent_mocap_error():
+    obs, _gt = _observations()
+    scaled = [
+        replace(o, track_t=tuple(v * 1.005 for v in o.track_t))
+        for o in obs
+    ]
+    result = solve_calibration(scaled, INTR, prefer_cpp=False, diagnose_scale=True)
+    assert result.scale_estimate == pytest.approx(1.0 / 1.005, abs=5e-4)
 
 
 @pytest.mark.skipif(not cpp_available(), reason="C++ solver not built")

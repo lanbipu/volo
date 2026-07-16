@@ -35,6 +35,21 @@ def test_valid_session_passes(tmp_path):
     assert report["matched"] >= 3
 
 
+def test_fiz_change_warns_with_frame_interval(tmp_path):
+    session, raw = _make_session(tmp_path)
+    poses = tmp_path / "tracking" / "poses.jsonl"
+    rows = [json.loads(line) for line in poses.read_text().splitlines()]
+    for i, row in enumerate(rows):
+        row["zoom_raw"] = 100 if i < 3 else 110
+        row["focus_raw"] = 200
+    poses.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+    report = validate_session(session, tmp_path, raw_session=raw)
+    assert report["fiz_constancy"]["zoom_raw"]["constant"] is False
+    assert report["fiz_constancy"]["focus_raw"]["constant"] is True
+    assert any("FIZ zoom_raw" in warning and "frames" in warning
+               for warning in report["warnings"])
+
+
 def test_unsupported_lens_model_rejected(tmp_path):
     session, raw = _make_session(tmp_path)
     raw["lens"]["distortion"]["k4"] = 0.01

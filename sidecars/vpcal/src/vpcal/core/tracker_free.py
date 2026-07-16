@@ -47,6 +47,8 @@ class ScreenPose:
 
     rvec: NDArray[np.float64]
     tvec: NDArray[np.float64]
+    ambiguous: bool = False
+    candidate_error_ratio: float | None = None
 
     @property
     def rotation_matrix(self) -> NDArray[np.float64]:
@@ -310,11 +312,34 @@ def _solve_pnp(
     img = img_pts.astype(np.float64)
     is_planar = np.ptp(obj[:, 2]) < 1e-6
     flag = cv2.SOLVEPNP_IPPE if is_planar and len(obj) >= 4 else cv2.SOLVEPNP_ITERATIVE
-    ok, rvec, tvec = cv2.solvePnP(obj, img, camera_matrix, dist_coeffs, flags=flag)
+    ambiguous = False
+    ratio = None
+    if flag == cv2.SOLVEPNP_IPPE:
+        result = cv2.solvePnPGeneric(obj, img, camera_matrix, dist_coeffs, flags=flag)
+        ok, rvecs, tvecs = result[:3]
+        if not ok or not rvecs:
+            return None
+        scored = []
+        for rv, tv in zip(rvecs, tvecs):
+            projected, _ = cv2.projectPoints(obj, rv, tv, camera_matrix, dist_coeffs)
+            rms = float(np.sqrt(np.mean(np.sum((projected.reshape(-1, 2) - img) ** 2, axis=1))))
+            R, _ = cv2.Rodrigues(rv)
+            normal_z = float(R[2, 2])
+            scored.append((rms, normal_z, rv, tv))
+        scored.sort(key=lambda x: (x[0], -x[1]))
+        if len(scored) > 1:
+            ratio = scored[1][0] / max(scored[0][0], 1.0e-12)
+            ambiguous = ratio < 1.2
+        _err, _normal, rvec, tvec = scored[0]
+    else:
+        ok, rvec, tvec = cv2.solvePnP(obj, img, camera_matrix, dist_coeffs, flags=flag)
     if not ok:
         return None
     rvec, tvec = cv2.solvePnPRefineLM(obj, img, camera_matrix, dist_coeffs, rvec, tvec)
-    return ScreenPose(rvec=rvec, tvec=tvec)
+    return ScreenPose(
+        rvec=rvec, tvec=tvec, ambiguous=ambiguous,
+        candidate_error_ratio=ratio,
+    )
 
 
 def spatial_solve(

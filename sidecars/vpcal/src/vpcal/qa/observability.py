@@ -210,12 +210,17 @@ def validate_lens_estimate(
         "verdicts": verdicts,
         "params_kept": params_kept,
         "params_reverted": params_reverted,
+        "cross_subset_skipped": bool(
+            cross_subset_deltas and cross_subset_deltas.get("cross_subset_skipped")
+        ),
         "confidence": confidence_label(
             backend=solver_result.solver_backend,
             params_kept=params_kept, params_reverted=params_reverted,
             corr_available=corr_avail,
         ),
     }
+    if post["cross_subset_skipped"] and post["confidence"] == "high":
+        post["confidence"] = "medium"
     surviving = LensFreedom(
         free_focal=("focal_scale" in freed and keep["focal_scale"]),
         free_cx=("cx" in freed and keep["cx"]),

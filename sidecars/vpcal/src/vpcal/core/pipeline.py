@@ -108,6 +108,7 @@ def _detect_observations(
     )
     observations: list[Observation] = []
     rejected_topology = 0
+    saturated_detections = 0
     images_processed = 0
     images_differenced = 0
     report_warnings: list[str] = []
@@ -133,6 +134,7 @@ def _detect_observations(
             frame, session.tracking.coordinate_system, session.tracking.custom_transform
         )
         for det in detect_markers(img, frame_id=frame.frame_id, inverted=inv):
+            saturated_detections += int(det.saturated)
             if det.confidence < 1.0:
                 # Topology-inconsistent detection: hard-reject (A2.3) — decode
                 # may be valid but the position contradicts its neighbours.
@@ -154,7 +156,13 @@ def _detect_observations(
         "images_processed": images_processed,
         "images_differenced": images_differenced,
         "warnings": report_warnings,
+        "saturated_detections": saturated_detections,
     }
+    if saturated_detections:
+        report["warnings"].append(
+            f"{saturated_detections} marker detection(s) contain saturated pixels; "
+            "reduce exposure or capture an exposure bracket"
+        )
     return observations, report
 
 
@@ -190,6 +198,7 @@ def _detect_observations_physical(
     images_processed = 0
     detected_total = 0
     unknown_total = 0
+    saturated_total = 0
     observed_markers: set[str] = set()
     for fm in match.matched:
         frame = frames[fm.tracking_index]
@@ -203,6 +212,7 @@ def _detect_observations_physical(
         dets, counters = detect_physical_markers(img, marker_map, frame_id=frame.frame_id)
         detected_total += counters["detected_markers"]
         unknown_total += counters["unknown_markers"]
+        saturated_total += counters.get("saturated_markers", 0)
         for det in dets:
             world = world_map.get(det.marker_id)
             if world is None:
@@ -225,10 +235,16 @@ def _detect_observations_physical(
         warnings.append(
             f"{unknown_total} detected marker(s) are not in the marker map — ignored"
         )
+    if saturated_total:
+        warnings.append(
+            f"{saturated_total} physical marker(s) contain saturated pixels; "
+            "reduce exposure or capture an exposure bracket"
+        )
     report = {
         "images_processed": images_processed,
         "detected_markers": detected_total,
         "unknown_markers": unknown_total,
+        "saturated_markers": saturated_total,
         "map_markers_never_detected": never_detected,
         "warnings": warnings,
         # Keys shared with the VP-QSP report so downstream consumers need no branch.
@@ -293,7 +309,10 @@ def _handeye_initial(
     t_diff_mm = float(np.linalg.norm(he.camera_from_tracker_t - np.asarray(t_prior)))
     report["prior_rotation_diff_deg"] = rot_diff_deg
     report["prior_translation_diff_mm"] = t_diff_mm
-    if rot_diff_deg > 5.0 or t_diff_mm > 20.0:
+    if (
+        rot_diff_deg > session.solver.handeye_deviation_warn_deg
+        or t_diff_mm > session.solver.handeye_deviation_warn_mm
+    ):
         source = "user tracker_to_camera_prior" if user_prior_given else "identity default prior"
         report["warnings"].append(
             f"{source} differs from the closed-form hand-eye solution by "
@@ -356,6 +375,7 @@ def _lens_profile_from_intr(intr: CameraIntrinsics, ref):
     w, h = ref.image_width_px, ref.image_height_px
     sw, sh = ref.sensor_width_mm, ref.sensor_height_mm
     return LensProfile(
+        image_domain=ref.image_domain,
         focal_length_mm=intr.fx * sw / w,
         sensor_width_mm=sw, sensor_height_mm=sh,
         principal_point_offset_mm=((intr.cx - w / 2.0) * sw / w, (intr.cy - h / 2.0) * sh / h),
@@ -364,6 +384,7 @@ def _lens_profile_from_intr(intr: CameraIntrinsics, ref):
         # QLE never estimates the entrance pupil — keep the nominal offset so
         # the exported lens matches what the solver actually used.
         entrance_pupil_offset_mm=ref.entrance_pupil_offset_mm,
+        lens_table=ref.lens_table,
     )
 
 
@@ -388,12 +409,11 @@ def _cross_subset_deltas(
 ) -> dict[str, float] | None:
     """Refine k1 on two disjoint pose halves; return ``{"k1": |Δk1|}`` (QLE §5.3 #3).
 
-    Returns None when there are too few poses to split (< 3 per half) or either
-    sub-solve fails to produce a k1 — the cross-subset gate is then skipped.
+    Failures return a ``cross_subset_skipped`` flag so the gate fails closed.
     """
     frame_ids = sorted({o.frame_id for o in observations})
     if len(frame_ids) < 6:
-        return None
+        return {"cross_subset_skipped": 1.0}
     mid = len(frame_ids) // 2
     a_ids, b_ids = set(frame_ids[:mid]), set(frame_ids[mid:])
     obs_a = [o for o in observations if o.frame_id in a_ids]
@@ -402,11 +422,11 @@ def _cross_subset_deltas(
         ra = solve_calibration(obs_a, seed_intr, lens_free=lens_free, **solver_kwargs)
         rb = solve_calibration(obs_b, seed_intr, lens_free=lens_free, **solver_kwargs)
     except Exception:  # noqa: BLE001
-        return None
+        return {"cross_subset_skipped": 1.0}
     k1a = (ra.lens_values or {}).get("k1")
     k1b = (rb.lens_values or {}).get("k1")
     if k1a is None or k1b is None:
-        return None
+        return {"cross_subset_skipped": 1.0}
     return {"k1": abs(float(k1a) - float(k1b))}
 
 
@@ -444,6 +464,7 @@ def _estimate_lens(
         prior_weight_translation=session.solver.prior_weight_translation,
         max_iterations=session.solver.max_iterations,
         timeout_seconds=session.solver.timeout_seconds, prefer_cpp=False,
+        diagnose_scale=session.solver.diagnose_scale,
     )
 
     # Step A — spatial-only baseline (nominal lens, always recorded).
@@ -752,6 +773,7 @@ def run_quick(
             max_iterations=session.solver.max_iterations,
             timeout_seconds=session.solver.timeout_seconds,
             prefer_cpp=prefer_cpp,
+            diagnose_scale=session.solver.diagnose_scale,
         )
         eff_intr = intr
 
@@ -817,11 +839,32 @@ def run_quick(
     total_obs = len(train_obs)
     rms = reproj["global_rms_px"]
     confidence = _confidence(num_poses, total_obs, rms, validation_rms)
+    handeye_warnings: list[str] = []
+    if handeye_report:
+        t_dev = handeye_report.get("prior_translation_diff_mm")
+        r_dev = handeye_report.get("prior_rotation_diff_deg")
+        if (
+            (t_dev is not None and t_dev > session.solver.handeye_deviation_warn_mm)
+            or (r_dev is not None and r_dev > session.solver.handeye_deviation_warn_deg)
+        ):
+            if confidence == "high":
+                confidence = "medium"
+            handeye_warnings.append(
+                "RMS does not constrain tracker-to-camera translation; independent "
+                "physical hand-eye verification is required"
+            )
+    if solver_result.scale_estimate is not None and abs(solver_result.scale_estimate - 1.0) > 0.003:
+        handeye_warnings.append(
+            f"tracking scale diagnostic estimated {solver_result.scale_estimate:.6f}; "
+            "deviation exceeds 0.3%"
+        )
 
     result = _assemble_result(
         session, raw_session, truth_name, solver_result, reproj, confidence, num_poses, total_obs,
         __version__, estimated_lens=estimated_lens,
         validation_rms=validation_rms, validation_observations=len(holdout_obs),
+        handeye_report=handeye_report, quality_warnings=handeye_warnings,
+        staticity=(validation.get("staticity") or {}).get("status", "unverifiable"),
     )
     export_lens = _lens_profile_from_intr(eff_intr, session.lens) if estimated_lens is not None else session.lens
     _write_outputs(
@@ -853,6 +896,7 @@ def run_quick(
 def _assemble_result(
     session, raw_session, truth_name, sr, reproj, confidence, num_poses, total_obs, version,
     *, estimated_lens=None, validation_rms=None, validation_observations=0,
+    handeye_report=None, quality_warnings=None, staticity="unverifiable",
 ):
     from vpcal.models.calibration import (
         CalibrationResult, CameraFromTracker, CovarianceStd, Inputs,
@@ -885,6 +929,10 @@ def _assemble_result(
             lens_residual_pattern="radial" if reproj["lens_residual_check"]["radial_pattern_detected"] else "none",
             lens_estimate=estimated_lens,
             lens_observability_warning=estimated_lens is not None,
+            handeye_deviation_mm=(handeye_report or {}).get("prior_translation_diff_mm"),
+            handeye_deviation_deg=(handeye_report or {}).get("prior_rotation_diff_deg"),
+            warnings=quality_warnings or [],
+            staticity=staticity,
         ),
         inputs=Inputs(
             session_config_hash=config_hash, image_count=num_poses, screen_definition=truth_name
@@ -894,6 +942,8 @@ def _assemble_result(
             termination_type=sr.termination_type, termination_message=sr.termination_message,
             num_residual_blocks=total_obs, num_inliers=sr.num_inliers, num_outliers=sr.num_outliers,
             outlier_ratio=outlier_ratio, solver_backend=sr.solver_backend,
+            degraded_backend=sr.degraded_backend,
+            scale_estimate=sr.scale_estimate,
             parameter_covariance=cov or ParameterCovariance(available=False),
         ),
     )

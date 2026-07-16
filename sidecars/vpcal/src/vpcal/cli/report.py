@@ -48,9 +48,13 @@ def generate(ctx, result_path, qa_dir, **flags) -> None:
               help="Translation drift alert threshold (mm).")
 @click.option("--rot-threshold-deg", type=float, default=0.05, show_default=True,
               help="Rotation drift alert threshold (deg).")
+@click.option("--delay-a", type=click.Path(), default=None, help="Optional baseline delay profile.")
+@click.option("--delay-b", type=click.Path(), default=None, help="Optional comparison delay profile.")
+@click.option("--delay-threshold-ms", type=float, default=2.0, show_default=True)
 @common_options
 @click.pass_context
-def diff(ctx, result_a, result_b, trans_threshold_mm, rot_threshold_deg, **flags) -> None:
+def diff(ctx, result_a, result_b, trans_threshold_mm, rot_threshold_deg,
+         delay_a, delay_b, delay_threshold_ms, **flags) -> None:
     """Compare two calibration results for drift (daily drift check).
 
     Reports translation / rotation drift of T_S_from_O and T_C_from_B plus the
@@ -67,8 +71,11 @@ def diff(ctx, result_a, result_b, trans_threshold_mm, rot_threshold_deg, **flags
                 raise ResourceNotFoundError(f"result not found: {p}", details={"path": str(p)})
         a = json.loads(pa.read_text())
         b = json.loads(pb.read_text())
+        da = json.loads(Path(delay_a).read_text()) if delay_a else None
+        db = json.loads(Path(delay_b).read_text()) if delay_b else None
         diff_data = compare_results(
             a, b, trans_threshold_mm=trans_threshold_mm, rot_threshold_deg=rot_threshold_deg,
+            delay_a=da, delay_b=db, delay_threshold_ms=delay_threshold_ms,
         )
         return OperationOutput(data=diff_data, text=render_drift(diff_data, label_a=pa.name, label_b=pb.name))
 

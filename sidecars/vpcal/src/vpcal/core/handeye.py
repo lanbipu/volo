@@ -177,6 +177,27 @@ def closed_form_handeye(
     rhs = np.concatenate([R_X @ B[:3, 3] - A[:3, 3] for A, B in pairs])
     t_X, *_ = np.linalg.lstsq(M, rhs, rcond=None)
 
+    # One trimmed re-solve prevents a single bad per-frame PnP from polluting
+    # every pair that contains it. Residual uses the full AX-XB transform.
+    X = np.eye(4)
+    X[:3, :3] = R_X
+    X[:3, 3] = t_X
+    pair_errors = np.asarray([np.linalg.norm(A @ X - X @ B) for A, B in pairs])
+    if len(pair_errors) >= 5:
+        cutoff = float(np.percentile(pair_errors, 80.0))
+        keep = [i for i, e in enumerate(pair_errors) if e <= cutoff]
+        if len(keep) >= 2:
+            H = np.zeros((3, 3))
+            for i in keep:
+                H += np.outer(betas[i], alphas[i])
+            U, _S, Vt = np.linalg.svd(H)
+            D = np.diag([1.0, 1.0, np.sign(np.linalg.det(Vt.T @ U.T))])
+            R_X = Vt.T @ D @ U.T
+            kept_pairs = [pairs[i] for i in keep]
+            M = np.vstack([A[:3, :3] - np.eye(3) for A, _B in kept_pairs])
+            rhs = np.concatenate([R_X @ B[:3, 3] - A[:3, 3] for A, B in kept_pairs])
+            t_X, *_ = np.linalg.lstsq(M, rhs, rcond=None)
+
     return HandeyeResult(
         camera_from_tracker_q=matrix_to_quat(R_X),
         camera_from_tracker_t=t_X,
@@ -187,5 +208,6 @@ def closed_form_handeye(
             "usable_frames": len(fids),
             "rotating_pairs": len(alphas),
             "axis_spread": axis_spread,
+            "trimmed_pairs": int(len(pair_errors) - len(keep)) if len(pair_errors) >= 5 else 0,
         },
     )

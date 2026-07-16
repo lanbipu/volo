@@ -120,8 +120,16 @@ def _camera_to_world_sample(
     tracker: dict = {"status": "calibrated", "recording": False}
     # Discipline §7 #1: a session-coupled quick estimate is NEVER a master lens;
     # the schema forbids custom lens keys, so the flag lives in tracker.notes.
+    domain_note = (
+        f"lensImageDomain: {lens.image_domain}"
+        if lens.image_domain != "unknown" else None
+    )
     notes = "; ".join(
-        n for n in (_SESSION_ESTIMATE_NOTE if session_estimate else None, frame_note) if n
+        n for n in (
+            _SESSION_ESTIMATE_NOTE if session_estimate else None,
+            domain_note,
+            frame_note,
+        ) if n
     )
     if notes:
         tracker["notes"] = notes

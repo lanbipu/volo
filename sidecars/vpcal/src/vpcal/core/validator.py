@@ -65,7 +65,14 @@ def validate_session(
 
     # 1. Lens model support (k4/k5/k6 → hard error).
     if raw_session is not None:
-        dist = (raw_session.get("lens", {}) or {}).get("distortion", {}) or {}
+        raw_lens = raw_session.get("lens", {}) or {}
+        raw_model = str(raw_lens.get("model", raw_lens.get("projection_model", ""))).lower()
+        if "anamorphic" in raw_model or raw_lens.get("anamorphic_squeeze") is not None:
+            raise PreconditionError(
+                "anamorphic lens models are not supported by this calibration pipeline",
+                details={"model": raw_model or "anamorphic"},
+            )
+        dist = raw_lens.get("distortion", {}) or {}
         bad = _UNSUPPORTED_DISTORTION_KEYS & dist.keys()
         if bad:
             raise PreconditionError(
@@ -73,6 +80,11 @@ def validate_session(
                 "Phase 1 supports Brown-Conrady k1,k2,k3,p1,p2 only",
                 details={"unsupported": sorted(bad)},
             )
+    if session.lens.image_domain == "unknown":
+        warnings.append(
+            "lens calibration pixel domain is unknown; parameters calibrated on a "
+            "scaled monitor output can be systematically wrong in the delivery domain"
+        )
 
     # 2. Referenced files exist.
     import json as _json
@@ -95,7 +107,22 @@ def validate_session(
         from vpcal.core.marker_map import validate_marker_map
         from vpcal.io.marker_map_io import load_marker_map
 
-        marker_map = load_marker_map(_resolve(session_dir, session.marker_map.path))
+        marker_map_path = _resolve(session_dir, session.marker_map.path)
+        marker_map = load_marker_map(marker_map_path)
+        if session.marker_map.fingerprint:
+            import hashlib
+
+            actual = "sha256:" + hashlib.sha256(marker_map_path.read_bytes()).hexdigest()
+            if actual != session.marker_map.fingerprint:
+                warnings.append(
+                    "session marker map fingerprint differs from the current workspace map; "
+                    "the map may have been rebased or levelled after capture"
+                )
+            report["marker_map_fingerprint"] = {
+                "captured": session.marker_map.fingerprint,
+                "current": actual,
+                "matches": actual == session.marker_map.fingerprint,
+            }
         map_report = validate_marker_map(marker_map)
         warnings.extend(map_report.pop("warnings"))
         report["marker_map"] = map_report
@@ -164,6 +191,62 @@ def validate_session(
             warnings.append(
                 f"large frame-to-frame position jumps detected (max {jumps.max():.0f} mm)"
             )
+
+    # Static-capture timing immunity is valid only when adjacent tracking
+    # samples prove negligible motion over the configured delay uncertainty.
+    staticity = {"status": "unverifiable"}
+    if len(frames) > 2:
+        times = np.asarray([f.timestamp_s for f in frames], dtype=float)
+        dt = np.diff(times)
+        valid = np.isfinite(dt) & (dt > 1.0e-6)
+        if np.count_nonzero(valid) >= max(2, len(dt) // 2):
+            linear = np.linalg.norm(np.diff(positions, axis=0), axis=1)[valid] / dt[valid]
+            static_poses = to_internal_poses(
+                frames, session.tracking.coordinate_system,
+                session.tracking.custom_transform,
+            )
+            quats = np.asarray([static_poses[f.frame_id][0] for f in frames], dtype=float)
+            quats /= np.linalg.norm(quats, axis=1, keepdims=True).clip(min=1.0e-12)
+            dots = np.clip(np.abs(np.sum(quats[1:] * quats[:-1], axis=1)), 0.0, 1.0)
+            angular = np.degrees(2.0 * np.arccos(dots))[valid] / dt[valid]
+            delay_s = session.solver.timing_delay_bound_ms * 1.0e-3
+            p95_mm = float(np.percentile(linear * delay_s, 95))
+            p95_deg = float(np.percentile(angular * delay_s, 95))
+            status = "verified" if p95_mm <= 1.0 else "warning"
+            staticity = {
+                "status": status,
+                "timing_delay_bound_ms": session.solver.timing_delay_bound_ms,
+                "p95_translation_error_bound_mm": p95_mm,
+                "p95_rotation_error_bound_deg": p95_deg,
+            }
+            if status == "warning":
+                warnings.append(
+                    f"capture motion makes timing error non-negligible: p95 bound "
+                    f"{p95_mm:.2f} mm > 1.0 mm"
+                )
+    report["staticity"] = staticity
+
+    # FIZ constancy: a single-lens calibration session must not cross zoom or
+    # focus states. FreeD values are raw encoder counts; tolerate two counts of
+    # transport/encoder chatter and identify the affected frame interval.
+    fiz_report = {}
+    for field in ("zoom_raw", "focus_raw"):
+        values = [(f.frame_id, getattr(f, field)) for f in frames
+                  if getattr(f, field) is not None]
+        if not values:
+            continue
+        baseline = values[0][1]
+        changed = [fid for fid, value in values if abs(value - baseline) > 2]
+        fiz_report[field] = {"min": min(v for _, v in values),
+                             "max": max(v for _, v in values),
+                             "constant": not changed, "deadband_counts": 2}
+        if changed:
+            warnings.append(
+                f"FIZ {field} changed beyond 2 counts during frames "
+                f"{min(changed)}-{max(changed)}; use a constant lens state or split the session"
+            )
+    if fiz_report:
+        report["fiz_constancy"] = fiz_report
 
     # 5. Pose diversity (spatial + angular spread).
     poses = to_internal_poses(frames, session.tracking.coordinate_system, session.tracking.custom_transform)

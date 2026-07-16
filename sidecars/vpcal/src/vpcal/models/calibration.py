@@ -88,6 +88,10 @@ class Quality(BaseModel):
     """Quick Lens Estimate block; None in Phase-1 (lens-fixed) mode."""
     lens_observability_warning: bool = False
     """Always True whenever ``lens_estimate`` is present (spec §5.5)."""
+    handeye_deviation_mm: Optional[float] = None
+    handeye_deviation_deg: Optional[float] = None
+    warnings: list[str] = Field(default_factory=list)
+    staticity: Literal["verified", "warning", "unverifiable"] = "unverifiable"
 
 
 class Inputs(BaseModel):
@@ -129,6 +133,8 @@ class SolverDiagnostics(BaseModel):
     num_outliers: int
     outlier_ratio: float
     solver_backend: Literal["ceres", "scipy"]
+    degraded_backend: bool = False
+    scale_estimate: Optional[float] = None
     parameter_covariance: ParameterCovariance = Field(
         default_factory=ParameterCovariance
     )

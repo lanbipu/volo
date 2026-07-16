@@ -114,8 +114,11 @@ def test_manifest_operations():
         "export.opentrackio", "export.ndisplay",
         "marker_map.create", "marker_map.validate", "marker_map.board",
         "marker_map.cube", "marker_map.rebase", "verify.mapping", "verify.overlay",
+        "verify.live",
         "capture.delay_cal",
-        "capture.track", "capture.enumerate", "capture.video", "capture.session",
+        "capture.track", "capture.list_devices", "capture.finalize",
+        "capture.enumerate", "capture.video", "capture.session",
         "capture.playback",
+        "doctor",
     }
     assert m.contract_version == "1.0"

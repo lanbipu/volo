@@ -6,7 +6,7 @@ See spec section 4.3 for the full definition and computed properties.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
@@ -30,6 +30,33 @@ class BrownConradyDistortion(BaseModel):
     p2: float = 0.0
 
 
+class LensTableSample(BaseModel):
+    """One measured FIZ sample reserved for future master-lens calibration."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    zoom_raw: float
+    focus_raw: float
+    iris_raw: Optional[float] = None
+    focal_length_mm: float = Field(gt=0)
+    principal_point_offset_mm: tuple[float, float] = (0.0, 0.0)
+    distortion: BrownConradyDistortion = Field(default_factory=BrownConradyDistortion)
+    entrance_pupil_offset_mm: Optional[float] = None
+
+
+class LensTable(BaseModel):
+    """FIZ-indexed lens samples and their interpolation contract.
+
+    This is schema-only in the current release. Calibration and runtime
+    interpolation intentionally remain out of scope until hardware validation.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    interpolation: Literal["nearest", "linear"] = "linear"
+    samples: list[LensTableSample] = Field(min_length=1)
+
+
 class LensProfile(BaseModel):
     """Unified internal lens representation.
 
@@ -40,6 +67,9 @@ class LensProfile(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+
+    image_domain: Literal["sensor_full", "monitor_scaled", "unknown"] = "unknown"
+    """Pixel domain in which the intrinsics were calibrated."""
 
     focal_length_mm: float = Field(gt=0)
     sensor_width_mm: float = Field(gt=0)
@@ -64,6 +94,8 @@ class LensProfile(BaseModel):
     ``lens_observability_warning`` / camera-prior diagnostics when both are in
     play. For a zoom lens, the offset should vary with focus/zoom (FIZ table)
     — not modelled yet (architecture 4.1 LensCal)."""
+    lens_table: Optional[LensTable] = None
+    """Reserved FIZ table; current solve paths consume only the scalar profile."""
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -122,6 +154,7 @@ def effective_lens(nominal: LensProfile, lens_estimate: dict) -> LensProfile:
     k1 = lens_estimate["distortion_k1"]["value"] if lens_estimate.get("distortion_k1") else d.k1
     k2 = lens_estimate["distortion_k2"]["value"] if lens_estimate.get("distortion_k2") else d.k2
     return LensProfile(
+        image_domain=nominal.image_domain,
         focal_length_mm=focal, sensor_width_mm=nominal.sensor_width_mm,
         sensor_height_mm=nominal.sensor_height_mm, principal_point_offset_mm=(ppo[0], ppo[1]),
         image_width_px=nominal.image_width_px, image_height_px=nominal.image_height_px,
@@ -129,4 +162,5 @@ def effective_lens(nominal: LensProfile, lens_estimate: dict) -> LensProfile:
         # QLE never estimates the entrance pupil — carry the nominal value so
         # downstream consumers keep the offset the solver actually used.
         entrance_pupil_offset_mm=nominal.entrance_pupil_offset_mm,
+        lens_table=nominal.lens_table,
     )

@@ -13,6 +13,7 @@ import numpy as np
 DEFAULT_TRANS_THRESHOLD_MM = 2.0
 DEFAULT_ROT_THRESHOLD_DEG = 0.05
 DEFAULT_RMS_THRESHOLD_PX = 0.5
+DEFAULT_DELAY_THRESHOLD_MS = 2.0
 
 
 def _trans_drift_mm(a: list[float], b: list[float]) -> float:
@@ -46,6 +47,9 @@ def compare_results(
     trans_threshold_mm: float = DEFAULT_TRANS_THRESHOLD_MM,
     rot_threshold_deg: float = DEFAULT_ROT_THRESHOLD_DEG,
     rms_threshold_px: float = DEFAULT_RMS_THRESHOLD_PX,
+    delay_a: dict | None = None,
+    delay_b: dict | None = None,
+    delay_threshold_ms: float = DEFAULT_DELAY_THRESHOLD_MS,
 ) -> dict:
     """Structured drift between two calibration result dicts.
 
@@ -60,7 +64,7 @@ def compare_results(
     out: dict = {
         "schema_version": "1.0",
         "thresholds": {"translation_mm": trans_threshold_mm, "rotation_deg": rot_threshold_deg,
-                       "validation_rms_px": rms_threshold_px},
+                       "validation_rms_px": rms_threshold_px, "delay_ms": delay_threshold_ms},
         "transforms": {},
         "quality": {},
     }
@@ -86,6 +90,20 @@ def compare_results(
                 alerts.append(entry["alert"])
         out["quality"][metric] = entry
 
+    if delay_a is not None and delay_b is not None:
+        cams_a = {str(c.get("id", i)): c for i, c in enumerate(delay_a.get("cameras", []))}
+        cams_b = {str(c.get("id", i)): c for i, c in enumerate(delay_b.get("cameras", []))}
+        delay_diff = {}
+        for camera_id in sorted(cams_a.keys() & cams_b.keys()):
+            va = float(cams_a[camera_id]["delay_ms"])
+            vb = float(cams_b[camera_id]["delay_ms"])
+            delta = vb - va
+            entry = {"a_ms": va, "b_ms": vb, "delta_ms": round(delta, 4),
+                     "alert": abs(delta) > delay_threshold_ms}
+            delay_diff[camera_id] = entry
+            alerts.append(entry["alert"])
+        out["delay"] = delay_diff
+
     out["any_alert"] = bool(any(alerts))
     return out
 
@@ -108,4 +126,10 @@ def render_drift(diff: dict, *, label_a: str = "A", label_b: str = "B") -> str:
     for metric, e in diff["quality"].items():
         if e.get("a") is not None and e.get("b") is not None:
             lines.append(f"  {metric:28s} {e['a']:.4f} → {e['b']:.4f}  (Δ {e['delta']:+.4f})")
+    for camera_id, e in diff.get("delay", {}).items():
+        flag = " ⚠" if e["alert"] else ""
+        lines.append(
+            f"  delay {camera_id:22s} {e['a_ms']:+.2f} → {e['b_ms']:+.2f} ms "
+            f"(Δ {e['delta_ms']:+.2f}){flag}"
+        )
     return "\n".join(lines)

@@ -121,6 +121,13 @@ def build_manifest() -> ContractManifest:
 
     operations = [
         _op(
+            "doctor",
+            "Diagnose solver, OpenCV, NDI, and DeckLink runtime availability.",
+            "vpcal doctor",
+            tool_name="doctor",
+            exit_codes=[0, 6],
+        ),
+        _op(
             "quick.run",
             "Run the full calibration pipeline (validate → detect → solve → report).",
             "vpcal quick run",
@@ -243,6 +250,13 @@ def build_manifest() -> ContractManifest:
             exit_codes=[0, 2, 5, 6],
         ),
         _op(
+            "verify.live",
+            "Stream live detected-vs-reprojected markers over an MJPEG preview.",
+            "vpcal verify live",
+            tool_name="verify_live",
+            exit_codes=[0, 1, 2, 3, 5, 6],
+        ),
+        _op(
             "capture.delay_cal",
             "Calibrate the video↔tracking delay from a swing-test capture.",
             "vpcal capture delay-cal",
@@ -251,10 +265,24 @@ def build_manifest() -> ContractManifest:
         ),
         _op(
             "capture.track",
-            "Record a timestamped tracking stream from a live FreeD / OpenTrackIO source.",
+            "Record or monitor a timestamped tracking stream from a live FreeD / OpenTrackIO source.",
             "vpcal capture track",
             tool_name="capture_track",
             exit_codes=[0, 1, 2, 5, 6],
+        ),
+        _op(
+            "capture.list_devices",
+            "Probe UVC device indices and report availability and negotiated format.",
+            "vpcal capture list-devices",
+            tool_name="capture_list_devices",
+            exit_codes=[0, 1, 2, 6],
+        ),
+        _op(
+            "capture.finalize",
+            "Promote an interrupted incremental capture into a session.json.",
+            "vpcal capture finalize",
+            tool_name="capture_finalize",
+            exit_codes=[0, 1, 2, 6],
         ),
         _op(
             "capture.enumerate",

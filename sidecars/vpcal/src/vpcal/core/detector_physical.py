@@ -104,6 +104,12 @@ def detect_physical_markers(
                 continue
             detected += 1
             pts = quad.reshape(4, 2).astype(np.float64)
+            x0, y0 = np.floor(pts.min(axis=0)).astype(int)
+            x1, y1 = np.ceil(pts.max(axis=0)).astype(int)
+            x0, y0 = max(x0, 0), max(y0, 0)
+            x1, y1 = min(x1, gray.shape[1] - 1), min(y1, gray.shape[0] - 1)
+            roi = gray[y0:y1 + 1, x0:x1 + 1]
+            saturated = bool(roi.size and np.mean(roi >= 250) > 0.01)
             for k in range(4):
                 detections.append(
                     Detection(
@@ -111,7 +117,12 @@ def detect_physical_markers(
                         marker_id=PhysicalMarkerId(marker_id, k),
                         pixel_u=float(pts[k, 0]),
                         pixel_v=float(pts[k, 1]),
+                        saturated=saturated,
                     )
                 )
-    counters = {"detected_markers": detected, "unknown_markers": unknown}
+    counters = {
+        "detected_markers": detected,
+        "unknown_markers": unknown,
+        "saturated_markers": sum(1 for d in detections[::4] if d.saturated),
+    }
     return detections, counters
