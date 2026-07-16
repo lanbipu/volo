@@ -346,11 +346,19 @@ class CaptureSessionRunner:
         index = len(self._poses) + 1
         t_pose0 = time.monotonic()
 
-        normal_frame, normal_ok = self._wait_pattern(frames_iter, "normal")
-        if not normal_ok or normal_frame is None:
-            self.emit("pose_rejected", {"pose_index": index,
-                                         "reason": "normal_pattern_not_confirmed"})
-            return
+        # Ordinary (non-inverted) capture does not switch the LED wall and
+        # therefore has no pattern-player handshake to confirm.  Requiring a
+        # `pattern_ready` acknowledgement here would make every valid profile
+        # without patternsDir time out.  The strict normal/inverted handshake
+        # applies only to the differencing workflow.
+        if cfg.inverted:
+            normal_frame, normal_ok = self._wait_pattern(frames_iter, "normal")
+            if not normal_ok or normal_frame is None:
+                self.emit("pose_rejected", {"pose_index": index,
+                                             "reason": "normal_pattern_not_confirmed"})
+                return
+        else:
+            normal_frame = current_frame
         avg_n, t0, normal_t1, timecode = self._burst(frames_iter, normal_frame)
         t1 = normal_t1
         avg_i = None

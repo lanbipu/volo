@@ -308,6 +308,9 @@ import { listMonitors, openPatternPlayer, closePatternPlayer } from "../api/play
         '--backend', profile.videoBackend || 'uvc', '--device', String(profile.device || '0'),
         '--track-protocol', profile.trackProtocol || 'freed', '--track-host', profile.trackHost || '0.0.0.0',
         '--track-port', String(profile.trackPort || 6301), '--tolerance', '0.05', '--preview-port', '0', '--duration', '0'];
+      if (profile.trackProtocol === 'freed' && profile.trackCameraId != null) {
+        args.push('--track-camera-id', String(profile.trackCameraId));
+      }
       if (profile.fmtMode === 'manual' && profile.width) args.push('--width', String(profile.width));
       if (profile.fmtMode === 'manual' && profile.height) args.push('--height', String(profile.height));
       if (profile.fmtMode === 'manual' && profile.fps) args.push('--fps', String(profile.fps));

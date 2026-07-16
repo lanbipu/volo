@@ -143,6 +143,7 @@ import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern,
     const [sourceNote, setSourceNote] = useState(null);
     const session = useCaptureSession();
     const handledPatterns = useRef(new Set());
+    const pendingPatterns = useRef(new Set());
     const running = session.taskId !== null && session.state.exit === null;
     const preview = session.latest('preview_ready');
     const coverage = session.latest('coverage_update');
@@ -154,13 +155,23 @@ import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern,
     const pickScreen = async () => { try { const p = await pickFile('屏幕定义 (screen.json)', ['json']); if (p) setScreenPath(p); } catch (e) {} };
     const generateScreen = async () => { try { const r = await exportVpcalScreen(proj.path, screenId, null); setScreenPath(r.path); setSourceNote('fingerprint ' + r.fingerprint); } catch (e) { setSourceNote('生成失败 · ' + (e && e.message ? e.message : e)); } };
     const pickOut = async () => { try { const p = await pickDirectory(); if (p) setOutDir(p); } catch (e) {} };
-    const start = () => {
+    const start = async () => {
       if (!screenPath || !outDir) return;
       if (!profile) return;
       const canInvert = !!(profile.inverted && profile.patternsDir);
       if (profile.inverted && !profile.patternsDir) setSourceNote('该 legacy Profile 缺 patternsDir：本次已禁用 inverted / graycode，不会假回执。');
       handledPatterns.current.clear();
-      if (canInvert) listMonitors().then((ms) => openPatternPlayer(ms.length ? ms[ms.length - 1].index : 0)).catch((e) => setSourceNote('打开图案播放器失败 · ' + (e && e.message ? e.message : e)));
+      pendingPatterns.current.clear();
+      if (canInvert) {
+        try {
+          const monitors = await listMonitors();
+          if (!monitors.length) throw new Error('未发现可用于图案播放器的显示器');
+          await openPatternPlayer(monitors[monitors.length - 1].index);
+        } catch (e) {
+          setSourceNote('打开图案播放器失败 · ' + (e && e.message ? e.message : e));
+          return;
+        }
+      }
       session.start({ screenPath, outDir, backend: profile.videoBackend, device: profile.device,
         trackProtocol: profile.trackProtocol, trackPort: Number(profile.trackPort), trackHost: profile.trackHost || '0.0.0.0',
         trackCameraId: profile.trackCameraId,
@@ -173,12 +184,29 @@ import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern,
     const skip = () => session.sendCmd({ cmd: 'skip_pose' });
     useEffect(() => {
       for (const ev of session.events) {
-        if (ev.type !== 'request_pattern' || typeof ev.sequence !== 'number' || handledPatterns.current.has(ev.sequence)) continue;
-        handledPatterns.current.add(ev.sequence);
+        if (ev.type !== 'request_pattern' || typeof ev.sequence !== 'number'
+          || handledPatterns.current.has(ev.sequence) || pendingPatterns.current.has(ev.sequence)) continue;
         if (!profile || !profile.patternsDir) { setSourceNote('收到 request_pattern，但 Profile 无 patternsDir；未发送假 pattern_ready。'); continue; }
+        pendingPatterns.current.add(ev.sequence);
         const pattern = String(ev.pattern || 'normal'); const sep = String(profile.patternsDir).includes('\\') ? '\\' : '/';
-        playerShowPattern(String(profile.patternsDir).replace(/[\\/]+$/, '') + sep + pattern + '.png', pattern, ev.frame_index == null ? null : ev.frame_index)
-          .then(() => session.sendCmd({ cmd: 'pattern_ready', pattern })).catch((e) => setSourceNote('播放器切图失败 · ' + (e && e.message ? e.message : e)));
+        const path = String(profile.patternsDir).replace(/[\\/]+$/, '') + sep + pattern + '.png';
+        const showAndAck = async () => {
+          let lastError;
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            try {
+              await playerShowPattern(path, pattern, ev.frame_index == null ? null : ev.frame_index);
+              await session.sendCmd({ cmd: 'pattern_ready', pattern });
+              return;
+            } catch (e) {
+              lastError = e;
+              if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 400));
+            }
+          }
+          throw lastError;
+        };
+        showAndAck()
+          .then(() => { pendingPatterns.current.delete(ev.sequence); handledPatterns.current.add(ev.sequence); })
+          .catch((e) => { pendingPatterns.current.delete(ev.sequence); setSourceNote('播放器切图失败 · ' + (e && e.message ? e.message : e)); });
       }
     }, [session.events]);
     useEffect(() => () => { closePatternPlayer().catch(() => {}); }, []);

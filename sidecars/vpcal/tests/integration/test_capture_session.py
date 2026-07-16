@@ -307,7 +307,7 @@ def test_cli_session_without_pattern_evidence_fails_closed(tmp_path):
             "--backend", "synthetic", "--width", "320", "--height", "180", "--fps", "60",
             "--track-port", str(port), "--poses", "1",
             "--settle-ms", "200", "--burst", "2",
-            "--no-control-stdin", "--output", "ndjson",
+            "--inverted", "--no-control-stdin", "--output", "ndjson",
         ])
     assert result.exit_code != 0
     lines = [json.loads(ln) for ln in result.output.splitlines() if ln.strip()]
@@ -318,3 +318,30 @@ def test_cli_session_without_pattern_evidence_fails_closed(tmp_path):
     # Sequences strictly increase.
     seqs = [ln["sequence"] for ln in lines]
     assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)
+
+
+@pytest.mark.slow
+def test_cli_non_inverted_session_needs_no_pattern_channel(tmp_path):
+    from click.testing import CliRunner
+
+    from vpcal.cli.main import cli
+
+    screen = _screen()
+    screen_path = tmp_path / "screen.json"
+    save_screen(screen, screen_path)
+    port = _free_udp_port()
+    out = tmp_path / "session"
+
+    with _FreeDSender(port):
+        result = CliRunner().invoke(cli, [
+            "capture", "session",
+            "--screen", str(screen_path), "--out", str(out),
+            "--backend", "synthetic", "--width", "320", "--height", "180", "--fps", "60",
+            "--track-port", str(port), "--poses", "1",
+            "--settle-ms", "200", "--burst", "2",
+            "--no-control-stdin", "--output", "ndjson",
+        ])
+    assert result.exit_code == 0, result.output
+    lines = [json.loads(ln) for ln in result.output.splitlines() if ln.strip()]
+    assert not any(line.get("type") == "request_pattern" for line in lines)
+    assert lines[-1]["type"] == "result"

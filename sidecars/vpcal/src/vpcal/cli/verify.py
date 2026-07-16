@@ -173,6 +173,8 @@ def overlay(ctx, config_path, result_path, out_dir, limit, **flags) -> None:
               help="Tracking UDP port.")
 @click.option("--track-host", default="0.0.0.0", show_default=True,
               help="Tracking UDP bind address.")
+@click.option("--track-camera-id", default=None,
+              help="FreeD camera ID to accept; packets from other IDs are ignored.")
 @click.option("--tolerance", "timestamp_tolerance_s", type=click.FloatRange(min=0.0),
               default=0.05, show_default=True, help="Frame-to-tracking pairing tolerance in seconds.")
 @click.option("--preview-port", type=int, default=0, show_default=True,
@@ -185,7 +187,8 @@ def overlay(ctx, config_path, result_path, out_dir, limit, **flags) -> None:
 @click.pass_context
 def live(ctx, config_path, result_path, backend, device, width, height, fps,
          transfer_function, allow_hx, track_protocol, track_port, track_host,
-         timestamp_tolerance_s, preview_port, duration_s, max_frames, **flags) -> None:
+         track_camera_id, timestamp_tolerance_s, preview_port, duration_s, max_frames,
+         **flags) -> None:
     """Stream detected vs calibrated marker reprojections over a live camera feed."""
 
     def body(emitter: StreamEmitter) -> OperationOutput:
@@ -219,6 +222,9 @@ def live(ctx, config_path, result_path, backend, device, width, height, fps,
                         "track_protocol": track_protocol,
                         "track_host": track_host,
                         "track_port": track_port,
+                        "track_camera_id": (
+                            track_camera_id if track_protocol == "freed" else None
+                        ),
                         "preview_port": preview_port,
                     }
                 },
@@ -232,6 +238,7 @@ def live(ctx, config_path, result_path, backend, device, width, height, fps,
             track_port=track_port,
             track_protocol=track_protocol,
             track_host=track_host,
+            track_camera_id=track_camera_id if track_protocol == "freed" else None,
             timestamp_tolerance_s=timestamp_tolerance_s,
             preview_port=preview_port,
             duration_s=duration_s,

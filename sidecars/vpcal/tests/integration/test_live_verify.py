@@ -154,6 +154,8 @@ def test_verify_live_cli_dry_run_ndjson_contract(live_dataset):
             str(root / "result.json"),
             "--backend",
             "synthetic",
+            "--track-camera-id",
+            "7",
             "--dry-run",
             "--output",
             "ndjson",
@@ -168,3 +170,4 @@ def test_verify_live_cli_dry_run_ndjson_contract(live_dataset):
     assert lines[-1]["type"] == "result"
     assert lines[-1]["operation_id"] == "verify.live"
     assert lines[-1]["data"]["dry_run_plan"]["backend"] == "synthetic"
+    assert lines[-1]["data"]["dry_run_plan"]["track_camera_id"] == "7"

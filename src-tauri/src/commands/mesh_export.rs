@@ -250,11 +250,30 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> VoloResult<()> {
     ));
     std::fs::write(&tmp, bytes)?;
     if let Err(first) = std::fs::rename(&tmp, path) {
-        // Windows rename does not replace an existing destination. Preserve
-        // the temp file until the old export is removed, then retry.
+        // Windows rename does not replace an existing destination. Move the
+        // previous export aside first, and restore it if installing the new
+        // file fails, so an update error never silently destroys valid data.
         if path.exists() {
-            std::fs::remove_file(path)?;
-            std::fs::rename(&tmp, path)?;
+            let backup = path.with_extension(format!(
+                "{}.bak",
+                path.extension().and_then(|s| s.to_str()).unwrap_or("json")
+            ));
+            if backup.exists() {
+                std::fs::remove_file(&backup)?;
+            }
+            std::fs::rename(path, &backup)?;
+            if let Err(install_error) = std::fs::rename(&tmp, path) {
+                let restore_result = std::fs::rename(&backup, path);
+                return match restore_result {
+                    Ok(()) => Err(install_error.into()),
+                    Err(restore_error) => Err(VoloError::Io(format!(
+                        "failed to install new export ({install_error}); also failed to restore {} from {} ({restore_error})",
+                        path.display(),
+                        backup.display()
+                    ))),
+                };
+            }
+            std::fs::remove_file(&backup)?;
         } else {
             return Err(first.into());
         }
@@ -371,5 +390,18 @@ output: { target: neutral, obj_filename: "{screen_id}.obj", weld_vertices_tolera
                 .unwrap();
             assert!(status.success(), "vpcal Pydantic loader rejected export");
         }
+    }
+
+    #[test]
+    fn atomic_write_replaces_existing_export_without_leaving_backup() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("screen.json");
+        std::fs::write(&path, b"old").unwrap();
+
+        write_atomic(&path, b"new").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert!(!dir.path().join("screen.json.bak").exists());
+        assert!(!dir.path().join("screen.json.tmp").exists());
     }
 }

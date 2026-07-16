@@ -157,6 +157,7 @@ def run_live_verify(
     track_port: int,
     track_protocol: str = "freed",
     track_host: str = "0.0.0.0",
+    track_camera_id: str | int | None = None,
     timestamp_tolerance_s: float = 0.05,
     preview_port: int = 0,
     duration_s: float = 0.0,
@@ -176,7 +177,8 @@ def run_live_verify(
     overlay = LiveOverlay(session, session_dir, result)
     source = backend if backend is not None else open_backend(capture_config)
     tracking = listener if listener is not None else TrackingListener(
-        track_port, protocol=track_protocol, host=track_host
+        track_port, protocol=track_protocol, host=track_host,
+        camera_id=track_camera_id,
     )
     sink = PreviewSink()
     server = PreviewServer(sink, port=preview_port)

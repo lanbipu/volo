@@ -391,7 +391,7 @@ def session(ctx, screen_path, out_dir, backend, device, width, height, fps,
                                        "track": f"{track_protocol}:{track_port}"}},
                 text="Dry run OK.")
 
-        if not control_stdin and not graycode_sync:
+        if inverted and not control_stdin and not graycode_sync:
             raise PreconditionError(
                 "capture session has no pattern-confirmation channel: enable control stdin "
                 "for pattern_ready acknowledgements or enable --graycode-sync"
