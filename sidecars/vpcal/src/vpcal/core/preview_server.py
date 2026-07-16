@@ -42,7 +42,7 @@ class PreviewSink:
     number appears.  Slow consumers skip frames (latest-wins), never queue.
     """
 
-    def __init__(self, max_width: int = 960, jpeg_quality: int = 70) -> None:
+    def __init__(self, max_width: int = 1920, jpeg_quality: int = 80) -> None:
         self.max_width = max_width
         self.jpeg_quality = jpeg_quality
         self._cond = threading.Condition()

@@ -172,35 +172,55 @@ def test_uvc_backend_bad_device_raises():
         open_backend(CaptureConfig(backend="uvc", device="/nonexistent/video-device"))
 
 
-def test_uyvy_to_bgr_solid_color():
-    """A solid UYVY buffer converts to the expected BGR color (BT.601)."""
+def test_uyvy_to_bgr_bt709_anchors():
+    """UYVY converts through the BT.709 video-range matrix (black/white/gray)."""
     import numpy as np
 
     from vpcal.core.ndi import uyvy_to_bgr
 
     w, h, stride = 4, 2, 8
-    # Pure gray: Y=128, U=V=128 → BGR ≈ (128,128,128)
-    buf = np.tile(np.array([128, 128], np.uint8), h * stride // 2).tobytes()
-    bgr = uyvy_to_bgr(buf, w, h, stride)
-    assert bgr.shape == (h, w, 3)
-    assert np.all(np.abs(bgr.astype(int) - 128) <= 2)
+
+    def solid(y, c):
+        return np.tile(np.array([c, y], np.uint8), h * stride // 2).tobytes()
+
+    black = uyvy_to_bgr(solid(16, 128), w, h, stride)
+    white = uyvy_to_bgr(solid(235, 128), w, h, stride)
+    gray = uyvy_to_bgr(solid(126, 128), w, h, stride)
+    assert black.shape == (h, w, 3)
+    assert np.all(black == 0) and np.all(white == 255)
+    # 1.164384 * (126 - 16) ≈ 128
+    assert np.all(np.abs(gray.astype(int) - 128) <= 1)
+
+
+def test_uyvy_to_bgr_bt709_red():
+    """A saturated 709 red round-trips (Y'CbCr 63/102/240 → ≈(0,0,255))."""
+    import numpy as np
+
+    from vpcal.core.ndi import uyvy_to_bgr
+
+    w, h, stride = 4, 2, 8
+    # BT.709 video-range red: Y=63, Cb=102, Cr=240 (UYVY = Cb Y0 Cr Y1)
+    buf = np.tile(np.array([102, 63, 240, 63], np.uint8), h * stride // 4).tobytes()
+    bgr = uyvy_to_bgr(buf, w, h, stride).astype(int)
+    assert np.all(np.abs(bgr[..., 2] - 255) <= 3)   # R saturated
+    assert np.all(bgr[..., 0] <= 3) and np.all(bgr[..., 1] <= 3)
 
 
 def test_p216_to_bgr_matches_uyvy_path():
-    """P216 top-8-bit repack agrees with the plain UYVY conversion."""
+    """P216 (16-bit) agrees with the 8-bit UYVY conversion within rounding."""
     import numpy as np
 
     from vpcal.core.ndi import p216_to_bgr, uyvy_to_bgr
 
     w, h, stride = 4, 2, 8  # stride bytes per row of the 16-bit Y plane
-    y16 = np.full((h, w), 0x8200, np.uint16)      # Y ≈ 130
-    cbcr16 = np.full((h, w), 0x6000, np.uint16)   # Cb=Cr ≈ 96 → colour cast
+    y16 = np.full((h, w), 130 << 8, np.uint16)
+    cbcr16 = np.full((h, w), 96 << 8, np.uint16)  # Cb=Cr=96 → colour cast
     buf = y16.astype("<u2").tobytes() + cbcr16.astype("<u2").tobytes()
-    bgr16 = p216_to_bgr(buf, w, h, stride)
+    bgr16 = p216_to_bgr(buf, w, h, stride).astype(int)
 
     uyvy = np.empty((h, w, 2), np.uint8)
     uyvy[:, :, 0] = 96
     uyvy[:, :, 1] = 130
     rows = np.ascontiguousarray(uyvy).reshape(h, w * 2)
-    bgr8 = uyvy_to_bgr(rows.tobytes(), w, h, w * 2)
-    assert np.array_equal(bgr16, bgr8)
+    bgr8 = uyvy_to_bgr(rows.tobytes(), w, h, w * 2).astype(int)
+    assert np.all(np.abs(bgr16 - bgr8) <= 1)

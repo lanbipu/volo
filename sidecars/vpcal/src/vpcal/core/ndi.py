@@ -65,29 +65,54 @@ def p216_luma16(data: Any, width: int, height: int, stride: int) -> np.ndarray:
     return rows[:, :width].copy()
 
 
-def uyvy_to_bgr(data: Any, width: int, height: int, stride: int) -> np.ndarray:
-    """Convert a packed 8-bit UYVY frame to BGR (preview only — BT.601 matrix)."""
-    import cv2
+def _bt709_ycbcr_to_bgr(y: np.ndarray, cb: np.ndarray, cr: np.ndarray) -> np.ndarray:
+    """BT.709 video-range Y'CbCr (8-bit scale, float ok) → 8-bit BGR.
 
+    HD NDI senders are Rec.709; OpenCV's built-in YUV paths are BT.601 and
+    visibly shift saturated colours, so the matrix is applied by hand.
+    """
+    yl = 1.164384 * (y.astype(np.float32) - 16.0)
+    cb = cb.astype(np.float32) - 128.0
+    cr = cr.astype(np.float32) - 128.0
+    b = yl + 2.112402 * cb
+    g = yl - 0.213249 * cb - 0.532909 * cr
+    r = yl + 1.792741 * cr
+    return np.clip(np.stack([b, g, r], axis=-1), 0.0, 255.0).astype(np.uint8)
+
+
+def uyvy_to_bgr(data: Any, width: int, height: int, stride: int) -> np.ndarray:
+    """Convert a packed 8-bit UYVY frame to BGR (BT.709 video range)."""
     raw = np.frombuffer(data, dtype=np.uint8, count=height * stride)
-    packed = raw.reshape(height, stride)[:, : width * 2].reshape(height, width, 2)
-    return cv2.cvtColor(packed, cv2.COLOR_YUV2BGR_UYVY)
+    rows = raw.reshape(height, stride)[:, : width * 2]
+    y = rows[:, 1::2]
+    cb = np.repeat(rows[:, 0::4], 2, axis=1)[:, :width]
+    cr = np.repeat(rows[:, 2::4], 2, axis=1)[:, :width]
+    return _bt709_ycbcr_to_bgr(y, cb, cr)
 
 
 def p216_to_bgr(data: Any, width: int, height: int, stride: int) -> np.ndarray:
-    """Convert semi-planar 16-bit P216/PA16 to 8-bit BGR (preview only).
+    """Convert semi-planar 16-bit P216/PA16 to 8-bit BGR (BT.709 video range).
 
-    Plane 0 is 16-bit Y, plane 1 is interleaved 16-bit CbCr (4:2:2). Both are
-    truncated to their top 8 bits and repacked as UYVY so the conversion shares
-    OpenCV's UYVY path (BT.601, like the UVC/UYVY previews). PA16's trailing
-    alpha plane is simply ignored.
+    Plane 0 is 16-bit Y, plane 1 is interleaved 16-bit CbCr (4:2:2). The
+    16-bit values enter the matrix at full precision (scaled to 8-bit range
+    as floats) so 10/16-bit gradation survives until the final 8-bit preview
+    quantise. PA16's trailing alpha plane is simply ignored.
     """
-    import cv2
-
-    buf = np.frombuffer(data, dtype=np.uint8, count=height * stride * 2)
+    buf = np.frombuffer(data, dtype=np.uint8)
     y = buf[: height * stride].view("<u2").reshape(height, stride // 2)[:, :width]
-    cbcr = buf[height * stride:].view("<u2").reshape(height, stride // 2)[:, :width]
-    uyvy = np.empty((height, width, 2), np.uint8)
-    uyvy[:, :, 0] = (cbcr >> 8).astype(np.uint8)
-    uyvy[:, :, 1] = (y >> 8).astype(np.uint8)
-    return cv2.cvtColor(uyvy, cv2.COLOR_YUV2BGR_UYVY)
+    if buf.size >= height * stride * 2:
+        cbcr = (buf[height * stride: height * stride * 2]
+                .view("<u2").reshape(height, stride // 2)[:, :width])
+        cb_s, cr_s = cbcr[:, 0::2], cbcr[:, 1::2]
+        if cr_s.shape[1] == 0:  # degenerate 1px-wide frame: no Cr sample
+            cr_s = np.full_like(cb_s, 128 << 8)
+        elif cr_s.shape[1] < cb_s.shape[1]:  # odd sample count: extend edge
+            cr_s = np.concatenate([cr_s, cr_s[:, -1:]], axis=1)
+        cb = np.repeat(cb_s, 2, axis=1)[:, :width]
+        cr = np.repeat(cr_s, 2, axis=1)[:, :width]
+    else:  # luma-only buffer (e.g. synthetic test frames) → neutral chroma
+        cb = cr = np.full_like(y, 128 << 8, dtype=np.uint16)
+    scale = np.float32(1.0 / 256.0)
+    return _bt709_ycbcr_to_bgr(y.astype(np.float32) * scale,
+                               cb.astype(np.float32) * scale,
+                               cr.astype(np.float32) * scale)
