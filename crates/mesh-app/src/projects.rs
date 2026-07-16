@@ -155,6 +155,7 @@ mod project_yaml_method_tests {
                 cabinet_count: [4, 2],
                 cabinet_size_mm: [500.0, 500.0],
                 pixels_per_cabinet: None,
+                output_topology: None,
                 shape_prior: ShapePriorConfig::Flat,
                 shape_mode: ShapeMode::Rectangle,
                 irregular_mask: vec![],
