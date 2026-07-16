@@ -8,14 +8,19 @@
    的左栏已不再有「实时采集」步骤，ctx 栏「采集设置」按钮打开的是这里 —— 一个纯粹
    的命名配置（Profile）管理模态，本身不发起任何采集。
 
+   Profile 瘦身：poses/settleMs/burst/inverted/graycodeSync/patternsDir/lensPath 这组
+   「采集参数」已下沉到 calCaptureWindow.tsx 的共享实时采集单窗口（localStorage 持久化，
+   grid/lens 入口共享，与 Profile 身份解耦）；Profile 只保留 名称 + 视频源 + 输出目录，
+   即信号源身份本身。
+
    持久化：Profile 由 Rust 写入 app data；localStorage 仅作为同步 cache，供现有同步式
    Lens 页面在同一 WebView 内立即读取。首次使用不预置假数据。 */
 import * as React from "react";
-import { pickDirectory, pickFile } from "../api/commands";
+import { pickDirectory } from "../api/commands";
 import { listCaptureProfiles, saveCaptureProfiles } from "../api/captureProfiles";
 
 (function () {
-  const { Button, Switch } = window.Spectrum2DesignSystem_b6d1b3;
+  const { Button } = window.Spectrum2DesignSystem_b6d1b3;
   const { useEffect, useRef, useState } = React;
   const h = React.createElement;
 
@@ -33,18 +38,15 @@ import { listCaptureProfiles, saveCaptureProfiles } from "../api/captureProfiles
     { id: 'synthetic', label: '合成测试源' },
   ];
   const backendLabel = (id) => (VIDEO_BACKENDS.find((b) => b.id === id) || {}).label || id;
-  const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
   const blankForm = () => ({ name: '', videoBackend: 'uvc', device: '0', trackProtocol: 'freed', trackPort: 6301,
     trackHost: '0.0.0.0', trackCameraId: null,
     fmtMode: 'auto', width: '', height: '', fps: '', transferFunction: 'sdr',
-    poses: 8, settleMs: 300, burst: 5, inverted: true, graycodeSync: true,
-    patternsDir: '', lensPath: '', outputRoot: '' });
+    outputRoot: '' });
 
   function CaptureModal({ s, close }) {
     const [profiles, setProfiles] = useState(() => loadProfiles());
     const [mode, setMode] = useState('loading'); /* loading | list | new | empty */
     const [form, setForm] = useState(blankForm);
-    const [advOpen, setAdvOpen] = useState(false);
     const [editId, setEditId] = useState(null);
     const [saving, setSaving] = useState(false);
     const savingRef = useRef(false);
@@ -64,17 +66,13 @@ import { listCaptureProfiles, saveCaptureProfiles } from "../api/captureProfiles
       catch (e) { setProfiles(previous); saveProfiles(previous); s.pushLog({ lv: 'err', cat: 'capture', msg: `保存采集配置失败 · ${e.message || e}` }); return false; }
       finally { savingRef.current = false; setSaving(false); }
     };
-    const startNew = () => { setForm(blankForm()); setEditId(null); setAdvOpen(false); setMode('new'); };
-    const startEdit = (p) => { setForm(Object.assign(blankForm(), p)); setEditId(p.id); setAdvOpen(true); setMode('new'); };
+    const startNew = () => { setForm(blankForm()); setEditId(null); setMode('new'); };
+    const startEdit = (p) => { setForm(Object.assign(blankForm(), p)); setEditId(p.id); setMode('new'); };
     const dup = async (p) => { const c = Object.assign({}, p, { id: 'pf_' + Math.random().toString(36).slice(2), name: p.name + ' 副本', lastUsed: '刚刚' });
       if (await commit(profiles.concat([c]))) s.pushLog({ lv: 'ok', cat: 'capture', msg: `复制采集配置 <b>${c.name}</b>` }); };
     const del = async (p) => { const nx = profiles.filter((x) => x.id !== p.id); if (await commit(nx)) { if (!nx.length) setMode('empty');
       s.pushLog({ lv: 'warn', cat: 'capture', msg: `删除采集配置 <b>${p.name}</b>` }); } };
     const save = async () => {
-      if (form.inverted && !String(form.patternsDir || '').trim()) {
-        s.pushLog({ lv: 'warn', cat: 'capture', msg: '保存采集配置失败 · inverted 模式必须设置 <b>patternsDir</b>' });
-        return;
-      }
       const nm = form.name.trim() || '未命名配置';
       const next = editId
         ? profiles.map((x) => x.id === editId ? Object.assign({}, form, { id: editId, name: nm, lastUsed: '刚刚' }) : x)
@@ -103,7 +101,7 @@ import { listCaptureProfiles, saveCaptureProfiles } from "../api/captureProfiles
           h('div', { className: 'cal2-cap-empty' },
             h('div', { className: 'ce-ico' }, h(Icon, { name: 'camera', size: 32, stroke: 1.3 })),
             h('div', { className: 'ce-t', style: { fontSize: 16 } }, '还没有采集配置'),
-            h('div', { className: 'ce-d' }, '采集配置（Profile）保存视频源、追踪源与采集参数，方便现场一键复用。先建一个吧。'))),
+            h('div', { className: 'ce-d' }, '采集配置（Profile）保存视频源与输出位置，方便现场一键复用。姿位、settle、inverted 等采集参数已下沉到实时采集窗口。先建一个吧。'))),
         h('div', { className: 'drawer-f' },
           h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'plus', size: 15 }), onPress: startNew }, '新建第一个采集配置')));
     }
@@ -131,55 +129,13 @@ import { listCaptureProfiles, saveCaptureProfiles } from "../api/captureProfiles
 
     /* ---------- 新建 / 编辑表单 ---------- */
     const set = (k, v) => setForm((f) => Object.assign({}, f, { [k]: v }));
-    const NumField = (label, key, unit, min, max) => h('div', { className: 'cap-num' },
-      h('label', null, label),
-      h('div', { className: 'cap-num-in' },
-        h('input', { type: 'number', value: form[key], min, max, onChange: (e) => set(key, e.target.value) }),
-        unit ? h('span', { className: 'u' }, unit) : null));
 
     const body = h('div', { className: 'drawer-b' },
       h('div', { className: 'cal2-cap-name' },
         h('span', { className: 'cap-lbl' }, '配置名'),
         h('input', { className: 'cap-tf', value: form.name, placeholder: '如：现场 · UVC 主机位', autoFocus: true, onChange: (e) => set('name', e.target.value) })),
       h(window.VoloVideoSource.VideoSourceCard, { form, set }),
-      /* 追踪源已移至独立「追踪源信号接入」模块。 */
-      h('div', { className: 'cap-card' },
-        h('button', { className: 'cap-adv-h', style: { width: '100%' }, onClick: () => setAdvOpen((v) => !v) },
-          h(Icon, { name: 'chevr', size: 13, style: { transform: advOpen ? 'rotate(90deg)' : 'none', transition: 'transform .15s' } }),
-          '采集参数', h('span', { className: 'cap-adv-tag' }, 'poses / settle / burst / inverted / graycode / lens')),
-        advOpen ? h('div', { style: { marginTop: 13 } },
-          h('div', { className: 'cap-param-grid' },
-            h('div', { className: 'cap-num' },
-              h('label', null, 'poses（3–24）'),
-              h('div', { className: 'cap-stepper' },
-                h('button', { onClick: () => set('poses', clamp(+form.poses - 1, 3, 24)) }, '−'),
-                h('span', null, form.poses),
-                h('button', { onClick: () => set('poses', clamp(+form.poses + 1, 3, 24)) }, '+'))),
-            NumField('settleMs', 'settleMs', 'ms', 100, 2000),
-            NumField('burst', 'burst', '帧', 1, 12)),
-          h('div', { className: 'cal2-toggles' },
-            h('div', { className: 'cap-toggle-row' },
-              h('div', null, h('div', { className: 'cap-tg-t' }, 'inverted'), h('div', { className: 'cap-tg-s' }, '正/反图案各拍一帧做差分')),
-              h(Switch, { isSelected: !!form.inverted, onChange: (v) => set('inverted', v) })),
-            h('div', { className: 'cap-toggle-row' },
-              h('div', null, h('div', { className: 'cap-tg-t' }, 'graycodeSync'), h('div', { className: 'cap-tg-s' }, '用 Gray code 确认图案序号')),
-              h(Switch, { isSelected: !!form.graycodeSync, onChange: (v) => set('graycodeSync', v) }))),
-          h('div', { className: 'cap-lens', style: { marginTop: 12 } },
-            h('label', null, 'patternsDir' + (form.inverted ? '（必填）' : '（可选）')),
-            h('div', { className: 'cap-lens-pick' },
-              h('button', { className: 'cap-file-btn', onClick: async () => {
-                if (form.patternsDir) set('patternsDir', '');
-                else { const p = await pickDirectory(); if (p) set('patternsDir', p); }
-              } }, h(Icon, { name: 'folder', size: 14 }), form.patternsDir || '选择 normal.png / inverted.png 所在目录…'),
-              form.patternsDir ? h('span', { className: 'cap-pill cap-pill--positive' }, h(Icon, { name: 'check', size: 12 }), '已选') : null)),
-          form.inverted && !form.patternsDir ? h('div', { className: 'vs-tf-note', style: { color: 'var(--notice-visual)' } },
-            'inverted=true 需要真实图案播放器闭环；未设置 patternsDir 时不能保存或开始采集。') : null,
-          h('div', { className: 'cap-lens', style: { marginTop: 12 } },
-            h('label', null, 'lensPath'),
-            h('div', { className: 'cap-lens-pick' },
-              h('button', { className: 'cap-file-btn', onClick: async () => { if (form.lensPath) set('lensPath', ''); else { const p = await pickFile('Lens profile', ['json']); if (p) set('lensPath', p); } } },
-                h(Icon, { name: 'folder', size: 14 }), form.lensPath || '选择文件…'),
-              form.lensPath ? h('span', { className: 'cap-pill cap-pill--positive' }, h(Icon, { name: 'check', size: 12 }), '已选') : null))) : null),
+      /* 追踪源已移至独立「追踪源信号接入」模块；采集参数已下沉到实时采集单窗口。 */
       h('div', { className: 'cap-card' },
         h('div', { className: 'cap-card-h' }, h(Icon, { name: 'folder', size: 15 }), '输出'),
         h('div', { className: 'cap-lens' },
@@ -191,7 +147,7 @@ import { listCaptureProfiles, saveCaptureProfiles } from "../api/captureProfiles
     return h('div', { className: 'drawer drawer--cal2cap' }, head, body,
       h('div', { className: 'drawer-f' },
         h(Button, { variant: 'secondary', size: 'M', isDisabled: saving, onPress: () => setMode(profiles.length ? 'list' : 'empty') }, '取消'),
-        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'check', size: 15 }), isDisabled: saving || (!!form.inverted && !form.patternsDir), onPress: save }, saving ? '正在保存…' : (editId ? '保存修改' : '保存配置'))));
+        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'check', size: 15 }), isDisabled: saving, onPress: save }, saving ? '正在保存…' : (editId ? '保存修改' : '保存配置'))));
   }
 
   function openCaptureModal(s) {

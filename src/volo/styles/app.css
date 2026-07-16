@@ -2300,6 +2300,15 @@ html, body {
 .desktop .s2-btn svg { width: 1.05em; height: 1.05em; }
 
 /* ============================================================
+   Switch — force the "on" track to the app's positive-green
+   across the whole app (both the neutral and emphasized/accent
+   variants default to white/neutral-gray in the vendored kit).
+   ============================================================ */
+.desktop .s2-switch--on .s2-switch__track,
+.desktop .s2-switch--on.s2-switch--emphasized .s2-switch__track,
+.desktop .s2-switch--on:hover .s2-switch__track { background: var(--positive-visual); }
+
+/* ============================================================
    ZenServer page — two-column layout
    Left: ① 架设 / 管理 (status + deploy form + steps)
    Right: ② 客户端机器列表

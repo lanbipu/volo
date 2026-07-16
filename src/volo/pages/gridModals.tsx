@@ -2,17 +2,14 @@
 /* Volo — 网格校正工作区 · 弹层与对话框（gridModals.tsx）
    1:1 port of the Claude Design handoff `src/grid_modals.jsx`。
    测量类型选择器 · 指导卡预览（复用 calHistory.tsx 已验证的 generateInstructionCard
-   真实 htmlContent 手法）· 重建进度（M1 走 CX.rebuildMesh）· 实时采集对话框（M2，
-   新接线：复用 pages/devCapture.tsx 导出的 useCaptureSession/buildSessionArgs——
-   该文件顶部注释明确写着"产品采集面板落地时，本页的数据流封装原样复用"，这里正是
-   那个落地点）· 融合（mesh_fuse_run，同样沿用 calHistory.tsx 的 Fuse 真实接线）·
-   导出（exportObj，沿用 ExportBlock 真实接线）。 */
+   真实 htmlContent 手法）· 重建进度（M1 走 CX.rebuildMesh）· 融合（mesh_fuse_run，
+   同样沿用 calHistory.tsx 的 Fuse 真实接线）· 导出（exportObj，沿用 ExportBlock
+   真实接线）。原「实时采集对话框」（M2）已被 calCaptureWindow.tsx 的共享采集单窗口
+   取代，见 pages/gridTree.tsx / gridInsp.tsx 的「接入摄影机…」入口。 */
 import * as React from "react";
 import { pickFile, pickDirectory, revealPath } from "../api/commands";
-import { generateInstructionCard, saveInstructionPdf, exportObj, listRuns, exportVpcalScreen } from "../api/meshCommands";
+import { generateInstructionCard, saveInstructionPdf, exportObj, listRuns } from "../api/meshCommands";
 import { meshFuseRun } from "../api/meshFuseCommands";
-import { useCaptureSession } from "./devCapture";
-import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern, playerClear } from "../api/player";
 
 (function () {
   const { Button, Switch } = window.Spectrum2DesignSystem_b6d1b3;
@@ -131,175 +128,7 @@ import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern,
   }
   const reconstruct = (s, close) => h(Reconstruct, { s, close });
 
-  /* ================= 4 · 实时采集对话框（M2，接 devCapture.tsx 的 useCaptureSession） ================= */
-  function LiveCapture({ s, close, onManifest }) {
-    const proj = CX.useProj();
-    const screenId = s.calActiveScreen;
-    const [screenPath, setScreenPath] = useState('');
-    const [outDir, setOutDir] = useState('');
-    const profiles = CX.loadProfiles ? CX.loadProfiles() : [];
-    const [profileId, setProfileId] = useState(profiles[0] ? profiles[0].id : null);
-    const profile = profiles.find((p) => p.id === profileId) || null;
-    const [sourceNote, setSourceNote] = useState(null);
-    const session = useCaptureSession();
-    const handledPatterns = useRef(new Set());
-    const pendingPatterns = useRef(new Set());
-    const running = session.taskId !== null && session.state.exit === null;
-    const preview = session.latest('preview_ready');
-    const coverage = session.latest('coverage_update');
-    const progress = session.latest('progress');
-    const detect = session.latest('detect_feedback');
-    const result = session.latest('result');
-    const conn = running ? (preview && preview.mjpeg_url ? 'on' : 'wait') : (session.spawnError ? 'off' : 'wait');
-
-    const pickScreen = async () => { try { const p = await pickFile('屏幕定义 (screen.json)', ['json']); if (p) setScreenPath(p); } catch (e) {} };
-    const generateScreen = async () => { try { const r = await exportVpcalScreen(proj.path, screenId, null); setScreenPath(r.path); setSourceNote('fingerprint ' + r.fingerprint); } catch (e) { setSourceNote('生成失败 · ' + (e && e.message ? e.message : e)); } };
-    const pickOut = async () => { try { const p = await pickDirectory(); if (p) setOutDir(p); } catch (e) {} };
-    const start = async () => {
-      if (!screenPath || !outDir) return;
-      if (!profile) return;
-      const canInvert = !!(profile.inverted && profile.patternsDir);
-      if (profile.inverted && !profile.patternsDir) setSourceNote('该 legacy Profile 缺 patternsDir：本次已禁用 inverted / graycode，不会假回执。');
-      handledPatterns.current.clear();
-      pendingPatterns.current.clear();
-      if (canInvert) {
-        try {
-          const monitors = await listMonitors();
-          if (!monitors.length) throw new Error('未发现可用于图案播放器的显示器');
-          await openPatternPlayer(monitors[monitors.length - 1].index);
-        } catch (e) {
-          setSourceNote('打开图案播放器失败 · ' + (e && e.message ? e.message : e));
-          return;
-        }
-      }
-      session.start({ screenPath, outDir, backend: profile.videoBackend, device: profile.device,
-        trackProtocol: profile.trackProtocol, trackPort: Number(profile.trackPort), trackHost: profile.trackHost || '0.0.0.0',
-        trackCameraId: profile.trackCameraId,
-        poses: Number(profile.poses || 8), inverted: canInvert, graycodeSync: canInvert && !!profile.graycodeSync,
-        lensPath: profile.lensPath || '', settleMs: Number(profile.settleMs || 300), burst: Number(profile.burst || 5),
-        width: profile.fmtMode === 'manual' ? profile.width : null, height: profile.fmtMode === 'manual' ? profile.height : null,
-        fps: profile.fmtMode === 'manual' ? profile.fps : null, transferFunction: profile.transferFunction || 'sdr' });
-    };
-    const finish = () => session.sendCmd({ cmd: 'finish' });
-    const skip = () => session.sendCmd({ cmd: 'skip_pose' });
-    useEffect(() => {
-      for (const ev of session.events) {
-        if (ev.type !== 'request_pattern' || typeof ev.sequence !== 'number'
-          || handledPatterns.current.has(ev.sequence) || pendingPatterns.current.has(ev.sequence)) continue;
-        if (!profile || !profile.patternsDir) { setSourceNote('收到 request_pattern，但 Profile 无 patternsDir；未发送假 pattern_ready。'); continue; }
-        pendingPatterns.current.add(ev.sequence);
-        const pattern = String(ev.pattern || 'normal'); const sep = String(profile.patternsDir).includes('\\') ? '\\' : '/';
-        const path = String(profile.patternsDir).replace(/[\\/]+$/, '') + sep + pattern + '.png';
-        const showAndAck = async () => {
-          let lastError;
-          for (let attempt = 0; attempt < 3; attempt += 1) {
-            try {
-              await playerShowPattern(path, pattern, ev.frame_index == null ? null : ev.frame_index);
-              await session.sendCmd({ cmd: 'pattern_ready', pattern });
-              return;
-            } catch (e) {
-              lastError = e;
-              if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 400));
-            }
-          }
-          throw lastError;
-        };
-        showAndAck()
-          .then(() => { pendingPatterns.current.delete(ev.sequence); handledPatterns.current.add(ev.sequence); })
-          .catch((e) => { pendingPatterns.current.delete(ev.sequence); setSourceNote('播放器切图失败 · ' + (e && e.message ? e.message : e)); });
-      }
-    }, [session.events]);
-    useEffect(() => () => { closePatternPlayer().catch(() => {}); }, []);
-    const confirmAbort = () => s.setModal({ destructive: true, render: ({ close: closeConfirm }) => h('div', { className: 'drawer drawer--confirm' },
-      dhead('alert', 'danger', '中止实时采集', '默认保留已拍姿位', closeConfirm),
-      h('div', { className: 'drawer-b' }, h('p', { className: 'lens-confirm-tx' }, '中止会终止当前进程；已增量落盘的 poses.jsonl / session.partial.json 将保留，可稍后 finalize 恢复。')),
-      h('div', { className: 'drawer-f' }, h(Button, { variant: 'secondary', onPress: closeConfirm }, '继续采集'),
-        h(Button, { variant: 'negative', onPress: async () => { closeConfirm(); await session.cancel(); await closePatternPlayer().catch(() => {}); close(); s.setCalReceipt({ tone: 'notice', text: '采集已中止 · 已拍姿位保留' }); } }, '中止并保留已拍姿位'))) });
-
-    if (result && result.data) {
-      const poses = result.data.poses_captured || 0;
-      return h('div', { className: 'drawer drawer--preview' },
-        dhead('check', 'ok', '采集汇总', '会话已完成', close),
-        h('div', { className: 'drawer-b' },
-          h('div', { className: 'gw-stat4', style: { gridTemplateColumns: 'repeat(2,1fr)' } },
-            h('div', { className: 'gw-metric' }, h('div', { className: 'k' }, '姿位'), h('div', { className: 'v' }, poses)),
-            h('div', { className: 'gw-metric' }, h('div', { className: 'k' }, '输出目录'), h('div', { className: 'v', style: { fontSize: 12 } }, result.data.session_dir)))),
-        h('div', { className: 'drawer-f' },
-          h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'check', size: 15 }), onPress: () => {
-            close(); CX.projStore.patch({ visualSession: { screenId, poses, sessionDir: result.data.session_dir } });
-            if (onManifest) onManifest(result.data.session_dir);
-            s.setCalReceipt({ tone: 'ok', text: '已保存采集会话 · ' + poses + ' 姿位' });
-          } }, '保存会话')));
-    }
-
-    const headerBar = h('div', { className: 'drawer-h' },
-      h('span', { className: 'di info' }, h(Icon, { name: 'live', size: 17 })),
-      h('div', { style: { minWidth: 0, flex: 1 } }, h('h2', null, '实时采集'),
-        h('div', { className: 'sub', style: { display: 'flex', alignItems: 'center', gap: 8 } }, screenId,
-          h('span', { className: 'gw-connpill ' + conn },
-            h(Icon, { name: conn === 'on' ? 'check' : conn === 'wait' ? 'sync' : 'x', size: 12 }),
-            conn === 'on' ? '已连接' : conn === 'wait' ? '等待数据' : (session.spawnError || '信号丢失')))),
-      h('button', { className: 'iconbtn', style: { width: 26, height: 26 }, onClick: close }, h(Icon, { name: 'x', size: 16 })));
-
-    const idlePanel = h('div', { className: 'drawer-b' },
-      h('div', { className: 'gw-field stack' },
-        h('span', { className: 'lb' }, 'Capture Profile'),
-        h('select', { className: 'ar-select', value: profileId || '', onChange: (e) => setProfileId(e.target.value || null) },
-          profiles.length ? profiles.map((p) => h('option', { key: p.id, value: p.id }, p.name + ' · ' + p.videoBackend + '/' + p.device)) : h('option', { value: '' }, '尚无 Profile'))),
-      h('div', { className: 'gw-field stack', style: { marginTop: 10 } },
-        h('span', { className: 'lb' }, 'screen.json'),
-        h('div', { className: 'gw-fileref' },
-          h('span', { className: 'ic' }, h(Icon, { name: 'doc', size: 14 })),
-          h('div', { className: 'm' }, h('div', { className: 'n' }, screenPath ? screenPath.split(/[\\/]/).pop() : '尚未选择')),
-          h(Button, { variant: 'secondary', size: 'S', onPress: generateScreen }, '从当前屏幕生成'),
-          h(Button, { variant: 'secondary', size: 'S', onPress: pickScreen }, '选择'))),
-      sourceNote ? h('div', { className: 'lens-nanote' }, sourceNote) : null,
-      h('div', { className: 'gw-field stack', style: { marginTop: 10 } },
-        h('span', { className: 'lb' }, '输出目录'),
-        h('div', { className: 'gw-fileref' },
-          h('span', { className: 'ic' }, h(Icon, { name: 'folder', size: 14 })),
-          h('div', { className: 'm' }, h('div', { className: 'n' }, outDir || '尚未选择')),
-          h(Button, { variant: 'secondary', size: 'S', onPress: pickOut }, '选择'))),
-      session.spawnError ? h('div', { style: { fontSize: 11.5, color: 'var(--negative-visual)', marginTop: 8 } }, session.spawnError) : null,
-      h('div', { style: { marginTop: 14 } },
-        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'camera', size: 15 }), isDisabled: !profile || !screenPath || !outDir, onPress: start }, '开始采集')));
-
-    const capMain = h('div', { className: 'gw-capmain' },
-      h('div', { className: 'gw-capfeed' },
-        preview && preview.mjpeg_url
-          ? h('img', { src: preview.mjpeg_url, alt: '预览' })
-          : h('div', { style: { color: '#6b7078', fontSize: 12, padding: 20 } }, '等待预览画面…'),
-        h('div', { className: 'gw-capfeed-fb' },
-          h(Icon, { name: 'target', size: 13 }),
-          h('span', null, detect ? `pose ${detect.pose_index} · ${detect.marker_hits} markers` : '等待检测反馈'))),
-      h('div', { style: { padding: '8px 14px', fontSize: 11, color: 'var(--chrome-faint)', borderTop: '1px solid var(--chrome-line)' } },
-        '状态：' + (progress ? progress.state : '—') + ' · 已采集 ' + (progress ? progress.poses_captured || 0 : 0) + ' 姿位'));
-
-    const capSide = h('div', { className: 'gw-capside' },
-      h('div', { className: 'gw-capside-h' }, h(Icon, { name: 'list', size: 14 }), '覆盖度反馈'),
-      h('div', { className: 'gw-capside-b' },
-        coverage
-          ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, fontSize: 11.5 } },
-              h('span', null, '画面覆盖：' + Math.round((coverage.sensor_coverage_pct || 0) * 100) + '%'),
-              h('span', null, '屏幕 marker：' + coverage.screen_markers_seen + '/' + coverage.screen_markers_total),
-              (coverage.suggestions || []).map((sug, i) => h('span', { key: i, style: { color: 'var(--notice-visual)' } }, '→ ' + sug)))
-          : h('div', { style: { fontSize: 11.5, color: 'var(--chrome-faint)' } }, '暂无（每个姿位采集后更新）')));
-
-    const capFoot = h('div', { className: 'gw-capdlg-foot' },
-      h(Button, { variant: 'secondary', size: 'M', onPress: skip }, '跳过此姿位'),
-      h('div', { style: { flex: 1 } }),
-      h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'check', size: 15 }), onPress: finish }, '完成'),
-      h(Button, { variant: 'negative', size: 'M', onPress: confirmAbort }, '中止'));
-
-    const capturingPanel = h('div', { className: 'gw-capdlg' }, capMain, capSide, capFoot);
-
-    return h('div', { className: 'drawer drawer--cal2cap', style: { width: '100%' } },
-      headerBar,
-      running ? capturingPanel : idlePanel);
-  }
-  const liveCapture = (s, close, onManifest) => h(LiveCapture, { s, close, onManifest });
-
-  /* ================= 6 · 融合对话框（真 mesh_fuse_run，同 calHistory.tsx Fuse） ================= */
+  /* ================= 4 · 融合对话框（真 mesh_fuse_run，同 calHistory.tsx Fuse） ================= */
   function Fuse({ s, close }) {
     const proj = CX.useProj();
     const screenId = s.calActiveScreen;
@@ -348,7 +177,7 @@ import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern,
   }
   const fuse = (s, close) => h(Fuse, { s, close });
 
-  /* ================= 7 · 导出对话框（真 exportObj，同 calHistory.tsx ExportBlock） ================= */
+  /* ================= 5 · 导出对话框（真 exportObj，同 calHistory.tsx ExportBlock） ================= */
   function ExportDlg({ s, close }) {
     const proj = CX.useProj();
     const [target, setTarget] = useState('disguise');
@@ -382,5 +211,5 @@ import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern,
   }
   const exportDlg = (s, close) => h(ExportDlg, { s, close });
 
-  window.VOLO_GRID_MODALS = { measSelector, guideCard, reconstruct, liveCapture, fuse, exportDlg };
+  window.VOLO_GRID_MODALS = { measSelector, guideCard, reconstruct, fuse, exportDlg };
 })();
