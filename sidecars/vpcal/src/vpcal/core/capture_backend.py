@@ -258,8 +258,18 @@ class NdiBackend:
         finder = self._api.Finder()
         finder.open()
         try:
-            finder.wait_for_sources(max(0.0, timeout_s))
+            # Poll until the deadline instead of a single wait_for_sources()
+            # call: wait_for_sources() returns on the *first* change event, and
+            # senders that announce late (e.g. iOS NDI|HX apps whose mDNS burst
+            # only lasts a few seconds) would otherwise miss a one-shot window.
+            deadline = time.monotonic() + max(0.0, timeout_s)
             names = finder.get_source_names()
+            while config.device not in names:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                finder.wait_for_sources(min(0.5, remaining))
+                names = finder.get_source_names()
             if config.device not in names:
                 raise PreconditionError(
                     f"NDI source not found: {config.device}",

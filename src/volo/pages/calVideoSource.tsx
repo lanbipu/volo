@@ -98,6 +98,7 @@ import {
     const [sdkAll, setSdkAll] = useState(false);       /* false = 仅 UVC（真实默认） */
     const [enumSt, setEnumSt] = useState('ready');      /* ready | loading | empty */
     const [sig, setSig] = useState('waiting');           /* ok | waiting | nosignal | frozen */
+    const [sigErr, setSigErr] = useState(null);          /* 无信号时的真实后端报错文案 */
     const [liveTask, setLiveTask] = useState(null);      /* 常驻监看流 task_id */
     const [liveUrl, setLiveUrl] = useState(null);        /* MJPEG 流地址（preview_ready） */
     const [previewUrl, setPreviewUrl] = useState(null);  /* DeckLink 一次性探测的静态帧 */
@@ -143,7 +144,7 @@ import {
        <img> 直接消费其 localhost MJPEG 流。切源/切 backend/卸载时取消旧任务。 */
     const startMonitor = async (device) => {
       if (liveTaskRef.current) void cancelSidecarTask(liveTaskRef.current);
-      setSig('waiting'); setLiveUrl(null); setNdiFmt(null);
+      setSig('waiting'); setLiveUrl(null); setNdiFmt(null); setSigErr(null);
       const manualFmt = fmtMode === 'manual';
       const args = ['capture', 'video', '--backend', backend, '--device', device,
         '--allow-hx', '--preview-port', '0', '--duration', '0', '--output', 'json'];
@@ -159,6 +160,7 @@ import {
         if (backend === 'ndi' && parsed.details && parsed.details.missing) {
           setNdiAvail('missing'); setNdiError(parsed);
         }
+        if (parsed.message) setSigErr(parsed.message);
         setSig('nosignal'); setLiveUrl(null);
       }
     };
@@ -196,6 +198,7 @@ import {
           setNdiAvail('missing');
           setNdiError({ code: err.code, message: err.message, details: err.details });
         }
+        if (err && err.message) setSigErr(err.message);
         setSig('nosignal'); setLiveUrl(null);
       }
     }, [liveStream.state.exit]);
@@ -203,7 +206,7 @@ import {
     /* backend 切换：拆掉当前监看流。卸载时同样取消（读 ref 避免 stale）。 */
     useEffect(() => {
       if (liveTaskRef.current) { void cancelSidecarTask(liveTaskRef.current); setLiveTask(null); }
-      setLiveUrl(null); setPreviewUrl(null);
+      setLiveUrl(null); setPreviewUrl(null); setSigErr(null);
     }, [backend]);
     useEffect(() => () => { if (liveTaskRef.current) void cancelSidecarTask(liveTaskRef.current); }, []);
 
@@ -457,7 +460,8 @@ import {
         effSig === 'frozen' ? h('div', { className: 'vs-warnstrip notice' }, h(Icon, { name: 'alert', size: 15 }),
           h('div', null, h('b', null, '画面疑似冻结。'), ' 连续多帧无变化，可能是信号线松动或源端暂停。检查连线或点刷新重连。')) : null,
         effSig === 'nosignal' ? h('div', { className: 'vs-warnstrip negative' }, h(Icon, { name: 'alert', size: 15 }),
-          h('div', null, h('b', null, '无信号。'), ' 设备打不开或已断流。确认设备未被其他程序占用，检查连线后刷新。')) : null);
+          h('div', null, h('b', null, '无信号。'), ' 设备打不开或已断流。确认设备未被其他程序占用，检查连线后刷新。',
+            sigErr ? h('div', { style: { marginTop: 4, fontFamily: 'var(--font-code)', fontSize: 11, opacity: 0.85, wordBreak: 'break-all' } }, sigErr) : null)) : null);
     }
 
     /* ------- 高级折叠区 ------- */
