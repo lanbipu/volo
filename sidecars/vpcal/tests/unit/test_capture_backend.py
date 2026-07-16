@@ -170,3 +170,37 @@ def test_decklink_frames_surface_detected_frame_rate():
 def test_uvc_backend_bad_device_raises():
     with pytest.raises(PreconditionError, match="could not be opened"):
         open_backend(CaptureConfig(backend="uvc", device="/nonexistent/video-device"))
+
+
+def test_uyvy_to_bgr_solid_color():
+    """A solid UYVY buffer converts to the expected BGR color (BT.601)."""
+    import numpy as np
+
+    from vpcal.core.ndi import uyvy_to_bgr
+
+    w, h, stride = 4, 2, 8
+    # Pure gray: Y=128, U=V=128 → BGR ≈ (128,128,128)
+    buf = np.tile(np.array([128, 128], np.uint8), h * stride // 2).tobytes()
+    bgr = uyvy_to_bgr(buf, w, h, stride)
+    assert bgr.shape == (h, w, 3)
+    assert np.all(np.abs(bgr.astype(int) - 128) <= 2)
+
+
+def test_p216_to_bgr_matches_uyvy_path():
+    """P216 top-8-bit repack agrees with the plain UYVY conversion."""
+    import numpy as np
+
+    from vpcal.core.ndi import p216_to_bgr, uyvy_to_bgr
+
+    w, h, stride = 4, 2, 8  # stride bytes per row of the 16-bit Y plane
+    y16 = np.full((h, w), 0x8200, np.uint16)      # Y ≈ 130
+    cbcr16 = np.full((h, w), 0x6000, np.uint16)   # Cb=Cr ≈ 96 → colour cast
+    buf = y16.astype("<u2").tobytes() + cbcr16.astype("<u2").tobytes()
+    bgr16 = p216_to_bgr(buf, w, h, stride)
+
+    uyvy = np.empty((h, w, 2), np.uint8)
+    uyvy[:, :, 0] = 96
+    uyvy[:, :, 1] = 130
+    rows = np.ascontiguousarray(uyvy).reshape(h, w * 2)
+    bgr8 = uyvy_to_bgr(rows.tobytes(), w, h, w * 2)
+    assert np.array_equal(bgr16, bgr8)

@@ -315,7 +315,7 @@ class NdiBackend:
     def frames(self) -> Iterator[CapturedFrame]:
         if self._receiver is None or self._video_frame is None or self._config is None:
             raise PreconditionError("NDI backend not opened")
-        from vpcal.core.ndi import p216_luma16, uyvy_luma
+        from vpcal.core.ndi import p216_luma16, p216_to_bgr, uyvy_luma, uyvy_to_bgr
 
         receiver = self._receiver
         video_frame = self._video_frame
@@ -363,6 +363,7 @@ class NdiBackend:
             data = video_frame.get_array()
             if fourcc in {"P216", "PA16"}:
                 gray = p216_luma16(data, width, height, stride)
+                bgr = p216_to_bgr(data, width, height, stride)
                 bit_depth = 16
                 is_hx = False
             elif fourcc == "UYVY":
@@ -374,6 +375,7 @@ class NdiBackend:
                                  "source_name": config.device, "fourcc": fourcc},
                     )
                 gray = uyvy_luma(data, width, height, stride)
+                bgr = uyvy_to_bgr(data, width, height, stride)
                 bit_depth = 8
             else:
                 raise PreconditionError(
@@ -391,6 +393,7 @@ class NdiBackend:
             last_yield = now
             yield CapturedFrame(
                 gray=gray,
+                bgr=bgr,
                 recv_ts=now,
                 timecode=f"{timecode_s:.7f}" if timecode_s > 0 else None,
                 frame_index=idx,

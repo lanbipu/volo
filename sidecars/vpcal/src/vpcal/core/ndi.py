@@ -63,3 +63,31 @@ def p216_luma16(data: Any, width: int, height: int, stride: int) -> np.ndarray:
     y_bytes = np.frombuffer(data, dtype=np.uint8, count=height * stride)
     rows = y_bytes.view("<u2").reshape(height, stride // 2)
     return rows[:, :width].copy()
+
+
+def uyvy_to_bgr(data: Any, width: int, height: int, stride: int) -> np.ndarray:
+    """Convert a packed 8-bit UYVY frame to BGR (preview only — BT.601 matrix)."""
+    import cv2
+
+    raw = np.frombuffer(data, dtype=np.uint8, count=height * stride)
+    packed = raw.reshape(height, stride)[:, : width * 2].reshape(height, width, 2)
+    return cv2.cvtColor(packed, cv2.COLOR_YUV2BGR_UYVY)
+
+
+def p216_to_bgr(data: Any, width: int, height: int, stride: int) -> np.ndarray:
+    """Convert semi-planar 16-bit P216/PA16 to 8-bit BGR (preview only).
+
+    Plane 0 is 16-bit Y, plane 1 is interleaved 16-bit CbCr (4:2:2). Both are
+    truncated to their top 8 bits and repacked as UYVY so the conversion shares
+    OpenCV's UYVY path (BT.601, like the UVC/UYVY previews). PA16's trailing
+    alpha plane is simply ignored.
+    """
+    import cv2
+
+    buf = np.frombuffer(data, dtype=np.uint8, count=height * stride * 2)
+    y = buf[: height * stride].view("<u2").reshape(height, stride // 2)[:, :width]
+    cbcr = buf[height * stride:].view("<u2").reshape(height, stride // 2)[:, :width]
+    uyvy = np.empty((height, width, 2), np.uint8)
+    uyvy[:, :, 0] = (cbcr >> 8).astype(np.uint8)
+    uyvy[:, :, 1] = (y >> 8).astype(np.uint8)
+    return cv2.cvtColor(uyvy, cv2.COLOR_YUV2BGR_UYVY)
