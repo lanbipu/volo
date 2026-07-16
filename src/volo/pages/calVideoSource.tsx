@@ -100,6 +100,7 @@ import {
     const [sig, setSig] = useState('waiting');           /* ok | waiting | nosignal | frozen */
     const [liveTask, setLiveTask] = useState(null);      /* 常驻监看流 task_id */
     const [liveUrl, setLiveUrl] = useState(null);        /* MJPEG 流地址（preview_ready） */
+    const [previewUrl, setPreviewUrl] = useState(null);  /* DeckLink 一次性探测的静态帧 */
     const [ndiSrcs, setNdiSrcs] = useState([]);
     const [ndiAvail, setNdiAvail] = useState('unknown'); /* unknown | ok | missing */
     const [ndiError, setNdiError] = useState(null);
@@ -202,7 +203,7 @@ import {
     /* backend 切换：拆掉当前监看流。卸载时同样取消（读 ref 避免 stale）。 */
     useEffect(() => {
       if (liveTaskRef.current) { void cancelSidecarTask(liveTaskRef.current); setLiveTask(null); }
-      setLiveUrl(null);
+      setLiveUrl(null); setPreviewUrl(null);
     }, [backend]);
     useEffect(() => () => { if (liveTaskRef.current) void cancelSidecarTask(liveTaskRef.current); }, []);
 
