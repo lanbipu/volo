@@ -109,7 +109,8 @@ class TrackingListener:
         assert self.t0 is not None
         rel = now - self.t0
         if self.protocol == "freed":
-            frame = freed_to_frame(data, self._frame_id, rel)
+            frame = freed_to_frame(data, self._frame_id, rel).model_copy(
+                update={"raw_monotonic_ts": now})
             self._frame_id += 1
             return frame
         # opentrackio: handle OTrk fragmentation incrementally.
@@ -134,7 +135,8 @@ class TrackingListener:
                     return None
                 self._otrk_buffers.pop(seq, None)
                 sample = _decode_otrk_payload(buf["encoding"], assembled)
-        frame = opentrackio_sample_to_frame(sample, self._frame_id, rel)
+        frame = opentrackio_sample_to_frame(sample, self._frame_id, rel).model_copy(
+            update={"raw_monotonic_ts": now})
         self._frame_id += 1
         return frame
 
@@ -160,13 +162,31 @@ class TrackingListener:
             recent = [(ts, f) for ts, f in self._samples if ts >= now - window_s]
         if len(recent) < 2:
             return None
-        t_a, f_a = recent[0]
-        t_b, f_b = recent[-1]
-        dt = t_b - t_a
-        if dt <= 0:
-            return None
-        d = np.linalg.norm(np.asarray(f_b.position) - np.asarray(f_a.position))
-        return float(d / dt)
+        speeds = []
+        for (t_a, f_a), (t_b, f_b) in zip(recent, recent[1:]):
+            dt = t_b - t_a
+            if dt > 0:
+                speeds.append(float(np.linalg.norm(
+                    np.asarray(f_b.position) - np.asarray(f_a.position)) / dt))
+        return max(speeds) if speeds else None
+
+    def angular_speed_deg_s(self, window_s: float = 0.3) -> float | None:
+        """Maximum adjacent-sample geodesic rotation speed in the trailing window."""
+        from vpcal.core.coordinates import rotation_to_source_matrix
+
+        now = time.monotonic()
+        with self._lock:
+            recent = [(ts, f) for ts, f in self._samples if ts >= now - window_s]
+        speeds = []
+        for (t_a, f_a), (t_b, f_b) in zip(recent, recent[1:]):
+            dt = t_b - t_a
+            if dt <= 0:
+                continue
+            Ra = rotation_to_source_matrix(f_a.rotation.order.value, f_a.rotation.values)
+            Rb = rotation_to_source_matrix(f_b.rotation.order.value, f_b.rotation.values)
+            angle = np.degrees(np.arccos(np.clip((np.trace(Ra.T @ Rb) - 1.0) / 2.0, -1, 1)))
+            speeds.append(float(angle / dt))
+        return max(speeds) if speeds else None
 
     def samples_between(self, t0: float, t1: float) -> list[tuple[float, TrackingFrame]]:
         with self._lock:
@@ -181,23 +201,33 @@ class TrackingListener:
         return best if abs(best[0] - ts) <= tolerance_s else None
 
     def mean_pose(self, t0: float, t1: float) -> TrackingFrame | None:
-        """Average position over [t0, t1] with the median sample's rotation.
-
-        Static-pose averaging: positions are averaged; rotation is taken from
-        the temporal median sample (robust, avoids quaternion-averaging
-        subtleties for what is by definition a stationary pose).
-        """
+        """Average position and rotation over [t0, t1] (Markley quaternion mean)."""
         window = self.samples_between(t0, t1)
         if not window:
             return None
+        from vpcal.core.coordinates import rotation_to_source_matrix
+        from vpcal.core.transforms import matrix_to_quat
+
         mid = window[len(window) // 2][1]
         pos = np.mean([f.position for _ts, f in window], axis=0)
+        quats = [matrix_to_quat(rotation_to_source_matrix(
+            f.rotation.order.value, f.rotation.values)) for _ts, f in window]
+        A = sum(np.outer(q, q) for q in quats)
+        q = np.linalg.eigh(A)[1][:, -1]
+        if q[0] < 0:
+            q = -q
+        from vpcal.models.tracking import RotationData, RotationOrder
         return TrackingFrame(
             frame_id=mid.frame_id,
             timestamp_s=mid.timestamp_s,
             position=[float(x) for x in pos],
-            rotation=mid.rotation,
+            rotation=RotationData(order=RotationOrder.QUATERNION,
+                                  values=[float(x) for x in q]),
             confidence=min(f.confidence for _ts, f in window),
+            raw_monotonic_ts=mid.raw_monotonic_ts,
+            protocol_ts_s=mid.protocol_ts_s,
+            zoom_raw=mid.zoom_raw,
+            focus_raw=mid.focus_raw,
         )
 
 

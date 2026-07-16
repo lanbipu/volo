@@ -102,8 +102,9 @@ def run_delay_cal(
         q, t = to_internal_pose(
             fr, session.tracking.coordinate_system, session.tracking.custom_transform
         )
-        samples.append((fr.timestamp_s, q, t))
-        ts_by_fid.setdefault(fr.frame_id, fr.timestamp_s)
+        clock_ts = fr.raw_monotonic_ts if fr.raw_monotonic_ts is not None else fr.timestamp_s
+        samples.append((clock_ts, q, t))
+        ts_by_fid.setdefault(fr.frame_id, clock_ts)
     sampler = PoseSampler(samples)
 
     # Video frame times must live in the TRACKING clock domain: the offline
@@ -113,8 +114,32 @@ def run_delay_cal(
     # filename-numbering offset (a 0001-based sequence alone adds one frame)
     # or clamp everything when the tracking clock has a different origin.
     base_fid = min(ts_by_fid) if ts_by_fid else None
+    manifest_times: dict[int, float] = {}
+    manifest_path = video_dir / "frames.jsonl"
+    if manifest_path.exists():
+        for line in manifest_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            rec = json.loads(line)
+            if rec.get("recv_ts") is not None:
+                manifest_times[int(rec["frame_index"])] = float(rec["recv_ts"])
+
+    image_fids = [parse_frame_number(p) for p in images]
+    matched_ts = [ts_by_fid[fid] for fid in image_fids if fid is not None and fid in ts_by_fid]
+    if not manifest_times and len(matched_ts) >= 3:
+        median_dt = float(np.median(np.diff(sorted(matched_ts))))
+        nominal_dt = 1.0 / fps
+        if abs(median_dt - nominal_dt) / nominal_dt > 0.15:
+            raise PreconditionError(
+                "video/tracking sampling rates disagree by more than 15% and "
+                "frames.jsonl is missing — recapture video with the frame manifest",
+                details={"tracking_median_dt_s": median_dt, "video_nominal_dt_s": nominal_dt,
+                         "fps": fps, "manifest": str(manifest_path)},
+            )
 
     def _frame_time(fid: int) -> float:
+        if fid in manifest_times:
+            return manifest_times[fid]
         ts = ts_by_fid.get(fid)
         if ts is not None:
             return ts

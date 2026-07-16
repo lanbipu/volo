@@ -80,15 +80,19 @@ class SessionCaptureConfig:
     track_host: str = "0.0.0.0"
     poses_target: int = 8              # 0 = unlimited (stop via control command)
     settle_speed_mm_s: float = 5.0     # below ⇒ settling
+    settle_ang_speed_deg_s: float = 0.2
     move_speed_mm_s: float = 25.0      # above ⇒ moving again (hysteresis)
     settle_duration_s: float = 0.3     # T_settle (plan 1b default 300 ms)
     burst_frames: int = 5
     timestamp_tolerance_s: float = 0.05
     inverted: bool = False             # capture an inverted frame per pose
     graycode_sync: bool = False        # auto-confirm pattern via corner tags
+    allow_ack_without_graycode: bool = False
     graycode_cell_px: int = 24
     pattern_wait_s: float = 10.0       # max wait for pattern switch per pose
     tracking_wait_s: float = 30.0      # max wait for first tracking packet
+    pose_translation_p2p_mm: float = 3.0
+    pose_rotation_p2p_deg: float = 0.1
     lens_path: Path | None = None
     preview_sink: Any = None           # PreviewSink | None (duck-typed)
 
@@ -197,6 +201,7 @@ class CaptureSessionRunner:
                     break
 
                 speed = self.listener.speed_mm_s()
+                angular_speed = self.listener.angular_speed_deg_s()
                 now = time.monotonic()
 
                 if self._state is SessionState.WAIT_TRACKING:
@@ -218,10 +223,14 @@ class CaptureSessionRunner:
                     continue
 
                 if self._state in (SessionState.MOVING, SessionState.SETTLING):
-                    if speed is not None and speed < self.cfg.settle_speed_mm_s:
+                    still = (speed is not None and angular_speed is not None
+                             and speed < self.cfg.settle_speed_mm_s
+                             and angular_speed < self.cfg.settle_ang_speed_deg_s)
+                    if still:
                         if settle_t0 is None:
                             settle_t0 = now
-                            self._set_state(SessionState.SETTLING, speed_mm_s=speed)
+                            self._set_state(SessionState.SETTLING, speed_mm_s=speed,
+                                            angular_speed_deg_s=angular_speed)
                         elif now - settle_t0 >= self.cfg.settle_duration_s:
                             self._set_state(SessionState.CAPTURING)
                             self._capture_pose(frames, frame)
@@ -242,6 +251,8 @@ class CaptureSessionRunner:
                 self.listener.stop()
 
         if abort:
+            if self._poses:
+                self._write_partial(out)
             raise PreconditionError("capture session aborted by controller",
                                     details={"poses_captured": len(self._poses)})
         self._set_state(SessionState.DONE)
@@ -261,6 +272,15 @@ class CaptureSessionRunner:
         timecode = first_frame.timecode
         n = 1
         while n < self.cfg.burst_frames:
+            speed = self.listener.speed_mm_s()
+            angular_speed = self.listener.angular_speed_deg_s()
+            if ((speed is not None and speed >= self.cfg.settle_speed_mm_s)
+                    or (angular_speed is not None
+                        and angular_speed >= self.cfg.settle_ang_speed_deg_s)):
+                raise PreconditionError(
+                    "camera moved during burst; pose must be re-captured",
+                    details={"speed_mm_s": speed, "angular_speed_deg_s": angular_speed},
+                )
             frame = next(frames_iter)
             if self.cfg.preview_sink is not None:
                 self.cfg.preview_sink.publish(
@@ -302,8 +322,12 @@ class CaptureSessionRunner:
                 tag = decode_tag(gray8, cell_px=self.cfg.graycode_cell_px)
                 if tag is not None and tag.inverted == (pattern == "inverted"):
                     return frame, True
-            if acked:  # graycode requested but not decodable — trust the ack
+            if acked and self.cfg.allow_ack_without_graycode:
                 return frame, True
+            if self.cfg.graycode_sync and tag is not None:
+                self.emit("warning", {"message": f"gray-code evidence contradicts requested "
+                                                   f"pattern '{pattern}'"})
+                return frame, False
         self.emit("warning", {"message": f"pattern switch to '{pattern}' not confirmed "
                                          f"within {self.cfg.pattern_wait_s:.0f}s"})
         return frame, False
@@ -315,12 +339,15 @@ class CaptureSessionRunner:
         index = len(self._poses) + 1
         t_pose0 = time.monotonic()
 
-        avg_n, t0, t1, timecode = self._burst(frames_iter, current_frame)
+        avg_n, t0, normal_t1, timecode = self._burst(frames_iter, current_frame)
+        t1 = normal_t1
         avg_i = None
+        inverted_window = None
         if cfg.inverted:
             frame, ok = self._wait_pattern(frames_iter, "inverted")
             if ok and frame is not None:
-                avg_i, _ti0, t1, _tc = self._burst(frames_iter, frame)
+                avg_i, ti0, t1, _tc = self._burst(frames_iter, frame)
+                inverted_window = (ti0, t1)
             # Switch playback back for the next pose (ack awaited next round).
             self.emit("request_pattern", {"pattern": "normal"})
 
@@ -332,10 +359,38 @@ class CaptureSessionRunner:
                            f"({cfg.timestamp_tolerance_s}s) of the burst window — pose dropped",
             })
             return
+        motion = self._window_motion(t0 - cfg.timestamp_tolerance_s,
+                                     t1 + cfg.timestamp_tolerance_s)
+        if (motion["translation_p2p_mm"] > cfg.pose_translation_p2p_mm
+                or motion["rotation_p2p_deg"] > cfg.pose_rotation_p2p_deg):
+            self.emit("pose_rejected", {"pose_index": index, "reason": "motion_during_capture",
+                                         **motion})
+            return
+        if inverted_window is not None:
+            pose_n = self.listener.mean_pose(t0, normal_t1)
+            pose_i = self.listener.mean_pose(*inverted_window)
+            if pose_n is not None and pose_i is not None:
+                consistency = self._pose_delta(pose_n, pose_i)
+                if (consistency["translation_mm"] > cfg.pose_translation_p2p_mm
+                        or consistency["rotation_deg"] > cfg.pose_rotation_p2p_deg):
+                    self.emit("pose_rejected", {"pose_index": index,
+                                                 "reason": "normal_inverted_pose_mismatch",
+                                                 **consistency})
+                    return
+        samples = self.listener.samples_between(t0, t1)
+        for field in ("zoom_raw", "focus_raw"):
+            values = [(f.frame_id, getattr(f, field)) for _, f in samples
+                      if getattr(f, field) is not None]
+            if values and max(v for _, v in values) - min(v for _, v in values) > 2:
+                self.emit("warning", {"message": f"FIZ {field} changed during pose {index}",
+                                      "pose_index": index, "frame_range":
+                                      [values[0][0], values[-1][0]], "field": field})
         # Persisted frame_id == file number == pose index (live pairing done).
         tracked = TrackingFrame(
             frame_id=index, timestamp_s=max(0.0, pose.timestamp_s),
-            position=pose.position, rotation=pose.rotation, confidence=pose.confidence)
+            position=pose.position, rotation=pose.rotation, confidence=pose.confidence,
+            raw_monotonic_ts=pose.raw_monotonic_ts, protocol_ts_s=pose.protocol_ts_s,
+            zoom_raw=pose.zoom_raw, focus_raw=pose.focus_raw, camera_id=pose.camera_id)
 
         name = f"{index:04d}.png"
         cv2.imwrite(str(cfg.out_dir / "captures" / "normal" / name), avg_n)
@@ -359,6 +414,10 @@ class CaptureSessionRunner:
         self._all_detections.extend(detections)
         for d in detections:
             self._seen_marker_ids.add(d.marker_id)
+        with (cfg.out_dir / "tracking" / "poses.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(tracked.model_dump(mode="json"), ensure_ascii=False) + "\n")
+            fh.flush()
+        self._write_partial(cfg.out_dir)
 
         self.emit("detect_feedback", {
             "pose_index": index,
@@ -370,6 +429,24 @@ class CaptureSessionRunner:
         self.emit("coverage_update", self._coverage_summary())
         self._timings["poses"].append({"pose": index,
                                        "duration_s": round(time.monotonic() - t_pose0, 3)})
+
+    @staticmethod
+    def _pose_delta(a: TrackingFrame, b: TrackingFrame) -> dict[str, float]:
+        from vpcal.core.coordinates import rotation_to_source_matrix
+        Ra = rotation_to_source_matrix(a.rotation.order.value, a.rotation.values)
+        Rb = rotation_to_source_matrix(b.rotation.order.value, b.rotation.values)
+        angle = np.degrees(np.arccos(np.clip((np.trace(Ra.T @ Rb) - 1) / 2, -1, 1)))
+        return {"translation_mm": float(np.linalg.norm(np.asarray(a.position) - b.position)),
+                "rotation_deg": float(angle)}
+
+    def _window_motion(self, t0: float, t1: float) -> dict[str, float]:
+        samples = [f for _, f in self.listener.samples_between(t0, t1)]
+        if len(samples) < 2:
+            return {"translation_p2p_mm": 0.0, "rotation_p2p_deg": 0.0}
+        positions = np.asarray([f.position for f in samples])
+        trans = max(float(np.linalg.norm(a - b)) for a in positions for b in positions)
+        rot = max(self._pose_delta(a, b)["rotation_deg"] for a in samples for b in samples)
+        return {"translation_p2p_mm": trans, "rotation_p2p_deg": rot}
 
     # ── coverage feedback ────────────────────────────────────────────
 
@@ -393,6 +470,38 @@ class CaptureSessionRunner:
             suggestions.append(f"还需 {self.cfg.poses_target - len(self._poses)} 个 pose")
         elif not missing:
             suggestions.append("覆盖达标，可以求解")
+        from vpcal.core.coordinates import rotation_to_source_matrix
+        rotations = [rotation_to_source_matrix(p.tracking.rotation.order.value,
+                                                p.tracking.rotation.values)
+                     for p in self._poses]
+        angular_spread = 0.0
+        if len(rotations) > 1:
+            angular_spread = max(float(np.degrees(np.arccos(np.clip(
+                (np.trace(a.T @ b) - 1.0) / 2.0, -1, 1))))
+                for a in rotations for b in rotations)
+        radii = [np.hypot(d.pixel_u - w / 2.0, d.pixel_v - h / 2.0)
+                 for d in self._all_detections]
+        edge_fraction = (float(np.mean(np.asarray(radii) > 0.35 * np.hypot(w, h)))
+                         if radii else 0.0)
+        corners_present = all(grid[r, c] for r, c in ((0, 0), (0, 2), (2, 0), (2, 2)))
+        center_present = bool(grid[1, 1])
+        checks = [
+            ("angular_spread", "Angular spread", angular_spread >= 30.0,
+             round(angular_spread, 2), 30.0, "补拍朝向差异更大的机位"),
+            ("edge_observations", "Edge observations", edge_fraction >= 0.25,
+             round(edge_fraction, 3), 0.25, "补拍 marker 靠近画面边缘的机位"),
+            ("poses", "Pose count", len(self._poses) >= 8, len(self._poses), 8,
+             "继续补拍不同机位"),
+            ("observations", "Observation count", len(self._all_detections) >= 60,
+             len(self._all_detections), 60, "增加可见 marker 数量"),
+            ("sensor_corners", "Sensor corners", corners_present, corners_present, True,
+             "覆盖画面四角"),
+            ("sensor_center", "Sensor center", center_present, center_present, True,
+             "补拍画面中心区域"),
+        ]
+        checklist = [{"key": k, "label": label, "ok": ok, "value": value,
+                      "target": target, "hint": "" if ok else hint}
+                     for k, label, ok, value, target, hint in checks]
         return {
             "poses_captured": len(self._poses),
             "sensor_coverage_pct": round(float(grid.sum() / 9.0), 3),
@@ -401,10 +510,37 @@ class CaptureSessionRunner:
             "screen_markers_total": self._total_markers,
             "screen_coverage_pct": round(len(self._seen_marker_ids) / max(self._total_markers, 1), 3),
             "pose_spatial_spread_mm": round(spread, 1),
+            "angular_spread_deg": round(angular_spread, 2),
+            "rotation_axis_spread": round(angular_spread, 2),
+            "edge_obs_fraction": round(edge_fraction, 3),
+            "corners_present": corners_present,
+            "center_present": center_present,
+            "gate_checklist": checklist,
             "suggestions": suggestions,
         }
 
     # ── session assembly ─────────────────────────────────────────────
+
+    def _session_document(self) -> tuple[dict[str, Any], bool]:
+        session: dict[str, Any] = {
+            "images": {"path": "captures/normal", "format": "png"},
+            "tracking": {"path": "tracking/poses.jsonl",
+                         "coordinate_system": COORDINATE_SYSTEM[self.cfg.track_protocol],
+                         "frame_matching": "frame_id",
+                         "timestamp_tolerance_s": self.cfg.timestamp_tolerance_s},
+            "screen": {"path": str(self.cfg.screen_path)},
+        }
+        lens_ready = self.cfg.lens_path is not None
+        if self.cfg.lens_path is not None:
+            session["lens"] = json.loads(Path(self.cfg.lens_path).read_text(encoding="utf-8"))
+        return session, lens_ready
+
+    def _write_partial(self, out: Path) -> None:
+        session, _ = self._session_document()
+        session["capture_partial"] = {"poses_captured": len(self._poses),
+                                      "updated_monotonic_s": time.monotonic()}
+        (out / "session.partial.json").write_text(
+            json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _assemble(self, out: Path) -> dict[str, Any]:
         if not self._poses:
@@ -412,22 +548,10 @@ class CaptureSessionRunner:
                                     details={"hint": "check tracking stream and settle thresholds"})
         write_tracking([p.tracking for p in self._poses], out / "tracking" / "poses.jsonl")
 
-        session: dict[str, Any] = {
-            "images": {"path": "captures/normal", "format": "png"},
-            "tracking": {
-                "path": "tracking/poses.jsonl",
-                "coordinate_system": COORDINATE_SYSTEM[self.cfg.track_protocol],
-                "frame_matching": "frame_id",
-                "timestamp_tolerance_s": self.cfg.timestamp_tolerance_s,
-            },
-            "screen": {"path": str(self.cfg.screen_path)},
-        }
-        lens_ready = False
-        if self.cfg.lens_path is not None:
-            session["lens"] = json.loads(Path(self.cfg.lens_path).read_text(encoding="utf-8"))
-            lens_ready = True
+        session, lens_ready = self._session_document()
         (out / "session.json").write_text(
             json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+        (out / "session.partial.json").unlink(missing_ok=True)
 
         meta = {
             "capture": {
@@ -460,4 +584,33 @@ class CaptureSessionRunner:
         }
 
 
-__all__ = ["SessionState", "SessionCaptureConfig", "CaptureSessionRunner"]
+def finalize_partial_session(session_dir: str | Path) -> dict[str, Any]:
+    """Promote an incrementally persisted capture after interruption."""
+    out = Path(session_dir)
+    partial = out / "session.partial.json"
+    if not partial.exists():
+        raise PreconditionError(f"partial session not found: {partial}")
+    session = json.loads(partial.read_text(encoding="utf-8"))
+    partial_meta = session.pop("capture_partial", {})
+    poses_path = out / session["tracking"]["path"]
+    frames = [ln for ln in poses_path.read_text(encoding="utf-8").splitlines() if ln.strip()] \
+        if poses_path.exists() else []
+    images = sorted((out / session["images"]["path"]).glob("*.png"))
+    recoverable = min(len(frames), len(images))
+    if recoverable == 0:
+        raise PreconditionError("partial session contains no complete image/tracking pose pairs")
+    if len(frames) != len(images):
+        raise PreconditionError(
+            "partial session image/tracking counts differ; repair or remove the incomplete tail",
+            details={"images": len(images), "tracking": len(frames)},
+        )
+    final = out / "session.json"
+    final.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+    partial.unlink()
+    return {"session_dir": str(out), "session_json": str(final),
+            "poses_recovered": recoverable, "lens_ready": "lens" in session,
+            "partial_metadata": partial_meta}
+
+
+__all__ = ["SessionState", "SessionCaptureConfig", "CaptureSessionRunner",
+           "finalize_partial_session"]

@@ -51,6 +51,11 @@ class TrackingFrame(BaseModel):
 
     frame_id: int = Field(ge=0)
     timestamp_s: float = Field(ge=0.0)
+    raw_monotonic_ts: float | None = None
+    protocol_ts_s: float | None = None
+    zoom_raw: int | None = None
+    focus_raw: int | None = None
+    camera_id: int | str | None = None
     position: Annotated[list[float], Field(min_length=3, max_length=3)]
     """(x, y, z) position in the tracker's native coordinate system."""
     rotation: RotationData

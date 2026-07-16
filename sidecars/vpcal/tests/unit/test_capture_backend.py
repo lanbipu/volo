@@ -115,7 +115,8 @@ def test_parse_decklink_device_invalid(device):
 
 
 class _FakeRaw:
-    def __init__(self, pixel_format, width=4, height=2, row_bytes=8, frame_rate=0.0):
+    def __init__(self, pixel_format, width=4, height=2, row_bytes=8, frame_rate=0.0,
+                 hardware_time_s=0.0):
         self.pixel_format = pixel_format
         self.width = width
         self.height = height
@@ -123,6 +124,7 @@ class _FakeRaw:
         self.data = b"\x00" * (row_bytes * height)
         self.timecode = ""
         self.frame_rate = frame_rate
+        self.hardware_time_s = hardware_time_s
 
 
 class _FakeImpl:
@@ -165,6 +167,36 @@ def test_decklink_frames_surface_detected_frame_rate():
     b = _decklink_with_impl(_FakeImpl([_FakeRaw("uyvy", frame_rate=59.94)]))
     frames = _take(b, 1)
     assert frames[0].meta["frame_rate"] == 59.94
+
+
+def test_decklink_uses_hardware_spacing_when_queue_is_backlogged(monkeypatch):
+    b = _decklink_with_impl(_FakeImpl([
+        _FakeRaw("uyvy", hardware_time_s=10.000),
+        _FakeRaw("uyvy", hardware_time_s=10.033),
+    ]))
+    times = iter([100.0, 100.2])  # dequeue stamps falsely 200 ms apart
+    monkeypatch.setattr("vpcal.core.capture_backend.time.monotonic", lambda: next(times))
+    frames = _take(b, 2)
+    assert frames[1].recv_ts - frames[0].recv_ts == pytest.approx(0.033)
+    assert frames[1].hardware_time_s == pytest.approx(10.033)
+
+
+def test_list_uvc_devices_reports_probe_truth(monkeypatch):
+    from vpcal.core.capture_backend import list_uvc_devices
+
+    class Cap:
+        def __init__(self, index): self.index = index
+        def isOpened(self): return self.index == 1
+        def get(self, prop): return {3: 1920.0, 4: 1080.0, 5: 30.0}.get(prop, 0.0)
+        def release(self): pass
+
+    monkeypatch.setattr("cv2.VideoCapture", Cap)
+    devices = list_uvc_devices(max_index=2)
+    assert devices == [
+        {"index": 0, "available": False, "width": 0, "height": 0, "fps": 0.0},
+        {"index": 1, "available": True, "width": 1920, "height": 1080, "fps": 30.0},
+        {"index": 2, "available": False, "width": 0, "height": 0, "fps": 0.0},
+    ]
 
 
 def test_uvc_backend_bad_device_raises():

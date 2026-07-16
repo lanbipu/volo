@@ -75,6 +75,7 @@ def _frame_from_opentrackio(obj: dict, fallback_id: int) -> TrackingFrame:
     return TrackingFrame(
         frame_id=int(frame_id),
         timestamp_s=ts,
+        protocol_ts_s=ts,
         position=[float(x) for x in compound[:3, 3]],
         rotation=RotationData(order=RotationOrder.QUATERNION, values=[float(x) for x in q]),
         confidence=1.0,

@@ -15,7 +15,13 @@ from pathlib import Path
 
 import click
 
-from vpcal.cli._common import OperationOutput, common_options, run_operation
+from vpcal.cli._common import (
+    OperationOutput,
+    StreamEmitter,
+    common_options,
+    run_operation,
+    run_streaming_operation,
+)
 from vpcal.core.errors import ResourceNotFoundError
 
 
@@ -144,3 +150,102 @@ def overlay(ctx, config_path, result_path, out_dir, limit, **flags) -> None:
         return OperationOutput(data=summary, text="\n".join(lines))
 
     run_operation("verify.overlay", body, **flags)
+
+
+@verify.command(name="live")
+@click.option("--config", "config_path", required=True, type=click.Path(),
+              help="Session config JSON (lens, truth source and tracking coordinates).")
+@click.option("--result", "result_path", required=True, type=click.Path(),
+              help="Solved result.json containing tracker-to-stage/camera transforms.")
+@click.option("--backend", type=click.Choice(["uvc", "ndi", "decklink", "synthetic"]),
+              default="uvc", show_default=True, help="Live camera backend.")
+@click.option("--device", default="0", show_default=True,
+              help="Device index (uvc/decklink) or source name (ndi).")
+@click.option("--width", type=int, default=None, help="Requested frame width.")
+@click.option("--height", type=int, default=None, help="Requested frame height.")
+@click.option("--fps", type=float, default=None, help="Requested frame rate.")
+@click.option("--transfer-function", default="sdr", show_default=True,
+              help="Declared source transfer function.")
+@click.option("--allow-hx", is_flag=True, help="Allow NDI|HX for this preview-only workflow.")
+@click.option("--track-protocol", type=click.Choice(["freed", "opentrackio"]),
+              default="freed", show_default=True, help="Tracking UDP protocol.")
+@click.option("--track-port", type=int, default=6301, show_default=True,
+              help="Tracking UDP port.")
+@click.option("--track-host", default="0.0.0.0", show_default=True,
+              help="Tracking UDP bind address.")
+@click.option("--tolerance", "timestamp_tolerance_s", type=click.FloatRange(min=0.0),
+              default=0.05, show_default=True, help="Frame-to-tracking pairing tolerance in seconds.")
+@click.option("--preview-port", type=int, default=0, show_default=True,
+              help="Local MJPEG/WS preview port; 0 chooses a free port.")
+@click.option("--duration", "duration_s", type=click.FloatRange(min=0.0), default=0.0,
+              show_default=True, help="Run duration in seconds; 0 runs until stopped/source end.")
+@click.option("--max-frames", type=click.IntRange(min=1), default=None,
+              help="Stop after N camera frames.")
+@common_options
+@click.pass_context
+def live(ctx, config_path, result_path, backend, device, width, height, fps,
+         transfer_function, allow_hx, track_protocol, track_port, track_host,
+         timestamp_tolerance_s, preview_port, duration_s, max_frames, **flags) -> None:
+    """Stream detected vs calibrated marker reprojections over a live camera feed."""
+
+    def body(emitter: StreamEmitter) -> OperationOutput:
+        from vpcal.cli.quick import _load_session
+        from vpcal.core.capture_backend import CaptureConfig
+        from vpcal.core.live_verify import LiveOverlay, run_live_verify
+
+        result_file = Path(result_path)
+        if not result_file.exists():
+            raise ResourceNotFoundError(
+                f"result not found: {result_file}", details={"path": str(result_file)}
+            )
+        session, _raw, session_dir = _load_session(config_path)
+        result = json.loads(result_file.read_text())
+        capture_config = CaptureConfig(
+            backend=backend,
+            device=device,
+            width=width,
+            height=height,
+            fps=fps,
+            transfer_function=transfer_function,
+            extra={"allow_hx": allow_hx},
+        )
+        if flags.get("dry_run"):
+            LiveOverlay(session, session_dir, result)
+            return OperationOutput(
+                data={
+                    "dry_run_plan": {
+                        "backend": backend,
+                        "device": device,
+                        "track_protocol": track_protocol,
+                        "track_host": track_host,
+                        "track_port": track_port,
+                        "preview_port": preview_port,
+                    }
+                },
+                text="Dry run OK — calibration/truth source loaded; no devices opened.",
+            )
+        summary = run_live_verify(
+            session,
+            session_dir,
+            result,
+            capture_config,
+            track_port=track_port,
+            track_protocol=track_protocol,
+            track_host=track_host,
+            timestamp_tolerance_s=timestamp_tolerance_s,
+            preview_port=preview_port,
+            duration_s=duration_s,
+            max_frames=max_frames,
+            event_callback=lambda kind, payload: emitter.emit(kind, payload),
+        )
+        return OperationOutput(
+            data=summary,
+            text=(
+                f"Live verify stopped: {summary['annotated_frames']}/"
+                f"{summary['frames']} frame(s) annotated, "
+                f"{summary['num_observations']} observations, "
+                f"RMS {summary['global_rms_px']} px."
+            ),
+        )
+
+    run_streaming_operation("verify.live", body, **flags)

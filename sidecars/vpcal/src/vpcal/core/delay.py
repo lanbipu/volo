@@ -139,7 +139,12 @@ def _track_cost(
         if cam[2] <= 1.0:
             return float("inf")
         preds[i] = project_points(cam.reshape(1, 3), intr)[0]
-    return float(np.sqrt(np.mean(np.sum((preds - track.pixels) ** 2, axis=1))))
+    # A constant per-marker screen/map or centroid bias is not timing evidence.
+    # Remove it before accumulating the swing residual so asymmetric motion
+    # cannot leak a static calibration offset into tau.
+    residual = preds - track.pixels
+    residual -= residual.mean(axis=0, keepdims=True)
+    return float(np.sqrt(np.mean(np.sum(residual ** 2, axis=1))))
 
 
 def _parabolic_min(taus: Array, costs: Array, idx: int) -> float:
@@ -180,20 +185,32 @@ def estimate_delay(
 
     T_S = make_transform(np.asarray(tracker_to_stage[0]), np.asarray(tracker_to_stage[1]))
     T_C = make_transform(np.asarray(camera_from_tracker[0]), np.asarray(camera_from_tracker[1]))
-    taus = np.arange(-search_ms, search_ms + step_ms / 2, step_ms) * 1e-3
-
-    per_marker_tau: list[float] = []
-    per_marker_depth: list[float] = []
-    for track in usable:
-        costs = np.array([_track_cost(track, sampler, float(tau), T_S, T_C, intr) for tau in taus])
-        if not np.isfinite(costs).all():
+    requested_search_ms = search_ms
+    boundary_hit = False
+    while True:
+        taus = np.arange(-search_ms, search_ms + step_ms / 2, step_ms) * 1e-3
+        per_marker_tau: list[float] = []
+        per_marker_depth: list[float] = []
+        boundary_flags: list[bool] = []
+        for track in usable:
+            costs = np.array([_track_cost(track, sampler, float(tau), T_S, T_C, intr) for tau in taus])
+            if not np.isfinite(costs).all():
+                continue
+            idx = int(np.argmin(costs))
+            hit = idx < 2 or idx >= len(taus) - 2
+            boundary_flags.append(hit)
+            tau_star = _parabolic_min(taus, costs, idx)
+            per_marker_tau.append(tau_star)
+            rng = float(costs.max() - costs.min())
+            per_marker_depth.append(rng / float(costs.max()) if costs.max() > 0 else 0.0)
+        majority_boundary = bool(boundary_flags) and sum(boundary_flags) * 2 >= len(boundary_flags)
+        if majority_boundary and search_ms < 400.0:
+            boundary_hit = True
+            search_ms = min(400.0, search_ms * 2.0)
             continue
-        idx = int(np.argmin(costs))
-        tau_star = _parabolic_min(taus, costs, idx)
-        per_marker_tau.append(tau_star)
-        # Trough depth: how decisively the scan prefers the minimum (0..1).
-        rng = float(costs.max() - costs.min())
-        per_marker_depth.append(rng / float(costs.max()) if costs.max() > 0 else 0.0)
+        unresolved_boundary = majority_boundary
+        boundary_hit = boundary_hit or unresolved_boundary
+        break
 
     if not per_marker_tau:
         raise PreconditionError(
@@ -203,8 +220,13 @@ def estimate_delay(
     tau_med = float(np.median(per_marker_tau))
     mad = float(np.median(np.abs(np.asarray(per_marker_tau) - tau_med)))
     delay_ms = -tau_med * 1e3
-    sigma_ms = 1.4826 * mad * 1e3  # MAD → σ under normality
+    low_marker_count = len(per_marker_tau) < 3
+    sigma_ms = None if low_marker_count else 1.4826 * mad * 1e3
     confidence = float(np.median(per_marker_depth)) if per_marker_depth else 0.0
+    if low_marker_count:
+        confidence *= len(per_marker_tau) / 3.0
+    if unresolved_boundary:
+        confidence = 0.0
 
     return {
         "delay_ms": delay_ms,
@@ -213,7 +235,11 @@ def estimate_delay(
         "num_markers": len(per_marker_tau),
         "num_frames": int(max(len(t.times) for t in usable)),
         "search_ms": search_ms,
+        "requested_search_ms": requested_search_ms,
         "step_ms": step_ms,
+        "boundary_hit": boundary_hit,
+        "boundary_unresolved": unresolved_boundary,
+        "low_marker_count": low_marker_count,
         "motion": motion,
         "method": "swing_reprojection_scan",
         "per_marker_delay_ms": [-t * 1e3 for t in per_marker_tau],

@@ -44,11 +44,50 @@ def capture(ctx: click.Context) -> None:
               help="Capture duration (seconds).")
 @click.option("--host", default="0.0.0.0", show_default=True, help="Bind address.")
 @click.option("--max-packets", type=int, default=None, help="Stop after N packets (optional).")
-@click.option("--out", "out_path", required=True, type=click.Path(), help="Output poses.jsonl path.")
+@click.option("--out", "out_path", required=False, type=click.Path(), help="Output poses.jsonl path.")
+@click.option("--monitor", is_flag=True, help="Emit 0.5 s live NDJSON monitor events until stdin EOF.")
 @common_options
 @click.pass_context
-def track(ctx, protocol, port, duration_s, host, max_packets, out_path, **flags) -> None:
+def track(ctx, protocol, port, duration_s, host, max_packets, out_path, monitor, **flags) -> None:
     """Record a timestamped tracking stream from a live FreeD / OpenTrackIO source."""
+
+    if monitor:
+        def stream_body(emitter: StreamEmitter) -> OperationOutput:
+            from vpcal.core.tracking_listener import TrackingListener
+
+            listener = TrackingListener(port, protocol=protocol, host=host)
+            eof = threading.Event()
+            threading.Thread(target=lambda: (sys.stdin.read(), eof.set()), daemon=True).start()
+            listener.start()
+            t0 = time.monotonic()
+            last_total = 0
+            last_t = t0
+            try:
+                while not eof.wait(0.5):
+                    now = time.monotonic()
+                    total = listener.packets_seen
+                    frames = listener.all_frames()
+                    latest = frames[-1] if frames else None
+                    emitter.emit("monitor", {
+                        "pkt_s": round((total - last_total) / max(now - last_t, 1e-9), 1),
+                        "total": total,
+                        "camera_ids": sorted({str(f.camera_id) for f in frames if f.camera_id is not None}),
+                        "pose": latest.model_dump(mode="json") if latest else None,
+                        "protocol": protocol,
+                    })
+                    last_total, last_t = total, now
+                    if duration_s > 0 and now - t0 >= duration_s:
+                        break
+            finally:
+                listener.stop()
+            return OperationOutput(data={"protocol": protocol, "total": listener.packets_seen},
+                                   text=f"Monitored {listener.packets_seen} packets")
+
+        run_streaming_operation("capture.track.monitor", stream_body, **flags)
+        return
+
+    if not out_path:
+        raise click.UsageError("--out is required unless --monitor is used")
 
     def body() -> OperationOutput:
         from vpcal.core.capture import COORDINATE_SYSTEM, capture_tracking_udp
@@ -75,6 +114,35 @@ def track(ctx, protocol, port, duration_s, host, max_packets, out_path, **flags)
         )
 
     run_operation("capture.track", body, **flags)
+
+
+@capture.command(name="list-devices")
+@click.option("--backend", type=click.Choice(["uvc"]), default="uvc", show_default=True)
+@common_options
+@click.pass_context
+def list_devices(ctx, backend, **flags) -> None:
+    """Probe local capture devices without fabricated display names."""
+    def body() -> OperationOutput:
+        from vpcal.core.capture_backend import list_uvc_devices
+
+        devices = list_uvc_devices()
+        return OperationOutput(data={"backend": backend, "devices": devices},
+                               text=f"Probed {len(devices)} UVC indices")
+    run_operation("capture.list_devices", body, **flags)
+
+
+@capture.command(name="finalize")
+@click.argument("session_dir", type=click.Path(file_okay=False))
+@common_options
+@click.pass_context
+def finalize(ctx, session_dir, **flags) -> None:
+    """Recover a quick-run-compatible session from incremental capture files."""
+    def body() -> OperationOutput:
+        from vpcal.core.capture_session import finalize_partial_session
+        data = finalize_partial_session(session_dir)
+        return OperationOutput(data=data, text=(f"Recovered {data['poses_recovered']} poses → "
+                                                f"{data['session_json']}"))
+    run_operation("capture.finalize", body, **flags)
 
 
 def _backend_options(fn):
@@ -187,8 +255,10 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
         src = open_backend(cfg)
         sink, server = _make_preview(preview_port, emitter)
         out = Path(out_dir) if out_dir else None
+        manifest_fh = None
         if out:
             out.mkdir(parents=True, exist_ok=True)
+            manifest_fh = (out / "frames.jsonl").open("w", encoding="utf-8")
         n = 0
         source_info = None
         t0 = time.monotonic()
@@ -216,6 +286,14 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
                     sink.publish(frame.bgr if frame.bgr is not None else frame.gray)
                 if out:
                     cv2.imwrite(str(out / f"{n:06d}.png"), frame.gray)
+                    manifest_fh.write(json.dumps({
+                        "frame_index": n,
+                        "recv_ts": frame.recv_ts,
+                        "timecode": frame.timecode,
+                        "hardware_time_s": frame.hardware_time_s,
+                        "fps_nominal": fps or frame.meta.get("frame_rate"),
+                    }, ensure_ascii=False) + "\n")
+                    manifest_fh.flush()
                 n += 1
                 now = time.monotonic()
                 if now - last_report >= 1.0:
@@ -230,6 +308,8 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
                     break
         finally:
             src.close()
+            if manifest_fh is not None:
+                manifest_fh.close()
             if server is not None:
                 server.stop()
         elapsed = time.monotonic() - t0
@@ -263,6 +343,8 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
               help="Required stillness duration before capture (T_settle).")
 @click.option("--settle-speed", type=float, default=5.0, show_default=True,
               help="Speed (mm/s) below which the camera counts as settling.")
+@click.option("--settle-ang-speed", type=float, default=0.2, show_default=True,
+              help="Angular speed (deg/s) below which the camera counts as settling.")
 @click.option("--move-speed", type=float, default=25.0, show_default=True,
               help="Speed (mm/s) above which the camera counts as moving again.")
 @click.option("--burst", "burst_frames", type=int, default=5, show_default=True,
@@ -271,14 +353,17 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
               show_default=True, help="Frame↔tracking pairing tolerance (s).")
 @click.option("--graycode-sync", is_flag=True,
               help="Confirm pattern switches by decoding corner Gray-code tags.")
+@click.option("--allow-ack-without-graycode", is_flag=True,
+              help="Compatibility escape hatch: permit playback ack without visual evidence.")
 @click.option("--control-stdin/--no-control-stdin", default=True, show_default=True,
               help="Read JSON control commands from stdin (stop/finish/pattern_ready).")
 @common_options
 @click.pass_context
 def session(ctx, screen_path, out_dir, backend, device, width, height, fps,
             transfer_function, preview_port, track_protocol, track_port, track_host,
-            poses_target, inverted, lens_path, settle_ms, settle_speed, move_speed,
+            poses_target, inverted, lens_path, settle_ms, settle_speed, settle_ang_speed, move_speed,
             burst_frames, timestamp_tolerance_s, graycode_sync, control_stdin,
+            allow_ack_without_graycode,
             **flags) -> None:
     """[C1.2+C1.3] Closed-loop capture session → quick-run-ready session directory.
 
@@ -312,9 +397,11 @@ def session(ctx, screen_path, out_dir, backend, device, width, height, fps,
             out_dir=Path(out_dir), screen_path=Path(screen_path), backend=backend_cfg,
             track_protocol=track_protocol, track_port=track_port, track_host=track_host,
             poses_target=poses_target, settle_speed_mm_s=settle_speed,
+            settle_ang_speed_deg_s=settle_ang_speed,
             move_speed_mm_s=move_speed, settle_duration_s=settle_ms / 1000.0,
             burst_frames=burst_frames, timestamp_tolerance_s=timestamp_tolerance_s,
             inverted=inverted, graycode_sync=graycode_sync,
+            allow_ack_without_graycode=allow_ack_without_graycode,
             lens_path=Path(lens_path) if lens_path else None, preview_sink=sink)
 
         src = open_backend(backend_cfg)
@@ -403,9 +490,11 @@ def delay_cal(ctx, config_path, result_path, video_dir, tracking_path, fps, sear
             fps=fps, search_ms=search_ms, out_path=out,
         )
         cam = profile["cameras"][0]
+        sigma_text = (f"{cam['sigma_ms']:.1f}" if cam.get("sigma_ms") is not None
+                      else "unknown")
         return OperationOutput(
             data=profile,
-            text=(f"Delay: {cam['delay_ms']:+.1f} ± {cam['sigma_ms']:.1f} ms "
+            text=(f"Delay: {cam['delay_ms']:+.1f} ± {sigma_text} ms "
                   f"(confidence {cam['confidence']:.2f}, {cam['num_markers']} markers) → {out}\n"
                   f"  {profile['recommendation']}"),
         )

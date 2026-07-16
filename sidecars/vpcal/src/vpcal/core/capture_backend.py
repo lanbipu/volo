@@ -66,6 +66,7 @@ class CapturedFrame:
 
     gray: np.ndarray
     recv_ts: float                     # monotonic receive timestamp (time.monotonic())
+    hardware_time_s: float | None = None
     timecode: str | None = None        # embedded RP188/VITC timecode if present
     frame_index: int = 0
     bgr: np.ndarray | None = None
@@ -329,7 +330,8 @@ class NdiBackend:
 
         while self._receiver is receiver:
             receiver.frame_sync.capture_video(self._api.FrameFormat.progressive)
-            now = time.monotonic()
+            recv_ts = time.monotonic()  # stamp arrival before receiver pacing sleep
+            now = recv_ts
             width, height = video_frame.get_resolution()
             if width <= 0 or height <= 0:
                 if now - started_waiting >= idle_timeout_s:
@@ -389,12 +391,11 @@ class NdiBackend:
             remaining_s = interval_s - (now - last_yield) if last_yield else 0.0
             if remaining_s > 0:
                 time.sleep(remaining_s)
-                now = time.monotonic()
             last_yield = now
             yield CapturedFrame(
                 gray=gray,
                 bgr=bgr,
-                recv_ts=now,
+                recv_ts=recv_ts,
                 timecode=f"{timecode_s:.7f}" if timecode_s > 0 else None,
                 frame_index=idx,
                 meta={
@@ -536,9 +537,11 @@ class DecklinkBackend:
         idx = 0
         misses = 0
         seen_first = False
+        hardware_origin: float | None = None
+        monotonic_origin: float | None = None
         while self._impl is not None:
             raw = self._impl.next_frame()  # blocking; None on stop/timeout
-            recv_ts = time.monotonic()
+            dequeue_ts = time.monotonic()
             if raw is None:
                 # A momentary signal drop (unplug, source pause) yields None per
                 # timeout; keep the stream alive across a few misses so a brief
@@ -557,6 +560,14 @@ class DecklinkBackend:
                 continue
             misses = 0
             seen_first = True
+            hardware_time_s = float(getattr(raw, "hardware_time_s", 0.0) or 0.0)
+            if hardware_time_s > 0:
+                if hardware_origin is None:
+                    hardware_origin = hardware_time_s
+                    monotonic_origin = dequeue_ts
+                recv_ts = float(monotonic_origin + hardware_time_s - hardware_origin)
+            else:
+                recv_ts = dequeue_ts
             if raw.pixel_format == "v210":
                 gray = v210_to_gray16(raw.data, raw.width, raw.height, raw.row_bytes)
             elif raw.pixel_format == "uyvy":
@@ -587,6 +598,7 @@ class DecklinkBackend:
             yield CapturedFrame(
                 gray=gray,
                 recv_ts=recv_ts,
+                hardware_time_s=hardware_time_s if hardware_time_s > 0 else None,
                 timecode=raw.timecode or None,
                 frame_index=idx,
                 meta=meta,
@@ -614,6 +626,27 @@ def open_backend(config: CaptureConfig) -> CaptureBackend:
     return backend
 
 
+def list_uvc_devices(max_index: int = 8) -> list[dict[str, Any]]:
+    """Probe UVC indices without inventing device names."""
+    import cv2
+
+    devices = []
+    for index in range(max_index + 1):
+        cap = cv2.VideoCapture(index)
+        try:
+            available = bool(cap.isOpened())
+            devices.append({
+                "index": index,
+                "available": available,
+                "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) if available else 0,
+                "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) if available else 0,
+                "fps": float(cap.get(cv2.CAP_PROP_FPS)) if available else 0.0,
+            })
+        finally:
+            cap.release()
+    return devices
+
+
 __all__ = [
     "BACKENDS",
     "DECKLINK_CONNECTORS",
@@ -630,4 +663,5 @@ __all__ = [
     "parse_decklink_device",
     "open_backend",
     "to_gray",
+    "list_uvc_devices",
 ]

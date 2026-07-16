@@ -57,6 +57,22 @@ def test_write_read_roundtrip(tmp_path):
     assert back[2].position == [2.0, 4.0, 6.0]
 
 
+def test_compact_roundtrip_preserves_dual_clock_and_fiz(tmp_path):
+    frame = TrackingFrame(
+        frame_id=1, timestamp_s=0.25, raw_monotonic_ts=1234.5,
+        protocol_ts_s=42.25, zoom_raw=100, focus_raw=200,
+        position=[0, 0, 0],
+        rotation=RotationData(order=RotationOrder.QUATERNION, values=[1, 0, 0, 0]),
+    )
+    path = tmp_path / "poses.jsonl"
+    write_tracking([frame], path)
+    restored = load_tracking(path)[0]
+    assert restored.timestamp_s == 0.25
+    assert restored.raw_monotonic_ts == 1234.5
+    assert restored.protocol_ts_s == 42.25
+    assert (restored.zoom_raw, restored.focus_raw) == (100, 200)
+
+
 def test_load_opentrackio_native(tmp_path):
     sample = {
         "protocol": {"name": "OpenTrackIO", "version": "1.0.0"},

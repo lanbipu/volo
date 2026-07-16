@@ -134,6 +134,9 @@ def freed_to_frame(packet: bytes, frame_id: int, timestamp_s: float) -> Tracking
     return TrackingFrame(
         frame_id=frame_id,
         timestamp_s=timestamp_s,
+        zoom_raw=p.zoom_raw,
+        focus_raw=p.focus_raw,
+        camera_id=p.camera_id,
         position=[p.x * _M_PER_MM, p.y * _M_PER_MM, p.z * _M_PER_MM],
         rotation=RotationData(order=RotationOrder.EULER_PTR, values=[p.pan, p.tilt, p.roll]),
         confidence=1.0,
@@ -166,9 +169,16 @@ def opentrackio_sample_to_frame(sample: dict, frame_id: int, timestamp_s: float)
         link[:3, 3] = [t.get("x", 0.0), t.get("y", 0.0), t.get("z", 0.0)]
         M = M @ link
     q = matrix_to_quat(M[:3, :3])
+    timing = sample.get("timing") or {}
+    sample_ts = timing.get("sampleTimestamp")
+    protocol_ts_s = None
+    if isinstance(sample_ts, dict):
+        protocol_ts_s = (float(sample_ts.get("seconds", 0))
+                         + float(sample_ts.get("nanoseconds", 0)) * 1e-9)
     return TrackingFrame(
         frame_id=frame_id,
         timestamp_s=timestamp_s,
+        protocol_ts_s=protocol_ts_s,
         position=[float(M[0, 3]) * _M_PER_MM, float(M[1, 3]) * _M_PER_MM, float(M[2, 3]) * _M_PER_MM],
         rotation=RotationData(order=RotationOrder.QUATERNION, values=[float(x) for x in q]),
         confidence=1.0,
@@ -213,7 +223,8 @@ def record_packets(
         if start_time is None:
             start_time = recv_time
         try:
-            frames.append(decode(packet, fid, max(0.0, recv_time - start_time)))
+            frame = decode(packet, fid, max(0.0, recv_time - start_time))
+            frames.append(frame.model_copy(update={"raw_monotonic_ts": recv_time}))
             fid += 1
         except Exception:
             if not skip_invalid:

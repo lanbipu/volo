@@ -10,6 +10,7 @@ directory that `vpcal quick run` accepts (validate + detect stages).
 from __future__ import annotations
 
 import json
+import itertools
 import socket
 import threading
 import time
@@ -19,7 +20,7 @@ import cv2
 import numpy as np
 import pytest
 
-from vpcal.core.capture_backend import CaptureConfig, SyntheticBackend
+from vpcal.core.capture_backend import CaptureConfig, CapturedFrame, SyntheticBackend
 from vpcal.core.capture_session import CaptureSessionRunner, SessionCaptureConfig
 from vpcal.core.errors import PreconditionError
 from vpcal.core.freed import FreeDPose, encode_freed_d1
@@ -152,6 +153,12 @@ def test_session_end_to_end_quick_run_compatible(tmp_path):
     assert all(hit == 16 for hit in hits), hits
     cov = [p for k, p in events if k == "coverage_update"][-1]
     assert cov["screen_coverage_pct"] == 1.0
+    assert {item["key"] for item in cov["gate_checklist"]} == {
+        "angular_spread", "edge_observations", "poses", "observations",
+        "sensor_corners", "sensor_center",
+    }
+    assert cov["angular_spread_deg"] >= 0.0
+    assert 0.0 <= cov["edge_obs_fraction"] <= 1.0
 
     # ── quick run consumes it (validate + detect stages) ─────────────
     from vpcal.core.pipeline import run_quick
@@ -235,6 +242,41 @@ def test_session_stop_command_aborts(tmp_path):
         threading.Timer(0.8, lambda: runner.post({"cmd": "stop"})).start()
         with pytest.raises(PreconditionError, match="aborted"):
             runner.run()
+
+
+@pytest.mark.parametrize(
+    "decoded_inverted,expected",
+    [(True, True), (False, False), (None, False)],
+)
+def test_graycode_evidence_is_fail_closed_even_with_ack(
+    tmp_path, monkeypatch, decoded_inverted, expected
+):
+    from vpcal.core.graycode import DecodedTag
+
+    screen_path = tmp_path / "screen.json"
+    save_screen(_screen(), screen_path)
+    backend = SyntheticBackend()
+    cfg = SessionCaptureConfig(
+        out_dir=tmp_path / "s", screen_path=screen_path,
+        backend=CaptureConfig(backend="synthetic"), graycode_sync=True,
+        allow_ack_without_graycode=False, pattern_wait_s=0.15,
+    )
+    events = []
+    runner = CaptureSessionRunner(cfg, backend, lambda kind, payload: events.append((kind, payload)))
+    runner.post({"cmd": "pattern_ready", "pattern": "inverted"})
+    if decoded_inverted is None:
+        monkeypatch.setattr("vpcal.core.capture_session.decode_tag", lambda *_a, **_k: None)
+    else:
+        tag = DecodedTag(1, decoded_inverted, "tl", 1.0)
+        monkeypatch.setattr("vpcal.core.capture_session.decode_tag", lambda *_a, **_k: tag)
+    tick = iter([0.0, 0.05, 0.10, 0.20, 0.30])
+    monkeypatch.setattr("vpcal.core.capture_session.time.monotonic", lambda: next(tick))
+    frame = CapturedFrame(np.zeros((64, 320), np.uint8), recv_ts=0.0)
+    _out, ok = runner._wait_pattern(itertools.repeat(frame), "inverted")
+    assert ok is expected
+    if decoded_inverted is False:
+        assert any(kind == "warning" and "contradicts" in payload["message"]
+                   for kind, payload in events)
 
 
 @pytest.mark.slow
