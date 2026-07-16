@@ -249,6 +249,7 @@ def _solve_cpp(
             o.world_rh[0], o.world_rh[1], o.world_rh[2],
             o.track_q[0], o.track_q[1], o.track_q[2], o.track_q[3],
             o.track_t[0], o.track_t[1], o.track_t[2],
+            o.sigma_px,
         )
         for o in observations
     ]

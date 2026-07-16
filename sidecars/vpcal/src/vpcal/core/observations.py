@@ -117,3 +117,5 @@ class Observation:
     track_t: tuple[float, float, float]
     frame_id: int = -1
     marker_id: "MarkerId | PhysicalMarkerId | None" = None
+    sigma_px: float = 1.0
+    """Per-correspondence pixel uncertainty used to whiten solver residuals."""

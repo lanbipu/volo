@@ -41,9 +41,9 @@ def _observations(seed=7):
 
 
 def _python_residuals(observations, T_S, T_C, intr):
-    world_h, pixels, inv_sdk = _build_observation_arrays(observations)
+    world_h, pixels, inv_sdk, sigma = _build_observation_arrays(observations)
     pred = _reproject(world_h, inv_sdk, T_S, T_C, intr)
-    return (pred - pixels).ravel()
+    return ((pred - pixels) / sigma).ravel()
 
 
 @pytest.mark.skipif(not cpp_available(), reason="C++ solver not built")

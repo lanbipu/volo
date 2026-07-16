@@ -134,18 +134,20 @@ def _transform_from_params(p: Array) -> Array:
     return make_transform(rotvec_to_quat(p[:3]), p[3:6])
 
 
-def _build_observation_arrays(observations: list[Observation]) -> tuple[Array, Array, Array]:
-    """Return (world_h (N,4), pixels (N,2), inv_T_sdk (N,4,4))."""
+def _build_observation_arrays(observations: list[Observation]) -> tuple[Array, Array, Array, Array]:
+    """Return world, pixels, inverse tracker poses, and pixel sigmas."""
     n = len(observations)
     world_h = np.ones((n, 4))
     pixels = np.zeros((n, 2))
     inv_sdk = np.zeros((n, 4, 4))
+    sigma = np.ones((n, 1))
     for i, o in enumerate(observations):
         world_h[i, :3] = o.world_rh
         pixels[i] = (o.pixel_u, o.pixel_v)
         T_sdk = make_transform(np.asarray(o.track_q), np.asarray(o.track_t))
         inv_sdk[i] = invert_transform(T_sdk)
-    return world_h, pixels, inv_sdk
+        sigma[i, 0] = max(float(o.sigma_px), 1.0e-9)
+    return world_h, pixels, inv_sdk, sigma
 
 
 def _reproject(world_h: Array, inv_sdk: Array, T_S: Array, T_C: Array, intr: CameraIntrinsics) -> Array:
@@ -179,7 +181,7 @@ def solve(
     backward compat).  When lens scalars are free, they are appended to the
     state in :data:`_LENS_ORDER` and refined jointly.
     """
-    world_h, pixels, inv_sdk = _build_observation_arrays(observations)
+    world_h, pixels, inv_sdk, sigma = _build_observation_arrays(observations)
 
     q_S0, t_S0 = init_S
     p_S0 = np.concatenate([quat_to_rotvec(np.asarray(q_S0, float)), np.asarray(t_S0, float)])
@@ -217,7 +219,7 @@ def solve(
         T_S = _transform_from_params(x[:6])
         T_C = _transform_from_params(x[6:12]) if refine_C else T_C_fixed
         pred = _reproject(world_h, inv_sdk, T_S, T_C, _intr_for(x))
-        res = (pred - pixels).ravel()
+        res = ((pred - pixels) / sigma).ravel()
         if refine_C:
             # Split prior weights: rotation residual is in rad, translation in
             # mm — one shared weight made the translation prior a hard freeze

@@ -72,6 +72,7 @@ def _load_exact_observations(
                 track_t=tuple(t),
                 frame_id=int(rec["frame_id"]),
                 marker_id=mid,
+                sigma_px=float(rec.get("sigma_px", 1.0)),
             )
         )
     return observations
@@ -144,6 +145,7 @@ def _detect_observations(
                 Observation(
                     pixel_u=det.pixel_u, pixel_v=det.pixel_v, world_rh=tuple(world),
                     track_q=tuple(q), track_t=tuple(t), frame_id=det.frame_id, marker_id=det.marker_id,
+                    sigma_px=1.0,
                 )
             )
     report = {
@@ -210,6 +212,9 @@ def _detect_observations_physical(
                 Observation(
                     pixel_u=det.pixel_u, pixel_v=det.pixel_v, world_rh=tuple(world),
                     track_q=tuple(q), track_t=tuple(t), frame_id=det.frame_id, marker_id=det.marker_id,
+                    # Four corners on one rigid tag are correlated; sigma=2
+                    # gives the quad approximately one point's total weight.
+                    sigma_px=2.0,
                 )
             )
     never_detected = sorted(

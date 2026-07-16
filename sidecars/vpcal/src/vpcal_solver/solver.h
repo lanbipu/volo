@@ -14,6 +14,7 @@ struct Observation {
 
     double track_qw, track_qx, track_qy, track_qz;  // tracker SDK output T_O_from_B rotation (quaternion w,x,y,z)
     double track_tx, track_ty, track_tz;              // tracker SDK output T_O_from_B translation
+    double sigma_px = 1.0;              // observation uncertainty; residuals are divided by sigma
                                        // Python wrapper is responsible for:
                                        //   1) coordinate-system conversion to right-hand
                                        //   2) passing the raw SDK output directly

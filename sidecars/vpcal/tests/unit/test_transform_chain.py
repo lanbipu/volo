@@ -126,3 +126,20 @@ def test_solver_rejects_too_few_poses():
     obs, _tp, _vis = forward_observations(screen, INTR, gt, poses, markers_per_cabinet=4, rng=rng)
     with pytest.raises(PreconditionError):
         solve_calibration(obs, INTR, prefer_cpp=False)
+
+
+def test_observation_sigma_is_carried_into_whitening_array():
+    from dataclasses import replace
+
+    from vpcal.core.solver_scipy import _build_observation_arrays
+
+    gt = random_ground_truth(np.random.default_rng(0), identity=True)
+    poses = generate_camera_poses(_plane_screen(), 3, np.random.default_rng(0))
+    obs, _tp, _vis = forward_observations(
+        _plane_screen(), INTR, gt, poses, markers_per_cabinet=4,
+        rng=np.random.default_rng(0),
+    )
+    _world, _pixels, _tracker, sigma = _build_observation_arrays(
+        [replace(obs[0], sigma_px=2.0)]
+    )
+    assert sigma.tolist() == [[2.0]]

@@ -78,8 +78,9 @@ struct ReprojectionCost {
 
         T u, v;
         project(lens_, p_cam, &u, &v);
-        residual[0] = u - T(obs_.pixel_u);
-        residual[1] = v - T(obs_.pixel_v);
+        const T sigma = T(obs_.sigma_px > 0.0 ? obs_.sigma_px : 1.0);
+        residual[0] = (u - T(obs_.pixel_u)) / sigma;
+        residual[1] = (v - T(obs_.pixel_v)) / sigma;
         return true;
     }
 

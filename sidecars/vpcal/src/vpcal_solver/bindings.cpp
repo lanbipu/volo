@@ -36,14 +36,19 @@ PYBIND11_MODULE(_vpcal_solver, m) {
     py::class_<vpcal::Observation>(m, "Observation")
         .def(py::init([](double pu, double pv, double wx, double wy, double wz,
                          double qw, double qx, double qy, double qz, double tx,
-                         double ty, double tz) {
+                         double ty, double tz, double sigma_px) {
             vpcal::Observation o;
             o.pixel_u = pu; o.pixel_v = pv;
             o.world_x = wx; o.world_y = wy; o.world_z = wz;
             o.track_qw = qw; o.track_qx = qx; o.track_qy = qy; o.track_qz = qz;
             o.track_tx = tx; o.track_ty = ty; o.track_tz = tz;
+            o.sigma_px = sigma_px;
             return o;
-        }));
+        }), py::arg("pixel_u"), py::arg("pixel_v"), py::arg("world_x"),
+            py::arg("world_y"), py::arg("world_z"), py::arg("track_qw"),
+            py::arg("track_qx"), py::arg("track_qy"), py::arg("track_qz"),
+            py::arg("track_tx"), py::arg("track_ty"), py::arg("track_tz"),
+            py::arg("sigma_px") = 1.0);
 
     py::class_<vpcal::LensParams>(m, "LensParams")
         .def(py::init([](double fx, double fy, double cx, double cy, double k1,
