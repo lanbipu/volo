@@ -2,12 +2,12 @@
 
 Minimises the 2D reprojection residual of the spec §5.1.4 chain over
 ``T_S_from_O`` (and optionally a small ``T_C_from_B`` delta) using a
-trust-region Levenberg-Marquardt with a robust loss.  The **un-robustified
+trust-region solve with outer IRLS.  The **un-robustified
 per-observation reprojection residual** is numerically identical to the C++
 Ceres core (locked by the bit-level dual-backend test); the backends
-legitimately differ in three places and are NOT bit-identical there: robust
-loss aggregation (scipy applies the loss to the full stacked vector incl.
-priors, Ceres per residual block with the prior un-robustified), the
+legitimately differ in optimiser internals. Robust weights apply only to
+per-observation reprojection blocks; camera/lens priors remain quadratic,
+matching Ceres. The
 ``T_C_from_B`` prior parametrisation (rotation-vector delta here vs
 quaternion-product small-angle in ``CameraPriorCost``), and the optimiser
 internals (TRF vs Levenberg-Marquardt trust region).
@@ -210,7 +210,7 @@ def solve(
 
     deadline = time.monotonic() + timeout_seconds if timeout_seconds else None
 
-    def residuals(x: Array) -> Array:
+    def residuals(x: Array, reprojection_weights: Array | None = None) -> Array:
         if deadline is not None and time.monotonic() > deadline:
             raise SolverTimeoutError(
                 f"solver exceeded timeout_seconds={timeout_seconds}",
@@ -219,7 +219,10 @@ def solve(
         T_S = _transform_from_params(x[:6])
         T_C = _transform_from_params(x[6:12]) if refine_C else T_C_fixed
         pred = _reproject(world_h, inv_sdk, T_S, T_C, _intr_for(x))
-        res = ((pred - pixels) / sigma).ravel()
+        reproj = (pred - pixels) / sigma
+        if reprojection_weights is not None:
+            reproj = reproj * reprojection_weights[:, None]
+        res = reproj.ravel()
         if refine_C:
             # Split prior weights: rotation residual is in rad, translation in
             # mm — one shared weight made the translation prior a hard freeze
@@ -244,10 +247,7 @@ def solve(
 
     if robust_loss not in _LOSS_MAP:
         raise ValueError(f"unsupported robust_loss: {robust_loss!r} (expected huber/cauchy/none)")
-    ls_kwargs: dict = dict(
-        method="trf", loss=_LOSS_MAP[robust_loss], f_scale=robust_scale,
-        max_nfev=max_iterations * (len(x0) + 1),
-    )
+    ls_kwargs: dict = dict(method="trf", loss="linear")
     if free_names:
         lo = np.full(len(x0), -np.inf)
         hi = np.full(len(x0), np.inf)
@@ -263,7 +263,35 @@ def solve(
                 lo[gi], hi[gi] = lf.k_lo, lf.k_hi
         ls_kwargs["bounds"] = (lo, hi)
 
-    sol = least_squares(residuals, x0, **ls_kwargs)
+    def _irls_weights(x: Array) -> Array:
+        T_S = _transform_from_params(x[:6])
+        T_C = _transform_from_params(x[6:12]) if refine_C else T_C_fixed
+        pred = _reproject(world_h, inv_sdk, T_S, T_C, _intr_for(x))
+        norms = np.linalg.norm((pred - pixels) / sigma, axis=1)
+        if robust_loss == "none":
+            return np.ones(len(norms))
+        if robust_loss == "huber":
+            return np.sqrt(np.where(norms <= robust_scale, 1.0, robust_scale / np.maximum(norms, 1e-12)))
+        # Cauchy rho'(s) = 1 / (1 + s/c²).
+        return np.sqrt(1.0 / (1.0 + (norms / robust_scale) ** 2))
+
+    rounds = 1 if robust_loss == "none" else 4
+    x_start = x0
+    sol = None
+    weights = np.ones(len(observations))
+    per_round_nfev = max((max_iterations * (len(x0) + 1)) // rounds, len(x0) + 1)
+    for _ in range(rounds):
+        sol = least_squares(
+            lambda x: residuals(x, weights), x_start,
+            max_nfev=per_round_nfev, **ls_kwargs,
+        )
+        x_start = sol.x
+        new_weights = _irls_weights(sol.x)
+        if np.allclose(new_weights, weights, rtol=1e-3, atol=1e-4):
+            weights = new_weights
+            break
+        weights = new_weights
+    assert sol is not None
 
     T_S = _transform_from_params(sol.x[:6])
     T_C = _transform_from_params(sol.x[6:12]) if refine_C else T_C_fixed
