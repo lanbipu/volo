@@ -365,6 +365,7 @@ pub fn run() {
             commands::sidecar_stream::spawn_sidecar_streaming,
             commands::sidecar_stream::sidecar_stdin_write,
             commands::sidecar_stream::cancel_sidecar_task,
+            commands::sidecar_stream::cancel_sidecar_tasks_by_program,
             // W4: M2 visual-BA group (backend-only; UI pending Claude Design handoff).
             commands::mesh_visual::mesh_visual_generate_pattern,
             commands::mesh_visual::mesh_visual_generate_structured_light,

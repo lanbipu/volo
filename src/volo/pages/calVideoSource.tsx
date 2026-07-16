@@ -5,6 +5,7 @@ import {
 } from "../api/captureProfiles";
 import {
   cancelSidecarTask,
+  cancelSidecarTasksByProgram,
   spawnSidecar,
   spawnSidecarStreaming,
   useSidecarStream,
@@ -18,6 +19,10 @@ import {
 (function () {
   const { useState, useRef, useEffect } = React;
   const h = React.createElement;
+
+  /* 孤儿清扫：页面（重）加载后，上一世代残留的 vpcal 采集任务已无人持有句柄，
+     却仍独占采集设备（DeckLink 单开）——模块加载时统一取消一次。 */
+  void cancelSidecarTasksByProgram('vpcal').catch(() => {});
 
   /* ---------- backend 段（保留四选一） ---------- */
   const BACKENDS = [

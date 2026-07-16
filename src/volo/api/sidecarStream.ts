@@ -64,6 +64,13 @@ export const sidecarStdinWrite = (taskId: string, line: string) =>
 export const cancelSidecarTask = (taskId: string) =>
   call<boolean>("cancel_sidecar_task", { taskId });
 
+/** Orphan sweep: cancel every running task of one sidecar program. Page
+ *  reloads lose all task handles, so previous-generation tasks (e.g. a
+ *  DeckLink monitor holding the device exclusively) can never be cancelled
+ *  individually — call this once at page load. Returns the count cancelled. */
+export const cancelSidecarTasksByProgram = (program: string) =>
+  call<number>("cancel_sidecar_tasks_by_program", { program });
+
 /** Subscribe to a running task's event channel directly (no React). Callers
  *  own the returned unlisten fn. */
 export const listenSidecarStream = (

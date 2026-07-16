@@ -317,12 +317,12 @@ pub(crate) async fn run_streaming_sidecar<S: SidecarEventSink>(
 /// once the task's terminal event has been emitted.
 #[derive(Default)]
 pub struct SidecarStreamRegistry {
-    tasks: TokioMutex<HashMap<String, mpsc::UnboundedSender<ControlMsg>>>,
+    tasks: TokioMutex<HashMap<String, (String, mpsc::UnboundedSender<ControlMsg>)>>,
 }
 
 impl SidecarStreamRegistry {
-    async fn insert(&self, task_id: String, tx: mpsc::UnboundedSender<ControlMsg>) {
-        self.tasks.lock().await.insert(task_id, tx);
+    async fn insert(&self, task_id: String, program: String, tx: mpsc::UnboundedSender<ControlMsg>) {
+        self.tasks.lock().await.insert(task_id, (program, tx));
     }
 
     async fn remove(&self, task_id: &str) {
@@ -333,11 +333,30 @@ impl SidecarStreamRegistry {
     /// handed to its control channel (task may still race an exit before it
     /// is processed — callers should treat `false` as "already gone").
     async fn send(&self, task_id: &str, msg: ControlMsg) -> bool {
-        let tx = self.tasks.lock().await.get(task_id).cloned();
+        let tx = self.tasks.lock().await.get(task_id).map(|(_, tx)| tx.clone());
         match tx {
             Some(tx) => tx.send(msg).is_ok(),
             None => false,
         }
+    }
+
+    /// Cancel every running task spawned from `program`. Sweep for orphans: a
+    /// webview reload loses all frontend task handles, so tasks from the
+    /// previous page generation keep running (and e.g. keep a DeckLink device
+    /// exclusively open) with no one able to cancel them. Returns the number
+    /// of tasks a cancel was delivered to.
+    async fn cancel_by_program(&self, program: &str) -> u32 {
+        let txs: Vec<_> = self
+            .tasks
+            .lock()
+            .await
+            .values()
+            .filter(|(p, _)| p == program)
+            .map(|(_, tx)| tx.clone())
+            .collect();
+        txs.into_iter()
+            .filter(|tx| tx.send(ControlMsg::Cancel).is_ok())
+            .count() as u32
     }
 }
 
@@ -373,7 +392,7 @@ pub async fn spawn_sidecar_streaming(
     let channel = format!("sidecar://{task_id}");
 
     let (control_tx, control_rx) = mpsc::unbounded_channel();
-    registry.insert(task_id.clone(), control_tx).await;
+    registry.insert(task_id.clone(), name.clone(), control_tx).await;
 
     let mut cmd = Command::from(sidecar_command(exe));
     cmd.args(&args);
@@ -414,6 +433,16 @@ pub async fn sidecar_stdin_write(
 /// Request cancellation of a running streaming task: stdin is closed
 /// immediately, and the child is force-killed if it hasn't exited within the
 /// grace window. Returns `false` if `task_id` is unknown (already exited).
+/// Cancel all running streaming tasks of one sidecar program (orphan sweep —
+/// called by the frontend on page load; see `cancel_by_program`).
+#[tauri::command]
+pub async fn cancel_sidecar_tasks_by_program(
+    registry: State<'_, SidecarStreamRegistry>,
+    program: String,
+) -> VoloResult<u32> {
+    Ok(registry.cancel_by_program(&program).await)
+}
+
 #[tauri::command]
 pub async fn cancel_sidecar_task(
     registry: State<'_, SidecarStreamRegistry>,
