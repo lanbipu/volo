@@ -205,6 +205,7 @@ mod tests {
             cabinet_count: [4, 2],
             cabinet_size_mm: [500.0, 500.0],
             pixels_per_cabinet: Some([256, 256]),
+            output_topology: None,
             shape_prior: dto::ShapePriorConfig::Flat,
             shape_mode: dto::ShapeMode::Rectangle,
             irregular_mask: vec![],

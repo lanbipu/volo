@@ -1,0 +1,117 @@
+{
+  "nDisplay": {
+    "description": "Volo two-node nDisplay output spike",
+    "version": "5.00",
+    "assetPath": "/Game/VoloOutput/BP_VoloOutput.BP_VoloOutput",
+    "misc": {
+      "bFollowLocalPlayerCamera": false,
+      "bExitOnEsc": true,
+      "bOverrideViewportsFromExternalConfig": false
+    },
+    "scene": {
+      "cameras": {
+        "DefaultViewPoint": {
+          "interpupillaryDistance": 6.4,
+          "swapEyes": false,
+          "stereoOffset": "none",
+          "parentId": "",
+          "location": {"x": -80, "y": 0, "z": 10},
+          "rotation": {"pitch": 0, "yaw": 0, "roll": 0}
+        }
+      },
+      "screens": {
+        "VoloScreen": {
+          "size": {"width": 200, "height": 100},
+          "parentId": "",
+          "location": {"x": 100, "y": -100, "z": 50},
+          "rotation": {"pitch": 0, "yaw": 0, "roll": 0}
+        }
+      }
+    },
+    "cluster": {
+      "primaryNode": {
+        "id": "RazerNode",
+        "ports": {
+          "ClusterSync": 41001,
+          "ClusterEventsJson": 41003,
+          "ClusterEventsBinary": 41004
+        }
+      },
+      "sync": {
+        "renderSyncPolicy": {"type": "none", "parameters": {}},
+        "inputSyncPolicy": {"type": "ReplicatePrimary", "parameters": {}}
+      },
+      "network": {
+        "ConnectRetriesAmount": "300",
+        "ConnectRetryDelay": "1000",
+        "GameStartBarrierTimeout": "180000",
+        "FrameStartBarrierTimeout": "60000",
+        "FrameEndBarrierTimeout": "60000",
+        "RenderSyncBarrierTimeout": "60000"
+      },
+      "failover": {"failoverPolicy": "Disabled"},
+      "nodes": {
+        "RazerNode": {
+          "host": "192.168.10.173",
+          "sound": false,
+          "fullScreen": false,
+          "window": {"x": 40, "y": 40, "w": 800, "h": 600},
+          "postprocess": {},
+          "viewports": {
+            "RazerViewport": {
+              "camera": "",
+              "bufferRatio": 1,
+              "gPUIndex": -1,
+              "allowCrossGPUTransfer": false,
+              "isShared": false,
+              "region": {"x": 0, "y": 0, "w": 800, "h": 600},
+              "projectionPolicy": {
+                "type": "simple",
+                "parameters": {"screen": "VoloScreen"}
+              }
+            }
+          },
+          "outputRemap": {
+            "bEnable": false,
+            "dataSource": "mesh",
+            "staticMeshAsset": "",
+            "externalFile": ""
+          }
+        },
+        "LanNode": {
+          "host": "192.168.10.20",
+          "sound": false,
+          "fullScreen": false,
+          "window": {"x": 40, "y": 40, "w": 800, "h": 600},
+          "postprocess": {},
+          "viewports": {
+            "LanViewport": {
+              "camera": "",
+              "bufferRatio": 1,
+              "gPUIndex": -1,
+              "allowCrossGPUTransfer": false,
+              "isShared": false,
+              "region": {"x": 0, "y": 0, "w": 800, "h": 600},
+              "projectionPolicy": {
+                "type": "simple",
+                "parameters": {"screen": "VoloScreen"}
+              }
+            }
+          },
+          "outputRemap": {
+            "bEnable": false,
+            "dataSource": "mesh",
+            "staticMeshAsset": "",
+            "externalFile": ""
+          }
+        }
+      }
+    },
+    "customParameters": {},
+    "diagnostics": {
+      "simulateLag": false,
+      "minLagTime": 0.01,
+      "maxLagTime": 0.3
+    }
+  }
+}

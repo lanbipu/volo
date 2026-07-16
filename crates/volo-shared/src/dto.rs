@@ -40,6 +40,8 @@ pub struct ScreenConfig {
     pub cabinet_size_mm: [f64; 2],
     #[serde(default)]
     pub pixels_per_cabinet: Option<[u32; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_topology: Option<OutputTopology>,
     pub shape_prior: ShapePriorConfig,
     pub shape_mode: ShapeMode,
     #[serde(default)]
@@ -68,6 +70,27 @@ pub struct ScreenConfig {
     /// the world-space origin. Legacy projects default to false.
     #[serde(default)]
     pub origin_aligned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+pub struct OutputTopology {
+    pub nodes: Vec<OutputNode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+pub struct OutputNode {
+    pub node_id: String,
+    pub machine: MachineRef,
+    pub viewport_rect_px: [u32; 4],
+    pub window_px: [u32; 2],
+    pub fullscreen: bool,
+    pub primary: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+pub struct MachineRef {
+    pub hostname: String,
+    pub ip: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -631,6 +654,7 @@ shape_mode: rectangle
         assert_eq!(cfg.position_m, [0.0, 0.0, 0.0]);
         assert_eq!(cfg.yaw_deg, 0.0);
         assert!(!cfg.origin_aligned);
+        assert!(cfg.output_topology.is_none());
     }
 
     #[test]

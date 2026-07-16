@@ -50,3 +50,6 @@ volo-dev.pid
 .claude/settings.json
 scripts/keyer/testset/
 testdata/
+!crates/mesh-app/testdata/
+!crates/mesh-app/testdata/ndisplay/
+!crates/mesh-app/testdata/ndisplay/golden-ue58-two-node.ndisplay
