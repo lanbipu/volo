@@ -120,6 +120,8 @@
 .vs-preview { position: relative; aspect-ratio: 16 / 9; border-radius: 11px; overflow: hidden; background: #0c0d11;
   border: 1px solid var(--chrome-line-2); margin-top: 8px; }
 .vs-preview svg.vs-frame { display: block; width: 100%; height: 100%; }
+/* 实时监看 <img>：原生分辨率流按完整画幅缩放显示（禁止裁切），非 16:9 信号加黑边 */
+.vs-preview img.vs-frame { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }
 .vs-preview.state-nosignal, .vs-preview.state-waiting { background: #08090c; }
 .vs-badge { position: absolute; left: 10px; top: 10px; z-index: 2; }
 .vs-badge .cap-pill { box-shadow: 0 1px 6px rgba(0,0,0,.45); backdrop-filter: blur(3px); }
