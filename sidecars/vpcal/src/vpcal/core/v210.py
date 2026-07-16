@@ -54,6 +54,52 @@ def v210_to_gray16(data: bytes | np.ndarray, width: int, height: int,
     return (gray << 6).astype(np.uint16)
 
 
+def v210_to_bgr16(data: bytes | np.ndarray, width: int, height: int,
+                  row_bytes: int | None = None) -> np.ndarray:
+    """Decode a full v210 buffer to BGR uint16 (left-aligned, BT.709 video range).
+
+    Preview/monitor path only — the calibration chain keeps using the luma
+    plane from :func:`v210_to_gray16`. Chroma is 4:2:2 and upsampled by
+    nearest-neighbour (each Cb/Cr pair covers two pixels), which is exact
+    enough for a monitor feed. 10-bit values are shifted left by 6 so the
+    result matches the gray16 left-aligned convention.
+    """
+    stride = row_bytes if row_bytes is not None else v210_row_bytes(width)
+    if stride % 16 != 0:
+        raise ValueError(f"v210 row_bytes must be a multiple of 16, got {stride}")
+    buf = np.frombuffer(data, dtype=np.uint8, count=stride * height)
+    words = buf.reshape(height, stride // 4, 4).view(np.uint32).reshape(height, stride // 4)
+    if words.shape[1] % 4 != 0:
+        raise ValueError("v210 row does not contain a whole number of 4-word groups")
+    groups = words.reshape(height, -1, 4)  # (h, n_groups, 4 words)
+    n = groups.shape[1]
+    y = np.empty((height, n, 6), dtype=np.uint16)
+    y[:, :, 0] = (groups[:, :, 0] >> 10) & 0x3FF
+    y[:, :, 1] = groups[:, :, 1] & 0x3FF
+    y[:, :, 2] = (groups[:, :, 1] >> 20) & 0x3FF
+    y[:, :, 3] = (groups[:, :, 2] >> 10) & 0x3FF
+    y[:, :, 4] = groups[:, :, 3] & 0x3FF
+    y[:, :, 5] = (groups[:, :, 3] >> 20) & 0x3FF
+    cb = np.empty((height, n, 3), dtype=np.uint16)
+    cr = np.empty((height, n, 3), dtype=np.uint16)
+    cb[:, :, 0] = groups[:, :, 0] & 0x3FF
+    cr[:, :, 0] = (groups[:, :, 0] >> 20) & 0x3FF
+    cb[:, :, 1] = (groups[:, :, 1] >> 10) & 0x3FF
+    cr[:, :, 1] = groups[:, :, 2] & 0x3FF
+    cb[:, :, 2] = (groups[:, :, 2] >> 20) & 0x3FF
+    cr[:, :, 2] = (groups[:, :, 3] >> 10) & 0x3FF
+    yf = y.reshape(height, -1)[:, :width].astype(np.float32) - 64.0
+    cbf = np.repeat(cb.reshape(height, -1), 2, axis=1)[:, :width].astype(np.float32) - 512.0
+    crf = np.repeat(cr.reshape(height, -1), 2, axis=1)[:, :width].astype(np.float32) - 512.0
+    # BT.709 video-range YCbCr → R'G'B' (coefficients scaled for 10-bit range).
+    r = 1.1644 * yf + 1.7927 * crf
+    g = 1.1644 * yf - 0.2132 * cbf - 0.5329 * crf
+    b = 1.1644 * yf + 2.1124 * cbf
+    bgr = np.stack([b, g, r], axis=-1)
+    np.clip(bgr, 0.0, 1023.0, out=bgr)
+    return bgr.astype(np.uint16) << 6
+
+
 def gray10_to_v210(gray10: np.ndarray) -> bytes:
     """Pack a 10-bit luma plane into a v210 buffer (chroma = neutral 512).
 
@@ -108,4 +154,5 @@ def parse_bcd_timecode(bcd: int) -> str:
     return f"{hh:02d}:{mm:02d}:{ss:02d}{sep}{ff:02d}"
 
 
-__all__ = ["v210_row_bytes", "v210_to_gray16", "gray10_to_v210", "parse_bcd_timecode"]
+__all__ = ["v210_row_bytes", "v210_to_gray16", "v210_to_bgr16", "gray10_to_v210",
+           "parse_bcd_timecode"]

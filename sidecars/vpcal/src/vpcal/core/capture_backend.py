@@ -532,8 +532,12 @@ class DecklinkBackend:
     def frames(self) -> Iterator[CapturedFrame]:
         if self._impl is None or self._config is None:
             raise PreconditionError("decklink backend not opened")
-        from vpcal.core.v210 import v210_to_gray16
+        from vpcal.core.ndi import uyvy_to_bgr
+        from vpcal.core.v210 import v210_to_bgr16, v210_to_gray16
 
+        # Colour decode is monitor-only (preview sink) — the calibration chain
+        # consumes luma; skip the extra full-frame YCbCr→BGR work otherwise.
+        want_bgr = bool(self._config.extra.get("want_bgr"))
         idx = 0
         misses = 0
         seen_first = False
@@ -568,12 +572,17 @@ class DecklinkBackend:
                 recv_ts = float(monotonic_origin + hardware_time_s - hardware_origin)
             else:
                 recv_ts = dequeue_ts
+            bgr = None
             if raw.pixel_format == "v210":
                 gray = v210_to_gray16(raw.data, raw.width, raw.height, raw.row_bytes)
+                if want_bgr:
+                    bgr = v210_to_bgr16(raw.data, raw.width, raw.height, raw.row_bytes)
             elif raw.pixel_format == "uyvy":
                 # 8-bit UYVY: luma is every second byte starting at offset 1.
                 buf = np.frombuffer(raw.data, dtype=np.uint8)
                 gray = buf.reshape(raw.height, raw.row_bytes)[:, 1:raw.width * 2:2].copy()
+                if want_bgr:
+                    bgr = uyvy_to_bgr(raw.data, raw.width, raw.height, raw.row_bytes)
             else:
                 # r210 (RGB444) / unknown: the calibration chain only unpacks
                 # YCbCr. An RGB signal (common on HDMI from laptops/players)
@@ -588,6 +597,7 @@ class DecklinkBackend:
             meta = {
                 "backend": "decklink",
                 "pixel_format": raw.pixel_format,
+                "bit_depth": 10 if raw.pixel_format == "v210" else 8,
                 "transfer_function": self._config.transfer_function,
             }
             # Only surface a real detected rate — the C++ shim reports 0.0 until
@@ -601,6 +611,7 @@ class DecklinkBackend:
                 hardware_time_s=hardware_time_s if hardware_time_s > 0 else None,
                 timecode=raw.timecode or None,
                 frame_index=idx,
+                bgr=bgr,
                 meta=meta,
             )
             idx += 1

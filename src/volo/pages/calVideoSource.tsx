@@ -2,7 +2,6 @@
 import {
   enumerateVideoSources,
   parseSidecarError,
-  probeVideoSource,
 } from "../api/captureProfiles";
 import {
   cancelSidecarTask,
@@ -105,7 +104,6 @@ import {
     const [sigErr, setSigErr] = useState(null);          /* 无信号时的真实后端报错文案 */
     const [liveTask, setLiveTask] = useState(null);      /* 常驻监看流 task_id */
     const [liveUrl, setLiveUrl] = useState(null);        /* MJPEG 流地址（preview_ready） */
-    const [previewUrl, setPreviewUrl] = useState(null);  /* DeckLink 一次性探测的静态帧 */
     const [ndiSrcs, setNdiSrcs] = useState([]);
     const [ndiAvail, setNdiAvail] = useState('unknown'); /* unknown | ok | missing */
     const [ndiError, setNdiError] = useState(null);
@@ -150,7 +148,7 @@ import {
        <img> 直接消费其 localhost MJPEG 流。切源/切 backend/卸载时取消旧任务。 */
     const startMonitor = async (device) => {
       if (liveTaskRef.current) void cancelSidecarTask(liveTaskRef.current);
-      setSig('waiting'); setLiveUrl(null); setNdiFmt(null); setSigErr(null);
+      setSig('waiting'); setLiveUrl(null); setNdiFmt(null); setDlFmt(null); setSigErr(null);
       const manualFmt = fmtMode === 'manual';
       const args = ['capture', 'video', '--backend', backend, '--device', device,
         '--allow-hx', '--preview-port', '0', '--duration', '0', '--output', 'json'];
@@ -180,16 +178,27 @@ import {
       if (preview && preview.mjpeg_url) setLiveUrl(preview.mjpeg_url);
       const info = [...parsed].reverse().find((p) => p.type === 'source_info');
       if (info) {
-        setNdiFmt({
-          w: info.width, h: info.height,
-          fps: info.fps == null ? '—' : Number(info.fps).toFixed(2),
-          pix: (info.fourcc || 'Unknown') + ' ' + info.bit_depth + '-bit',
-          tf: (info.transfer_function || form.transferFunction || 'sdr').toUpperCase(),
-          is_hx: !!info.is_hx,
-        });
+        const tf = (info.transfer_function || form.transferFunction || 'sdr').toUpperCase();
+        const fps = info.fps == null ? '—' : Number(info.fps).toFixed(2);
+        if (backend === 'decklink') {
+          const pf = info.pixel_format;
+          setDlFmt({
+            w: info.width, h: info.height, fps,
+            pix: pf === 'v210' ? 'v210 10-bit' : pf === 'uyvy' ? 'UYVY 8-bit'
+              : pf ? pf : (info.bit_depth + '-bit'),
+            tf,
+          });
+        } else {
+          setNdiFmt({
+            w: info.width, h: info.height, fps,
+            pix: (info.fourcc || 'Unknown') + ' ' + info.bit_depth + '-bit',
+            tf,
+            is_hx: !!info.is_hx,
+          });
+        }
         setSig(info.is_hx ? 'hx' : 'ok');
       }
-    }, [liveStream.state.lines]);
+    }, [liveStream.state.lines, backend]);
 
     /* 进程退出：cancel 触发的静默；fatal 时从流里取最后一条 error 事件报错。 */
     useEffect(() => {
@@ -212,7 +221,7 @@ import {
     /* backend 切换：拆掉当前监看流。卸载时同样取消（读 ref 避免 stale）。 */
     useEffect(() => {
       if (liveTaskRef.current) { void cancelSidecarTask(liveTaskRef.current); setLiveTask(null); }
-      setLiveUrl(null); setPreviewUrl(null); setSigErr(null);
+      setLiveUrl(null); setSigErr(null);
     }, [backend]);
     useEffect(() => () => { if (liveTaskRef.current) void cancelSidecarTask(liveTaskRef.current); }, []);
 
@@ -273,14 +282,14 @@ import {
         const sel = dlSelRef.current;
         const card = sel.card != null ? devs.find((d) => String(d.index) === sel.card) : null;
         if (sel.card != null && !card) {
-          setDlCard(null); setDlLine(null); setDlFmt(null); setPreviewUrl(null);
+          setDlCard(null); setDlLine(null); setDlFmt(null);
         }
       } catch (error) {
         const parsed = parseSidecarError(error);
         setDlError(parsed);
         if (parsed.details && parsed.details.missing) setDlAvail('missing');
         else setDlAvail('ok');
-        setDlDevs([]); setEnumSt('empty'); setPreviewUrl(null);
+        setDlDevs([]); setEnumSt('empty');
       }
     };
 
@@ -289,51 +298,6 @@ import {
       if (backend === 'ndi' && ndiAvail === 'unknown') void discoverNdi();
       if (backend === 'decklink' && dlAvail === 'unknown') void discoverDecklink();
     }, [backend, ndiAvail, dlAvail]);
-
-    const refresh = async (deviceOverride) => {
-      if (backend === 'synthetic') return;
-      setEnumSt('loading'); setSig('waiting');
-      try {
-        const manualFmt = fmtMode === 'manual';
-        const r = await probeVideoSource({ backend, device: typeof deviceOverride === 'string' ? deviceOverride : (form.device || '0'),
-          width: manualFmt && form.width ? Number(form.width) : null,
-          height: manualFmt && form.height ? Number(form.height) : null,
-          fps: manualFmt && form.fps ? Number(form.fps) : null,
-          transferFunction: form.transferFunction || 'sdr' });
-        if (backend === 'ndi' && r.source) {
-          setNdiFmt({
-            w: r.source.width, h: r.source.height,
-            fps: r.source.fps == null ? '—' : Number(r.source.fps).toFixed(2),
-            pix: (r.source.fourcc || 'Unknown') + ' ' + r.source.bit_depth + '-bit',
-            tf: (r.source.transfer_function || form.transferFunction || 'sdr').toUpperCase(),
-            is_hx: !!r.source.is_hx,
-          });
-        }
-        if (backend === 'decklink' && r.source) {
-          const pf = r.source.pixel_format;
-          const pixLabel = pf === 'v210' ? 'v210 10-bit'
-            : pf === 'uyvy' ? 'UYVY 8-bit'
-            : pf ? pf : (r.source.bit_depth + '-bit');
-          setDlFmt({
-            w: r.source.width, h: r.source.height,
-            fps: r.source.fps == null ? '—' : Number(r.source.fps).toFixed(2),
-            pix: pixLabel,
-            tf: (r.source.transfer_function || form.transferFunction || 'sdr').toUpperCase(),
-          });
-        }
-        // DeckLink keeps the one-shot probe + static preview frame; NDI/UVC use
-        // the persistent MJPEG monitor (liveUrl). The render falls back to this
-        // previewUrl when no live stream is running.
-        setPreviewUrl(r.preview_data_url || null); setEnumSt('ready');
-        setSig(r.frames > 0 ? (r.source && r.source.is_hx ? 'hx' : 'ok') : 'nosignal');
-      } catch (error) {
-        const parsed = parseSidecarError(error);
-        if (backend === 'ndi' && parsed.details && parsed.details.missing) {
-          setNdiAvail('missing'); setNdiError(parsed);
-        }
-        setEnumSt('ready'); setSig('nosignal');
-      }
-    };
 
     /* 当前选中设备的 fmt（信号信息条来源） */
     const curFmt = (() => {
@@ -393,14 +357,14 @@ import {
         const pickCard = (id) => {
           const dev = dlDevs.find((x) => String(x.index) === id);
           const cs = (dev && dev.connectors) || [];
-          setDlCard(id); setDlFmt(null); setPreviewUrl(null);
+          setDlCard(id); setDlFmt(null);
           if (cs.length === 1) {
             const only = cs[0].id; const d = id + ':' + only;
-            setDlLine(only); set('device', d); refresh(d);
+            setDlLine(only); set('device', d); void startMonitor(d);
           } else {
             setDlLine(null);
-            /* 无 connector 信息（少见）：仍可仅按 index 探测 */
-            if (cs.length === 0) { set('device', id); refresh(id); }
+            /* 无 connector 信息（少见）：仍可仅按 index 起监看 */
+            if (cs.length === 0) { set('device', id); void startMonitor(id); }
           }
         };
         selector = h('div', { className: 'vs-two' },
@@ -422,7 +386,7 @@ import {
               value: (() => { const l = conns.find((x) => x.id === dlLine); return l ? h('span', { className: 'nm' }, l.name) : null; })(),
               options: conns.map((l) => ({ id: l.id, node: h('div', { className: 'vs-opt-meta' },
                 h('div', { className: 'vs-opt-n' }, l.name), h('div', { className: 'vs-opt-s' }, l.id)) })),
-              selId: dlLine, onPick: (id) => { const dev = dlCard + ':' + id; setDlLine(id); setDlFmt(null); set('device', dev); refresh(dev); },
+              selId: dlLine, onPick: (id) => { const dev = dlCard + ':' + id; setDlLine(id); setDlFmt(null); set('device', dev); void startMonitor(dev); },
             })));
       } else if (backend === 'uvc') {
         const d = uvcDevs.find((x) => x.id === uvcSel);
@@ -470,7 +434,7 @@ import {
         h('div', { className: 'vs-preview state-' + effSig },
           h('div', { className: 'vs-badge' }, h(StatusPill, { st: effSig })),
           (effSig === 'ok' || effSig === 'hx') ? h('span', { className: 'vs-livedot' }, h('i', null), 'LIVE') : null,
-          (liveUrl || previewUrl) ? h('img', { className: 'vs-frame', src: liveUrl || previewUrl, alt: liveUrl ? '视频源实时监看帧' : '视频源探测帧' }) : h(Frame, { state: effSig === 'hx' ? 'ok' : effSig }),
+          liveUrl ? h('img', { className: 'vs-frame', src: liveUrl, alt: '视频源实时监看帧' }) : h(Frame, { state: effSig === 'hx' ? 'ok' : effSig }),
           effSig === 'waiting' ? h('div', { className: 'vs-preview-mid' }, h('span', { className: 'ring' }), h('span', { className: 'msg' }, '等待首帧…')) : null,
           effSig === 'nosignal' ? h('div', { className: 'vs-preview-mid' }, h(Icon, { name: 'alert', size: 26, style: { color: 'color-mix(in srgb, var(--negative-visual) 80%, #fff)' } }), h('span', { className: 'msg neg' }, '设备无法打开 / 断流')) : null,
           effSig === 'frozen' ? h('span', { className: 'vs-frozen-tag' }, '最后一帧 · 已 4.2s 未更新') : null),

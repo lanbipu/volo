@@ -42,7 +42,7 @@ class PreviewSink:
     number appears.  Slow consumers skip frames (latest-wins), never queue.
     """
 
-    def __init__(self, max_width: int = 1920, jpeg_quality: int = 80) -> None:
+    def __init__(self, max_width: int | None = 1920, jpeg_quality: int = 80) -> None:
         self.max_width = max_width
         self.jpeg_quality = jpeg_quality
         self._cond = threading.Condition()
@@ -58,7 +58,7 @@ class PreviewSink:
         img = frame
         if img.dtype == np.uint16:  # preview is 8-bit; keep top bits
             img = (img >> 8).astype(np.uint8)
-        if img.shape[1] > self.max_width:
+        if self.max_width is not None and img.shape[1] > self.max_width:
             scale = self.max_width / img.shape[1]
             img = cv2.resize(img, (self.max_width, max(1, round(img.shape[0] * scale))),
                              interpolation=cv2.INTER_AREA)
