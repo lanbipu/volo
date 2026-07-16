@@ -78,6 +78,7 @@ class SessionCaptureConfig:
     track_protocol: str = "freed"
     track_port: int = 6301
     track_host: str = "0.0.0.0"
+    track_camera_id: str | None = None
     poses_target: int = 8              # 0 = unlimited (stop via control command)
     settle_speed_mm_s: float = 5.0     # below ⇒ settling
     settle_ang_speed_deg_s: float = 0.2
@@ -114,7 +115,8 @@ class CaptureSessionRunner:
         self.backend = backend
         self.emit = emit
         self.listener = listener or TrackingListener(
-            config.track_port, protocol=config.track_protocol, host=config.track_host)
+            config.track_port, protocol=config.track_protocol, host=config.track_host,
+            camera_id=config.track_camera_id)
         self._own_listener = listener is None
         self._control: queue.Queue[dict] = queue.Queue()
         self._poses: list[_PoseRecord] = []
@@ -311,9 +313,14 @@ class CaptureSessionRunner:
             for cmd in self._drain_control():
                 if cmd.get("cmd") == "pattern_ready" and cmd.get("pattern") == pattern:
                     acked = True
-                elif cmd.get("cmd") == "stop":
+                elif cmd.get("cmd") in {"stop", "finish", "skip_pose"}:
                     self._control.put(cmd)  # re-queue for the main loop
                     return frame, False
+                else:
+                    # Commands owned by the outer state machine must survive a
+                    # nested pattern wait.  In particular, dropping ``finish``
+                    # here can strand the session in WAIT_MOVE indefinitely.
+                    self._control.put(cmd)
             if acked and not self.cfg.graycode_sync:
                 return frame, True
             if self.cfg.graycode_sync:
@@ -339,15 +346,24 @@ class CaptureSessionRunner:
         index = len(self._poses) + 1
         t_pose0 = time.monotonic()
 
-        avg_n, t0, normal_t1, timecode = self._burst(frames_iter, current_frame)
+        normal_frame, normal_ok = self._wait_pattern(frames_iter, "normal")
+        if not normal_ok or normal_frame is None:
+            self.emit("pose_rejected", {"pose_index": index,
+                                         "reason": "normal_pattern_not_confirmed"})
+            return
+        avg_n, t0, normal_t1, timecode = self._burst(frames_iter, normal_frame)
         t1 = normal_t1
         avg_i = None
         inverted_window = None
         if cfg.inverted:
             frame, ok = self._wait_pattern(frames_iter, "inverted")
-            if ok and frame is not None:
-                avg_i, ti0, t1, _tc = self._burst(frames_iter, frame)
-                inverted_window = (ti0, t1)
+            if not ok or frame is None:
+                self.emit("pose_rejected", {"pose_index": index,
+                                             "reason": "inverted_pattern_not_confirmed"})
+                self.emit("request_pattern", {"pattern": "normal"})
+                return
+            avg_i, ti0, t1, _tc = self._burst(frames_iter, frame)
+            inverted_window = (ti0, t1)
             # Switch playback back for the next pose (ack awaited next round).
             self.emit("request_pattern", {"pattern": "normal"})
 
@@ -427,8 +443,15 @@ class CaptureSessionRunner:
             if detections else 0.0,
         })
         self.emit("coverage_update", self._coverage_summary())
-        self._timings["poses"].append({"pose": index,
-                                       "duration_s": round(time.monotonic() - t_pose0, 3)})
+        self._timings["poses"].append({
+            "pose": index,
+            "duration_s": round(time.monotonic() - t_pose0, 3),
+            # These are computed from continuous samples in this capture
+            # window.  Offline validation must never infer staticity from the
+            # one-mean-pose-per-image tracking artifact.
+            "translation_p2p_mm": motion["translation_p2p_mm"],
+            "rotation_p2p_deg": motion["rotation_p2p_deg"],
+        })
 
     @staticmethod
     def _pose_delta(a: TrackingFrame, b: TrackingFrame) -> dict[str, float]:
@@ -451,11 +474,31 @@ class CaptureSessionRunner:
     # ── coverage feedback ────────────────────────────────────────────
 
     def _coverage_summary(self) -> dict[str, Any]:
+        from vpcal.core.observations import Observation
+        from vpcal.core.projection import CameraIntrinsics
+        from vpcal.qa.coverage import _pose_distribution, _sensor_coverage
+        from vpcal.qa.observability import edge_obs_fraction
+
         w, h = self._frame_size or (1, 1)
+        observations = [Observation(
+            pixel_u=d.pixel_u, pixel_v=d.pixel_v, world_rh=(0.0, 0.0, 0.0),
+            track_q=(1.0, 0.0, 0.0, 0.0), track_t=(0.0, 0.0, 0.0),
+            frame_id=d.frame_id, marker_id=d.marker_id,
+        ) for d in self._all_detections]
+        intr = CameraIntrinsics(fx=1.0, fy=1.0, cx=w / 2.0, cy=h / 2.0,
+                                width=w, height=h)
+        if self.cfg.lens_path is not None:
+            from vpcal.models.lens import LensProfile
+
+            lens = LensProfile.model_validate_json(
+                Path(self.cfg.lens_path).read_text(encoding="utf-8"))
+            intr = CameraIntrinsics.from_lens(lens)
+        sensor = _sensor_coverage(observations, intr)
+        regions = sensor["regions"]
         grid = np.zeros((3, 3), dtype=bool)
-        for d in self._all_detections:
-            c = min(2, max(0, int(d.pixel_u / w * 3)))
-            r = min(2, max(0, int(d.pixel_v / h * 3)))
+        for o in observations:
+            c = min(2, max(0, int(o.pixel_u / intr.image_size[0] * 3)))
+            r = min(2, max(0, int(o.pixel_v / intr.image_size[1] * 3)))
             grid[r, c] = True
         missing = [_SENSOR_REGION_NAMES[(r, c)] for r in range(3) for c in range(3)
                    if not grid[r, c]]
@@ -471,20 +514,17 @@ class CaptureSessionRunner:
         elif not missing:
             suggestions.append("覆盖达标，可以求解")
         from vpcal.core.coordinates import rotation_to_source_matrix
-        rotations = [rotation_to_source_matrix(p.tracking.rotation.order.value,
-                                                p.tracking.rotation.values)
-                     for p in self._poses]
-        angular_spread = 0.0
-        if len(rotations) > 1:
-            angular_spread = max(float(np.degrees(np.arccos(np.clip(
-                (np.trace(a.T @ b) - 1.0) / 2.0, -1, 1))))
-                for a in rotations for b in rotations)
-        radii = [np.hypot(d.pixel_u - w / 2.0, d.pixel_v - h / 2.0)
-                 for d in self._all_detections]
-        edge_fraction = (float(np.mean(np.asarray(radii) > 0.35 * np.hypot(w, h)))
-                         if radii else 0.0)
-        corners_present = all(grid[r, c] for r, c in ((0, 0), (0, 2), (2, 0), (2, 2)))
-        center_present = bool(grid[1, 1])
+        tracker_poses = []
+        for p in self._poses:
+            R = rotation_to_source_matrix(p.tracking.rotation.order.value,
+                                          p.tracking.rotation.values)
+            from vpcal.core.transforms import matrix_to_quat
+            tracker_poses.append((matrix_to_quat(R), np.asarray(p.tracking.position)))
+        angular_spread = _pose_distribution(tracker_poses)["angular_spread_deg"]
+        edge_fraction = edge_obs_fraction(observations, intr, 0.35)
+        corners_present = all(regions[k] for k in
+                              ("top_left", "top_right", "bottom_left", "bottom_right"))
+        center_present = regions["center"]
         checks = [
             ("angular_spread", "Angular spread", angular_spread >= 30.0,
              round(angular_spread, 2), 30.0, "补拍朝向差异更大的机位"),
@@ -504,7 +544,7 @@ class CaptureSessionRunner:
                      for k, label, ok, value, target, hint in checks]
         return {
             "poses_captured": len(self._poses),
-            "sensor_coverage_pct": round(float(grid.sum() / 9.0), 3),
+            "sensor_coverage_pct": round(float(sensor["percentage"]), 3),
             "sensor_missing_regions": missing,
             "screen_markers_seen": len(self._seen_marker_ids),
             "screen_markers_total": self._total_markers,

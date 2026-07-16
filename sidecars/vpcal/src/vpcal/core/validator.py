@@ -192,27 +192,26 @@ def validate_session(
                 f"large frame-to-frame position jumps detected (max {jumps.max():.0f} mm)"
             )
 
-    # Static-capture timing immunity is valid only when adjacent tracking
-    # samples prove negligible motion over the configured delay uncertainty.
+    # Static-capture timing immunity is valid only when continuous samples from
+    # each *capture window* prove negligible motion.  poses.jsonl contains one
+    # mean pose per image, so adjacent records describe intentional moves
+    # between poses and must never be used for this estimate.
     staticity = {"status": "unverifiable"}
-    if len(frames) > 2:
-        times = np.asarray([f.timestamp_s for f in frames], dtype=float)
-        dt = np.diff(times)
-        valid = np.isfinite(dt) & (dt > 1.0e-6)
-        if np.count_nonzero(valid) >= max(2, len(dt) // 2):
-            linear = np.linalg.norm(np.diff(positions, axis=0), axis=1)[valid] / dt[valid]
-            static_poses = to_internal_poses(
-                frames, session.tracking.coordinate_system,
-                session.tracking.custom_transform,
-            )
-            quats = np.asarray([static_poses[f.frame_id][0] for f in frames], dtype=float)
-            quats /= np.linalg.norm(quats, axis=1, keepdims=True).clip(min=1.0e-12)
-            dots = np.clip(np.abs(np.sum(quats[1:] * quats[:-1], axis=1)), 0.0, 1.0)
-            angular = np.degrees(2.0 * np.arccos(dots))[valid] / dt[valid]
-            delay_s = session.solver.timing_delay_bound_ms * 1.0e-3
-            p95_mm = float(np.percentile(linear * delay_s, 95))
-            p95_deg = float(np.percentile(angular * delay_s, 95))
-            status = "verified" if p95_mm <= 1.0 else "warning"
+    capture_meta_path = session_dir / "capture_meta.json"
+    if capture_meta_path.exists():
+        try:
+            capture_meta = _json.loads(capture_meta_path.read_text(encoding="utf-8"))
+            windows = (capture_meta.get("timings") or {}).get("poses") or []
+            trans = [float(w["translation_p2p_mm"]) for w in windows
+                     if w.get("translation_p2p_mm") is not None]
+            rot = [float(w["rotation_p2p_deg"]) for w in windows
+                   if w.get("rotation_p2p_deg") is not None]
+        except (OSError, ValueError, TypeError, KeyError):
+            trans, rot = [], []
+        if trans and rot and len(trans) == len(rot) == len(windows):
+            p95_mm = float(np.percentile(trans, 95))
+            p95_deg = float(np.percentile(rot, 95))
+            status = "verified" if p95_mm <= 1.0 and p95_deg <= 0.1 else "warning"
             staticity = {
                 "status": status,
                 "timing_delay_bound_ms": session.solver.timing_delay_bound_ms,
@@ -221,8 +220,9 @@ def validate_session(
             }
             if status == "warning":
                 warnings.append(
-                    f"capture motion makes timing error non-negligible: p95 bound "
-                    f"{p95_mm:.2f} mm > 1.0 mm"
+                    "capture-window motion makes timing error non-negligible: "
+                    f"p95 {p95_mm:.2f} mm / {p95_deg:.3f} deg "
+                    "(limits 1.0 mm / 0.1 deg)"
                 )
     report["staticity"] = staticity
 

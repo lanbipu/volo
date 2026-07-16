@@ -363,6 +363,22 @@ class TestLensCalibrate:
 
 class TestSpatialSolve:
 
+    def test_ambiguous_ippe_pose_fails_closed(self, tmp_path):
+        from vpcal.core.tracker_free import ScreenPose
+
+        cv2.imwrite(str(tmp_path / "view.png"), np.zeros((IMG_H, IMG_W), np.uint8))
+        scr_a = _screen(width=2000, height=1500, cab_size=1000, mpc=1)
+        scr_b = _screen(width=2000, height=1500, cab_size=1000, mpc=1)
+        obj = np.array([[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.]])
+        img = np.array([[10., 10.], [20., 10.], [20., 20.], [10., 20.]])
+        ambiguous = ScreenPose(rvec=np.zeros((3, 1)), tvec=np.array([[0.], [0.], [10.]]),
+                               ambiguous=True, candidate_error_ratio=1.01)
+        with patch("vpcal.core.tracker_free.detect_markers", return_value=[]), \
+             patch("vpcal.core.tracker_free._match_detections", return_value=(obj, img)), \
+             patch("vpcal.core.tracker_free._solve_pnp", return_value=ambiguous):
+            with pytest.raises(ValueError, match="No images with both screens"):
+                spatial_solve(tmp_path, scr_a, scr_b, _lens_result())
+
     def test_spatial_solve_finds_relative_pose(self, tmp_path):
         scr_a = _screen(width=3000, height=2000, cab_size=1000, mpc=1)
         scr_b = ScreenDefinition(

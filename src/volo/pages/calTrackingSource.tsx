@@ -5,7 +5,8 @@ import { spawnSidecarStreaming, useSidecarStream } from "../api/sidecarStream";
    采集设置 → Profile 追踪源模块。与「视频源」卡片对偶：
    选协议 → 定端口/绑定 → 监听验证数据（监听测试区 ↔ 信号预览区）。
    字段以真实后端为准：protocol(freed|opentrackio) / port(UDP) / host(绑定地址,默认0.0.0.0)
-   / trackCameraId(FreeD 专属过滤,新增)。实时读出值：position(mm) / pan·tilt·roll(度)
+   / trackCameraId(FreeD 专属过滤,新增)。实时读出值：position(mm) / 按 rotation.order
+   如实显示的 Euler 或 quaternion
    / zoom_raw·focus_raw(FreeD 24-bit 原始编码器计数)。不引入这些之外的配置项。 */
 (function () {
   const { useState, useRef, useEffect } = React;
@@ -56,7 +57,9 @@ import { spawnSidecarStreaming, useSidecarStream } from "../api/sidecarStream";
     const latest = monitors[monitors.length - 1] || null;
     const pose = (latest && latest.pose) || {};
     const pos = pose.position || pose.translation || [0, 0, 0];
-    const rot = (pose.rotation && pose.rotation.values) || pose.rotation || pose.euler_deg || [0, 0, 0];
+    const rotation = pose.rotation || {};
+    const rotOrder = rotation.order || (pose.euler_deg ? 'euler_ptr' : null);
+    const rot = rotation.values || pose.euler_deg || [];
     const vals = { x: Number(pos[0] || 0), y: Number(pos[1] || 0), z: Number(pos[2] || 0),
       pan: Number(rot[0] || 0), tilt: Number(rot[1] || 0), roll: Number(rot[2] || 0),
       zoom: pose.zoom_raw ?? latest?.zoom_raw ?? null, focus: pose.focus_raw ?? latest?.focus_raw ?? null };
@@ -169,8 +172,13 @@ import { spawnSidecarStreaming, useSidecarStream } from "../api/sidecarStream";
             h('div', { className: 'ts-grp-h' }, '位置', h('span', { className: 'unit' }, 'mm')),
             h('div', { className: 'ts-row3' }, Val('x', 'X', vals.x.toFixed(1)), Val('y', 'Y', vals.y.toFixed(1)), Val('z', 'Z', vals.z.toFixed(1)))),
           h('div', { className: 'ts-grp' },
-            h('div', { className: 'ts-grp-h' }, '姿态', h('span', { className: 'unit' }, 'deg')),
-            h('div', { className: 'ts-row3' }, Val('pan', 'Pan', vals.pan.toFixed(2)), Val('tilt', 'Tilt', vals.tilt.toFixed(2)), Val('roll', 'Roll', vals.roll.toFixed(2)))),
+            h('div', { className: 'ts-grp-h' }, '姿态', h('span', { className: 'unit' }, rotOrder === 'euler_ptr' ? 'deg · euler_ptr' : rotOrder || 'unknown')),
+            rotOrder === 'euler_ptr'
+              ? h('div', { className: 'ts-row3' }, Val('pan', 'Pan', vals.pan.toFixed(2)), Val('tilt', 'Tilt', vals.tilt.toFixed(2)), Val('roll', 'Roll', vals.roll.toFixed(2)))
+              : (rotOrder === 'quaternion' || rotOrder === 'quaternion_xyzw')
+                ? h('div', { className: 'ts-row3', style: { gridTemplateColumns: 'repeat(4,minmax(0,1fr))' } },
+                    (rotOrder === 'quaternion' ? ['W', 'X', 'Y', 'Z'] : ['X', 'Y', 'Z', 'W']).map((label, i) => Val('q' + i, label, Number(rot[i] || 0).toFixed(5))))
+                : h('div', { className: 'vs-tf-note' }, '当前 rotation order 不适合按 Euler 角展示；原始值未伪装为角度。')),
           h('div', { className: 'ts-grp ts-grp-lens' },
             Val('zoom', 'Zoom', String(vals.zoom ?? '—'), { raw: true, lens: true, dead: vals.zoom == null }),
             Val('focus', 'Focus', String(vals.focus ?? '—'), { raw: true, lens: true, dead: vals.focus == null })));

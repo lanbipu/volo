@@ -318,7 +318,10 @@ def solve(
     pred = _reproject(world_h, _poses_for(sol.x), T_S, T_C, _intr_for(sol.x))
     per_obs = np.nan_to_num(np.linalg.norm(pred - pixels, axis=1), nan=1.0e6, posinf=1.0e6)
     outlier_thresh = max(3.0 * robust_scale, 1e-6)
-    num_outliers = int(np.sum(per_obs > outlier_thresh))
+    # robust_scale is expressed in whitened residual units. Keep the exported
+    # residuals in raw pixels, but classify in the same units as the optimiser
+    # and Ceres ReprojectionCost.
+    num_outliers = int(np.sum((per_obs / sigma[:, 0]) > outlier_thresh))
 
     lens_values = lens_std = lens_corr = None
     lens_corr_available = False

@@ -33,6 +33,18 @@ def test_valid_session_passes(tmp_path):
     report = validate_session(session, tmp_path, raw_session=raw)
     assert report["passed"] is True
     assert report["matched"] >= 3
+    assert report["staticity"]["status"] == "unverifiable"
+
+
+def test_staticity_uses_capture_windows_and_gates_rotation(tmp_path):
+    session, raw = _make_session(tmp_path)
+    poses = [{"pose": i, "translation_p2p_mm": 0.2,
+              "rotation_p2p_deg": 0.15} for i in range(8)]
+    (tmp_path / "capture_meta.json").write_text(json.dumps({"timings": {"poses": poses}}))
+    report = validate_session(session, tmp_path, raw_session=raw)
+    assert report["staticity"]["status"] == "warning"
+    assert report["staticity"]["p95_translation_error_bound_mm"] == pytest.approx(0.2)
+    assert report["staticity"]["p95_rotation_error_bound_deg"] == pytest.approx(0.15)
 
 
 def test_fiz_change_warns_with_frame_interval(tmp_path):

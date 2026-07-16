@@ -40,13 +40,14 @@ class TrackingListener:
     """
 
     def __init__(self, port: int, *, protocol: str = "freed", host: str = "0.0.0.0",
-                 window_s: float = 600.0) -> None:
+                 window_s: float = 600.0, camera_id: str | int | None = None) -> None:
         if protocol not in PROTOCOLS:
             raise ValueError(f"unknown protocol {protocol!r}; expected one of {PROTOCOLS}")
         self.port = port
         self.protocol = protocol
         self.host = host
         self.window_s = window_s
+        self.camera_id = None if camera_id is None else str(camera_id)
         self.t0: float | None = None
         self._samples: deque[tuple[float, TrackingFrame]] = deque()
         self._lock = threading.Lock()
@@ -91,7 +92,6 @@ class TrackingListener:
                 return
             now = time.monotonic()
             self.packets_seen += 1
-            self.last_packet_mono = now
             try:
                 frame = self._decode(data, now)
             except Exception:
@@ -99,11 +99,18 @@ class TrackingListener:
                 continue
             if frame is None:  # OTrk fragment awaiting reassembly
                 continue
+            if not self.accepts_frame(frame):
+                continue
+            self.last_packet_mono = now
             with self._lock:
                 self._samples.append((now, frame))
                 horizon = now - self.window_s
                 while self._samples and self._samples[0][0] < horizon:
                     self._samples.popleft()
+
+    def accepts_frame(self, frame: TrackingFrame) -> bool:
+        """Return whether ``frame`` belongs to the selected tracking camera."""
+        return self.camera_id is None or str(frame.camera_id) == self.camera_id
 
     def _decode(self, data: bytes, now: float) -> TrackingFrame | None:
         assert self.t0 is not None

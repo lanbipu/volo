@@ -163,6 +163,7 @@ import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern,
       if (canInvert) listMonitors().then((ms) => openPatternPlayer(ms.length ? ms[ms.length - 1].index : 0)).catch((e) => setSourceNote('打开图案播放器失败 · ' + (e && e.message ? e.message : e)));
       session.start({ screenPath, outDir, backend: profile.videoBackend, device: profile.device,
         trackProtocol: profile.trackProtocol, trackPort: Number(profile.trackPort), trackHost: profile.trackHost || '0.0.0.0',
+        trackCameraId: profile.trackCameraId,
         poses: Number(profile.poses || 8), inverted: canInvert, graycodeSync: canInvert && !!profile.graycodeSync,
         lensPath: profile.lensPath || '', settleMs: Number(profile.settleMs || 300), burst: Number(profile.burst || 5),
         width: profile.fmtMode === 'manual' ? profile.width : null, height: profile.fmtMode === 'manual' ? profile.height : null,

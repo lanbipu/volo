@@ -68,6 +68,7 @@ export interface CaptureSessionOptions {
   trackProtocol: string;
   trackPort: number;
   trackHost?: string;
+  trackCameraId?: string | number | null;
   poses: number;
   inverted: boolean;
   graycodeSync: boolean;
@@ -100,6 +101,9 @@ export function buildSessionArgs(o: CaptureSessionOptions): string[] {
   if (o.height) args.push("--height", String(o.height));
   if (o.fps) args.push("--fps", String(o.fps));
   if (o.transferFunction) args.push("--transfer-function", o.transferFunction);
+  if (o.trackProtocol === "freed" && o.trackCameraId != null) {
+    args.push("--track-camera-id", String(o.trackCameraId));
+  }
   if (o.inverted) args.push("--inverted");
   if (o.graycodeSync) args.push("--graycode-sync");
   if (o.lensPath) args.push("--lens", o.lensPath);

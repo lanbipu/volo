@@ -384,10 +384,17 @@ def spatial_solve(
             "markers_b": len(obj_b),
             "pose_a": pose_a is not None,
             "pose_b": pose_b is not None,
+            "pose_a_ambiguous": bool(pose_a and pose_a.ambiguous),
+            "pose_b_ambiguous": bool(pose_b and pose_b.ambiguous),
         }
         per_image.append(entry)
 
-        if pose_a is not None and pose_b is not None:
+        # IPPE's two planar solutions can be nearly indistinguishable in a
+        # fronto-parallel view.  Until a cross-image normal consensus selects a
+        # branch, fail closed instead of feeding a possible mirror solution to
+        # the relative-transform average.
+        if (pose_a is not None and pose_b is not None
+                and not pose_a.ambiguous and not pose_b.ambiguous):
             M_a = pose_a.matrix_4x4
             M_b = pose_b.matrix_4x4
             M_rel = np.linalg.inv(M_a) @ M_b
@@ -492,6 +499,10 @@ def verify_pose(
 
     pose_a = _solve_pnp(obj_a, img_a, camera_matrix, dist) if len(obj_a) >= 4 else None
     pose_b = _solve_pnp(obj_b, img_b, camera_matrix, dist) if len(obj_b) >= 4 else None
+    if pose_a is not None and pose_a.ambiguous:
+        pose_a = None
+    if pose_b is not None and pose_b.ambiguous:
+        pose_b = None
 
     return VerifyResult(
         camera_pose_from_a=pose_a,

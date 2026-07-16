@@ -18,7 +18,7 @@ void copy7_to_qt(const double in[7], double q[4], double t[3]) {
     for (int i = 0; i < 3; ++i) t[i] = in[4 + i];
 }
 
-double reprojection_norm(const Observation& o, const LensParams& lens,
+double whitened_reprojection_norm(const Observation& o, const LensParams& lens,
                          const double qs[4], const double ts[3],
                          const double qc[4], const double tc[3]) {
     ReprojectionCost cost(o, lens);
@@ -102,7 +102,9 @@ SolverResult solve(const std::vector<Observation>& observations,
     const double thresh = 3.0 * config.robust_loss_scale;
     int outliers = 0;
     for (const auto& obs : observations) {
-        if (reprojection_norm(obs, lens, qs, ts, qc, tc) > thresh) ++outliers;
+        // ReprojectionCost divides by sigma_px, so classification uses the
+        // same whitened units as the robust loss (Python fallback matches).
+        if (whitened_reprojection_norm(obs, lens, qs, ts, qc, tc) > thresh) ++outliers;
     }
     result.num_outliers = outliers;
     result.num_inliers = static_cast<int>(observations.size()) - outliers;

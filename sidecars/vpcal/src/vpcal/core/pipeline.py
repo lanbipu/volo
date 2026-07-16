@@ -8,6 +8,7 @@ real image detector runs on the captured frames.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 from datetime import datetime, timezone
@@ -19,17 +20,18 @@ from numpy.typing import NDArray
 from vpcal.core.coordinates import m_rh_from_source
 from vpcal.core.detector import detect_markers
 from vpcal.core.errors import PreconditionError
-from vpcal.core.observations import Observation, marker_id_from_dict
+from vpcal.core.observations import Observation, PhysicalMarkerId, marker_id_from_dict
 from vpcal.core.projection import CameraIntrinsics
 from vpcal.core.screen_geometry import marker_world_map
 from vpcal.core.solver import (
     MIN_OBSERVATIONS_SOFT,
     MIN_POSES_SOFT,
     cv2_bootstrap_lens,
+    pnp_initial_tracker_to_stage,
     solve_calibration,
 )
 from vpcal.core.solver_scipy import LensFreedom, SolverResult
-from vpcal.core.transforms import make_transform
+from vpcal.core.transforms import make_transform, stage_to_camera_transform
 from vpcal.core.validator import list_images, validate_session
 from vpcal.io.frame_matching import match_frames
 from vpcal.io.screen_io import load_screen
@@ -41,6 +43,42 @@ from vpcal.qa.reprojection import reprojection_report
 
 Array = NDArray[np.float64]
 _M_UE = m_rh_from_source("unreal")[:3, :3]
+
+
+def _apply_marker_uncertainty_weights(
+    observations: list[Observation], seed_observations: list[Observation], marker_map,
+    intr: CameraIntrinsics, init_C: tuple[Array, Array],
+) -> tuple[list[Observation], int]:
+    """Project surveyed world uncertainty into pixel sigma at the initial depth.
+
+    The opt-in flag is consumed by the caller.  The 2 px base sigma preserves
+    the correlated-four-corner weighting; survey uncertainty is combined in
+    quadrature using the conservative larger focal length.
+    """
+    init_S = pnp_initial_tracker_to_stage(seed_observations, intr, init_C)
+    T_S = make_transform(np.asarray(init_S[0]), np.asarray(init_S[1]))
+    T_C = make_transform(np.asarray(init_C[0]), np.asarray(init_C[1]))
+    by_id = {m.marker_id: m for m in marker_map.markers}
+    weighted: list[Observation] = []
+    applied = 0
+    for obs in observations:
+        marker = by_id.get(obs.marker_id.marker) if isinstance(obs.marker_id, PhysicalMarkerId) else None
+        uncertainty_mm = marker.uncertainty_mm if marker is not None else None
+        if uncertainty_mm is None or uncertainty_mm <= 0:
+            weighted.append(obs)
+            continue
+        T_sdk = make_transform(np.asarray(obs.track_q), np.asarray(obs.track_t))
+        T_C_from_S = stage_to_camera_transform(T_S, T_sdk, T_C)
+        cam = T_C_from_S[:3, :3] @ np.asarray(obs.world_rh) + T_C_from_S[:3, 3]
+        depth_mm = float(cam[2] - intr.entrance_pupil_offset_mm)
+        if not np.isfinite(depth_mm) or depth_mm <= 1.0:
+            weighted.append(obs)
+            continue
+        survey_sigma_px = max(intr.fx, intr.fy) * float(uncertainty_mm) / depth_mm
+        weighted.append(dataclasses.replace(
+            obs, sigma_px=float(np.hypot(obs.sigma_px, survey_sigma_px))))
+        applied += 1
+    return weighted, applied
 
 
 def _resolve(session_dir: Path, p: str) -> Path:
@@ -735,6 +773,16 @@ def run_quick(
     init_C, handeye_report = _handeye_initial(
         session, raw_session, train_obs, intr, init_C, force=handeye_init
     )
+    if marker_map is not None and session.solver.marker_uncertainty_weighting:
+        weighted, applied = _apply_marker_uncertainty_weights(
+            train_obs + holdout_obs, train_obs, marker_map, intr, init_C)
+        train_count = len(train_obs)
+        train_obs, holdout_obs = weighted[:train_count], weighted[train_count:]
+        detection_report["marker_uncertainty_weighting"] = {
+            "enabled": True,
+            "weighted_observations": applied,
+            "method": "initial_depth_projection",
+        }
 
     estimated_lens = None
     lens_obs = None
@@ -840,6 +888,13 @@ def run_quick(
     rms = reproj["global_rms_px"]
     confidence = _confidence(num_poses, total_obs, rms, validation_rms)
     handeye_warnings: list[str] = []
+    staticity_status = (validation.get("staticity") or {}).get("status", "unverifiable")
+    if staticity_status == "warning":
+        if confidence == "high":
+            confidence = "medium"
+        handeye_warnings.append(
+            "capture-window motion exceeds the static timing-immunity gate"
+        )
     if handeye_report:
         t_dev = handeye_report.get("prior_translation_diff_mm")
         r_dev = handeye_report.get("prior_rotation_diff_deg")
@@ -864,7 +919,7 @@ def run_quick(
         __version__, estimated_lens=estimated_lens,
         validation_rms=validation_rms, validation_observations=len(holdout_obs),
         handeye_report=handeye_report, quality_warnings=handeye_warnings,
-        staticity=(validation.get("staticity") or {}).get("status", "unverifiable"),
+        staticity=staticity_status,
     )
     export_lens = _lens_profile_from_intr(eff_intr, session.lens) if estimated_lens is not None else session.lens
     _write_outputs(

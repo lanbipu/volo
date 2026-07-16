@@ -123,6 +123,15 @@ def test_session_end_to_end_quick_run_compatible(tmp_path):
     )
     with _FreeDSender(port):
         runner = CaptureSessionRunner(cfg, backend, lambda t, p: events.append((t, p)))
+        def _ack_pump() -> None:
+            seen = 0
+            for _ in range(300):
+                reqs = [p for k, p in events if k == "request_pattern"]
+                for req in reqs[seen:]:
+                    runner.post({"cmd": "pattern_ready", "pattern": req["pattern"]})
+                seen = len(reqs)
+                time.sleep(0.02)
+        threading.Thread(target=_ack_pump, daemon=True).start()
         data = runner.run()
 
     # ── session artifact ─────────────────────────────────────────────
@@ -280,8 +289,7 @@ def test_graycode_evidence_is_fail_closed_even_with_ack(
 
 
 @pytest.mark.slow
-def test_cli_session_ndjson_stream(tmp_path):
-    """CLI adapter: NDJSON event flow + final result envelope + exit 0."""
+def test_cli_session_without_pattern_evidence_fails_closed(tmp_path):
     from click.testing import CliRunner
 
     from vpcal.cli.main import cli
@@ -301,15 +309,12 @@ def test_cli_session_ndjson_stream(tmp_path):
             "--settle-ms", "200", "--burst", "2",
             "--no-control-stdin", "--output", "ndjson",
         ])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code != 0
     lines = [json.loads(ln) for ln in result.output.splitlines() if ln.strip()]
     assert lines[0]["type"] == "start"
-    kinds = [ln["type"] for ln in lines]
-    assert "progress" in kinds and "pose_captured" in kinds
     final = lines[-1]
-    assert final["type"] == "result" and final["final"] is True
-    assert final["status"] == "ok" and final["operation_id"] == "capture.session"
-    assert final["data"]["poses_captured"] == 1
+    assert final["type"] == "error" and final["final"] is True
+    assert "pattern-confirmation channel" in final["error"]["message"]
     # Sequences strictly increase.
     seqs = [ln["sequence"] for ln in lines]
     assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)

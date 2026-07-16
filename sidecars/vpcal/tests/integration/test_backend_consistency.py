@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from dataclasses import replace
 
 from vpcal.core.projection import CameraIntrinsics
 from vpcal.core.simulator import forward_observations, generate_camera_poses, random_ground_truth
@@ -51,6 +52,7 @@ def test_cpp_python_residuals_bit_level():
     import vpcal._vpcal_solver as cpp
 
     observations = _observations()
+    observations[0] = replace(observations[0], sigma_px=2.5)
     rng = np.random.default_rng(42)
     # Deliberately non-identity, non-converged parameter vector.
     q_S = normalize_quat(np.array([0.9, 0.1, -0.2, 0.15]))
@@ -68,6 +70,7 @@ def test_cpp_python_residuals_bit_level():
             o.world_rh[0], o.world_rh[1], o.world_rh[2],
             o.track_q[0], o.track_q[1], o.track_q[2], o.track_q[3],
             o.track_t[0], o.track_t[1], o.track_t[2],
+            o.sigma_px,
         )
         for o in observations
     ]

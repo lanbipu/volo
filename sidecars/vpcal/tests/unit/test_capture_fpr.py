@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from collections import deque
 import json
+import itertools
+import queue
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -46,6 +49,14 @@ def test_mean_pose_markley_average_preserves_raw_fields():
     assert mean.rotation.order is RotationOrder.QUATERNION
     assert abs(mean.rotation.values[3]) < 1e-6
     assert mean.raw_monotonic_ts == pytest.approx(100.1)
+
+
+def test_listener_camera_filter_excludes_other_camera_ids():
+    listener = TrackingListener(9999, camera_id="2")
+    cam1 = _frame(1, 0.1).model_copy(update={"camera_id": 1})
+    cam2 = _frame(2, 0.2).model_copy(update={"camera_id": 2})
+    assert listener.accepts_frame(cam1) is False
+    assert listener.accepts_frame(cam2) is True
 
 
 def test_delay_boundary_auto_expands_and_single_marker_has_no_fake_sigma(monkeypatch):
@@ -101,3 +112,20 @@ def test_finalize_partial_session_recovers_completed_pairs(tmp_path):
     assert (tmp_path / "session.json").exists()
     assert not (tmp_path / "session.partial.json").exists()
     assert "capture_partial" not in json.loads((tmp_path / "session.json").read_text())
+
+
+def test_pattern_wait_preserves_outer_finish_command():
+    from vpcal.core.capture_backend import CapturedFrame
+    from vpcal.core.capture_session import CaptureSessionRunner
+
+    runner = CaptureSessionRunner.__new__(CaptureSessionRunner)
+    runner.cfg = SimpleNamespace(pattern_wait_s=1.0, graycode_sync=False,
+                                 allow_ack_without_graycode=False, graycode_cell_px=24,
+                                 preview_sink=None)
+    runner.emit = lambda *_args: None
+    runner._control = queue.Queue()
+    runner.post({"cmd": "finish"})
+    frame = CapturedFrame(np.zeros((8, 8), np.uint8), recv_ts=0.0)
+    _frame, ok = runner._wait_pattern(itertools.repeat(frame), "normal")
+    assert ok is False
+    assert runner._drain_control() == [{"cmd": "finish"}]

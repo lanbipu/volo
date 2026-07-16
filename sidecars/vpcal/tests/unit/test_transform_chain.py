@@ -143,3 +143,44 @@ def test_observation_sigma_is_carried_into_whitening_array():
         [replace(obs[0], sigma_px=2.0)]
     )
     assert sigma.tolist() == [[2.0]]
+
+
+def test_outlier_classification_uses_whitened_units():
+    from dataclasses import replace
+
+    gt = random_ground_truth(np.random.default_rng(3), identity=True)
+    poses = generate_camera_poses(_plane_screen(), 8, np.random.default_rng(4))
+    obs, _tp, _vis = forward_observations(
+        _plane_screen(), INTR, gt, poses, markers_per_cabinet=4,
+        rng=np.random.default_rng(5),
+    )
+    # 4 raw px with sigma=2 is a 2-sigma residual, below the 3-sigma gate.
+    obs[0] = replace(obs[0], pixel_u=obs[0].pixel_u + 4.0, sigma_px=2.0)
+    result = solve_calibration(obs, INTR, robust_loss="none", robust_scale=1.0,
+                               prefer_cpp=False)
+    assert result.residuals_px[0] > 3.0
+    assert result.num_outliers == 0
+
+
+def test_marker_uncertainty_is_projected_at_initial_depth(monkeypatch):
+    from vpcal.core.observations import Observation, PhysicalMarkerId
+    from vpcal.core.pipeline import _apply_marker_uncertainty_weights
+    from vpcal.models.marker_map import MarkerMapDefinition, SurveyedMarker
+
+    marker_map = MarkerMapDefinition(frame_name="stage", markers=[SurveyedMarker(
+        marker_id="AT_1", marker_type="apriltag", dictionary="DICT_APRILTAG_36h11",
+        tag_id=1, center_stage_mm=[0, 0, 1000], size_mm=100,
+        normal=[0, 0, -1], uncertainty_mm=1.0,
+    )])
+    obs = Observation(
+        pixel_u=0, pixel_v=0, world_rh=(0, 0, 1000),
+        track_q=(1, 0, 0, 0), track_t=(0, 0, 0),
+        marker_id=PhysicalMarkerId("AT_1", 0), sigma_px=2.0,
+    )
+    monkeypatch.setattr("vpcal.core.pipeline.pnp_initial_tracker_to_stage",
+                        lambda *_a, **_k: (np.array([1., 0, 0, 0]), np.zeros(3)))
+    intr = CameraIntrinsics(fx=1000, fy=900, cx=0, cy=0)
+    weighted, count = _apply_marker_uncertainty_weights(
+        [obs], [obs], marker_map, intr, (np.array([1., 0, 0, 0]), np.zeros(3)))
+    assert count == 1
+    assert weighted[0].sigma_px == pytest.approx(np.sqrt(5.0))

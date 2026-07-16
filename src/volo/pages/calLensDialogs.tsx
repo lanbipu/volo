@@ -94,7 +94,9 @@ import { listMonitors, openPatternPlayer, closePatternPlayer } from "../api/play
       /* solver + output */
       h('div', { className: 'lens-rsec' },
         h('div', { className: 'lens-rsec-h' }, h(Icon, { name: 'settings', size: 14 }), 'solver'),
-        R.degraded_backend ? h('div', { className: 'ar-degen ar-degen--notice' }, h(Icon, { name: 'alert', size: 14 }), h('div', null, h('b', null, '已降级 scipy 后端（无协方差）'))) : null,
+        R.degraded_backend ? h('div', { className: 'ar-degen ar-degen--notice' }, h(Icon, { name: 'alert', size: 14 }), h('div', null, h('b', null, '求解器使用了 fallback / degraded path'))) : null,
+        R.parameter_covariance ? h('div', { className: 'kv' }, h('span', { className: 'k' }, 'parameter_covariance'),
+          h('span', { className: 'v mono' }, R.parameter_covariance.available ? 'available' : 'unavailable')) : null,
         h('div', { className: 'kv' }, h('span', { className: 'k' }, 'solver_backend'),
           h('span', { className: 'v' }, R.solver_backend ? h('span', { className: 'mono' }, R.solver_backend) : h(Badge, { variant: 'neutral', size: 'S' }, 'n/a'))),
         h('div', { className: 'lens-outrow' },
@@ -293,12 +295,15 @@ import { listMonitors, openPatternPlayer, closePatternPlayer } from "../api/play
     const profiles = CX.loadProfiles ? CX.loadProfiles() : [];
     const profile = profiles.find((p) => p.id === live.profileId) || profiles[0] || null;
     const [taskId, setTaskId] = useState(null);
+    const [starting, setStarting] = useState(false);
+    const [launchError, setLaunchError] = useState(null);
     const stream = useSidecarStream(taskId);
     const events = stream.state.lines.map((l) => l.parsed).filter(Boolean);
     const preview = [...events].reverse().find((e) => e.type === 'preview_ready');
     const stats = [...events].reverse().find((e) => e.type === 'live_stats');
     const start = async () => {
       if (!R || !profile) return;
+      setStarting(true); setLaunchError(null);
       const args = ['verify', 'live', '--config', R.session_path, '--result', R.result_path,
         '--backend', profile.videoBackend || 'uvc', '--device', String(profile.device || '0'),
         '--track-protocol', profile.trackProtocol || 'freed', '--track-host', profile.trackHost || '0.0.0.0',
@@ -307,14 +312,21 @@ import { listMonitors, openPatternPlayer, closePatternPlayer } from "../api/play
       if (profile.fmtMode === 'manual' && profile.height) args.push('--height', String(profile.height));
       if (profile.fmtMode === 'manual' && profile.fps) args.push('--fps', String(profile.fps));
       args.push('--transfer-function', profile.transferFunction || 'sdr', '--output', 'ndjson');
-      const r = await spawnSidecarStreaming('vpcal', args); setTaskId(r.task_id);
-      s.pushLog({ lv: 'info', cat: 'lens', msg: '启动实时回填验证 · <b>vpcal verify live</b>' });
+      try {
+        const r = await spawnSidecarStreaming('vpcal', args); setTaskId(r.task_id);
+        s.pushLog({ lv: 'info', cat: 'lens', msg: '启动实时回填验证 · <b>vpcal verify live</b>' });
+      } catch (e) {
+        const message = e && e.message ? e.message : String(e);
+        setLaunchError(message);
+        s.pushLog({ lv: 'err', cat: 'lens', msg: '实时回填验证启动失败 · ' + message });
+      } finally { setStarting(false); }
     };
     const stop = async () => { await stream.cancel(); setTaskId(null); };
     useEffect(() => () => { if (taskId) void stream.cancel(); }, [taskId]);
     return h('div', { className: 'drawer drawer--lens' }, head('live', 'info', '实时回填验证', 'vpcal verify live', close),
       h('div', { className: 'drawer-b' },
         !profile ? h(InlineAlert, { variant: 'notice', title: '缺少采集配置' }, '先选择一个 Capture Profile，实时验证会复用其 video / tracking source。') : null,
+        launchError ? h(InlineAlert, { variant: 'negative', title: '实时验证启动失败' }, launchError) : null,
         preview && preview.mjpeg_url ? h('img', { src: preview.mjpeg_url, alt: '实时重投影验证', style: { width: '100%', minHeight: 260, objectFit: 'contain', background: '#08090c' } })
           : h('div', { className: 'cal2-cap-empty', style: { minHeight: 240 } }, h('div', { className: 'ce-t' }, taskId ? '等待首个标注帧…' : '尚未开始'), h('div', { className: 'ce-d' }, '绿十字为检测点，红圈为当前标定的实时重投影。')),
         stats ? h('div', { className: 'gw-stat4', style: { marginTop: 10 } },
@@ -324,7 +336,7 @@ import { listMonitors, openPatternPlayer, closePatternPlayer } from "../api/play
       h('div', { className: 'drawer-f' },
         h(Button, { variant: 'secondary', size: 'M', onPress: close }, '关闭'),
         taskId ? h(Button, { variant: 'negative', size: 'M', onPress: stop }, '停止验证')
-          : h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'live', size: 15 }), isDisabled: !R || !profile, onPress: start }, '开始实时验证')));
+          : h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'live', size: 15 }), isDisabled: !R || !profile || starting, onPress: start }, starting ? '正在启动…' : '开始实时验证')));
   }
 
   /* ============ ④ 播放器自检 ============ */

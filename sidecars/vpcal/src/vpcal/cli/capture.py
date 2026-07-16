@@ -333,6 +333,8 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
 @click.option("--track-port", type=int, default=6301, show_default=True,
               help="Tracking UDP port.")
 @click.option("--track-host", default="0.0.0.0", show_default=True, help="Tracking bind address.")
+@click.option("--track-camera-id", default=None,
+              help="FreeD camera ID to accept; packets from other IDs are ignored.")
 @click.option("--poses", "poses_target", type=int, default=8, show_default=True,
               help="Target pose count (0 = unlimited, finish via stdin control).")
 @click.option("--inverted", is_flag=True,
@@ -360,7 +362,7 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
 @common_options
 @click.pass_context
 def session(ctx, screen_path, out_dir, backend, device, width, height, fps,
-            transfer_function, preview_port, track_protocol, track_port, track_host,
+            transfer_function, preview_port, track_protocol, track_port, track_host, track_camera_id,
             poses_target, inverted, lens_path, settle_ms, settle_speed, settle_ang_speed, move_speed,
             burst_frames, timestamp_tolerance_s, graycode_sync, control_stdin,
             allow_ack_without_graycode,
@@ -389,6 +391,12 @@ def session(ctx, screen_path, out_dir, backend, device, width, height, fps,
                                        "track": f"{track_protocol}:{track_port}"}},
                 text="Dry run OK.")
 
+        if not control_stdin and not graycode_sync:
+            raise PreconditionError(
+                "capture session has no pattern-confirmation channel: enable control stdin "
+                "for pattern_ready acknowledgements or enable --graycode-sync"
+            )
+
         backend_cfg = CaptureConfig(backend=backend, device=device, width=width,
                                     height=height, fps=fps,
                                     transfer_function=transfer_function)
@@ -396,6 +404,7 @@ def session(ctx, screen_path, out_dir, backend, device, width, height, fps,
         cfg = SessionCaptureConfig(
             out_dir=Path(out_dir), screen_path=Path(screen_path), backend=backend_cfg,
             track_protocol=track_protocol, track_port=track_port, track_host=track_host,
+            track_camera_id=track_camera_id if track_protocol == "freed" else None,
             poses_target=poses_target, settle_speed_mm_s=settle_speed,
             settle_ang_speed_deg_s=settle_ang_speed,
             move_speed_mm_s=move_speed, settle_duration_s=settle_ms / 1000.0,
