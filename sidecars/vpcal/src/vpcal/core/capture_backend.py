@@ -215,6 +215,11 @@ class UvcBackend:
     def frames(self) -> Iterator[CapturedFrame]:
         if self._cap is None or self._config is None:
             raise PreconditionError("uvc backend not opened")
+        import cv2
+
+        fcc = int(self._cap.get(cv2.CAP_PROP_FOURCC))
+        fourcc = ("".join(chr((fcc >> 8 * i) & 0xFF) for i in range(4)).strip()
+                  or None) if fcc > 0 else None
         idx = 0
         while self._cap is not None:
             ok, bgr = self._cap.read()
@@ -229,6 +234,8 @@ class UvcBackend:
                 meta={
                     "backend": "uvc",
                     "device": self._config.device,
+                    "fourcc": fourcc,
+                    "bit_depth": int(bgr.dtype.itemsize * 8),
                     "transfer_function": self._config.transfer_function,
                 },
             )
@@ -323,6 +330,10 @@ class NdiBackend:
         config = self._config
         idle_timeout_s = float(config.extra.get("idle_timeout_s", 5.0))
         poll_interval_s = float(config.extra.get("poll_interval_s", 1.0 / 120.0))
+        # Monitor mode (same contract as decklink): never give up on signal
+        # loss — the receiver stays connected and NDI auto-reconnects to a
+        # returning source of the same name; frames then resume.
+        keep_alive = bool(config.extra.get("keep_alive"))
         started_waiting = time.monotonic()
         disconnected_since: float | None = None
         last_yield = 0.0
@@ -334,7 +345,7 @@ class NdiBackend:
             now = recv_ts
             width, height = video_frame.get_resolution()
             if width <= 0 or height <= 0:
-                if now - started_waiting >= idle_timeout_s:
+                if not keep_alive and now - started_waiting >= idle_timeout_s:
                     raise PreconditionError(
                         f"no video frames from NDI source: {config.device}",
                         details={"backend": "ndi", "reason": "no_signal",
@@ -352,11 +363,17 @@ class NdiBackend:
             if connections <= 0:
                 disconnected_since = disconnected_since or now
                 if now - disconnected_since >= idle_timeout_s:
-                    raise PreconditionError(
-                        f"NDI source disconnected: {config.device}",
-                        details={"backend": "ndi", "reason": "no_signal",
-                                 "source_name": config.device},
-                    )
+                    if not keep_alive:
+                        raise PreconditionError(
+                            f"NDI source disconnected: {config.device}",
+                            details={"backend": "ndi", "reason": "no_signal",
+                                     "source_name": config.device},
+                        )
+                    # FrameSync keeps repeating the last frame of a gone
+                    # source — stop yielding stale frames so the UI liveness
+                    # watchdog flips to "waiting" until the source returns.
+                    time.sleep(max(poll_interval_s, 0.05))
+                    continue
             else:
                 disconnected_since = None
 
