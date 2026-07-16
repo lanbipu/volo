@@ -248,3 +248,84 @@ pub fn read_image_as_data_url(
         base64::engine::general_purpose::STANDARD.encode(bytes)
     ))
 }
+
+/// Read the one QA artifact the Lens report UI consumes. The renderer cannot
+/// provide a filename: it provides a run directory and Rust fixes the relative
+/// allowlist entry to `qa/reprojection.json`. Canonical containment rejects a
+/// symlinked `qa` directory or report file that escapes the run directory.
+#[tauri::command]
+pub fn read_lens_qa_report(run_dir: String) -> VoloResult<Value> {
+    const MAX_REPORT_BYTES: u64 = 16 * 1024 * 1024;
+
+    let root = Path::new(&run_dir).canonicalize().map_err(|e| {
+        VoloError::Io(format!(
+            "failed to resolve lens run directory {run_dir}: {e}"
+        ))
+    })?;
+    if !root.is_dir() {
+        return Err(VoloError::InvalidInput(format!(
+            "lens run path is not a directory: {run_dir}"
+        )));
+    }
+    let report = root.join("qa").join("reprojection.json");
+    let report = report.canonicalize().map_err(|e| {
+        VoloError::Io(format!(
+            "failed to resolve {}/qa/reprojection.json: {e}",
+            root.display()
+        ))
+    })?;
+    if !report.starts_with(&root) {
+        return Err(VoloError::InvalidInput(
+            "qa/reprojection.json escapes the selected lens run directory".into(),
+        ));
+    }
+    let meta = fs::metadata(&report)?;
+    if !meta.is_file() {
+        return Err(VoloError::InvalidInput(
+            "qa/reprojection.json is not a regular file".into(),
+        ));
+    }
+    if meta.len() > MAX_REPORT_BYTES {
+        return Err(VoloError::InvalidInput(format!(
+            "qa/reprojection.json is {} bytes, exceeds the {MAX_REPORT_BYTES}-byte cap",
+            meta.len()
+        )));
+    }
+    let bytes = fs::read(&report)?;
+    serde_json::from_slice(&bytes)
+        .map_err(|e| VoloError::InvalidInput(format!("invalid qa/reprojection.json: {e}")))
+}
+
+#[cfg(test)]
+mod qa_report_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn reads_only_fixed_qa_report_child() {
+        let run = tempdir().unwrap();
+        fs::create_dir(run.path().join("qa")).unwrap();
+        fs::write(
+            run.path().join("qa/reprojection.json"),
+            br#"{"global_rms_px":0.5,"per_pose":[]}"#,
+        )
+        .unwrap();
+        let value = read_lens_qa_report(run.path().display().to_string()).unwrap();
+        assert_eq!(value["global_rms_px"], 0.5);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let run = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        fs::create_dir(outside.path().join("qa")).unwrap();
+        fs::write(outside.path().join("qa/reprojection.json"), b"{}").unwrap();
+        symlink(outside.path().join("qa"), run.path().join("qa")).unwrap();
+
+        let err = read_lens_qa_report(run.path().display().to_string()).unwrap_err();
+        assert!(format!("{err}").contains("escapes"), "got: {err}");
+    }
+}

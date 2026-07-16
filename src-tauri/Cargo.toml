@@ -39,6 +39,7 @@ volo-shared = { path = "../crates/volo-shared" }
 # commands/mesh_visual.rs streams the adapter's raw progress `Event` as the
 # Tauri event payload (mesh_visual_reconstruct's job progress channel).
 mesh-adapter-visual-ba = { path = "../crates/mesh-adapter-visual-ba" }
+mesh-adapter-total-station = { path = "../crates/mesh-adapter-total-station" }
 # commands use tokio::sync::Mutex (UeJobRegistry) and tracing; run() inits tracing-subscriber.
 # mesh save_instruction_pdf also routes through tokio::task::spawn_blocking.
 tokio = { workspace = true }
@@ -47,6 +48,8 @@ tracing-subscriber = { workspace = true }
 # commands/pso.rs timestamps job rows; commands/zen.rs edits the rules YAML.
 chrono = { workspace = true }
 serde_yaml = { workspace = true }
+sha2 = { workspace = true }
+if-addrs = "0.13"
 
 # step 3c: native PDF render backends for mesh save_instruction_pdf, cfg-gated.
 [target.'cfg(target_os = "windows")'.dependencies]
@@ -67,3 +70,5 @@ objc2-web-kit = { version = "0.3", features = ["WKWebView", "WKWebViewConfigurat
 objc2-core-foundation = { version = "0.3", features = ["CFCGTypes"] }
 block2 = "0.6"
 
+[dev-dependencies]
+tempfile = { workspace = true }
