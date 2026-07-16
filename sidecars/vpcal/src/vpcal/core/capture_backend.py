@@ -538,6 +538,10 @@ class DecklinkBackend:
         # Colour decode is monitor-only (preview sink) — the calibration chain
         # consumes luma; skip the extra full-frame YCbCr→BGR work otherwise.
         want_bgr = bool(self._config.extra.get("want_bgr"))
+        # Monitor mode: never give up on signal loss — the DeckLink input stays
+        # started, so when the source comes back (camera power-cycle) frames
+        # resume via the callback without reopening the device.
+        keep_alive = bool(self._config.extra.get("keep_alive"))
         idx = 0
         misses = 0
         seen_first = False
@@ -559,7 +563,7 @@ class DecklinkBackend:
                 # genuinely-connected source as "nosignal". Once frames flow, a
                 # >5s gap is a real drop. (The Rust probe caps total wall-clock.)
                 misses += 1
-                if misses >= (5 if seen_first else 15):
+                if not keep_alive and misses >= (5 if seen_first else 15):
                     return
                 continue
             misses = 0

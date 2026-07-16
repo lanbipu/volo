@@ -200,22 +200,34 @@ import {
       }
     }, [liveStream.state.lines, backend]);
 
-    /* 进程退出：cancel 触发的静默；fatal 时从流里取最后一条 error 事件报错。 */
+    /* 进程退出：cancel 触发的静默；fatal 时从流里取最后一条 error 事件报错。
+       其余情况（断流终止、设备暂时打不开）在设备仍选中时 3s 后自动重连监看流。 */
     useEffect(() => {
       const exit = liveStream.state.exit;
       if (!exit || exit.cancelled) return;
+      let missing = false;
       if (exit.fatal) {
         const errLine = [...liveStream.state.lines].reverse()
           .map((l) => l.parsed)
           .find((p) => p && p.type === 'error' && p.error);
         const err = errLine && errLine.error;
-        if (err && err.details && err.details.missing) {
-          setNdiAvail('missing');
-          setNdiError({ code: err.code, message: err.message, details: err.details });
+        missing = !!(err && err.details && err.details.missing);
+        if (missing) {
+          const parsed = { code: err.code, message: err.message, details: err.details };
+          if (backend === 'decklink') { setDlAvail('missing'); setDlError(parsed); }
+          else { setNdiAvail('missing'); setNdiError(parsed); }
         }
         if (err && err.message) setSigErr(err.message);
         setSig('nosignal'); setLiveUrl(null);
+      } else {
+        /* 正常结束（如断流后源终止）：回到等待态，交给自动重连 */
+        setSig('waiting'); setLiveUrl(null);
       }
+      if (missing) return;                 /* SDK/模块缺失：重试无意义 */
+      const dev = form.device;
+      if (!dev) return;
+      const t = setTimeout(() => { void startMonitor(dev); }, 3000);
+      return () => clearTimeout(t);
     }, [liveStream.state.exit]);
 
     /* backend 切换：拆掉当前监看流。卸载时同样取消（读 ref 避免 stale）。 */

@@ -255,7 +255,10 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
         cfg = CaptureConfig(backend=backend, device=device, width=width, height=height,
                             fps=fps, transfer_function=transfer_function,
                             extra={"allow_hx": allow_hx,
-                                   "want_bgr": preview_port is not None})
+                                   "want_bgr": preview_port is not None,
+                                   # Open-ended preview run = the UI monitor:
+                                   # survive signal drops instead of exiting.
+                                   "keep_alive": duration_s == 0 and preview_port is not None})
         src = open_backend(cfg)
         sink, server = _make_preview(preview_port, emitter)
         out = Path(out_dir) if out_dir else None
