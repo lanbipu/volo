@@ -398,6 +398,7 @@ fn finish_operation(
             })
         }
         Err(error) => {
+            tracing::error!("ndisplay output {operation} failed: {error}");
             emit_runner(
                 app,
                 &session_id,
