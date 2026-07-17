@@ -20,6 +20,7 @@ type OutputMode = "show" | "clear";
 
 interface RuntimePaths {
   editor_path: string;
+  editor_paths?: Record<string, string>;
   project_path: string;
   config_path: string;
   manifest_path: string;
@@ -101,6 +102,7 @@ interface NDisplayOutputRunnerEvent {
 `RuntimePaths` 中的路径均为节点 Windows 绝对路径：
 
 - `editor_path`
+- `editor_paths`：可选的 node id → `UnrealEditor.exe` 映射；存在对应节点项时优先于兼容 fallback `editor_path`。
 - `project_path`
 - `config_path`
 - `manifest_path`
@@ -109,6 +111,10 @@ interface NDisplayOutputRunnerEvent {
 模板工程来自 bundle resource `ue-template/VoloOutput`。`output_deploy` 写入 `project_path`
 对应的工程根，并把生成的 config 写到 `config_path`。`output_start` 会再次硬检查模板、
 config 和 Blueprint asset 已存在，避免绕过部署 gate。
+
+前端在 preflight 时按拓扑节点的 hostname/IP 匹配机器库，读取该机器的 `machine_ue_installs`，选择 5.8（优先 primary install）并构造节点级 `editor_paths`。机器不存在或未探测到 5.8 时预检直接失败；硬编码 `editor_path` 只保留为旧调用方兼容 fallback。
+
+一期只允许窗口模式：拓扑对话框保留但禁用 `fullscreen` 开关并提示“一期仅窗口模式”，保存时强制写 `false`；nDisplay 生成器也无条件输出 `fullScreen: false`。DTO 字段保留供后续版本启用。
 
 ## 启动不变量
 
