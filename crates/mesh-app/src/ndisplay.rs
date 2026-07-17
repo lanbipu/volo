@@ -340,6 +340,28 @@ fn validate_topology_on_canvas(
     Ok(result)
 }
 
+/// Show manifests whose crop is node-local (0,0,w,h): each node's image is
+/// already composed to exactly its viewport size (see output::show_stage).
+pub fn generate_manifest_json_node_relative(
+    screen: &ScreenConfig,
+    revision: u64,
+    image_paths: &BTreeMap<String, String>,
+) -> VoloResult<BTreeMap<String, Value>> {
+    let mut manifests =
+        generate_manifest_json(screen, revision, OutputManifestMode::Show, image_paths)?;
+    let topology = screen.output_topology.as_ref().expect("validated topology");
+    for node in &topology.nodes {
+        let manifest = manifests
+            .get_mut(&node.node_id)
+            .expect("manifest generated for every node");
+        manifest["crop_x"] = json!(0);
+        manifest["crop_y"] = json!(0);
+        manifest["crop_w"] = json!(node.viewport_rect_px[2]);
+        manifest["crop_h"] = json!(node.viewport_rect_px[3]);
+    }
+    Ok(manifests)
+}
+
 pub fn generate_manifest_json(
     screen: &ScreenConfig,
     revision: u64,

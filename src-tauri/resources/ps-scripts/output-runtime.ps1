@@ -108,8 +108,12 @@ try {
             ('-ResY={0}' -f [int]$request.window_height),
             # UE only reads .ndisplay window x/y through a launcher (Switchboard
             # passes -WinX/-WinY); the engine itself ignores them in -game mode.
+            # -forceres keeps the command-line geometry from being overridden by
+            # the post-init r.SetRes default (1280x720) which re-centered the
+            # window onto the primary monitor (Razer real-machine evidence).
             ('-WinX={0}' -f [int]$request.window_x),
             ('-WinY={0}' -f [int]$request.window_y),
+            '-forceres',
             '-RemoteControlIsHeadless', '-RCWebControlEnable', '-ClusterForceApplyResponse',
             # dc_dev_mono marks views as stereo views; the engine then draws the
             # "StereoView / Stereo rendering method" on-screen debug lines
@@ -135,10 +139,7 @@ try {
         $argQ = ($arguments -join ' ') -replace "'", "''"
         $launcherLines = @(
             ('$p = Start-Process -FilePath ''{0}'' -ArgumentList ''{1}'' -PassThru' -f $exeQ, $argQ),
-            'Add-Type -TypeDefinition ''using System; using System.Runtime.InteropServices; public class VoloWin { [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int w, int hh, uint f); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v); }''',
-            # Physical-pixel coordinates for SetWindowPos (launcher default is not
-            # per-monitor DPI aware; without this the move gets DPI-virtualized).
-            '[VoloWin]::SetProcessDpiAwarenessContext([IntPtr](-4)) | Out-Null',
+            'Add-Type -TypeDefinition ''using System; using System.Runtime.InteropServices; public class VoloWin { [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int w, int hh, uint f); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }''',
             'for ($i = 0; $i -lt 240; $i++) {',
             '    Start-Sleep -Milliseconds 500',
             '    $p.Refresh()',
@@ -146,10 +147,6 @@ try {
             '    if ($p.MainWindowHandle -ne [IntPtr]::Zero) { break }',
             '}',
             'if ($p.MainWindowHandle -ne [IntPtr]::Zero) {',
-            # -WinX/-WinY proved unreliable on the real machine (window opened on
-            # the internal panel despite -WinX=3840); force-move from the
-            # interactive session instead. 0x0044 = NOZORDER | SHOWWINDOW.
-            ('    [VoloWin]::SetWindowPos($p.MainWindowHandle, [IntPtr]::Zero, {0}, {1}, {2}, {3}, 0x0044) | Out-Null' -f [int]$request.window_x, [int]$request.window_y, [int]$request.window_width, [int]$request.window_height),
             '    [VoloWin]::SetWindowPos($p.MainWindowHandle, [IntPtr](-1), 0, 0, 0, 0, 0x0003) | Out-Null',
             '    [VoloWin]::SetWindowPos($p.MainWindowHandle, [IntPtr](-2), 0, 0, 0, 0, 0x0003) | Out-Null',
             '    [VoloWin]::SetForegroundWindow($p.MainWindowHandle) | Out-Null',

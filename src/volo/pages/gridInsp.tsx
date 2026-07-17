@@ -602,7 +602,6 @@ import { listen } from "@tauri-apps/api/event";
       const comp = window.buildStageComposite((p.proj.config && p.proj.config.screens) || {});
       const stage = {
         project_path: p.proj.path,
-        canvas_px: [comp.canvas.w, comp.canvas.h],
         screens: comp.screens.map((r) => ({ screen_id: r.id, x: r.x, y: r.y })),
       };
       return outputShow(Object.assign(runtimeRequest(), { mode: 'show', image_path: null, stage }));

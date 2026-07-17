@@ -1,6 +1,8 @@
 //! Transport-agnostic orchestration for the nDisplay output runtime.
 
-use crate::ndisplay::{generate_manifest_json, OutputManifestMode};
+use crate::ndisplay::{
+    generate_manifest_json, generate_manifest_json_node_relative, OutputManifestMode,
+};
 use std::collections::BTreeMap;
 use std::path::Path;
 use volo_shared::dto::{OutputNode, ScreenConfig};
@@ -310,37 +312,101 @@ fn map_node(node: &OutputNode, result: Result<String, String>) -> VoloResult<Nod
         })
 }
 
-/// Composites each screen's test-pattern PNG onto a black Stage canvas at its
-/// composite-canvas offset, and returns the temp-file path of the result.
-/// Layers: (screen_id, png_path, [x, y]).
-pub fn compose_stage_image(
-    canvas_px: [u32; 2],
-    layers: &[(String, std::path::PathBuf, [u32; 2])],
+/// One screen's test-pattern layer in Stage composite coordinates.
+pub struct StageLayer {
+    pub screen_id: String,
+    pub image_path: std::path::PathBuf,
+    pub origin_px: [u32; 2],
+}
+
+/// Stage show: each node receives an image of exactly its own crop size,
+/// composed from the intersecting screens' pattern PNGs. No global
+/// composite image is ever materialized, so canvas size never exceeds any
+/// single node's output resolution.
+pub fn show_stage<T: OutputTransport>(
+    transport: &T,
+    screen: &ScreenConfig,
+    paths: &RuntimePaths,
+    layers: &[StageLayer],
     revision: u64,
-) -> VoloResult<std::path::PathBuf> {
-    let mut canvas = image::RgbImage::new(canvas_px[0].max(1), canvas_px[1].max(1));
-    for (screen_id, path, origin) in layers {
-        if !path.is_file() {
+) -> VoloResult<PublishResult> {
+    let nodes = ordered_nodes(screen)?;
+    let mut decoded: BTreeMap<&str, image::RgbImage> = BTreeMap::new();
+    for layer in layers {
+        if !layer.image_path.is_file() {
             return Err(VoloError::InvalidInput(format!(
-                "屏幕 {screen_id} 尚未生成测试图（{} 不存在），请先在该屏生成测试图",
-                path.display()
+                "屏幕 {} 尚未生成测试图（{} 不存在），请先在该屏生成测试图",
+                layer.screen_id,
+                layer.image_path.display()
             )));
         }
-        let layer = image::open(path)
-            .map_err(|error| VoloError::Other(format!("decode {}: {error}", path.display())))?
+        let img = image::open(&layer.image_path)
+            .map_err(|error| {
+                VoloError::Other(format!("decode {}: {error}", layer.image_path.display()))
+            })?
             .to_rgb8();
-        image::imageops::replace(
-            &mut canvas,
-            &layer,
-            i64::from(origin[0]),
-            i64::from(origin[1]),
-        );
+        decoded.insert(layer.screen_id.as_str(), img);
     }
-    let out = std::env::temp_dir().join(format!("volo-output-stage-{revision}.png"));
-    canvas
-        .save(&out)
-        .map_err(|error| VoloError::Other(format!("encode {}: {error}", out.display())))?;
-    Ok(out)
+
+    let remote_image_path = win_join(&paths.image_dir, &format!("frame-{revision}.png"));
+    // Phase 1: per-node image compose + push. No visible state changes here.
+    for node in &nodes {
+        let [cx, cy, cw, ch] = node.viewport_rect_px;
+        let mut canvas = image::RgbImage::new(cw.max(1), ch.max(1));
+        for layer in layers {
+            let img = &decoded[layer.screen_id.as_str()];
+            let (lx, ly) = (layer.origin_px[0], layer.origin_px[1]);
+            let (lw, lh) = (img.width(), img.height());
+            let x0 = cx.max(lx);
+            let y0 = cy.max(ly);
+            let x1 = (cx + cw).min(lx + lw);
+            let y1 = (cy + ch).min(ly + lh);
+            if x0 >= x1 || y0 >= y1 {
+                continue;
+            }
+            let view = image::imageops::crop_imm(img, x0 - lx, y0 - ly, x1 - x0, y1 - y0);
+            image::imageops::replace(
+                &mut canvas,
+                &view.to_image(),
+                i64::from(x0 - cx),
+                i64::from(y0 - cy),
+            );
+        }
+        let local = std::env::temp_dir().join(format!(
+            "volo-output-node-{}-{revision}.png",
+            node.node_id
+        ));
+        canvas
+            .save(&local)
+            .map_err(|error| VoloError::Other(format!("encode {}: {error}", local.display())))?;
+        transport
+            .push_file(node, &local, &remote_image_path)
+            .map_err(|error| VoloError::Other(format!("push {}: {error}", node.node_id)))?;
+    }
+
+    let image_paths = nodes
+        .iter()
+        .map(|node| (node.node_id.clone(), remote_image_path.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let manifests = generate_manifest_json_node_relative(screen, revision, &image_paths)?;
+
+    // Phase 2: atomic manifest replacement. Secondary-first, primary-last.
+    let mut results = Vec::with_capacity(nodes.len());
+    for node in &nodes {
+        let manifest = manifests
+            .get(&node.node_id)
+            .expect("manifest generated for every validated node");
+        let manifest = serde_json::to_string(manifest)?;
+        results.push(map_node(
+            node,
+            transport.publish_manifest(node, &paths.manifest_path, &manifest),
+        )?);
+    }
+    Ok(PublishResult {
+        revision,
+        remote_image_path: Some(remote_image_path),
+        nodes: results,
+    })
 }
 
 /// Returns a path to an RGB8/RGBA8 PNG: the input itself when already

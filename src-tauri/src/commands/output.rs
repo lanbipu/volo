@@ -135,7 +135,6 @@ pub struct ShowRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub struct StageShowLayout {
     pub project_path: PathBuf,
-    pub canvas_px: [u32; 2],
     pub screens: Vec<StageScreenLayer>,
 }
 
@@ -586,36 +585,42 @@ pub async fn output_show(
     let session_id = request.session_id.clone();
     let result = tokio::task::spawn_blocking(move || match request.mode {
         OutputMode::Show => {
-            let image = match request.stage.as_ref() {
+            let published = match request.stage.as_ref() {
                 Some(stage) => {
                     let layers = stage
                         .screens
                         .iter()
-                        .map(|layer| {
-                            (
-                                layer.screen_id.clone(),
-                                stage
-                                    .project_path
-                                    .join("patterns")
-                                    .join(&layer.screen_id)
-                                    .join("full_screen.png"),
-                                [layer.x, layer.y],
-                            )
+                        .map(|layer| output::StageLayer {
+                            screen_id: layer.screen_id.clone(),
+                            image_path: stage
+                                .project_path
+                                .join("patterns")
+                                .join(&layer.screen_id)
+                                .join("full_screen.png"),
+                            origin_px: [layer.x, layer.y],
                         })
                         .collect::<Vec<_>>();
-                    output::compose_stage_image(stage.canvas_px, &layers, revision)?
+                    output::show_stage(
+                        &transport(request.ssh_user)?,
+                        &request.screen,
+                        &request.paths,
+                        &layers,
+                        revision,
+                    )?
                 }
-                None => request.image_path.ok_or_else(|| {
-                    VoloError::InvalidInput("image_path is required when mode=show".into())
-                })?,
+                None => {
+                    let image = request.image_path.ok_or_else(|| {
+                        VoloError::InvalidInput("image_path is required when mode=show".into())
+                    })?;
+                    output::show(
+                        &transport(request.ssh_user)?,
+                        &request.screen,
+                        &request.paths,
+                        &image,
+                        revision,
+                    )?
+                }
             };
-            let published = output::show(
-                &transport(request.ssh_user)?,
-                &request.screen,
-                &request.paths,
-                &image,
-                revision,
-            )?;
             Ok((published.nodes, published.remote_image_path))
         }
         OutputMode::Clear => {
