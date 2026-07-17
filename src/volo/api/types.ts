@@ -1439,6 +1439,7 @@ export type OutputEventState = "queued" | "running" | "ok" | "error";
 
 export interface RuntimePaths {
   editor_path: string;
+  editor_paths?: Record<string, string>;
   project_path: string;
   config_path: string;
   manifest_path: string;

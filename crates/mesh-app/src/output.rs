@@ -9,6 +9,8 @@ use volo_shared::error::{VoloError, VoloResult};
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RuntimePaths {
     pub editor_path: String,
+    #[serde(default)]
+    pub editor_paths: BTreeMap<String, String>,
     pub project_path: String,
     pub config_path: String,
     pub manifest_path: String,
@@ -434,6 +436,7 @@ mod tests {
     fn paths() -> RuntimePaths {
         RuntimePaths {
             editor_path: "ue.exe".into(),
+            editor_paths: BTreeMap::new(),
             project_path: "x.uproject".into(),
             config_path: "x.ndisplay".into(),
             manifest_path: r"C:\out\manifest.json".into(),

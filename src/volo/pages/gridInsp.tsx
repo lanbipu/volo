@@ -9,7 +9,7 @@
 import * as React from "react";
 import { saveProjectYaml, setRunCurrent, getRunReport, exportObj } from "../api/meshCommands";
 import { generatedPatternImagePath, meshVisualGeneratePattern, meshVisualReconstruct } from "../api/meshVisualCommands";
-import { pickDirectory, pickFile, revealPath } from "../api/commands";
+import { getMachineDetail, listMachines, pickDirectory, pickFile, revealPath } from "../api/commands";
 import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern, playerClear } from "../api/player";
 import {
   listenNDisplayOutputEvent, listenNDisplayOutputRunner, outputDeploy,
@@ -446,7 +446,9 @@ import { listen } from "@tauri-apps/api/event";
   /* 后端 run_generate_pattern 只认 charuco | vpqsp；handoff 里的「密集编码点」即 VP-QSP */
   const PATTERN_SCHEMES = [{ id: 'charuco', label: 'ChArUco' }, { id: 'vpqsp', label: '密集编码点' }];
   const OUTPUT_PATHS = {
+    /* Compatibility fallback only; preflight resolves editor_paths per node from the machine library. */
     editor_path: 'D:\\Program Files\\Epic Games\\UE_5.8\\Engine\\Binaries\\Win64\\UnrealEditor.exe',
+    editor_paths: {},
     project_path: 'C:\\ProgramData\\UECM\\ndisplay-output\\VoloOutput\\VoloOutput.uproject',
     config_path: 'C:\\ProgramData\\UECM\\ndisplay-output\\VoloOutput\\Config\\VoloOutput.ndisplay',
     manifest_path: 'C:\\ProgramData\\UECM\\ndisplay-output\\session\\manifest.json',
@@ -509,6 +511,7 @@ import { listen } from "@tauri-apps/api/event";
     const [clusterBusy, setClusterBusy] = useState(false);
     const [nodeStates, setNodeStates] = useState({});
     const [outputLogs, setOutputLogs] = useState([]);
+    const [runtimePaths, setRuntimePaths] = useState(OUTPUT_PATHS);
     const screen = p.proj.config && p.proj.config.screens[p.screenId];
     const nodes = (screen && screen.output_topology && screen.output_topology.nodes) || [];
     const sessionId = `${p.proj.path}::${p.screenId}`;
@@ -527,7 +530,28 @@ import { listen } from "@tauri-apps/api/event";
       }).then((fn) => alive ? cleanups.push(fn) : fn());
       return () => { alive = false; cleanups.forEach((fn) => fn()); };
     }, [sessionId]);
-    const runtimeRequest = () => ({ session_id: sessionId, screen, paths: OUTPUT_PATHS, ssh_user: null });
+    const runtimeRequest = (paths) => ({ session_id: sessionId, screen, paths: paths || runtimePaths, ssh_user: null });
+    const resolveEditorPaths = async () => {
+      const machines = await listMachines();
+      const resolved = {};
+      for (const node of nodes) {
+        const hostname = (node.machine.hostname || '').trim().toLowerCase();
+        const ip = (node.machine.ip || '').trim().toLowerCase();
+        const machine = machines.find((candidate) =>
+          (hostname && (candidate.hostname || '').trim().toLowerCase() === hostname) ||
+          (ip && (candidate.ip || '').trim().toLowerCase() === ip));
+        if (!machine || machine.id == null) throw new Error(`${node.node_id}：机器库中找不到 ${node.machine.ip || node.machine.hostname}`);
+        const detail = await getMachineDetail(machine.id);
+        const install = detail.ue_installs
+          .filter((item) => /^5\.8(?:\.|$)/.test(item.version))
+          .sort((a, b) => Number(b.is_primary) - Number(a.is_primary))[0];
+        if (!install) throw new Error(`${node.node_id}：机器库未探测到 UE 5.8`);
+        resolved[node.node_id] = `${install.install_path.replace(/[\\/]+$/, '')}\\Engine\\Binaries\\Win64\\UnrealEditor.exe`;
+      }
+      const paths = Object.assign({}, OUTPUT_PATHS, { editor_paths: resolved });
+      setRuntimePaths(paths);
+      return paths;
+    };
     const runCluster = async (operation, fn, nextPhase) => {
       if (clusterBusy || !screen) return;
       setClusterBusy(true);
@@ -542,7 +566,10 @@ import { listen } from "@tauri-apps/api/event";
       } finally { setClusterBusy(false); }
     };
     const openTopology = () => s.setModal({ xwide: true, render: ({ close }) => window.VOLO_GRID_MODALS.topology(s, close) });
-    const preflight = () => runCluster('预检', () => outputPreflight(runtimeRequest()), 'preflight');
+    const preflight = () => runCluster('预检', async () => {
+      const paths = await resolveEditorPaths();
+      return outputPreflight(runtimeRequest(paths));
+    }, 'preflight');
     const deploy = () => runCluster('部署', () => outputDeploy(Object.assign(runtimeRequest(), { ue_version: '5.8' })), 'deployed');
     const startCluster = () => runCluster('启动', () => outputStart(runtimeRequest()), 'running');
     const showCluster = () => runCluster('显示', () => outputShow(Object.assign(runtimeRequest(), { mode: 'show', image_path: generatedPatternImagePath(p.res.output_dir) })), 'running');

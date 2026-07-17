@@ -188,10 +188,11 @@ impl SshOutputTransport {
         paths: &RuntimePaths,
         extra: serde_json::Value,
     ) -> Result<ScriptEnvelope, String> {
+        let editor_path = editor_path_for_node(paths, &node.node_id);
         let mut args = serde_json::json!({
             "action": action,
             "node_id": node.node_id,
-            "editor_path": paths.editor_path,
+            "editor_path": editor_path,
             "project_path": paths.project_path,
             "config_path": paths.config_path,
             "manifest_path": paths.manifest_path,
@@ -215,6 +216,14 @@ impl SshOutputTransport {
             Err(envelope.message)
         }
     }
+}
+
+fn editor_path_for_node<'a>(paths: &'a RuntimePaths, node_id: &str) -> &'a str {
+    paths
+        .editor_paths
+        .get(node_id)
+        .map(String::as_str)
+        .unwrap_or(&paths.editor_path)
 }
 
 impl OutputTransport for SshOutputTransport {
@@ -262,6 +271,7 @@ impl OutputTransport for SshOutputTransport {
     ) -> Result<String, String> {
         let empty_paths = RuntimePaths {
             editor_path: String::new(),
+            editor_paths: Default::default(),
             project_path: String::new(),
             config_path: remote_path.into(),
             manifest_path: String::new(),
@@ -283,6 +293,7 @@ impl OutputTransport for SshOutputTransport {
     ) -> Result<String, String> {
         let empty_paths = RuntimePaths {
             editor_path: String::new(),
+            editor_paths: Default::default(),
             project_path: String::new(),
             config_path: String::new(),
             manifest_path: manifest_path.into(),
@@ -633,5 +644,28 @@ mod tests {
     #[test]
     fn blank_session_id_is_rejected() {
         assert!(OutputSessions::default().reserve_revision("  ").is_err());
+    }
+
+    #[test]
+    fn node_editor_path_overrides_compatibility_fallback() {
+        let paths = RuntimePaths {
+            editor_path: r"C:\fallback\UnrealEditor.exe".into(),
+            editor_paths: std::collections::BTreeMap::from([(
+                "RazerNode".into(),
+                r"D:\UE_5.8\Engine\Binaries\Win64\UnrealEditor.exe".into(),
+            )]),
+            project_path: String::new(),
+            config_path: String::new(),
+            manifest_path: String::new(),
+            image_dir: String::new(),
+        };
+        assert_eq!(
+            editor_path_for_node(&paths, "RazerNode"),
+            r"D:\UE_5.8\Engine\Binaries\Win64\UnrealEditor.exe"
+        );
+        assert_eq!(
+            editor_path_for_node(&paths, "LanNode"),
+            r"C:\fallback\UnrealEditor.exe"
+        );
     }
 }
