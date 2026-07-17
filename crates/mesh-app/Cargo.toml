@@ -20,6 +20,7 @@ rusqlite.workspace = true
 chrono.workspace = true
 tracing.workspace = true
 include_dir = "0.7"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -118,8 +118,31 @@ try {
             throw "no interactive console user logged on (required for -game rendering)"
         }
         Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
+        # The task action is a small launcher running IN the interactive session:
+        # it starts UE, waits for the main window, then flips TOPMOST on and off
+        # (SetWindowPos) to raise it above existing windows. Windows foreground
+        # lock blocks background-spawned windows from surfacing on their own.
+        $launcherPath = Join-Path $projectDir "launch-$nodeId.ps1"
+        $exeQ = ([string]$request.editor_path) -replace "'", "''"
+        $argQ = ($arguments -join ' ') -replace "'", "''"
+        $launcherLines = @(
+            ('$p = Start-Process -FilePath ''{0}'' -ArgumentList ''{1}'' -PassThru' -f $exeQ, $argQ),
+            'Add-Type -TypeDefinition ''using System; using System.Runtime.InteropServices; public class VoloWin { [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int w, int hh, uint f); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }''',
+            'for ($i = 0; $i -lt 240; $i++) {',
+            '    Start-Sleep -Milliseconds 500',
+            '    $p.Refresh()',
+            '    if ($p.HasExited) { exit 0 }',
+            '    if ($p.MainWindowHandle -ne [IntPtr]::Zero) { break }',
+            '}',
+            'if ($p.MainWindowHandle -ne [IntPtr]::Zero) {',
+            '    [VoloWin]::SetWindowPos($p.MainWindowHandle, [IntPtr](-1), 0, 0, 0, 0, 0x0003) | Out-Null',
+            '    [VoloWin]::SetWindowPos($p.MainWindowHandle, [IntPtr](-2), 0, 0, 0, 0, 0x0003) | Out-Null',
+            '    [VoloWin]::SetForegroundWindow($p.MainWindowHandle) | Out-Null',
+            '}'
+        )
+        Set-Content -LiteralPath $launcherPath -Value $launcherLines -Encoding ASCII
         $taskName = "VoloOutput-$nodeId-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
-        $act = New-ScheduledTaskAction -Execute ([string]$request.editor_path) -Argument ($arguments -join ' ')
+        $act = New-ScheduledTaskAction -Execute "powershell.exe" -Argument ('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $launcherPath)
         $prn = New-ScheduledTaskPrincipal -UserId $consoleUser -LogonType Interactive -RunLevel Limited
         $set = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 12) -AllowStartIfOnBatteries
         Register-ScheduledTask -TaskName $taskName -Action $act -Principal $prn -Settings $set -Force | Out-Null

@@ -230,11 +230,14 @@ pub fn show<T: OutputTransport>(
     }
     let nodes = ordered_nodes(screen)?;
     let remote_image_path = win_join(&paths.image_dir, &format!("frame-{revision}.png"));
+    // UE ImportFileAsTexture2D 把灰度 PNG 导成单通道 G8 纹理，viewport 上整图
+    // 泛红（lanPC 实测）；推送前统一转成 RGB。
+    let local_png = ensure_rgb_png(local_png, revision)?;
 
     // Phase 1: immutable payload everywhere. No visible state changes here.
     for node in &nodes {
         transport
-            .push_file(node, local_png, &remote_image_path)
+            .push_file(node, &local_png, &remote_image_path)
             .map_err(|error| VoloError::Other(format!("push {}: {error}", node.node_id)))?;
     }
 
@@ -305,6 +308,26 @@ fn map_node(node: &OutputNode, result: Result<String, String>) -> VoloResult<Nod
         .map_err(|error| {
             VoloError::Other(format!("{} ({}): {error}", node.node_id, node_host(node)))
         })
+}
+
+/// Returns a path to an RGB8/RGBA8 PNG: the input itself when already
+/// multi-channel, otherwise a converted copy under the OS temp dir.
+fn ensure_rgb_png(local_png: &Path, revision: u64) -> VoloResult<std::path::PathBuf> {
+    let decoded = image::open(local_png)
+        .map_err(|error| VoloError::Other(format!("decode {}: {error}", local_png.display())))?;
+    match decoded {
+        image::DynamicImage::ImageRgb8(_) | image::DynamicImage::ImageRgba8(_) => {
+            Ok(local_png.to_path_buf())
+        }
+        other => {
+            let out = std::env::temp_dir().join(format!("volo-output-frame-{revision}-rgb.png"));
+            other
+                .to_rgb8()
+                .save(&out)
+                .map_err(|error| VoloError::Other(format!("encode {}: {error}", out.display())))?;
+            Ok(out)
+        }
+    }
 }
 
 pub fn node_host(node: &OutputNode) -> String {
@@ -470,7 +493,10 @@ mod tests {
     fn show_pushes_all_images_before_any_manifest() {
         let dir = tempfile::tempdir().unwrap();
         let png = dir.path().join("x.png");
-        std::fs::write(&png, b"png").unwrap();
+        // 真 PNG（1×1 灰度）：show 现在会解码并按需转 RGB，占位字节过不了 decode。
+        image::GrayImage::from_pixel(1, 1, image::Luma([128u8]))
+            .save(&png)
+            .unwrap();
         let fake = Fake {
             calls: Mutex::new(vec![]),
             connected: true,
