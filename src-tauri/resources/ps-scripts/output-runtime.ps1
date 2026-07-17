@@ -27,8 +27,14 @@ try {
         New-Item -ItemType Directory -Force -Path $projectDir | Out-Null
         if (-not [string]::IsNullOrWhiteSpace($manifestDir)) { New-Item -ItemType Directory -Force -Path $manifestDir | Out-Null }
         New-Item -ItemType Directory -Force -Path ([string]$request.image_dir) | Out-Null
-        $version = (Get-Item -LiteralPath ([string]$request.editor_path)).VersionInfo.ProductVersion
-        if (-not ([string]$version).StartsWith("5.8")) {
+        # ProductVersion reads like "++UE5+Release-5.8-CL-55116800" so prefix checks fail;
+        # the authoritative source is Engine/Build/Build.version (JSON, Major/Minor).
+        $engineRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent ([string]$request.editor_path)))
+        $buildFile = Join-Path $engineRoot "Build\Build.version"
+        if (-not (Test-Path -LiteralPath $buildFile -PathType Leaf)) { throw "cannot determine UE version: missing $buildFile" }
+        $build = Get-Content -LiteralPath $buildFile -Raw | ConvertFrom-Json
+        $version = "$($build.MajorVersion).$($build.MinorVersion).$($build.PatchVersion)"
+        if (-not $version.StartsWith("5.8")) {
             throw "unsupported Unreal Engine $version; VoloOutput Blueprint was saved by UE 5.8 and Phase 1 requires UE 5.8"
         }
         Reply $true "preflight passed; UE $version"
