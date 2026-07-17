@@ -106,6 +106,10 @@ try {
             '-windowed',
             ('-ResX={0}' -f [int]$request.window_width),
             ('-ResY={0}' -f [int]$request.window_height),
+            # UE only reads .ndisplay window x/y through a launcher (Switchboard
+            # passes -WinX/-WinY); the engine itself ignores them in -game mode.
+            ('-WinX={0}' -f [int]$request.window_x),
+            ('-WinY={0}' -f [int]$request.window_y),
             '-RemoteControlIsHeadless', '-RCWebControlEnable', '-ClusterForceApplyResponse',
             # dc_dev_mono marks views as stereo views; the engine then draws the
             # "StereoView / Stereo rendering method" on-screen debug lines

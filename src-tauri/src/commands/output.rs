@@ -198,7 +198,9 @@ impl SshOutputTransport {
             "manifest_path": paths.manifest_path,
             "image_dir": paths.image_dir,
             "window_width": node.window_px[0],
-            "window_height": node.window_px[1]
+            "window_height": node.window_px[1],
+            "window_x": node.window_origin_px[0],
+            "window_y": node.window_origin_px[1]
         });
         if let (Some(target), Some(source)) = (args.as_object_mut(), extra.as_object()) {
             target.extend(source.clone());
