@@ -502,8 +502,8 @@ import { listen } from "@tauri-apps/api/event";
     return h('span', { className: 'spill spill--positive' }, h(Icon, { name: 'check', size: 12 }), '已生成');
   }
 
-  function PatternPanel({ s }) {
-    const p = usePattern(s);
+  /* 「去向」段（本机显示器 / nDisplay 集群）—— PatternPanel 与 StagePanel 的测试图段共用 */
+  function OutputDestination({ s, p }) {
     const [destination, setDestination] = useState('local');
     const [clusterPhase, setClusterPhase] = useState('idle');
     const [clusterBusy, setClusterBusy] = useState(false);
@@ -550,23 +550,7 @@ import { listen } from "@tauri-apps/api/event";
     const stopCluster = () => runCluster('停止', () => outputStop(runtimeRequest()), 'idle');
     const phaseRank = { idle: 0, preflight: 1, deployed: 2, running: 3 };
     return h(React.Fragment, null,
-      head('grid', '测试图', 'ChArUco 校正图案', p.gen ? patternBadge(p.gen, p.stale) : null),
-      h(Fold, { label: '参数' },
-        Field('图案方案', h(Sel, { value: p.scheme, options: PATTERN_SCHEMES, onChange: p.setScheme, w: 150 })),
-        Field('屏幕标识码', h('input', { className: 'gw-txt', value: String(SCREEN_ID_CODE), readOnly: true, style: { width: 70, textAlign: 'center' } })),
-        Field('目标屏幕', h('span', { style: { fontSize: 12.5, color: 'var(--chrome-text)', fontFamily: 'var(--font-code)' } }, p.screenId))),
-      p.busy
-        ? h('div', { className: 'gw-grp-body' }, h('div', { style: { fontSize: 11.5, color: 'var(--chrome-dim)', marginBottom: 6 } }, '生成中…'),
-            h('div', { className: 'vmeter vmeter--accent ar-indeterminate' }, h('div', { className: 'vmeter__fill' })))
-        : h('div', { className: 'gw-grp-body' }, h(Button, { variant: p.gen ? 'secondary' : 'accent', size: 'M', icon: h(Icon, { name: p.gen ? 'sync' : 'grid', size: 15 }), onPress: p.runGen }, p.gen ? '重新生成测试图' : '生成测试图')),
-      p.res ? h(Fold, { label: '完成摘要' },
-        h('div', { className: 'gw-derived' },
-          h('div', { className: 'gw-dcell' }, h('div', { className: 'k' }, '覆盖箱体'), h('div', { className: 'v' }, p.res.cabinet_count)),
-          h('div', { className: 'gw-dcell' }, h('div', { className: 'k' }, '标记总数'), h('div', { className: 'v' }, p.res.total_markers))),
-        h('div', { className: 'gw-fileref', style: { marginTop: 8 } }, h('span', { className: 'ic' }, h(Icon, { name: 'folder', size: 14 })),
-          h('div', { className: 'm' }, h('div', { className: 'n' }, p.res.output_dir.split(/[\\/]/).pop() + '/'), h('div', { className: 'd' }, p.res.output_dir)))) : null,
-      p.gen ? h(Fold, { label: '去向' },
-        h('div', { className: 'gw-output-targets' },
+      h('div', { className: 'gw-output-targets' },
           h('button', { className: destination === 'local' ? 'on' : '', onClick: () => setDestination('local') }, h(Icon, { name: 'panel', size: 14 }), '本机显示器'),
           h('button', { className: destination === 'cluster' ? 'on' : '', onClick: () => setDestination('cluster') }, h(Icon, { name: 'node', size: 14 }), 'nDisplay 集群')),
         destination === 'local' ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
@@ -595,7 +579,28 @@ import { listen } from "@tauri-apps/api/event";
               h('details', { className: 'gw-output-log' },
                 h('summary', null, h(Icon, { name: 'doc', size: 12 }), `运行日志 (${outputLogs.length})`),
                 h('div', { className: 'gw-output-logbody' }, outputLogs.length ? outputLogs.map((entry, index) => h('div', { key: index, className: `row ${entry.state || ''}` },
-                  h('span', { className: 'op' }, entry.operation || 'output'), h('span', { className: 'tx' }, entry.message || '—'))) : h('div', { className: 'empty' }, '暂无日志'))))) : null);
+                  h('span', { className: 'op' }, entry.operation || 'output'), h('span', { className: 'tx' }, entry.message || '—'))) : h('div', { className: 'empty' }, '暂无日志')))));
+  }
+
+  function PatternPanel({ s }) {
+    const p = usePattern(s);
+    return h(React.Fragment, null,
+      head('grid', '测试图', 'ChArUco 校正图案', p.gen ? patternBadge(p.gen, p.stale) : null),
+      h(Fold, { label: '参数' },
+        Field('图案方案', h(Sel, { value: p.scheme, options: PATTERN_SCHEMES, onChange: p.setScheme, w: 150 })),
+        Field('屏幕标识码', h('input', { className: 'gw-txt', value: String(SCREEN_ID_CODE), readOnly: true, style: { width: 70, textAlign: 'center' } })),
+        Field('目标屏幕', h('span', { style: { fontSize: 12.5, color: 'var(--chrome-text)', fontFamily: 'var(--font-code)' } }, p.screenId))),
+      p.busy
+        ? h('div', { className: 'gw-grp-body' }, h('div', { style: { fontSize: 11.5, color: 'var(--chrome-dim)', marginBottom: 6 } }, '生成中…'),
+            h('div', { className: 'vmeter vmeter--accent ar-indeterminate' }, h('div', { className: 'vmeter__fill' })))
+        : h('div', { className: 'gw-grp-body' }, h(Button, { variant: p.gen ? 'secondary' : 'accent', size: 'M', icon: h(Icon, { name: p.gen ? 'sync' : 'grid', size: 15 }), onPress: p.runGen }, p.gen ? '重新生成测试图' : '生成测试图')),
+      p.res ? h(Fold, { label: '完成摘要' },
+        h('div', { className: 'gw-derived' },
+          h('div', { className: 'gw-dcell' }, h('div', { className: 'k' }, '覆盖箱体'), h('div', { className: 'v' }, p.res.cabinet_count)),
+          h('div', { className: 'gw-dcell' }, h('div', { className: 'k' }, '标记总数'), h('div', { className: 'v' }, p.res.total_markers))),
+        h('div', { className: 'gw-fileref', style: { marginTop: 8 } }, h('span', { className: 'ic' }, h(Icon, { name: 'folder', size: 14 })),
+          h('div', { className: 'm' }, h('div', { className: 'n' }, p.res.output_dir.split(/[\\/]/).pop() + '/'), h('div', { className: 'd' }, p.res.output_dir)))) : null,
+      p.gen ? h(Fold, { label: '去向' }, h(OutputDestination, { s, p })) : null);
   }
 
   /* ================= 全局校正细节选项（无选中默认） ================= */
@@ -724,9 +729,7 @@ import { listen } from "@tauri-apps/api/event";
         p.busy
           ? h('div', null, h('div', { style: { fontSize: 11.5, color: 'var(--chrome-dim)', marginBottom: 6 } }, '生成中…'), h('div', { className: 'vmeter vmeter--accent ar-indeterminate' }, h('div', { className: 'vmeter__fill' })))
           : h(Button, { variant: p.gen ? 'secondary' : 'accent', size: 'S', icon: h(Icon, { name: p.gen ? 'sync' : 'grid', size: 14 }), onPress: p.runGen }, p.gen ? '重新生成' : '生成测试图'),
-        p.gen ? h('div', { className: 'gw-stage-acts' },
-          h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'eye', size: 13 }), onPress: () => s.setCalDisplay(Object.assign({}, s.calDisplay, { pattern: true })) }, '视口预览'),
-          h(Button, { variant: p.playing ? 'negative' : 'secondary', size: 'S', isDisabled: !p.res, icon: h(Icon, { name: p.playing ? 'pause' : 'play', size: 13 }), onPress: p.togglePlayer }, p.playing ? '停止播放' : '发送到播放器')) : null) : null,
+        p.gen ? h(OutputDestination, { s, p }) : null) : null,
       h(Fold, { label: '测量导入', defOpen: false },
         isTS
           ? (window.VOLO_GRID.flows ? window.VOLO_GRID.flows.total(s) : null)
