@@ -215,6 +215,9 @@ import { meshFuseRun } from "../api/meshFuseCommands";
   function validateOutputTopology(screen, nodes) {
     const pixels = screen.pixels_per_cabinet || [0, 0];
     const canvas = [screen.cabinet_count[0] * pixels[0], screen.cabinet_count[1] * pixels[1]];
+    if (pixels[0] <= 0 || pixels[1] <= 0) {
+      return { canvas, errors: ['请先在参数面板设置箱体像素密度'], warnings: [] };
+    }
     const errors = [];
     const warnings = [];
     const ids = new Set();
@@ -247,7 +250,7 @@ import { meshFuseRun } from "../api/meshFuseCommands";
     const proj = CX.useProj();
     const screenId = s.calActiveScreen;
     const screen = proj.config.screens[screenId];
-    const pixels = screen.pixels_per_cabinet || [1, 1];
+    const pixels = screen.pixels_per_cabinet || [0, 0];
     const canvas = [screen.cabinet_count[0] * pixels[0], screen.cabinet_count[1] * pixels[1]];
     const defaultNodes = [
       { node_id: 'LanNode', machine: { hostname: 'lanPC', ip: '' }, viewport_rect_px: [0, 0, Math.floor(canvas[0] / 2), canvas[1]], window_px: [Math.floor(canvas[0] / 2), canvas[1]], fullscreen: false, primary: true },
