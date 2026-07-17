@@ -107,6 +107,10 @@ try {
             ('-ResX={0}' -f [int]$request.window_width),
             ('-ResY={0}' -f [int]$request.window_height),
             '-RemoteControlIsHeadless', '-RCWebControlEnable', '-ClusterForceApplyResponse',
+            # dc_dev_mono marks views as stereo views; the engine then draws the
+            # "StereoView / Stereo rendering method" on-screen debug lines
+            # (SceneRendering.cpp, !UE_BUILD_SHIPPING). Not acceptable on an LED wall.
+            '-NoScreenMessages',
             ('-abslog="{0}"' -f $logPath)
         )
         # SSH runs as a network logon (session 0): Start-Process there has no desktop
