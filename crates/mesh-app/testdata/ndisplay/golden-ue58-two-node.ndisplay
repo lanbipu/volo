@@ -6,7 +6,7 @@
     "misc": {
       "bFollowLocalPlayerCamera": false,
       "bExitOnEsc": true,
-      "bOverrideViewportsFromExternalConfig": false
+      "bOverrideViewportsFromExternalConfig": true
     },
     "scene": {
       "cameras": {

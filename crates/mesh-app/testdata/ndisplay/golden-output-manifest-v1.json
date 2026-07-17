@@ -1,0 +1,15 @@
+{
+  "schema_version": "volo_output.v1",
+  "revision": 42,
+  "mode": "show",
+  "nodes": {
+    "LanNode": {
+      "image_path": "C:\\ProgramData\\UECM\\ndisplay-output\\images\\frame-42.png",
+      "crop": [800, 0, 800, 600]
+    },
+    "RazerNode": {
+      "image_path": "C:\\ProgramData\\UECM\\ndisplay-output\\images\\frame-42.png",
+      "crop": [0, 0, 800, 600]
+    }
+  }
+}

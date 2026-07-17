@@ -29,6 +29,30 @@ pub struct TopologyValidation {
     pub warnings: Vec<TopologyIssue>,
 }
 
+pub const OUTPUT_MANIFEST_SCHEMA_VERSION: &str = "volo_output.v1";
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputManifestMode {
+    Show,
+    Clear,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OutputManifestNode {
+    pub image_path: String,
+    /// Source crop in `[x, y, width, height]` pixel order.
+    pub crop: [u32; 4],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OutputManifest {
+    pub schema_version: String,
+    pub revision: u64,
+    pub mode: OutputManifestMode,
+    pub nodes: BTreeMap<String, OutputManifestNode>,
+}
+
 impl TopologyValidation {
     pub fn is_valid(&self) -> bool {
         self.errors.is_empty()
@@ -111,11 +135,11 @@ pub fn validate_topology(screen: &ScreenConfig) -> VoloResult<TopologyValidation
 
         if node.window_px != [width, height] {
             push_issue(
-                &mut result.warnings,
-                TopologyIssueSeverity::Warning,
+                &mut result.errors,
+                TopologyIssueSeverity::Error,
                 "resolution_mismatch",
                 format!(
-                    "node '{}' window {:?} differs from viewport size [{width}, {height}]",
+                    "node '{}' window {:?} differs from viewport size [{width}, {height}]; pixel 1:1 output requires equal dimensions",
                     node.node_id, node.window_px
                 ),
                 vec![node.node_id.clone()],
@@ -201,6 +225,80 @@ pub fn validate_topology(screen: &ScreenConfig) -> VoloResult<TopologyValidation
     }
 
     Ok(result)
+}
+
+pub fn generate_manifest_json(
+    screen: &ScreenConfig,
+    revision: u64,
+    mode: OutputManifestMode,
+    image_paths: &BTreeMap<String, String>,
+) -> VoloResult<Value> {
+    let validation = validate_topology(screen)?;
+    if !validation.is_valid() {
+        return Err(VoloError::InvalidInput(format!(
+            "invalid output topology: {}",
+            validation
+                .errors
+                .iter()
+                .map(|issue| issue.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; ")
+        )));
+    }
+
+    let topology = screen.output_topology.as_ref().expect("validated topology");
+    let mut nodes = BTreeMap::new();
+    match mode {
+        OutputManifestMode::Show => {
+            for node in &topology.nodes {
+                let image_path = image_paths.get(&node.node_id).ok_or_else(|| {
+                    VoloError::InvalidInput(format!(
+                        "image_path is missing for node '{}'",
+                        node.node_id
+                    ))
+                })?;
+                if image_path.trim().is_empty() {
+                    return Err(VoloError::InvalidInput(format!(
+                        "image_path is empty for node '{}'",
+                        node.node_id
+                    )));
+                }
+                nodes.insert(
+                    node.node_id.clone(),
+                    OutputManifestNode {
+                        image_path: image_path.clone(),
+                        crop: node.viewport_rect_px,
+                    },
+                );
+            }
+            if image_paths.len() != nodes.len() {
+                let unknown = image_paths
+                    .keys()
+                    .filter(|node_id| !nodes.contains_key(*node_id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                return Err(VoloError::InvalidInput(format!(
+                    "image_path contains unknown nodes: {}",
+                    unknown.join(", ")
+                )));
+            }
+        }
+        OutputManifestMode::Clear => {
+            if !image_paths.is_empty() {
+                return Err(VoloError::InvalidInput(
+                    "clear manifest must not contain image paths".to_string(),
+                ));
+            }
+        }
+    }
+
+    serde_json::to_value(OutputManifest {
+        schema_version: OUTPUT_MANIFEST_SCHEMA_VERSION.to_string(),
+        revision,
+        mode,
+        nodes,
+    })
+    .map_err(|error| VoloError::Other(format!("serialize output manifest: {error}")))
 }
 
 pub fn generate_ndisplay_json(
@@ -302,7 +400,7 @@ pub fn generate_ndisplay_json(
             "misc": {
                 "bFollowLocalPlayerCamera": false,
                 "bExitOnEsc": true,
-                "bOverrideViewportsFromExternalConfig": false
+                "bOverrideViewportsFromExternalConfig": true
             },
             "scene": {
                 "cameras": {
@@ -506,12 +604,12 @@ mod tests {
         assert!(error_codes.contains("viewport_overlap"));
         assert!(error_codes.contains("viewport_out_of_bounds"));
         assert!(error_codes.contains("primary_count"));
+        assert!(error_codes.contains("resolution_mismatch"));
         let warning_codes: HashSet<_> = validation
             .warnings
             .iter()
             .map(|issue| issue.code.as_str())
             .collect();
-        assert!(warning_codes.contains("resolution_mismatch"));
         assert!(warning_codes.contains("multiple_nodes_on_machine"));
     }
 
@@ -541,6 +639,80 @@ mod tests {
             validate_topology(&config),
             Err(VoloError::InvalidInput(message))
                 if message.contains("pixels_per_cabinet")
+        ));
+    }
+
+    #[test]
+    fn resolution_mismatch_is_a_hard_error() {
+        let mut only = node("OnlyNode", 0, true, "lanpc");
+        only.viewport_rect_px = [0, 0, 1600, 600];
+        only.window_px = [800, 600];
+        let validation = validate_topology(&screen(vec![only])).unwrap();
+        assert!(validation
+            .errors
+            .iter()
+            .any(|issue| issue.code == "resolution_mismatch"));
+    }
+
+    #[test]
+    fn generated_show_manifest_matches_v1_contract() {
+        let config = screen(vec![
+            node("RazerNode", 0, true, "razer"),
+            node("LanNode", 800, false, "lanpc"),
+        ]);
+        let paths = BTreeMap::from([
+            (
+                "LanNode".to_string(),
+                r"C:\ProgramData\UECM\ndisplay-output\images\frame-42.png".to_string(),
+            ),
+            (
+                "RazerNode".to_string(),
+                r"C:\ProgramData\UECM\ndisplay-output\images\frame-42.png".to_string(),
+            ),
+        ]);
+        let actual = generate_manifest_json(&config, 42, OutputManifestMode::Show, &paths).unwrap();
+        let expected: Value = serde_json::from_str(include_str!(
+            "../testdata/ndisplay/golden-output-manifest-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn generated_clear_manifest_has_no_node_payloads() {
+        let config = screen(vec![
+            node("RazerNode", 0, true, "razer"),
+            node("LanNode", 800, false, "lanpc"),
+        ]);
+        let actual =
+            generate_manifest_json(&config, 43, OutputManifestMode::Clear, &BTreeMap::new())
+                .unwrap();
+        assert_eq!(actual["schema_version"], OUTPUT_MANIFEST_SCHEMA_VERSION);
+        assert_eq!(actual["revision"], 43);
+        assert_eq!(actual["mode"], "clear");
+        assert_eq!(actual["nodes"], json!({}));
+    }
+
+    #[test]
+    fn show_manifest_rejects_missing_or_unknown_nodes() {
+        let config = screen(vec![
+            node("RazerNode", 0, true, "razer"),
+            node("LanNode", 800, false, "lanpc"),
+        ]);
+        let missing = BTreeMap::from([("LanNode".to_string(), "frame.png".to_string())]);
+        assert!(matches!(
+            generate_manifest_json(&config, 1, OutputManifestMode::Show, &missing),
+            Err(VoloError::InvalidInput(message)) if message.contains("RazerNode")
+        ));
+
+        let unknown = BTreeMap::from([
+            ("LanNode".to_string(), "frame.png".to_string()),
+            ("RazerNode".to_string(), "frame.png".to_string()),
+            ("GhostNode".to_string(), "frame.png".to_string()),
+        ]);
+        assert!(matches!(
+            generate_manifest_json(&config, 1, OutputManifestMode::Show, &unknown),
+            Err(VoloError::InvalidInput(message)) if message.contains("GhostNode")
         ));
     }
 
