@@ -253,10 +253,10 @@ import { meshFuseRun } from "../api/meshFuseCommands";
     const pixels = screen.pixels_per_cabinet || [0, 0];
     const canvas = [screen.cabinet_count[0] * pixels[0], screen.cabinet_count[1] * pixels[1]];
     const defaultNodes = [
-      { node_id: 'LanNode', machine: { hostname: 'lanPC', ip: '' }, viewport_rect_px: [0, 0, Math.floor(canvas[0] / 2), canvas[1]], window_px: [Math.floor(canvas[0] / 2), canvas[1]], fullscreen: false, primary: true },
-      { node_id: 'RazerNode', machine: { hostname: 'Razer', ip: '192.168.10.173' }, viewport_rect_px: [Math.floor(canvas[0] / 2), 0, canvas[0] - Math.floor(canvas[0] / 2), canvas[1]], window_px: [canvas[0] - Math.floor(canvas[0] / 2), canvas[1]], fullscreen: false, primary: false },
+      { node_id: 'LanNode', machine: { hostname: 'lanPC', ip: '' }, viewport_rect_px: [0, 0, Math.floor(canvas[0] / 2), canvas[1]], window_px: [Math.floor(canvas[0] / 2), canvas[1]], window_origin_px: [40, 40], fullscreen: false, primary: true },
+      { node_id: 'RazerNode', machine: { hostname: 'Razer', ip: '192.168.10.173' }, viewport_rect_px: [Math.floor(canvas[0] / 2), 0, canvas[0] - Math.floor(canvas[0] / 2), canvas[1]], window_px: [canvas[0] - Math.floor(canvas[0] / 2), canvas[1]], window_origin_px: [40, 40], fullscreen: false, primary: false },
     ];
-    const [nodes, setNodes] = useState(() => JSON.parse(JSON.stringify((screen.output_topology && screen.output_topology.nodes) || defaultNodes)).map((node) => Object.assign({}, node, { fullscreen: false })));
+    const [nodes, setNodes] = useState(() => JSON.parse(JSON.stringify((screen.output_topology && screen.output_topology.nodes) || defaultNodes)).map((node) => Object.assign({}, node, { fullscreen: false, window_origin_px: node.window_origin_px || [40, 40] })));
     const [saving, setSaving] = useState(false);
     const [saveError, setSaveError] = useState('');
     const validation = validateOutputTopology(screen, nodes);
@@ -264,8 +264,9 @@ import { meshFuseRun } from "../api/meshFuseCommands";
     const patchMachine = (index, patch) => patchNode(index, { machine: Object.assign({}, nodes[index].machine, patch) });
     const patchRect = (index, position, value) => { const next = nodes[index].viewport_rect_px.slice(); next[position] = Math.max(0, Number(value) || 0); patchNode(index, { viewport_rect_px: next }); };
     const patchWindow = (index, position, value) => { const next = nodes[index].window_px.slice(); next[position] = Math.max(0, Number(value) || 0); patchNode(index, { window_px: next }); };
+    const patchOrigin = (index, position, value) => { const next = (nodes[index].window_origin_px || [40, 40]).slice(); next[position] = Number(value) || 0; patchNode(index, { window_origin_px: next }); };
     const setPrimary = (index) => setNodes((current) => current.map((node, i) => Object.assign({}, node, { primary: i === index })));
-    const addNode = () => setNodes((current) => current.concat({ node_id: `Node${current.length + 1}`, machine: { hostname: '', ip: '' }, viewport_rect_px: [0, 0, canvas[0], canvas[1]], window_px: [canvas[0], canvas[1]], fullscreen: false, primary: current.length === 0 }));
+    const addNode = () => setNodes((current) => current.concat({ node_id: `Node${current.length + 1}`, machine: { hostname: '', ip: '' }, viewport_rect_px: [0, 0, canvas[0], canvas[1]], window_px: [canvas[0], canvas[1]], window_origin_px: [40, 40], fullscreen: false, primary: current.length === 0 }));
     const save = async () => {
       if (validation.errors.length || saving) return;
       setSaving(true); setSaveError('');
@@ -303,6 +304,7 @@ import { meshFuseRun } from "../api/meshFuseCommands";
           h('label', null, 'Crop x / y', h('span', { className: 'dual' }, [0, 1].map((position) => h('input', { key: position, className: 'gw-num', type: 'number', min: 0, value: node.viewport_rect_px[position], onChange: (e) => patchRect(index, position, e.target.value) })))),
           h('label', null, 'Crop w / h', h('span', { className: 'dual' }, [2, 3].map((position) => h('input', { key: position, className: 'gw-num', type: 'number', min: 1, value: node.viewport_rect_px[position], onChange: (e) => patchRect(index, position, e.target.value) })))),
           h('label', null, 'Window w / h', h('span', { className: 'dual' }, [0, 1].map((position) => h('input', { key: position, className: 'gw-num', type: 'number', min: 1, value: node.window_px[position], onChange: (e) => patchWindow(index, position, e.target.value) })))),
+          h('label', { title: '窗口在节点虚拟桌面上的左上角坐标（副屏可为其屏幕偏移，如 3840,0）' }, 'Window x / y', h('span', { className: 'dual' }, [0, 1].map((position) => h('input', { key: position, className: 'gw-num', type: 'number', value: (node.window_origin_px || [40, 40])[position], onChange: (e) => patchOrigin(index, position, e.target.value) })))),
           h('label', { className: 'check', title: '一期仅窗口模式' }, h('input', { type: 'checkbox', checked: false, disabled: true }), '全屏输出（一期仅窗口模式）')))),
       h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'plus', size: 13 }), onPress: addNode }, '添加节点'));
     const validationView = h('section', { className: 'topo-validation' },

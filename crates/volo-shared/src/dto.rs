@@ -83,8 +83,18 @@ pub struct OutputNode {
     pub machine: MachineRef,
     pub viewport_rect_px: [u32; 4],
     pub window_px: [u32; 2],
+    /// Top-left corner of the output window on the node's virtual desktop.
+    /// Signed because secondary monitors can sit at negative coordinates.
+    /// Defaults to [40, 40] so topologies saved before this field existed keep
+    /// the historical placement.
+    #[serde(default = "default_window_origin_px")]
+    pub window_origin_px: [i32; 2],
     pub fullscreen: bool,
     pub primary: bool,
+}
+
+fn default_window_origin_px() -> [i32; 2] {
+    [40, 40]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]

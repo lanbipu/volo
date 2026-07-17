@@ -1422,6 +1422,8 @@ export interface OutputNode {
   /** [crop_x, crop_y, crop_width, crop_height]. */
   viewport_rect_px: [number, number, number, number];
   window_px: [number, number];
+  /** 节点虚拟桌面上的窗口左上角坐标；缺省 [40, 40]（旧拓扑兼容）。 */
+  window_origin_px?: [number, number];
   fullscreen: boolean;
   primary: boolean;
 }

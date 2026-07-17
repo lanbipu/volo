@@ -374,8 +374,8 @@ pub fn generate_ndisplay_json(
                 // forward compatibility, but never emit a conflicting mode.
                 "fullScreen": false,
                 "window": {
-                    "x": 40,
-                    "y": 40,
+                    "x": node.window_origin_px[0],
+                    "y": node.window_origin_px[1],
                     "w": node.window_px[0],
                     "h": node.window_px[1]
                 },
@@ -592,6 +592,7 @@ mod tests {
             },
             viewport_rect_px: [x, 0, 800, 600],
             window_px: [800, 600],
+            window_origin_px: [40, 40],
             fullscreen: false,
             primary,
         }

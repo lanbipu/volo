@@ -433,6 +433,7 @@ mod tests {
             },
             viewport_rect_px: [x * 4, 0, 4, 4],
             window_px: [4, 4],
+            window_origin_px: [40, 40],
             fullscreen: false,
             primary,
         }
