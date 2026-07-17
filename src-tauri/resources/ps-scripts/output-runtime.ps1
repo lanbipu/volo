@@ -135,7 +135,10 @@ try {
         $argQ = ($arguments -join ' ') -replace "'", "''"
         $launcherLines = @(
             ('$p = Start-Process -FilePath ''{0}'' -ArgumentList ''{1}'' -PassThru' -f $exeQ, $argQ),
-            'Add-Type -TypeDefinition ''using System; using System.Runtime.InteropServices; public class VoloWin { [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int w, int hh, uint f); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }''',
+            'Add-Type -TypeDefinition ''using System; using System.Runtime.InteropServices; public class VoloWin { [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int w, int hh, uint f); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v); }''',
+            # Physical-pixel coordinates for SetWindowPos (launcher default is not
+            # per-monitor DPI aware; without this the move gets DPI-virtualized).
+            '[VoloWin]::SetProcessDpiAwarenessContext([IntPtr](-4)) | Out-Null',
             'for ($i = 0; $i -lt 240; $i++) {',
             '    Start-Sleep -Milliseconds 500',
             '    $p.Refresh()',
@@ -143,6 +146,10 @@ try {
             '    if ($p.MainWindowHandle -ne [IntPtr]::Zero) { break }',
             '}',
             'if ($p.MainWindowHandle -ne [IntPtr]::Zero) {',
+            # -WinX/-WinY proved unreliable on the real machine (window opened on
+            # the internal panel despite -WinX=3840); force-move from the
+            # interactive session instead. 0x0044 = NOZORDER | SHOWWINDOW.
+            ('    [VoloWin]::SetWindowPos($p.MainWindowHandle, [IntPtr]::Zero, {0}, {1}, {2}, {3}, 0x0044) | Out-Null' -f [int]$request.window_x, [int]$request.window_y, [int]$request.window_width, [int]$request.window_height),
             '    [VoloWin]::SetWindowPos($p.MainWindowHandle, [IntPtr](-1), 0, 0, 0, 0, 0x0003) | Out-Null',
             '    [VoloWin]::SetWindowPos($p.MainWindowHandle, [IntPtr](-2), 0, 0, 0, 0, 0x0003) | Out-Null',
             '    [VoloWin]::SetForegroundWindow($p.MainWindowHandle) | Out-Null',

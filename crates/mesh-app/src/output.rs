@@ -310,6 +310,39 @@ fn map_node(node: &OutputNode, result: Result<String, String>) -> VoloResult<Nod
         })
 }
 
+/// Composites each screen's test-pattern PNG onto a black Stage canvas at its
+/// composite-canvas offset, and returns the temp-file path of the result.
+/// Layers: (screen_id, png_path, [x, y]).
+pub fn compose_stage_image(
+    canvas_px: [u32; 2],
+    layers: &[(String, std::path::PathBuf, [u32; 2])],
+    revision: u64,
+) -> VoloResult<std::path::PathBuf> {
+    let mut canvas = image::RgbImage::new(canvas_px[0].max(1), canvas_px[1].max(1));
+    for (screen_id, path, origin) in layers {
+        if !path.is_file() {
+            return Err(VoloError::InvalidInput(format!(
+                "屏幕 {screen_id} 尚未生成测试图（{} 不存在），请先在该屏生成测试图",
+                path.display()
+            )));
+        }
+        let layer = image::open(path)
+            .map_err(|error| VoloError::Other(format!("decode {}: {error}", path.display())))?
+            .to_rgb8();
+        image::imageops::replace(
+            &mut canvas,
+            &layer,
+            i64::from(origin[0]),
+            i64::from(origin[1]),
+        );
+    }
+    let out = std::env::temp_dir().join(format!("volo-output-stage-{revision}.png"));
+    canvas
+        .save(&out)
+        .map_err(|error| VoloError::Other(format!("encode {}: {error}", out.display())))?;
+    Ok(out)
+}
+
 /// Returns a path to an RGB8/RGBA8 PNG: the input itself when already
 /// multi-channel, otherwise a converted copy under the OS temp dir.
 fn ensure_rgb_png(local_png: &Path, revision: u64) -> VoloResult<std::path::PathBuf> {
