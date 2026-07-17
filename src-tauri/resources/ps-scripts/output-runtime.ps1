@@ -109,12 +109,42 @@ try {
             '-RemoteControlIsHeadless', '-RCWebControlEnable', '-ClusterForceApplyResponse',
             ('-abslog="{0}"' -f $logPath)
         )
-        # This is the operator-visible nDisplay output window, so it must not be hidden.
-        $process = Start-Process -FilePath ([string]$request.editor_path) -ArgumentList $arguments -PassThru
-        Start-Sleep -Seconds 2
-        $process.Refresh()
-        if ($process.HasExited) { throw "UE exited immediately after launch (exit $($process.ExitCode)); log=$logPath" }
-        Reply $true "launched PID=$($process.Id); log=$logPath"
+        # SSH runs as a network logon (session 0): Start-Process there has no desktop
+        # and D3D12 device creation fails with DXGI_ERROR_NOT_CURRENTLY_AVAILABLE.
+        # Launch through an Interactive-logon scheduled task instead (the verified
+        # technique from start-ue-interactive.ps1 / PSO warmup).
+        $consoleUser = (Get-CimInstance Win32_ComputerSystem).UserName
+        if ([string]::IsNullOrWhiteSpace($consoleUser)) {
+            throw "no interactive console user logged on (required for -game rendering)"
+        }
+        Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
+        $taskName = "VoloOutput-$nodeId-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+        $act = New-ScheduledTaskAction -Execute ([string]$request.editor_path) -Argument ($arguments -join ' ')
+        $prn = New-ScheduledTaskPrincipal -UserId $consoleUser -LogonType Interactive -RunLevel Limited
+        $set = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 12) -AllowStartIfOnBatteries
+        Register-ScheduledTask -TaskName $taskName -Action $act -Principal $prn -Settings $set -Force | Out-Null
+        $t0 = Get-Date
+        Start-ScheduledTask -TaskName $taskName
+        $process = $null
+        $deadline = (Get-Date).AddSeconds(90)
+        while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 1500
+            $process = Get-CimInstance Win32_Process -Filter "Name='UnrealEditor.exe'" |
+                Where-Object {
+                    $_.CommandLine -and
+                    $_.CommandLine.IndexOf($project, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+                    $_.CreationDate -ge $t0.AddSeconds(-5)
+                } |
+                Select-Object -First 1
+            if ($process) { break }
+        }
+        if (-not $process) {
+            Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+            throw "UnrealEditor did not appear within 90s of task start (task instance stopped); log=$logPath"
+        }
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+        Reply $true "launched PID=$($process.ProcessId); log=$logPath"
         exit 0
     }
 
