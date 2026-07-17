@@ -414,12 +414,23 @@ fn finish_operation(
     }
 }
 
+/// Windows `resource_dir()` can come back verbatim-prefixed (`\\?\C:\...`);
+/// scp parses the `:` in that prefix as a remote-host separator, so strip it.
+fn strip_verbatim(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(stripped) => PathBuf::from(stripped),
+        None => path,
+    }
+}
+
 fn template_root(app: &AppHandle) -> VoloResult<PathBuf> {
-    let bundled = app
-        .path()
-        .resource_dir()
-        .map_err(|error| VoloError::Io(error.to_string()))?
-        .join("ue-template/VoloOutput");
+    let bundled = strip_verbatim(
+        app.path()
+            .resource_dir()
+            .map_err(|error| VoloError::Io(error.to_string()))?
+            .join("ue-template/VoloOutput"),
+    );
     if bundled.is_dir() {
         return Ok(bundled);
     }
