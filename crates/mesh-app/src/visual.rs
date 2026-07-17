@@ -1674,10 +1674,11 @@ output:
         let value: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(manifest).unwrap()).unwrap();
         assert_eq!(value["views"].as_array().unwrap().len(), 1);
-        assert!(value["views"][0]["images"][0]
+        let image_path = value["views"][0]["images"][0]
             .as_str()
             .unwrap()
-            .contains("captures/normal/pose-01.png"));
+            .replace('\\', "/");
+        assert!(image_path.contains("captures/normal/pose-01.png"));
     }
 
     #[test]
