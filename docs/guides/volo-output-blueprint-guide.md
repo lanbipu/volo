@@ -19,7 +19,7 @@
 
 | 变量 | 类型 | 默认值 |
 | --- | --- | --- |
-| `ManifestPath` | String | `C:\ProgramData\UECM\ndisplay-output\session\manifest-spike.json` |
+| `ManifestPath` | String | `C:\ProgramData\UECM\ndisplay-output\session\manifest.json` |
 | `LastRevision` | Integer | `-1` |
 | `ActiveTexture` | Texture2D Object Reference | 空 |
 | `PollInterval` | Float | `0.5` |
@@ -37,11 +37,11 @@
 3. `mode == "clear"` 时调用 `SetReplaceTextureFlagForAllViewports(false)`，成功后更新 revision。
 4. show 路径调用 `Import File as Texture 2D`，结果写入 `ActiveTexture`，依次设置 `SRGB=true`、`MipGenSettings=NoMipmaps`、`Filter=Nearest`。
 5. 通过 `Get Current Config Data → Cluster → Nodes → Find(Get Node ID) → Viewports → Values → [0]` 定位本节点 viewport。
-6. 组装 Replace：`bAllowReplace=true`、`SourceTexture=ActiveTexture`、`bShouldUseTextureRegion=true`，`TextureRegion` 写 manifest crop。
+6. 从顶层读取 `image_path` 与 `crop_x`、`crop_y`、`crop_w`、`crop_h`。组装 Replace：`bAllowReplace=true`、`SourceTexture=ActiveTexture`、`bShouldUseTextureRegion=true`，`TextureRegion` 写入这四个 crop 值。
 7. `Set Members in RenderSettings` 后必须连接 `Set Render Settings` 写回；只修改 struct 副本不会生效。
 8. 调用 `SetReplaceTextureFlagForAllViewports(true)`；全部成功后才更新 `LastRevision`。
 
-`TextureRegion` 在不同 Blueprint UI 中可能显示为 `IntRect`，也可能展开成 `Origin + Size`，按实际引脚形态填写同一 crop 四元组。
+`TextureRegion` 在不同 Blueprint UI 中可能显示为 `IntRect`，也可能展开成 `Origin + Size`，按实际引脚形态填写同一组 `crop_x/y/w/h`。
 
 ## 6. nDisplay 配置命名
 

@@ -39,18 +39,20 @@ pub enum OutputManifestMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OutputManifestNode {
-    pub image_path: String,
-    /// Source crop in `[x, y, width, height]` pixel order.
-    pub crop: [u32; 4],
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OutputManifest {
     pub schema_version: String,
     pub revision: u64,
     pub mode: OutputManifestMode,
-    pub nodes: BTreeMap<String, OutputManifestNode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crop_x: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crop_y: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crop_w: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crop_h: Option<u32>,
 }
 
 impl TopologyValidation {
@@ -232,7 +234,7 @@ pub fn generate_manifest_json(
     revision: u64,
     mode: OutputManifestMode,
     image_paths: &BTreeMap<String, String>,
-) -> VoloResult<Value> {
+) -> VoloResult<BTreeMap<String, Value>> {
     let validation = validate_topology(screen)?;
     if !validation.is_valid() {
         return Err(VoloError::InvalidInput(format!(
@@ -247,7 +249,7 @@ pub fn generate_manifest_json(
     }
 
     let topology = screen.output_topology.as_ref().expect("validated topology");
-    let mut nodes = BTreeMap::new();
+    let mut manifests = BTreeMap::new();
     match mode {
         OutputManifestMode::Show => {
             for node in &topology.nodes {
@@ -263,18 +265,24 @@ pub fn generate_manifest_json(
                         node.node_id
                     )));
                 }
-                nodes.insert(
-                    node.node_id.clone(),
-                    OutputManifestNode {
-                        image_path: image_path.clone(),
-                        crop: node.viewport_rect_px,
-                    },
-                );
+                let [crop_x, crop_y, crop_w, crop_h] = node.viewport_rect_px;
+                let manifest = serde_json::to_value(OutputManifest {
+                    schema_version: OUTPUT_MANIFEST_SCHEMA_VERSION.to_string(),
+                    revision,
+                    mode,
+                    image_path: Some(image_path.clone()),
+                    crop_x: Some(crop_x),
+                    crop_y: Some(crop_y),
+                    crop_w: Some(crop_w),
+                    crop_h: Some(crop_h),
+                })
+                .map_err(|error| VoloError::Other(format!("serialize output manifest: {error}")))?;
+                manifests.insert(node.node_id.clone(), manifest);
             }
-            if image_paths.len() != nodes.len() {
+            if image_paths.len() != manifests.len() {
                 let unknown = image_paths
                     .keys()
-                    .filter(|node_id| !nodes.contains_key(*node_id))
+                    .filter(|node_id| !manifests.contains_key(*node_id))
                     .cloned()
                     .collect::<Vec<_>>();
                 return Err(VoloError::InvalidInput(format!(
@@ -289,16 +297,23 @@ pub fn generate_manifest_json(
                     "clear manifest must not contain image paths".to_string(),
                 ));
             }
+            for node in &topology.nodes {
+                let manifest = serde_json::to_value(OutputManifest {
+                    schema_version: OUTPUT_MANIFEST_SCHEMA_VERSION.to_string(),
+                    revision,
+                    mode,
+                    image_path: None,
+                    crop_x: None,
+                    crop_y: None,
+                    crop_w: None,
+                    crop_h: None,
+                })
+                .map_err(|error| VoloError::Other(format!("serialize output manifest: {error}")))?;
+                manifests.insert(node.node_id.clone(), manifest);
+            }
         }
     }
-
-    serde_json::to_value(OutputManifest {
-        schema_version: OUTPUT_MANIFEST_SCHEMA_VERSION.to_string(),
-        revision,
-        mode,
-        nodes,
-    })
-    .map_err(|error| VoloError::Other(format!("serialize output manifest: {error}")))
+    Ok(manifests)
 }
 
 pub fn generate_ndisplay_json(
@@ -675,7 +690,8 @@ mod tests {
             "../testdata/ndisplay/golden-output-manifest-v1.json"
         ))
         .unwrap();
-        assert_eq!(actual, expected);
+        assert_eq!(actual["LanNode"], expected);
+        assert_eq!(actual["RazerNode"]["crop_x"], 0);
     }
 
     #[test]
@@ -687,10 +703,14 @@ mod tests {
         let actual =
             generate_manifest_json(&config, 43, OutputManifestMode::Clear, &BTreeMap::new())
                 .unwrap();
-        assert_eq!(actual["schema_version"], OUTPUT_MANIFEST_SCHEMA_VERSION);
-        assert_eq!(actual["revision"], 43);
-        assert_eq!(actual["mode"], "clear");
-        assert_eq!(actual["nodes"], json!({}));
+        assert_eq!(actual.len(), 2);
+        for manifest in actual.values() {
+            assert_eq!(manifest["schema_version"], OUTPUT_MANIFEST_SCHEMA_VERSION);
+            assert_eq!(manifest["revision"], 43);
+            assert_eq!(manifest["mode"], "clear");
+            assert!(manifest.get("image_path").is_none());
+            assert!(manifest.get("crop_x").is_none());
+        }
     }
 
     #[test]

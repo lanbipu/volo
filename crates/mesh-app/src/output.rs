@@ -219,13 +219,16 @@ pub fn show<T: OutputTransport>(
         .iter()
         .map(|node| (node.node_id.clone(), remote_image_path.clone()))
         .collect::<BTreeMap<_, _>>();
-    let manifest =
+    let manifests =
         generate_manifest_json(screen, revision, OutputManifestMode::Show, &image_paths)?;
-    let manifest = serde_json::to_string(&manifest)?;
 
     // Phase 2: atomic manifest replacement. Secondary-first, primary-last.
     let mut results = Vec::with_capacity(nodes.len());
     for node in &nodes {
+        let manifest = manifests
+            .get(&node.node_id)
+            .expect("manifest generated for every validated node");
+        let manifest = serde_json::to_string(manifest)?;
         results.push(map_node(
             node,
             transport.publish_manifest(node, &paths.manifest_path, &manifest),
@@ -245,15 +248,18 @@ pub fn clear<T: OutputTransport>(
     revision: u64,
 ) -> VoloResult<PublishResult> {
     let nodes = ordered_nodes(screen)?;
-    let manifest = generate_manifest_json(
+    let manifests = generate_manifest_json(
         screen,
         revision,
         OutputManifestMode::Clear,
         &BTreeMap::new(),
     )?;
-    let manifest = serde_json::to_string(&manifest)?;
     let mut results = Vec::with_capacity(nodes.len());
     for node in &nodes {
+        let manifest = manifests
+            .get(&node.node_id)
+            .expect("manifest generated for every validated node");
+        let manifest = serde_json::to_string(manifest)?;
         results.push(map_node(
             node,
             transport.publish_manifest(node, &paths.manifest_path, &manifest),
@@ -348,11 +354,16 @@ mod tests {
                 .push(format!("text:{}:{remote}", n.node_id));
             Ok("ok".into())
         }
-        fn publish_manifest(&self, n: &OutputNode, _: &str, _: &str) -> Result<String, String> {
+        fn publish_manifest(
+            &self,
+            n: &OutputNode,
+            _: &str,
+            content: &str,
+        ) -> Result<String, String> {
             self.calls
                 .lock()
                 .unwrap()
-                .push(format!("manifest:{}", n.node_id));
+                .push(format!("manifest:{}:{content}", n.node_id));
             Ok("ok".into())
         }
     }
@@ -432,6 +443,21 @@ mod tests {
             .unwrap();
         assert_eq!(first_manifest, 2);
         assert!(calls[0].contains("frame-7.png"));
+        let secondary: serde_json::Value = serde_json::from_str(
+            calls[first_manifest]
+                .strip_prefix("manifest:secondary:")
+                .unwrap(),
+        )
+        .unwrap();
+        let primary: serde_json::Value = serde_json::from_str(
+            calls[first_manifest + 1]
+                .strip_prefix("manifest:primary:")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(secondary["crop_x"], 4);
+        assert_eq!(primary["crop_x"], 0);
+        assert!(secondary.get("nodes").is_none());
     }
 
     #[test]

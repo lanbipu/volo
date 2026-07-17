@@ -127,6 +127,7 @@ config 和 Blueprint asset 已存在，避免绕过部署 gate。
 - show 的远端文件名为 `frame-<revision>.png`，同一 session 不覆盖旧图片。
 - 所有节点 PNG 推送完成之前，不允许替换任何 manifest。
 - manifest 使用 UTF-8 无 BOM 写入 `<manifest>.tmp`，再由同卷 `Move-Item -Force` 原子覆盖。
+- 每个节点收到一份顶层含 `image_path`、`crop_x/y/w/h` 的扁平 manifest；clear 只含 schema、revision、mode。
 - manifest 发布仍按 secondary-first、primary-last 执行。
 - crop 永远来自 `OutputNode.viewport_rect_px`，不允许 command 调用方另传一份漂移值。
 
