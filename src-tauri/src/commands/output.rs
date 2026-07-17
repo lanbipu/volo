@@ -253,12 +253,15 @@ impl OutputTransport for SshOutputTransport {
     }
     fn push_file(&self, node: &OutputNode, local: &Path, remote: &str) -> Result<(), String> {
         let user = self.ssh_user.as_deref().unwrap_or(&self.exec.default_user);
+        // 本地路径可能来自 canonicalize/resource_dir，Windows 上带 \\?\ verbatim
+        // 前缀会让 scp 把冒号解析成远程主机分隔符——统一在传输层剥掉。
+        let local = strip_verbatim(local.to_path_buf());
         scp_push_file(
             &self.exec.key_path,
             &self.exec.known_hosts,
             user,
             &output::node_host(node),
-            local,
+            &local,
             &remote.replace('\\', "/"),
         )
         .map_err(|error| error.to_string())
