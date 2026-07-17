@@ -513,6 +513,7 @@ pub async fn output_deploy(
 #[tauri::command]
 pub async fn output_start(
     app: AppHandle,
+    sessions: State<'_, OutputSessions>,
     request: RuntimeRequest,
 ) -> VoloResult<OutputCommandResult> {
     let total = node_count(&request.screen);
@@ -526,13 +527,14 @@ pub async fn output_start(
         "正在启动",
         None,
     );
+    // 上一会话的 manifest（mode=show）残留在节点上；新 UE 的 LastRevision=-1
+    // 会把它当新指令立即上屏旧图。启动前先发布 clear，保证起始为黑场。
+    let clear_revision = sessions.reserve_revision(&request.session_id)?;
     let session_id = request.session_id.clone();
     let result = tokio::task::spawn_blocking(move || {
-        output::start(
-            &transport(request.ssh_user)?,
-            &request.screen,
-            &request.paths,
-        )
+        let transport = transport(request.ssh_user)?;
+        output::clear(&transport, &request.screen, &request.paths, clear_revision)?;
+        output::start(&transport, &request.screen, &request.paths)
     })
     .await
     .map_err(|error| VoloError::Other(format!("output start task failed: {error}")))?;
