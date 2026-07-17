@@ -352,6 +352,18 @@ pub fn show_stage<T: OutputTransport>(
     // Phase 1: per-node image compose + push. No visible state changes here.
     for node in &nodes {
         let [cx, cy, cw, ch] = node.viewport_rect_px;
+        // Fast path: crop exactly matches one screen's layer -> push that
+        // screen's pattern PNG as-is (no re-encode, pixel-identical).
+        if let Some(exact) = layers.iter().find(|layer| {
+            let img = &decoded[layer.screen_id.as_str()];
+            layer.origin_px == [cx, cy] && img.width() == cw && img.height() == ch
+        }) {
+            let local = ensure_rgb_png(&exact.image_path, revision)?;
+            transport
+                .push_file(node, &local, &remote_image_path)
+                .map_err(|error| VoloError::Other(format!("push {}: {error}", node.node_id)))?;
+            continue;
+        }
         let mut canvas = image::RgbImage::new(cw.max(1), ch.max(1));
         for layer in layers {
             let img = &decoded[layer.screen_id.as_str()];
