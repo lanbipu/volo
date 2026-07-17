@@ -19,7 +19,7 @@ import { listen } from "@tauri-apps/api/event";
 
 (function () {
   const { Button, Switch } = window.Spectrum2DesignSystem_b6d1b3;
-  const { useState, useRef, useEffect } = React;
+  const { useState, useRef, useEffect, useMemo } = React;
   const h = React.createElement;
   const CX = window.VOLO_CAL2;
   const ROLE = (window.VOLO_GRID && window.VOLO_GRID.ROLE) || {};
@@ -64,7 +64,12 @@ import { listen } from "@tauri-apps/api/event";
   function ScreenPresets({ s, proj, editingId, setEditingId }) {
     const screens = Object.keys(proj.config.screens);
     const active = s.calActiveScreen;
-    const switchTo = (id) => { s.setCalActiveScreen(id); s.setCalDraftScreen(null); s.setCalSel({ type: 'screen' }); };
+    const selectedIds = (window.VOLO_GRID && window.VOLO_GRID.selectedScreenIds)
+      ? window.VOLO_GRID.selectedScreenIds(s) : [];
+    const switchTo = (id, e) => {
+      if (e && (e.ctrlKey || e.metaKey)) { window.VOLO_GRID.toggleScreenSel(s, id); return; }
+      s.setCalActiveScreen(id); s.setCalDraftScreen(null); s.setCalSel({ type: 'screen' });
+    };
     const renameScreen = async (oldId, rawName) => {
       const name = (rawName || '').trim();
       setEditingId(null);
@@ -122,13 +127,14 @@ import { listen } from "@tauri-apps/api/event";
       h('div', { className: 'gw-parent-h' }, h(Icon, { name: 'panel', size: 14 }), '屏幕预设'),
       h('div', { className: 'gw-presets' }, screens.map((id) => {
         const sc = proj.config.screens[id];
-        return h('div', { key: id, className: 'gw-preset' + (id === active ? ' on' : ''), onClick: () => switchTo(id), onDoubleClick: () => setEditingId(id) },
+        const on = selectedIds.includes(id) || id === active;
+        return h('div', { key: id, className: 'gw-preset' + (on ? ' on' : ''), onClick: (e) => switchTo(id, e), onDoubleClick: () => setEditingId(id) },
           h('span', { className: 'ic' }, h(Icon, { name: 'panel', size: 14 })),
           editingId === id
             ? h('input', { className: 'gw-preset-edit', autoFocus: true, defaultValue: id, onClick: (e) => e.stopPropagation(),
                 onKeyDown: (e) => { if (e.key === 'Enter') renameScreen(id, e.target.value); else if (e.key === 'Escape') setEditingId(null); },
                 onBlur: (e) => renameScreen(id, e.target.value) })
-            : h('span', { className: 'nm', title: '双击或 F2 重命名' }, id),
+            : h('span', { className: 'nm', title: '双击或 F2 重命名 · Ctrl/⌘ 多选' }, id),
           h('span', { className: 'mt' }, sc.cabinet_count[0] + '×' + sc.cabinet_count[1]),
           screens.length > 1 ? h('button', { className: 'rm', title: '删除预设', onClick: (e) => { e.stopPropagation(); delScreen(id); } }, h(Icon, { name: 'trash', size: 12 })) : null);
       })),
@@ -454,25 +460,38 @@ import { listen } from "@tauri-apps/api/event";
     manifest_path: 'C:\\ProgramData\\UECM\\ndisplay-output\\session\\manifest.json',
     image_dir: 'C:\\ProgramData\\UECM\\ndisplay-output\\session\\frames',
   };
-  function usePattern(s) {
+  function usePattern(s, screenIds) {
     const proj = CX.useProj();
-    const screenId = s.calActiveScreen;
+    const ids = (screenIds && screenIds.length) ? screenIds : [s.calActiveScreen];
+    const screenId = ids[0];
     const [scheme, setScheme] = useState('vpqsp');
     const [busy, setBusy] = useState(false);
     const [playing, setPlaying] = useState(false);
+    const genN = ids.filter((id) => proj.patternGenByScreen && proj.patternGenByScreen[id]).length;
+    const gen = genN === ids.length && ids.length > 0;
+    const stale = ids.some((id) => proj.patternGenByScreen && proj.patternGenByScreen[id] && proj.patternStaleByScreen && proj.patternStaleByScreen[id]);
     const res = proj.patternGenByScreen && proj.patternGenByScreen[screenId];
-    const gen = !!res;
-    const stale = !!(gen && proj.patternStaleByScreen && proj.patternStaleByScreen[screenId]);
     const runGen = async () => {
       if (busy) return;
       setBusy(true);
       try {
-        const r = await meshVisualGeneratePattern(proj.path, screenId, scheme, SCREEN_ID_CODE, null);
-        CX.projStore.patch({
-          patternGenByScreen: Object.assign({}, proj.patternGenByScreen, { [screenId]: r }),
-          patternStaleByScreen: Object.assign({}, proj.patternStaleByScreen, { [screenId]: false }),
-        });
-        s.setCalReceipt({ tone: 'ok', text: `已生成测试图 · ${r.cabinet_count} 箱体` });
+        const nextGen = Object.assign({}, proj.patternGenByScreen);
+        const nextStale = Object.assign({}, proj.patternStaleByScreen);
+        let last = null;
+        let failed = null;
+        await Promise.all(ids.map(async (id) => {
+          try {
+            const result = await meshVisualGeneratePattern(proj.path, id, scheme, SCREEN_ID_CODE, null);
+            nextGen[id] = result;
+            nextStale[id] = false;
+            last = result;
+            CX.projStore.patch({ patternGenByScreen: Object.assign({}, nextGen), patternStaleByScreen: Object.assign({}, nextStale) });
+          } catch (e) {
+            if (!failed) failed = e;
+          }
+        }));
+        if (failed) throw failed;
+        s.setCalReceipt({ tone: 'ok', text: ids.length > 1 ? `已生成测试图 · ${ids.length} 块屏幕` : `已生成测试图 · ${last.cabinet_count} 箱体` });
       } catch (e) {
         const msg = `测试图生成失败 · ${e && e.message ? e.message : e}`;
         s.pushLog({ lv: 'err', cat: 'calibrate', msg });
@@ -496,10 +515,14 @@ import { listen } from "@tauri-apps/api/event";
       } catch (e) { s.pushLog({ lv: 'err', cat: 'calibrate', msg: `发送到播放器失败 · ${e && e.message ? e.message : e}` }); }
     };
     const openFolder = () => { if (res && typeof res === 'object' && res.output_dir) revealPath(res.output_dir).catch(() => {}); };
-    return { proj, screenId, scheme, setScheme, busy, runGen, gen, stale, res: (res && typeof res === 'object') ? res : null, playing, togglePlayer, openFolder };
+    return { proj, screenId, screenIds: ids, scheme, setScheme, busy, runGen, gen, genN, stale, res: (res && typeof res === 'object') ? res : null, playing, togglePlayer, openFolder };
   }
-  function patternBadge(gen, stale) {
-    if (!gen) return h('span', { className: 'spill spill--neutral' }, h('span', { style: { fontWeight: 700 } }, '—'), '未生成');
+  function patternBadge(stale, genN, total) {
+    if (total > 1) {
+      if (genN === total) return h('span', { className: 'spill spill--positive' }, h(Icon, { name: 'check', size: 12 }), '已生成 ' + genN + ' / ' + total + ' 屏');
+      return h('span', { className: 'spill spill--notice' }, h(Icon, { name: 'alert', size: 12 }), '已生成 ' + (genN || 0) + ' / ' + total + ' 屏');
+    }
+    if (genN !== total || total === 0) return h('span', { className: 'spill spill--neutral' }, h('span', { style: { fontWeight: 700 } }, '—'), '未生成');
     if (stale) return h('span', { className: 'spill spill--notice' }, h(Icon, { name: 'alert', size: 12 }), '已过期');
     return h('span', { className: 'spill spill--positive' }, h(Icon, { name: 'check', size: 12 }), '已生成');
   }
@@ -512,9 +535,12 @@ import { listen } from "@tauri-apps/api/event";
     const [nodeStates, setNodeStates] = useState({});
     const [outputLogs, setOutputLogs] = useState([]);
     const [runtimePaths, setRuntimePaths] = useState(OUTPUT_PATHS);
-    const screen = p.proj.config && p.proj.config.screens[p.screenId];
-    const nodes = (screen && screen.output_topology && screen.output_topology.nodes) || [];
-    const sessionId = `${p.proj.path}::${p.screenId}`;
+    const topology = useMemo(() => window.resolveProjectTopology(p.proj.config), [p.proj.config]);
+    const nodes = (topology && topology.nodes) || [];
+    const screen = useMemo(() => topology
+      ? window.stageScreenForOutput(p.proj.config, topology)
+      : (p.proj.config && p.proj.config.screens[p.screenId]), [p.proj.config, topology, p.screenId]);
+    const sessionId = `${p.proj.path}::stage`;
     const appendOutputLog = (entry) => setOutputLogs((current) => current.concat(entry).slice(-80));
     useEffect(() => {
       let alive = true;
@@ -576,43 +602,56 @@ import { listen } from "@tauri-apps/api/event";
     const clearCluster = () => runCluster('清空', () => outputShow(Object.assign(runtimeRequest(), { mode: 'clear', image_path: null })), 'running');
     const stopCluster = () => runCluster('停止', () => outputStop(runtimeRequest()), 'idle');
     const phaseRank = { idle: 0, preflight: 1, deployed: 2, running: 3 };
-    return h(React.Fragment, null,
-      h('div', { className: 'gw-output-targets' },
-          h('button', { className: destination === 'local' ? 'on' : '', onClick: () => setDestination('local') }, h(Icon, { name: 'panel', size: 14 }), '本机显示器'),
-          h('button', { className: destination === 'cluster' ? 'on' : '', onClick: () => setDestination('cluster') }, h(Icon, { name: 'node', size: 14 }), 'nDisplay 集群')),
-        destination === 'local' ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
-          h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'eye', size: 13 }), onPress: () => s.setCalDisplay(Object.assign({}, s.calDisplay, { pattern: true })) }, '在视口中预览'),
-          h(Button, { variant: p.playing ? 'negative' : 'secondary', size: 'S', isDisabled: !p.res, icon: h(Icon, { name: p.playing ? 'pause' : 'play', size: 13 }), onPress: p.togglePlayer }, p.playing ? '停止播放' : '发送到播放器'),
+    return h('div', { className: 'nd-deliver' },
+      h('div', { className: 'nd-target' },
+        h('button', { className: 'nd-tbtn' + (destination === 'local' ? ' on' : ''), onClick: () => setDestination('local') },
+          h(Icon, { name: 'panel', size: 15 }), h('div', { className: 'm' }, h('b', null, '本机显示器'), h('span', null, '投到本机 HDMI'))),
+        h('button', { className: 'nd-tbtn' + (destination === 'cluster' ? ' on' : ''), onClick: () => setDestination('cluster') },
+          h(Icon, { name: 'net', size: 15 }), h('div', { className: 'm' }, h('b', null, 'nDisplay 集群'), h('span', null, '渲染服务器上墙')))),
+      destination === 'local' ? h('div', { className: 'nd-monitor', style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+          h(Button, { variant: p.playing ? 'negative' : 'accent', size: 'S', isDisabled: !p.res, icon: h(Icon, { name: p.playing ? 'pause' : 'play', size: 13 }), onPress: p.togglePlayer }, p.playing ? '停止投放' : '投放到显示器'),
           h(Button, { variant: 'secondary', size: 'S', isDisabled: !p.res, icon: h(Icon, { name: 'external', size: 13 }), onPress: p.openFolder }, '打开输出文件夹'))
-          : h('div', { className: 'gw-output-cluster' },
-              h('div', { className: 'gw-output-flow' },
-                h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'sliders', size: 13 }), onPress: openTopology }, '配置拓扑'),
-                h(Button, { variant: 'secondary', size: 'S', isDisabled: clusterBusy || !nodes.length, icon: h(Icon, { name: 'check', size: 13 }), onPress: preflight }, '预检'),
-                h(Button, { variant: 'secondary', size: 'S', isDisabled: clusterBusy || phaseRank[clusterPhase] < 1, icon: h(Icon, { name: 'download', size: 13 }), onPress: deploy }, '部署'),
-                h(Button, { variant: 'accent', size: 'S', isDisabled: clusterBusy || phaseRank[clusterPhase] < 2, icon: h(Icon, { name: 'play', size: 13 }), onPress: startCluster }, '启动')),
-              h('div', { className: 'gw-output-flow' },
-                h(Button, { variant: 'secondary', size: 'S', isDisabled: clusterBusy || clusterPhase !== 'running', icon: h(Icon, { name: 'eye', size: 13 }), onPress: showCluster }, '显示测试图'),
-                h(Button, { variant: 'secondary', size: 'S', isDisabled: clusterBusy || clusterPhase !== 'running', icon: h(Icon, { name: 'minus', size: 13 }), onPress: clearCluster }, '清空'),
-                h(Button, { variant: 'negative', size: 'S', isDisabled: clusterBusy || clusterPhase !== 'running', icon: h(Icon, { name: 'pause', size: 13 }), onPress: stopCluster }, '停止')),
-              nodes.length ? h('div', { className: 'gw-output-nodes' }, nodes.map((node) => {
-                const state = nodeStates[node.node_id];
-                const tone = state && state.state === 'ok' ? 'positive' : state && state.state === 'error' ? 'negative' : clusterBusy ? 'notice' : 'neutral';
-                const label = state ? state.message : node.primary ? 'Primary · 待命' : 'Secondary · 待命';
-                return h('div', { key: node.node_id, className: 'gw-output-node' },
-                  h('span', { className: `cap-pill cap-pill--${tone}` }, h(Icon, { name: tone === 'positive' ? 'check' : tone === 'negative' ? 'alert' : 'info', size: 11 }), node.node_id),
-                  h('span', { className: 'host' }, node.machine.ip || node.machine.hostname),
-                  h('span', { className: 'msg', title: label }, label));
-              })) : h('div', { className: 'gw-stage-warn' }, h(Icon, { name: 'alert', size: 13 }), '尚未配置输出拓扑'),
-              h('details', { className: 'gw-output-log' },
-                h('summary', null, h(Icon, { name: 'doc', size: 12 }), `运行日志 (${outputLogs.length})`),
-                h('div', { className: 'gw-output-logbody' }, outputLogs.length ? outputLogs.map((entry, index) => h('div', { key: index, className: `row ${entry.state || ''}` },
-                  h('span', { className: 'op' }, entry.operation || 'output'), h('span', { className: 'tx' }, entry.message || '—'))) : h('div', { className: 'empty' }, '暂无日志')))));
+          : h('div', { className: 'nd-cluster' },
+              !nodes.length
+                ? h('div', { className: 'nd-guide' },
+                    h('div', { className: 'nd-guide-ic' }, h(Icon, { name: 'net', size: 26 })),
+                    h('div', { className: 'nd-guide-t' }, '该 Stage 尚未配置输出拓扑'),
+                    h('div', { className: 'nd-guide-d' }, '整个 Stage 只有一份 nDisplay 集群配置：需先在复合画布上定义哪几台渲染服务器、各驱动哪个像素区域（可跨屏），才能把测试图上墙。'),
+                    h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'net', size: 15 }), onPress: openTopology }, '配置输出拓扑…'))
+                : h(React.Fragment, null,
+                    h('button', { className: 'nd-summary', onClick: openTopology, title: '点击重新打开输出拓扑配置' },
+                      h('span', { className: 'nd-summary-ic' }, h(Icon, { name: 'panel', size: 15 })),
+                      h('div', { className: 'nd-summary-m' },
+                        h('div', { className: 'nd-summary-t' }, nodes.length + ' 节点 · Stage 级'),
+                        h('div', { className: 'nd-summary-s' }, '复合画布拓扑')),
+                      h(Icon, { name: 'settings', size: 14, style: { color: 'var(--chrome-faint)' } })),
+                    h('div', { className: 'gw-output-flow' },
+                      h(Button, { variant: 'secondary', size: 'S', isDisabled: clusterBusy || !nodes.length, icon: h(Icon, { name: 'check', size: 13 }), onPress: preflight }, '预检'),
+                      h(Button, { variant: 'secondary', size: 'S', isDisabled: clusterBusy || phaseRank[clusterPhase] < 1, icon: h(Icon, { name: 'download', size: 13 }), onPress: deploy }, '部署'),
+                      h(Button, { variant: 'accent', size: 'S', isDisabled: clusterBusy || phaseRank[clusterPhase] < 2, icon: h(Icon, { name: 'play', size: 13 }), onPress: startCluster }, '启动')),
+                    h('div', { className: 'gw-output-flow' },
+                      h(Button, { variant: 'secondary', size: 'S', isDisabled: clusterBusy || clusterPhase !== 'running', icon: h(Icon, { name: 'eye', size: 13 }), onPress: showCluster }, '显示测试图'),
+                      h(Button, { variant: 'secondary', size: 'S', isDisabled: clusterBusy || clusterPhase !== 'running', icon: h(Icon, { name: 'minus', size: 13 }), onPress: clearCluster }, '清空'),
+                      h(Button, { variant: 'negative', size: 'S', isDisabled: clusterBusy || clusterPhase !== 'running', icon: h(Icon, { name: 'pause', size: 13 }), onPress: stopCluster }, '停止')),
+                    h('div', { className: 'gw-output-nodes' }, nodes.map((node) => {
+                      const state = nodeStates[node.node_id];
+                      const tone = state && state.state === 'ok' ? 'positive' : state && state.state === 'error' ? 'negative' : clusterBusy ? 'notice' : 'neutral';
+                      const label = state ? state.message : node.primary ? 'Primary · 待命' : 'Secondary · 待命';
+                      return h('div', { key: node.node_id, className: 'gw-output-node' },
+                        h('span', { className: `cap-pill cap-pill--${tone}` }, h(Icon, { name: tone === 'positive' ? 'check' : tone === 'negative' ? 'alert' : 'info', size: 11 }), node.node_id),
+                        h('span', { className: 'host' }, node.machine.ip || node.machine.hostname),
+                        h('span', { className: 'msg', title: label }, label));
+                    })),
+                    h('details', { className: 'gw-output-log' },
+                      h('summary', null, h(Icon, { name: 'doc', size: 12 }), `运行日志 (${outputLogs.length})`),
+                      h('div', { className: 'gw-output-logbody' }, outputLogs.length ? outputLogs.map((entry, index) => h('div', { key: index, className: `row ${entry.state || ''}` },
+                        h('span', { className: 'op' }, entry.operation || 'output'), h('span', { className: 'tx' }, entry.message || '—'))) : h('div', { className: 'empty' }, '暂无日志'))))));
   }
 
   function PatternPanel({ s }) {
     const p = usePattern(s);
     return h(React.Fragment, null,
-      head('grid', '测试图', 'ChArUco 校正图案', p.gen ? patternBadge(p.gen, p.stale) : null),
+      head('grid', '测试图', 'ChArUco 校正图案', p.gen ? patternBadge(p.stale, p.genN, 1) : null),
       h(Fold, { label: '参数' },
         Field('图案方案', h(Sel, { value: p.scheme, options: PATTERN_SCHEMES, onChange: p.setScheme, w: 150 })),
         Field('屏幕标识码', h('input', { className: 'gw-txt', value: String(SCREEN_ID_CODE), readOnly: true, style: { width: 70, textAlign: 'center' } })),
@@ -620,14 +659,16 @@ import { listen } from "@tauri-apps/api/event";
       p.busy
         ? h('div', { className: 'gw-grp-body' }, h('div', { style: { fontSize: 11.5, color: 'var(--chrome-dim)', marginBottom: 6 } }, '生成中…'),
             h('div', { className: 'vmeter vmeter--accent ar-indeterminate' }, h('div', { className: 'vmeter__fill' })))
-        : h('div', { className: 'gw-grp-body' }, h(Button, { variant: p.gen ? 'secondary' : 'accent', size: 'M', icon: h(Icon, { name: p.gen ? 'sync' : 'grid', size: 15 }), onPress: p.runGen }, p.gen ? '重新生成测试图' : '生成测试图')),
+        : h('div', { className: 'gw-grp-body', style: { display: 'flex', gap: 8 } },
+            h(Button, { variant: p.gen ? 'secondary' : 'accent', size: 'M', icon: h(Icon, { name: p.gen ? 'sync' : 'grid', size: 15 }), onPress: p.runGen }, p.gen ? '重新生成' : '生成'),
+            p.gen ? h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'eye', size: 14 }), onPress: () => s.setCalDisplay(Object.assign({}, s.calDisplay, { pattern: true })) }, '预览') : null),
       p.res ? h(Fold, { label: '完成摘要' },
         h('div', { className: 'gw-derived' },
           h('div', { className: 'gw-dcell' }, h('div', { className: 'k' }, '覆盖箱体'), h('div', { className: 'v' }, p.res.cabinet_count)),
           h('div', { className: 'gw-dcell' }, h('div', { className: 'k' }, '标记总数'), h('div', { className: 'v' }, p.res.total_markers))),
         h('div', { className: 'gw-fileref', style: { marginTop: 8 } }, h('span', { className: 'ic' }, h(Icon, { name: 'folder', size: 14 })),
           h('div', { className: 'm' }, h('div', { className: 'n' }, p.res.output_dir.split(/[\\/]/).pop() + '/'), h('div', { className: 'd' }, p.res.output_dir)))) : null,
-      p.gen ? h(Fold, { label: '去向' }, h(OutputDestination, { s, p })) : null);
+      p.gen ? h(OutputDestination, { s, p }) : null);
   }
 
   /* ================= 全局校正细节选项（无选中默认） ================= */
@@ -640,6 +681,10 @@ import { listen } from "@tauri-apps/api/event";
   /* ================= 阶段动作面板（顶部重建方法 + 折叠子项） ================= */
   function StagePanel({ s }) {
     const proj = CX.useProj();
+    const selected = (window.VOLO_GRID && window.VOLO_GRID.selectedScreenIds)
+      ? window.VOLO_GRID.selectedScreenIds(s) : [];
+    const multiIds = selected.length ? selected : [s.calActiveScreen];
+    const isMulti = multiIds.length > 1;
     const screenId = s.calActiveScreen;
     const m = proj.config && proj.config.screens[screenId];
     const built = s.calScreenReports && !!s.calScreenReports[screenId];
@@ -661,8 +706,8 @@ import { listen } from "@tauri-apps/api/event";
     const runs = (proj.runs || []);
     const curRun = runs.find((r) => r.is_current) || runs[0] || null;
 
-    /* 测试图（仅视觉法） */
-    const p = usePattern(s);
+    /* 测试图（仅视觉法）—— 多选时批量作用于全部选中屏 */
+    const p = usePattern(s, multiIds);
 
     /* 导出（内联，同 exportDlg 的真实 exportObj） */
     const [target, setTarget] = useState('disguise');
@@ -749,14 +794,18 @@ import { listen } from "@tauri-apps/api/event";
       h(Fold, { label: '屏幕设计', defOpen: false }, h(ScreenForm, { s, noHead: true })),
       /* ① 测试图 —— 仅视觉校正需要 */
       !isTS ? h(Fold, { label: '测试图', defOpen: false },
-        h('div', { className: 'gw-stage-badge' }, patternBadge(p.gen, p.stale)),
+        h('div', { className: 'gw-stage-badge' }, patternBadge(p.stale, p.genN, multiIds.length)),
         Field('图案方案', h(Sel, { value: p.scheme, options: PATTERN_SCHEMES, onChange: (scheme) => { p.setScheme(scheme); if (scheme === 'charuco' && intr === 'auto') setIntr('file'); }, w: 150 })),
         Field('屏幕标识码', h('input', { className: 'gw-txt', value: String(SCREEN_ID_CODE), readOnly: true, style: { width: 70, textAlign: 'center' } })),
-        Field('目标屏幕', h('span', { style: { fontSize: 12.5, color: 'var(--chrome-text)', fontFamily: 'var(--font-code)' } }, screenId)),
+        Field(isMulti ? '目标屏幕 · ' + multiIds.length + ' 块' : '目标屏幕',
+          h('span', { style: { fontSize: 12.5, color: 'var(--chrome-text)', fontFamily: 'var(--font-code)', textAlign: 'right', textWrap: 'balance' } },
+            isMulti ? multiIds.join(' · ') : screenId)),
         p.busy
           ? h('div', null, h('div', { style: { fontSize: 11.5, color: 'var(--chrome-dim)', marginBottom: 6 } }, '生成中…'), h('div', { className: 'vmeter vmeter--accent ar-indeterminate' }, h('div', { className: 'vmeter__fill' })))
-          : h(Button, { variant: p.gen ? 'secondary' : 'accent', size: 'S', icon: h(Icon, { name: p.gen ? 'sync' : 'grid', size: 14 }), onPress: p.runGen }, p.gen ? '重新生成' : '生成测试图'),
-        p.gen ? h(OutputDestination, { s, p }) : null) : null,
+          : h('div', { style: { display: 'flex', gap: 8 } },
+              h(Button, { variant: p.gen ? 'secondary' : 'accent', size: 'S', icon: h(Icon, { name: p.gen ? 'sync' : 'grid', size: 14 }), onPress: p.runGen }, p.gen ? '重新生成' : '生成'),
+              p.genN > 0 ? h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'eye', size: 13 }), onPress: () => s.setCalDisplay(Object.assign({}, s.calDisplay, { pattern: true })) }, '预览') : null),
+        p.genN > 0 ? h('div', { style: { marginTop: 8 } }, h(OutputDestination, { s, p })) : null) : null,
       h(Fold, { label: '测量导入', defOpen: false },
         isTS
           ? (window.VOLO_GRID.flows ? window.VOLO_GRID.flows.total(s) : null)
@@ -812,6 +861,15 @@ import { listen } from "@tauri-apps/api/event";
   function inspector(s) {
     const sel = s.calSel;
     const t = sel && sel.type;
+    if (t === 'screenMulti') {
+      const ids = sel.ids || [];
+      return h('div', { className: 'gw-insp' },
+        h('div', { className: 'gw-multi-banner' },
+          h('span', { className: 'ic' }, h(Icon, { name: 'panel', size: 15 })),
+          h('div', { className: 'm' }, h('b', null, '多选 · ' + ids.length + ' 块屏幕'), h('span', null, '改动将应用到全部选中屏幕')),
+          h('span', { className: 'spill spill--informative' }, h(Icon, { name: 'check', size: 12 }), '多选')),
+        h(StagePanel, { s }));
+    }
     const body = t === 'cabinet' ? h(BoxSingle, { s })
       : t === 'cabinetMulti' ? h(BoxMulti, { s })
       : t === 'run' ? h(RunInsp, { s })

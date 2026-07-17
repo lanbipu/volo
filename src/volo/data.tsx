@@ -366,9 +366,74 @@ const GRID_EXPORT_TARGETS = [
   { id: 'neutral', label: '中性', desc: '米单位 · 不做引擎特定转换，通用交换' },
 ];
 
+/* Stage 复合像素画布：多屏按各自像素尺寸横向排布；area = 屏幕像素并集（覆盖校验基准）。
+   screensMap: Record<screenId, ScreenConfig>（项目 config.screens）。 */
+function buildStageComposite(screensMap) {
+  const ids = screensMap ? Object.keys(screensMap) : [];
+  let x = 0, H = 0; const rects = [];
+  ids.forEach((id) => {
+    const sc = screensMap[id];
+    const ppc = (sc && sc.pixels_per_cabinet) || [176, 176];
+    const cc = (sc && sc.cabinet_count) || [1, 1];
+    const w = Math.max(1, (cc[0] || 1) * (ppc[0] || 1));
+    const h = Math.max(1, (cc[1] || 1) * (ppc[1] || 1));
+    rects.push({ id, x, y: 0, w, h });
+    x += w; H = Math.max(H, h);
+  });
+  return { canvas: { w: x || 1, h: H || 1 }, screens: rects, area: rects.reduce((a, r) => a + r.w * r.h, 0) };
+}
+
+/* Stage 级默认拓扑：每屏一节点，crop = 该屏在复合画布上的区域，window = crop 1:1。 */
+function buildStageNdisplayTopo(screensMap) {
+  const comp = buildStageComposite(screensMap);
+  const nodes = comp.screens.map((r, i) => ({
+    node_id: 'Node' + i,
+    machine: { hostname: '', ip: '' },
+    viewport_rect_px: [r.x, r.y, r.w, r.h],
+    window_px: [r.w, r.h],
+    window_origin_px: [40, 40],
+    fullscreen: false,
+    primary: i === 0,
+  }));
+  return { nodes, canvas: comp.canvas };
+}
+
+function resolveProjectTopology(config) {
+  if (!config) return null;
+  if (config.output_topology && config.output_topology.nodes && config.output_topology.nodes.length)
+    return config.output_topology;
+  const screens = config.screens || {};
+  for (const id of Object.keys(screens)) {
+    const t = screens[id] && screens[id].output_topology;
+    if (t && t.nodes && t.nodes.length) return t;
+  }
+  return null;
+}
+
+function stageScreenForOutput(config, topology) {
+  const comp = buildStageComposite(config && config.screens);
+  const topo = topology || resolveProjectTopology(config);
+  return {
+    cabinet_count: [1, 1],
+    cabinet_size_mm: [comp.canvas.w, comp.canvas.h],
+    pixels_per_cabinet: [comp.canvas.w, comp.canvas.h],
+    output_topology: topo,
+    shape_prior: { type: 'flat' },
+    shape_mode: 'rectangle',
+    irregular_mask: [],
+    bottom_completion: null,
+    position_m: [0, 0, 0],
+    yaw_deg: 0,
+    height_offset_mm: 0,
+    normal_flip: false,
+    origin_aligned: false,
+  };
+}
+
 Object.assign(window, {
   GRID_SHAPES, GRID_SCREEN_TYPES, GRID_CAB_PRESETS, GRID_DISPLAY_DEFAULT, GRID_DISPLAY_ITEMS,
   GRID_VIEWS, GRID_STAGE_ACTIONS, GRID_MEAS_TYPES, GRID_RECON_STAGES, GRID_EXPORT_TARGETS,
+  buildStageComposite, buildStageNdisplayTopo, resolveProjectTopology, stageScreenForOutput,
   Icon, STAGES, PAGES,
   /* machines / creds / shares / projects are loaded from the backend by the
      shell and mirrored onto window.{RENDER_NODES,CREDS,SHARES,UE_PROJECTS};

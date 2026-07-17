@@ -185,6 +185,7 @@ mod project_yaml_method_tests {
                 weld_vertices_tolerance_mm: 1.0,
                 triangulate: true,
             },
+            output_topology: None,
         }
     }
 

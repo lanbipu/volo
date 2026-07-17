@@ -104,6 +104,12 @@ import { listen } from "@tauri-apps/api/event";
 
     const caret = (open, onClick, leaf) => h('span', { className: 'gw-tcaret' + (leaf ? ' leaf' : open ? '' : ' closed'), onClick: leaf ? null : (e) => { e.stopPropagation(); onClick(); } }, h(Icon, { name: 'chevd', size: 13 }));
     const selectScreen = () => { s.setCalMode('object'); s.setCalSel({ type: 'screen' }); };
+    const selectedIds = (window.VOLO_GRID && window.VOLO_GRID.selectedScreenIds)
+      ? window.VOLO_GRID.selectedScreenIds(s) : [];
+    const pickScreen = (id, e) => {
+      if (e && (e.ctrlKey || e.metaKey || e.shiftKey)) { window.VOLO_GRID.toggleScreenSel(s, id); return; }
+      s.setCalActiveScreen(id); s.setCalDraftScreen(null); s.setCalMode('object'); s.setCalSel({ type: 'screen' });
+    };
     const hasTs = !!proj.measurementsAbsPath;
     const hasVs = !!(proj.visualSession && proj.visualSession.screenId === screenId);
     const fuseReady = hasTs && hasVs;
@@ -146,11 +152,28 @@ import { listen } from "@tauri-apps/api/event";
           .catch(() => {});
       } },
     ];
-    const screenNode = h('div', { className: 'gw-tnode' + (selType === 'screen' ? ' on' : ''), onClick: selectScreen },
+    const screenNode = h('div', { className: 'gw-tnode' + (selectedIds.includes(screenId) ? ' on' : ''), onClick: (e) => { if (e.ctrlKey || e.metaKey) { window.VOLO_GRID.toggleScreenSel(s, screenId); return; } selectScreen(); } },
       caret(openS, () => setOpenS((v) => !v)), h('span', { className: 'gw-tico' }, h(Icon, { name: 'panel', size: 15 })),
       h('span', { className: 'gw-tlabel' }, screenId),
       m ? h('span', { className: 'gw-tmeta' }, m.cabinet_count[0] + '×' + m.cabinet_count[1]) : null,
       h('span', { className: 'gw-tacts' }, h(NodeMenu, { items: screenMenuItems })));
+
+    const allScreenIds = Object.keys(proj.config.screens || {});
+    const screenListNodes = allScreenIds.length > 1 ? h(React.Fragment, null,
+      h('div', { className: 'gw-tgrouph' }, 'Stage 屏幕', h('span', null, allScreenIds.length + ' 块')),
+      allScreenIds.map((id) => {
+        const sc = proj.config.screens[id];
+        return h('div', { key: id, className: 'gw-tnode' + (selectedIds.includes(id) ? ' on' : ''), onClick: (e) => pickScreen(id, e) },
+          caret(false, null, true), h('span', { className: 'gw-tico' }, h(Icon, { name: 'panel', size: 14 })),
+          h('span', { className: 'gw-tlabel' }, id),
+          h('span', { className: 'gw-tmeta' }, sc.cabinet_count[0] + '×' + sc.cabinet_count[1]));
+      })) : null;
+    const topo = window.resolveProjectTopology && window.resolveProjectTopology(proj.config);
+    const ndisplayNode = h('div', { className: 'gw-tnode' + (selType === 'ndisplay' ? ' on' : ''),
+      onClick: () => { s.setCalSel({ type: 'ndisplay' }); s.setModal({ xwide: true, render: ({ close }) => window.VOLO_GRID_MODALS.topology(s, close) }); } },
+      caret(false, null, true), h('span', { className: 'gw-tico' }, h(Icon, { name: 'net', size: 14 })),
+      h('span', { className: 'gw-tlabel' }, 'nDisplay 输出'),
+      h('span', { className: 'gw-tmeta' }, topo && topo.nodes ? topo.nodes.length + ' 节点' : '未配置'));
 
     const patternNode = hasPattern
       ? h('div', { className: 'gw-tnode' + (selType === 'pattern' ? ' on' : ''), onClick: () => s.setCalSel({ type: 'pattern' }) },
@@ -199,8 +222,10 @@ import { listen } from "@tauri-apps/api/event";
       openRuns ? runsChildren : null);
 
     const projectChildren = h('div', { className: 'gw-tchildren' },
+      screenListNodes,
       screenNode,
-      openS ? screenChildren : null);
+      openS ? screenChildren : null,
+      ndisplayNode);
 
     return h('div', { className: 'gw-tree' },
       h('div', { className: 'gw-tnode', onClick: () => setOpenP((v) => !v) },

@@ -205,6 +205,28 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
     return { boxes, cols, rows };
   }
 
+  /* 当前选中的屏幕 id 列表（单选 / 多选）；无屏幕选中时返回 [] */
+  function selectedScreenIds(s) {
+    const cur = s.calSel;
+    if (cur && cur.type === 'screenMulti') return (cur.ids || []).slice();
+    if (cur && cur.type === 'screen' && s.calActiveScreen) return [s.calActiveScreen];
+    return [];
+  }
+
+  /* 屏幕多选：Ctrl/Cmd 点击切换（场景树 / 视口 / 检查器预设列表共用） */
+  function toggleScreenSel(s, id) {
+    const cur = s.calSel;
+    let base = cur && cur.type === 'screenMulti' ? (cur.ids || []).slice() : [s.calActiveScreen];
+    base = base.filter(Boolean);
+    const i = base.indexOf(id);
+    if (i >= 0) base.splice(i, 1); else base.push(id);
+    s.setCalMode('object');
+    if (base.length === 0) { s.setCalSel(null); return; }
+    if (base.length === 1) { s.setCalActiveScreen(base[0]); s.setCalDraftScreen(null); s.setCalSel({ type: 'screen' }); return; }
+    if (!base.includes(s.calActiveScreen)) s.setCalActiveScreen(id);
+    s.setCalSel({ type: 'screenMulti', ids: base });
+  }
+
   /* ---------- 视口 SVG ---------- */
   const VIEWPORT_MIN_ZOOM = 0.5;
   const VIEWPORT_MAX_ZOOM = 16;
@@ -227,23 +249,41 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
     const paintRef = useRef(null); /* 遮罩拖刷：{ to: boolean } */
     const innerRef = useRef(null); /* 内层 pan/zoom <g>，命中转换用其真实 CTM */
     const touchedRef = useRef(false); /* 用户手动操作过视口后停用自动取景 */
-    const patternResult = proj_.patternGenByScreen && proj_.patternGenByScreen[s.calActiveScreen];
-    const patternPath = patternResult && patternResult.output_dir ? generatedPatternImagePath(patternResult.output_dir) : null;
-    const [patternImage, setPatternImage] = useState(null); /* { path, dataUrl } */
+    const patternByScreen = proj_.patternGenByScreen || {};
+    const patternPathKey = Object.keys(patternByScreen).sort()
+      .map((id) => id + '=' + ((patternByScreen[id] && patternByScreen[id].output_dir) || '')).join('|');
+    const [patternImages, setPatternImages] = useState({}); /* { [screenId]: { path, dataUrl } } */
+    const patternImagesRef = useRef({});
     ORBIT = orbit;
 
+    useEffect(() => { patternImagesRef.current = patternImages; }, [patternImages]);
     useEffect(() => {
       let active = true;
-      if (!disp.pattern || !patternPath) { setPatternImage(null); return () => { active = false; }; }
-      readGeneratedPatternAsDataUrl(patternPath)
-        .then((dataUrl) => { if (active) setPatternImage({ path: patternPath, dataUrl }); })
-        .catch((e) => {
-          if (!active) return;
-          setPatternImage(null);
-          s.pushLog({ lv: 'err', cat: 'calibrate', msg: `测试图预览读取失败 · ${e && e.message ? e.message : e}` });
-        });
+      if (!disp.pattern) { setPatternImages({}); return () => { active = false; }; }
+      const ids = Object.keys(patternByScreen);
+      if (!ids.length) { setPatternImages({}); return () => { active = false; }; }
+      const prev = patternImagesRef.current || {};
+      Promise.all(ids.map(async (id) => {
+        const res = patternByScreen[id];
+        const path = res && res.output_dir ? generatedPatternImagePath(res.output_dir) : null;
+        if (!path) return [id, null];
+        const cached = prev[id];
+        if (cached && cached.path === path && cached.dataUrl) return [id, cached];
+        try {
+          const dataUrl = await readGeneratedPatternAsDataUrl(path);
+          return [id, { path, dataUrl }];
+        } catch (e) {
+          s.pushLog({ lv: 'err', cat: 'calibrate', msg: `测试图预览读取失败 · ${id} · ${e && e.message ? e.message : e}` });
+          return [id, null];
+        }
+      })).then((entries) => {
+        if (!active) return;
+        const next = {};
+        entries.forEach(([id, img]) => { if (img) next[id] = img; });
+        setPatternImages(next);
+      });
       return () => { active = false; };
-    }, [disp.pattern, patternPath, patternResult]);
+    }, [disp.pattern, patternPathKey]);
 
     /* client 坐标 → 指定元素（外层 svg / 内层 g）局部坐标，走引擎 CTM，
        避免手写反演与 transform-origin 实现差异打架。 */
@@ -410,6 +450,7 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       if (e.button === 2) { startPan(e); return; }
       if (e.button !== 0) return;
       if (!cabinet || s.calBoxTool === 'select') startOrbit(e);
+      if (e.ctrlKey || e.metaKey) { window.VOLO_GRID.toggleScreenSel(s, entry.id); return; }
       if (entry.isActive) { clickBox(b, e); return; }
       s.setCalActiveScreen(entry.id); s.setCalDraftScreen(null); s.setCalMode('object'); s.setCalSel({ type: 'screen' });
     };
@@ -437,7 +478,8 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
     };
     const patternDefs = [];
     const patternForBox = (b, entry, projected) => {
-      if (!disp.pattern || !patternImage || patternImage.path !== patternPath || !entry.isActive || b.masked || !faceToCamera(b, entry)) return null;
+      const patternImage = patternImages[entry.id];
+      if (!disp.pattern || !patternImage || b.masked || !faceToCamera(b, entry)) return null;
       const ppc = entry.cfg.pixels_per_cabinet;
       if (!ppc || !ppc[0] || !ppc[1]) return null;
       const sx0 = b.c * ppc[0], sx1 = sx0 + ppc[0];
@@ -569,15 +611,25 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       });
     }
 
-    /* 仅 screen selection 显示整屏橙色轮廓。 */
+    /* 单选 / 多选屏幕均显示橙色轮廓。 */
     const objOutline = [];
-    if (activeEntry && s.calSel && s.calSel.type === 'screen') {
-      const cols = activeEntry.g.cols, rows = activeEntry.g.rows, ring = [];
-      for (let c = 0; c <= cols; c++) ring.push(vertexMap.get(c + ',0'));
-      for (let r = 1; r <= rows; r++) ring.push(vertexMap.get(cols + ',' + r));
-      for (let c = cols - 1; c >= 0; c--) ring.push(vertexMap.get(c + ',' + rows));
-      for (let r = rows - 1; r > 0; r--) ring.push(vertexMap.get('0,' + r));
-      objOutline.push(h('polygon', { className: 'gw-obj-outline', points: pstr(ring.filter(Boolean).map((p) => proj(p, view))) }));
+    {
+      const selIds = selectedScreenIds(s);
+      selIds.forEach((sid) => {
+        const entry = sbuilt.find((x) => x.id === sid);
+        if (!entry) return;
+        const vmap = new Map();
+        entry.g.boxes.forEach((b) => {
+          [[b.c, b.r, b.corners[0]], [b.c + 1, b.r, b.corners[1]], [b.c + 1, b.r + 1, b.corners[2]], [b.c, b.r + 1, b.corners[3]]]
+            .forEach(([c, r, p]) => vmap.set(c + ',' + r, p));
+        });
+        const cols = entry.g.cols, rows = entry.g.rows, ring = [];
+        for (let c = 0; c <= cols; c++) ring.push(vmap.get(c + ',0'));
+        for (let r = 1; r <= rows; r++) ring.push(vmap.get(cols + ',' + r));
+        for (let c = cols - 1; c >= 0; c--) ring.push(vmap.get(c + ',' + rows));
+        for (let r = rows - 1; r > 0; r--) ring.push(vmap.get('0,' + r));
+        objOutline.push(h('polygon', { key: 'objol-' + sid, className: 'gw-obj-outline', points: pstr(ring.filter(Boolean).map((p) => proj(p, view))) }));
+      });
     }
 
     return h('svg', { className: 'gw-svp', ref: stageRef, viewBox: '0 0 1000 700', preserveAspectRatio: 'xMidYMid meet', onMouseDown: onBg, onContextMenu: (e) => e.preventDefault() },
@@ -823,5 +875,5 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
         h('div', { className: 'gw-ov gw-ov--br' }, h(Receipt, { s }))));
   }
 
-  window.VOLO_GRID = Object.assign(window.VOLO_GRID || {}, { Center, center: (s) => h(Center, { s }), ROLE, PROV, pointName, roleAtCabinet, buildNominalBoxes, buildRealBoxes });
+  window.VOLO_GRID = Object.assign(window.VOLO_GRID || {}, { Center, center: (s) => h(Center, { s }), ROLE, PROV, pointName, roleAtCabinet, buildNominalBoxes, buildRealBoxes, selectedScreenIds, toggleScreenSel });
 })();

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use volo_shared::{
-    dto::{OutputNode, ScreenConfig},
+    dto::{OutputNode, OutputTopology, ProjectConfig, ScreenConfig, ShapeMode, ShapePriorConfig},
     error::{VoloError, VoloResult},
 };
 
@@ -27,6 +27,25 @@ pub struct TopologyValidation {
     pub canvas_px: [u32; 2],
     pub errors: Vec<TopologyIssue>,
     pub warnings: Vec<TopologyIssue>,
+}
+
+/// One screen's pixel rect inside the Stage composite canvas (horizontal pack).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StageScreenRect {
+    pub id: String,
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
+
+/// Stage composite pixel canvas: screens laid out left-to-right by pixel size.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StageComposite {
+    pub canvas_px: [u32; 2],
+    pub screens: Vec<StageScreenRect>,
+    /// Union of screen pixel areas (coverage warning baseline; may be < bbox).
+    pub area: u64,
 }
 
 pub const OUTPUT_MANIFEST_SCHEMA_VERSION: &str = "volo_output.v1";
@@ -66,12 +85,100 @@ impl TopologyValidation {
     }
 }
 
+/// Pack every screen's pixel framebuffer left-to-right into one Stage canvas.
+pub fn build_stage_composite(
+    screens: &BTreeMap<String, ScreenConfig>,
+) -> VoloResult<StageComposite> {
+    let mut x: u32 = 0;
+    let mut height: u32 = 0;
+    let mut rects = Vec::new();
+    let mut area: u64 = 0;
+    for (id, screen) in screens {
+        let [w, h] = canvas_size(screen)?;
+        rects.push(StageScreenRect {
+            id: id.clone(),
+            x,
+            y: 0,
+            w,
+            h,
+        });
+        area = area.saturating_add(u64::from(w).saturating_mul(u64::from(h)));
+        x = x
+            .checked_add(w)
+            .ok_or_else(|| VoloError::InvalidInput("stage composite width overflows u32".into()))?;
+        height = height.max(h);
+    }
+    Ok(StageComposite {
+        canvas_px: [x.max(1), height.max(1)],
+        screens: rects,
+        area,
+    })
+}
+
+/// Validate Stage-level topology against the composite canvas (union-area cover).
+pub fn validate_stage_topology(
+    screens: &BTreeMap<String, ScreenConfig>,
+    topology: &OutputTopology,
+) -> VoloResult<TopologyValidation> {
+    let composite = build_stage_composite(screens)?;
+    validate_topology_on_canvas(topology, composite.canvas_px, composite.area)
+}
+
+/// Build a synthetic single-screen config whose canvas equals the Stage composite,
+/// so existing output orchestration (manifest / .ndisplay) can reuse per-screen APIs.
+pub fn stage_screen_for_output(
+    screens: &BTreeMap<String, ScreenConfig>,
+    topology: &OutputTopology,
+) -> VoloResult<ScreenConfig> {
+    let composite = build_stage_composite(screens)?;
+    Ok(ScreenConfig {
+        cabinet_count: [1, 1],
+        cabinet_size_mm: [f64::from(composite.canvas_px[0]), f64::from(composite.canvas_px[1])],
+        pixels_per_cabinet: Some(composite.canvas_px),
+        output_topology: Some(topology.clone()),
+        shape_prior: ShapePriorConfig::Flat,
+        shape_mode: ShapeMode::Rectangle,
+        irregular_mask: Vec::new(),
+        bottom_completion: None,
+        position_m: [0.0; 3],
+        yaw_deg: 0.0,
+        height_offset_mm: 0.0,
+        normal_flip: false,
+        origin_aligned: false,
+    })
+}
+
+/// Prefer project-level Stage topology; fall back to a single screen that still
+/// carries legacy `output_topology`.
+pub fn resolve_output_screen(project: &ProjectConfig) -> VoloResult<ScreenConfig> {
+    if let Some(topology) = project.output_topology.as_ref() {
+        return stage_screen_for_output(&project.screens, topology);
+    }
+    for screen in project.screens.values() {
+        if screen.output_topology.is_some() {
+            return Ok(screen.clone());
+        }
+    }
+    Err(VoloError::InvalidInput(
+        "project.output_topology is required (or a legacy screen.output_topology)".into(),
+    ))
+}
+
 pub fn validate_topology(screen: &ScreenConfig) -> VoloResult<TopologyValidation> {
     let topology = screen
         .output_topology
         .as_ref()
         .ok_or_else(|| VoloError::InvalidInput("screen.output_topology is required".to_string()))?;
     let canvas_px = canvas_size(screen)?;
+    let coverage = u64::from(canvas_px[0]).saturating_mul(u64::from(canvas_px[1]));
+    validate_topology_on_canvas(topology, canvas_px, coverage)
+}
+
+fn validate_topology_on_canvas(
+    topology: &OutputTopology,
+    canvas_px: [u32; 2],
+    coverage_need: u64,
+) -> VoloResult<TopologyValidation> {
     let mut result = TopologyValidation {
         canvas_px,
         errors: Vec::new(),
@@ -197,14 +304,13 @@ pub fn validate_topology(screen: &ScreenConfig) -> VoloResult<TopologyValidation
         );
     }
 
-    if geometry_valid && total_area != u64::from(canvas_px[0]) * u64::from(canvas_px[1]) {
+    if geometry_valid && total_area < coverage_need {
         push_issue(
             &mut result.warnings,
             TopologyIssueSeverity::Warning,
             "canvas_not_fully_covered",
             format!(
-                "viewport union covers {total_area} of {} canvas pixels",
-                u64::from(canvas_px[0]) * u64::from(canvas_px[1])
+                "viewport union covers {total_area} of {coverage_need} stage screen pixels (composite canvas not fully covered)"
             ),
             Vec::new(),
         );

@@ -120,7 +120,7 @@ import { loadProjectYaml, listRuns, removeRecentProject } from "../api/meshComma
         h('div', { className: 'ce-d' }, proj.error || '先在软件里建立 LED 屏的理想三维模型，再采集真实数据重建实测网格。打开或新建一个项目开始。'),
         h('div', { className: 'ce-acts' },
           h(Button, { variant: 'accent', size: 'L', icon: h(Icon, { name: 'folder', size: 16 }), onPress: () => CX.pickAndOpenProject(s) }, '打开项目'),
-          h(Button, { variant: 'secondary', size: 'L', icon: h(Icon, { name: 'plus', size: 16 }), onPress: () => CX.pickAndSeedExample(s, 'curved-flat') }, '新建项目')),
+          h(Button, { variant: 'secondary', size: 'L', icon: h(Icon, { name: 'plus', size: 16 }), onPress: () => CX.pickAndSeedExample(s, 'stage-triple') }, '新建项目')),
         h('div', { className: 'ce-recent' },
           h('div', { className: 'ce-recent-h' }, h(Icon, { name: 'folder', size: 13 }), '最近的项目'),
           !proj.recent || !proj.recent.length

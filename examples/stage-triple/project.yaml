@@ -1,0 +1,48 @@
+project:
+  name: Stage-Triple-Demo
+  unit: mm
+screens:
+  FRONT:
+    cabinet_count: [8, 3]
+    cabinet_size_mm: [500, 500]
+    pixels_per_cabinet: [176, 176]
+    shape_prior:
+      type: arc
+      center_flat_cols: 2
+      angle_per_col_deg: 9
+    shape_mode: rectangle
+    irregular_mask: []
+    position_m: [0, 0, 0]
+    yaw_deg: 0
+    height_offset_mm: 0
+  LEFT:
+    cabinet_count: [4, 3]
+    cabinet_size_mm: [500, 500]
+    pixels_per_cabinet: [176, 176]
+    shape_prior:
+      type: flat
+    shape_mode: rectangle
+    irregular_mask: []
+    position_m: [-5.6, 0, 1.6]
+    yaw_deg: 45
+    height_offset_mm: 0
+  RIGHT:
+    cabinet_count: [6, 2]
+    cabinet_size_mm: [500, 500]
+    pixels_per_cabinet: [176, 176]
+    shape_prior:
+      type: flat
+    shape_mode: rectangle
+    irregular_mask: []
+    position_m: [5.4, 0, 1.4]
+    yaw_deg: -40
+    height_offset_mm: 0
+coordinate_system:
+  origin_point: FRONT_V001_R001
+  x_axis_point: FRONT_V009_R001
+  xy_plane_point: FRONT_V001_R004
+output:
+  target: disguise
+  obj_filename: "{screen_id}_mesh.obj"
+  weld_vertices_tolerance_mm: 1.0
+  triangulate: true

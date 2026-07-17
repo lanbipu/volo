@@ -17,6 +17,10 @@ pub struct ProjectConfig {
     pub screens: BTreeMap<String, ScreenConfig>,
     pub coordinate_system: CoordinateSystemConfig,
     pub output: OutputConfig,
+    /// Stage-level nDisplay output topology (unique global object for the whole
+    /// stage). Prefer this over per-screen `ScreenConfig.output_topology`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_topology: Option<OutputTopology>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

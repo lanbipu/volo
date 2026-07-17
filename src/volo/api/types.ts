@@ -1378,6 +1378,8 @@ export interface ProjectConfig {
   screens: Record<string, ScreenConfig>;
   coordinate_system: CoordinateSystemConfig;
   output: OutputConfig;
+  /** Stage-level nDisplay topology (preferred over per-screen output_topology). */
+  output_topology?: OutputTopology;
 }
 
 export interface ProjectMeta {
@@ -1394,7 +1396,8 @@ export interface ScreenConfig {
   cabinet_count: [number, number];
   cabinet_size_mm: [number, number];
   pixels_per_cabinet?: [number, number] | null;
-  output_topology?: OutputTopology | null;
+  /** Legacy per-screen topology; prefer project.output_topology. Absent = none. */
+  output_topology?: OutputTopology;
   shape_prior: ShapePriorConfig;
   shape_mode: ShapeMode;
   /** Cabinet-indexed [col, row] pairs explicitly absent from the array. */
