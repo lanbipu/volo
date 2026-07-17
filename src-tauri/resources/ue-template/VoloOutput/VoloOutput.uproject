@@ -1,0 +1,28 @@
+{
+  "FileVersion": 3,
+  "EngineAssociation": "5.8",
+  "Category": "Volo",
+  "Description": "Minimal nDisplay texture-output runtime bundled with Volo",
+  "Plugins": [
+    {
+      "Name": "nDisplay",
+      "Enabled": true
+    },
+    {
+      "Name": "TextureShare",
+      "Enabled": true
+    },
+    {
+      "Name": "RemoteControl",
+      "Enabled": true
+    },
+    {
+      "Name": "RemoteControlWebInterface",
+      "Enabled": true
+    },
+    {
+      "Name": "JsonBlueprintUtilities",
+      "Enabled": true
+    }
+  ]
+}

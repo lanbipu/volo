@@ -53,3 +53,10 @@ testdata/
 !crates/mesh-app/testdata/
 !crates/mesh-app/testdata/ndisplay/
 !crates/mesh-app/testdata/ndisplay/golden-ue58-two-node.ndisplay
+
+# Bundled UE runtime template (binary asset is intentionally versioned)
+!src-tauri/resources/ue-template/
+!src-tauri/resources/ue-template/VoloOutput/
+!src-tauri/resources/ue-template/VoloOutput/Content/
+!src-tauri/resources/ue-template/VoloOutput/Content/VoloOutput/
+!src-tauri/resources/ue-template/VoloOutput/Content/VoloOutput/BP_VoloOutput.uasset

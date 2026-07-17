@@ -42,6 +42,7 @@
       "resources/ps-scripts/*.cmd": "ps-scripts",
       "resources/ps-scripts/*.txt": "ps-scripts",
       "resources/vendor": "vendor",
+      "resources/ue-template/VoloOutput": "ue-template/VoloOutput",
       "../examples": "examples",
       "../target/sidecar-vendor": "sidecar-vendor"
     }
