@@ -363,7 +363,9 @@ pub fn generate_ndisplay_json(
             json!({
                 "host": host,
                 "sound": false,
-                "fullScreen": node.fullscreen,
+                // Phase 1 supports windowed output only. Keep the DTO field for
+                // forward compatibility, but never emit a conflicting mode.
+                "fullScreen": false,
                 "window": {
                     "x": 40,
                     "y": 40,
@@ -754,6 +756,19 @@ mod tests {
             let actual = generate_ndisplay_json(&config, &resolved, version).unwrap();
             assert_eq!(actual, expected, "UE {version}");
         }
+    }
+
+    #[test]
+    fn ndisplay_generator_forces_phase_one_windowed_mode() {
+        let mut fullscreen_node = node("LanNode", 0, true, "lanpc");
+        fullscreen_node.fullscreen = true;
+        let config = screen(vec![fullscreen_node]);
+        let resolved = BTreeMap::from([("LanNode".to_string(), "127.0.0.1".to_string())]);
+        let actual = generate_ndisplay_json(&config, &resolved, "5.8").unwrap();
+        assert_eq!(
+            actual["nDisplay"]["cluster"]["nodes"]["LanNode"]["fullScreen"],
+            false
+        );
     }
 
     #[test]

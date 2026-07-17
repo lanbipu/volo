@@ -256,7 +256,7 @@ import { meshFuseRun } from "../api/meshFuseCommands";
       { node_id: 'LanNode', machine: { hostname: 'lanPC', ip: '' }, viewport_rect_px: [0, 0, Math.floor(canvas[0] / 2), canvas[1]], window_px: [Math.floor(canvas[0] / 2), canvas[1]], fullscreen: false, primary: true },
       { node_id: 'RazerNode', machine: { hostname: 'Razer', ip: '192.168.10.173' }, viewport_rect_px: [Math.floor(canvas[0] / 2), 0, canvas[0] - Math.floor(canvas[0] / 2), canvas[1]], window_px: [canvas[0] - Math.floor(canvas[0] / 2), canvas[1]], fullscreen: false, primary: false },
     ];
-    const [nodes, setNodes] = useState(() => JSON.parse(JSON.stringify((screen.output_topology && screen.output_topology.nodes) || defaultNodes)));
+    const [nodes, setNodes] = useState(() => JSON.parse(JSON.stringify((screen.output_topology && screen.output_topology.nodes) || defaultNodes)).map((node) => Object.assign({}, node, { fullscreen: false })));
     const [saving, setSaving] = useState(false);
     const [saveError, setSaveError] = useState('');
     const validation = validateOutputTopology(screen, nodes);
@@ -271,7 +271,8 @@ import { meshFuseRun } from "../api/meshFuseCommands";
       setSaving(true); setSaveError('');
       try {
         const latest = await loadProjectYaml(proj.path);
-        const nextScreen = Object.assign({}, latest.screens[screenId], { output_topology: { nodes } });
+        const windowedNodes = nodes.map((node) => Object.assign({}, node, { fullscreen: false }));
+        const nextScreen = Object.assign({}, latest.screens[screenId], { output_topology: { nodes: windowedNodes } });
         const next = Object.assign({}, latest, { screens: Object.assign({}, latest.screens, { [screenId]: nextScreen }) });
         await saveProjectYaml(proj.path, next);
         await CX.openProjectPath(proj.path, s);
@@ -302,7 +303,7 @@ import { meshFuseRun } from "../api/meshFuseCommands";
           h('label', null, 'Crop x / y', h('span', { className: 'dual' }, [0, 1].map((position) => h('input', { key: position, className: 'gw-num', type: 'number', min: 0, value: node.viewport_rect_px[position], onChange: (e) => patchRect(index, position, e.target.value) })))),
           h('label', null, 'Crop w / h', h('span', { className: 'dual' }, [2, 3].map((position) => h('input', { key: position, className: 'gw-num', type: 'number', min: 1, value: node.viewport_rect_px[position], onChange: (e) => patchRect(index, position, e.target.value) })))),
           h('label', null, 'Window w / h', h('span', { className: 'dual' }, [0, 1].map((position) => h('input', { key: position, className: 'gw-num', type: 'number', min: 1, value: node.window_px[position], onChange: (e) => patchWindow(index, position, e.target.value) })))),
-          h('label', { className: 'check' }, h('input', { type: 'checkbox', checked: node.fullscreen, onChange: (e) => patchNode(index, { fullscreen: e.target.checked }) }), '全屏输出')))),
+          h('label', { className: 'check', title: '一期仅窗口模式' }, h('input', { type: 'checkbox', checked: false, disabled: true }), '全屏输出（一期仅窗口模式）')))),
       h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'plus', size: 13 }), onPress: addNode }, '添加节点'));
     const validationView = h('section', { className: 'topo-validation' },
       h('h3', null, '校验'),
