@@ -390,10 +390,10 @@ pub fn run() {
             commands::mesh_fuse::mesh_fuse_run,
             // nDisplay output runtime: preflight/start/stop/show/clear.
             commands::output::output_preflight,
+            commands::output::output_deploy,
             commands::output::output_start,
             commands::output::output_stop,
             commands::output::output_show,
-            commands::output::output_clear,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

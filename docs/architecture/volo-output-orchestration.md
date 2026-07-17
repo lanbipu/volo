@@ -1,16 +1,100 @@
 # Volo Output A-P2 编排契约
 
-## 命令边界
+## 五个命令
 
-Tauri 暴露五个命令，均以 `request` 作为唯一顶层参数：
+Tauri 暴露以下五个命令，均以 `request` 作为唯一顶层参数。JS 调用形态固定为
+`invoke(command, { request })`；`request` 内部字段保持 Rust/serde 的 snake_case。
 
-1. `output_preflight`：逐节点验证 UE、模板工程与 nDisplay config，创建 manifest/图片目录。
-2. `output_start`：secondary-first、primary-last 启动；每节点必须在 UE log 中找到 DisplayCluster 连接/同步证据。
-3. `output_stop`：按工程路径精确筛选并停止 UE 进程。
-4. `output_show`：为 session 预留单调 revision，以新文件名推送 PNG，全部成功后再逐节点原子替换 manifest。
-5. `output_clear`：为 session 预留单调 revision，原子发布 `mode:"clear"` manifest。
+1. `output_preflight`：逐节点验证 SSH、UE 版本与目录可写性。它不要求模板已部署。
+2. `output_deploy`：把 bundle 内最小模板和由当前 topology 生成的 `.ndisplay` config 部署到全部节点。
+3. `output_start`：secondary-first、primary-last 启动；每节点必须在 UE log 中找到 DisplayCluster 连接/同步证据。
+4. `output_show`：统一承载 `show` / `clear`；show 先推新 PNG 再原子切 manifest，clear 只原子切 manifest。
+5. `output_stop`：按工程路径精确筛选并停止 UE 进程。
 
 所有阻塞 SSH/SCP 工作均在 `spawn_blocking` 中执行。核心顺序与发布语义位于零 Tauri 依赖的 `mesh-app::output`；`src-tauri` 只负责 SSH transport 和 command DTO。
+
+## DTO
+
+```ts
+type OutputMode = "show" | "clear";
+
+interface RuntimePaths {
+  editor_path: string;
+  project_path: string;
+  config_path: string;
+  manifest_path: string;
+  image_dir: string;
+}
+
+interface RuntimeRequest {
+  session_id: string;
+  screen: ScreenConfig;
+  paths: RuntimePaths;
+  ssh_user?: string | null;
+}
+
+interface DeployRequest extends RuntimeRequest {
+  ue_version: string;
+}
+
+interface ShowRequest extends RuntimeRequest {
+  mode: OutputMode;
+  image_path?: string | null; // mode=show 必填；mode=clear 必须为空
+}
+
+interface OutputNodeResult {
+  node_id: string;
+  host: string;
+  message: string;
+}
+
+interface OutputCommandResult {
+  session_id: string;
+  operation: "preflight" | "deploy" | "start" | "show" | "clear" | "stop";
+  revision?: number | null;
+  remote_image_path?: string | null;
+  nodes: OutputNodeResult[];
+}
+```
+
+五个命令都返回 `OutputCommandResult`。失败沿现有 `call()` 约定 reject，不把错误伪装成
+`ok:false` 的成功返回。`screen.output_topology` 缺失或 topology validation 存在 error 时，
+preflight/deploy/start/show/stop 都拒绝执行。
+
+## 事件
+
+```ts
+type OutputOperation = "preflight" | "deploy" | "start" | "show" | "clear" | "stop";
+type OutputEventState = "queued" | "running" | "ok" | "error";
+
+interface NDisplayOutputEvent {
+  session_id: string;
+  operation: OutputOperation;
+  node_id: string;
+  host: string;
+  state: OutputEventState;
+  message: string;
+  revision?: number | null;
+  timestamp_ms: number;
+}
+
+interface NDisplayOutputRunnerEvent {
+  session_id: string;
+  operation: OutputOperation;
+  state: "running" | "ok" | "error";
+  completed: number;
+  total: number;
+  message: string;
+  revision?: number | null;
+  timestamp_ms: number;
+}
+```
+
+- `ndisplay-output-event`：节点状态 pill 和节点日志的数据源。
+- `ndisplay-output-runner`：按钮流程锁、总进度和失败回执的数据源。
+- 每条事件必须含 `session_id`，前端只消费当前 screen session。
+- runner 先发 `running`，最终只发一个 `ok` 或 `error`。节点完成后各发一条 `ok`；
+  无法归属具体节点的错误只发 runner `error`。
 
 ## 请求路径
 
@@ -22,7 +106,9 @@ Tauri 暴露五个命令，均以 `request` 作为唯一顶层参数：
 - `manifest_path`
 - `image_dir`
 
-模板工程来自 bundle resource `ue-template/VoloOutput`。当前五命令契约把模板/config 的安装视为调用前的部署步骤；`output_preflight` 会硬检查它们已存在，缺失即拒绝启动。
+模板工程来自 bundle resource `ue-template/VoloOutput`。`output_deploy` 写入 `project_path`
+对应的工程根，并把生成的 config 写到 `config_path`。`output_start` 会再次硬检查模板、
+config 和 Blueprint asset 已存在，避免绕过部署 gate。
 
 ## 启动不变量
 

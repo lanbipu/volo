@@ -33,7 +33,14 @@ pub trait OutputTransport {
     fn preflight(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<String, String>;
     fn start(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<(bool, String), String>;
     fn stop(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<String, String>;
+    fn prepare_deploy(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<String, String>;
     fn push_file(&self, node: &OutputNode, local: &Path, remote: &str) -> Result<(), String>;
+    fn publish_text(
+        &self,
+        node: &OutputNode,
+        remote_path: &str,
+        content: &str,
+    ) -> Result<String, String>;
     fn publish_manifest(
         &self,
         node: &OutputNode,
@@ -73,6 +80,67 @@ pub fn preflight<T: OutputTransport>(
         .iter()
         .map(|node| map_node(node, transport.preflight(node, paths)))
         .collect()
+}
+
+pub fn deploy<T: OutputTransport>(
+    transport: &T,
+    screen: &ScreenConfig,
+    paths: &RuntimePaths,
+    template_root: &Path,
+    ue_version: &str,
+) -> VoloResult<Vec<NodeResult>> {
+    let nodes = ordered_nodes(screen)?;
+    let project_root = win_parent(&paths.project_path)
+        .ok_or_else(|| VoloError::InvalidInput("project_path has no parent directory".into()))?;
+    let files = [
+        (
+            template_root.join("VoloOutput.uproject"),
+            paths.project_path.clone(),
+        ),
+        (
+            template_root.join("Config/DefaultEngine.ini"),
+            win_join(project_root, "Config\\DefaultEngine.ini"),
+        ),
+        (
+            template_root.join("Config/DefaultRemoteControl.ini"),
+            win_join(project_root, "Config\\DefaultRemoteControl.ini"),
+        ),
+        (
+            template_root.join("Content/VoloOutput/BP_VoloOutput.uasset"),
+            win_join(project_root, "Content\\VoloOutput\\BP_VoloOutput.uasset"),
+        ),
+    ];
+    for (local, _) in &files {
+        if !local.is_file() {
+            return Err(VoloError::NotFound(local.display().to_string()));
+        }
+    }
+    let resolved_ips = nodes
+        .iter()
+        .map(|node| (node.node_id.clone(), node_host(node)))
+        .collect::<BTreeMap<_, _>>();
+    let config = serde_json::to_string_pretty(&crate::ndisplay::generate_ndisplay_json(
+        screen,
+        &resolved_ips,
+        ue_version,
+    )?)?;
+
+    let mut results = Vec::with_capacity(nodes.len());
+    for node in &nodes {
+        transport
+            .prepare_deploy(node, paths)
+            .map_err(|error| VoloError::Other(format!("prepare {}: {error}", node.node_id)))?;
+        for (local, remote) in &files {
+            transport
+                .push_file(node, local, remote)
+                .map_err(|error| VoloError::Other(format!("deploy {}: {error}", node.node_id)))?;
+        }
+        results.push(map_node(
+            node,
+            transport.publish_text(node, &paths.config_path, &config),
+        )?);
+    }
+    Ok(results)
 }
 
 /// Starts secondaries first and the primary last. A live process is not enough:
@@ -222,6 +290,11 @@ fn win_join(dir: &str, name: &str) -> String {
     format!("{}\\{}", dir.trim_end_matches(['\\', '/']), name)
 }
 
+fn win_parent(path: &str) -> Option<&str> {
+    let index = path.rfind(['\\', '/'])?;
+    (index > 0).then_some(&path[..index])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,12 +327,26 @@ mod tests {
                 .push(format!("stop:{}", n.node_id));
             Ok("ok".into())
         }
+        fn prepare_deploy(&self, n: &OutputNode, _: &RuntimePaths) -> Result<String, String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("prepare:{}", n.node_id));
+            Ok("ok".into())
+        }
         fn push_file(&self, n: &OutputNode, _: &Path, remote: &str) -> Result<(), String> {
             self.calls
                 .lock()
                 .unwrap()
                 .push(format!("push:{}:{remote}", n.node_id));
             Ok(())
+        }
+        fn publish_text(&self, n: &OutputNode, remote: &str, _: &str) -> Result<String, String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("text:{}:{remote}", n.node_id));
+            Ok("ok".into())
         }
         fn publish_manifest(&self, n: &OutputNode, _: &str, _: &str) -> Result<String, String> {
             self.calls

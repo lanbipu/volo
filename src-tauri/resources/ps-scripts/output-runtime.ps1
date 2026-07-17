@@ -16,15 +16,15 @@ try {
     if ($action -eq "preflight") {
         $missing = @()
         foreach ($item in @(
-            @{ Name = "UnrealEditor"; Path = [string]$request.editor_path },
-            @{ Name = "project"; Path = [string]$request.project_path },
-            @{ Name = "nDisplay config"; Path = [string]$request.config_path }
+            @{ Name = "UnrealEditor"; Path = [string]$request.editor_path }
         )) {
             if (-not (Test-Path -LiteralPath $item.Path -PathType Leaf)) { $missing += "$($item.Name): $($item.Path)" }
         }
         if ($missing.Count -gt 0) { throw "missing runtime files: $($missing -join '; ')" }
 
+        $projectDir = Split-Path -Parent ([string]$request.project_path)
         $manifestDir = Split-Path -Parent ([string]$request.manifest_path)
+        New-Item -ItemType Directory -Force -Path $projectDir | Out-Null
         if (-not [string]::IsNullOrWhiteSpace($manifestDir)) { New-Item -ItemType Directory -Force -Path $manifestDir | Out-Null }
         New-Item -ItemType Directory -Force -Path ([string]$request.image_dir) | Out-Null
         $version = (Get-Item -LiteralPath ([string]$request.editor_path)).VersionInfo.ProductVersion
@@ -32,9 +32,46 @@ try {
         exit 0
     }
 
+    if ($action -eq "prepare_deploy") {
+        $projectDir = Split-Path -Parent ([string]$request.project_path)
+        @(
+            $projectDir,
+            (Join-Path $projectDir "Config"),
+            (Join-Path $projectDir "Content\VoloOutput"),
+            (Split-Path -Parent ([string]$request.config_path)),
+            (Split-Path -Parent ([string]$request.manifest_path)),
+            ([string]$request.image_dir)
+        ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object {
+            New-Item -ItemType Directory -Force -Path $_ | Out-Null
+        }
+        Reply $true "deployment directories ready"
+        exit 0
+    }
+
+    if ($action -eq "publish_text") {
+        $destination = [string]$request.config_path
+        $parent = Split-Path -Parent $destination
+        New-Item -ItemType Directory -Force -Path $parent | Out-Null
+        $temp = "$destination.tmp"
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($temp, [string]$request.content, $utf8NoBom)
+        Move-Item -LiteralPath $temp -Destination $destination -Force
+        Reply $true "nDisplay config deployed"
+        exit 0
+    }
+
     if ($action -eq "start") {
         $project = [string]$request.project_path
         $nodeId = [string]$request.node_id
+        $projectDir = Split-Path -Parent $project
+        $asset = Join-Path $projectDir "Content\VoloOutput\BP_VoloOutput.uasset"
+        foreach ($item in @(
+            @{ Name = "project"; Path = $project },
+            @{ Name = "nDisplay config"; Path = [string]$request.config_path },
+            @{ Name = "Blueprint asset"; Path = $asset }
+        )) {
+            if (-not (Test-Path -LiteralPath $item.Path -PathType Leaf)) { throw "start gate missing $($item.Name): $($item.Path)" }
+        }
         $logDir = Join-Path (Split-Path -Parent $project) "Saved\Logs"
         New-Item -ItemType Directory -Force -Path $logDir | Out-Null
         $logPath = Join-Path $logDir "VoloOutput-$nodeId.log"

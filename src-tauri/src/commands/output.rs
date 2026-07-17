@@ -1,14 +1,17 @@
 //! Thin Tauri transport for the output orchestrator in `mesh-app`.
 
 use cache_core::core::ssh::{run_json, scp_push_file, NodeScript, SshExecutor};
-use mesh_app::output::{self, OutputTransport, PublishResult, RuntimePaths};
-use serde::Deserialize;
+use mesh_app::output::{self, OutputTransport, RuntimePaths};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use tauri::State;
+use tauri::{AppHandle, Emitter, Manager, State};
 use volo_shared::dto::{OutputNode, ScreenConfig};
 use volo_shared::error::{VoloError, VoloResult};
+
+const NODE_EVENT: &str = "ndisplay-output-event";
+const RUNNER_EVENT: &str = "ndisplay-output-runner";
 
 #[derive(Clone, Default)]
 pub struct OutputSessions {
@@ -49,9 +52,6 @@ impl OutputSessions {
             .revisions
             .lock()
             .map_err(|_| VoloError::Other("output session registry poisoned".into()))?;
-        // The wall-clock floor prevents a deleted state file or fast app restart
-        // from returning to small revisions. It remains within Blueprint int32
-        // through 2038; fail explicitly after that instead of wrapping.
         let epoch_seconds = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|error| VoloError::Other(format!("system clock before Unix epoch: {error}")))?
@@ -68,7 +68,6 @@ impl OutputSessions {
                 "output revision exceeds Blueprint Integer range".into(),
             ));
         }
-        // Reserve before any remote write. A failed/partially visible revision is never reused.
         let previous = revisions.insert(session_id.to_string(), revision);
         if let Some(path) = &self.state_path {
             let encoded = serde_json::to_vec(&*revisions)?;
@@ -93,6 +92,7 @@ impl OutputSessions {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RuntimeRequest {
+    pub session_id: String,
     pub screen: ScreenConfig,
     pub paths: RuntimePaths,
     #[serde(default)]
@@ -100,14 +100,65 @@ pub struct RuntimeRequest {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct PublishRequest {
+pub struct DeployRequest {
     pub session_id: String,
     pub screen: ScreenConfig,
     pub paths: RuntimePaths,
+    pub ue_version: String,
     #[serde(default)]
     pub ssh_user: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputMode {
+    Show,
+    Clear,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ShowRequest {
+    pub session_id: String,
+    pub screen: ScreenConfig,
+    pub paths: RuntimePaths,
+    pub mode: OutputMode,
     #[serde(default)]
     pub image_path: Option<PathBuf>,
+    #[serde(default)]
+    pub ssh_user: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OutputCommandResult {
+    pub session_id: String,
+    pub operation: String,
+    pub revision: Option<u64>,
+    pub remote_image_path: Option<String>,
+    pub nodes: Vec<output::NodeResult>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct NodeEventPayload {
+    session_id: String,
+    operation: String,
+    node_id: String,
+    host: String,
+    state: String,
+    message: String,
+    revision: Option<u64>,
+    timestamp_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RunnerEventPayload {
+    session_id: String,
+    operation: String,
+    state: String,
+    completed: usize,
+    total: usize,
+    message: String,
+    revision: Option<u64>,
+    timestamp_ms: u128,
 }
 
 #[derive(Debug, Deserialize)]
@@ -127,7 +178,7 @@ impl SshOutputTransport {
     fn new(ssh_user: Option<String>) -> Result<Self, String> {
         SshExecutor::from_config()
             .map(|exec| Self { exec, ssh_user })
-            .map_err(|e| e.to_string())
+            .map_err(|error| error.to_string())
     }
 
     fn run(
@@ -179,6 +230,10 @@ impl OutputTransport for SshOutputTransport {
         self.run(node, "stop", paths, serde_json::json!({}))
             .map(|x| x.message)
     }
+    fn prepare_deploy(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<String, String> {
+        self.run(node, "prepare_deploy", paths, serde_json::json!({}))
+            .map(|x| x.message)
+    }
     fn push_file(&self, node: &OutputNode, local: &Path, remote: &str) -> Result<(), String> {
         let user = self.ssh_user.as_deref().unwrap_or(&self.exec.default_user);
         scp_push_file(
@@ -189,7 +244,28 @@ impl OutputTransport for SshOutputTransport {
             local,
             &remote.replace('\\', "/"),
         )
-        .map_err(|e| e.to_string())
+        .map_err(|error| error.to_string())
+    }
+    fn publish_text(
+        &self,
+        node: &OutputNode,
+        remote_path: &str,
+        content: &str,
+    ) -> Result<String, String> {
+        let empty_paths = RuntimePaths {
+            editor_path: String::new(),
+            project_path: String::new(),
+            config_path: remote_path.into(),
+            manifest_path: String::new(),
+            image_dir: String::new(),
+        };
+        self.run(
+            node,
+            "publish_text",
+            &empty_paths,
+            serde_json::json!({"content": content}),
+        )
+        .map(|x| x.message)
     }
     fn publish_manifest(
         &self,
@@ -197,7 +273,7 @@ impl OutputTransport for SshOutputTransport {
         manifest_path: &str,
         manifest_json: &str,
     ) -> Result<String, String> {
-        let paths = RuntimePaths {
+        let empty_paths = RuntimePaths {
             editor_path: String::new(),
             project_path: String::new(),
             config_path: String::new(),
@@ -207,7 +283,7 @@ impl OutputTransport for SshOutputTransport {
         self.run(
             node,
             "publish",
-            &paths,
+            &empty_paths,
             serde_json::json!({"manifest_json": manifest_json}),
         )
         .map(|x| x.message)
@@ -218,9 +294,145 @@ fn transport(user: Option<String>) -> VoloResult<SshOutputTransport> {
     SshOutputTransport::new(user).map_err(VoloError::Other)
 }
 
+fn timestamp_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn node_count(screen: &ScreenConfig) -> usize {
+    screen
+        .output_topology
+        .as_ref()
+        .map(|topology| topology.nodes.len())
+        .unwrap_or(0)
+}
+
+fn emit_runner(
+    app: &AppHandle,
+    session_id: &str,
+    operation: &str,
+    state: &str,
+    completed: usize,
+    total: usize,
+    message: impl Into<String>,
+    revision: Option<u64>,
+) {
+    let _ = app.emit(
+        RUNNER_EVENT,
+        RunnerEventPayload {
+            session_id: session_id.into(),
+            operation: operation.into(),
+            state: state.into(),
+            completed,
+            total,
+            message: message.into(),
+            revision,
+            timestamp_ms: timestamp_ms(),
+        },
+    );
+}
+
+fn finish_operation(
+    app: &AppHandle,
+    session_id: String,
+    operation: &str,
+    revision: Option<u64>,
+    remote_image_path: Option<String>,
+    total: usize,
+    result: VoloResult<Vec<output::NodeResult>>,
+) -> VoloResult<OutputCommandResult> {
+    match result {
+        Ok(nodes) => {
+            for node in &nodes {
+                let _ = app.emit(
+                    NODE_EVENT,
+                    NodeEventPayload {
+                        session_id: session_id.clone(),
+                        operation: operation.into(),
+                        node_id: node.node_id.clone(),
+                        host: node.host.clone(),
+                        state: "ok".into(),
+                        message: node.message.clone(),
+                        revision,
+                        timestamp_ms: timestamp_ms(),
+                    },
+                );
+            }
+            emit_runner(
+                app,
+                &session_id,
+                operation,
+                "ok",
+                nodes.len(),
+                total,
+                "操作完成",
+                revision,
+            );
+            Ok(OutputCommandResult {
+                session_id,
+                operation: operation.into(),
+                revision,
+                remote_image_path,
+                nodes,
+            })
+        }
+        Err(error) => {
+            emit_runner(
+                app,
+                &session_id,
+                operation,
+                "error",
+                0,
+                total,
+                error.to_string(),
+                revision,
+            );
+            Err(error)
+        }
+    }
+}
+
+fn template_root(app: &AppHandle) -> VoloResult<PathBuf> {
+    let bundled = app
+        .path()
+        .resource_dir()
+        .map_err(|error| VoloError::Io(error.to_string()))?
+        .join("ue-template/VoloOutput");
+    if bundled.is_dir() {
+        return Ok(bundled);
+    }
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/ue-template/VoloOutput");
+    if dev.is_dir() {
+        Ok(dev)
+    } else {
+        Err(VoloError::NotFound(format!(
+            "VoloOutput template not found at {} or {}",
+            bundled.display(),
+            dev.display()
+        )))
+    }
+}
+
 #[tauri::command]
-pub async fn output_preflight(request: RuntimeRequest) -> VoloResult<Vec<output::NodeResult>> {
-    tokio::task::spawn_blocking(move || {
+pub async fn output_preflight(
+    app: AppHandle,
+    request: RuntimeRequest,
+) -> VoloResult<OutputCommandResult> {
+    let total = node_count(&request.screen);
+    emit_runner(
+        &app,
+        &request.session_id,
+        "preflight",
+        "running",
+        0,
+        total,
+        "正在预检",
+        None,
+    );
+    let session_id = request.session_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
         output::preflight(
             &transport(request.ssh_user)?,
             &request.screen,
@@ -228,12 +440,60 @@ pub async fn output_preflight(request: RuntimeRequest) -> VoloResult<Vec<output:
         )
     })
     .await
-    .map_err(|e| VoloError::Other(format!("output preflight task failed: {e}")))?
+    .map_err(|error| VoloError::Other(format!("output preflight task failed: {error}")))?;
+    finish_operation(&app, session_id, "preflight", None, None, total, result)
 }
 
 #[tauri::command]
-pub async fn output_start(request: RuntimeRequest) -> VoloResult<Vec<output::NodeResult>> {
-    tokio::task::spawn_blocking(move || {
+pub async fn output_deploy(
+    app: AppHandle,
+    request: DeployRequest,
+) -> VoloResult<OutputCommandResult> {
+    let total = node_count(&request.screen);
+    emit_runner(
+        &app,
+        &request.session_id,
+        "deploy",
+        "running",
+        0,
+        total,
+        "正在部署",
+        None,
+    );
+    let root = template_root(&app)?;
+    let session_id = request.session_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        output::deploy(
+            &transport(request.ssh_user)?,
+            &request.screen,
+            &request.paths,
+            &root,
+            &request.ue_version,
+        )
+    })
+    .await
+    .map_err(|error| VoloError::Other(format!("output deploy task failed: {error}")))?;
+    finish_operation(&app, session_id, "deploy", None, None, total, result)
+}
+
+#[tauri::command]
+pub async fn output_start(
+    app: AppHandle,
+    request: RuntimeRequest,
+) -> VoloResult<OutputCommandResult> {
+    let total = node_count(&request.screen);
+    emit_runner(
+        &app,
+        &request.session_id,
+        "start",
+        "running",
+        0,
+        total,
+        "正在启动",
+        None,
+    );
+    let session_id = request.session_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
         output::start(
             &transport(request.ssh_user)?,
             &request.screen,
@@ -241,12 +501,104 @@ pub async fn output_start(request: RuntimeRequest) -> VoloResult<Vec<output::Nod
         )
     })
     .await
-    .map_err(|e| VoloError::Other(format!("output start task failed: {e}")))?
+    .map_err(|error| VoloError::Other(format!("output start task failed: {error}")))?;
+    finish_operation(&app, session_id, "start", None, None, total, result)
 }
 
 #[tauri::command]
-pub async fn output_stop(request: RuntimeRequest) -> VoloResult<Vec<output::NodeResult>> {
-    tokio::task::spawn_blocking(move || {
+pub async fn output_show(
+    app: AppHandle,
+    sessions: State<'_, OutputSessions>,
+    request: ShowRequest,
+) -> VoloResult<OutputCommandResult> {
+    let revision = sessions.reserve_revision(&request.session_id)?;
+    let operation = match request.mode {
+        OutputMode::Show => "show",
+        OutputMode::Clear => "clear",
+    };
+    let total = node_count(&request.screen);
+    emit_runner(
+        &app,
+        &request.session_id,
+        operation,
+        "running",
+        0,
+        total,
+        "正在发布",
+        Some(revision),
+    );
+    let session_id = request.session_id.clone();
+    let result = tokio::task::spawn_blocking(move || match request.mode {
+        OutputMode::Show => {
+            let image = request.image_path.ok_or_else(|| {
+                VoloError::InvalidInput("image_path is required when mode=show".into())
+            })?;
+            let published = output::show(
+                &transport(request.ssh_user)?,
+                &request.screen,
+                &request.paths,
+                &image,
+                revision,
+            )?;
+            Ok((published.nodes, published.remote_image_path))
+        }
+        OutputMode::Clear => {
+            if request.image_path.is_some() {
+                return Err(VoloError::InvalidInput(
+                    "image_path must be empty when mode=clear".into(),
+                ));
+            }
+            let published = output::clear(
+                &transport(request.ssh_user)?,
+                &request.screen,
+                &request.paths,
+                revision,
+            )?;
+            Ok((published.nodes, None))
+        }
+    })
+    .await
+    .map_err(|error| VoloError::Other(format!("output show task failed: {error}")))?;
+    match result {
+        Ok((nodes, remote_image_path)) => finish_operation(
+            &app,
+            session_id,
+            operation,
+            Some(revision),
+            remote_image_path,
+            total,
+            Ok(nodes),
+        ),
+        Err(error) => finish_operation(
+            &app,
+            session_id,
+            operation,
+            Some(revision),
+            None,
+            total,
+            Err(error),
+        ),
+    }
+}
+
+#[tauri::command]
+pub async fn output_stop(
+    app: AppHandle,
+    request: RuntimeRequest,
+) -> VoloResult<OutputCommandResult> {
+    let total = node_count(&request.screen);
+    emit_runner(
+        &app,
+        &request.session_id,
+        "stop",
+        "running",
+        0,
+        total,
+        "正在停止",
+        None,
+    );
+    let session_id = request.session_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
         output::stop(
             &transport(request.ssh_user)?,
             &request.screen,
@@ -254,48 +606,8 @@ pub async fn output_stop(request: RuntimeRequest) -> VoloResult<Vec<output::Node
         )
     })
     .await
-    .map_err(|e| VoloError::Other(format!("output stop task failed: {e}")))?
-}
-
-#[tauri::command]
-pub async fn output_show(
-    sessions: State<'_, OutputSessions>,
-    request: PublishRequest,
-) -> VoloResult<PublishResult> {
-    let revision = sessions.reserve_revision(&request.session_id)?;
-    let image = request
-        .image_path
-        .clone()
-        .ok_or_else(|| VoloError::InvalidInput("image_path is required for show".into()))?;
-    tokio::task::spawn_blocking(move || {
-        output::show(
-            &transport(request.ssh_user)?,
-            &request.screen,
-            &request.paths,
-            &image,
-            revision,
-        )
-    })
-    .await
-    .map_err(|e| VoloError::Other(format!("output show task failed: {e}")))?
-}
-
-#[tauri::command]
-pub async fn output_clear(
-    sessions: State<'_, OutputSessions>,
-    request: PublishRequest,
-) -> VoloResult<PublishResult> {
-    let revision = sessions.reserve_revision(&request.session_id)?;
-    tokio::task::spawn_blocking(move || {
-        output::clear(
-            &transport(request.ssh_user)?,
-            &request.screen,
-            &request.paths,
-            revision,
-        )
-    })
-    .await
-    .map_err(|e| VoloError::Other(format!("output clear task failed: {e}")))?
+    .map_err(|error| VoloError::Other(format!("output stop task failed: {error}")))?;
+    finish_operation(&app, session_id, "stop", None, None, total, result)
 }
 
 #[cfg(test)]
