@@ -5,7 +5,7 @@
 Tauri 暴露以下五个命令，均以 `request` 作为唯一顶层参数。JS 调用形态固定为
 `invoke(command, { request })`；`request` 内部字段保持 Rust/serde 的 snake_case。
 
-1. `output_preflight`：逐节点验证 SSH、UE 5.8 与目录可写性。它不要求模板已部署；非 5.8 直接拒绝。
+1. `output_preflight`：逐节点验证 SSH、UE 5.8 与目录可写性。它不要求模板已部署；非 5.8 直接拒绝。UE 版本以 `Engine/Build/Build.version` JSON（Major/Minor/Patch）为准；exe 的 ProductVersion 是 `++UE5+Release-5.8-CL-...` 格式，不能做前缀比较。
 2. `output_deploy`：把 bundle 内最小模板和由当前 topology 生成的 `.ndisplay` config 部署到全部节点。
 3. `output_start`：secondary-first、primary-last 启动；每节点必须在 UE log 中找到 DisplayCluster 连接/同步证据。
 4. `output_show`：统一承载 `show` / `clear`；show 先推新 PNG 再原子切 manifest，clear 只原子切 manifest。
@@ -123,7 +123,14 @@ config 和 Blueprint asset 已存在，避免绕过部署 gate。
 ```text
 -game -messaging -dc_cluster -dc_dev_mono
 -RemoteControlIsHeadless -RCWebControlEnable -ClusterForceApplyResponse
+-NoScreenMessages
 ```
+
+`-NoScreenMessages` 是 2026-07-17 真机加入的固定项：`dc_dev_mono` 使视图成为 stereo view，引擎（SceneRendering.cpp，非 SHIPPING 构建）会在左上角常驻 `StereoView: Primary / Stereo rendering method: Splitscreen-like` 调试字并上墙；与 Pixel Streaming 插件无关（模板未启用该插件，只是同一段 screen-debug 代码的不同触发者）。
+
+节点侧启动必须经 Interactive-logon 计划任务落到交互桌面会话（`New-ScheduledTaskPrincipal -LogonType Interactive`，launcher 脚本再做 `SetWindowPos TOPMOST→NOTOPMOST + SetForegroundWindow` 把 UE 窗口置前）：SSH 网络登录直接 `Start-Process` 会落在 session 0，UE 创建 D3D12 设备时以 `DXGI_ERROR_NOT_CURRENTLY_AVAILABLE` 秒崩且无 abslog。
+
+`output_start` 在启动任何节点前，先用预留的新 revision 向全部节点发布一份 clear manifest：新 UE 进程 `LastRevision=-1`，会把上一会话残留的 show manifest 当新指令，启动即上屏旧图。
 
 并按节点补齐 `-dc_cfg`、`-dc_node`、窗口尺寸与独立 `-abslog`。启动分两阶段：先按 secondary-first、primary-last 对全部节点执行 `launch`，校验进程没有立即退出；之后才逐节点执行 `wait_evidence`。不能在启动下一个节点前阻塞等当前节点证据，否则 secondary 会在等待 primary 时形成死锁。
 
@@ -150,3 +157,15 @@ FortniteRelease 四组 `Custom version is too new`。因此一期只支持 UE 5.
 
 Razer SSH 的网络阻塞已解除，但执行端必须从 Mac 使用带
 `-o PubkeyAuthentication=no` 的指定 `sshpass` 命令；不得回退为多 key 公钥认证。
+
+## 操作端 SSH 与路径注意（2026-07-17 真机结论）
+
+- App 连节点用的是自己 keystore 的 `uecm_ed25519`（`AppData\Roaming\com.lanbipu.uecm`，默认用户 `uecm-svc`），不是操作者的个人 ssh key；其公钥必须进节点的 `C:\ProgramData\ssh\administrators_authorized_keys`。
+- 节点必须先在机器库登记并「刷新」探测过 UE 安装，preflight 才能解析出节点级 editor 路径。
+- Windows 上 `resource_dir()`/canonicalize 返回 `\\?\C:\...` verbatim 路径，scp 会把冒号当远端主机分隔符报 `Could not resolve hostname \\?\c`；transport 的 `push_file` 统一剥去该前缀。
+
+## 二期待办（暂缓）
+
+- 全屏输出：启用 `fullscreen` 开关，在全屏路径复验 dev_mono 水印与双线性 1:1。
+- 采集闭环自动切图；首启 shader 编译耗时记录。
+- 蓝图 revision 接线修正（现 BP 恒打印 revision=1 且每 0.5s 重复 apply）。

@@ -37,7 +37,7 @@
 3. `mode == "clear"` 时调用 `SetReplaceTextureFlagForAllViewports(false)`，成功后更新 revision。
 4. show 路径调用 `Import File as Texture 2D`，结果写入 `ActiveTexture`，依次设置 `SRGB=true`、`MipGenSettings=NoMipmaps`、`Filter=Nearest`。
 5. 通过 `Get Current Config Data → Cluster → Nodes → Find(Get Node ID) → Viewports → Values → [0]` 定位本节点 viewport。
-6. 从顶层读取 `image_path` 与 `crop_x`、`crop_y`、`crop_w`、`crop_h`。组装 Replace：`bAllowReplace=true`、`SourceTexture=ActiveTexture`、`bShouldUseTextureRegion=true`，`TextureRegion` 写入这四个 crop 值。
+6. 从顶层读取 `image_path` 与 `crop_x`、`crop_y`、`crop_w`、`crop_h`。注意：现存手工 `BP_VoloOutput.uasset` 实际读取的字段名是 `texture_path`（偏离本指南），生产 manifest 因此双字段同发；新建/修复 Blueprint 时应统一改回 `image_path`。组装 Replace：`bAllowReplace=true`、`SourceTexture=ActiveTexture`、`bShouldUseTextureRegion=true`，`TextureRegion` 写入这四个 crop 值。
 7. `Set Members in RenderSettings` 后必须连接 `Set Render Settings` 写回；只修改 struct 副本不会生效。
 8. 调用 `SetReplaceTextureFlagForAllViewports(true)`；全部成功后才更新 `LastRevision`。
 
@@ -62,6 +62,12 @@ Blueprint 与外部 `.ndisplay` 必须一致：
 ```
 
 UE 5.8 缺少 `-dc_dev_mono` 时不会创建 nDisplay 渲染设备；不能以“进程仍在运行”判断启动成功。
+
+生产启动参数另需 `-NoScreenMessages`：`dc_dev_mono` 使视图成为 stereo view，引擎会在左上角常驻 `StereoView: Primary` 调试字并上墙。生产启动还必须经 Interactive 计划任务落到交互桌面会话，SSH 网络登录直启会因 session 0 无桌面报 `DXGI_ERROR_NOT_CURRENTLY_AVAILABLE` 秒崩（见 `volo-output-orchestration.md`）。
+
+### 7.0 已知缺陷（待修）
+
+2026-07-17 真机观察：现存手工 uasset 的 revision 接线有误——每 0.5s 轮询都重新 apply 且恒打印 `applied revision=1`，说明 `LastRevision` 从未被写成 manifest 的 revision（§5 第 2/8 步的 gate 失效）。功能可用但每轮重复导图，浪费 IO/GPU；修复时逐点核对 `Get Json Field("revision")` 的输出是否同时接进比较节点和最终的 `Set LastRevision`。
 
 ### 7.2 A 图 + crop
 
