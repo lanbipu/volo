@@ -20,6 +20,7 @@ pub mod machines;
 // env write, project-INI backend field, local-cache create) — these otherwise
 // leave no `operations` row, so failures had no DB error trail to analyze.
 pub mod oplog;
+pub mod output;
 // step 3c: mesh (LMT) command group. `mesh` holds the MeshDb state newtype;
 // the `mesh_*` modules are the migrated LMT `#[tauri::command]` shims.
 pub mod mesh;

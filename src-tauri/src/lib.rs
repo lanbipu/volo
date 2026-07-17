@@ -154,6 +154,10 @@ pub fn run() {
                     .expect("failed to migrate mesh DB");
             }
             app.manage(commands::mesh::MeshDb(mesh_db));
+            app.manage(
+                commands::output::OutputSessions::from_config()
+                    .expect("failed to initialize output revision state"),
+            );
             tracing::info!("volo mesh database at {}", mesh_db_path.display());
 
             // macOS：把应用菜单装进系统菜单栏（屏幕顶端）。Windows/Linux 菜单画在窗口顶部
@@ -384,6 +388,12 @@ pub fn run() {
             commands::mesh_visual::mesh_visual_export_pose_obj,
             // W6 R1: M1+M2 fuse (backend-only; no UI wiring this pass).
             commands::mesh_fuse::mesh_fuse_run,
+            // nDisplay output runtime: preflight/start/stop/show/clear.
+            commands::output::output_preflight,
+            commands::output::output_start,
+            commands::output::output_stop,
+            commands::output::output_show,
+            commands::output::output_clear,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

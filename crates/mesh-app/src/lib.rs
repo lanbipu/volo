@@ -14,6 +14,7 @@ pub mod export;
 pub mod fuse;
 pub mod measurements;
 pub mod ndisplay;
+pub mod output;
 pub mod projects;
 pub mod reconstruct;
 pub mod total_station;
