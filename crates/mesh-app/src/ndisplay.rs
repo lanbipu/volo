@@ -45,6 +45,11 @@ pub struct OutputManifest {
     pub mode: OutputManifestMode,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_path: Option<String>,
+    /// 与 image_path 同值。真机验收的 BP_VoloOutput 蓝图读的字段名是
+    /// texture_path（偏离了 guide 的 image_path）；蓝图是手工二进制资产，
+    /// 契约侧双字段兼容两种命名。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub texture_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crop_x: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -271,6 +276,7 @@ pub fn generate_manifest_json(
                     revision,
                     mode,
                     image_path: Some(image_path.clone()),
+                    texture_path: Some(image_path.clone()),
                     crop_x: Some(crop_x),
                     crop_y: Some(crop_y),
                     crop_w: Some(crop_w),
@@ -303,6 +309,7 @@ pub fn generate_manifest_json(
                     revision,
                     mode,
                     image_path: None,
+                    texture_path: None,
                     crop_x: None,
                     crop_y: None,
                     crop_w: None,
