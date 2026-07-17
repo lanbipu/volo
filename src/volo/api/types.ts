@@ -1394,6 +1394,7 @@ export interface ScreenConfig {
   cabinet_count: [number, number];
   cabinet_size_mm: [number, number];
   pixels_per_cabinet?: [number, number] | null;
+  output_topology?: OutputTopology | null;
   shape_prior: ShapePriorConfig;
   shape_mode: ShapeMode;
   /** Cabinet-indexed [col, row] pairs explicitly absent from the array. */
@@ -1409,6 +1410,91 @@ export interface ScreenConfig {
   normal_flip?: boolean;
   /** True after the assigned origin vertex has been translated to world (0,0,0). */
   origin_aligned?: boolean;
+}
+
+export interface OutputTopology {
+  nodes: OutputNode[];
+}
+
+export interface OutputNode {
+  node_id: string;
+  machine: MachineRef;
+  /** [crop_x, crop_y, crop_width, crop_height]. */
+  viewport_rect_px: [number, number, number, number];
+  window_px: [number, number];
+  fullscreen: boolean;
+  primary: boolean;
+}
+
+export interface MachineRef {
+  hostname: string;
+  ip: string;
+}
+
+/* ====================== nDisplay output runtime ====================== */
+
+export type OutputMode = "show" | "clear";
+export type OutputOperation = "preflight" | "deploy" | "start" | "show" | "clear" | "stop";
+export type OutputEventState = "queued" | "running" | "ok" | "error";
+
+export interface RuntimePaths {
+  editor_path: string;
+  project_path: string;
+  config_path: string;
+  manifest_path: string;
+  image_dir: string;
+}
+
+export interface RuntimeRequest {
+  session_id: string;
+  screen: ScreenConfig;
+  paths: RuntimePaths;
+  ssh_user?: string | null;
+}
+
+export interface DeployRequest extends RuntimeRequest {
+  ue_version: string;
+}
+
+export interface ShowRequest extends RuntimeRequest {
+  mode: OutputMode;
+  image_path?: string | null;
+}
+
+export interface OutputNodeResult {
+  node_id: string;
+  host: string;
+  message: string;
+}
+
+export interface OutputCommandResult {
+  session_id: string;
+  operation: OutputOperation;
+  revision?: number | null;
+  remote_image_path?: string | null;
+  nodes: OutputNodeResult[];
+}
+
+export interface NDisplayOutputEvent {
+  session_id: string;
+  operation: OutputOperation;
+  node_id: string;
+  host: string;
+  state: OutputEventState;
+  message: string;
+  revision?: number | null;
+  timestamp_ms: number;
+}
+
+export interface NDisplayOutputRunnerEvent {
+  session_id: string;
+  operation: OutputOperation;
+  state: "running" | "ok" | "error";
+  completed: number;
+  total: number;
+  message: string;
+  revision?: number | null;
+  timestamp_ms: number;
 }
 
 export type ShapePriorConfig =
