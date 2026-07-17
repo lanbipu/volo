@@ -222,8 +222,16 @@ impl OutputTransport for SshOutputTransport {
         self.run(node, "preflight", paths, serde_json::json!({}))
             .map(|x| x.message)
     }
-    fn start(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<(bool, String), String> {
-        self.run(node, "start", paths, serde_json::json!({}))
+    fn launch(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<String, String> {
+        self.run(node, "launch", paths, serde_json::json!({}))
+            .map(|x| x.message)
+    }
+    fn wait_evidence(
+        &self,
+        node: &OutputNode,
+        paths: &RuntimePaths,
+    ) -> Result<(bool, String), String> {
+        self.run(node, "wait_evidence", paths, serde_json::json!({}))
             .map(|x| (x.cluster_connected, x.message))
     }
     fn stop(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<String, String> {

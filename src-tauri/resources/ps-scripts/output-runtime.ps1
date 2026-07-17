@@ -37,7 +37,15 @@ try {
         if (-not $version.StartsWith("5.8")) {
             throw "unsupported Unreal Engine $version; VoloOutput Blueprint was saved by UE 5.8 and Phase 1 requires UE 5.8"
         }
-        Reply $true "preflight passed; UE $version"
+        $running = @(Get-CimInstance Win32_Process -Filter "Name='UnrealEditor.exe'" |
+            Where-Object { $_.CommandLine } |
+            ForEach-Object {
+                $summary = ([string]$_.CommandLine -replace '\s+', ' ').Trim()
+                if ($summary.Length -gt 180) { $summary = $summary.Substring(0, 180) + '...' }
+                "UnrealEditor.exe PID=$($_.ProcessId) command=$summary"
+            })
+        $warning = if ($running.Count -gt 0) { "; warning: running UE process(es): $($running -join ' | ')" } else { '' }
+        Reply $true "preflight passed; UE $version$warning"
         exit 0
     }
 
@@ -69,7 +77,7 @@ try {
         exit 0
     }
 
-    if ($action -eq "start") {
+    if ($action -eq "launch") {
         $project = [string]$request.project_path
         $nodeId = [string]$request.node_id
         $projectDir = Split-Path -Parent $project
@@ -84,6 +92,12 @@ try {
         $logDir = Join-Path (Split-Path -Parent $project) "Saved\Logs"
         New-Item -ItemType Directory -Force -Path $logDir | Out-Null
         $logPath = Join-Path $logDir "VoloOutput-$nodeId.log"
+        $existing = @(Get-CimInstance Win32_Process -Filter "Name='UnrealEditor.exe'" |
+            Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($project, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
+        if ($existing.Count -gt 0) {
+            $pids = ($existing | ForEach-Object { $_.ProcessId }) -join ', '
+            throw "VoloOutput project is already running (PID=$pids); stop it before starting again: $project"
+        }
         $arguments = @(
             ('"{0}"' -f $project),
             '-game', '-messaging', '-dc_cluster', '-dc_dev_mono',
@@ -97,12 +111,24 @@ try {
         )
         # This is the operator-visible nDisplay output window, so it must not be hidden.
         $process = Start-Process -FilePath ([string]$request.editor_path) -ArgumentList $arguments -PassThru
+        Start-Sleep -Seconds 2
+        $process.Refresh()
+        if ($process.HasExited) { throw "UE exited immediately after launch (exit $($process.ExitCode)); log=$logPath" }
+        Reply $true "launched PID=$($process.Id); log=$logPath"
+        exit 0
+    }
 
-        # A PID is deliberately not the success criterion. Wait for cluster/render
-        # connection evidence emitted by DisplayCluster in this node's UE log.
-        $deadline = (Get-Date).AddSeconds(60)
+    if ($action -eq "wait_evidence") {
+        $project = [string]$request.project_path
+        $nodeId = [string]$request.node_id
+        $logDir = Join-Path (Split-Path -Parent $project) "Saved\Logs"
+        $logPath = Join-Path $logDir "VoloOutput-$nodeId.log"
+        # Create viewport manager is emitted only after the GameStart barrier has
+        # passed. Keep older connection patterns as fallbacks for engine variants.
+        $deadline = (Get-Date).AddSeconds(240)
         $evidence = $null
         $patterns = @(
+            'LogDisplayClusterGame:.*Create viewport manager',
             'LogDisplayClusterCluster:.*(connected|connection established|joined|synchronization)',
             'LogDisplayClusterNetwork:.*(connected|connection established)',
             'LogDisplayClusterCluster:.*barrier.*(activated|synchronized)'
@@ -112,12 +138,17 @@ try {
                 $match = Select-String -LiteralPath $logPath -Pattern $patterns -CaseSensitive:$false | Select-Object -Last 1
                 if ($null -ne $match) { $evidence = $match.Line.Trim(); break }
             }
-            if ($process.HasExited) { throw "UE exited before cluster log evidence (exit $($process.ExitCode)); log=$logPath" }
+            $process = @(Get-CimInstance Win32_Process -Filter "Name='UnrealEditor.exe'" |
+                Where-Object {
+                    $_.CommandLine -and
+                    $_.CommandLine.IndexOf($project, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+                    $_.CommandLine.IndexOf("-dc_node=$nodeId", [StringComparison]::OrdinalIgnoreCase) -ge 0
+                }) | Select-Object -First 1
+            if ($null -eq $process) { throw "UE exited before cluster render evidence; log=$logPath" }
             Start-Sleep -Milliseconds 500
-            $process.Refresh()
         }
-        if ($null -eq $evidence) { throw "timeout waiting for cluster log evidence; PID=$($process.Id); log=$logPath" }
-        Reply $true "PID=$($process.Id); $evidence" $true
+        if ($null -eq $evidence) { throw "timeout after 240s waiting for cluster render evidence; log=$logPath" }
+        Reply $true "$evidence; log=$logPath" $true
         exit 0
     }
 

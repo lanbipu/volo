@@ -31,7 +31,12 @@ pub struct PublishResult {
 
 pub trait OutputTransport {
     fn preflight(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<String, String>;
-    fn start(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<(bool, String), String>;
+    fn launch(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<String, String>;
+    fn wait_evidence(
+        &self,
+        node: &OutputNode,
+        paths: &RuntimePaths,
+    ) -> Result<(bool, String), String>;
     fn stop(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<String, String>;
     fn prepare_deploy(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<String, String>;
     fn push_file(&self, node: &OutputNode, local: &Path, remote: &str) -> Result<(), String>;
@@ -143,22 +148,32 @@ pub fn deploy<T: OutputTransport>(
     Ok(results)
 }
 
-/// Starts secondaries first and the primary last. A live process is not enough:
-/// the transport must return `cluster_connected=true`, sourced from UE log evidence.
+/// Launches every node secondary-first/primary-last before waiting for evidence.
+/// This two-phase shape is required because secondaries cannot cross the game-start
+/// barrier until the primary is running. A live process alone is not success.
 pub fn start<T: OutputTransport>(
     transport: &T,
     screen: &ScreenConfig,
     paths: &RuntimePaths,
 ) -> VoloResult<Vec<NodeResult>> {
-    ordered_nodes(screen)?
+    let nodes = ordered_nodes(screen)?;
+    let mut launch_messages = BTreeMap::new();
+    for node in &nodes {
+        let message = transport.launch(node, paths).map_err(|error| {
+            VoloError::Other(format!("{} ({}): {error}", node.node_id, node_host(node)))
+        })?;
+        launch_messages.insert(node.node_id.clone(), message);
+    }
+    nodes
         .iter()
         .map(|node| {
-            let (cluster_connected, message) = transport.start(node, paths).map_err(|error| {
-                VoloError::Other(format!("{} ({}): {error}", node.node_id, node_host(node)))
-            })?;
+            let (cluster_connected, evidence) =
+                transport.wait_evidence(node, paths).map_err(|error| {
+                    VoloError::Other(format!("{} ({}): {error}", node.node_id, node_host(node)))
+                })?;
             if !cluster_connected {
                 return Err(VoloError::Other(format!(
-                    "{} ({}) started without cluster connection log evidence: {message}",
+                    "{} ({}) started without cluster render evidence: {evidence}",
                     node.node_id,
                     node_host(node)
                 )));
@@ -166,7 +181,13 @@ pub fn start<T: OutputTransport>(
             Ok(NodeResult {
                 node_id: node.node_id.clone(),
                 host: node_host(node),
-                message,
+                message: format!(
+                    "{}; {}",
+                    launch_messages
+                        .get(&node.node_id)
+                        .expect("launch message recorded for every node"),
+                    evidence
+                ),
             })
         })
         .collect()
@@ -319,11 +340,22 @@ mod tests {
                 .push(format!("preflight:{}", n.node_id));
             Ok("ok".into())
         }
-        fn start(&self, n: &OutputNode, _: &RuntimePaths) -> Result<(bool, String), String> {
+        fn launch(&self, n: &OutputNode, _: &RuntimePaths) -> Result<String, String> {
             self.calls
                 .lock()
                 .unwrap()
-                .push(format!("start:{}", n.node_id));
+                .push(format!("launch:{}", n.node_id));
+            Ok("PID=1".into())
+        }
+        fn wait_evidence(
+            &self,
+            n: &OutputNode,
+            _: &RuntimePaths,
+        ) -> Result<(bool, String), String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("wait:{}", n.node_id));
             Ok((self.connected, "log".into()))
         }
         fn stop(&self, n: &OutputNode, _: &RuntimePaths) -> Result<String, String> {
@@ -410,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn start_is_secondary_first_and_requires_log_evidence() {
+    fn start_launches_every_node_before_waiting_for_log_evidence() {
         let fake = Fake {
             calls: Mutex::new(vec![]),
             connected: true,
@@ -418,7 +450,12 @@ mod tests {
         start(&fake, &screen(), &paths()).unwrap();
         assert_eq!(
             *fake.calls.lock().unwrap(),
-            vec!["start:secondary", "start:primary"]
+            vec![
+                "launch:secondary",
+                "launch:primary",
+                "wait:secondary",
+                "wait:primary"
+            ]
         );
         let bad = Fake {
             calls: Mutex::new(vec![]),

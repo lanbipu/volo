@@ -119,7 +119,11 @@ config 和 Blueprint asset 已存在，避免绕过部署 gate。
 -RemoteControlIsHeadless -RCWebControlEnable -ClusterForceApplyResponse
 ```
 
-并按节点补齐 `-dc_cfg`、`-dc_node`、窗口尺寸与独立 `-abslog`。`Start-Process` 返回 PID 不代表成功；60 秒内没有 `LogDisplayClusterCluster` / `LogDisplayClusterNetwork` 的连接、同步或 barrier 激活证据，命令必须失败。
+并按节点补齐 `-dc_cfg`、`-dc_node`、窗口尺寸与独立 `-abslog`。启动分两阶段：先按 secondary-first、primary-last 对全部节点执行 `launch`，校验进程没有立即退出；之后才逐节点执行 `wait_evidence`。不能在启动下一个节点前阻塞等当前节点证据，否则 secondary 会在等待 primary 时形成死锁。
+
+`Start-Process` 返回 PID 不代表成功。成功主证据是 UE log 中的 `LogDisplayClusterGame:.*Create viewport manager`（GameStart barrier 通过后出现），旧的 cluster/network/barrier pattern 仅作备选。证据等待上限为 240 秒，覆盖 180 秒 GameStart barrier 和首次 shader 编译；超时错误必须包含节点 log 路径。
+
+`launch` 会拒绝同一 `project_path` 已有 UnrealEditor 进程的重入，并提示先停止。preflight 会把主机上正在运行的 UE 进程以“进程名 + PID + 截断命令行摘要”追加为非阻塞警告。
 
 ## 发布不变量
 
