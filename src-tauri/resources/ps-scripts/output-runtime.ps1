@@ -28,6 +28,9 @@ try {
         if (-not [string]::IsNullOrWhiteSpace($manifestDir)) { New-Item -ItemType Directory -Force -Path $manifestDir | Out-Null }
         New-Item -ItemType Directory -Force -Path ([string]$request.image_dir) | Out-Null
         $version = (Get-Item -LiteralPath ([string]$request.editor_path)).VersionInfo.ProductVersion
+        if (-not ([string]$version).StartsWith("5.8")) {
+            throw "unsupported Unreal Engine $version; VoloOutput Blueprint was saved by UE 5.8 and Phase 1 requires UE 5.8"
+        }
         Reply $true "preflight passed; UE $version"
         exit 0
     }

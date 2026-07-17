@@ -29,6 +29,10 @@ UnrealEditor.exe <project.uproject>
 
 `-dc_dev_mono` 是 UE 5.8 的必要基线参数。缺少它时日志会显示 `No rendering device specified` / `No stereo device created`，进程虽然存活，但不会创建可承接 Viewport Texture Replacement 的 nDisplay 渲染设备。
 
+模板兼容性结论：`BP_VoloOutput.uasset` 由 UE 5.8 保存。2026-07-17 使用 UE 5.7.4
+对隔离副本执行加载，因 package engine version 与四组 custom version 过新而失败；
+一期 preflight 因此硬拒绝非 UE 5.8。
+
 ## 3. 单节点验收记录
 
 | 用例 | 输入 | 结果 |

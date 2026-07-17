@@ -433,4 +433,49 @@ mod tests {
         assert_eq!(first_manifest, 2);
         assert!(calls[0].contains("frame-7.png"));
     }
+
+    #[test]
+    fn deploy_pushes_template_and_generated_config_to_every_node() {
+        let dir = tempfile::tempdir().unwrap();
+        for relative in [
+            "VoloOutput.uproject",
+            "Config/DefaultEngine.ini",
+            "Config/DefaultRemoteControl.ini",
+            "Content/VoloOutput/BP_VoloOutput.uasset",
+        ] {
+            let path = dir.path().join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"fixture").unwrap();
+        }
+        let fake = Fake {
+            calls: Mutex::new(vec![]),
+            connected: true,
+        };
+        let mut runtime_paths = paths();
+        runtime_paths.project_path = r"C:\Volo\VoloOutput.uproject".into();
+        runtime_paths.config_path = r"C:\Volo\Config\VoloOutput.ndisplay".into();
+        deploy(&fake, &screen(), &runtime_paths, dir.path(), "5.8").unwrap();
+        let calls = fake.calls.lock().unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.starts_with("prepare:"))
+                .count(),
+            2
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.starts_with("push:"))
+                .count(),
+            8
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.starts_with("text:"))
+                .count(),
+            2
+        );
+    }
 }

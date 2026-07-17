@@ -5,7 +5,7 @@
 Tauri 暴露以下五个命令，均以 `request` 作为唯一顶层参数。JS 调用形态固定为
 `invoke(command, { request })`；`request` 内部字段保持 Rust/serde 的 snake_case。
 
-1. `output_preflight`：逐节点验证 SSH、UE 版本与目录可写性。它不要求模板已部署。
+1. `output_preflight`：逐节点验证 SSH、UE 5.8 与目录可写性。它不要求模板已部署；非 5.8 直接拒绝。
 2. `output_deploy`：把 bundle 内最小模板和由当前 topology 生成的 `.ndisplay` config 部署到全部节点。
 3. `output_start`：secondary-first、primary-last 启动；每节点必须在 UE log 中找到 DisplayCluster 连接/同步证据。
 4. `output_show`：统一承载 `show` / `clear`；show 先推新 PNG 再原子切 manifest，clear 只原子切 manifest。
@@ -130,6 +130,12 @@ config 和 Blueprint asset 已存在，避免绕过部署 gate。
 - manifest 发布仍按 secondary-first、primary-last 执行。
 - crop 永远来自 `OutputNode.viewport_rect_px`，不允许 command 调用方另传一份漂移值。
 
-## 已知待复验项
+## 兼容性结论
 
-Razer SSH 恢复后执行双机连接证据模式复验及 UE 5.7 兼容验证。若确认 UE 5.8 保存的 `uasset` 无法由 5.7 加载，则把 preflight 从“报告版本”收紧为“拒绝非 5.8”，并同步更新模板支持声明。
+2026-07-17 已在 lanPC 用 UE 5.7.4 对模板副本执行 package load：退出码 1，明确报告
+`Package EngineVersion: 5.8.0`，以及 FortniteMain、UE5-Main、UE5-Release、
+FortniteRelease 四组 `Custom version is too new`。因此一期只支持 UE 5.8，preflight
+硬拒绝非 5.8；不再把 5.7 列为待验证兼容版本。
+
+Razer SSH 的网络阻塞已解除，但执行端必须从 Mac 使用带
+`-o PubkeyAuthentication=no` 的指定 `sshpass` 命令；不得回退为多 key 公钥认证。
