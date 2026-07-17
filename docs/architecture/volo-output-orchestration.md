@@ -168,4 +168,3 @@ Razer SSH 的网络阻塞已解除，但执行端必须从 Mac 使用带
 
 - 全屏输出：启用 `fullscreen` 开关，在全屏路径复验 dev_mono 水印与双线性 1:1。
 - 采集闭环自动切图；首启 shader 编译耗时记录。
-- 蓝图 revision 接线修正（现 BP 恒打印 revision=1 且每 0.5s 重复 apply）。
