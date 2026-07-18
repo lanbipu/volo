@@ -1654,6 +1654,9 @@ output:
         assert_eq!(mapping["cabinets"].as_array().unwrap().len(), 8);
     }
 
+    /// Covers both legacy pose names and `vpcal capture stills` `{n:06d}.png`
+    /// under `captures/normal/`. Stills must not drop `capture_manifest.json`
+    /// (that would short-circuit this importer).
     #[test]
     fn prepare_capture_manifest_uses_vpcal_normal_capture_folder() {
         let dir = tempdir().unwrap();
@@ -1666,19 +1669,43 @@ output:
         )
         .unwrap();
         let session = dir.path().join("session");
-        std::fs::create_dir_all(session.join("captures/normal")).unwrap();
-        std::fs::write(session.join("captures/normal/pose-01.png"), b"png").unwrap();
+        let normal = session.join("captures/normal");
+        std::fs::create_dir_all(&normal).unwrap();
+        std::fs::write(normal.join("000000.png"), b"png").unwrap();
+        std::fs::write(normal.join("000001.png"), b"png").unwrap();
         std::fs::write(session.join("debug.png"), b"debug").unwrap();
+        assert!(!session.join("capture_manifest.json").is_file());
 
         let manifest = prepare_capture_manifest(dir.path(), "MAIN", &session).unwrap();
+        assert!(
+            manifest
+                .to_string_lossy()
+                .contains("measurements/capture_imports"),
+            "importer must generate a manifest under capture_imports, got {}",
+            manifest.display()
+        );
         let value: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(manifest).unwrap()).unwrap();
-        assert_eq!(value["views"].as_array().unwrap().len(), 1);
-        let image_path = value["views"][0]["images"][0]
-            .as_str()
+        assert_eq!(value["method"], "vpqsp");
+        assert_eq!(value["views"].as_array().unwrap().len(), 2);
+        let paths: Vec<String> = value["views"]
+            .as_array()
             .unwrap()
-            .replace('\\', "/");
-        assert!(image_path.contains("captures/normal/pose-01.png"));
+            .iter()
+            .map(|v| {
+                v["images"][0]
+                    .as_str()
+                    .unwrap()
+                    .replace('\\', "/")
+                    .to_string()
+            })
+            .collect();
+        assert!(paths.iter().any(|p| p.contains("captures/normal/000000.png")));
+        assert!(paths.iter().any(|p| p.contains("captures/normal/000001.png")));
+        assert!(
+            paths.iter().all(|p| !p.contains("/debug.png")),
+            "only captures/normal should be scanned"
+        );
     }
 
     #[test]

@@ -79,7 +79,7 @@ def test_manifest_operation_ids():
         "verify.live",
         "capture.delay_cal",
         "capture.track", "capture.list_devices", "capture.finalize",
-        "capture.enumerate", "capture.video", "capture.session",
+        "capture.enumerate", "capture.video", "capture.stills", "capture.session",
         "capture.playback",
         "doctor",
     }

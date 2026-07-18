@@ -79,6 +79,45 @@ export const listenSidecarStream = (
 ): Promise<UnlistenFn> =>
   listen<SidecarStreamEvent>(`sidecar://${taskId}`, (e) => onEvent(e.payload));
 
+/** Cancel then wait for the real exit event (DeckLink/UVC exclusive devices).
+ *  `cancel_sidecar_task` only posts Cancel — the process may linger up to ~3s.
+ *  Subscribe to exit *before* cancel so the event cannot race past us. */
+export async function cancelSidecarTaskAwaitExit(
+  taskId: string,
+  timeoutMs = 5000,
+): Promise<void> {
+  await new Promise<void>((resolve) => {
+    let un: UnlistenFn | null = null;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (un) un();
+      resolve();
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    void (async () => {
+      try {
+        const fn = await listenSidecarStream(taskId, (ev) => {
+          if (ev.kind === "exit") finish();
+        });
+        if (done) fn();
+        else un = fn;
+      } catch {
+        finish();
+        return;
+      }
+      try {
+        const alive = await cancelSidecarTask(taskId);
+        if (!alive || !un) finish();
+      } catch {
+        finish();
+      }
+    })();
+  });
+}
+
 /* -------------------------------- hook -------------------------------- */
 
 export interface UseSidecarStreamState {

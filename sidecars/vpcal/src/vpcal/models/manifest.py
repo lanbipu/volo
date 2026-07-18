@@ -299,6 +299,14 @@ def build_manifest() -> ContractManifest:
             exit_codes=[0, 1, 2, 6],
         ),
         _op(
+            "capture.stills",
+            "Tracker-free stills capture for grid rebuild: MJPEG preview + auto/manual "
+            "snaps into captures/normal (no tracking, no capture_manifest).",
+            "vpcal capture stills",
+            tool_name="capture_stills",
+            exit_codes=[0, 1, 2, 6],
+        ),
+        _op(
             "capture.session",
             "Closed-loop capture session: settle/burst state machine, live detect "
             "feedback, auto-assembled quick-run-ready session directory.",

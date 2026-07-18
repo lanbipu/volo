@@ -1,0 +1,88 @@
+/* Volo — 网格快拍采集 · 屏幕重建（gcapw）
+   1:1 port of Claude Design handoff `src/gridcapw.css`。
+   仅承载本窗新增件；窗口骨架 / 双栏 / 分栏 / 缩放 / 信号徽章沿用 calCaptureWindow.css（capw-*）。 */
+
+/* 稳定度浮标（左视图，顶部居中） */
+.gcapw-motionchip { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: 3; display: inline-flex; align-items: center; gap: 7px;
+  font-size: 11px; font-weight: 700; color: #fff; padding: 5px 12px; border-radius: 999px; backdrop-filter: blur(6px); box-shadow: 0 1px 10px rgba(0,0,0,.45); border: 1px solid rgba(255,255,255,.16); -webkit-user-select: none; user-select: none; }
+.gcapw-motionchip--positive { background: color-mix(in srgb, var(--positive-visual) 82%, #0a0d12); }
+.gcapw-motionchip--notice   { background: color-mix(in srgb, var(--notice-visual) 82%, #0a0d12); color: #14110a; }
+.gcapw-motionchip--negative { background: color-mix(in srgb, var(--negative-visual) 84%, #0a0d12); }
+.gcapw-mdot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: gcapwBlink 1s ease infinite; }
+@keyframes gcapwBlink { 0%,100% { opacity: .45; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .gcapw-mdot { animation: none; } }
+
+/* 快门闪烁反馈 */
+.gcapw-flash { position: absolute; inset: 0; z-index: 5; background: #fff; pointer-events: none; animation: gcapwFlash .2s ease-out; }
+@keyframes gcapwFlash { 0% { opacity: .0; } 15% { opacity: .82; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .gcapw-flash { animation: none; opacity: 0; } }
+
+/* ---------- 右栏采集控制卡 ---------- */
+.gcapw-capcard { display: flex; flex-direction: column; }
+.gcapw-autorow { display: flex; align-items: center; gap: 12px; margin-top: 4px; }
+.gcapw-autorow > div:first-child { flex: 1; min-width: 0; }
+
+/* 稳定度状态徽章（右栏） */
+.gcapw-statusbadge { margin-top: 13px; display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--chrome-line); }
+.gcapw-statusbadge .gcapw-status-t { font-size: 13px; font-weight: 800; }
+.gcapw-statusbadge .gcapw-status-h { font-size: 11px; color: var(--chrome-faint); margin-left: auto; text-align: right; }
+.gcapw-statusbadge svg { flex: 0 0 auto; }
+.gcapw-statusbadge--positive { background: color-mix(in srgb, var(--positive-visual) 10%, transparent); border-color: color-mix(in srgb, var(--positive-visual) 32%, var(--chrome-line)); color: var(--positive-visual); }
+.gcapw-statusbadge--notice   { background: color-mix(in srgb, var(--notice-visual) 10%, transparent); border-color: color-mix(in srgb, var(--notice-visual) 32%, var(--chrome-line)); color: var(--notice-visual); }
+.gcapw-statusbadge--negative { background: color-mix(in srgb, var(--negative-visual) 10%, transparent); border-color: color-mix(in srgb, var(--negative-visual) 34%, var(--chrome-line)); color: var(--negative-visual); }
+.gcapw-statusbadge--positive .gcapw-status-t, .gcapw-statusbadge--notice .gcapw-status-t, .gcapw-statusbadge--negative .gcapw-status-t { color: var(--chrome-text); }
+
+/* 大号手动快门 */
+.gcapw-shutterwrap { display: flex; flex-direction: column; align-items: center; gap: 8px; margin: 16px 0 4px; }
+.gcapw-shutter { all: unset; cursor: pointer; position: relative; width: 84px; height: 84px; border-radius: 50%; display: grid; place-items: center; -webkit-tap-highlight-color: transparent; -webkit-user-select: none; user-select: none; }
+.gcapw-shutter-ring { position: absolute; inset: 0; border-radius: 50%; border: 3px solid var(--chrome-line-2); transition: border-color .13s, transform .13s; }
+.gcapw-shutter-core { position: relative; width: 62px; height: 62px; border-radius: 50%; display: grid; place-items: center; color: #fff;
+  background: var(--volo-600, var(--accent-900)); box-shadow: 0 6px 18px color-mix(in srgb, var(--volo-600, var(--accent-900)) 40%, transparent); transition: transform .12s, background .13s, box-shadow .13s; }
+.gcapw-shutter:hover .gcapw-shutter-ring { border-color: color-mix(in srgb, var(--volo-500) 55%, var(--chrome-line-2)); }
+.gcapw-shutter:hover .gcapw-shutter-core { background: var(--volo-500, var(--accent-1000)); }
+.gcapw-shutter:active .gcapw-shutter-core { transform: scale(.9); box-shadow: 0 2px 8px color-mix(in srgb, var(--volo-600) 34%, transparent); }
+.gcapw-shutter:active .gcapw-shutter-ring { transform: scale(.94); }
+.gcapw-shutter-cap { font-size: 11px; color: var(--chrome-faint); }
+
+/* 张数计数 */
+.gcapw-count { margin-top: 8px; display: flex; align-items: center; gap: 14px; padding: 12px 4px 2px; border-top: 1px solid var(--chrome-line); }
+.gcapw-count-main { display: flex; align-items: baseline; gap: 4px; flex: 0 0 auto; }
+.gcapw-count-n { font-size: 40px; font-weight: 800; line-height: 1; color: var(--chrome-text); font-variant-numeric: tabular-nums; animation: gcapwBump .28s var(--ease-default, ease); }
+@keyframes gcapwBump { 0% { transform: scale(1); } 40% { transform: scale(1.18); color: var(--volo-500); } 100% { transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .gcapw-count-n { animation: none; } }
+.gcapw-count-u { font-size: 13px; font-weight: 600; color: var(--chrome-faint); }
+.gcapw-count-side { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.gcapw-count-split { font-size: 12px; color: var(--chrome-dim); display: flex; align-items: center; gap: 7px; }
+.gcapw-count-split b { font-variant-numeric: tabular-nums; color: var(--chrome-text); font-weight: 700; }
+.gcapw-count-split .sep { opacity: .4; }
+.gcapw-count-file { font-size: 11px; display: flex; align-items: center; gap: 7px; min-width: 0; }
+.gcapw-count-file .k { color: var(--chrome-faint); flex: 0 0 auto; }
+.gcapw-count-file .mono { color: var(--chrome-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gcapw-count-file .dim { color: var(--chrome-faint); }
+
+/* 晃动告警条 */
+.capw-note--negative { color: var(--negative-visual); background: color-mix(in srgb, var(--negative-visual) 12%, transparent); }
+.gcapw-warn { margin-top: 14px; }
+
+/* Profile 自动输出目录卡 */
+.gcapw-autodir { border: 1px solid var(--chrome-line); border-radius: 10px; padding: 10px 12px; background: var(--wash-3); }
+.gcapw-autodir-h { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--chrome-text); }
+.gcapw-autodir-h svg { color: var(--chrome-faint); flex: 0 0 auto; }
+.gcapw-autodir-h .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gcapw-autodir-s { margin-top: 7px; font-size: 11px; color: var(--chrome-faint); }
+.gcapw-autodir-s .mono { color: var(--chrome-dim); }
+
+/* 采集态：信号源折叠纤条 */
+.gcapw-srcstrip { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--chrome-line); background: var(--wash-3); }
+.gcapw-srcstrip-ic { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; flex: 0 0 auto; background: var(--wash-2); color: var(--volo-500); }
+.gcapw-srcstrip-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.gcapw-srcstrip-main b { font-size: 12px; font-weight: 700; color: var(--chrome-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gcapw-srcstrip-main .mono { font-size: 10.5px; color: var(--chrome-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gcapw-srcstrip .cap-pill { flex: 0 0 auto; }
+
+.gcapw-reset { all: unset; cursor: pointer; box-sizing: border-box; width: 100%; margin-top: 10px; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  font-size: 11.5px; font-weight: 600; color: var(--chrome-dim); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--chrome-line); background: transparent; text-align: center; -webkit-user-select: none; user-select: none; }
+.gcapw-reset:hover { color: var(--negative-visual); border-color: color-mix(in srgb, var(--negative-visual) 40%, var(--chrome-line)); background: color-mix(in srgb, var(--negative-visual) 7%, transparent); }
+.gcapw-reset svg { flex: 0 0 auto; }
+
+.drawer--gcapw .mono { font-family: var(--font-code); }

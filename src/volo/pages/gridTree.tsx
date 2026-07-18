@@ -431,7 +431,11 @@ import { listen } from "@tauri-apps/api/event";
           ? (manifestPath
               ? h('div', { className: 'gw-fileref' }, h('span', { className: 'ic' }, h(Icon, { name: 'doc', size: 14 })), h('div', { className: 'm' }, h('div', { className: 'n' }, manifestPath.split(/[\\/]/).pop())))
               : h('div', { className: 'gw-drop', onClick: pickManifest }, h(Icon, { name: 'folder', size: 20 }), h('div', null, '选择 capture manifest')))
-          : h(Button, { variant: 'accent', size: 'S', icon: h(Icon, { name: 'camera', size: 13 }), onPress: () => window.VOLO_CAPTURE.openGrid(s, (resultData) => { setManifestPath(resultData.session_dir); setTab('offline'); }) }, '接入摄影机…')),
+          : h(Button, { variant: 'accent', size: 'S', icon: h(Icon, { name: 'camera', size: 13 }), onPress: () => window.VOLO_GRID_CAPTURE.openGrid(s, (r) => {
+              if (r && r.reset) { setManifestPath(''); return; }
+              setManifestPath(r.session_dir || '');
+              setTab('offline');
+            }) }, '接入摄影机…')),
       h(Step, { n: 3, done: intr !== null, active: false, title: '标定',
         desc: '内参来源，无需操作即可继续。' },
         h('div', { className: 'gw-tabs2' },

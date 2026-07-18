@@ -828,7 +828,14 @@ import { listen } from "@tauri-apps/api/event";
                         h('div', { className: 'm' }, h('div', { className: 'n' }, captureDir.split(/[\\/]/).pop()), h('div', { className: 'd' }, captureDir)),
                         h(Button, { variant: 'secondary', size: 'S', onPress: pickCaptureDir }, '更换'))
                     : h('div', { className: 'gw-drop', onClick: pickCaptureDir }, h(Icon, { name: 'folder', size: 20 }), h('div', null, '选择照片文件夹')))
-                : h(Button, { variant: 'accent', size: 'S', icon: h(Icon, { name: 'camera', size: 14 }), onPress: () => window.VOLO_CAPTURE.openGrid(s, (resultData) => { setCaptureDirs((current) => Object.assign({}, current, { [screenId]: resultData.session_dir })); setCapMode('offline'); }) }, '接入摄影机…'),
+                : h(Button, { variant: 'accent', size: 'S', icon: h(Icon, { name: 'camera', size: 14 }), onPress: () => window.VOLO_GRID_CAPTURE.openGrid(s, (r) => {
+                    if (r && r.reset) {
+                      setCaptureDirs((current) => { const next = Object.assign({}, current); delete next[screenId]; return next; });
+                      return;
+                    }
+                    setCaptureDirs((current) => Object.assign({}, current, { [screenId]: r.session_dir || '' }));
+                    setCapMode('offline');
+                  }) }, '接入摄影机…'),
               (captureDir || (proj.visualSession && proj.visualSession.screenId === screenId))
                 ? h('div', { className: 'cal2-switch-ok', style: { marginTop: 8 } }, h(Icon, { name: 'check', size: 14 }), h('span', null, '已采集 · 采集会话'))
                 : null,

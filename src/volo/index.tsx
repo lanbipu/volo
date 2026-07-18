@@ -23,7 +23,8 @@ import "./styles/cal2.css";      // Calibrate 旧仪表盘语言 token（dash-ca
 import "./styles/grid.css";      // 网格校正单一工作区新 IA 样式（gw-* —— 概览/工作区/检查器/弹层）
 import "./styles/ndisplay.css";  // Stage 级 nDisplay 拓扑 / 多选聚合 / 输出投放（nd-* · gw-multi-*）
 import "./styles/calLens.css";   // 镜头校正单页 + 二级对话框样式（相机画面区 / 五态横幅 / 覆盖度环等）
-import "./styles/calCaptureWindow.css"; // 实时采集单窗口（capw-* —— 现场画面常驻 + 信号源/会话参数/采集控制两栏 modal，grid/lens 共用）
+import "./styles/calCaptureWindow.css"; // 实时采集单窗口（capw-* —— 现场画面常驻 + 信号源/会话参数/采集控制两栏 modal；lens 变体 + 网格快拍窗骨架复用）
+import "./styles/gridCaptureWindow.css"; // 网格快拍采集窗增量（gcapw-* —— 稳定度徽章/大号快门/张数计数/重置）
 
 import "./ds";          // window.Spectrum2DesignSystem_b6d1b3 (+ React global)
 import "./data";        // window data globals + Icon
@@ -45,7 +46,8 @@ import "./pages/calibrate";     // window.VOLO_CAL2 基座（projStore/CalContro
 import "./pages/calVideoSource";   // window.VoloVideoSource.{VideoSourceCard}（须在 calCapture 之前，供其渲染时引用）
 import "./pages/calTrackingSource"; // window.VoloTrackingSource.{TrackingSourceCard} + window.VOLO_CAL2.openTrackingModal（须在 calCapture 之前）
 import "./pages/calCapture";    // window.VOLO_CAL2.{openCaptureModal,CaptureModal,loadProfiles}（采集设置 · Profile CRUD，非实时采集会话）
-import "./pages/calCaptureWindow"; // window.VOLO_CAPTURE.{openCaptureWindow,openGrid,openLens}（实时采集共享单窗口，须在 calCapture 之后，供其读取 loadProfiles/openCaptureModal；calLens/gridTree/gridInsp 的采集入口都改接这里）
+import "./pages/calCaptureWindow"; // window.VOLO_CAPTURE.{openCaptureWindow,openLens}（镜头标定实时采集窗；须在 calCapture 之后）
+import "./pages/gridCaptureWindow"; // window.VOLO_GRID_CAPTURE.{openGridCapture,openGrid}（网格屏幕重建快拍窗；须在 calCapture 之后，供 loadProfiles/openCaptureModal）
 import "./pages/calLens";        // window.VOLO_CAL2.{Lens,lensInspector,useLensLive,lensStore,useLensSolve,...}（镜头校正单页，真接 vpcal；本轮网格校正 IA 改动不涉及）
 import "./pages/calLensDialogs"; // window.VOLO_CAL2.{openSolveFromSession,openReport,openExport,openPlayerCheck}
 import "./pages/calAr";          // window.VOLO_CAL_AR 基座（arStore/atoms/useVpcalRun + left/center/inspector 路由 + Overview；本轮改动不涉及）

@@ -3,6 +3,9 @@
 ``track`` (C1.1): listen for FreeD / OpenTrackIO over UDP and record a
 timestamped tracking stream.  ``video`` (C1.2): capture a video stream via a
 :mod:`~vpcal.core.capture_backend` backend (synthetic / uvc / ndi / decklink).
+``stills``: tracker-free stills capture for grid screen rebuild — single process
+opens the device, serves MJPEG preview, and writes ``captures/normal/*.png``
+(auto frame-diff snap + manual shutter; no tracking / no capture_manifest).
 ``session`` (C1.2+C1.3 core): the closed-loop auto-assembled capture session —
 settle→burst→detect→advance state machine, NDJSON event stream, stdin control
 channel (see ``docs/c1-capture-service.md`` and the live-capture plan).
@@ -11,6 +14,7 @@ channel (see ``docs/c1-capture-service.md`` and the live-capture plan).
 from __future__ import annotations
 
 import json
+import queue
 import sys
 import threading
 import time
@@ -146,7 +150,7 @@ def finalize(ctx, session_dir, **flags) -> None:
 
 
 def _backend_options(fn):
-    """Shared video-source options for ``video`` and ``session``."""
+    """Shared video-source options for ``video``, ``stills``, and ``session``."""
     decorators = [
         click.option("--backend", type=click.Choice(_BACKEND_CHOICES), default="uvc",
                      show_default=True, help="Video capture backend."),
@@ -184,6 +188,20 @@ def _make_preview(preview_port, emitter: StreamEmitter):
         "poc_url": f"http://127.0.0.1:{server.port}/poc",
     }, text=f"preview: http://127.0.0.1:{server.port}/preview.mjpg")
     return sink, server
+
+
+def _source_info(frame, *, fps, transfer_function) -> dict:
+    """Shared source_info payload for ``video`` / ``stills`` NDJSON events."""
+    return {
+        "width": int(frame.gray.shape[1]),
+        "height": int(frame.gray.shape[0]),
+        "fps": frame.meta.get("frame_rate", fps),
+        "fourcc": frame.meta.get("fourcc"),
+        "pixel_format": frame.meta.get("pixel_format"),
+        "bit_depth": frame.meta.get("bit_depth", int(frame.gray.dtype.itemsize * 8)),
+        "is_hx": frame.meta.get("is_hx", False),
+        "transfer_function": frame.meta.get("transfer_function", transfer_function),
+    }
 
 
 @capture.command(name="enumerate")
@@ -290,16 +308,7 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
                 # frame — DeckLink/NDI may renegotiate resolution/format mid-run
                 # (format auto-detection), and the last frame is authoritative.
                 first_info = source_info is None
-                source_info = {
-                    "width": int(frame.gray.shape[1]),
-                    "height": int(frame.gray.shape[0]),
-                    "fps": frame.meta.get("frame_rate", fps),
-                    "fourcc": frame.meta.get("fourcc"),
-                    "pixel_format": frame.meta.get("pixel_format"),
-                    "bit_depth": frame.meta.get("bit_depth", int(frame.gray.dtype.itemsize * 8)),
-                    "is_hx": frame.meta.get("is_hx", False),
-                    "transfer_function": frame.meta.get("transfer_function", transfer_function),
-                }
+                source_info = _source_info(frame, fps=fps, transfer_function=transfer_function)
                 if first_info:
                     # Push the format to the live monitor as soon as it is known.
                     emitter.emit("source_info", dict(source_info))
@@ -343,6 +352,214 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
                                                f"({data['mean_fps']} fps)")
 
     run_streaming_operation("capture.video", body, **flags)
+
+
+@capture.command(name="stills")
+@_backend_options
+@click.option("--allow-hx", is_flag=True,
+              help="Allow NDI|HX for preview/probing only.")
+@click.option("--out", "out_dir", required=True, type=click.Path(),
+              help="Session output directory (writes captures/normal/*.png).")
+@click.option("--auto/--no-auto", default=True, show_default=True,
+              help="Enable automatic stills detection (frame-diff gate).")
+@click.option("--stable-ms", type=float, default=700.0, show_default=True,
+              help="Required stillness duration before an auto snap (ms).")
+@click.option("--motion-thresh", type=float, default=1.5, show_default=True,
+              help="EMA motion score above which the camera counts as moving.")
+@click.option("--novelty-thresh", type=float, default=6.0, show_default=True,
+              help="Min mean-abs-diff vs last saved frame to accept an auto snap.")
+@click.option("--min-interval", type=float, default=1.0, show_default=True,
+              help="Minimum seconds between auto snaps (manual snap ignores this).")
+@common_options
+@click.pass_context
+def stills(ctx, backend, device, width, height, fps, transfer_function, preview_port,
+           allow_hx, out_dir, auto, stable_ms, motion_thresh, novelty_thresh,
+           min_interval, **flags) -> None:
+    """Tracker-free stills capture → ``<out>/captures/normal/{n:06d}.png``.
+
+    Single process owns the device for MJPEG preview + stills. Emits NDJSON
+    events (preview_ready | source_info | progress | snap_saved | auto_state |
+    warning | result) and accepts JSON control lines on stdin:
+
+    \b
+      {"cmd": "snap"}                 save immediately (bypasses thresholds)
+      {"cmd": "auto", "enabled": bool}
+      {"cmd": "finish"}               close device → result → exit 0
+    stdin EOF is equivalent to finish (exclusive devices release promptly).
+    Does **not** write frames.jsonl or capture_manifest.json.
+    """
+
+    def body(emitter: StreamEmitter) -> OperationOutput:
+        import cv2
+
+        from vpcal.core.capture_backend import CaptureConfig, open_backend
+        from vpcal.core.stills import AutoSnapDetector
+
+        if flags.get("dry_run"):
+            return OperationOutput(
+                data={"dry_run_plan": {"backend": backend, "device": device,
+                                       "out": out_dir, "auto": auto}},
+                text="Dry run OK.")
+
+        session_dir = Path(out_dir)
+        normal_dir = session_dir / "captures" / "normal"
+        normal_dir.mkdir(parents=True, exist_ok=True)
+
+        cfg = CaptureConfig(
+            backend=backend, device=device, width=width, height=height,
+            fps=fps, transfer_function=transfer_function,
+            extra={"allow_hx": allow_hx, "want_bgr": preview_port is not None},
+        )
+        sink, server = _make_preview(preview_port, emitter)
+        src = open_backend(cfg)
+        detector = AutoSnapDetector(
+            stable_ms=stable_ms, motion_thresh=motion_thresh,
+            novelty_thresh=novelty_thresh, min_interval=min_interval,
+            enabled=auto,
+        )
+
+        finish = threading.Event()
+        cmds: queue.Queue[tuple] = queue.Queue()
+        last_auto_state: str | None = None
+        last_motion = 0.0
+        last_novelty = 0.0
+        frames_seen = 0
+        auto_snaps = 0
+        manual_snaps = 0
+        source_info = None
+        latest_gray = None
+        t0 = time.monotonic()
+        last_report = t0
+
+        def _emit_auto_state() -> None:
+            emitter.emit("auto_state", {
+                "enabled": detector.enabled,
+                "state": detector.state,
+                "motion": last_motion,
+                "novelty": last_novelty,
+            })
+
+        def _save(gray, *, is_auto: bool) -> None:
+            nonlocal auto_snaps, manual_snaps
+            idx = auto_snaps + manual_snaps
+            path = normal_dir / f"{idx:06d}.png"
+            cv2.imwrite(str(path), gray)
+            now = time.monotonic()
+            # Auto path just ran update() — reuse its downsampled buffer.
+            if is_auto:
+                detector.mark_saved(None, now)
+            else:
+                detector.mark_saved(gray, now)
+            if is_auto:
+                auto_snaps += 1
+            else:
+                manual_snaps += 1
+            emitter.emit("snap_saved", {
+                "index": idx, "path": str(path), "auto": is_auto,
+            }, text=f"snap {idx:06d} ({'auto' if is_auto else 'manual'}) → {path}")
+
+        def _drain_cmds(gray) -> None:
+            while True:
+                try:
+                    item = cmds.get_nowait()
+                except queue.Empty:
+                    return
+                if item[0] == "snap":
+                    _save(gray, is_auto=False)
+                elif item[0] == "auto":
+                    detector.set_enabled(item[1])
+                    _emit_auto_state()
+
+        def _stdin_pump() -> None:
+            for line in sys.stdin:
+                if finish.is_set():
+                    return
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                except json.JSONDecodeError:
+                    emitter.emit("warning", {"message": f"bad control line: {line[:120]}"})
+                    continue
+                cmd = msg.get("cmd")
+                if cmd == "finish":
+                    finish.set()
+                    return
+                if cmd == "snap":
+                    cmds.put(("snap",))
+                elif cmd == "auto":
+                    cmds.put(("auto", bool(msg.get("enabled", True))))
+                else:
+                    emitter.emit("warning", {"message": f"unknown control cmd: {cmd}"})
+            finish.set()
+
+        threading.Thread(target=_stdin_pump, name="vpcal-stills-control", daemon=True).start()
+
+        try:
+            for frame in src.frames():
+                now = time.monotonic()
+                latest_gray = frame.gray
+                frames_seen += 1
+
+                first_info = source_info is None
+                source_info = _source_info(frame, fps=fps, transfer_function=transfer_function)
+                if first_info:
+                    emitter.emit("source_info", dict(source_info))
+                if sink is not None:
+                    sink.publish(frame.bgr if frame.bgr is not None else frame.gray)
+
+                # Drain before finish check so snap lines that raced ahead of the
+                # first frame still land on a real buffer.
+                _drain_cmds(frame.gray)
+                if finish.is_set():
+                    break
+
+                result = detector.update(frame.gray, now)
+                last_motion = result["motion"]
+                last_novelty = result["novelty"]
+                if result["state"] != last_auto_state:
+                    last_auto_state = result["state"]
+                    _emit_auto_state()
+                if result.get("warning"):
+                    emitter.emit("warning", result["warning"])
+                if result["snap"]:
+                    _save(frame.gray, is_auto=True)
+
+                if now - last_report >= 1.0:
+                    elapsed = max(now - t0, 1e-9)
+                    snaps = auto_snaps + manual_snaps
+                    emitter.emit("progress", {
+                        "fps": round(frames_seen / elapsed, 1),
+                        "frames_seen": frames_seen,
+                        "snaps": snaps,
+                    }, text=f"{frames_seen} frames / {snaps} snaps "
+                            f"({frames_seen / elapsed:.1f} fps)")
+                    last_report = now
+        finally:
+            finish.set()
+            src.close()
+            if server is not None:
+                server.stop()
+
+        if latest_gray is not None:
+            _drain_cmds(latest_gray)
+
+        data = {
+            "session_dir": str(session_dir),
+            "frames_captured": auto_snaps + manual_snaps,
+            "auto_snaps": auto_snaps,
+            "manual_snaps": manual_snaps,
+            "source": source_info,
+        }
+        return OperationOutput(
+            data=data,
+            text=(f"Stills complete: {data['frames_captured']} frames → "
+                  f"{session_dir / 'captures' / 'normal'} "
+                  f"(auto={auto_snaps}, manual={manual_snaps})"),
+        )
+
+    run_streaming_operation("capture.stills", body, **flags)
 
 
 @capture.command(name="session")

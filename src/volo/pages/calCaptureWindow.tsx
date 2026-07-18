@@ -1,27 +1,15 @@
 // @ts-nocheck
-/* Volo — 实时采集 · 单窗口（配置 + 现场画面 + 采集，一屏完成）
+/* Volo — 实时采集 · 镜头标定单窗口（配置 + 现场画面 + 采集，一屏完成）
    1:1 port of the Claude Design handoff `src/cal2_capture_window.jsx`，真实接线。
 
-   替代原先两套独立的真实采集实现——gridModals.tsx 的 LiveCapture（网格「接入摄影
-   机…」/「现场实时采集」入口）与 calLens.tsx 内联的采集态渲染（镜头「开始采集」）——
-   统一成这一个共享组件，grid/lens 两变体复用同一份接线：
-   - 采集会话：复用 devCapture.tsx 的 useCaptureSession/buildSessionArgs（唯一验证
-     过的 spawnSidecarStreaming + `vpcal capture session` 真实闭环）。
-   - 现场画面：采集前常驻 `vpcal capture video --duration 0 --preview-port 0` 监看流
-     （画面保真 + 断流自愈标准，同 calVideoSource.tsx）；采集开始后让出设备，切换消费
-     采集会话自己的 preview_ready.mjpeg_url。
-   - 会话参数（poses/settleMs/burst/inverted/graycodeSync/patternsDir/lensPath）不再
-     挂在 Capture Profile 上，改为本窗口自己的 localStorage 持久化（volo-capw-params，
-     grid/lens 入口共享），与 Profile（信号源身份 + 输出目录）解耦。
-   - screen.json 为真实采集会话必填参数（--screen，与 backend 无关，不像设计稿假设
-     synthetic 可以跳过）；grid 变体每次现开现选，lens 变体接受调用方传入的已选路径，
-     变更时回写给调用方（同步 Lens 页顶栏的 screen.json 选择）。
-   - 覆盖度反馈只渲染真实 coverage_update 字段；设计稿的 3×3 sensor_grid 示意矩阵后端
-     不产出，不臆造，改用 sensor_missing_regions 文字提示（同 calLens.tsx lensInspector
-     的既有真实数据渲染）。 */
+   网格「屏幕重建」快拍入口已迁至 gridCaptureWindow.tsx（VOLO_GRID_CAPTURE）。
+   本窗仅服务 lens 变体（镜头标定真需要 FreeD 追踪 + `vpcal capture session` 闭环）：
+   - 采集会话：devCapture.tsx 的 useCaptureSession/buildSessionArgs。
+   - 现场画面：采集前 `vpcal capture video --duration 0` 监看；开始后让出设备给会话 preview。
+   - 会话参数 localStorage（volo-capw-params）；screen.json / 图案 / 覆盖度反馈保留给 lens。 */
 import * as React from "react";
 import { pickDirectory, pickFile } from "../api/commands";
-import { spawnSidecarStreaming, cancelSidecarTask, listenSidecarStream, useSidecarStream } from "../api/sidecarStream";
+import { spawnSidecarStreaming, cancelSidecarTask, cancelSidecarTaskAwaitExit, useSidecarStream } from "../api/sidecarStream";
 import { useCaptureSession } from "./devCapture";
 import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern } from "../api/player";
 import { exportVpcalScreen } from "../api/meshCommands";
@@ -150,18 +138,7 @@ import { exportVpcalScreen } from "../api/meshCommands";
       const t = taskRef.current;
       taskRef.current = null;
       setTask(null); setUrl(null); setSig('waiting');
-      if (!t) return;
-      await new Promise((resolve) => {
-        let un = null;
-        let done = false;
-        const finish = () => { if (done) return; done = true; clearTimeout(timer); if (un) un(); resolve(); };
-        const timer = setTimeout(finish, 5000);
-        (async () => {
-          /* 先建立 exit 订阅、再发 Cancel，避免退出事件抢跑在订阅之前被漏掉。 */
-          try { const fn = await listenSidecarStream(t, (ev) => { if (ev.kind === 'exit') finish(); }); if (done) fn(); else un = fn; } catch (e) {}
-          try { const alive = await cancelSidecarTask(t); if (!alive || !un) finish(); } catch (e) { finish(); }
-        })();
-      });
+      if (t) await cancelSidecarTaskAwaitExit(t);
     };
 
     return { sig, url, fmt, stop };
@@ -228,8 +205,8 @@ import { exportVpcalScreen } from "../api/meshCommands";
   }
 
   /* ================= 主窗口 ================= */
-  function CaptureWindow({ s, close, variant, profileId, screenPath: screenPathProp, onScreenPathChange, onSaved }) {
-    const isLens = variant === 'lens';
+  function CaptureWindow({ s, close, profileId, screenPath: screenPathProp, onScreenPathChange, onSaved }) {
+    const isLens = true; /* grid 入口已迁至 VOLO_GRID_CAPTURE；本窗只服务 lens */
     const proj = CX.useProj();
     const screenId = s.calActiveScreen;
     const profiles = CX.loadProfiles ? CX.loadProfiles() : [];
@@ -419,11 +396,7 @@ import { exportVpcalScreen } from "../api/meshCommands";
       const msg = '已保存采集会话 · ' + captureResult.poses_captured + ' 姿位';
       s.pushLog({ lv: 'ok', cat: 'capture', msg });
       s.setCalReceipt({ tone: 'ok', text: msg });
-      /* visualSession 是网格「测量导入」专属的持久信号（gridTree/gridInsp 的 hasVs/fuseReady
-         都读它），lens 采集跟它无关，不能连带写进去。 */
-      if (!isLens) {
-        CX.projStore.patch({ visualSession: { screenId, poses: captureResult.poses_captured, sessionDir: captureResult.session_dir } });
-      }
+      /* 网格 visualSession 由 gridCaptureWindow 负责；本窗只服务 lens。 */
       close();
       onSaved && onSaved(captureResult);
     };
@@ -600,8 +573,7 @@ import { exportVpcalScreen } from "../api/meshCommands";
     opts = opts || {};
     s.setModal({ xwide: true, render: ({ s: st, close }) => h(CaptureWindow, Object.assign({ s: st, close }, opts)) });
   }
-  const openGrid = (s, onSaved) => openCaptureWindow(s, { variant: 'grid', onSaved });
-  const openLens = (s, opts) => openCaptureWindow(s, Object.assign({ variant: 'lens' }, opts));
+  const openLens = (s, opts) => openCaptureWindow(s, opts || {});
 
-  window.VOLO_CAPTURE = { openCaptureWindow, openGrid, openLens, CaptureWindow };
+  window.VOLO_CAPTURE = { openCaptureWindow, openLens, CaptureWindow };
 })();
