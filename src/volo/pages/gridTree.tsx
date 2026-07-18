@@ -15,7 +15,7 @@ import * as React from "react";
 import { pickFile } from "../api/commands";
 import { isTauri } from "../api/invoke";
 import { importTotalStationCsv, loadMeasurementsYaml, saveProjectYaml } from "../api/meshCommands";
-import { meshVisualGeneratePattern, meshVisualReconstruct } from "../api/meshVisualCommands";
+import { meshVisualGeneratePattern, meshVisualReconstruct, vpqspScreenIdCode } from "../api/meshVisualCommands";
 import { listen } from "@tauri-apps/api/event";
 
 (function () {
@@ -340,7 +340,7 @@ import { listen } from "@tauri-apps/api/event";
     const proj = CX.useProj();
     const screenId = s.calActiveScreen;
     const m = proj.config && proj.config.screens[screenId];
-    const [tab, setTab] = useState('offline');
+    const [tab, setTab] = useState('live');
     const [manifestPath, setManifestPath] = useState(null);
     const [intr, setIntr] = useState('auto');
     const [baState, setBaState] = useState('idle');
@@ -378,7 +378,14 @@ import { listen } from "@tauri-apps/api/event";
     const genPattern = async () => {
       if (!hasBackend) return;
       try {
-        const r = await meshVisualGeneratePattern(proj.path, screenId, 'vpqsp', 1, null);
+        const screenIds = Object.keys((proj.config && proj.config.screens) || {});
+        const r = await meshVisualGeneratePattern(
+          proj.path,
+          screenId,
+          'vpqsp',
+          vpqspScreenIdCode(screenId, screenIds),
+          null,
+        );
         /* 存完整结果对象（与 gridInsp usePattern 一致），否则检查器里「发送到播放器/打开输出文件夹」拿不到 output_dir */
         CX.projStore.patch({
           patternGenByScreen: Object.assign({}, proj.patternGenByScreen, { [screenId]: r }),

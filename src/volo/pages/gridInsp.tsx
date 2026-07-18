@@ -8,7 +8,7 @@
    箱体选中/run 质量指标/阶段动作面板同样只读写真实数据，无自造 mock。 */
 import * as React from "react";
 import { saveProjectYaml, setRunCurrent, getRunReport, exportObj } from "../api/meshCommands";
-import { generatedPatternImagePath, meshVisualGeneratePattern, meshVisualReconstruct } from "../api/meshVisualCommands";
+import { generatedPatternImagePath, meshVisualGeneratePattern, meshVisualReconstruct, vpqspScreenIdCode } from "../api/meshVisualCommands";
 import { getMachineDetail, listMachines, pickDirectory, pickFile, revealPath } from "../api/commands";
 import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern, playerClear } from "../api/player";
 import {
@@ -448,8 +448,8 @@ import { listen } from "@tauri-apps/api/event";
   }
 
   /* ================= 测试图（共享状态：PatternPanel 与 StagePanel「测试图」折叠共用） ================= */
-  const SCREEN_ID_CODE = 1; /* 单屏采集会话固定标识码，与 meshVisualGeneratePattern 调用一致 */
-  /* 后端 run_generate_pattern 只认 charuco | vpqsp；handoff 里的「密集编码点」即 VP-QSP */
+  /* 后端 run_generate_pattern 只认 charuco | vpqsp；handoff 里的「密集编码点」即 VP-QSP。
+     screen_id_code 必须按屏唯一（vpqspScreenIdCode），不可再写死为 1。 */
   const PATTERN_SCHEMES = [{ id: 'charuco', label: 'ChArUco' }, { id: 'vpqsp', label: '密集编码点' }];
   const OUTPUT_PATHS = {
     /* Compatibility fallback only; preflight resolves editor_paths per node from the machine library. */
@@ -471,6 +471,8 @@ import { listen } from "@tauri-apps/api/event";
     const gen = genN === ids.length && ids.length > 0;
     const stale = ids.some((id) => proj.patternGenByScreen && proj.patternGenByScreen[id] && proj.patternStaleByScreen && proj.patternStaleByScreen[id]);
     const res = proj.patternGenByScreen && proj.patternGenByScreen[screenId];
+    const projectScreenIds = Object.keys((proj.config && proj.config.screens) || {});
+    const codeFor = (id) => vpqspScreenIdCode(id, projectScreenIds);
     const runGen = async () => {
       if (busy) return;
       setBusy(true);
@@ -481,7 +483,7 @@ import { listen } from "@tauri-apps/api/event";
         let failed = null;
         await Promise.all(ids.map(async (id) => {
           try {
-            const result = await meshVisualGeneratePattern(proj.path, id, scheme, SCREEN_ID_CODE, null);
+            const result = await meshVisualGeneratePattern(proj.path, id, scheme, codeFor(id), null);
             nextGen[id] = result;
             nextStale[id] = false;
             last = result;
@@ -515,7 +517,8 @@ import { listen } from "@tauri-apps/api/event";
       } catch (e) { s.pushLog({ lv: 'err', cat: 'calibrate', msg: `发送到播放器失败 · ${e && e.message ? e.message : e}` }); }
     };
     const openFolder = () => { if (res && typeof res === 'object' && res.output_dir) revealPath(res.output_dir).catch(() => {}); };
-    return { proj, screenId, screenIds: ids, scheme, setScheme, busy, runGen, gen, genN, stale, res: (res && typeof res === 'object') ? res : null, playing, togglePlayer, openFolder };
+    const screenIdCodes = ids.map(codeFor);
+    return { proj, screenId, screenIds: ids, screenIdCodes, scheme, setScheme, busy, runGen, gen, genN, stale, res: (res && typeof res === 'object') ? res : null, playing, togglePlayer, openFolder };
   }
   function patternBadge(stale, genN, total) {
     if (total > 1) {
@@ -661,8 +664,8 @@ import { listen } from "@tauri-apps/api/event";
       head('grid', '测试图', 'ChArUco 校正图案', p.gen ? patternBadge(p.stale, p.genN, 1) : null),
       h(Fold, { label: '参数' },
         Field('图案方案', h(Sel, { value: p.scheme, options: PATTERN_SCHEMES, onChange: p.setScheme, w: 150 })),
-        Field('屏幕标识码', h('input', { className: 'gw-txt', value: String(SCREEN_ID_CODE), readOnly: true, style: { width: 70, textAlign: 'center' } })),
-        Field('目标屏幕', h('span', { style: { fontSize: 12.5, color: 'var(--chrome-text)', fontFamily: 'var(--font-code)' } }, p.screenId))),
+        Field('屏幕标识码', h('input', { className: 'gw-txt', value: p.screenIdCodes.join(', '), readOnly: true, style: { width: 70, textAlign: 'center' }, title: 'VP-QSP 每屏唯一 0–15，按项目屏幕名排序分配' })),
+        Field('目标屏幕', h('span', { style: { fontSize: 12.5, color: 'var(--chrome-text)', fontFamily: 'var(--font-code)' } }, p.screenIds.join(', ')))),
       p.busy
         ? h('div', { className: 'gw-grp-body' }, h('div', { style: { fontSize: 11.5, color: 'var(--chrome-dim)', marginBottom: 6 } }, '生成中…'),
             h('div', { className: 'vmeter vmeter--accent ar-indeterminate' }, h('div', { className: 'vmeter__fill' })))
@@ -696,7 +699,7 @@ import { listen } from "@tauri-apps/api/event";
     const m = proj.config && proj.config.screens[screenId];
     const built = s.calScreenReports && !!s.calScreenReports[screenId];
     const [method, setMethod] = useState('visual'); /* handoff 默认视觉校正 */
-    const [capMode, setCapMode] = useState('offline');
+    const [capMode, setCapMode] = useState('live');
     const [captureDirs, setCaptureDirs] = useState({});
     const [intr, setIntr] = useState('auto');
     const [intrFile, setIntrFile] = useState('');
@@ -803,7 +806,7 @@ import { listen } from "@tauri-apps/api/event";
       !isTS ? h(Fold, { label: '测试图', defOpen: false },
         h('div', { className: 'gw-stage-badge' }, patternBadge(p.stale, p.genN, multiIds.length)),
         Field('图案方案', h(Sel, { value: p.scheme, options: PATTERN_SCHEMES, onChange: (scheme) => { p.setScheme(scheme); if (scheme === 'charuco' && intr === 'auto') setIntr('file'); }, w: 150 })),
-        Field('屏幕标识码', h('input', { className: 'gw-txt', value: String(SCREEN_ID_CODE), readOnly: true, style: { width: 70, textAlign: 'center' } })),
+        Field('屏幕标识码', h('input', { className: 'gw-txt', value: p.screenIdCodes.join(', '), readOnly: true, style: { width: 70, textAlign: 'center' }, title: 'VP-QSP 每屏唯一 0–15，按项目屏幕名排序分配' })),
         Field(isMulti ? '目标屏幕 · ' + multiIds.length + ' 块' : '目标屏幕',
           h('span', { style: { fontSize: 12.5, color: 'var(--chrome-text)', fontFamily: 'var(--font-code)', textAlign: 'right', textWrap: 'balance' } },
             isMulti ? multiIds.join(' · ') : screenId)),

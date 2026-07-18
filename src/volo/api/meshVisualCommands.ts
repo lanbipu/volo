@@ -39,6 +39,24 @@ export const meshVisualReconstruct = (
 export const meshVisualCancel = (jobId: string) => call<boolean>("mesh_visual_cancel", { jobId });
 
 /* ----------------------------- pattern / structured-light generation ----------------------------- */
+/**
+ * Stable VP-QSP 4-bit `screen_id` (0–15) for one project screen.
+ * Markers bake this into every codeword; batch-generating multiple screens with
+ * the same code produces visually identical patterns. Assignment is the sorted
+ * index of `screenId` among `projectScreenIds` so ASUS/LG etc. stay distinct.
+ */
+export const vpqspScreenIdCode = (screenId: string, projectScreenIds: string[]): number => {
+  const sorted = Array.from(new Set(projectScreenIds.filter(Boolean))).sort();
+  const idx = sorted.indexOf(screenId);
+  if (idx < 0) return 0;
+  if (sorted.length > 16) {
+    throw new Error(
+      `VP-QSP 屏幕标识码仅 4 bit（0–15），项目内已有 ${sorted.length} 块屏幕，无法为每屏分配唯一码`,
+    );
+  }
+  return idx;
+};
+
 // ✅ wired: gridTree.tsx + gridInsp.tsx 的视觉标定图案步骤
 export const meshVisualGeneratePattern = (
   projectPath: string,
