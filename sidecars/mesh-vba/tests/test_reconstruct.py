@@ -1238,6 +1238,36 @@ def test_nonconverged_ba_is_fatal_even_with_low_rms(tmp_path, capsys, monkeypatc
     assert "did not converge" in last["message"]
 
 
+def test_budget_exhausted_with_acceptable_rms_is_accepted(tmp_path, capsys, monkeypatch):
+    """Budget exhaust with rms≪2px is practical convergence — accept with
+    ba_budget_exhausted warning (starved max_nfev=1 covered by sibling test)."""
+    import lmt_vba_sidecar.reconstruct as rec
+    from lmt_vba_sidecar.model_constrained_ba import BAResult
+    orig = rec.stage_b_robust_solve
+
+    def doctored(**kw):
+        result, rej, n, surv = orig(**kw)
+        max_nfev = int(kw.get("max_nfev", 200))
+        result = BAResult(
+            camera_poses=result.camera_poses, cabinet_poses=result.cabinet_poses,
+            rms_reprojection_px=0.18, iterations=max_nfev,
+            converged=False, cabinet_covariances=result.cabinet_covariances)
+        return result, rej, n, surv
+
+    monkeypatch.setattr(rec, "stage_b_robust_solve", doctored)
+    rc, report, *_ = _run_sl_pipeline(tmp_path, n_views=2, noise_px=0.0)
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert report.exists()
+    warns = [json.loads(ln) for ln in out.splitlines()
+             if ln.strip() and json.loads(ln).get("event") == "warning"]
+    assert any(w["code"] == "ba_budget_exhausted" for w in warns), warns
+    result_ev = [json.loads(ln) for ln in out.splitlines()
+                 if ln.strip() and json.loads(ln).get("event") == "result"][-1]
+    assert result_ev["data"]["ba_stats"]["converged"] is False
+    assert abs(result_ev["data"]["ba_stats"]["rms_reprojection_px"] - 0.18) < 1e-9
+
+
 def test_converged_high_rms_is_refused(tmp_path, capsys, monkeypatch):
     """FIX-4: a CONVERGED solution whose rms exceeds the 2.0px gate must be
     refused -- the OLD gate (not-converged AND rms>2) shipped any converged

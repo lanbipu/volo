@@ -122,6 +122,50 @@ STAGE_B_MAD_K = 3.0
 STAGE_B_ABS_PX_FLOOR = 3.0
 STAGE_B_GROUP_MEDIAN_PX = 4.0  # whole-(cam,cab)-group coherence guard
 BA_RMS_FATAL_PX = 2.0          # FIX-4: converged solutions above this rms are refused
+BA_NFEV_FLOOR = 200
+BA_NFEV_PER_CAB_CAM = 50
+# Budget-exhaust practical acceptance: scipy status=0 with excellent residual
+# (joint 2×8 captures stall near rms≈0.18px without xtol/ftol). Starve tests
+# (max_nfev < BA_NFEV_MIN_FOR_BUDGET_ACCEPT) stay fatal. Tighter than
+# BA_RMS_FATAL_PX so anisotropic-pitch stalls (~1.5px) remain refused.
+BA_NFEV_MIN_FOR_BUDGET_ACCEPT = 50
+BA_RMS_BUDGET_ACCEPT_PX = 1.0
+
+
+def _ba_max_nfev(n_cabinets: int, n_cameras: int) -> int:
+    return max(BA_NFEV_FLOOR, BA_NFEV_PER_CAB_CAM * n_cabinets * n_cameras)
+
+
+def _ba_acceptance_failed(result: BAResult, max_nfev: int) -> bool:
+    """Emit ba_diverged / ba_budget_exhausted; True means refuse the solve.
+
+    ba_stats.converged stays scipy's truthful success flag.
+    """
+    if result.rms_reprojection_px > BA_RMS_FATAL_PX:
+        write_event(ErrorEvent(
+            event="error", code="ba_diverged",
+            message=(f"BA {'converged' if result.converged else 'finished'} but "
+                     f"reprojection rms {result.rms_reprojection_px:.2f}px "
+                     f"exceeds {BA_RMS_FATAL_PX}px: the model does not explain the "
+                     f"observations (wrong shape_prior / intrinsics / capture geometry)"),
+            fatal=True))
+        return True
+    if result.converged:
+        return False
+    if (result.iterations >= max_nfev
+            and max_nfev >= BA_NFEV_MIN_FOR_BUDGET_ACCEPT
+            and result.rms_reprojection_px <= BA_RMS_BUDGET_ACCEPT_PX):
+        write_event(WarningEvent(
+            event="warning", code="ba_budget_exhausted",
+            message=(f"BA hit nfev budget ({result.iterations}) with acceptable "
+                     f"rms={result.rms_reprojection_px:.2f}px; accepting solution")))
+        return False
+    write_event(ErrorEvent(
+        event="error", code="ba_diverged",
+        message=(f"BA did not converge (rms={result.rms_reprojection_px:.2f}px "
+                 f"after {result.iterations} iters)"),
+        fatal=True))
+    return True
 
 
 def _classify_cabinet_quality(observed_views: int, reproj_rms_px: float) -> str:
@@ -1252,6 +1296,9 @@ def run_reconstruct_vpqsp_joint(cmd: ReconstructInput, manifest) -> int:
         n_rejected_pre=n_rej_stage_a,
         rejected_per_cab_pre=rej_per_cab_stage_a,
         intrinsics_source=intrinsics_source,
+        ignored_photos=ignored_photos,
+        photos_used=photos_used,
+        photos_total=photos_total,
     )
 
 
@@ -1338,6 +1385,9 @@ def joint_solve_and_emit(
     n_rejected_pre: int = 0,
     rejected_per_cab_pre: dict[int, int] | None = None,
     intrinsics_source: str = "file",
+    ignored_photos: list[str] | None = None,
+    photos_used: int = 0,
+    photos_total: int = 0,
 ) -> int:
     """Joint multi-screen BA + per-screen pose reports + screen transforms."""
     write_event(ProgressEvent(event="progress", stage="bundle_adjustment", percent=0.5,
@@ -1386,13 +1436,14 @@ def joint_solve_and_emit(
         init_cameras.append(
             _pnp_camera(cam_idx, gauge_idx, init_cabinets, per_view_cab_corners, K))
 
+    max_nfev = _ba_max_nfev(n_cabinets, n_cameras)
     result, rejected_per_cab_stage_b, n_rej_stage_b, surviving_observations = \
         stage_b_robust_solve(
             K=K, observations=observations, n_cameras=n_cameras,
             n_cabinets=n_cabinets, root_cabinet_idx=gauge_idx,
             init_cameras=init_cameras, init_cabinets=init_cabinets,
             per_cabinet_min_points=8,
-            max_nfev=max(200, 50 * n_cabinets * n_cameras))
+            max_nfev=max_nfev)
 
     rejected_per_cab_pre = rejected_per_cab_pre or {}
     n_used = len(surviving_observations)
@@ -1420,19 +1471,7 @@ def joint_solve_and_emit(
                 fatal=True))
             return 1
 
-    if not result.converged:
-        write_event(ErrorEvent(
-            event="error", code="ba_diverged",
-            message=f"BA did not converge (rms={result.rms_reprojection_px:.2f}px after {result.iterations} iters)",
-            fatal=True))
-        return 1
-    if result.rms_reprojection_px > BA_RMS_FATAL_PX:
-        write_event(ErrorEvent(
-            event="error", code="ba_diverged",
-            message=(f"BA converged but reprojection rms {result.rms_reprojection_px:.2f}px "
-                     f"exceeds {BA_RMS_FATAL_PX}px: the model does not explain the "
-                     f"observations (wrong shape_prior / intrinsics / capture geometry)"),
-            fatal=True))
+    if _ba_acceptance_failed(result, max_nfev):
         return 1
 
     per_cabinet_rms = _per_cabinet_reproj_rms(
@@ -1561,7 +1600,7 @@ def joint_solve_and_emit(
             intrinsics_source=intrinsics_source,
             screen_transforms_path=screen_transforms_path,
             screens=screen_summaries,
-            ignored_photos=ignored_photos,
+            ignored_photos=list(ignored_photos or []),
             photos_used=photos_used,
             photos_total=photos_total,
         ),
@@ -1719,13 +1758,14 @@ def solve_and_emit(
         init_cameras.append(pose)
 
     # --- 8. BA (Stage B robust-residual trim — PRIMARY geometric authority) ---
+    max_nfev = _ba_max_nfev(n_cabinets, n_cameras)
     result, rejected_per_cab_stage_b, n_rej_stage_b, surviving_observations = \
         stage_b_robust_solve(
             K=K, observations=observations, n_cameras=n_cameras,
             n_cabinets=n_cabinets, root_cabinet_idx=gauge_idx,
             init_cameras=init_cameras, init_cabinets=init_cabinets,
             per_cabinet_min_points=8,
-            max_nfev=max(200, 50 * n_cabinets * n_cameras))
+            max_nfev=max_nfev)
     # Re-express the solution in the EXTERNAL root cabinet's frame (the gauge sat
     # at the wall center purely for conditioning; reports keep V000_R000 frame
     # semantics).
@@ -1765,27 +1805,9 @@ def solve_and_emit(
                          f"(needs >=8 points and >=2 views)"),
                 fatal=True))
             return 1
-    # FIX-4: single-condition acceptance gates (the old AND-gate required BOTH
-    # non-convergence and high RMS to refuse, shipping non-converged-but-low-RMS
-    # and converged-but-high-RMS solutions alike). Strict by default. Runs AFTER
-    # the post-trim observability re-check so an amputated cabinet surfaces as
-    # the more actionable observability_failed ("add a camera"), not a generic
-    # divergence.
-    if not result.converged:
-        write_event(ErrorEvent(
-            event="error", code="ba_diverged",
-            message=f"BA did not converge (rms={result.rms_reprojection_px:.2f}px after {result.iterations} iters)",
-            fatal=True,
-        ))
-        return 1
-    if result.rms_reprojection_px > BA_RMS_FATAL_PX:
-        write_event(ErrorEvent(
-            event="error", code="ba_diverged",
-            message=(f"BA converged but reprojection rms {result.rms_reprojection_px:.2f}px "
-                     f"exceeds {BA_RMS_FATAL_PX}px: the model does not explain the "
-                     f"observations (wrong shape_prior / intrinsics / capture geometry)"),
-            fatal=True,
-        ))
+    # After post-trim observability so amputated cabinets surface as
+    # observability_failed, not a generic ba_diverged.
+    if _ba_acceptance_failed(result, max_nfev):
         return 1
     # Per-cabinet reprojection RMS from the solved poses (same projection as BA).
     # NOTE: computed from the ORIGINAL BA poses, before any align_to_nominal rigid

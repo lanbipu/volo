@@ -195,6 +195,7 @@ def _charuco_geometry_cold(scene, design):
     # THIS module at import time — a module-level import here would be a cycle.
     from lmt_vba_sidecar.nominal import nominal_cabinet_poses_model_frame
     from lmt_vba_sidecar.reconstruct import (
+        _ba_max_nfev,
         _nominal_init_root_frame,
         _pnp_camera,
         estimate_nonroot_cabinet_init,
@@ -243,7 +244,7 @@ def _charuco_geometry_cold(scene, design):
         n_cabinets=scene.n_cabinets, root_cabinet_idx=gauge_idx,
         init_cameras=init_cams, init_cabinets=init_cabs,
         per_cabinet_min_points=8,
-        max_nfev=max(200, 50 * scene.n_cabinets * scene.n_cameras))
+        max_nfev=_ba_max_nfev(scene.n_cabinets, scene.n_cameras))
     if not res.converged:
         raise ValueError(f"cold init: BA did not converge (rms={res.rms_reprojection_px:.2f}px)")
     est_c, est_n, est_s, est_w = {}, {}, {}, {}
