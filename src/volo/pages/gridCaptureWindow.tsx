@@ -8,15 +8,23 @@
    三阶段态 config → capturing → done；重置通过 onSaved({reset:true}) 清 visualSession。 */
 import * as React from "react";
 import { pickDirectory } from "../api/commands";
+import { meshVisualPlanCapture } from "../api/meshVisualCommands";
 import {
   spawnSidecarStreaming,
   cancelSidecarTaskAwaitExit,
   useSidecarStream,
 } from "../api/sidecarStream";
+import {
+  applyMatchHysteresis,
+  cabinetsNormBBox,
+  computeFramingScore,
+  missingCabinetsHint,
+  roleLabel,
+} from "../lib/framingMatch";
 
 (function () {
   const { Button, Switch } = window.Spectrum2DesignSystem_b6d1b3;
-  const { useState, useEffect, useRef } = React;
+  const { useState, useEffect, useRef, memo } = React;
   const h = React.createElement;
   const CX = window.VOLO_CAL2;
 
@@ -46,6 +54,48 @@ import {
   function makeStamp() {
     return new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
   }
+  function profileHfov(p) {
+    if (!p || p.hfovDeg == null || p.hfovDeg === '') return null;
+    const n = Number(p.hfovDeg);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  function imageSizeOf(profile, fmt) {
+    if (fmt && fmt.res) return String(fmt.res).replace(/[×xX]/, 'x');
+    if (profile && profile.width && profile.height) return `${profile.width}x${profile.height}`;
+    return '1920x1080';
+  }
+
+  /* 参考画幅缩略图：屏幕箱体网格 + 当前机位期望覆盖高亮 */
+  const GuideThumb = memo(function GuideThumb({ cols, rows, covers }) {
+    const cN = Math.max(1, cols | 0), rN = Math.max(1, rows | 0);
+    const pad = 8, W = 200, H = 120;
+    const gw = W - pad * 2, gh = H - pad * 2;
+    const cabW = gw / cN, cabH = gh / rN;
+    const coverSet = new Set((covers || []).map(([c, r]) => c + ',' + r));
+    const cells = [];
+    for (let r = 0; r < rN; r++) {
+      for (let c = 0; c < cN; c++) {
+        const on = coverSet.has(c + ',' + r);
+        cells.push(h('rect', {
+          key: c + '-' + r, className: on ? 'gt-cab' : 'gt-panel',
+          x: pad + c * cabW + 0.5, y: pad + r * cabH + 0.5,
+          width: Math.max(1, cabW - 1), height: Math.max(1, cabH - 1), rx: 1.5,
+        }));
+      }
+    }
+    const box = cabinetsNormBBox(covers || [], cN, rN);
+    const frame = box
+      ? h('rect', {
+          className: 'gt-frame',
+          x: pad + box[0] * gw, y: pad + box[1] * gh,
+          width: Math.max(2, (box[2] - box[0]) * gw),
+          height: Math.max(2, (box[3] - box[1]) * gh),
+          rx: 3,
+        })
+      : null;
+    return h('svg', { className: 'gcapw-guide-svg', viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'none' },
+      cells, frame);
+  });
 
   /* ---------- 现场画面：真实 MJPEG + 稳定度浮标 / 快门白闪 ---------- */
   function CamFeed({ signal, url, synthetic, phase, motion, flash }) {
@@ -120,6 +170,13 @@ import {
     const [markerCount, setMarkerCount] = useState(0);
     const [markerStale, setMarkerStale] = useState(true);
     const [gateNoPattern, setGateNoPattern] = useState(false);
+    const [guideStations, setGuideStations] = useState([]);
+    const [poseIdx, setPoseIdx] = useState(0);
+    const [matchPct, setMatchPct] = useState(0);
+    const [matched, setMatched] = useState(false);
+    const [obsCabinets, setObsCabinets] = useState([]);
+    const [obsBbox, setObsBbox] = useState(null);
+    const [guidePlanning, setGuidePlanning] = useState(false);
 
     const rootRef = useRef(null);
     const pfRef = useRef(null);
@@ -131,11 +188,29 @@ import {
     const seenResult = useRef(false);
     const finishingRef = useRef(false);
     const phaseRef = useRef(phase);
+    const matchedRef = useRef(false);
+    const guideOnRef = useRef(false);
+    const guideLenRef = useRef(0);
+    const lastAutoCmdRef = useRef(null);
     phaseRef.current = phase;
     finishingRef.current = finishing;
     taskRef.current = taskId;
+    matchedRef.current = matched;
+    guideLenRef.current = guideStations.length;
 
     const stream = useSidecarStream(taskId);
+    const proj = CX.projStore ? CX.projStore.get() : null;
+    const projPath = proj && proj.path ? proj.path : null;
+    const screenCfg = (proj && proj.config && proj.config.screens && screenId)
+      ? proj.config.screens[screenId] : null;
+    const screenCols = screenCfg && screenCfg.cabinet_count ? screenCfg.cabinet_count[0] : 8;
+    const screenRows = screenCfg && screenCfg.cabinet_count ? screenCfg.cabinet_count[1] : 4;
+    const hfov = profileHfov(profile);
+    const planImageSize = imageSizeOf(profile, fmt);
+    const guideOn = guideStations.length > 0;
+    guideOnRef.current = guideOn;
+    const curStation = guideStations[poseIdx] || null;
+    const curCovers = (curStation && curStation.covers_cabinets) || [];
 
     const sessionRoot = hasRoot ? profile.outputRoot : outputDir;
     const sessionDir = sessionRoot ? joinPath(sessionRoot, 'stills_' + sessionStamp) : '';
@@ -175,9 +250,19 @@ import {
       return stream.writeLine(JSON.stringify(cmd));
     };
 
+    const syncAuto = (enabled) => {
+      const on = !!enabled;
+      if (lastAutoCmdRef.current === on) return Promise.resolve(true);
+      lastAutoCmdRef.current = on;
+      return sendCmd({ cmd: 'auto', enabled: on });
+    };
+
+    const resetMatch = () => { setMatched(false); setMatchPct(0); };
+
     const stopTask = async () => {
       const t = taskRef.current;
       taskRef.current = null;
+      lastAutoCmdRef.current = null;
       setTaskId(null); setUrl(null); setSig('waiting'); setFmt(null);
       if (t) await cancelSidecarTaskAwaitExit(t);
     };
@@ -221,6 +306,64 @@ import {
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [canSpawn, pid, sessionDir, spawnGen]);
 
+    /* 参考画幅规划：需项目路径 + 活跃屏 + Profile.hfovDeg；失败则引导层整体隐藏 */
+    useEffect(() => {
+      if (!projPath || !screenId || hfov == null) {
+        setGuideStations([]);
+        setGuidePlanning(false);
+        return undefined;
+      }
+      let cancelled = false;
+      setGuidePlanning(true);
+      meshVisualPlanCapture(projPath, screenId, planImageSize, hfov, null).then((plan) => {
+        if (cancelled) return;
+        const stations = (plan && plan.stations) || [];
+        setGuideStations(stations);
+        setPoseIdx(0);
+        resetMatch();
+        if (!stations.length) {
+          s.pushLog({ lv: 'warn', cat: 'capture', msg: '参考画幅规划返回 0 机位 · 退化为纯快拍' });
+        } else {
+          s.pushLog({
+            lv: 'ok', cat: 'capture',
+            msg: '参考画幅规划完成 · ' + stations.length + ' 机位 · hfov ' + hfov + '°',
+          });
+        }
+      }).catch((e) => {
+        if (cancelled) return;
+        setGuideStations([]);
+        s.pushLog({
+          lv: 'warn', cat: 'capture',
+          msg: '参考画幅规划失败 · 退化为纯快拍 · ' + (e && e.message ? e.message : e),
+        });
+      }).finally(() => { if (!cancelled) setGuidePlanning(false); });
+      return () => { cancelled = true; };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [pid, screenId, hfov, projPath, planImageSize]);
+
+    /* 匹配分：期望箱体 ∩ 实测箱体 + bbox 占比容差；滞回防闪烁 */
+    useEffect(() => {
+      if (!guideOn || poseIdx >= guideStations.length) {
+        if (poseIdx >= guideStations.length) { setMatchPct(0); setMatched(false); }
+        return;
+      }
+      const station = guideStations[poseIdx];
+      if (!station || markerStale) return;
+      const expected = station.covers_cabinets || [];
+      const expBox = cabinetsNormBBox(expected, screenCols, screenRows);
+      const score = computeFramingScore(expected, obsCabinets, expBox, obsBbox);
+      setMatchPct(score);
+      setMatched((prev) => applyMatchHysteresis(score, prev));
+    }, [guideOn, guideStations, poseIdx, obsCabinets, obsBbox, markerStale, screenCols, screenRows]);
+
+    /* 引导开启时：仅绿框 + 用户开关打开才放行后端自动快门 */
+    useEffect(() => {
+      if (phase !== 'capturing' || !guideOn) return undefined;
+      void syncAuto(!!(autoSnap && matched));
+      return undefined;
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [phase, guideOn, autoSnap, matched]);
+
     /* 增量消费 stills NDJSON（避免每行整表 O(n²) 重扫） */
     useEffect(() => {
       const lines = stream.state.lines;
@@ -249,6 +392,23 @@ import {
           const stale = !!p.stale;
           setMarkerCount((cur) => (cur === n ? cur : n));
           setMarkerStale((cur) => (cur === stale ? cur : stale));
+          const cabs = Array.isArray(p.cabinets)
+            ? p.cabinets.map((c) => [c[1] | 0, c[2] | 0])
+            : [];
+          setObsCabinets((cur) => {
+            if (cur.length === cabs.length
+              && cur.every((c, i) => c[0] === cabs[i][0] && c[1] === cabs[i][1])) {
+              return cur;
+            }
+            return cabs;
+          });
+          const bbox = Array.isArray(p.bbox_frac) && p.bbox_frac.length >= 4 ? p.bbox_frac : null;
+          setObsBbox((cur) => {
+            if (cur === bbox) return cur;
+            if (cur && bbox && cur.length === bbox.length
+              && cur.every((v, i) => v === bbox[i])) return cur;
+            return bbox;
+          });
         }
 
         if (p.type === 'auto_state' && phaseRef.current === 'capturing') {
@@ -281,6 +441,11 @@ import {
             });
           }
           setGateNoPattern(false);
+          if (p.auto && guideOnRef.current) {
+            setPoseIdx((i) => Math.min(i + 1, Math.max(0, guideLenRef.current)));
+            setMatched(false);
+            setMatchPct(0);
+          }
         }
         if (p.type === 'result' && p.data && !seenResult.current
             && (phaseRef.current === 'capturing' || finishingRef.current)) {
@@ -359,14 +524,24 @@ import {
       setMotion('moving');
       s.pushLog({
         lv: 'info', cat: 'capture',
-        msg: '开始快拍采集 · 屏幕重建 · 配置 <b>' + profile.name + '</b> · 会话 ' + sessionDir,
+        msg: '开始快拍采集 · 屏幕重建 · 配置 <b>' + profile.name + '</b> · 会话 ' + sessionDir
+          + (guideOn ? (' · 引导 ' + guideStations.length + ' 机位') : ''),
       });
-      await sendCmd({ cmd: 'auto', enabled: !!autoSnap });
+      await syncAuto(!!autoSnap && (!guideOn || matchedRef.current));
     };
 
     const toggleAuto = async (on) => {
       setAutoSnap(on);
-      if (phase === 'capturing') await sendCmd({ cmd: 'auto', enabled: !!on });
+      if (phase === 'capturing') {
+        await syncAuto(!!on && (!guideOnRef.current || matchedRef.current));
+      }
+    };
+
+    const advancePose = (delta) => {
+      const n = guideStations.length;
+      if (!n) return;
+      setPoseIdx((i) => (i + delta + n) % n);
+      resetMatch();
     };
 
     const doSnap = () => {
@@ -396,6 +571,8 @@ import {
       setLastFileNoMarker(false);
       setGateNoPattern(false);
       setMarkerCount(0); setMarkerStale(true);
+      setObsCabinets([]); setObsBbox(null);
+      setPoseIdx(0); resetMatch();
       setCaptureResult(null); setMotion('ready'); setAutoSnap(true);
       seenSnapSeq.current = new Set();
       seenResult.current = false;
@@ -450,12 +627,24 @@ import {
       }, h(Icon, { name: 'x', size: 16 })));
 
     /* ---------- 左侧现场画面 ---------- */
+    const guideActive = guideOn && phase === 'capturing' && displaySig === 'ok';
+    const guideDone = guideOn && poseIdx >= guideStations.length;
+    const diffHint = guideActive && curStation && !guideDone
+      ? missingCabinetsHint(curCovers, obsCabinets)
+      : '';
     const stage = h('div', { className: 'capw-stage' },
       h('div', { className: 'capw-feed' },
         h(CamFeed, {
           signal: displaySig, url, synthetic: backend === 'synthetic',
           phase, motion: effMotion, flash,
         }),
+        guideActive && !guideDone
+          ? h('div', { className: 'gcapw-matchframe gcapw-matchframe--' + (matched ? 'ok' : 'no') },
+              h('div', { className: 'gcapw-matchbadge gcapw-matchbadge--' + (matched ? 'ok' : 'no') },
+                h(Icon, { name: matched ? 'check' : 'target', size: 13 }),
+                h('span', null, matched ? '构图匹配' : diffHint),
+                h('span', { className: 'gcapw-match-pct mono' }, Math.round(matchPct) + '%')))
+          : null,
         h('div', { className: 'capw-sigbadge' },
           h('span', { className: 'cap-pill cap-pill--' + (backend === 'synthetic' ? 'informative' : sigMeta.tone) + ' is-lg' },
             displaySig === 'waiting'
@@ -490,7 +679,13 @@ import {
               : h('span', { className: 'capw-fmt-read dim' }, '等待格式上报…'),
         backend !== 'synthetic' && displaySig !== 'lost' && fmt
           ? h('span', { className: 'capw-fmt-auto' }, h(Icon, { name: 'check', size: 12 }), '自动读取')
-          : null));
+          : null),
+      guideActive
+        ? h('div', { className: 'gcapw-lenslock' },
+            h(Icon, { name: 'pin', size: 13 }),
+            h('span', { className: 'gcapw-lenslock-t' }, '引导会话进行中 · 本次会话请保持焦距不变'),
+            h('span', { className: 'gcapw-lenslock-v mono' }, hfov + '° hfov'))
+        : null);
 
     /* ---------- 右栏：信号源 ---------- */
     const sourceSection = h('div', { className: 'cap-card' + (locked ? ' is-locked' : '') },
@@ -532,6 +727,17 @@ import {
                 }
               },
             }, h(Icon, { name: 'sliders', size: 14 }), '管理采集配置…')) : null)),
+      hfov != null
+        ? h('div', { className: 'capw-pick gcapw-lensrow' },
+            h('span', { className: 'capw-pick-lb' }, '镜头参数', h('span', { className: 'capw-opt' }, '来自 Profile')),
+            h('div', { className: 'gcapw-lens-vals' },
+              h('div', { className: 'gcapw-lens-v' }, h('span', { className: 'k' }, 'hfov'), h('span', { className: 'v mono' }, hfov + '°')),
+              h('span', { className: 'gcapw-lens-note' }, h(Icon, { name: 'pin', size: 12 }),
+                guidePlanning ? '正在规划参考画幅…'
+                  : (guideOn ? '引导拍摄须保持不变' : '已设 hfov · 规划未就绪'))))
+        : h('div', { className: 'capw-pick' },
+            h('span', { className: 'capw-pick-lb' }, '镜头参数', h('span', { className: 'capw-opt' }, '可选')),
+            h('div', { className: 'cap-tg-s' }, '未设置 hfov · 参考画幅引导已隐藏，仍可纯快拍')),
       hasRoot
         ? h('div', { className: 'capw-pick' },
             h('span', { className: 'capw-pick-lb' }, '输出目录', h('span', { className: 'capw-opt' }, '来自 Profile')),
@@ -556,6 +762,36 @@ import {
                 ? h('span', { className: 'cap-pill cap-pill--positive' }, h(Icon, { name: 'check', size: 12 }), '已选')
                 : null)));
 
+    /* ---------- 参考画幅引导卡 ---------- */
+    const poseLabel = curStation
+      ? (roleLabel(curStation.role) + ' · ' + (curCovers.length || 0) + ' 箱体')
+      : '—';
+    const guideCard = guideOn ? h('div', { className: 'cap-card gcapw-guide' },
+      h('div', { className: 'cap-card-h' }, h(Icon, { name: 'target', size: 15 }), '参考画幅',
+        h('span', { className: 'gcapw-guide-prog' }, '机位 ',
+          h('b', { className: 'mono' }, Math.min(poseIdx + 1, guideStations.length)),
+          ' / ', h('span', { className: 'mono' }, guideStations.length))),
+      guideDone
+        ? h('div', { className: 'gcapw-guide-diff', style: { marginTop: 10 } },
+            '全部引导机位已拍完。可继续手动补拍，或点「完成并保存」。')
+        : h(React.Fragment, null,
+            h('div', { className: 'gcapw-guide-body' },
+              h('div', { className: 'gcapw-guide-thumbwrap' },
+                h(GuideThumb, { cols: screenCols, rows: screenRows, covers: curCovers }),
+                h('span', { className: 'gcapw-guide-region' }, poseLabel)),
+              h('div', { className: 'gcapw-guide-side' },
+                h('div', { className: 'gcapw-guide-match gcapw-guide-match--' + (matched ? 'ok' : 'no') },
+                  h(Icon, { name: matched ? 'check' : 'target', size: 13 }),
+                  h('span', null, matched ? '构图匹配' : '继续对准'),
+                  h('span', { className: 'gcapw-guide-match-pct mono' }, Math.round(matchPct) + '%')),
+                h('div', { className: 'gcapw-guide-diff' }, diffHint || '移动相机使检测到的箱体覆盖推荐区域'))),
+            h('div', { className: 'gcapw-guide-nav' },
+              h('button', { className: 'gcapw-guide-btn', onClick: () => advancePose(-1) },
+                h(Icon, { name: 'arrowl', size: 14 }), '上一个'),
+              h('button', { className: 'gcapw-guide-btn', onClick: () => advancePose(1) },
+                '下一个', h(Icon, { name: 'arrowr', size: 14 })))))
+      : null;
+
     /* ---------- 采集控制卡 ---------- */
     const captureCard = h('div', { className: 'cap-card gcapw-capcard' },
       h('div', { className: 'cap-card-h' }, h(Icon, { name: 'camera', size: 15 }), '快拍采集',
@@ -564,7 +800,10 @@ import {
       h('div', { className: 'gcapw-autorow' },
         h('div', null,
           h('div', { className: 'cap-tg-t' }, '自动快拍'),
-          h('div', { className: 'cap-tg-s' }, '画面稳定后自动拍摄一张，无需手动')),
+          h('div', { className: 'cap-tg-s' },
+            guideOn
+              ? '构图匹配（绿框）且画面稳定后自动拍摄'
+              : '画面稳定后自动拍摄一张，无需手动')),
         h(Switch, { isSelected: autoSnap, onChange: toggleAuto, isDisabled: finishing })),
       h('div', { className: 'gcapw-statusbadge gcapw-statusbadge--' + mstate.tone },
         effMotion === 'ready' ? h(Icon, { name: 'check', size: 14 }) : h('span', { className: 'gcapw-mdot' }),
@@ -631,7 +870,7 @@ import {
           h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'check', size: 15 }), onPress: savedSession }, '保存会话')));
     } else if (phase === 'capturing') {
       side = h(React.Fragment, null,
-        h('div', { className: 'capw-side-scroll' }, captureCard, sourceStrip),
+        h('div', { className: 'capw-side-scroll' }, guideCard, captureCard, sourceStrip),
         h('div', { className: 'capw-foot is-capture' },
           h(Button, {
             variant: 'accent', size: 'M', icon: h(Icon, { name: 'check', size: 15 }),

@@ -9,9 +9,9 @@
    的命名配置（Profile）管理模态，本身不发起任何采集。
 
    Profile 瘦身：poses/settleMs/burst/inverted/graycodeSync/patternsDir/lensPath 这组
-   「采集参数」已下沉到 calCaptureWindow.tsx 的共享实时采集单窗口（localStorage 持久化，
-   grid/lens 入口共享，与 Profile 身份解耦）；Profile 只保留 名称 + 视频源 + 输出目录，
-   即信号源身份本身。
+   「采集参数」已下沉到实时采集窗口（localStorage 持久化，grid/lens 入口共享，与
+   Profile 身份解耦）；Profile 保留 名称 + 视频源 + 可选 hfovDeg（快拍参考画幅）+
+   输出目录，即信号源身份本身。
 
    持久化：Profile 由 Rust 写入 app data；localStorage 仅作为同步 cache，供现有同步式
    Lens 页面在同一 WebView 内立即读取。首次使用不预置假数据。 */
@@ -41,6 +41,8 @@ import { listCaptureProfiles, saveCaptureProfiles } from "../api/captureProfiles
   const blankForm = () => ({ name: '', videoBackend: 'uvc', device: '0', trackProtocol: 'freed', trackPort: 6301,
     trackHost: '0.0.0.0', trackCameraId: null,
     fmtMode: 'auto', width: '', height: '', fps: '', transferFunction: 'sdr',
+    /* 水平视场角（度）：快拍参考画幅引导用；留空则引导层隐藏 */
+    hfovDeg: '',
     outputRoot: '' });
 
   function CaptureModal({ s, close }) {
@@ -136,6 +138,18 @@ import { listCaptureProfiles, saveCaptureProfiles } from "../api/captureProfiles
         h('input', { className: 'cap-tf', value: form.name, placeholder: '如：现场 · UVC 主机位', autoFocus: true, onChange: (e) => set('name', e.target.value) })),
       h(window.VoloVideoSource.VideoSourceCard, { form, set }),
       /* 追踪源已移至独立「追踪源信号接入」模块；采集参数已下沉到实时采集单窗口。 */
+      h('div', { className: 'cap-card' },
+        h('div', { className: 'cap-card-h' }, h(Icon, { name: 'sliders', size: 15 }), '镜头标称',
+          h('span', { className: 'capw-opt', style: { marginLeft: 'auto' } }, '可选 · 快拍引导')),
+        h('div', { className: 'cap-lens' },
+          h('label', null, '水平视场角 hfov（度）'),
+          h('input', {
+            className: 'cap-tf', type: 'number', min: 1, max: 180, step: '0.1',
+            value: form.hfovDeg, placeholder: '如 54.4 · 留空则不用参考画幅引导',
+            onChange: (e) => set('hfovDeg', e.target.value),
+          }),
+          h('div', { className: 'cap-tg-s', style: { marginTop: 6 } },
+            '会话内请保持焦距不变。重建自标定假设全部视图共享同一内参。'))),
       h('div', { className: 'cap-card' },
         h('div', { className: 'cap-card-h' }, h(Icon, { name: 'folder', size: 15 }), '输出'),
         h('div', { className: 'cap-lens' },

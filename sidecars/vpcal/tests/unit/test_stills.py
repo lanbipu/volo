@@ -120,16 +120,21 @@ def test_never_stable_warning_once_after_15s():
 # ---------- DetectionGate (VP-QSP content gate) ----------
 
 
+def _count(n: int) -> dict:
+    return {"count": n}
+
+
 def test_detection_gate_throttles_detect_fn():
     calls = []
 
     def detect_fn(gray):
         calls.append(int(gray[0, 0]))
-        return 8
+        return _count(8)
 
     gate = DetectionGate(min_markers=4, detect_fn=detect_fn, interval_s=0.5)
     frame = _gray(10)
-    assert gate.poll(frame, 0.0) == {"markers": 8, "stale": False}
+    s0 = gate.poll(frame, 0.0)
+    assert s0["markers"] == 8 and s0["stale"] is False
     assert len(calls) == 1
     assert gate.poll(frame, 0.2)["markers"] == 8
     assert len(calls) == 1
@@ -139,23 +144,41 @@ def test_detection_gate_throttles_detect_fn():
 
 def test_detection_gate_freshness_and_threshold():
     frame = _gray()
-    low = DetectionGate(min_markers=4, detect_fn=lambda _g: 3)
+    low = DetectionGate(min_markers=4, detect_fn=lambda _g: _count(3))
     low.poll(frame, 0.0)
     assert low.allow(0.0) is False
-    assert low.snapshot(0.0) == {"markers": 3, "stale": False}
+    assert low.snapshot(0.0)["markers"] == 3
+    assert low.snapshot(0.0)["stale"] is False
     assert low.snapshot(1.1)["stale"] is True
     assert low.allow(1.1) is False
 
-    ok = DetectionGate(min_markers=4, detect_fn=lambda _g: 6)
+    ok = DetectionGate(min_markers=4, detect_fn=lambda _g: _count(6))
     ok.poll(frame, 0.0)
     assert ok.allow(0.5) is True
     assert ok.markers_for_event(0.5) == 6
     assert ok.markers_for_event(1.5) is None
 
 
+def test_detection_gate_accepts_rich_detect_result():
+    frame = _gray()
+    gate = DetectionGate(
+        min_markers=4,
+        detect_fn=lambda _g: {
+            "count": 9,
+            "cabinets": [[1, 2, 0], [1, 3, 0]],
+            "bbox_frac": [0.1, 0.2, 0.8, 0.7],
+        },
+    )
+    snap = gate.poll(frame, 0.0)
+    assert snap["markers"] == 9
+    assert snap["cabinets"] == [[1, 2, 0], [1, 3, 0]]
+    assert snap["bbox_frac"] == [0.1, 0.2, 0.8, 0.7]
+    assert gate.allow(0.0) is True
+
+
 def test_detection_gate_stable_zero_markers_blocks_without_mark_saved():
     det = AutoSnapDetector(stable_ms=200, motion_thresh=1.5, novelty_thresh=6.0, min_interval=0.5)
-    gate = DetectionGate(min_markers=4, detect_fn=lambda _g: 0)
+    gate = DetectionGate(min_markers=4, detect_fn=lambda _g: _count(0))
     frame = _gray(100)
     gate.poll(frame, 0.0)
     last = _feed_still(det, frame, t0=0.0, n=10, dt=0.05)
@@ -166,7 +189,7 @@ def test_detection_gate_stable_zero_markers_blocks_without_mark_saved():
 
 def test_detection_gate_enough_markers_allows_auto_save():
     det = AutoSnapDetector(stable_ms=200, motion_thresh=1.5, novelty_thresh=6.0, min_interval=0.5)
-    gate = DetectionGate(min_markers=4, detect_fn=lambda _g: 12)
+    gate = DetectionGate(min_markers=4, detect_fn=lambda _g: _count(12))
     frame = _gray(110)
     gate.poll(frame, 0.0)
     last = _feed_still(det, frame, t0=0.0, n=10, dt=0.05)
@@ -177,7 +200,7 @@ def test_detection_gate_enough_markers_allows_auto_save():
 
 
 def test_detection_gate_min_markers_zero_bypasses():
-    gate = DetectionGate(min_markers=0, detect_fn=lambda _g: 0)
+    gate = DetectionGate(min_markers=0, detect_fn=lambda _g: _count(0))
     assert gate.bypass is True
     assert gate.allow(0.0) is True
     gate.poll(_gray(), 0.0)

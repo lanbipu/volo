@@ -100,4 +100,52 @@
   background: color-mix(in srgb, var(--notice-visual) 11%, transparent); border: 1px solid color-mix(in srgb, var(--notice-visual) 28%, var(--chrome-line)); padding: 7px 10px; border-radius: 8px; text-wrap: pretty; }
 .gcapw-nomkwarn svg { flex: 0 0 auto; }
 
+/* ---------- 匹配度取景框（左侧现场画面外框，滞回过渡） ---------- */
+.gcapw-matchframe { position: absolute; inset: 0; z-index: 4; pointer-events: none; border-radius: 2px; border: 3px solid transparent; transition: border-color .4s ease, box-shadow .4s ease; }
+.gcapw-matchframe--ok { border-color: color-mix(in srgb, var(--positive-visual) 78%, #fff); box-shadow: inset 0 0 34px color-mix(in srgb, var(--positive-visual) 24%, transparent); }
+.gcapw-matchframe--no { border-color: color-mix(in srgb, var(--negative-visual) 74%, #fff); box-shadow: inset 0 0 28px color-mix(in srgb, var(--negative-visual) 18%, transparent); }
+.gcapw-matchbadge { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12px; font-weight: 700; color: #fff; padding: 6px 13px; border-radius: 999px; white-space: nowrap; box-shadow: 0 2px 12px rgba(0,0,0,.45); border: 1px solid rgba(255,255,255,.18); backdrop-filter: blur(6px); transition: background .4s ease; }
+.gcapw-matchbadge svg { flex: 0 0 auto; }
+.gcapw-matchbadge--ok { background: color-mix(in srgb, var(--positive-visual) 84%, #0a0d12); }
+.gcapw-matchbadge--no { background: color-mix(in srgb, var(--negative-visual) 82%, #0a0d12); }
+.gcapw-match-pct { opacity: .85; font-size: 11px; padding-left: 8px; margin-left: 2px; border-left: 1px solid rgba(255,255,255,.3); font-variant-numeric: tabular-nums; }
+
+/* ---------- 焦距锁定提示条 ---------- */
+.gcapw-lenslock { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 7px 14px; font-size: 11px; color: #cdd3de; background: #0b0c10; border-top: 1px solid rgba(255,255,255,.06); }
+.gcapw-lenslock svg { color: #8fb4e6; flex: 0 0 auto; }
+.gcapw-lenslock-v { margin-left: auto; font-size: 11px; color: #fff; background: rgba(255,255,255,.08); padding: 2px 9px; border-radius: 6px; flex: 0 0 auto; }
+
+/* ---------- 镜头参数行（config） ---------- */
+.gcapw-lensrow .gcapw-lens-vals { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.gcapw-lens-v { display: flex; align-items: baseline; gap: 6px; padding: 6px 11px; border-radius: 8px; border: 1px solid var(--chrome-line); background: var(--wash-3); }
+.gcapw-lens-v .k { font-size: 10.5px; color: var(--chrome-faint); }
+.gcapw-lens-v .v { font-size: 13px; font-weight: 700; color: var(--chrome-text); }
+.gcapw-lens-note { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--chrome-faint); }
+.gcapw-lens-note svg { color: var(--volo-500); flex: 0 0 auto; }
+
+/* ---------- 参考画幅引导面板 ---------- */
+.gcapw-guide .cap-card-h { align-items: center; }
+.gcapw-guide-prog { margin-left: auto; font-size: 11px; color: var(--chrome-dim); display: inline-flex; align-items: baseline; gap: 3px; }
+.gcapw-guide-prog b { font-size: 13px; font-weight: 800; color: var(--chrome-text); }
+.gcapw-guide-body { margin-top: 11px; display: grid; grid-template-columns: 122px 1fr; gap: 12px; align-items: stretch; }
+.gcapw-guide-thumbwrap { position: relative; border-radius: 9px; overflow: hidden; border: 1px solid var(--chrome-line); background: var(--wash-2); aspect-ratio: 5 / 3; }
+.gcapw-guide-svg { width: 100%; height: 100%; display: block; }
+.gcapw-guide-svg .gt-panel { fill: var(--wash); stroke: var(--chrome-line-2); stroke-width: 1; }
+.gcapw-guide-svg .gt-cab { fill: color-mix(in srgb, var(--volo-500) 22%, transparent); stroke: var(--volo-500); stroke-width: 1.2; }
+.gcapw-guide-svg .gt-frame { fill: color-mix(in srgb, var(--volo-500) 14%, transparent); stroke: var(--volo-500); stroke-width: 2; stroke-dasharray: 6 4; }
+.gcapw-guide-region { position: absolute; left: 6px; bottom: 6px; font-size: 10px; font-weight: 700; color: var(--chrome-text); background: color-mix(in srgb, var(--chrome-card) 82%, transparent); padding: 2px 7px; border-radius: 6px; backdrop-filter: blur(3px); }
+.gcapw-guide-side { display: flex; flex-direction: column; gap: 8px; justify-content: center; min-width: 0; }
+.gcapw-guide-match { display: inline-flex; align-items: center; gap: 7px; padding: 7px 10px; border-radius: 8px; font-size: 12px; font-weight: 700; }
+.gcapw-guide-match svg { flex: 0 0 auto; }
+.gcapw-guide-match-pct { margin-left: auto; font-variant-numeric: tabular-nums; }
+.gcapw-guide-match--ok { color: var(--positive-visual); background: color-mix(in srgb, var(--positive-visual) 12%, transparent); border: 1px solid color-mix(in srgb, var(--positive-visual) 34%, var(--chrome-line)); }
+.gcapw-guide-match--no { color: var(--negative-visual); background: color-mix(in srgb, var(--negative-visual) 11%, transparent); border: 1px solid color-mix(in srgb, var(--negative-visual) 32%, var(--chrome-line)); }
+.gcapw-guide-diff { font-size: 11.5px; line-height: 1.5; color: var(--chrome-dim); text-wrap: pretty; }
+.gcapw-guide-nav { margin-top: 11px; display: flex; gap: 7px; }
+.gcapw-guide-btn { all: unset; box-sizing: border-box; cursor: pointer; flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  font-size: 11.5px; font-weight: 600; color: var(--chrome-dim); padding: 7px 8px; border-radius: 8px; border: 1px solid var(--chrome-line); -webkit-user-select: none; user-select: none; }
+.gcapw-guide-btn:hover { color: var(--chrome-text); border-color: var(--chrome-line-2); background: var(--wash); }
+.gcapw-guide-btn svg { flex: 0 0 auto; }
+
 .drawer--gcapw .mono { font-family: var(--font-code); }

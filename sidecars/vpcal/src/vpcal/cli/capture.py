@@ -396,6 +396,7 @@ def stills(ctx, backend, device, width, height, fps, transfer_function, preview_
 
         from vpcal.core.capture_backend import CaptureConfig, open_backend
         from vpcal.core.detector import detect_markers
+        from vpcal.core.framing_match import summarize_detections
         from vpcal.core.stills import AutoSnapDetector, DetectionGate, gray_to_uint8
 
         if flags.get("dry_run"):
@@ -421,10 +422,12 @@ def stills(ctx, backend, device, width, height, fps, transfer_function, preview_
             novelty_thresh=novelty_thresh, min_interval=min_interval,
             enabled=auto,
         )
-        gate = DetectionGate(
-            min_markers=min_markers,
-            detect_fn=lambda g: len(detect_markers(gray_to_uint8(g))),
-        )
+
+        def _detect(gray):
+            dets = detect_markers(gray_to_uint8(gray))
+            return summarize_detections(dets, gray.shape)
+
+        gate = DetectionGate(min_markers=min_markers, detect_fn=_detect)
 
         finish = threading.Event()
         cmds: queue.Queue[tuple] = queue.Queue()
@@ -513,7 +516,7 @@ def stills(ctx, backend, device, width, height, fps, transfer_function, preview_
             finish.set()
 
         def _detect_worker() -> None:
-            last_emit: tuple[int, bool] | None = None
+            last_emit = None
             last_heartbeat = 0.0
             while not finish.is_set():
                 with mailbox_lock:
@@ -525,11 +528,24 @@ def stills(ctx, backend, device, width, height, fps, transfer_function, preview_
                 snap = gate.poll(gray, float(t))
                 markers = 0 if snap["markers"] is None else int(snap["markers"])
                 stale = bool(snap["stale"] or snap["markers"] is None)
-                payload = (markers, stale)
+                cabinets = snap.get("cabinets") or []
+                bbox_frac = snap.get("bbox_frac")
+                payload = (
+                    markers, stale,
+                    tuple(tuple(c) for c in cabinets),
+                    None if bbox_frac is None else tuple(bbox_frac),
+                )
                 now_hb = time.monotonic()
-                if payload != last_emit or (now_hb - last_heartbeat) >= 1.0:
+                # Emit on change; heartbeat only when stale so UI can show "—"
+                # without re-pushing identical cabinets every second.
+                if payload != last_emit or (
+                    stale and (now_hb - last_heartbeat) >= 1.0
+                ):
                     emitter.emit("detect_state", {
-                        "markers": markers, "stale": stale,
+                        "markers": markers,
+                        "stale": stale,
+                        "cabinets": [list(c) for c in cabinets],
+                        "bbox_frac": None if bbox_frac is None else list(bbox_frac),
                     })
                     last_emit = payload
                     last_heartbeat = now_hb

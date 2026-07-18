@@ -8,11 +8,13 @@ VP-QSP content gate layered on top of the motion gate (does not replace it).
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import cv2
 import numpy as np
+
+DetectFnResult = Mapping[str, Any]
 
 _EMA_ALPHA = 0.3
 _PREVIEW_WIDTH = 160
@@ -181,17 +183,16 @@ class AutoSnapDetector:
 class DetectionGate:
     """VP-QSP marker content gate for auto stills.
 
-    Pure logic + injectable ``detect_fn`` (returns marker count). Call
-    ``poll(gray, t)`` from a throttled worker on full-resolution gray;
-    ``allow(t)`` / ``snapshot(t)`` are cheap reads for the frame loop.
-    ``min_markers <= 0`` bypasses the gate (escape hatch).
+    ``detect_fn(gray)`` returns ``{count, cabinets?, bbox_frac?}``. Call
+    ``poll`` from a throttled worker; ``allow`` / ``snapshot`` are cheap reads.
+    ``min_markers <= 0`` bypasses the gate.
     """
 
     def __init__(
         self,
         *,
         min_markers: int = 4,
-        detect_fn: Callable[[np.ndarray], int],
+        detect_fn: Callable[[np.ndarray], DetectFnResult],
         interval_s: float = 0.5,
         fresh_s: float = _GATE_FRESH_S,
     ) -> None:
@@ -201,6 +202,8 @@ class DetectionGate:
         self.fresh_s = float(fresh_s)
         self._count: int | None = None
         self._detect_t: float | None = None
+        self._cabinets: list[list[int]] = []
+        self._bbox_frac: list[float] | None = None
         self._lock = threading.Lock()
 
     @property
@@ -208,19 +211,21 @@ class DetectionGate:
         return self.min_markers <= 0
 
     def poll(self, gray: np.ndarray, t: float) -> dict[str, Any]:
-        """Run ``detect_fn`` when the throttle interval elapses; cache count.
-
-        Returns ``{markers, stale}`` reflecting the cache after this call
-        (``markers`` is ``None`` until the first successful detect).
-        """
+        """Run ``detect_fn`` when the throttle interval elapses; cache result."""
         t = float(t)
         with self._lock:
             due = self._detect_t is None or (t - self._detect_t) >= self.interval_s
         if due:
-            count = int(self.detect_fn(gray))
+            raw = self.detect_fn(gray)
+            count = int(raw.get("count", 0))
+            cabinets = [list(c) for c in (raw.get("cabinets") or [])]
+            bbox = raw.get("bbox_frac")
+            bbox_frac = [float(x) for x in bbox] if bbox is not None else None
             with self._lock:
                 self._count = count
                 self._detect_t = t
+                self._cabinets = cabinets
+                self._bbox_frac = bbox_frac
         return self.snapshot(t)
 
     def snapshot(self, t: float) -> dict[str, Any]:
@@ -229,10 +234,18 @@ class DetectionGate:
         with self._lock:
             count = self._count
             detect_t = self._detect_t
+            cabinets = list(self._cabinets)
+            bbox_frac = None if self._bbox_frac is None else list(self._bbox_frac)
         if count is None or detect_t is None:
-            return {"markers": None, "stale": True}
+            return {
+                "markers": None, "stale": True,
+                "cabinets": [], "bbox_frac": None,
+            }
         stale = (t - detect_t) > self.fresh_s
-        return {"markers": count, "stale": stale}
+        return {
+            "markers": count, "stale": stale,
+            "cabinets": cabinets, "bbox_frac": bbox_frac,
+        }
 
     def markers_for_event(self, t: float) -> int | None:
         """Marker count for ``snap_saved`` — ``None`` when stale / never run."""

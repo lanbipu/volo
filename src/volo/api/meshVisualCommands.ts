@@ -174,6 +174,20 @@ export const meshVisualCompareKnown = (
   });
 
 /* ----------------------------- capture planning ----------------------------- */
+/**
+ * UI guide-session defaults for ``mesh_visual_plan_capture``.
+ * CLI requires explicit ``--standoff`` / ``--height``; trials/seed/target-mm
+ * CLI defaults are 20 / 0 / 3.0 — guide uses a wider search + more trials.
+ */
+export const DEFAULT_PLAN_CAPTURE = {
+  standoff: "2000..12000",
+  height: "500..3000",
+  targetP95ResidualMm: 3.0,
+  trials: 200,
+  seed: 1,
+  minViews: 2,
+} as const;
+
 // 📝 no-ui: 采集机位规划（逐箱体覆盖/残差）
 export const meshVisualPlanCapture = (
   projectPath: string,
@@ -181,17 +195,17 @@ export const meshVisualPlanCapture = (
   imageSize: string,
   hfovDeg: number | null,
   vfovDeg: number | null,
-  standoff: string,
-  height: string,
-  targetP95ResidualMm: number,
-  trials: number,
-  seed: number,
+  standoff: string = DEFAULT_PLAN_CAPTURE.standoff,
+  height: string = DEFAULT_PLAN_CAPTURE.height,
+  targetP95ResidualMm: number = DEFAULT_PLAN_CAPTURE.targetP95ResidualMm,
+  trials: number = DEFAULT_PLAN_CAPTURE.trials,
+  seed: number = DEFAULT_PLAN_CAPTURE.seed,
   minViews?: number | null,
 ) =>
   call<CapturePlan>("mesh_visual_plan_capture", {
     projectPath, screenId, imageSize, hfovDeg, vfovDeg, standoff, height,
     targetP95ResidualMm, trials, seed,
-    minViews: minViews ?? null,
+    minViews: minViews ?? DEFAULT_PLAN_CAPTURE.minViews,
   });
 // 📝 no-ui: 采集指导 3D HTML 卡片渲染
 export const meshVisualCaptureCard = (
@@ -200,11 +214,11 @@ export const meshVisualCaptureCard = (
   imageSize: string,
   hfovDeg: number | null,
   vfovDeg: number | null,
-  standoff: string,
-  height: string,
-  targetP95ResidualMm: number,
-  trials: number,
-  seed: number,
+  standoff: string = DEFAULT_PLAN_CAPTURE.standoff,
+  height: string = DEFAULT_PLAN_CAPTURE.height,
+  targetP95ResidualMm: number = DEFAULT_PLAN_CAPTURE.targetP95ResidualMm,
+  trials: number = DEFAULT_PLAN_CAPTURE.trials,
+  seed: number = DEFAULT_PLAN_CAPTURE.seed,
 ) =>
   call<CaptureCardResult>("mesh_visual_capture_card", {
     projectPath, screenId, imageSize, hfovDeg, vfovDeg, standoff, height,
