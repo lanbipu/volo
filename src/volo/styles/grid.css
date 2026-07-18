@@ -202,7 +202,8 @@
 
 /* 箱体编辑模式 · 顶部小工具条 */
 .gw-boxbar { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 6;
-  display: inline-flex; align-items: center; gap: 3px; padding: 4px; }
+  display: inline-flex; align-items: center; gap: 3px; padding: 4px; width: max-content; max-width: none; flex-wrap: nowrap; }
+.gw-boxbar .tbtn, .gw-boxbar .gw-alignbtn, .gw-boxbar .gw-alignreset, .gw-boxbar .gw-roleseg button, .gw-aligned-badge { white-space: nowrap; flex: 0 0 auto; }
 .gw-boxbar .tbtn { all: unset; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; padding: 6px 12px;
   border-radius: 7px; font-size: 12px; font-weight: 600; color: #c4c8d0; }
 .gw-boxbar .tbtn:hover { background: rgba(255,255,255,.08); color: #fff; }
@@ -217,9 +218,40 @@
 .gw-roleseg .num { font-family: var(--font-code); font-size: 9.5px; background: rgba(0,0,0,.3); border-radius: 3px; padding: 0 4px; }
 .gw-roleseg .dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
 .gw-roleseg .done { color: var(--positive-visual); display: grid; place-items: center; }
+.gw-roleseg .done.cross { color: #8ab4ff; }
 .gw-boxbar-note { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 6;
   display: inline-flex; align-items: center; gap: 7px; padding: 7px 13px; font-size: 11.5px; color: #ffd08a; }
 .gw-boxbar-note svg { color: var(--notice-visual); }
+
+/* 参考系对齐按钮（BoxBar refs 工具）· Claude Design handoff 1:1 */
+.gw-boxbar .gw-alignbtn { all: unset; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; padding: 6px 12px;
+  border-radius: 7px; font-size: 12px; font-weight: 700; color: #dfe2e7; }
+.gw-boxbar .gw-alignbtn.is-ready { background: rgba(255,255,255,.1); }
+.gw-boxbar .gw-alignbtn.is-ready:hover { background: rgba(255,255,255,.17); color: #fff; }
+.gw-boxbar .gw-alignbtn.is-accent { background: var(--volo-600); color: #fff; }
+.gw-boxbar .gw-alignbtn.is-accent:hover { background: var(--volo-500); }
+.gw-boxbar .gw-alignbtn.is-off { opacity: .42; cursor: not-allowed; }
+.gw-boxbar .gw-alignbtn-ck { display: grid; place-items: center; color: #7fe0a6; }
+.gw-boxbar .gw-alignbtn.is-accent .gw-alignbtn-ck { color: #fff; }
+.gw-boxbar .gw-alignreset { all: unset; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; padding: 6px 10px;
+  border-radius: 7px; font-size: 11.5px; font-weight: 600; color: #c4c8d0; }
+.gw-boxbar .gw-alignreset:hover { background: rgba(255,255,255,.08); color: #fff; }
+.gw-aligned-badge { display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; border-radius: 999px; font-size: 10.5px; font-weight: 700;
+  color: var(--positive-visual); background: color-mix(in srgb, var(--positive-visual) 18%, transparent); }
+.gw-aligned-badge svg { color: currentColor; }
+.gw-aligned-badge.stale { color: var(--notice-visual); background: color-mix(in srgb, var(--notice-visual) 18%, transparent); }
+.gw-reset-confirm { display: inline-flex; align-items: center; gap: 7px; margin-left: 2px; padding: 4px 6px 4px 10px; border-radius: 8px;
+  background: rgba(0,0,0,.42); border: 1px solid rgba(255,255,255,.15); font-size: 11px; color: #dfe2e7; }
+.gw-reset-confirm button { all: unset; cursor: pointer; padding: 3px 9px; border-radius: 6px; font-size: 11px; font-weight: 700; }
+.gw-reset-confirm .y { background: var(--notice-visual); color: #1a1206; }
+.gw-reset-confirm .n { color: #c4c8d0; }
+.gw-reset-confirm .n:hover { background: rgba(255,255,255,.1); }
+.gw-alignstatus { position: absolute; top: 50px; left: 50%; transform: translateX(-50%); z-index: 6; width: max-content;
+  display: inline-flex; align-items: center; gap: 8px; padding: 5px 8px 5px 10px; }
+.gw-solonote { position: absolute; top: 56px; left: 50%; transform: translateX(-50%); z-index: 6; white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; font-size: 11px; color: #bcd2f2; }
+.gw-solonote svg { color: #5aa2ff; flex: 0 0 auto; }
+.gw-pvaxis { pointer-events: none; }
 
 /* ============================================================
    底部状态栏
@@ -656,6 +688,10 @@
 .gw-plegend .sw.solid { background: #6d7180; border: 1px solid rgba(255,255,255,.25); }
 .gw-plegend .sw.ghost { background: transparent; border: 1px dashed rgba(120,180,255,.8); }
 .gw-plegend .note { font-size: 10px; color: #9aa0ab; line-height: 1.45; text-wrap: pretty; margin-top: 1px; }
+.gw-plegend .li.align { color: var(--positive-visual); }
+.gw-plegend .li.align svg { color: var(--positive-visual); flex: 0 0 auto; }
+.gw-plegend .li.stale { color: var(--notice-visual); align-items: flex-start; white-space: normal; text-wrap: pretty; }
+.gw-plegend .li.stale svg { color: var(--notice-visual); flex: 0 0 auto; margin-top: 1px; }
 .gw-runlist-note { display: flex; align-items: flex-start; gap: 6px; font-size: 10.5px; color: var(--chrome-faint); line-height: 1.45; margin-bottom: 9px; text-wrap: pretty; }
 .gw-runlist-note svg { flex: 0 0 auto; margin-top: 2px; }
 .gw-runlist { display: flex; flex-direction: column; gap: 7px; }

@@ -1447,6 +1447,30 @@ export interface ProjectConfig {
   output: OutputConfig;
   /** Stage-level nDisplay topology (preferred over per-screen output_topology). */
   output_topology?: OutputTopology;
+  /** Rigid alignment for rebuilt meshes; absent on legacy projects. */
+  rebuilt_alignment?: RebuiltAlignment;
+}
+
+/** Per-project rebuilt-mesh alignment (`P_s = A ∘ B_s`). */
+export interface RebuiltAlignment {
+  groups: RebuiltAlignmentGroup[];
+}
+
+export interface RebuiltAlignmentGroup {
+  screens: string[];
+  /** Row-major 3×3 right-handed orthonormal rotation. */
+  rotation: [[number, number, number], [number, number, number], [number, number, number]];
+  t_m: [number, number, number];
+  ref_points: RebuiltAlignmentRefPoints;
+  /** Joint screen_transforms path when applied; absent for single-screen groups. */
+  solve_ref?: string;
+  applied_at: string;
+}
+
+export interface RebuiltAlignmentRefPoints {
+  origin: string;
+  x_axis?: string;
+  xy_plane?: string;
 }
 
 export interface ProjectMeta {

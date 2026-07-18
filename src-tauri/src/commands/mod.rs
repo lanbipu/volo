@@ -24,6 +24,7 @@ pub mod output;
 // step 3c: mesh (LMT) command group. `mesh` holds the MeshDb state newtype;
 // the `mesh_*` modules are the migrated LMT `#[tauri::command]` shims.
 pub mod mesh;
+pub mod mesh_alignment;
 pub mod mesh_export;
 pub mod mesh_fuse;
 pub mod mesh_measurements;

@@ -10,11 +10,13 @@
 //!
 //! 本 crate 不依赖 `tauri`——所有 `#[tauri::command]` 装饰留在 src-tauri 一侧。
 
+pub mod alignment;
 pub mod export;
 pub mod fuse;
 pub mod measurements;
 pub mod ndisplay;
 pub mod output;
+pub mod placement;
 pub mod projects;
 pub mod reconstruct;
 pub mod total_station;

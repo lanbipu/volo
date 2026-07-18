@@ -11,6 +11,7 @@ pub mod fuse;
 pub mod measured_points;
 pub mod point;
 pub mod reconstruct;
+pub mod rigid;
 pub mod sampling;
 pub mod shape;
 pub mod surface;

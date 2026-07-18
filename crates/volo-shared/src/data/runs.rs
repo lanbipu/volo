@@ -145,6 +145,16 @@ pub fn get_report_path(conn: &Connection, run_id: i64) -> VoloResult<(String, St
     .map_err(|_| crate::error::VoloError::NotFound(format!("run id {run_id}")))
 }
 
+/// Absolute or project-relative path to `visual_solve_digest.v1`, if this run is visual.
+pub fn get_visual_solve_path(conn: &Connection, run_id: i64) -> VoloResult<Option<String>> {
+    conn.query_row(
+        "SELECT visual_solve_path FROM reconstruction_runs WHERE id = ?1",
+        [run_id],
+        |r| r.get::<_, Option<String>>(0),
+    )
+    .map_err(|_| crate::error::VoloError::NotFound(format!("run id {run_id}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

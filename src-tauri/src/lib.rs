@@ -393,6 +393,7 @@ pub fn run() {
             commands::mesh_visual::mesh_visual_export_pose_obj,
             // W6 R1: M1+M2 fuse (backend-only; no UI wiring this pass).
             commands::mesh_fuse::mesh_fuse_run,
+            commands::mesh_alignment::mesh_compute_rebuilt_alignment,
             // nDisplay output runtime: preflight/start/stop/show/clear.
             commands::output::output_preflight,
             commands::output::output_deploy,

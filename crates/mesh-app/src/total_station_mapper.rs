@@ -240,6 +240,7 @@ mod tests {
                 triangulate: true,
             },
             output_topology: None,
+            rebuilt_alignment: None,
         }
     }
 

@@ -21,6 +21,105 @@ pub struct ProjectConfig {
     /// stage). Prefer this over per-screen `ScreenConfig.output_topology`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_topology: Option<OutputTopology>,
+    /// Rigid alignment applied to rebuilt (not nominal) meshes. Absent on legacy
+    /// projects; see `docs/calibrate/rebuilt-alignment-spec.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rebuilt_alignment: Option<RebuiltAlignment>,
+}
+
+/// Per-project rebuilt-mesh alignment groups (`A` in `P_s = A ∘ B_s`).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct RebuiltAlignment {
+    pub groups: Vec<RebuiltAlignmentGroup>,
+}
+
+impl<'de> Deserialize<'de> for RebuiltAlignment {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw {
+            groups: Vec<RebuiltAlignmentGroup>,
+        }
+        let raw = Raw::deserialize(d)?;
+        validate_alignment_groups(&raw.groups).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            groups: raw.groups,
+        })
+    }
+}
+
+fn validate_alignment_groups(groups: &[RebuiltAlignmentGroup]) -> Result<(), String> {
+    let mut seen = std::collections::BTreeSet::new();
+    for (gi, g) in groups.iter().enumerate() {
+        if g.screens.is_empty() {
+            return Err(format!("rebuilt_alignment.groups[{gi}]: screens must be non-empty"));
+        }
+        for sid in &g.screens {
+            if !seen.insert(sid.clone()) {
+                return Err(format!(
+                    "screen '{sid}' appears in more than one rebuilt_alignment group"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One joint (or single-screen) rebuilt alignment entry.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct RebuiltAlignmentGroup {
+    pub screens: Vec<String>,
+    /// Row-major 3×3 rotation (right-handed orthonormal).
+    pub rotation: [[f64; 3]; 3],
+    pub t_m: [f64; 3],
+    pub ref_points: RebuiltAlignmentRefPoints,
+    /// Path to the joint `*_screen_transforms.json` used when applied; null for
+    /// single-screen groups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solve_ref: Option<String>,
+    pub applied_at: String,
+}
+
+#[derive(Deserialize)]
+struct RebuiltAlignmentGroupRaw {
+    screens: Vec<String>,
+    rotation: [[f64; 3]; 3],
+    t_m: [f64; 3],
+    ref_points: RebuiltAlignmentRefPoints,
+    #[serde(default)]
+    solve_ref: Option<String>,
+    applied_at: String,
+}
+
+impl<'de> Deserialize<'de> for RebuiltAlignmentGroup {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = RebuiltAlignmentGroupRaw::deserialize(d)?;
+        mesh_core::rigid::RigidTransform::validate_rotation(&raw.rotation)
+            .map_err(serde::de::Error::custom)?;
+        for (i, v) in raw.t_m.iter().enumerate() {
+            if !v.is_finite() {
+                return Err(serde::de::Error::custom(format!(
+                    "t_m[{i}] is not finite: {v}"
+                )));
+            }
+        }
+        Ok(Self {
+            screens: raw.screens,
+            rotation: raw.rotation,
+            t_m: raw.t_m,
+            ref_points: raw.ref_points,
+            solve_ref: raw.solve_ref,
+            applied_at: raw.applied_at,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RebuiltAlignmentRefPoints {
+    pub origin: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x_axis: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xy_plane: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -58,11 +157,11 @@ pub struct ScreenConfig {
     #[serde(default)]
     pub position_m: [f64; 3],
     /// Rotation about the model-frame Z axis (the wall's own "up", i.e. the row
-    /// axis — not world Y), in degrees. See `mesh_app::export::apply_world_transform`.
+    /// axis — not world Y), in degrees. See `mesh_app::placement::nominal_placement`.
     #[serde(default)]
     pub yaw_deg: f64,
     /// Bottom-edge height off the ground, in millimetres. Applied as an extra
-    /// world-Z translation alongside `position_m` (see `apply_world_transform`);
+    /// world-Z translation alongside `position_m` (see `nominal_placement`);
     /// defaults to 0 so pre-existing `project.yaml` files keep loading unchanged.
     #[serde(default)]
     pub height_offset_mm: f64,
@@ -1012,6 +1111,110 @@ output:
         let cfg = parse(&build(""));
         let s = serde_yaml::to_string(&cfg).unwrap();
         assert!(!s.contains("method:"), "expected method field omitted, got: {}", s);
+    }
+
+    #[test]
+    fn rebuilt_alignment_absent_omitted_on_roundtrip() {
+        let cfg = parse(&build(""));
+        assert!(cfg.rebuilt_alignment.is_none());
+        let s = serde_yaml::to_string(&cfg).unwrap();
+        assert!(
+            !s.contains("rebuilt_alignment"),
+            "legacy projects must not grow the section: {s}"
+        );
+    }
+
+    #[test]
+    fn rebuilt_alignment_roundtrips() {
+        let mut yaml = build("");
+        yaml.push_str(
+            r#"
+rebuilt_alignment:
+  groups:
+    - screens: [ASUS, LG]
+      rotation:
+        - [1.0, 0.0, 0.0]
+        - [0.0, 1.0, 0.0]
+        - [0.0, 0.0, 1.0]
+      t_m: [-1.5, 0.25, 0.0]
+      ref_points:
+        origin: LG_V001_R001
+        x_axis: LG_V009_R001
+        xy_plane: LG_V001_R005
+      solve_ref: measurements/ASUS+LG_screen_transforms.json
+      applied_at: "2026-07-19T12:00:00Z"
+"#,
+        );
+        let cfg = parse(&yaml);
+        let align = cfg.rebuilt_alignment.as_ref().expect("section present");
+        assert_eq!(align.groups.len(), 1);
+        let g = &align.groups[0];
+        assert_eq!(g.screens, vec!["ASUS", "LG"]);
+        assert_eq!(g.t_m, [-1.5, 0.25, 0.0]);
+        assert_eq!(g.ref_points.origin, "LG_V001_R001");
+        assert_eq!(
+            g.solve_ref.as_deref(),
+            Some("measurements/ASUS+LG_screen_transforms.json")
+        );
+        let out = serde_yaml::to_string(&cfg).unwrap();
+        let back: ProjectConfig = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(
+            back.rebuilt_alignment.as_ref().unwrap().groups[0].t_m,
+            [-1.5, 0.25, 0.0]
+        );
+    }
+
+    #[test]
+    fn rebuilt_alignment_rejects_bad_rotation() {
+        let mut yaml = build("");
+        yaml.push_str(
+            r#"
+rebuilt_alignment:
+  groups:
+    - screens: [MAIN]
+      rotation:
+        - [1.0, 0.0, 0.0]
+        - [0.0, 1.0, 0.0]
+        - [0.0, 0.0, -1.0]
+      t_m: [0.0, 0.0, 0.0]
+      ref_points:
+        origin: MAIN_V001_R001
+      applied_at: "2026-07-19T12:00:00Z"
+"#,
+        );
+        let result: Result<ProjectConfig, _> = serde_yaml::from_str(&yaml);
+        assert!(result.is_err(), "left-handed R must be rejected");
+    }
+
+    #[test]
+    fn rebuilt_alignment_rejects_overlapping_screens() {
+        let mut yaml = build("");
+        yaml.push_str(
+            r#"
+rebuilt_alignment:
+  groups:
+    - screens: [ASUS, LG]
+      rotation:
+        - [1.0, 0.0, 0.0]
+        - [0.0, 1.0, 0.0]
+        - [0.0, 0.0, 1.0]
+      t_m: [0.0, 0.0, 0.0]
+      ref_points:
+        origin: LG_V001_R001
+      applied_at: "2026-07-19T12:00:00Z"
+    - screens: [LG]
+      rotation:
+        - [1.0, 0.0, 0.0]
+        - [0.0, 1.0, 0.0]
+        - [0.0, 0.0, 1.0]
+      t_m: [0.0, 0.0, 0.0]
+      ref_points:
+        origin: LG_V002_R001
+      applied_at: "2026-07-19T12:00:00Z"
+"#,
+        );
+        let result: Result<ProjectConfig, _> = serde_yaml::from_str(&yaml);
+        assert!(result.is_err(), "overlapping screens must be rejected");
     }
 }
 

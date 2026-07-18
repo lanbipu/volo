@@ -12,13 +12,14 @@
      X = 列（横向）· Y = 弯曲/深度（曲面外凸方向）· Z = 行（竖直，随 row 递增）。
      视口据此把 Z 当"上"来摆相机，不是设计稿原型的 Y-up 摆法。 */
 import * as React from "react";
-import { saveProjectYaml } from "../api/meshCommands";
+import { computeRebuiltAlignment, saveProjectYaml } from "../api/meshCommands";
 import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api/meshVisualCommands";
 
 (function () {
   const { useState, useRef, useEffect, useMemo, useCallback } = React;
   const h = React.createElement;
   const CX = window.VOLO_CAL2;
+  const Icon = window.Icon;
 
   const ROLE = {
     origin: { short: 'O', label: 'origin', color: '#3ddc84' },
@@ -49,6 +50,16 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
     if (!raw.startsWith(prefix)) return null;
     const m = raw.slice(prefix.length).match(/^(\d+)_R(\d+)$/);
     return m ? { c: Number(m[1]) - 1, r: Number(m[2]) - 1 } : null;
+  }
+  /** 在候选屏列表中解析点名，返回 { screenId, c, r }；跨屏 O/X/Y 用。 */
+  function resolvePointName(name, screenIds) {
+    if (!name || !screenIds) return null;
+    for (let i = 0; i < screenIds.length; i++) {
+      const sid = screenIds[i];
+      const at = parsePointName(name, sid);
+      if (at) return { screenId: sid, c: at.c, r: at.r };
+    }
+    return null;
   }
 
   /* ---------- 投影（模型 Z=竖直/行，Y=弯曲深度，X=列） ---------- */
@@ -186,17 +197,143 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
     };
   }
 
-  /** Joint visual SE(3): p' = R·p + t_m（相对基准屏 screen_local）。 */
-  function applySe3Transform(p, R, tM) {
+  /** 行主序 SE(3)：p' = R·p + t（屏间 SE3 / rebuilt_alignment 共用）。 */
+  function applyRowMajorRigid(p, R, t) {
+    const t0 = (t && t[0]) || 0, t1 = (t && t[1]) || 0, t2 = (t && t[2]) || 0;
     return {
-      x: R[0][0] * p.x + R[0][1] * p.y + R[0][2] * p.z + tM[0],
-      y: R[1][0] * p.x + R[1][1] * p.y + R[1][2] * p.z + tM[1],
-      z: R[2][0] * p.x + R[2][1] * p.y + R[2][2] * p.z + tM[2],
+      x: R[0][0] * p.x + R[0][1] * p.y + R[0][2] * p.z + t0,
+      y: R[1][0] * p.x + R[1][1] * p.y + R[1][2] * p.z + t1,
+      z: R[2][0] * p.x + R[2][1] * p.y + R[2][2] * p.z + t2,
     };
+  }
+  function applyAlignmentTransform(p, A) {
+    if (!A || !A.rotation) return p;
+    return applyRowMajorRigid(p, A.rotation, A.t_m);
+  }
+
+  /**
+   * 从 visualSession.screenTransforms 建屏→SE3 表。
+   * null = 尚未加载；{} / 有成员 = 已加载。membershipOnly 时只记 screen_id（组判定用）。
+   */
+  function se3ByScreenFromFile(xfFile, membershipOnly) {
+    if (!xfFile) return null;
+    const out = {};
+    (xfFile.transforms || []).forEach((t) => {
+      if (!t.R) return;
+      if (membershipOnly) {
+        out[t.screen_id] = true;
+      } else {
+        out[t.screen_id] = {
+          R: t.R,
+          tM: [(t.t_mm[0] || 0) / 1000, (t.t_mm[1] || 0) / 1000, (t.t_mm[2] || 0) / 1000],
+        };
+      }
+    });
+    return out;
+  }
+
+  function boxesVertexMap(boxes) {
+    const vmap = new Map();
+    (boxes || []).forEach((b) => {
+      [[b.c, b.r, b.corners[0]], [b.c + 1, b.r, b.corners[1]], [b.c + 1, b.r + 1, b.corners[2]], [b.c, b.r + 1, b.corners[3]]]
+        .forEach(([c, r, p]) => vmap.set(c + ',' + r, p));
+    });
+    return vmap;
+  }
+
+  /**
+   * 联合重建组成员：
+   * 1. se3ByScreen 有 ≥2 成员且含本屏 → 该联合组
+   * 2. se3ByScreen 已加载（非 null）但本屏不在其中 / 仅 1 成员 → 单屏组（不回退 yaml）
+   * 3. se3ByScreen === null（尚未加载）→ 才回退 yaml persisted 多屏组（恢复跨屏点选）
+   */
+  function alignmentGroupScreenIds(screenId, se3ByScreen, config) {
+    if (se3ByScreen != null) {
+      const members = Object.keys(se3ByScreen);
+      if (members.length >= 2 && members.indexOf(screenId) >= 0) return members.slice();
+      return [screenId];
+    }
+    const persisted = alignmentForScreen(config, screenId);
+    if (persisted && persisted.screens && persisted.screens.length >= 2) {
+      return persisted.screens.slice();
+    }
+    return [screenId];
+  }
+
+  /** 两组 alignment 的 rotation/t_m 是否在容差内一致。 */
+  function alignmentApproxEq(a, b, tol) {
+    const t = tol == null ? 1e-9 : tol;
+    if (!a && !b) return true;
+    if (!a || !b) return false;
+    const ta = a.t_m || [0, 0, 0], tb = b.t_m || [0, 0, 0];
+    for (let i = 0; i < 3; i++) if (Math.abs(ta[i] - tb[i]) > t) return false;
+    const ra = a.rotation, rb = b.rotation;
+    if (!ra || !rb) return false;
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
+      if (Math.abs(ra[i][j] - rb[i][j]) > t) return false;
+    }
+    return true;
+  }
+
+  /** 组内各屏现有 alignment 是否一致；不一致时不可直接应用（需先复位）。 */
+  function groupAlignmentsConsistent(screenIds, config) {
+    let baseline = undefined;
+    for (let i = 0; i < screenIds.length; i++) {
+      const e = alignmentForScreen(config, screenIds[i]);
+      if (baseline === undefined) { baseline = e; continue; }
+      if (!alignmentApproxEq(baseline, e)) return false;
+    }
+    return true;
+  }
+
+  /** 查屏所属 rebuilt_alignment 组（同一屏至多一组）。 */
+  function alignmentForScreen(config, screenId) {
+    const groups = config && config.rebuilt_alignment && config.rebuilt_alignment.groups;
+    if (!groups) return null;
+    for (let i = 0; i < groups.length; i++) {
+      const g = groups[i];
+      if (g.screens && g.screens.indexOf(screenId) >= 0) return g;
+    }
+    return null;
+  }
+
+  /** 项目相对路径（写 yaml solve_ref）；已是相对则原样。 */
+  function relUnderProject(projectPath, absOrRel) {
+    if (!absOrRel || !projectPath) return absOrRel || null;
+    const root = String(projectPath).replace(/[\\/]+$/, '');
+    const p = String(absOrRel);
+    const norm = (s) => s.replace(/\\/g, '/');
+    const nr = norm(root), np = norm(p);
+    if (np.toLowerCase().startsWith(nr.toLowerCase() + '/')) return np.slice(nr.length + 1);
+    if (np.toLowerCase() === nr.toLowerCase()) return '';
+    if (!/^[A-Za-z]:[\\/]/.test(p) && !p.startsWith('/')) return p.replace(/^[\\/]+/, '');
+    return p;
+  }
+
+  /** solve_ref 与当前 visualSession 路径不一致 → 对齐过期。 */
+  function alignmentIsStale(group, proj_) {
+    if (!group || !group.solve_ref) return false;
+    const cur = proj_.visualSession && proj_.visualSession.screenTransformsPath;
+    if (!cur) return false;
+    const a = relUnderProject(proj_.path, group.solve_ref);
+    const b = relUnderProject(proj_.path, cur);
+    return !!(a && b && a.replace(/\\/g, '/') !== b.replace(/\\/g, '/'));
+  }
+
+  /** 从联合组 entries 的 vmap 取参考点世界坐标（已含 A∘B）。 */
+  function refWorldFromEntries(entries, resolved) {
+    if (!resolved || !entries) return null;
+    const entry = entries.find((x) => x.id === resolved.screenId);
+    if (!entry || !entry.vmap) return null;
+    return entry.vmap.get(resolved.c + ',' + resolved.r) || null;
+  }
+
+  function xyzTuple(p) {
+    return p ? [p.x, p.y, p.z] : null;
   }
 
   /* ---------- 已重建几何：读真实 ReconstructedSurface ---------- */
-  function buildRealBoxes(surface, m, se3) {
+  function buildRealBoxes(surface, m, se3, alignment) {
     const cols = surface.topology.cols, rows = surface.topology.rows;
     const verts = surface.vertices;
     const prov = surface.vertex_provenance || [];
@@ -204,8 +341,10 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
     const at = (c, r) => {
       const v = verts[vi(c, r)];
       const local = { x: v[0], y: v[1], z: v[2] };
-      if (se3 && se3.R && se3.tM) return applySe3Transform(local, se3.R, se3.tM);
-      return applyScreenTransform(local, m);
+      const placed = (se3 && se3.R && se3.tM)
+        ? applyRowMajorRigid(local, se3.R, se3.tM)
+        : applyScreenTransform(local, m);
+      return applyAlignmentTransform(placed, alignment);
     };
     const provAt = (c, r) => prov.length ? prov[vi(c, r)] : null;
     const boxes = [];
@@ -263,6 +402,7 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
     const paintRef = useRef(null); /* 遮罩拖刷：{ to: boolean } */
     const innerRef = useRef(null); /* 内层 pan/zoom <g>，命中转换用其真实 CTM */
     const touchedRef = useRef(false); /* 用户手动操作过视口后停用自动取景 */
+    const prevPreviewRef = useRef(false); /* 轴向预览刚出现时弹一次 Receipt */
     const patternByScreen = proj_.patternGenByScreen || {};
     const patternPathKey = Object.keys(patternByScreen).sort()
       .map((id) => id + '=' + ((patternByScreen[id] && patternByScreen[id].output_dir) || '')).join('|');
@@ -271,6 +411,30 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
     ORBIT = orbit;
 
     useEffect(() => { patternImagesRef.current = patternImages; }, [patternImages]);
+
+    /* 轴向预览刚出现时配一条非阻塞 Receipt（与 handoff 一致）。 */
+    useEffect(() => {
+      const cfg = proj_.config;
+      if (!cfg) { prevPreviewRef.current = false; return; }
+      const cab = s.calMode === 'cabinet' && s.calBoxTool === 'refs';
+      const report = s.calScreenReports && s.calScreenReports[s.calActiveScreen];
+      const ver = report ? s.calMeshVersion : 'original';
+      const aligned = !!(alignmentForScreen(cfg, s.calActiveScreen) && ver !== 'original');
+      const ids = Object.keys(cfg.screens || {});
+      const o = resolvePointName(cfg.coordinate_system && cfg.coordinate_system.origin_point, ids);
+      const x = resolvePointName(cfg.coordinate_system && cfg.coordinate_system.x_axis_point, ids);
+      const y = resolvePointName(cfg.coordinate_system && cfg.coordinate_system.xy_plane_point, ids);
+      const show = cab && !!report && ver !== 'original' && !aligned && !!(o && x && y);
+      if (show && !prevPreviewRef.current) {
+        s.setCalReceipt({ tone: 'ok', text: '预览：应用后模型将按此轴向对齐，深度轴由右手系自动推导' });
+      }
+      prevPreviewRef.current = show;
+    }, [
+      s.calMode, s.calBoxTool, s.calMeshVersion, s.calActiveScreen, s.calScreenReports,
+      proj_.config && proj_.config.coordinate_system,
+      proj_.config && proj_.config.rebuilt_alignment,
+    ]);
+
     useEffect(() => {
       let active = true;
       if (!disp.pattern) { setPatternImages({}); return () => { active = false; }; }
@@ -361,33 +525,28 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
 
     if (!proj_.config) return h('svg', { className: 'gw-svp', ref: stageRef, viewBox: '0 0 1000 700' });
 
-    /* 联合视觉求解的屏间 SE(3)：新建/叠加的重建网格用它摆放；原始与幽灵仍走名义 position/yaw。 */
-    const xfFile = proj_.visualSession && proj_.visualSession.screenTransforms;
-    const se3ByScreen = {};
-    if (xfFile && xfFile.transforms) {
-      xfFile.transforms.forEach((t) => {
-        const R = t.R;
-        if (!R) return;
-        se3ByScreen[t.screen_id] = {
-          R,
-          tM: [(t.t_mm[0] || 0) / 1000, (t.t_mm[1] || 0) / 1000, (t.t_mm[2] || 0) / 1000],
-        };
-      });
-    }
+    /* 联合视觉求解的屏间 SE(3)：新建/叠加的重建网格用它摆放；原始与幽灵仍走名义 position/yaw。
+       null = session 尚未加载（alignmentGroup 可回退 yaml）；{} = 已加载但无联合成员。 */
+    const se3ByScreen = se3ByScreenFromFile(proj_.visualSession && proj_.visualSession.screenTransforms);
+    const se3Lookup = se3ByScreen || {};
 
-    /* 每块屏幕：激活屏用草稿（若有）+ 已重建版本切换；其余屏幕恒用已保存配置 + 原始网格。 */
+    /* 每块屏幕：激活屏用草稿（若有）+ 已重建版本切换；其余屏幕恒用已保存配置 + 原始网格。
+       新建/叠加：P_s = A ∘ B_s（A=rebuilt_alignment，B=屏间 SE3 或名义摆放）；ghost/原始不变。 */
     const sbuilt = screens.map((id) => {
       const isActive = id === s.calActiveScreen;
       const cfg = (isActive && s.calDraftScreen) ? s.calDraftScreen : proj_.config.screens[id];
       const report = s.calScreenReports && s.calScreenReports[id];
       const built = !!report;
       const version = built ? s.calMeshVersion : 'original';
-      const se3 = se3ByScreen[id] || null;
+      const se3 = se3Lookup[id] || null;
+      const alignment = (version === 'rebuilt' || version === 'overlay')
+        ? alignmentForScreen(proj_.config, id)
+        : null;
       const g = (version === 'rebuilt' || version === 'overlay')
-        ? buildRealBoxes(report.surface, cfg, se3)
+        ? buildRealBoxes(report.surface, cfg, se3, alignment)
         : buildNominalBoxes(cfg);
       const ghost = version === 'overlay' ? buildNominalBoxes(cfg) : null;
-      return { id, cfg, isActive, g, ghost, built, version };
+      return { id, cfg, isActive, g, ghost, built, version, vmap: boxesVertexMap(g.boxes) };
     });
 
     /* 轨道目标 + 自动取景：内容包围盒中心为旋转枢轴；未手动操作视口时按内容尺度取景。 */
@@ -440,13 +599,15 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       }
     };
 
-    const assignReferenceVertex = (c, r, e) => {
+    const assignReferenceVertex = (screenId, c, r, e) => {
       e.stopPropagation();
       const role = s.calRefRole;
-      const name = pointName(s.calActiveScreen, c, r);
+      const name = pointName(screenId, c, r);
+      const entry = sbuilt.find((x) => x.id === screenId);
+      const screenCfg = entry ? entry.cfg : (proj_.config.screens[screenId] || m);
       const nextCoord = Object.assign({}, coord, { [role + '_point']: name });
       const nextScreens = role === 'origin'
-        ? Object.assign({}, proj_.config.screens, { [s.calActiveScreen]: Object.assign({}, m, { origin_aligned: false }) })
+        ? Object.assign({}, proj_.config.screens, { [screenId]: Object.assign({}, screenCfg, { origin_aligned: false }) })
         : proj_.config.screens;
       const nextConfig = Object.assign({}, proj_.config, { screens: nextScreens, coordinate_system: nextCoord });
       s.runCmd({ domain: 'calibrate', action: '指派参考点', target: name, chan: 'local' },
@@ -602,28 +763,76 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       });
     }
 
-    const vertexMap = new Map();
-    if (activeEntry) activeEntry.g.boxes.forEach((b) => {
-      [[b.c, b.r, b.corners[0]], [b.c + 1, b.r, b.corners[1]], [b.c + 1, b.r + 1, b.corners[2]], [b.c, b.r + 1, b.corners[3]]]
-        .forEach(([c, r, p]) => vertexMap.set(c + ',' + r, p));
-    });
-
-    /* 参考点工具：所有 seam vertex 以绿色角点呈现；O/X/Y badge 最后绘制。 */
+    /* 参考点工具：联合组内所有屏 seam 可点；badge 用 sbuilt[].vmap + resolvePointName。 */
     const refPoints = [], refMarks = [];
-    const refsActive = cabinet && s.calBoxTool === 'refs' && activeEntry;
-    if (refsActive) vertexMap.forEach((v, key) => {
-      const [c, r] = key.split(',').map(Number), p = proj(v, view);
-      refPoints.push(h('circle', { key: 'rv-' + key, cx: p[0], cy: p[1], r: 2, className: 'gw-pt gw-pt--pick' }));
-      refPoints.push(h('circle', { key: 'rh-' + key, cx: p[0], cy: p[1], r: 8, fill: 'transparent', className: 'gw-pt-hit', style: { pointerEvents: 'all' }, onMouseDown: (e) => { e.stopPropagation(); }, onClick: (e) => assignReferenceVertex(c, r, e) }));
+    const groupIds = activeEntry
+      ? alignmentGroupScreenIds(activeEntry.id, se3ByScreen, proj_.config)
+      : [];
+    const groupEntries = sbuilt.filter((x) => groupIds.indexOf(x.id) >= 0);
+    const refsActive = cabinet && s.calBoxTool === 'refs' && groupEntries.length > 0;
+    if (refsActive) groupEntries.forEach((entry) => {
+      entry.vmap.forEach((v, key) => {
+        const [c, r] = key.split(',').map(Number), p = proj(v, view);
+        const hitKey = entry.id + ':' + key;
+        refPoints.push(h('circle', { key: 'rv-' + hitKey, cx: p[0], cy: p[1], r: 2, className: 'gw-pt gw-pt--pick' }));
+        refPoints.push(h('circle', { key: 'rh-' + hitKey, cx: p[0], cy: p[1], r: 8, fill: 'transparent', className: 'gw-pt-hit', style: { pointerEvents: 'all' }, onMouseDown: (e) => { e.stopPropagation(); }, onClick: (e) => assignReferenceVertex(entry.id, c, r, e) }));
+      });
     });
-    if (activeEntry && coord) Object.entries({ origin: coord.origin_point, x_axis: coord.x_axis_point, xy_plane: coord.xy_plane_point }).forEach(([role, name]) => {
-      const at = parsePointName(name, activeEntry.id); if (!at) return;
-      const v = vertexMap.get(at.c + ',' + at.r); if (!v) return;
-      const p = proj(v, view), meta = ROLE[role];
-      refMarks.push(h('g', { key: 'ref-' + role },
-        h('circle', { cx: p[0], cy: p[1], r: 5.5, fill: meta.color, stroke: '#0c0c10', strokeWidth: .8 }),
-        h('text', { x: p[0], y: p[1] + 2.4, fill: '#0c0c10', fontSize: 6.5, fontWeight: 800, textAnchor: 'middle' }, meta.short)));
-    });
+    if (coord) {
+      const allIds = sbuilt.map((x) => x.id);
+      Object.entries({ origin: coord.origin_point, x_axis: coord.x_axis_point, xy_plane: coord.xy_plane_point }).forEach(([role, name]) => {
+        const at = resolvePointName(name, allIds);
+        if (!at) return;
+        const entry = sbuilt.find((x) => x.id === at.screenId);
+        const v = entry && entry.vmap.get(at.c + ',' + at.r);
+        if (!v) return;
+        const p = proj(v, view), meta = ROLE[role];
+        refMarks.push(h('g', { key: 'ref-' + role + '-' + at.screenId },
+          h('circle', { cx: p[0], cy: p[1], r: 5.5, fill: meta.color, stroke: '#0c0c10', strokeWidth: .8 }),
+          h('text', { x: p[0], y: p[1] + 2.4, fill: '#0c0c10', fontSize: 6.5, fontWeight: 800, textAnchor: 'middle' }, meta.short)));
+      });
+    }
+
+    /* 轴向预览：O/X/Y 齐备且组未对齐、新建/叠加视图时，由 O 绘推导三轴（仅视觉，不写 A'）。 */
+    const previewAxes = [];
+    const activeBuilt = !!(activeEntry && s.calScreenReports && s.calScreenReports[activeEntry.id]);
+    const versionNow = activeBuilt ? s.calMeshVersion : 'original';
+    const alignGroup = activeEntry ? alignmentForScreen(proj_.config, activeEntry.id) : null;
+    const alignedNow = !!(alignGroup && versionNow !== 'original');
+    const allIdsForRefs = sbuilt.map((x) => x.id);
+    const oAt = coord && resolvePointName(coord.origin_point, allIdsForRefs);
+    const xAt = coord && resolvePointName(coord.x_axis_point, allIdsForRefs);
+    const yAt = coord && resolvePointName(coord.xy_plane_point, allIdsForRefs);
+    const allThree = !!(oAt && xAt && yAt);
+    const showPreview = refsActive && allThree && !alignedNow && versionNow !== 'original' && activeBuilt;
+    if (showPreview) {
+      const O = refWorldFromEntries(sbuilt, oAt);
+      const X = refWorldFromEntries(sbuilt, xAt);
+      const Y = refWorldFromEntries(sbuilt, yAt);
+      if (O && X && Y) {
+        const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z });
+        const nrm = (v) => { const l = Math.hypot(v.x, v.y, v.z) || 1; return { x: v.x / l, y: v.y / l, z: v.z / l }; };
+        const crs = (a, b) => ({ x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x });
+        /* 深度 = dY × dX，与 from_three_points 的 z=normalize(dxy×x) → m01 后模型 +Y 一致 */
+        const dX = nrm(sub(X, O)), dY = nrm(sub(Y, O)), dZ = nrm(crs(dY, dX));
+        const L = 1.6;
+        const arrow = (dir, col, label, k) => {
+          const tip = { x: O.x + dir.x * L, y: O.y + dir.y * L, z: O.z + dir.z * L };
+          const P0 = proj(O, view), P1 = proj(tip, view);
+          const ang = Math.atan2(P1[1] - P0[1], P1[0] - P0[0]);
+          const hl = 7, hw = 0.42;
+          const a1 = [P1[0] - hl * Math.cos(ang - hw), P1[1] - hl * Math.sin(ang - hw)];
+          const a2 = [P1[0] - hl * Math.cos(ang + hw), P1[1] - hl * Math.sin(ang + hw)];
+          previewAxes.push(h('g', { key: 'pv' + k, className: 'gw-pvaxis' },
+            h('line', { x1: P0[0], y1: P0[1], x2: P1[0], y2: P1[1], stroke: col, strokeWidth: 1.7, strokeDasharray: '4 3', strokeLinecap: 'round' }),
+            h('polygon', { points: pstr([P1, a1, a2]), fill: col }),
+            h('text', { x: P1[0] + 5, y: P1[1] - 4, fill: col, fontSize: 8, fontWeight: 800 }, label)));
+        };
+        arrow(dX, '#e0563f', '横向 · OX', 'x');
+        arrow(dY, '#49b257', '高度 · OY', 'y');
+        arrow(dZ, '#4f88e0', '深度 · 推导', 'z');
+      }
+    }
 
     /* 激活屏箱体外法线；镂空块始终跳过。 */
     const normals = [];
@@ -649,11 +858,7 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       selIds.forEach((sid) => {
         const entry = sbuilt.find((x) => x.id === sid);
         if (!entry) return;
-        const vmap = new Map();
-        entry.g.boxes.forEach((b) => {
-          [[b.c, b.r, b.corners[0]], [b.c + 1, b.r, b.corners[1]], [b.c + 1, b.r + 1, b.corners[2]], [b.c, b.r + 1, b.corners[3]]]
-            .forEach(([c, r, p]) => vmap.set(c + ',' + r, p));
-        });
+        const vmap = entry.vmap;
         const cols = entry.g.cols, rows = entry.g.rows, ring = [];
         for (let c = 0; c <= cols; c++) ring.push(vmap.get(c + ',0'));
         for (let r = 1; r <= rows; r++) ring.push(vmap.get(cols + ',' + r));
@@ -669,7 +874,7 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
          transform-origin 的实现差异）。 */
       h('g', { ref: innerRef, transform: 'translate(' + (pan.x + 500 * (1 - zoom)) + ',' + (pan.y + 350 * (1 - zoom)) + ') scale(' + zoom + ')' },
         h('g', { className: 'gw-ground' }, ground),
-        axes, ghost, boxEls, objOutline, labels, points, refPoints, normals, refMarks),
+        axes, ghost, boxEls, objOutline, labels, points, refPoints, normals, previewAxes, refMarks),
       marquee ? (function () {
         const [x0, y0] = toLocal(stageRef.current, marquee.cx0, marquee.cy0);
         const [x1, y1] = toLocal(stageRef.current, marquee.cx1, marquee.cy1);
@@ -737,6 +942,7 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
   }
 
   function HintBar({ s }) {
+    const proj_ = CX.useProj();
     const cabinet = s.calMode === 'cabinet';
     const tool = s.calBoxTool;
     const [show, setShow] = useState(false);
@@ -765,7 +971,14 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
     let hint;
     if (!cabinet) hint = [['Tab', '箱体编辑'], ['左键', '旋转'], ['右键', '平移'], ['滚轮', '缩放']];
     else if (tool === 'mask') hint = [['单击/拖刷', '切换镂空'], ['Tab', '退出']];
-    else if (tool === 'refs') hint = [['单击角点', '指派角色'], ['1/2/3', '切角色']];
+    else if (tool === 'refs') {
+      const se3By = se3ByScreenFromFile(proj_.visualSession && proj_.visualSession.screenTransforms, true);
+      const gids = alignmentGroupScreenIds(s.calActiveScreen, se3By, proj_.config);
+      const joint = gids.length >= 2;
+      hint = joint
+        ? [['单击角点', '指派角色'], ['1/2/3', '切角色'], ['组内各屏', '均可指派']]
+        : [['单击角点', '指派角色'], ['1/2/3', '切角色'], ['单独重建', '仅本屏']];
+    }
     else hint = [['单击', '选箱体'], ['Shift', '加选'], ['Shift+拖动', '框选多选']];
     return h('div', { className: 'gw-glass gw-hint' + (show ? ' show' : '') }, hint.flatMap(([k, v], i) => [
       i > 0 ? h('span', { className: 'sep', key: 's' + i }, '·') : null,
@@ -781,7 +994,7 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
         h('span', { className: 'sw', style: { background: PROV[k].color } }), PROV[k].label)));
   }
 
-  /* 摆放图例：解算结果生效时，说明「新建=解算摆放 / 原始=设计摆放」 */
+  /* 摆放图例：解算结果生效时，说明「新建=解算摆放 / 原始=设计摆放」+ 对齐/过期态 */
   function PlacementLegend({ s }) {
     const proj_ = CX.useProj();
     const built = s.calScreenReports && s.calScreenReports[s.calActiveScreen];
@@ -789,10 +1002,16 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
     if (!built || v === 'original') return null;
     const multi = proj_.config && Object.keys(proj_.config.screens || {}).length > 1;
     const overlay = v === 'overlay';
+    const alignEntry = alignmentForScreen(proj_.config, s.calActiveScreen);
+    const aligned = !!alignEntry;
+    const translateOnly = aligned && !(alignEntry.ref_points && alignEntry.ref_points.x_axis && alignEntry.ref_points.xy_plane);
+    const stale = alignmentIsStale(alignEntry, proj_);
     return h('div', { className: 'gw-glass gw-plegend' },
       h('div', { className: 'gw-plegend-h' }, h(Icon, { name: 'cube3', size: 12 }), '网格摆放'),
       h('div', { className: 'li' }, h('span', { className: 'sw solid' }), h('span', null, '新建网格 · 解算摆放')),
       overlay ? h('div', { className: 'li' }, h('span', { className: 'sw ghost' }), h('span', null, '原始网格 · 设计摆放')) : null,
+      aligned ? h('div', { className: 'li align' }, h(Icon, { name: 'target', size: 12 }), h('span', null, '新建网格 · 已按参考系对齐' + (translateOnly ? '（仅平移）' : ''))) : null,
+      stale ? h('div', { className: 'li stale' }, h(Icon, { name: 'alert', size: 12 }), h('span', null, '对齐来自旧解算，建议重新指派参考点')) : null,
       h('div', { className: 'note' }, overlay
         ? '两套摆放之差即为解算修正量。'
         : (multi ? '各屏已按联合解算位置摆放。' : '已按解算位置摆放。')));
@@ -800,71 +1019,169 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
 
   function BoxBar({ s }) {
     const proj_ = CX.useProj();
+    const [resetArm, setResetArm] = useState(false);
     const m = (proj_.config && proj_.config.screens[s.calActiveScreen]) || {};
     const tool = s.calBoxTool;
     const rectScreen = m.shape_mode !== 'irregular';
     const coord = proj_.config && proj_.config.coordinate_system;
-    const originVertex = coord && parsePointName(coord.origin_point, s.calActiveScreen);
-    const alignOrigin = async () => {
-      if (!originVertex || !proj_.path || !proj_.config) {
-        s.setCalReceipt({ tone: 'notice', text: '请先指派 origin 参考点' });
+    const allScreenIds = proj_.config && proj_.config.screens
+      ? Object.keys(proj_.config.screens)
+      : [s.calActiveScreen].filter(Boolean);
+    const se3ByScreen = se3ByScreenFromFile(proj_.visualSession && proj_.visualSession.screenTransforms);
+    const se3Lookup = se3ByScreen || {};
+    const gids = alignmentGroupScreenIds(s.calActiveScreen, se3ByScreen, proj_.config);
+    const originRef = coord && resolvePointName(coord.origin_point, allScreenIds);
+    const xRef = coord && resolvePointName(coord.x_axis_point, allScreenIds);
+    const yRef = coord && resolvePointName(coord.xy_plane_point, allScreenIds);
+    const hasO = !!originRef;
+    const full = !!(originRef && xRef && yRef);
+    const built = !!(s.calScreenReports && s.calScreenReports[s.calActiveScreen]);
+    const version = built ? s.calMeshVersion : 'original';
+    const onOriginal = version === 'original';
+    const alignEntry = alignmentForScreen(proj_.config, s.calActiveScreen);
+    const aligned = !!alignEntry;
+    const stale = alignmentIsStale(alignEntry, proj_);
+    let aDisabled = false, aVariant = 'is-ready', aTip = '';
+    if (!built) { aDisabled = true; aVariant = 'is-off'; aTip = '需先完成重建以生成新建网格'; }
+    else if (onOriginal) { aDisabled = true; aVariant = 'is-off'; aTip = '参考系对齐仅作用于新建网格，请切换到新建/叠加视图'; }
+    else if (!hasO) { aDisabled = true; aVariant = 'is-off'; aTip = '请先指派 origin 参考点'; }
+    else if (full) { aVariant = 'is-accent'; aTip = 'O→原点 · OX 贴横向轴 · OY 贴高度轴'; }
+    else { aVariant = 'is-ready'; aTip = '将 O 平移至世界原点 (0,0,0)'; }
+
+    const applyReferenceFrame = async () => {
+      if (aDisabled || !proj_.path || !proj_.config || !originRef) return;
+      if (!groupAlignmentsConsistent(gids, proj_.config)) {
+        s.setCalReceipt({ tone: 'notice', text: '组内存在旧对齐，请先复位再应用' });
         return;
       }
-      const report = s.calScreenReports && s.calScreenReports[s.calActiveScreen];
-      const useRebuilt = report && s.calMeshVersion !== 'original';
-      const geometry = useRebuilt ? buildRealBoxes(report.surface, m) : buildNominalBoxes(m);
-      const vertices = new Map();
-      geometry.boxes.forEach((b) => {
-        [[b.c, b.r, b.corners[0]], [b.c + 1, b.r, b.corners[1]], [b.c + 1, b.r + 1, b.corners[2]], [b.c, b.r + 1, b.corners[3]]]
-          .forEach(([c, r, p]) => vertices.set(c + ',' + r, p));
-      });
-      const world = vertices.get(originVertex.c + ',' + originVertex.r);
-      if (!world) {
-        s.setCalReceipt({ tone: 'notice', text: '请先指派 origin 参考点' });
-        return;
+      /* 同一屏只建一次 vmap（O/X/Y 常跨 1–3 屏，避免重复 buildRealBoxes）。 */
+      const vmapByScreen = new Map();
+      const worldOf = (resolved) => {
+        if (!resolved) return null;
+        let vmap = vmapByScreen.get(resolved.screenId);
+        if (!vmap) {
+          const cfg = proj_.config.screens[resolved.screenId] || m;
+          const report = s.calScreenReports && s.calScreenReports[resolved.screenId];
+          const se3 = se3Lookup[resolved.screenId] || null;
+          const alignment = (version === 'rebuilt' || version === 'overlay')
+            ? alignmentForScreen(proj_.config, resolved.screenId)
+            : null;
+          const geometry = (report && version !== 'original')
+            ? buildRealBoxes(report.surface, cfg, se3, alignment)
+            : buildNominalBoxes(cfg);
+          vmap = boxesVertexMap(geometry.boxes);
+          vmapByScreen.set(resolved.screenId, vmap);
+        }
+        return vmap.get(resolved.c + ',' + resolved.r) || null;
+      };
+      const O = worldOf(originRef);
+      if (!O) { s.setCalReceipt({ tone: 'notice', text: 'origin 参考点无效' }); return; }
+      const X = full ? worldOf(xRef) : null;
+      const Y = full ? worldOf(yRef) : null;
+      if (full && (!X || !Y)) { s.setCalReceipt({ tone: 'notice', text: 'X/Y 参考点无效' }); return; }
+      /* aOld 取 origin 点所在屏的 alignment（跨屏指派时激活屏可能无条目）。 */
+      const aOldEntry = alignmentForScreen(proj_.config, originRef.screenId);
+      const aOld = aOldEntry || {
+        rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+        t_m: [0, 0, 0],
+      };
+      try {
+        const result = await computeRebuiltAlignment({
+          origin: xyzTuple(O),
+          x_axis: full ? xyzTuple(X) : null,
+          xy_plane: full ? xyzTuple(Y) : null,
+          a_old_rotation: aOld.rotation,
+          a_old_t_m: aOld.t_m || [0, 0, 0],
+        });
+        const solveAbs = proj_.visualSession && proj_.visualSession.screenTransformsPath;
+        const solveRef = (gids.length >= 2 && solveAbs)
+          ? relUnderProject(proj_.path, solveAbs)
+          : null;
+        const newGroup = {
+          screens: gids.slice(),
+          rotation: result.rotation,
+          t_m: result.t_m,
+          ref_points: {
+            origin: coord.origin_point,
+            x_axis: full ? coord.x_axis_point : null,
+            xy_plane: full ? coord.xy_plane_point : null,
+          },
+          solve_ref: solveRef || undefined,
+          applied_at: new Date().toISOString(),
+        };
+        const prevGroups = (proj_.config.rebuilt_alignment && proj_.config.rebuilt_alignment.groups) || [];
+        const gidSet = new Set(gids);
+        const kept = prevGroups.filter((g) => !(g.screens || []).some((sid) => gidSet.has(sid)));
+        const nextConfig = Object.assign({}, proj_.config, {
+          rebuilt_alignment: { groups: kept.concat([newGroup]) },
+        });
+        await s.runCmd(
+          { domain: 'calibrate', action: '应用参考系', target: gids.join('+'), chan: 'local' },
+          () => saveProjectYaml(proj_.path, nextConfig),
+          { okMsg: () => '已应用参考系 · ' + gids.length + ' 块屏随组对齐' },
+        );
+        await CX.openProjectPath(proj_.path, s);
+        s.setCalReceipt({ tone: 'ok', text: '已应用参考系 · ' + gids.length + ' 块屏随组对齐' });
+      } catch (e) {
+        const msg = (e && e.message) ? e.message : String(e);
+        s.setCalReceipt({ tone: 'err', text: '应用参考系失败 · ' + msg });
       }
-      const pos = m.position_m || [0, 0, 0];
-      const clean = (v) => Math.abs(v) < 1e-9 ? 0 : +v.toFixed(9);
-      const nextScreen = Object.assign({}, m, {
-        position_m: [clean(pos[0] - world.x), clean(pos[1] - world.y), clean(pos[2] - world.z)],
-        origin_aligned: true,
-      });
+    };
+
+    const doReset = async () => {
+      if (!proj_.path || !proj_.config || !alignEntry) return;
+      const prevGroups = (proj_.config.rebuilt_alignment && proj_.config.rebuilt_alignment.groups) || [];
+      const gidSet = new Set(alignEntry.screens || gids);
+      const kept = prevGroups.filter((g) => !(g.screens || []).some((sid) => gidSet.has(sid)));
       const nextConfig = Object.assign({}, proj_.config, {
-        screens: Object.assign({}, proj_.config.screens, { [s.calActiveScreen]: nextScreen }),
+        rebuilt_alignment: kept.length ? { groups: kept } : null,
       });
       try {
-        await s.runCmd({ domain: 'calibrate', action: '对齐原点', target: coord.origin_point, chan: 'local' },
+        await s.runCmd(
+          { domain: 'calibrate', action: '复位对齐', target: (alignEntry.screens || gids).join('+'), chan: 'local' },
           () => saveProjectYaml(proj_.path, nextConfig),
-          { okMsg: () => '已将 origin 对齐到世界坐标原点 (0,0,0)' });
+          { okMsg: () => '已复位对齐 · 网格回到解算原始摆放' },
+        );
         await CX.openProjectPath(proj_.path, s);
-        s.setCalReceipt({ tone: 'ok', text: '已将 origin 对齐到世界坐标原点 (0,0,0)' });
-      } catch (e) { /* runCmd 已记录失败 */ }
+        s.setCalReceipt({ tone: 'notice', text: '已复位对齐 · 网格回到解算原始摆放' });
+      } catch (e) { /* runCmd 已记录 */ }
+      setResetArm(false);
     };
+
     const T = (id, label, key, icon) => h('button', { className: 'tbtn' + (tool === id ? ' on' : ''), onClick: () => s.setCalBoxTool(id), title: label + ' (' + key + ')' },
       h(Icon, { name: icon, size: 14 }), h('span', null, label), h('kbd', null, key));
-    return h('div', { className: 'gw-glass gw-boxbar' },
-      T('select', '选择', 'V', 'target'),
-      h('button', { className: 'tbtn' + (tool === 'mask' ? ' on' : ''), onClick: () => s.setCalBoxTool('mask'), disabled: rectScreen, style: rectScreen ? { opacity: .45 } : null, title: rectScreen ? '矩形屏不支持遮罩' : '遮罩 (M)' },
-        h(Icon, { name: 'panel', size: 14 }), h('span', null, '遮罩'), h('kbd', null, 'M')),
-      T('refs', '参考点', 'R', 'pin'),
-      tool === 'refs' ? h(React.Fragment, null,
-        h('div', { className: 'sep' }),
-        h('div', { className: 'gw-roleseg' }, ['origin', 'x_axis', 'xy_plane'].map((rk, i) => {
-          const field = rk === 'origin' ? 'origin_point' : rk === 'x_axis' ? 'x_axis_point' : 'xy_plane_point';
-          const assigned = !!(coord && coord[field] && parsePointName(coord[field], s.calActiveScreen));
-          return h('button', { key: rk, className: s.calRefRole === rk ? 'on' : '', onClick: () => s.setCalRefRole(rk), title: ROLE[rk].label },
-            h('span', { className: 'dot', style: { background: ROLE[rk].color } }),
-            ROLE[rk].short, h('span', { className: 'num' }, i + 1),
-            assigned ? h('span', { className: 'done' }, h(Icon, { name: 'check', size: 11 })) : null);
-        })),
-        h('div', { className: 'sep' }),
-        h('button', {
-          className: 'tbtn gw-alignorigin' + (m.origin_aligned ? ' on' : ''),
-          disabled: !originVertex,
-          style: !originVertex ? { opacity: .45 } : null,
-          title: originVertex ? '对齐原点 — 将 origin 参考点平移至世界坐标原点 (0,0,0)' : '请先指派 origin 参考点',
-          onClick: alignOrigin,
-        }, h(Icon, { name: m.origin_aligned ? 'check' : 'target', size: 14 }))) : null);
+    return h(React.Fragment, null,
+      h('div', { className: 'gw-glass gw-boxbar' },
+        T('select', '选择', 'V', 'target'),
+        h('button', { className: 'tbtn' + (tool === 'mask' ? ' on' : ''), onClick: () => s.setCalBoxTool('mask'), disabled: rectScreen, style: rectScreen ? { opacity: .45 } : null, title: rectScreen ? '矩形屏不支持遮罩' : '遮罩 (M)' },
+          h(Icon, { name: 'panel', size: 14 }), h('span', null, '遮罩'), h('kbd', null, 'M')),
+        T('refs', '参考点', 'R', 'pin'),
+        tool === 'refs' ? h(React.Fragment, null,
+          h('div', { className: 'sep' }),
+          h('div', { className: 'gw-roleseg' }, ['origin', 'x_axis', 'xy_plane'].map((rk, i) => {
+            const field = rk === 'origin' ? 'origin_point' : rk === 'x_axis' ? 'x_axis_point' : 'xy_plane_point';
+            const at = coord && resolvePointName(coord[field], allScreenIds);
+            const onOther = at && at.screenId !== s.calActiveScreen;
+            return h('button', { key: rk, className: s.calRefRole === rk ? 'on' : '', onClick: () => s.setCalRefRole(rk),
+              title: ROLE[rk].label + '（' + (i + 1) + '）' + (onOther ? ' · 已在其他屏指派' : '') },
+              h('span', { className: 'dot', style: { background: ROLE[rk].color } }),
+              ROLE[rk].short,
+              at ? h('span', { className: 'done' + (onOther ? ' cross' : '') }, h(Icon, { name: 'check', size: 11 })) : null);
+          })),
+          h('div', { className: 'sep' }),
+          h('button', { className: 'gw-alignbtn ' + aVariant, disabled: aDisabled, title: aTip, onClick: applyReferenceFrame },
+            h(Icon, { name: 'target', size: 14 }), h('span', null, '应用参考系'),
+            aligned ? h('span', { className: 'gw-alignbtn-ck' }, h(Icon, { name: 'check', size: 11 })) : null)) : null),
+      tool === 'refs' && aligned ? h('div', { className: 'gw-glass gw-alignstatus' },
+        h('span', { className: 'gw-aligned-badge' + (stale ? ' stale' : '') },
+          h(Icon, { name: stale ? 'alert' : 'check', size: 11 }),
+          stale ? '对齐过期' : '已对齐 · ' + (alignEntry.screens || gids).length + ' 屏联动'),
+        h('button', { className: 'gw-alignreset', title: '清除对齐 · 网格回到解算原始摆放', onClick: () => setResetArm((v) => !v) },
+          h(Icon, { name: 'undo', size: 13 }), h('span', null, '复位对齐')),
+        resetArm ? h('div', { className: 'gw-reset-confirm' },
+          h('span', null, '复位？'),
+          h('button', { className: 'y', onClick: doReset }, '复位'),
+          h('button', { className: 'n', onClick: () => setResetArm(false) }, '取消')) : null) : null);
   }
 
   function Coords() {
@@ -912,10 +1229,18 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
     useHotkeys(s);
     useEffect(() => { s.setLeftCollapsed(false); }, []);
     const cabinet = s.calMode === 'cabinet';
+    const proj_ = CX.useProj();
+    const se3By = se3ByScreenFromFile(proj_.visualSession && proj_.visualSession.screenTransforms, true);
+    const gids = alignmentGroupScreenIds(s.calActiveScreen, se3By, proj_.config);
+    const isSolo = gids.length < 2;
+    const alignedNow = !!alignmentForScreen(proj_.config, s.calActiveScreen);
     return h('div', { className: 'gw-center' },
       h('div', { className: 'gw-stage' },
         h(Viewport, { s }),
         cabinet ? h(BoxBar, { s }) : null,
+        /* 已对齐时 gw-alignstatus 占同带，隐藏 solonote 避免叠层 */
+        cabinet && s.calBoxTool === 'refs' && isSolo && !alignedNow
+          ? h('div', { className: 'gw-glass gw-solonote' }, h(Icon, { name: 'info', size: 13 }), '当前屏为单独重建 · 多屏联动需联合重建') : null,
         h('div', { className: 'gw-ov gw-ov--tl' }, h(CtxCard, { s }), h(Coords)),
         h('div', { className: 'gw-ov gw-ov--tr' }, h(DisplayToggles, { s })),
         h('div', { className: 'gw-ov gw-ov--bc' }, h(HintBar, { s }), h(VersionSwitcher, { s })),
@@ -923,5 +1248,10 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
         h('div', { className: 'gw-ov gw-ov--br' }, h(Receipt, { s }))));
   }
 
-  window.VOLO_GRID = Object.assign(window.VOLO_GRID || {}, { Center, center: (s) => h(Center, { s }), ROLE, PROV, pointName, roleAtCabinet, buildNominalBoxes, buildRealBoxes, selectedScreenIds, toggleScreenSel });
+  window.VOLO_GRID = Object.assign(window.VOLO_GRID || {}, {
+    Center, center: (s) => h(Center, { s }), ROLE, PROV, pointName, roleAtCabinet, parsePointName, resolvePointName,
+    buildNominalBoxes, buildRealBoxes, applyRowMajorRigid, applyAlignmentTransform, se3ByScreenFromFile,
+    alignmentGroupScreenIds, alignmentForScreen, alignmentIsStale, alignmentApproxEq,
+    groupAlignmentsConsistent, selectedScreenIds, toggleScreenSel,
+  });
 })();

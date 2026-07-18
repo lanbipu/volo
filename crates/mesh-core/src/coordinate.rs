@@ -49,40 +49,41 @@ fn validate_origin(o: &[f64; 3]) -> Result<(), String> {
     Ok(())
 }
 
+/// Shared orthonormal / right-handed check used by [`CoordinateFrame`] basis and
+/// row-major SE(3) rotations in `rigid`.
+pub(crate) fn validate_orthonormal_columns(cols: &[Vector3<f64>; 3]) -> Result<(), String> {
+    for (i, c) in cols.iter().enumerate() {
+        if !c.x.is_finite() || !c.y.is_finite() || !c.z.is_finite() {
+            return Err(format!("column {i} contains non-finite value"));
+        }
+        let n = c.norm();
+        if (n - 1.0).abs() > 1e-6 {
+            return Err(format!("column {i} not unit length: norm={n}"));
+        }
+    }
+    for i in 0..3 {
+        for j in (i + 1)..3 {
+            let d = cols[i].dot(&cols[j]);
+            if d.abs() > 1e-6 {
+                return Err(format!("columns {i} and {j} not orthogonal: dot={d}"));
+            }
+        }
+    }
+    let det = cols[0].dot(&cols[1].cross(&cols[2]));
+    if (det - 1.0).abs() > 1e-6 {
+        return Err(format!("not right-handed: det={det}"));
+    }
+    Ok(())
+}
+
 fn validate_basis(b: &[[f64; 3]; 3]) -> Result<(), String> {
+    // `basis` stores columns as rows in the array layout used by CoordinateFrame.
     let cols: [Vector3<f64>; 3] = [
         Vector3::new(b[0][0], b[0][1], b[0][2]),
         Vector3::new(b[1][0], b[1][1], b[1][2]),
         Vector3::new(b[2][0], b[2][1], b[2][2]),
     ];
-    // finite
-    for (i, c) in cols.iter().enumerate() {
-        if !c.x.is_finite() || !c.y.is_finite() || !c.z.is_finite() {
-            return Err(format!("basis column {i} contains non-finite value"));
-        }
-    }
-    // unit length
-    for (i, c) in cols.iter().enumerate() {
-        let n = c.norm();
-        if (n - 1.0).abs() > 1e-6 {
-            return Err(format!("basis column {i} not unit length: norm={n}"));
-        }
-    }
-    // mutual orthogonality
-    for i in 0..3 {
-        for j in (i + 1)..3 {
-            let d = cols[i].dot(&cols[j]);
-            if d.abs() > 1e-6 {
-                return Err(format!("basis columns {i} and {j} not orthogonal: dot={d}"));
-            }
-        }
-    }
-    // right-handed: det = X · (Y × Z) = +1
-    let det = cols[0].dot(&cols[1].cross(&cols[2]));
-    if (det - 1.0).abs() > 1e-6 {
-        return Err(format!("basis not right-handed: det={det}"));
-    }
-    Ok(())
+    validate_orthonormal_columns(&cols).map_err(|e| format!("basis {e}"))
 }
 
 impl CoordinateFrame {

@@ -1,3 +1,9 @@
+//! nDisplay topology / .ndisplay generators.
+//!
+//! Per-screen rebuilt placement (`P = A ∘ B`) is shared with OBJ export via
+//! [`crate::placement::resolve_rebuilt_placement`] (spec A8). Composite LED
+//! output JSON stays canvas-based; mesh assets carry the SE3.
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};

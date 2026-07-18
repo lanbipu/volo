@@ -1,3 +1,4 @@
+use crate::placement::{apply_rigid_transform, resolve_rebuilt_placement};
 use mesh_core::export::build::surface_to_mesh_output;
 use mesh_core::export::obj::write_obj;
 use mesh_core::shape::CabinetArray;
@@ -7,7 +8,8 @@ use mesh_core::surface::{
 use mesh_core::uv::compute_grid_uv;
 use volo_shared::data::{runs, Db};
 use volo_shared::dto::{
-    CabinetPoseReportFile, ExportPoseObjResult, PoseReportGauge, ReconstructionReport, ShapeMode,
+    CabinetPoseReportFile, ExportPoseObjResult, PoseReportGauge, ProjectConfig, ReconstructionReport,
+    ScreenTransformsFile, ShapeMode,
 };
 use volo_shared::error::{VoloError, VoloResult};
 use nalgebra::Vector3;
@@ -79,30 +81,50 @@ pub fn build_cabinet_array(screen_cfg: &volo_shared::dto::ScreenConfig) -> VoloR
     }
 }
 
-/// Rotate (about world +Y, `yaw_deg`) then translate (`position_m`) every
-/// vertex in place. Identity when both fields are default (0), which is
-/// every `project.yaml` written before these fields existed.
+/// Rotate (about model +Z / wall-up, `yaw_deg`) then translate (`position_m`)
+/// every vertex in place. Production export uses [`resolve_rebuilt_placement`].
+#[cfg(test)]
 fn apply_world_transform(vertices: &mut [Vector3<f64>], screen_cfg: &volo_shared::dto::ScreenConfig) {
-    if screen_cfg.yaw_deg == 0.0
-        && screen_cfg.position_m == [0.0, 0.0, 0.0]
-        && screen_cfg.height_offset_mm == 0.0
-    {
-        return;
+    let xf = crate::placement::nominal_placement(screen_cfg);
+    apply_rigid_transform(vertices, &xf);
+}
+
+/// Resolve joint `screen_transforms` for a run: prefer the current run digest's
+/// `screen_transforms_path` (matches viewport), yaml `solve_ref` as fallback only.
+fn load_screen_transforms_for_export(
+    project_root: &Path,
+    config: &ProjectConfig,
+    screen_id: &str,
+    visual_solve_path: Option<&str>,
+) -> Option<ScreenTransformsFile> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(solve) = visual_solve_path {
+        let solve_abs = abs_under_project(project_root, solve);
+        if let Ok(digest) = crate::visual::load_visual_solve_digest(&solve_abs) {
+            if let Some(xf) = digest.screen_transforms_path {
+                candidates.push(abs_under_project(project_root, &xf));
+            }
+        }
     }
-    // Model-frame Z is the row axis (the one shape_grid.rs's expected_grid_positions
-    // and CoordinateFrame::from_three_points_m01 leave invariant across columns —
-    // see the frame's `[b0, b2, -b1]` permutation), i.e. the wall's own "up" —
-    // not world Y. Yaw therefore rotates the X-Y (column/bow) plane and leaves Z
-    // untouched, so a screen spins in place around its own vertical axis.
-    let theta = screen_cfg.yaw_deg.to_radians();
-    let (s, c) = theta.sin_cos();
-    let [tx, ty, tz] = screen_cfg.position_m;
-    let tz = tz + screen_cfg.height_offset_mm / 1000.0;
-    for v in vertices.iter_mut() {
-        let (x, y) = (v.x, v.y);
-        v.x = x * c + y * s + tx;
-        v.y = -x * s + y * c + ty;
-        v.z += tz;
+    if let Some(g) = crate::placement::alignment_for_screen(config, screen_id) {
+        if let Some(rel) = g.solve_ref.as_ref() {
+            candidates.push(abs_under_project(project_root, rel));
+        }
+    }
+    for p in candidates {
+        if let Ok(xf) = crate::visual::load_screen_transforms(&p) {
+            return Some(xf);
+        }
+    }
+    None
+}
+
+fn abs_under_project(project_root: &Path, rel_or_abs: &str) -> PathBuf {
+    let p = PathBuf::from(rel_or_abs);
+    if p.is_absolute() {
+        p
+    } else {
+        project_root.join(p)
     }
 }
 
@@ -123,18 +145,23 @@ pub fn run_export(
     let report_abs = project_root.join(&report_rel);
     let mut report: ReconstructionReport = serde_json::from_slice(&std::fs::read(&report_abs)?)?;
 
-    // World-space placement (`ScreenConfig.position_m`/`yaw_deg`) is a
-    // presentation-layer transform, not a reconstruction input — unlike
-    // weld_tolerance/cabinet_array below (frozen in the report so re-exports
-    // stay reproducible), this reads the *current* project.yaml so moving a
-    // screen after reconstruction is reflected without re-running it. A
-    // missing/unreadable project.yaml or a since-renamed screen id just
-    // falls back to identity — this is a placement nicety, not something
-    // that should fail the export.
+    // World-space placement `P_s = A ∘ B_s` (rebuilt_alignment ∘ joint SE3 /
+    // nominal). Reads *current* project.yaml + optional screen_transforms so
+    // viewport and OBJ stay consistent (spec A8). Missing yaml/screen → identity.
     if let Ok(config) = crate::projects::load_project_yaml_from_path(&project_root) {
-        if let Some(screen_cfg) = config.screens.get(&report.surface.screen_id) {
-            apply_world_transform(&mut report.surface.vertices, screen_cfg);
-        }
+        let screen_id = report.surface.screen_id.clone();
+        let visual_solve = {
+            let conn = db.lock().unwrap();
+            runs::get_visual_solve_path(&conn, run_id).ok().flatten()
+        };
+        let xf = load_screen_transforms_for_export(
+            &project_root,
+            &config,
+            &screen_id,
+            visual_solve.as_deref(),
+        );
+        let placement = resolve_rebuilt_placement(&config, &screen_id, xf.as_ref());
+        apply_rigid_transform(&mut report.surface.vertices, &placement);
     }
 
     // Use snapshotted values from the report — no re-read of project.yaml.
@@ -1742,5 +1769,128 @@ mod tests {
         let v = |i: u32| mesh.vertices[i as usize];
         let nrm = (v(t[1]) - v(t[0])).cross(&(v(t[2]) - v(t[0]))).normalize();
         assert!(nrm.z < -0.9, "Path A disguise front face must be -Z, got {nrm:?}");
+    }
+
+    #[test]
+    fn load_screen_transforms_prefers_digest_over_solve_ref() {
+        use std::collections::BTreeMap;
+        use volo_shared::dto::{
+            CoordinateSystemConfig, OutputConfig, ProjectMeta, RebuiltAlignment,
+            RebuiltAlignmentGroup, RebuiltAlignmentRefPoints, ScreenConfig, ScreenTransformEntry,
+            ShapeMode, ShapePriorConfig,
+        };
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let meas = root.join("measurements");
+        std::fs::create_dir_all(&meas).unwrap();
+
+        let write_xf = |name: &str, t_mm: [f64; 3]| {
+            let xf = ScreenTransformsFile {
+                schema_version: "visual_screen_transforms.v1".into(),
+                frame_screen_id: "ASUS".into(),
+                transforms: vec![ScreenTransformEntry {
+                    screen_id: "LG".into(),
+                    rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    t_mm,
+                    rms_px: 0.0,
+                    bridge_views: 0,
+                }],
+            };
+            let p = meas.join(name);
+            std::fs::write(&p, serde_json::to_vec_pretty(&xf).unwrap()).unwrap();
+            p
+        };
+        write_xf("current_screen_transforms.json", [2000.0, 0.0, 0.0]);
+        write_xf("stale_screen_transforms.json", [9999.0, 0.0, 0.0]);
+
+        let digest = serde_json::json!({
+            "schema_version": "visual_solve_digest.v1",
+            "status": "success",
+            "empty": false,
+            "ba_rms_px": 0.1,
+            "photos_used": 1,
+            "photos_total": 1,
+            "observation_points": 1,
+            "finished_at": "2026-07-19T00:00:00Z",
+            "ignored_photos": [],
+            "ref_screen_id": "ASUS",
+            "screen_transforms_path": "measurements/current_screen_transforms.json",
+            "screens": [],
+            "warnings": [],
+            "intrinsics_source": "file"
+        });
+        let digest_path = meas.join("solve.json");
+        std::fs::write(&digest_path, serde_json::to_vec_pretty(&digest).unwrap()).unwrap();
+
+        let screen = ScreenConfig {
+            cabinet_count: [1, 1],
+            cabinet_size_mm: [500.0, 500.0],
+            pixels_per_cabinet: None,
+            output_topology: None,
+            shape_prior: ShapePriorConfig::Flat,
+            shape_mode: ShapeMode::Rectangle,
+            irregular_mask: vec![],
+            bottom_completion: None,
+            position_m: [0.0, 0.0, 0.0],
+            yaw_deg: 0.0,
+            height_offset_mm: 0.0,
+            normal_flip: false,
+            origin_aligned: false,
+        };
+        let mut screens = BTreeMap::new();
+        screens.insert("LG".into(), screen);
+        let config = ProjectConfig {
+            project: ProjectMeta {
+                name: "t".into(),
+                unit: "m".into(),
+                method: None,
+            },
+            screens,
+            coordinate_system: CoordinateSystemConfig {
+                origin_point: String::new(),
+                x_axis_point: String::new(),
+                xy_plane_point: String::new(),
+            },
+            output: OutputConfig {
+                target: "neutral".into(),
+                obj_filename: "out.obj".into(),
+                weld_vertices_tolerance_mm: 1.0,
+                triangulate: true,
+            },
+            output_topology: None,
+            rebuilt_alignment: Some(RebuiltAlignment {
+                groups: vec![RebuiltAlignmentGroup {
+                    screens: vec!["LG".into()],
+                    rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    t_m: [0.0, 0.0, 0.0],
+                    ref_points: RebuiltAlignmentRefPoints {
+                        origin: "LG_V001_R001".into(),
+                        x_axis: None,
+                        xy_plane: None,
+                    },
+                    solve_ref: Some("measurements/stale_screen_transforms.json".into()),
+                    applied_at: "2026-07-19T00:00:00Z".into(),
+                }],
+            }),
+        };
+
+        let loaded = load_screen_transforms_for_export(
+            root,
+            &config,
+            "LG",
+            Some("measurements/solve.json"),
+        )
+        .expect("should load transforms");
+        let entry = loaded
+            .transforms
+            .iter()
+            .find(|t| t.screen_id == "LG")
+            .unwrap();
+        assert!(
+            (entry.t_mm[0] - 2000.0).abs() < 1e-9,
+            "must prefer digest transforms (2000), not stale solve_ref (9999); got {:?}",
+            entry.t_mm
+        );
     }
 }

@@ -14,6 +14,8 @@ import {
   loadProjectYaml, listRecentProjects, addRecentProject, seedExampleProject,
   reconstructSurface, listRuns, getRunReport, setRunCurrent,
 } from "../api/meshCommands";
+import { meshVisualLoadScreenTransforms } from "../api/meshVisualCommands";
+import { loadSolveDigestCached, peekSolveDigestCache } from "../api/visualSolveUi";
 
 (function () {
   const { Button, Badge } = window.Spectrum2DesignSystem_b6d1b3;
@@ -188,32 +190,122 @@ import {
     await reloadScreenReports(proj.path, proj.config, s);
   }
 
-  /* 多屏视口同时渲染需要"每块屏幕各自的最新重建"，不止当前激活屏
-     （区别于上面按 calActiveScreen 单屏刷新的 reloadRuns/proj.reconstruction，
-     后者供检查器/历史用）。按屏幕 fan-out listRuns，取 is_current（无显式当前
-     指针时退回最新一条，同 list_runs 的既定排序语义），再各拉一次完整 report。 */
+  /** 相对项目根拼绝对路径（yaml solve_ref → 读 transforms）。 */
+  function absUnderProject(projectPath, relOrAbs) {
+    if (!relOrAbs) return null;
+    const p = String(relOrAbs);
+    if (/^[A-Za-z]:[\\/]/.test(p) || p.startsWith('/')) return p;
+    const sep = projectPath.indexOf('\\') >= 0 ? '\\' : '/';
+    return projectPath.replace(/[\\/]+$/, '') + sep + p.replace(/^[\\/]+/, '');
+  }
+
+  /**
+   * A6：当前 run digest 的 screen_transforms_path → 回填 visualSession；
+   * yaml solve_ref 仅作后备。多独立联合组时只加载第一份，其余组回退名义摆放。
+   * 已确定当前项目不需要联合 SE(3)（无 visual_solve / 无 solve_ref）时清除会话 transforms，
+   * 避免切到全站仪/单屏后仍套用旧 SE(3)。不在 digest 加载完成前误清。
+   */
+  async function ensureScreenTransformsLoaded(projectPath, config, s, visualSolvePaths) {
+    const st = projStore.get();
+    let xfPath = null;
+    const uniq = Array.from(new Set((visualSolvePaths || []).filter(Boolean)));
+    for (let i = 0; i < uniq.length; i++) {
+      const peeked = peekSolveDigestCache(uniq[i]);
+      if (peeked && peeked.screen_transforms_path) {
+        xfPath = peeked.screen_transforms_path;
+        break;
+      }
+    }
+    if (!xfPath && uniq.length) {
+      const digests = await Promise.all(
+        uniq.map((p) => loadSolveDigestCached(p, { pushLog: s.pushLog })),
+      );
+      for (let i = 0; i < digests.length; i++) {
+        if (digests[i] && digests[i].screen_transforms_path) {
+          xfPath = digests[i].screen_transforms_path;
+          break;
+        }
+      }
+    }
+    if (!xfPath && config && config.rebuilt_alignment) {
+      const groups = config.rebuilt_alignment.groups || [];
+      for (let i = 0; i < groups.length; i++) {
+        if (groups[i].solve_ref) {
+          xfPath = absUnderProject(projectPath, groups[i].solve_ref);
+          break;
+        }
+      }
+    }
+    if (!xfPath) {
+      /* digest 已解析完毕（uniq 空或已 await），且无 solve_ref → 清除旧会话 SE(3) */
+      if (st.visualSession
+        && (st.visualSession.screenTransforms || st.visualSession.screenTransformsPath)) {
+        projStore.patch({
+          visualSession: Object.assign({}, st.visualSession, {
+            screenTransformsPath: null,
+            screenTransforms: null,
+          }),
+        });
+      }
+      return;
+    }
+    if (st.visualSession
+      && st.visualSession.screenTransformsPath === xfPath
+      && st.visualSession.screenTransforms) {
+      return;
+    }
+    try {
+      const transforms = await meshVisualLoadScreenTransforms(xfPath);
+      projStore.patch({
+        visualSession: Object.assign({}, st.visualSession || {}, {
+          screenTransformsPath: xfPath,
+          screenTransforms: transforms,
+        }),
+      });
+    } catch (e) {
+      s.pushLog({
+        lv: 'warn',
+        cat: 'survey',
+        msg: `读取屏间变换失败 · ${e && e.message ? e.message : e}`,
+      });
+    }
+  }
+
+  /* 多屏视口：每屏当前 run 的 report + 回填联合屏间 SE(3)（A6）。 */
   async function reloadScreenReports(projectPath, config, s) {
     if (!config) { s.setCalScreenReports({}); return; }
     const screenIds = Object.keys(config.screens);
     const st = projStore.get();
-    /* 激活屏若刚被同一 projectPath 下的 reloadRuns 拉过，直接复用其 reconstruction，
-       省一次重复的 listRuns+getRunReport 往返（rebuildMesh/setRunCurrentAction 总是
-       紧接着 reloadRuns 调用这里）。 */
+    /* 激活屏优先复用 reloadRuns 刚写入的 reconstruction + runs（省 listRuns/getRunReport）。 */
     const entries = await Promise.all(screenIds.map(async (id) => {
       if (id === s.calActiveScreen && st.path === projectPath && st.reconstruction) {
-        return [id, { surface: st.reconstruction.surface, quality_metrics: st.reconstruction.quality_metrics }];
+        const run = (st.runs || []).find((r) => r.is_current) || (st.runs || [])[0];
+        const solvePath = (run && run.visual_solve_path) || null;
+        return [id, { surface: st.reconstruction.surface, quality_metrics: st.reconstruction.quality_metrics }, solvePath];
       }
       try {
         const runs = await listRuns(projectPath, id);
-        if (!runs.length) return [id, null];
+        if (!runs.length) return [id, null, null];
         const run = runs.find((r) => r.is_current) || runs[0];
         const report = await getRunReport(run.id);
-        return [id, report];
-      } catch (e) { return [id, null]; }
+        return [id, report, (run && run.visual_solve_path) || null];
+      } catch (e) {
+        s.pushLog({
+          lv: 'warn',
+          cat: 'calibrate',
+          msg: `加载屏 ${id} 重建摘要失败 · ${e && e.message ? e.message : e}`,
+        });
+        return [id, null, null];
+      }
     }));
     const next = {};
-    entries.forEach(([id, report]) => { if (report) next[id] = report; });
+    const visualSolvePaths = [];
+    entries.forEach(([id, report, solvePath]) => {
+      if (report) next[id] = report;
+      if (solvePath) visualSolvePaths.push(solvePath);
+    });
     s.setCalScreenReports(next);
+    await ensureScreenTransformsLoaded(projectPath, config, s, visualSolvePaths);
   }
 
   /* 常驻控制器：随 center() 挂载（不随 calSection 切换卸载/重挂），负责首次自动打开

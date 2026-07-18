@@ -21,6 +21,22 @@ export const loadProjectYaml = (absPath: string) => call<ProjectConfig>("load_pr
 export const saveProjectYaml = (absPath: string, config: ProjectConfig) =>
   call<void>("save_project_yaml", { absPath, config });
 
+/* ----------------------------- rebuilt alignment ----------------------------- */
+export interface ComputeRebuiltAlignmentInput {
+  origin: [number, number, number];
+  x_axis?: [number, number, number] | null;
+  xy_plane?: [number, number, number] | null;
+  a_old_rotation?: [[number, number, number], [number, number, number], [number, number, number]];
+  a_old_t_m?: [number, number, number];
+}
+export interface ComputeRebuiltAlignmentResult {
+  rotation: [[number, number, number], [number, number, number], [number, number, number]];
+  t_m: [number, number, number];
+}
+/** ✅ wired: gridView「应用参考系」→ Rust `compute_rebuilt_alignment`（禁止前端重算 F⁻¹） */
+export const computeRebuiltAlignment = (input: ComputeRebuiltAlignmentInput) =>
+  call<ComputeRebuiltAlignmentResult>("mesh_compute_rebuilt_alignment", { input });
+
 /* ----------------------------- recent projects ----------------------------- */
 // ✅ wired: Calibrate 页加载时取最近项目 → listRecentProjects
 export const listRecentProjects = () => call<RecentProject[]>("list_recent_projects");
