@@ -7,6 +7,82 @@ function Reply([bool]$Ok, [string]$Message, [bool]$ClusterConnected = $false) {
         ConvertTo-Json -Compress -Depth 8
 }
 
+function Grant-VoloUsersModify {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    # SSH / admin-created files under ProgramData default to Users:RX only.
+    # The interactive launcher runs as the console user with RunLevel Limited, so
+    # it must be able to rewrite GUS before Start-Process.
+    try {
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        if ($item.PSIsContainer) {
+            & icacls.exe $Path /grant '*S-1-5-32-545:(OI)(CI)M' /T /C /Q 2>$null | Out-Null
+        } else {
+            & icacls.exe $Path /grant '*S-1-5-32-545:M' /C /Q 2>$null | Out-Null
+        }
+    } catch {}
+}
+
+function Write-VoloGameUserSettings {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][int]$WinX,
+        [Parameter(Mandatory = $true)][int]$WinY,
+        [Parameter(Mandatory = $true)][int]$WinW,
+        [Parameter(Mandatory = $true)][int]$WinH,
+        [int]$DisplayIndex = -1
+    )
+    $gusDirs = @(
+        (Join-Path $ProjectDir 'Saved\Config\WindowsEditor'),
+        (Join-Path $ProjectDir 'Saved\Config\Windows'),
+        (Join-Path $ProjectDir 'Saved\Config\WindowsNoEditor')
+    )
+    $gusLines = @(
+        '[/Script/Engine.GameUserSettings]',
+        # 2 = EWindowMode::Windowed (0 Fullscreen, 1 WindowedFullscreen)
+        'FullscreenMode=2',
+        'LastConfirmedFullscreenMode=2',
+        # 0 = exclusive fullscreen preference; 1 would steer r.FullScreenMode toward
+        # WindowedFullscreen which always recenters onto a monitor DisplayRect via
+        # SceneViewport::ResizeFrame — unusable for a secondary LED wall.
+        'PreferredFullscreenMode=0',
+        ('ResolutionSizeX={0}' -f $WinW),
+        ('ResolutionSizeY={0}' -f $WinH),
+        ('LastUserConfirmedResolutionSizeX={0}' -f $WinW),
+        ('LastUserConfirmedResolutionSizeY={0}' -f $WinH),
+        ('DesiredScreenWidth={0}' -f $WinW),
+        'bUseDesiredScreenHeight=True',
+        ('DesiredScreenHeight={0}' -f $WinH),
+        ('WindowPosX={0}' -f $WinX),
+        ('WindowPosY={0}' -f $WinY),
+        ('WindowPositions=(X={0},Y={1})' -f $WinX, $WinY),
+        'bUseVSync=False',
+        'bUseDynamicResolution=False',
+        'Version=5'
+    )
+    if ($DisplayIndex -ge 0) {
+        $gusLines += @(
+            ('DisplayIndex={0}' -f $DisplayIndex),
+            ('LastUserConfirmedDisplayIndex={0}' -f $DisplayIndex)
+        )
+    }
+    $gusBody = ($gusLines -join "`r`n") + "`r`n"
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    foreach ($gusDir in $gusDirs) {
+        New-Item -ItemType Directory -Force -Path $gusDir | Out-Null
+        Grant-VoloUsersModify -Path $gusDir
+        $gusPath = Join-Path $gusDir 'GameUserSettings.ini'
+        if (Test-Path -LiteralPath $gusPath) {
+            try {
+                $existing = Get-Item -LiteralPath $gusPath -Force
+                if ($existing.IsReadOnly) { $existing.IsReadOnly = $false }
+            } catch {}
+            Grant-VoloUsersModify -Path $gusPath
+        }
+        [System.IO.File]::WriteAllText($gusPath, $gusBody, $utf8NoBom)
+        Grant-VoloUsersModify -Path $gusPath
+    }
+}
+
 try {
     $line = [Console]::In.ReadLine()
     if ([string]::IsNullOrWhiteSpace($line)) { throw "missing JSON request" }
@@ -135,55 +211,274 @@ try {
             throw "no interactive console user logged on (required for -game rendering)"
         }
         Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
-        # The task action is a small launcher running IN the interactive session.
-        # It starts UE, then detaches a pin watchdog that keeps re-applying the
-        # node window origin (physical pixels, DPI-aware) for long enough to
-        # cover GameStart + viewport creation. The scheduled task itself is
-        # unregistered as soon as the UE process appears, so the pin loop must
-        # outlive the task via a separate Start-Process.
-        $launcherPath = Join-Path $projectDir "launch-$nodeId.ps1"
-        $pinPath = Join-Path $projectDir "pin-window-$nodeId.ps1"
-        $exeQ = ([string]$request.editor_path) -replace "'", "''"
-        $argQ = ($arguments -join ' ') -replace "'", "''"
-        $pinPathQ = $pinPath -replace "'", "''"
         $winX = [int]$request.window_x
         $winY = [int]$request.window_y
         $winW = [int]$request.window_width
         $winH = [int]$request.window_height
-        # Pin for 210s: GameStartBarrierTimeout is 180s in generated .ndisplay,
-        # plus margin for Create viewport manager / late r.SetRes sinks.
-        $pinLines = @(
-            'param([Parameter(Mandatory=$true)][int]$UePid, [int]$WinX, [int]$WinY, [int]$WinW, [int]$WinH)',
-            'Add-Type -TypeDefinition ''using System; using System.Runtime.InteropServices; public class VoloWin { [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int w, int hh, uint f); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v); }''',
-            # Physical-pixel coordinates for SetWindowPos (default PowerShell is
-            # not per-monitor DPI aware; without this the move is virtualized).
+        # Stale GUS (especially FullscreenMode=1 WindowedFullscreen) makes
+        # ApplySettings(false) rebind onto the primary monitor after GameStart.
+        # Seed now from SSH; the interactive launcher rewrites with a live
+        # DisplayIndex once monitor enumeration sees the real desktop.
+        Write-VoloGameUserSettings -ProjectDir $projectDir -WinX $winX -WinY $winY -WinW $winW -WinH $winH
+        # The task action is a small launcher running IN the interactive session.
+        # It rewrites GUS with the resolved monitor index, starts UE, then detaches
+        # a pin watchdog that keeps the outer HWND on the target monitor bounds.
+        $launcherPath = Join-Path $projectDir "launch-$nodeId.ps1"
+        $pinPath = Join-Path $projectDir "pin-window-$nodeId.ps1"
+        $exeQ = ([string]$request.editor_path) -replace "'", "''"
+        $argQ = ($arguments -join ' ') -replace "'", "''"
+        $projectDirQ = $projectDir -replace "'", "''"
+        $pinPathQ = $pinPath -replace "'", "''"
+        # Pin for process lifetime (cap 600s). EnumWindows (not MainWindowHandle)
+        # so we catch the HWND before first paint; strip OS chrome; hide→move→show
+        # onto monitor Bounds to avoid laptop↔LG bounce. FullscreenMode stays 2.
+        $pinBody = @'
+param([Parameter(Mandatory=$true)][int]$UePid, [int]$WinX, [int]$WinY, [int]$WinW, [int]$WinH)
+Add-Type -TypeDefinition @"
+using System;
+using System.Text;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+public class VoloWin {
+  public delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int n);
+  [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr h, int n, int v);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int w, int hh, uint f);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v);
+  [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr h);
+  [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L; public int T; public int R; public int B; }
+  public static List<IntPtr> FindGameHwnds(uint pid) {
+    var list = new List<IntPtr>();
+    EnumWindows((h, l) => {
+      uint wpid = 0;
+      GetWindowThreadProcessId(h, out wpid);
+      if (wpid != pid) return true;
+      RECT wr; GetWindowRect(h, out wr);
+      int ow = wr.R - wr.L, oh = wr.B - wr.T;
+      if (ow < 64 || oh < 64) return true;
+      // Skip IME / tool windows; keep untitled splash / game HWNDs.
+      int len = GetWindowTextLength(h);
+      if (len > 0) {
+        var sb = new StringBuilder(len + 1);
+        GetWindowText(h, sb, sb.Capacity);
+        string t = sb.ToString();
+        if (t.IndexOf("IME", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        if (t.IndexOf("MSCTF", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+      } else if (!IsWindowVisible(h)) {
+        return true;
+      }
+      list.Add(h);
+      return true;
+    }, IntPtr.Zero);
+    return list;
+  }
+}
+"@
+[VoloWin]::SetProcessDpiAwarenessContext([IntPtr](-4)) | Out-Null
+$deadline = (Get-Date).AddSeconds(600)
+$t0 = Get-Date
+$log = Join-Path $PSScriptRoot ('pin-window-{0}.log' -f $UePid)
+('pin start pid={0} target={1},{2} {3}x{4}' -f $UePid, $WinX, $WinY, $WinW, $WinH) | Set-Content -LiteralPath $log -Encoding ASCII
+$script:firstPlaced = $false
+$script:lastTopmost = Get-Date
+function Apply-VoloBorderless([IntPtr]$Hwnd) {
+    $GWL_STYLE = -16
+    # Chrome bits to clear (caption/thickframe/sysmenu/minmax/border/dlgframe).
+    $chrome = [int]0x00CF0000
+    $WS_POPUP = [int]0x80000000
+    $WS_VISIBLE = [int]0x10000000
+    $WS_CLIPCHILDREN = [int]0x02000000
+    $WS_CLIPSIBLINGS = [int]0x04000000
+    $style = [VoloWin]::GetWindowLong($Hwnd, $GWL_STYLE)
+    $hadChrome = (($style -band $chrome) -ne 0)
+    $keepVisible = ($style -band $WS_VISIBLE)
+    $newStyle = [int](($style -band (-bnot $chrome)) -bor $WS_POPUP -bor $WS_CLIPCHILDREN -bor $WS_CLIPSIBLINGS -bor $keepVisible)
+    if ($newStyle -ne $style) {
+        [void][VoloWin]::SetWindowLong($Hwnd, $GWL_STYLE, $newStyle)
+    }
+    return ($hadChrome -or ($newStyle -ne $style))
+}
+function Place-VoloWindow([IntPtr]$Hwnd, [bool]$Initial) {
+    $rect = New-Object VoloWin+RECT
+    [void][VoloWin]::GetWindowRect($Hwnd, [ref]$rect)
+    $ow = $rect.R - $rect.L; $oh = $rect.B - $rect.T
+    $cr = New-Object VoloWin+RECT
+    [void][VoloWin]::GetClientRect($Hwnd, [ref]$cr)
+    $cw = $cr.R - $cr.L; $ch = $cr.B - $cr.T
+    $styleChanged = Apply-VoloBorderless $Hwnd
+    $posBad = ($rect.L -ne $WinX) -or ($rect.T -ne $WinY) -or ($ow -ne $WinW) -or ($oh -ne $WinH)
+    $clientBad = ($cw -ne $WinW) -or ($ch -ne $WinH)
+    if (-not ($Initial -or $styleChanged -or $posBad -or $clientBad)) { return $false }
+    # Hide when first placing or when the window is off the target monitor Bounds
+    # so the user never sees the primary-monitor splash cross the desktop.
+    $onTarget = ($rect.L -ge $WinX) -and ($rect.T -ge $WinY) -and ($rect.R -le ($WinX + $WinW)) -and ($rect.B -le ($WinY + $WinH))
+    if ($Initial -or (-not $onTarget)) {
+        [void][VoloWin]::ShowWindow($Hwnd, 0) # SW_HIDE
+    }
+    # 0x0020 FRAMECHANGED + 0x0040 SHOWWINDOW; HWND_TOPMOST=-1
+    [void][VoloWin]::SetWindowPos($Hwnd, [IntPtr](-1), $WinX, $WinY, $WinW, $WinH, 0x0060)
+    [void][VoloWin]::ShowWindow($Hwnd, 5) # SW_SHOW
+    ('{0:o} place outer ({1},{2}) {3}x{4} client {5}x{6} initial={7} style={8} -> ({9},{10}) {11}x{12}' -f `
+        (Get-Date), $rect.L, $rect.T, $ow, $oh, $cw, $ch, $Initial, $styleChanged, $WinX, $WinY, $WinW, $WinH) |
+        Add-Content -LiteralPath $log -Encoding ASCII
+    return $true
+}
+while ((Get-Date) -lt $deadline) {
+    try { $proc = Get-Process -Id $UePid -ErrorAction Stop } catch { exit 0 }
+    if ($proc.HasExited) { exit 0 }
+    $hwnds = [VoloWin]::FindGameHwnds([uint32]$UePid)
+    try {
+        $proc.Refresh()
+        if ($proc.MainWindowHandle -ne [IntPtr]::Zero -and -not ($hwnds -contains $proc.MainWindowHandle)) {
+            $hwnds.Add($proc.MainWindowHandle)
+        }
+    } catch {}
+    foreach ($hwnd in $hwnds) {
+        $isInitial = -not $script:firstPlaced
+        if (Place-VoloWindow $hwnd $isInitial) {
+            if ($isInitial) {
+                [void][VoloWin]::SetForegroundWindow($hwnd)
+                $script:firstPlaced = $true
+            }
+        } elseif (((Get-Date) - $script:lastTopmost).TotalSeconds -ge 2) {
+            # Reassert TOPMOST without moving (avoids 16ms SetWindowPos flicker).
+            [void][VoloWin]::SetWindowPos($hwnd, [IntPtr](-1), 0, 0, 0, 0, 0x0013) # NOSIZE|NOMOVE|NOACTIVATE
+            $script:lastTopmost = Get-Date
+        }
+    }
+    $elapsed = ((Get-Date) - $t0).TotalSeconds
+    $sleepMs = if (-not $script:firstPlaced) { 1 } elseif ($elapsed -lt 120) { 8 } else { 100 }
+    Start-Sleep -Milliseconds $sleepMs
+}
+'@
+        # ASCII / UTF8-no-BOM: Windows PowerShell -Encoding UTF8 writes a BOM that
+        # breaks `param()` as the first token of the generated pin script.
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($pinPath, $pinBody, $utf8NoBom)
+        $launcherLines = @(
+            # GUS rewrite is best-effort: SSH-seeded files under ProgramData may be
+            # Administrators-owned (Users:RX). Never block Start-Process on that.
+            '$ErrorActionPreference = ''Continue''',
+            'Add-Type -AssemblyName System.Windows.Forms',
+            'Add-Type -TypeDefinition ''using System; using System.Runtime.InteropServices; public class VoloWin { [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v); }''',
             '[VoloWin]::SetProcessDpiAwarenessContext([IntPtr](-4)) | Out-Null',
-            '$deadline = (Get-Date).AddSeconds(210)',
-            '$raised = $false',
-            'while ((Get-Date) -lt $deadline) {',
-            '    try { $proc = Get-Process -Id $UePid -ErrorAction Stop } catch { exit 0 }',
-            '    if ($proc.HasExited) { exit 0 }',
-            '    $proc.Refresh()',
-            '    if ($proc.MainWindowHandle -ne [IntPtr]::Zero) {',
-            '        # 0x0044 = SWP_NOZORDER | SWP_SHOWWINDOW; pin size+pos against ResizeFrame recenter.',
-            '        [VoloWin]::SetWindowPos($proc.MainWindowHandle, [IntPtr]::Zero, $WinX, $WinY, $WinW, $WinH, 0x0044) | Out-Null',
-            '        if (-not $raised) {',
-            '            [VoloWin]::SetWindowPos($proc.MainWindowHandle, [IntPtr](-1), 0, 0, 0, 0, 0x0003) | Out-Null',
-            '            [VoloWin]::SetWindowPos($proc.MainWindowHandle, [IntPtr](-2), 0, 0, 0, 0, 0x0003) | Out-Null',
-            '            [VoloWin]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null',
-            '            $raised = $true',
+            ('$WinX = {0}; $WinY = {1}; $WinW = {2}; $WinH = {3}' -f $winX, $winY, $winW, $winH),
+            '$pinX = $WinX; $pinY = $WinY; $pinW = $WinW; $pinH = $WinH',
+            '$displayIndex = -1',
+            '$screens = @([System.Windows.Forms.Screen]::AllScreens)',
+            '$idx = 0',
+            'foreach ($screen in $screens) {',
+            '    $b = $screen.Bounds',
+            '    if (($WinX -ge $b.X) -and ($WinX -lt ($b.X + $b.Width)) -and ($WinY -ge $b.Y) -and ($WinY -lt ($b.Y + $b.Height))) {',
+            '        $displayIndex = $idx',
+            '        $pinX = $b.X; $pinY = $b.Y; $pinW = $b.Width; $pinH = $b.Height',
+            '        break',
+            '    }',
+            '    $idx++',
+            '}',
+            # Single-monitor nodes (LanPC→ASUS): if origin missed every Bounds
+            # (DPI / virtual-display oddities), pin the only real screen.
+            'if (($displayIndex -lt 0) -and ($screens.Count -eq 1)) {',
+            '    $b = $screens[0].Bounds',
+            '    $displayIndex = 0',
+            '    $pinX = $b.X; $pinY = $b.Y; $pinW = $b.Width; $pinH = $b.Height',
+            '}',
+            ('$projectDir = ''{0}''' -f $projectDirQ),
+            '$gusDirs = @(',
+            '    (Join-Path $projectDir ''Saved\Config\WindowsEditor''),',
+            '    (Join-Path $projectDir ''Saved\Config\Windows''),',
+            '    (Join-Path $projectDir ''Saved\Config\WindowsNoEditor'')',
+            ')',
+            '$gusLines = @(',
+            '    ''[/Script/Engine.GameUserSettings]'',',
+            '    ''FullscreenMode=2'',',
+            '    ''LastConfirmedFullscreenMode=2'',',
+            '    ''PreferredFullscreenMode=0'',',
+            '    (''ResolutionSizeX={0}'' -f $pinW),',
+            '    (''ResolutionSizeY={0}'' -f $pinH),',
+            '    (''LastUserConfirmedResolutionSizeX={0}'' -f $pinW),',
+            '    (''LastUserConfirmedResolutionSizeY={0}'' -f $pinH),',
+            '    (''DesiredScreenWidth={0}'' -f $pinW),',
+            '    ''bUseDesiredScreenHeight=True'',',
+            '    (''DesiredScreenHeight={0}'' -f $pinH),',
+            '    (''WindowPosX={0}'' -f $pinX),',
+            '    (''WindowPosY={0}'' -f $pinY),',
+            '    (''WindowPositions=(X={0},Y={1})'' -f $pinX, $pinY),',
+            '    ''bUseVSync=False'',',
+            '    ''bUseDynamicResolution=False'',',
+            '    ''Version=5''',
+            ')',
+            'if ($displayIndex -ge 0) {',
+            '    $gusLines += @(',
+            '        (''DisplayIndex={0}'' -f $displayIndex),',
+            '        (''LastUserConfirmedDisplayIndex={0}'' -f $displayIndex)',
+            '    )',
+            '}',
+            '$gusBody = ($gusLines -join "`r`n") + "`r`n"',
+            '$utf8NoBom = New-Object System.Text.UTF8Encoding($false)',
+            'foreach ($gusDir in $gusDirs) {',
+            '    try {',
+            '        New-Item -ItemType Directory -Force -Path $gusDir | Out-Null',
+            '        $gusPath = Join-Path $gusDir ''GameUserSettings.ini''',
+            '        if (Test-Path -LiteralPath $gusPath) {',
+            '            try { $g = Get-Item -LiteralPath $gusPath -Force; if ($g.IsReadOnly) { $g.IsReadOnly = $false } } catch {}',
+            '            icacls.exe $gusPath /grant ''*S-1-5-32-545:M'' /C /Q 2>$null | Out-Null',
+            '        }',
+            '        [System.IO.File]::WriteAllText($gusPath, $gusBody, $utf8NoBom)',
+            '    } catch {',
+            '        # Keep going — SSH seed + -WinX/-WinY/-ForceRes still apply.',
+            '    }',
+            '}',
+            ('$p = Start-Process -FilePath ''{0}'' -ArgumentList ''{1}'' -PassThru' -f $exeQ, $argQ),
+            'if (-not $p) { throw ''Start-Process UnrealEditor returned no process'' }',
+            # Detached pin covers the full process lifetime; the sync burst below
+            # covers the ~0.5s second-PowerShell cold start so the first HWND is
+            # already hidden+moved before it can paint on the primary monitor.
+            ('$pinArgs = ''-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -UePid '' + $p.Id + '' -WinX '' + $pinX + '' -WinY '' + $pinY + '' -WinW '' + $pinW + '' -WinH '' + $pinH' -f $pinPathQ),
+            'Start-Process -FilePath ''powershell.exe'' -ArgumentList $pinArgs -WindowStyle Hidden | Out-Null',
+            'Add-Type -TypeDefinition ''using System; using System.Collections.Generic; using System.Runtime.InteropServices; public class VoloBurst { public delegate bool EnumProc(IntPtr h, IntPtr l); [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid); [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r); [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int n); [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr h, int n, int v); [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int w, int hh, uint f); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd); [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr h); [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L; public int T; public int R; public int B; } }''',
+            '$burstEnd = (Get-Date).AddSeconds(5)',
+            '$uePidBurst = [uint32]$p.Id',
+            'while ((Get-Date) -lt $burstEnd) {',
+            '    try { if ((Get-Process -Id $p.Id -ErrorAction Stop).HasExited) { break } } catch { break }',
+            '    $script:burstHwnds = New-Object System.Collections.Generic.List[IntPtr]',
+            '    $cb = [VoloBurst+EnumProc]{',
+            '        param([IntPtr]$h, [IntPtr]$l)',
+            '        $wpid = [uint32]0',
+            '        [void][VoloBurst]::GetWindowThreadProcessId($h, [ref]$wpid)',
+            '        if ($wpid -ne $uePidBurst) { return $true }',
+            '        $wr = New-Object VoloBurst+RECT',
+            '        [void][VoloBurst]::GetWindowRect($h, [ref]$wr)',
+            '        if ((($wr.R - $wr.L) -lt 64) -or (($wr.B - $wr.T) -lt 64)) { return $true }',
+            '        $script:burstHwnds.Add($h)',
+            '        return $true',
+            '    }',
+            '    [void][VoloBurst]::EnumWindows($cb, [IntPtr]::Zero)',
+            '    foreach ($h in $script:burstHwnds) {',
+            '        $st = [VoloBurst]::GetWindowLong($h, -16)',
+            '        $chrome = [int]0x00CF0000',
+            '        $ns = [int](($st -band (-bnot $chrome)) -bor [int]0x80000000 -bor [int]0x02000000 -bor [int]0x04000000 -bor ($st -band [int]0x10000000))',
+            '        if ($ns -ne $st) { [void][VoloBurst]::SetWindowLong($h, -16, $ns) }',
+            '        $wr = New-Object VoloBurst+RECT',
+            '        [void][VoloBurst]::GetWindowRect($h, [ref]$wr)',
+            '        $onTarget = ($wr.L -ge $pinX) -and ($wr.T -ge $pinY) -and ($wr.R -le ($pinX + $pinW)) -and ($wr.B -le ($pinY + $pinH))',
+            '        $sizeOk = (($wr.R - $wr.L) -eq $pinW) -and (($wr.B - $wr.T) -eq $pinH)',
+            '        if ((-not $onTarget) -or (-not $sizeOk) -or (($st -band $chrome) -ne 0)) {',
+            '            if (-not $onTarget) { [void][VoloBurst]::ShowWindow($h, 0) }',
+            '            [void][VoloBurst]::SetWindowPos($h, [IntPtr](-1), $pinX, $pinY, $pinW, $pinH, 0x0060)',
+            '            [void][VoloBurst]::ShowWindow($h, 5)',
             '        }',
             '    }',
-            '    Start-Sleep -Seconds 2',
+            '    Start-Sleep -Milliseconds 1',
             '}'
-        )
-        Set-Content -LiteralPath $pinPath -Value $pinLines -Encoding ASCII
-        $launcherLines = @(
-            ('$p = Start-Process -FilePath ''{0}'' -ArgumentList ''{1}'' -PassThru' -f $exeQ, $argQ),
-            # Detach pin so Unregister-ScheduledTask on the launcher task cannot
-            # cut short the 210s GameStart coverage window.
-            ('$pinArgs = ''-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -UePid '' + $p.Id + '' -WinX {1} -WinY {2} -WinW {3} -WinH {4}''' -f $pinPathQ, $winX, $winY, $winW, $winH),
-            'Start-Process -FilePath ''powershell.exe'' -ArgumentList $pinArgs -WindowStyle Hidden | Out-Null'
         )
         Set-Content -LiteralPath $launcherPath -Value $launcherLines -Encoding ASCII
         $taskName = "VoloOutput-$nodeId-$([guid]::NewGuid().ToString('N').Substring(0, 8))"

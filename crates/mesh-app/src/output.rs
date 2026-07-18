@@ -111,6 +111,10 @@ pub fn deploy<T: OutputTransport>(
             win_join(project_root, "Config\\DefaultEngine.ini"),
         ),
         (
+            template_root.join("Config/DefaultGame.ini"),
+            win_join(project_root, "Config\\DefaultGame.ini"),
+        ),
+        (
             template_root.join("Config/DefaultRemoteControl.ini"),
             win_join(project_root, "Config\\DefaultRemoteControl.ini"),
         ),
@@ -644,6 +648,7 @@ mod tests {
         for relative in [
             "VoloOutput.uproject",
             "Config/DefaultEngine.ini",
+            "Config/DefaultGame.ini",
             "Config/DefaultRemoteControl.ini",
             "Content/VoloOutput/BP_VoloOutput.uasset",
         ] {
@@ -672,7 +677,7 @@ mod tests {
                 .iter()
                 .filter(|call| call.starts_with("push:"))
                 .count(),
-            8
+            10
         );
         assert_eq!(
             calls
