@@ -108,9 +108,14 @@ try {
             ('-ResY={0}' -f [int]$request.window_height),
             # UE only reads .ndisplay window x/y through a launcher (Switchboard
             # passes -WinX/-WinY); the engine itself ignores them in -game mode.
-            # -forceres keeps the command-line geometry from being overridden by
-            # the post-init r.SetRes default (1280x720) which re-centered the
-            # window onto the primary monitor (Razer real-machine evidence).
+            # -ForceRes only prevents ConditionallyOverrideSettings from clamping
+            # ResX/ResY to the *primary* monitor size (GameEngine.cpp). It does
+            # NOT stop a later SceneViewport::ResizeFrame from re-centering the
+            # window onto the primary work area when size appears to change
+            # (common after nDisplay GameStart → Create viewport manager).
+            # Dual-node start waits up to GameStartBarrierTimeout (180s), so that
+            # late recenter is far more visible than single-node. Position is
+            # therefore also pinned from the interactive launcher (see below).
             ('-WinX={0}' -f [int]$request.window_x),
             ('-WinY={0}' -f [int]$request.window_y),
             '-forceres',
@@ -130,27 +135,55 @@ try {
             throw "no interactive console user logged on (required for -game rendering)"
         }
         Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
-        # The task action is a small launcher running IN the interactive session:
-        # it starts UE, waits for the main window, then flips TOPMOST on and off
-        # (SetWindowPos) to raise it above existing windows. Windows foreground
-        # lock blocks background-spawned windows from surfacing on their own.
+        # The task action is a small launcher running IN the interactive session.
+        # It starts UE, then detaches a pin watchdog that keeps re-applying the
+        # node window origin (physical pixels, DPI-aware) for long enough to
+        # cover GameStart + viewport creation. The scheduled task itself is
+        # unregistered as soon as the UE process appears, so the pin loop must
+        # outlive the task via a separate Start-Process.
         $launcherPath = Join-Path $projectDir "launch-$nodeId.ps1"
+        $pinPath = Join-Path $projectDir "pin-window-$nodeId.ps1"
         $exeQ = ([string]$request.editor_path) -replace "'", "''"
         $argQ = ($arguments -join ' ') -replace "'", "''"
+        $pinPathQ = $pinPath -replace "'", "''"
+        $winX = [int]$request.window_x
+        $winY = [int]$request.window_y
+        $winW = [int]$request.window_width
+        $winH = [int]$request.window_height
+        # Pin for 210s: GameStartBarrierTimeout is 180s in generated .ndisplay,
+        # plus margin for Create viewport manager / late r.SetRes sinks.
+        $pinLines = @(
+            'param([Parameter(Mandatory=$true)][int]$UePid, [int]$WinX, [int]$WinY, [int]$WinW, [int]$WinH)',
+            'Add-Type -TypeDefinition ''using System; using System.Runtime.InteropServices; public class VoloWin { [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int w, int hh, uint f); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v); }''',
+            # Physical-pixel coordinates for SetWindowPos (default PowerShell is
+            # not per-monitor DPI aware; without this the move is virtualized).
+            '[VoloWin]::SetProcessDpiAwarenessContext([IntPtr](-4)) | Out-Null',
+            '$deadline = (Get-Date).AddSeconds(210)',
+            '$raised = $false',
+            'while ((Get-Date) -lt $deadline) {',
+            '    try { $proc = Get-Process -Id $UePid -ErrorAction Stop } catch { exit 0 }',
+            '    if ($proc.HasExited) { exit 0 }',
+            '    $proc.Refresh()',
+            '    if ($proc.MainWindowHandle -ne [IntPtr]::Zero) {',
+            '        # 0x0044 = SWP_NOZORDER | SWP_SHOWWINDOW; pin size+pos against ResizeFrame recenter.',
+            '        [VoloWin]::SetWindowPos($proc.MainWindowHandle, [IntPtr]::Zero, $WinX, $WinY, $WinW, $WinH, 0x0044) | Out-Null',
+            '        if (-not $raised) {',
+            '            [VoloWin]::SetWindowPos($proc.MainWindowHandle, [IntPtr](-1), 0, 0, 0, 0, 0x0003) | Out-Null',
+            '            [VoloWin]::SetWindowPos($proc.MainWindowHandle, [IntPtr](-2), 0, 0, 0, 0, 0x0003) | Out-Null',
+            '            [VoloWin]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null',
+            '            $raised = $true',
+            '        }',
+            '    }',
+            '    Start-Sleep -Seconds 2',
+            '}'
+        )
+        Set-Content -LiteralPath $pinPath -Value $pinLines -Encoding ASCII
         $launcherLines = @(
             ('$p = Start-Process -FilePath ''{0}'' -ArgumentList ''{1}'' -PassThru' -f $exeQ, $argQ),
-            'Add-Type -TypeDefinition ''using System; using System.Runtime.InteropServices; public class VoloWin { [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int w, int hh, uint f); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }''',
-            'for ($i = 0; $i -lt 240; $i++) {',
-            '    Start-Sleep -Milliseconds 500',
-            '    $p.Refresh()',
-            '    if ($p.HasExited) { exit 0 }',
-            '    if ($p.MainWindowHandle -ne [IntPtr]::Zero) { break }',
-            '}',
-            'if ($p.MainWindowHandle -ne [IntPtr]::Zero) {',
-            '    [VoloWin]::SetWindowPos($p.MainWindowHandle, [IntPtr](-1), 0, 0, 0, 0, 0x0003) | Out-Null',
-            '    [VoloWin]::SetWindowPos($p.MainWindowHandle, [IntPtr](-2), 0, 0, 0, 0, 0x0003) | Out-Null',
-            '    [VoloWin]::SetForegroundWindow($p.MainWindowHandle) | Out-Null',
-            '}'
+            # Detach pin so Unregister-ScheduledTask on the launcher task cannot
+            # cut short the 210s GameStart coverage window.
+            ('$pinArgs = ''-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -UePid '' + $p.Id + '' -WinX {1} -WinY {2} -WinW {3} -WinH {4}''' -f $pinPathQ, $winX, $winY, $winW, $winH),
+            'Start-Process -FilePath ''powershell.exe'' -ArgumentList $pinArgs -WindowStyle Hidden | Out-Null'
         )
         Set-Content -LiteralPath $launcherPath -Value $launcherLines -Encoding ASCII
         $taskName = "VoloOutput-$nodeId-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
