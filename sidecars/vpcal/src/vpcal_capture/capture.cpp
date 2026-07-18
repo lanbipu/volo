@@ -273,8 +273,11 @@ void DeckLinkInput::start() {
     std::snprintf(buf, sizeof(buf),
                   "EnableVideoInput failed (hr=0x%08lX%s)",
                   static_cast<unsigned long>(hr),
-                  hr == E_ACCESSDENIED ? ", device busy / in use by another application"
-                                       : "");
+                  // BMD's Windows driver reports an in-use device as E_FAIL
+                  // (verified on UltraStudio 4K Mini), not just E_ACCESSDENIED.
+                  hr == E_ACCESSDENIED || hr == E_FAIL
+                      ? ", device busy / in use by another application"
+                      : "");
     throw std::runtime_error(buf);
   }
   hr = input_->StartStreams();
