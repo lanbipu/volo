@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <stdexcept>
 
 #ifdef _WIN32
@@ -268,11 +269,21 @@ void DeckLinkInput::start() {
   HRESULT hr = input_->EnableVideoInput(bmdModeHD1080p25, pixel_format_,
                                         bmdVideoInputEnableFormatDetection);
   if (hr != S_OK) {
-    throw std::runtime_error("EnableVideoInput failed (signal/driver state)");
+    char buf[96];
+    std::snprintf(buf, sizeof(buf),
+                  "EnableVideoInput failed (hr=0x%08lX%s)",
+                  static_cast<unsigned long>(hr),
+                  hr == E_ACCESSDENIED ? ", device busy / in use by another application"
+                                       : "");
+    throw std::runtime_error(buf);
   }
-  if (input_->StartStreams() != S_OK) {
+  hr = input_->StartStreams();
+  if (hr != S_OK) {
     input_->DisableVideoInput();
-    throw std::runtime_error("StartStreams failed");
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "StartStreams failed (hr=0x%08lX)",
+                  static_cast<unsigned long>(hr));
+    throw std::runtime_error(buf);
   }
   running_ = true;
 }

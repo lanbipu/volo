@@ -21,7 +21,7 @@
      的既有真实数据渲染）。 */
 import * as React from "react";
 import { pickDirectory, pickFile } from "../api/commands";
-import { spawnSidecarStreaming, cancelSidecarTask, useSidecarStream } from "../api/sidecarStream";
+import { spawnSidecarStreaming, cancelSidecarTask, listenSidecarStream, useSidecarStream } from "../api/sidecarStream";
 import { useCaptureSession } from "./devCapture";
 import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern } from "../api/player";
 import { exportVpcalScreen } from "../api/meshCommands";
@@ -142,10 +142,26 @@ import { exportVpcalScreen } from "../api/meshCommands";
     }, [active, stream.state.exit]);
 
     /* 采集开始前显式让出设备：调用方必须 await 这个再去 spawn 真实 capture session，
-       避免监看流还没释放设备、新会话就去抢占同一个 backend/device 导致 device busy。 */
+       避免监看流还没释放设备、新会话就去抢占同一个 backend/device 导致 device busy。
+       cancel_sidecar_task 只投递 Cancel 就返回（进程还有最长 3s 的 grace 窗口），
+       所以这里必须订阅 exit 事件等进程真正退出——DeckLink/UVC 是独占设备，早一毫秒
+       spawn 真会话都会 EnableVideoInput busy。5s 兜底超时 > Rust 侧 3s grace + kill。 */
     const stop = async () => {
-      if (taskRef.current) await cancelSidecarTask(taskRef.current);
+      const t = taskRef.current;
+      taskRef.current = null;
       setTask(null); setUrl(null); setSig('waiting');
+      if (!t) return;
+      await new Promise((resolve) => {
+        let un = null;
+        let done = false;
+        const finish = () => { if (done) return; done = true; clearTimeout(timer); if (un) un(); resolve(); };
+        const timer = setTimeout(finish, 5000);
+        (async () => {
+          /* 先建立 exit 订阅、再发 Cancel，避免退出事件抢跑在订阅之前被漏掉。 */
+          try { const fn = await listenSidecarStream(t, (ev) => { if (ev.kind === 'exit') finish(); }); if (done) fn(); else un = fn; } catch (e) {}
+          try { const alive = await cancelSidecarTask(t); if (!alive || !un) finish(); } catch (e) { finish(); }
+        })();
+      });
     };
 
     return { sig, url, fmt, stop };

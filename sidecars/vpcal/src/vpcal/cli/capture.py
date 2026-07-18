@@ -260,6 +260,20 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
                                    # survive signal drops instead of exiting.
                                    "keep_alive": duration_s == 0 and preview_port is not None})
         src = open_backend(cfg)
+        # Monitor mode (duration 0 + preview) is Volo-driven: the bridge closes
+        # our stdin on cancel, but a hard kill only lands after a 3 s grace —
+        # far too long for an exclusive device (DeckLink/UVC) the real capture
+        # session is waiting to reopen. Watch stdin for EOF and exit promptly.
+        stdin_closed = threading.Event()
+        if duration_s == 0 and preview_port is not None:
+            def _watch_stdin() -> None:
+                try:
+                    while sys.stdin.buffer.read(4096):
+                        pass
+                except Exception:
+                    pass
+                stdin_closed.set()
+            threading.Thread(target=_watch_stdin, daemon=True).start()
         sink, server = _make_preview(preview_port, emitter)
         out = Path(out_dir) if out_dir else None
         manifest_fh = None
@@ -309,6 +323,8 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
                         "timecode": frame.timecode,
                     }, text=f"{n} frames ({n / (now - t0):.1f} fps)")
                     last_report = now
+                if stdin_closed.is_set():
+                    break
                 if duration_s > 0 and now - t0 >= duration_s:
                     break
                 if max_frames is not None and n >= max_frames:
