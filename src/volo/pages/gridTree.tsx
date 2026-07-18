@@ -15,7 +15,15 @@ import * as React from "react";
 import { pickFile } from "../api/commands";
 import { isTauri } from "../api/invoke";
 import { importTotalStationCsv, loadMeasurementsYaml, saveProjectYaml } from "../api/meshCommands";
-import { meshVisualGeneratePattern, meshVisualReconstruct, vpqspScreenIdCode } from "../api/meshVisualCommands";
+import {
+  meshVisualGeneratePattern, meshVisualReconstruct, vpqspScreenIdCode,
+} from "../api/meshVisualCommands";
+import {
+  applyReconstructDone, errMsg, formatReconstructWarning,
+} from "../api/visualReconstructLanding";
+import {
+  loadSolveDigestCached, screenSolveStatusFromDigest, sessionSolveStatus,
+} from "../api/visualSolveUi";
 import { listen } from "@tauri-apps/api/event";
 
 (function () {
@@ -94,8 +102,20 @@ import { listen } from "@tauri-apps/api/event";
     const [openS, setOpenS] = useState(true);
     const [openMeas, setOpenMeas] = useState(true);
     const [openRuns, setOpenRuns] = useState(true);
-    if (!proj.config) return h('div', { className: 'gw-tree' }, h('div', { className: 'gw-tempty' }, '加载中…'));
+    const [solveDigest, setSolveDigest] = useState(null);
     const screenId = s.calActiveScreen;
+    const solvePath = (proj.visualSession && proj.visualSession.visualSolvePath)
+      || ((proj.runs || []).find((r) => r.is_current && r.visual_solve_path)
+        || (proj.runs || []).find((r) => r.visual_solve_path)
+        || {}).visual_solve_path
+      || null;
+    useEffect(() => {
+      let alive = true;
+      if (!solvePath) { setSolveDigest(null); return undefined; }
+      loadSolveDigestCached(solvePath, { pushLog: s.pushLog }).then((d) => { if (alive) setSolveDigest(d); });
+      return () => { alive = false; };
+    }, [solvePath]);
+    if (!proj.config) return h('div', { className: 'gw-tree' }, h('div', { className: 'gw-tempty' }, '加载中…'));
     const m = proj.config.screens[screenId];
     const runs = proj.runs || [];
     const sel = s.calSel;
@@ -127,11 +147,18 @@ import { listen } from "@tauri-apps/api/event";
           caret(false, null, true), h('span', { className: 'gw-tico' }, h(Icon, { name: 'target', size: 14 })),
           h('span', { className: 'gw-tlabel gw-tempty' }, '全站仪数据集'),
           h('button', { className: 'gw-tinline', onClick: () => s.setCalFlow('totalstation') }, h(Icon, { name: 'download', size: 12 }), '导入'));
+    const meshBuilt = !!(s.calScreenReports && s.calScreenReports[screenId]);
+    const screenSolveKey = (sid) => screenSolveStatusFromDigest(meshBuilt, solveDigest, sid, {
+      sessionScreenId: screenId,
+      hasVisualRun: (proj.runs || []).some((r) => r.screen_id === sid && r.visual_solve_path),
+    });
+    const vsStatusKey = sessionSolveStatus(meshBuilt, solveDigest, hasVs);
+    const vst = GRID_SOLVE_STATUS[vsStatusKey] || GRID_SOLVE_STATUS.none;
     const vsNode = hasVs
-      ? h('div', { key: 'vs', className: 'gw-tnode' + (selType === 'survey' && sel.kind === 'vs' ? ' on' : ''), onClick: () => { s.setCalSel({ type: 'survey', kind: 'vs' }); s.setCalFlow('visual'); } },
+      ? h('div', { key: 'vs', className: 'gw-tnode' + (selType === 'survey' && sel.kind === 'vs' ? ' on' : ''), onClick: () => { s.setCalSel({ type: 'survey', kind: 'vs' }); s.setCalFlow('visual'); }, title: (proj.visualSession.poses || 0) + ' 姿位 · 求解 ' + vst.label },
           caret(false, null, true), h('span', { className: 'gw-tico' }, h(Icon, { name: 'camera', size: 14 })),
           h('span', { className: 'gw-tlabel' }, '视觉采集会话'),
-          h('span', { className: 'gw-tmeta' }, (proj.visualSession.poses || 0) + ' 姿位'))
+          h('span', { className: 'spill spill--' + vst.tone + ' spill--mini' }, h(Icon, { name: vst.icon, size: 11 }), vst.label))
       : h('div', { key: 'vs', className: 'gw-tnode is-muted' },
           caret(false, null, true), h('span', { className: 'gw-tico' }, h(Icon, { name: 'camera', size: 14 })),
           h('span', { className: 'gw-tlabel gw-tempty' }, '视觉采集会话'),
@@ -152,10 +179,17 @@ import { listen } from "@tauri-apps/api/event";
           .catch(() => {});
       } },
     ];
+    const activeSolveDot = (() => {
+      const st = screenSolveKey(screenId);
+      const d = GRID_SOLVE_STATUS[st] || GRID_SOLVE_STATUS.none;
+      const col = st === 'none' ? 'var(--chrome-faint)' : 'var(--' + d.tone + '-visual)';
+      return h('span', { className: 'gw-tsolve-dot', title: '求解：' + d.label, style: { background: col, color: col } });
+    })();
     const screenNode = h('div', { className: 'gw-tnode' + (selectedIds.includes(screenId) ? ' on' : ''), onClick: (e) => { if (e.ctrlKey || e.metaKey) { window.VOLO_GRID.toggleScreenSel(s, screenId); return; } selectScreen(); } },
       caret(openS, () => setOpenS((v) => !v)), h('span', { className: 'gw-tico' }, h(Icon, { name: 'panel', size: 15 })),
       h('span', { className: 'gw-tlabel' }, screenId),
       m ? h('span', { className: 'gw-tmeta' }, m.cabinet_count[0] + '×' + m.cabinet_count[1]) : null,
+      activeSolveDot,
       h('span', { className: 'gw-tacts' }, h(NodeMenu, { items: screenMenuItems })));
 
     const allScreenIds = Object.keys(proj.config.screens || {});
@@ -163,10 +197,14 @@ import { listen } from "@tauri-apps/api/event";
       h('div', { className: 'gw-tgrouph' }, 'Stage 屏幕', h('span', null, allScreenIds.length + ' 块')),
       allScreenIds.map((id) => {
         const sc = proj.config.screens[id];
+        const st = screenSolveKey(id);
+        const d = GRID_SOLVE_STATUS[st] || GRID_SOLVE_STATUS.none;
+        const col = st === 'none' ? 'var(--chrome-faint)' : 'var(--' + d.tone + '-visual)';
         return h('div', { key: id, className: 'gw-tnode' + (selectedIds.includes(id) ? ' on' : ''), onClick: (e) => pickScreen(id, e) },
           caret(false, null, true), h('span', { className: 'gw-tico' }, h(Icon, { name: 'panel', size: 14 })),
           h('span', { className: 'gw-tlabel' }, id),
-          h('span', { className: 'gw-tmeta' }, sc.cabinet_count[0] + '×' + sc.cabinet_count[1]));
+          h('span', { className: 'gw-tmeta' }, sc.cabinet_count[0] + '×' + sc.cabinet_count[1]),
+          h('span', { className: 'gw-tsolve-dot', title: '求解：' + d.label, style: { background: col, color: col } }));
       })) : null;
     const topo = window.resolveProjectTopology && window.resolveProjectTopology(proj.config);
     const ndisplayNode = h('div', { className: 'gw-tnode' + (selType === 'ndisplay' ? ' on' : ''),
@@ -360,13 +398,33 @@ import { listen } from "@tauri-apps/api/event";
         const p = e.payload; if (!p || p.job_id !== jobRef.current) return;
         const ev = p.event || {};
         if (ev.event === 'progress') { setBaPct(Math.max(0, Math.min(100, ev.percent || 0))); setBaStage(ev.stage || ''); }
+        else if (ev.event === 'warning') {
+          s.pushLog({ lv: 'warn', cat: 'survey', msg: formatReconstructWarning('BA', ev) });
+        }
       }).then(add);
       listen('mesh-visual-reconstruct-done', (e) => {
         const p = e.payload; if (!p || p.job_id !== jobRef.current) return;
         if (p.result) {
           setBaState('done'); setBaPct(100); jobRef.current = null;
-          CX.projStore.patch({ visualSession: { screenId, poses: (p.result.cabinets || []).length || 1, posePath: p.result.pose_report_path } });
-          s.pushLog({ lv: 'ok', cat: 'survey', msg: `BA 重建完成 · ba_rms <b>${p.result.ba_rms_px.toFixed(2)} px</b>` });
+          (async () => {
+            await applyReconstructDone({
+              projectPath: proj.path,
+              screenId,
+              result: p.result,
+              label: 'BA',
+              pushLog: s.pushLog,
+              reloadRuns: CX.reloadRuns,
+              onSelectCurrentRun: (runId) => {
+                s.setCalSurveyRun(runId);
+                s.setCalSel({ type: 'run', id: runId });
+                s.setCalMeshVersion('rebuilt');
+              },
+              reloadScreenReports: CX.reloadScreenReports,
+              projConfig: proj.config,
+              s,
+              patchVisualSession: (visualSession) => CX.projStore.patch({ visualSession }),
+            });
+          })();
         } else {
           setBaErr(p.error || '重建失败'); setBaState('idle'); jobRef.current = null;
           s.pushLog({ lv: 'err', cat: 'survey', msg: `BA 重建失败 · ${p.error || '未知错误'}` });
@@ -407,11 +465,11 @@ import { listen } from "@tauri-apps/api/event";
       if (!manifestPath) { await pickManifest(); return; }
       setBaErr(null); setBaState('running'); setBaPct(0);
       try {
-        const resp = await meshVisualReconstruct(proj.path, screenId, manifestPath, intr === 'auto' ? 'auto' : intr, null);
+        const resp = await meshVisualReconstruct(proj.path, [screenId], manifestPath, intr === 'auto' ? 'auto' : intr, null);
         jobRef.current = resp.job_id;
       } catch (e) {
-        setBaState('idle'); setBaErr(e && e.message ? e.message : String(e));
-        s.pushLog({ lv: 'err', cat: 'survey', msg: `BA 重建启动失败 · ${e && e.message ? e.message : e}` });
+        setBaState('idle'); setBaErr(errMsg(e));
+        s.pushLog({ lv: 'err', cat: 'survey', msg: `BA 重建启动失败 · ${errMsg(e)}` });
       }
     };
 

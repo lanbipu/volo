@@ -15,8 +15,8 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use volo_shared::dto::{
     CabinetPoseReportFile, CalibrateResult, CaptureCardResult, CapturePlan,
     CompareKnownResult, DecodeStructuredLightResult, EvalResult, ExportPoseObjResult,
-    GeneratePatternResult, GenerateStructuredLightResult, SimulateResult,
-    VisualReconstructResult,
+    GeneratePatternResult, GenerateStructuredLightResult, ReconstructionResult,
+    ScreenTransformsFile, SimulateResult, VisualReconstructResult, VisualSolveDigest,
 };
 use volo_shared::error::VoloResult;
 
@@ -87,21 +87,27 @@ pub async fn mesh_visual_reconstruct(
     app: AppHandle,
     registry: State<'_, MeshVisualJobRegistry>,
     project_path: String,
-    screen_id: String,
+    screen_ids: Vec<String>,
     capture_manifest: String,
     intrinsics: Option<String>,
     intrinsics_crosscheck: Option<String>,
 ) -> VoloResult<MeshVisualJobResponse> {
+    if screen_ids.is_empty() {
+        return Err(volo_shared::error::VoloError::InvalidInput(
+            "screen_ids must be non-empty".into(),
+        ));
+    }
     let capture_manifest = mesh_app::visual::prepare_capture_manifest(
         Path::new(&project_path),
-        &screen_id,
+        &screen_ids,
         Path::new(&capture_manifest),
     )?;
     let intrinsics = mesh_app::visual::normalize_reconstruct_intrinsics(
         &capture_manifest,
         intrinsics.as_deref(),
     )?;
-    let job_id = format!("mesh-visual-reconstruct-{screen_id}-{}", now_millis());
+    let job_label = screen_ids.join("+");
+    let job_id = format!("mesh-visual-reconstruct-{job_label}-{}", now_millis());
 
     let (cancel_tx, cancel_rx) = oneshot::channel();
     registry.insert(&job_id, cancel_tx).await;
@@ -129,7 +135,7 @@ pub async fn mesh_visual_reconstruct(
     tokio::spawn(async move {
         let outcome = mesh_app::visual::run_reconstruct_streaming(
             Path::new(&project_path),
-            &screen_id,
+            &screen_ids,
             &capture_manifest,
             intrinsics.as_deref(),
             intrinsics_crosscheck.as_deref(),
@@ -402,6 +408,68 @@ pub fn mesh_visual_load_pose_report(
     pose_report_path: String,
 ) -> VoloResult<CabinetPoseReportFile> {
     mesh_app::visual::load_pose_report(Path::new(&pose_report_path))
+}
+
+#[tauri::command]
+pub fn mesh_visual_load_screen_transforms(path: String) -> VoloResult<ScreenTransformsFile> {
+    mesh_app::visual::load_screen_transforms(Path::new(&path))
+}
+
+#[tauri::command]
+pub async fn mesh_visual_register_run(
+    state: State<'_, crate::commands::mesh::MeshDb>,
+    project_path: String,
+    screen_id: String,
+    pose_report_path: String,
+    visual_solve_path: Option<String>,
+) -> VoloResult<ReconstructionResult> {
+    let db = state.0.clone();
+    tokio::task::spawn_blocking(move || {
+        let solve = visual_solve_path.as_deref().map(Path::new);
+        mesh_app::visual::register_visual_run(
+            db,
+            Path::new(&project_path),
+            &screen_id,
+            Path::new(&pose_report_path),
+            solve,
+        )
+    })
+    .await
+    .map_err(|e| volo_shared::error::VoloError::Other(format!("register visual task join: {e}")))?
+}
+
+#[tauri::command]
+pub fn mesh_visual_persist_solve(
+    project_path: String,
+    result: VisualReconstructResult,
+) -> VoloResult<String> {
+    let path = mesh_app::visual::persist_visual_solve_digest(Path::new(&project_path), &result)?;
+    Ok(path.display().to_string())
+}
+
+#[tauri::command]
+pub fn mesh_visual_load_solve(path: String) -> VoloResult<VisualSolveDigest> {
+    mesh_app::visual::load_visual_solve_digest(Path::new(&path))
+}
+
+#[tauri::command]
+pub async fn mesh_visual_register_empty_run(
+    state: State<'_, crate::commands::mesh::MeshDb>,
+    project_path: String,
+    screen_id: String,
+    visual_solve_path: String,
+) -> VoloResult<i64> {
+    let db = state.0.clone();
+    tokio::task::spawn_blocking(move || {
+        mesh_app::visual::register_empty_visual_run(
+            db,
+            Path::new(&project_path),
+            &screen_id,
+            Path::new(&visual_solve_path),
+        )
+    })
+    .await
+    .map_err(|e| volo_shared::error::VoloError::Other(format!("register empty visual task join: {e}")))?
 }
 
 #[tauri::command]

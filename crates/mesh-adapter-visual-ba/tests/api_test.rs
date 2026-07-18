@@ -33,16 +33,22 @@ async fn reconstruct_returns_ir_measured_points() {
             absent_cells: vec![],
         },
         shape_prior: ShapePrior::Flat(FlatTag::Flat),
+        screen_id_code: None,
+        pattern_meta_path: None,
+        screen_mapping_path: None,
+        pose_report_path: None,
     };
     // The mock ignores stdin, so the manifest / pose-report paths need not
     // exist; a missing pose report just yields empty cabinet_summaries.
     let args = ReconstructArgs {
         project,
+        screens: None,
         capture_manifest_path: "/nonexistent/manifest.json".into(),
         screen_mapping_path: None,
         intrinsics_path: None,
         crosscheck_intrinsics_path: None,
         pose_report_path: "/nonexistent/pose_report.json".into(),
+        screen_transforms_path: None,
         progress_tx: None,
         cancel: None,
     };
@@ -90,14 +96,20 @@ async fn reconstruct_payload_is_new_capture_manifest_shape() {
             absent_cells: vec![],
         },
         shape_prior: ShapePrior::Flat(FlatTag::Flat),
+        screen_id_code: None,
+        pattern_meta_path: None,
+        screen_mapping_path: None,
+        pose_report_path: None,
     };
     let args = ReconstructArgs {
         project,
+        screens: None,
         capture_manifest_path: "/tmp/manifest.json".into(),
         screen_mapping_path: Some("/tmp/screen_mapping.json".into()),
         intrinsics_path: Some("auto".into()),
         crosscheck_intrinsics_path: Some("/tmp/anchor.json".into()),
         pose_report_path: "/tmp/does_not_exist_pose_report.json".into(),
+        screen_transforms_path: None,
         progress_tx: None,
         cancel: None,
     };
@@ -147,14 +159,20 @@ async fn invalid_cabinet_size_returns_error_not_panic() {
             absent_cells: vec![],
         },
         shape_prior: ShapePrior::Flat(FlatTag::Flat),
+        screen_id_code: None,
+        pattern_meta_path: None,
+        screen_mapping_path: None,
+        pose_report_path: None,
     };
     let args = ReconstructArgs {
         project,
+        screens: None,
         capture_manifest_path: "/nonexistent/manifest.json".into(),
         screen_mapping_path: None,
         intrinsics_path: None,
         crosscheck_intrinsics_path: None,
         pose_report_path: "/nonexistent/pose_report.json".into(),
+        screen_transforms_path: None,
         progress_tx: None,
         cancel: None,
     };

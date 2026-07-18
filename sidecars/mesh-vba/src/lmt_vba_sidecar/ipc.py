@@ -137,18 +137,36 @@ class ReconstructProject(BaseModel):
     screen_id: str
     cabinet_array: CabinetArray
     shape_prior: ShapePrior = "flat"
+    # VP-QSP 4-bit screen code (0–15). Required for multi-screen joint solve so
+    # detections can be bucketed without re-reading each pattern_meta. Optional
+    # for the single-screen `project` compat path (code then comes from meta).
+    screen_id_code: int | None = Field(default=None, ge=0, le=15)
+    # Optional per-screen overrides for joint reconstruct (when set, preferred
+    # over the capture manifest's top-level pattern_meta / screen_mapping).
+    pattern_meta_path: str | None = None
+    screen_mapping_path: str | None = None
+    # Per-screen pose report path; when null, falls back to ReconstructInput.pose_report_path
+    # (single-screen) or is derived by the caller.
+    pose_report_path: str | None = None
 
 
 class ReconstructInput(BaseModel):
     command: Literal["reconstruct"]
     version: Literal[1]
-    project: ReconstructProject
+    # Single-screen compat entry. Mutually exclusive with `screens` (`screens` wins).
+    project: ReconstructProject | None = None
+    # Multi-screen joint solve: one ReconstructProject per screen. When set,
+    # preferred over `project`. First entry is the gauge / frame screen.
+    screens: list[ReconstructProject] | None = None
     capture_manifest_path: str
     # Optional override of the manifest's screen_mapping reference; when null
     # the sidecar uses the path the capture manifest points to.
     screen_mapping_path: str | None = None
     # If set, the sidecar writes cabinet_pose_report.json (spec §9) here.
     pose_report_path: str | None = None
+    # Joint multi-screen SE(3) transforms (visual_screen_transforms.v1). Required
+    # output path when len(screens) > 1; ignored for single-screen.
+    screen_transforms_path: str | None = None
     # Optional override of the manifest's intrinsics reference. The reserved value
     # "auto" runs inline self-calibration from the captured VP-QSP markers (vpqsp
     # method only); a file path loads {K, dist_coeffs, image_size}. When null the
@@ -157,6 +175,21 @@ class ReconstructInput(BaseModel):
     # Optional independent intrinsics anchor for the --intrinsics auto anti-
     # absorption cross-check (vpqsp self-cal only).
     crosscheck_intrinsics_path: str | None = None
+
+    @model_validator(mode="after")
+    def _require_project_or_screens(self) -> "ReconstructInput":
+        if self.screens:
+            if len(self.screens) == 0:
+                raise ValueError("screens must be non-empty when provided")
+            for i, s in enumerate(self.screens):
+                if s.screen_id_code is None:
+                    raise ValueError(
+                        f"screens[{i}].screen_id_code is required for joint reconstruct"
+                    )
+            return self
+        if self.project is None:
+            raise ValueError("project or screens is required")
+        return self
 
 
 class ReconstructStructuredLightInput(BaseModel):
@@ -371,6 +404,16 @@ class BaStats(BaseModel):
     n_rejected: int = 0
 
 
+class ScreenResultSummary(BaseModel):
+    """Per-screen digest nested under joint ResultData.screens."""
+
+    screen_id: str
+    pose_report_path: str | None = None
+    ba_rms_px: float = Field(ge=0.0)
+    cabinet_count: int = Field(ge=0)
+    bridge_views: int = Field(default=0, ge=0)
+
+
 class ResultData(BaseModel):
     measured_points: list[MeasuredPoint]
     ba_stats: BaStats
@@ -380,6 +423,29 @@ class ResultData(BaseModel):
     procrustes_align_rms_m: float = Field(default=0.0, ge=0.0)
     # "file" (provided intrinsics) | "auto_self_calibrated" (--intrinsics auto).
     intrinsics_source: str = "file"
+    # Joint multi-screen: path to visual_screen_transforms.v1 JSON (None for single).
+    screen_transforms_path: str | None = None
+    # Joint multi-screen: per-screen summaries (None / omitted for single-screen).
+    screens: list[ScreenResultSummary] | None = None
+    # Photos with no usable markers (basenames); empty = all photos contributed.
+    ignored_photos: list[str] = Field(default_factory=list)
+    # Capture photo counts (used = total − ignored). Older sidecars omit → 0.
+    photos_used: int = Field(default=0, ge=0)
+    photos_total: int = Field(default=0, ge=0)
+
+
+class ScreenTransformEntry(BaseModel):
+    screen_id: str
+    R: Mat3
+    t_mm: Vec3
+    rms_px: float = Field(ge=0.0)
+    bridge_views: int = Field(ge=0)
+
+
+class ScreenTransformsReport(BaseModel):
+    schema_version: Literal["visual_screen_transforms.v1"]
+    frame_screen_id: str
+    transforms: list[ScreenTransformEntry]
 
 
 class ProgressEvent(BaseModel):
@@ -416,6 +482,7 @@ class ErrorEvent(BaseModel):
         "image_load_failed",
         "detection_failed",
         "observability_failed",
+        "screens_disconnected",
         "ba_diverged",
         "procrustes_failed",
         "intrinsics_invalid",

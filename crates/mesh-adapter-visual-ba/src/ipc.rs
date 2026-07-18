@@ -114,6 +114,14 @@ pub struct ReconstructProject {
     pub cabinet_array: CabinetArray,
     #[serde(default = "default_flat_shape")]
     pub shape_prior: ShapePrior,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_id_code: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern_meta_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_mapping_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pose_report_path: Option<String>,
 }
 
 fn default_flat_shape() -> ShapePrior {
@@ -124,12 +132,17 @@ fn default_flat_shape() -> ShapePrior {
 pub struct ReconstructInput {
     pub command: String,
     pub version: u32,
-    pub project: ReconstructProject,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<ReconstructProject>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screens: Option<Vec<ReconstructProject>>,
     pub capture_manifest_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_mapping_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pose_report_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_transforms_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,6 +187,17 @@ pub struct BaStats {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScreenResultSummary {
+    pub screen_id: String,
+    #[serde(default)]
+    pub pose_report_path: Option<String>,
+    pub ba_rms_px: f64,
+    pub cabinet_count: usize,
+    #[serde(default)]
+    pub bridge_views: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResultData {
     pub measured_points: Vec<MeasuredPointDto>,
     pub ba_stats: BaStats,
@@ -186,6 +210,17 @@ pub struct ResultData {
     /// "file" | "auto_self_calibrated"; older sidecars omit it -> default "file".
     #[serde(default = "default_intrinsics_source")]
     pub intrinsics_source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_transforms_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screens: Option<Vec<ScreenResultSummary>>,
+    /// Basenames of photos with no usable markers (older sidecars omit → []).
+    #[serde(default)]
+    pub ignored_photos: Vec<String>,
+    #[serde(default)]
+    pub photos_used: u32,
+    #[serde(default)]
+    pub photos_total: u32,
 }
 
 fn default_intrinsics_source() -> String {
@@ -288,6 +323,9 @@ pub struct CabinetSummary {
     pub normal: [f64; 3],
     pub reprojection_rms_px: f64,
     pub observed_views: u32,
+    /// Pose report field; older reports omit → 0.
+    #[serde(default)]
+    pub observed_points: u32,
     pub quality: String,
 }
 

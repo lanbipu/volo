@@ -47,14 +47,14 @@ fn parse_cabinet_id(id: &str) -> Option<(u32, u32)> {
 
 /// 0-based 箱体 (col,row) 的第 `corner_idx`(0=BL,1=BR,2=TR,3=TL)个角点，
 /// 换算成 M1 的 1-based 网格顶点名。
-fn corner_vertex_name(screen_id: &str, col0: u32, row0: u32, corner_idx: usize) -> String {
+pub(crate) fn corner_vertex_name(screen_id: &str, col0: u32, row0: u32, corner_idx: usize) -> String {
     let (dc, dr) = CORNER_VERTEX_OFFSETS[corner_idx];
     format!("{screen_id}_V{:03}_R{:03}", col0 + dc + 1, row0 + dr + 1)
 }
 
 /// 把 pose report 的全部箱体角点按顶点名分组求均值,得到"视觉侧"每个网格顶点
 /// 的世界系估计(mm)。`cabinet_id` 不符合预期格式时返回明确错误(不静默跳过)。
-fn build_visual_vertex_points(
+pub(crate) fn build_visual_vertex_points(
     screen_id: &str,
     report: &CabinetPoseReportFile,
 ) -> VoloResult<HashMap<String, Vector3<f64>>> {
@@ -298,6 +298,7 @@ mod tests {
                 cabinet_poses.push(CabinetPoseEntry {
                     cabinet_id: format!("V{col0:03}_R{row0:03}"),
                     corners_mm,
+                    observed_views: 0,
                     covariance_mm2: Some([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
                 });
             }
@@ -435,6 +436,7 @@ mod tests {
                 // measured.yaml writer) must not silently pass through.
                 cabinet_id: "MAIN_V000_R000".into(),
                 corners_mm: [[0.0, 0.0, 0.0]; 4],
+                observed_views: 0,
                 covariance_mm2: None,
             }],
         };
@@ -467,6 +469,7 @@ mod tests {
                 cabinet_poses.push(CabinetPoseEntry {
                     cabinet_id: format!("V{col0:03}_R{row0:03}"),
                     corners_mm: [bl, br, tr, tl].map(|p| [p.x, p.y, p.z]),
+                    observed_views: 0,
                     covariance_mm2: None,
                 });
             }

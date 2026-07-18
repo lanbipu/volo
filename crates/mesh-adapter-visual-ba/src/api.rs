@@ -25,7 +25,10 @@ use crate::sidecar::{run_sidecar, SidecarRequest};
 // ---------------------------------------------------------------------------
 
 pub struct ReconstructArgs {
+    /// Single-screen project (compat). Ignored when `screens` is set.
     pub project: ReconstructProject,
+    /// Multi-screen joint solve. When `Some` and len > 1, preferred over `project`.
+    pub screens: Option<Vec<ReconstructProject>>,
     pub capture_manifest_path: String,
     /// Optional override of the manifest's screen_mapping reference. `None`
     /// tells the sidecar to use the path the capture manifest points to.
@@ -39,10 +42,25 @@ pub struct ReconstructArgs {
     /// anti-absorption cross-check (vpqsp self-cal only).
     pub crosscheck_intrinsics_path: Option<String>,
     /// Where the sidecar writes `cabinet_pose_report.json` (spec §9). The
-    /// adapter reads it back to build `cabinet_summaries`.
+    /// adapter reads it back to build `cabinet_summaries`. For joint mode this
+    /// is the first screen's report path (per-screen paths live on each
+    /// `ReconstructProject.pose_report_path`).
     pub pose_report_path: String,
+    /// Joint multi-screen transforms output path (`visual_screen_transforms.v1`).
+    pub screen_transforms_path: Option<String>,
     pub progress_tx: Option<mpsc::Sender<Event>>,
     pub cancel: Option<oneshot::Receiver<()>>,
+}
+
+/// Per-screen digest for joint reconstruct (mirrors sidecar `ScreenResultSummary`).
+#[derive(Debug, Clone)]
+pub struct ScreenReconstructSummary {
+    pub screen_id: String,
+    pub pose_report_path: Option<String>,
+    pub ba_rms_px: f64,
+    pub cabinet_count: usize,
+    pub bridge_views: usize,
+    pub cabinet_summaries: Vec<CabinetSummary>,
 }
 
 /// Output of [`reconstruct`]. `measured_points` is the primary product (cabinet
@@ -64,6 +82,11 @@ pub struct ReconstructOut {
     /// `no_intrinsics_anchor`, `high_rejection`, `cabinet_quality`, `missing_covariance`).
     pub warnings: Vec<WarningEvent>,
     pub cabinet_summaries: Vec<CabinetSummary>,
+    pub screen_transforms_path: Option<String>,
+    pub screens: Option<Vec<ScreenReconstructSummary>>,
+    pub ignored_photos: Vec<String>,
+    pub photos_used: u32,
+    pub photos_total: u32,
 }
 
 fn ipc_to_ir_coord(c: &IpcCoordinateFrame) -> VbaResult<mesh_core::coordinate::CoordinateFrame> {
@@ -159,15 +182,29 @@ fn read_cabinet_summaries(
 }
 
 pub async fn reconstruct(args: ReconstructArgs) -> VbaResult<ReconstructOut> {
-    validate_project_eagerly(&args.project)?;
+    let joint = args
+        .screens
+        .as_ref()
+        .is_some_and(|s| s.len() > 1);
+    if joint {
+        for p in args.screens.as_ref().unwrap() {
+            validate_project_eagerly(p)?;
+        }
+    } else {
+        validate_project_eagerly(&args.project)?;
+    }
 
     let mut payload = json!({
         "command": "reconstruct",
         "version": 1,
-        "project": &args.project,
         "capture_manifest_path": &args.capture_manifest_path,
         "pose_report_path": &args.pose_report_path,
     });
+    if joint {
+        payload["screens"] = json!(&args.screens);
+    } else {
+        payload["project"] = json!(&args.project);
+    }
     // Omit screen_mapping_path when None so the sidecar falls back to the
     // manifest's reference (its `None` default).
     if let Some(p) = &args.screen_mapping_path {
@@ -180,6 +217,9 @@ pub async fn reconstruct(args: ReconstructArgs) -> VbaResult<ReconstructOut> {
     }
     if let Some(p) = &args.crosscheck_intrinsics_path {
         payload["crosscheck_intrinsics_path"] = json!(p);
+    }
+    if let Some(p) = &args.screen_transforms_path {
+        payload["screen_transforms_path"] = json!(p);
     }
 
     let out = run_sidecar(SidecarRequest {
@@ -201,17 +241,26 @@ pub async fn reconstruct(args: ReconstructArgs) -> VbaResult<ReconstructOut> {
     let ba_rejected = result.ba_stats.n_rejected;
     let procrustes_align_rms_m = result.procrustes_align_rms_m;
     let intrinsics_source = result.intrinsics_source.clone();
+    let screen_transforms_path = result
+        .screen_transforms_path
+        .clone()
+        .or_else(|| args.screen_transforms_path.clone());
     let points: Vec<mesh_core::point::MeasuredPoint> = result
         .measured_points
         .into_iter()
         .map(|dto| dto.into_ir())
         .collect();
 
+    let primary = if joint {
+        args.screens.as_ref().unwrap().first().unwrap()
+    } else {
+        &args.project
+    };
     let measured_points = MeasuredPoints {
-        screen_id: args.project.screen_id.clone(),
+        screen_id: primary.screen_id.clone(),
         coordinate_frame: identity_frame()?,
-        cabinet_array: ipc_to_ir_cabinet(&args.project.cabinet_array)?,
-        shape_prior: ipc_to_ir_shape(&args.project.shape_prior)?,
+        cabinet_array: ipc_to_ir_cabinet(&primary.cabinet_array)?,
+        shape_prior: ipc_to_ir_shape(&primary.shape_prior)?,
         points,
         sampling_mode: mesh_core::sampling::SamplingMode::Grid,
     };
@@ -219,6 +268,35 @@ pub async fn reconstruct(args: ReconstructArgs) -> VbaResult<ReconstructOut> {
     let (cabinet_summaries, report_warnings) =
         read_cabinet_summaries(&args.pose_report_path);
     warnings.extend(report_warnings);
+
+    let screens = if let Some(summaries) = result.screens {
+        let mut out_screens = Vec::with_capacity(summaries.len());
+        for s in summaries {
+            let path = s.pose_report_path.clone().or_else(|| {
+                args.screens.as_ref().and_then(|list| {
+                    list.iter()
+                        .find(|p| p.screen_id == s.screen_id)
+                        .and_then(|p| p.pose_report_path.clone())
+                })
+            });
+            let (cabs, more_warn) = path
+                .as_deref()
+                .map(read_cabinet_summaries)
+                .unwrap_or_default();
+            warnings.extend(more_warn);
+            out_screens.push(ScreenReconstructSummary {
+                screen_id: s.screen_id,
+                pose_report_path: path,
+                ba_rms_px: s.ba_rms_px,
+                cabinet_count: s.cabinet_count,
+                bridge_views: s.bridge_views,
+                cabinet_summaries: cabs,
+            });
+        }
+        Some(out_screens)
+    } else {
+        None
+    };
 
     Ok(ReconstructOut {
         measured_points,
@@ -231,6 +309,11 @@ pub async fn reconstruct(args: ReconstructArgs) -> VbaResult<ReconstructOut> {
         intrinsics_source,
         warnings,
         cabinet_summaries,
+        screen_transforms_path,
+        screens,
+        ignored_photos: result.ignored_photos,
+        photos_used: result.photos_used,
+        photos_total: result.photos_total,
     })
 }
 
@@ -319,6 +402,11 @@ pub async fn reconstruct_structured_light(
         intrinsics_source,
         warnings,
         cabinet_summaries,
+        screen_transforms_path: None,
+        screens: None,
+        ignored_photos: result.ignored_photos,
+        photos_used: result.photos_used,
+        photos_total: result.photos_total,
     })
 }
 

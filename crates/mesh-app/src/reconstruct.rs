@@ -118,6 +118,7 @@ pub fn run_reconstruction(
                 vertex_count: surface.vertices.len(),
                 report_json_path: report_rel.display().to_string(),
                 warnings_json,
+                visual_solve_path: None,
             },
         )?;
         // 一次成功的重建应当自动成为该屏的"当前" run（CALIBRATE-UX.md §7.2：

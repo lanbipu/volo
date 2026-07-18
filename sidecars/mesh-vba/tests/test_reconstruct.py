@@ -171,6 +171,8 @@ def test_reconstruct_underobserved_cabinet_flagged_low_observation(
     w = quality_warnings[0]
     assert w["cabinet"] == "V001_R000"
     assert "low_observation" in w["message"]
+    assert "V001_R000" in w["message"]
+    assert "1 cabinet(s) with quality issues" in w["message"]
 
 
 def test_reconstruct_structured_light_method_rejected(synthetic_charuco_capture):

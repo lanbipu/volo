@@ -27,6 +27,7 @@ Pipeline:
 """
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable
 
 import hashlib
@@ -60,8 +61,12 @@ from lmt_vba_sidecar.ipc import (
     PointSourceVisualBa,
     ProgressEvent,
     ReconstructInput,
+    ReconstructProject,
     ResultData,
     ResultEvent,
+    ScreenResultSummary,
+    ScreenTransformEntry,
+    ScreenTransformsReport,
     Uncertainty,
     VpqspPatternMeta,
     WarningEvent,
@@ -78,7 +83,12 @@ from lmt_vba_sidecar.model_constrained_ba import (
 from lmt_vba_sidecar.nominal import (
     nominal_cabinet_poses_model_frame,
 )
-from lmt_vba_sidecar.observability import ObservabilityError, check_observability
+from lmt_vba_sidecar.observability import (
+    ObservabilityError,
+    ScreenConnectivityError,
+    check_observability,
+    check_screen_connectivity,
+)
 from lmt_vba_sidecar.procrustes import procrustes_rigid
 from lmt_vba_sidecar.screen_mapping import ScreenMapping, ScreenMappingError
 
@@ -125,6 +135,32 @@ def _classify_cabinet_quality(observed_views: int, reproj_rms_px: float) -> str:
     if reproj_rms_px > QUALITY_MAX_CABINET_RMS_PX:
         return "high_residual"
     return "ok"
+
+
+def _emit_cabinet_quality_summary(
+    items: list[tuple[str, str]],
+) -> None:
+    """Emit one aggregated ``cabinet_quality`` warning (counts + sample ids).
+
+    ``items`` is ``(cabinet_id, quality)`` for non-ok cabinets. Mirrors
+    ``dead_weight_image`` aggregation so the UI does not get one event per cabinet.
+    """
+    if not items:
+        return
+    counts = Counter(q for _, q in items)
+    count_txt = ", ".join(f"{n} {q}" for q, n in sorted(counts.items()))
+    sample = [cid for cid, _ in items[:5]]
+    sample_txt = ", ".join(sample)
+    more = len(items) - len(sample)
+    if more > 0:
+        sample_txt += f", … (+{more} more)"
+    write_event(WarningEvent(
+        event="warning",
+        code="cabinet_quality",
+        message=(f"{len(items)} cabinet(s) with quality issues ({count_txt}); "
+                 f"e.g. {sample_txt}"),
+        cabinet=items[0][0],
+    ))
 
 
 def _per_cabinet_reproj_rms(
@@ -267,8 +303,57 @@ def pattern_hash(pattern_meta: "PatternMeta | VpqspPatternMeta") -> str:
     return hashlib.sha256(pattern_meta.model_dump_json().encode()).hexdigest()[:16]
 
 
+def _photo_ignore_stats(all_paths, detections) -> tuple[list[str], int, int]:
+    """Basenames of photos with no detections + used/total counts."""
+    ignored = [pathlib.Path(p).name for p in all_paths if not detections.get(p)]
+    total = len(all_paths)
+    return ignored, total - len(ignored), total
+
+
 def _cabinet_id(col: int, row: int) -> str:
     return f"V{col:03d}_R{row:03d}"
+
+
+def _effective_project(cmd: ReconstructInput) -> ReconstructProject | None:
+    if cmd.screens:
+        return cmd.screens[0]
+    return cmd.project
+
+
+def _is_joint_vpqsp_mode(cmd: ReconstructInput, manifest) -> bool:
+    if cmd.screens and len(cmd.screens) > 1:
+        return True
+    return bool(manifest.screens and len(manifest.screens) > 1)
+
+
+def _resolve_joint_screen_projects(cmd: ReconstructInput, manifest) -> list[ReconstructProject]:
+    if cmd.screens and len(cmd.screens) > 1:
+        return list(cmd.screens)
+    if not manifest.screens or len(manifest.screens) <= 1:
+        raise ValueError("joint reconstruct requires multiple screens")
+    template = _effective_project(cmd)
+    if template is None:
+        raise ValueError("project or screens is required for joint reconstruct")
+    by_id = {s.screen_id: s for s in (cmd.screens or [])}
+    projects: list[ReconstructProject] = []
+    for ms in manifest.screens:
+        override = by_id.get(ms.screen_id)
+        if override is not None:
+            projects.append(override.model_copy(update={
+                "screen_id_code": override.screen_id_code or ms.screen_id_code,
+                "pattern_meta_path": override.pattern_meta_path or ms.pattern_meta,
+                "screen_mapping_path": override.screen_mapping_path or ms.screen_mapping,
+            }))
+        else:
+            projects.append(ReconstructProject(
+                screen_id=ms.screen_id,
+                screen_id_code=ms.screen_id_code,
+                cabinet_array=template.cabinet_array,
+                shape_prior=template.shape_prior,
+                pattern_meta_path=ms.pattern_meta,
+                screen_mapping_path=ms.screen_mapping,
+            ))
+    return projects
 
 
 def _active_surface_corners_mm(screen_mapping: ScreenMapping, cabinet_id: str) -> np.ndarray:
@@ -353,6 +438,21 @@ def run_reconstruct(cmd: ReconstructInput) -> int:
         ))
         return 1
 
+    if _is_joint_vpqsp_mode(cmd, manifest):
+        write_event(ErrorEvent(
+            event="error", code="invalid_input",
+            message="multi-screen joint reconstruct is only supported for method=vpqsp",
+            fatal=True,
+        ))
+        return 1
+
+    project = _effective_project(cmd)
+    if project is None:
+        write_event(ErrorEvent(
+            event="error", code="invalid_input",
+            message="project or screens is required", fatal=True))
+        return 1
+
     # --- 2. referenced files ---
     # screen_mapping: an explicit cmd.screen_mapping_path overrides the
     # manifest's reference (lets a caller swap in a corrected mapping without
@@ -433,6 +533,13 @@ def run_reconstruct(cmd: ReconstructInput) -> int:
     view_images: list[list[str]] = [list(v.images) for v in manifest.views]
     all_paths = [p for imgs in view_images for p in imgs]
     detections = detect_charuco_corners(all_paths, boards=boards)
+    ignored_photos, photos_used, photos_total = _photo_ignore_stats(all_paths, detections)
+    if ignored_photos:
+        write_event(WarningEvent(
+            event="warning", code="dead_weight_image",
+            message=(f"{len(ignored_photos)} image(s) have no markers "
+                     f"(e.g. {', '.join(ignored_photos[:3])}"
+                     f"{', …' if len(ignored_photos) > 3 else ''})")))
 
     observations: list[Observation] = []
     # camera_idx == view index; aggregate corners per (view, cabinet) for PnP.
@@ -480,9 +587,10 @@ def run_reconstruct(cmd: ReconstructInput) -> int:
         write_event(ErrorEvent(event="error", code="observability_failed", message=str(e), fatal=True))
         return 1
 
-    # --- 7. nominal model (kept here: needs cmd.project) ---
+    # --- 7. nominal model (kept here: needs project) ---
     try:
-        nominal_poses = nominal_cabinet_poses_model_frame(cmd.project.cabinet_array, cmd.project.shape_prior)
+        nominal_poses = nominal_cabinet_poses_model_frame(
+            project.cabinet_array, project.shape_prior)
     except ValueError as e:
         write_event(ErrorEvent(event="error", code="invalid_input", message=str(e), fatal=True))
         return 1
@@ -496,6 +604,7 @@ def run_reconstruct(cmd: ReconstructInput) -> int:
         pose_report_path=cmd.pose_report_path,
         n_rejected_pre=n_rej_stage_a, rejected_per_cab_pre=rej_per_cab_stage_a,
         gauge_strategy="fix_root_cabinet",  # charuco unchanged; output stays in BA-local frame
+        ignored_photos=ignored_photos, photos_used=photos_used, photos_total=photos_total,
     )
 
 
@@ -624,6 +733,9 @@ def run_reconstruct_vpqsp(cmd: ReconstructInput, manifest) -> int:
     self-calibration (the captured markers are themselves the calibration target);
     everything from observability onward is shared.
     """
+    if _is_joint_vpqsp_mode(cmd, manifest):
+        return run_reconstruct_vpqsp_joint(cmd, manifest)
+
     from lmt_vba_sidecar.vpqsp_detect import detect_vpqsp_markers
     from lmt_vba_sidecar.vpqsp_layout import marker_local_mm
 
@@ -643,18 +755,10 @@ def run_reconstruct_vpqsp(cmd: ReconstructInput, manifest) -> int:
             message=f"failed to load manifest references: {e}", fatal=True))
         return 1
 
-    # --- 3. preflight (pattern hash ties screen_mapping to this exact pattern) ---
-    if screen_mapping.expected_pattern_hash is None:
-        write_event(WarningEvent(
-            event="warning", code="pattern_hash_unset",
-            message="screen_mapping.expected_pattern_hash is not set; skipping the "
-                    "capture↔pattern binding check. Set it to the generated pattern's "
-                    "hash to verify the captured pattern matches this config."))
-    try:
-        screen_mapping.preflight(pattern_hash(meta))
-    except ScreenMappingError as e:
-        write_event(ErrorEvent(event="error", code="invalid_input", message=str(e), fatal=True))
-        return 1
+    # --- 3. preflight (pattern hash + rotation/mirror + active_size scale) ---
+    fatal = _vpqsp_preflight_screen_mapping(screen_mapping, meta)
+    if fatal is not None:
+        return fatal
 
     # Per-cabinet VP-QSP grid: (col,row) -> (markers_x, markers_y, resolution_px, pitch).
     # The displayed pattern is the single source of truth for marker positions.
@@ -664,44 +768,6 @@ def run_reconstruct_vpqsp(cmd: ReconstructInput, manifest) -> int:
                          (c.pixel_pitch_mm[0], c.pixel_pitch_mm[1]))
         for c in meta.cabinets
     }
-
-    # --- 3b. cross-source consistency preflight ---
-    # The charuco path gets two guards for free via screen_mapping.charuco_corner_local_mm:
-    # (a) it fails loud on rotation/mirror, (b) ScreenMappingCabinet enforces
-    # resolution_px*pixel_pitch_mm ~= active_size_mm. VP-QSP sources p_local's metric
-    # scale from the pattern_meta (resolution_px x pixel_pitch_mm) but the pose-report
-    # corners from screen_mapping.active_size_mm, so neither guard applies automatically.
-    # Re-assert both here, or a swapped/edited screen_mapping (even with the correct
-    # pattern_hash) would silently mix scales / drop a rotation.
-    sm_by_id = {c.cabinet_id: c for c in screen_mapping.cabinets}
-    for c in meta.cabinets:
-        cid = _cabinet_id(c.col, c.row)
-        sm_cab = sm_by_id.get(cid)
-        if sm_cab is None:
-            continue  # unmapped cabinet (handled later by cab_to_idx routing)
-        if sm_cab.rotation != 0 or sm_cab.mirror_x or sm_cab.mirror_y:
-            write_event(ErrorEvent(event="error", code="invalid_input",
-                message=(f"cabinet '{cid}' has rotation={sm_cab.rotation}, "
-                         f"mirror_x={sm_cab.mirror_x}, mirror_y={sm_cab.mirror_y}; "
-                         "rotation/mirror not yet supported in VP-QSP local-mm mapping "
-                         "(fail loud, not silent)"), fatal=True))
-            return 1
-        # The VP-QSP marker grid's implied physical extent (resolution_px x pitch, the
-        # BA scale) must match active_size_mm (the pose-report corner scale) within the
-        # same 1% tolerance ScreenMappingCabinet uses, or the recovered geometry and the
-        # BA point cloud are at different scales.
-        for axis, name in ((0, "width"), (1, "height")):
-            implied = c.resolution_px[axis] * c.pixel_pitch_mm[axis]
-            active = sm_cab.active_size_mm[axis]
-            if abs(implied - active) > 0.01 * active:
-                write_event(ErrorEvent(event="error", code="invalid_input",
-                    message=(f"cabinet '{cid}' {name} scale mismatch: vpqsp pattern_meta "
-                             f"resolution_px {c.resolution_px[axis]} x pixel_pitch_mm "
-                             f"{c.pixel_pitch_mm[axis]} = {implied:.3f}mm, but screen_mapping "
-                             f"active_size_mm = {active}mm (>1% apart). These set the BA scale "
-                             "and the pose-report corner scale respectively and must agree."),
-                    fatal=True))
-                return 1
 
     # --- 4. deterministic cabinet index map ---
     present = sorted(((c.col, c.row) for c in meta.cabinets), key=lambda cr: (cr[1], cr[0]))
@@ -720,6 +786,13 @@ def run_reconstruct_vpqsp(cmd: ReconstructInput, manifest) -> int:
     view_images: list[list[str]] = [list(v.images) for v in manifest.views]
     all_paths = [p for imgs in view_images for p in imgs]
     detections = detect_vpqsp_markers(all_paths, screen_id_code=meta.screen_id_code)
+    ignored_photos, photos_used, photos_total = _photo_ignore_stats(all_paths, detections)
+    if ignored_photos:
+        write_event(WarningEvent(
+            event="warning", code="dead_weight_image",
+            message=(f"{len(ignored_photos)} image(s) have no markers "
+                     f"(e.g. {', '.join(ignored_photos[:3])}"
+                     f"{', …' if len(ignored_photos) > 3 else ''})")))
 
     # --- 3c. resolve intrinsics: CLI override (cmd.intrinsics_path) > manifest
     #         reference. The reserved value "auto" self-calibrates K + distortion
@@ -803,8 +876,15 @@ def run_reconstruct_vpqsp(cmd: ReconstructInput, manifest) -> int:
         return 1
 
     # --- 7. nominal model (shared) ---
+    project = _effective_project(cmd)
+    if project is None:
+        write_event(ErrorEvent(
+            event="error", code="invalid_input",
+            message="project or screens is required", fatal=True))
+        return 1
     try:
-        nominal_poses = nominal_cabinet_poses_model_frame(cmd.project.cabinet_array, cmd.project.shape_prior)
+        nominal_poses = nominal_cabinet_poses_model_frame(
+            project.cabinet_array, project.shape_prior)
     except ValueError as e:
         write_event(ErrorEvent(event="error", code="invalid_input", message=str(e), fatal=True))
         return 1
@@ -819,7 +899,674 @@ def run_reconstruct_vpqsp(cmd: ReconstructInput, manifest) -> int:
         n_rejected_pre=n_rej_stage_a, rejected_per_cab_pre=rej_per_cab_stage_a,
         gauge_strategy="fix_root_cabinet",  # fast-mode marker, same gauge as charuco
         intrinsics_source=intrinsics_source,
+        ignored_photos=ignored_photos, photos_used=photos_used, photos_total=photos_total,
     )
+
+
+def _vpqsp_preflight_screen_mapping(screen_mapping: ScreenMapping, meta: VpqspPatternMeta) -> int | None:
+    """Cross-source VP-QSP preflight. Returns an exit code on fatal error, else None.
+
+    Charuco gets rotation/mirror + scale guards via screen_mapping.charuco_corner_local_mm;
+    VP-QSP sources p_local scale from pattern_meta but pose-report corners from
+    active_size_mm — re-assert both here (plus pattern_hash binding).
+    """
+    if screen_mapping.expected_pattern_hash is None:
+        write_event(WarningEvent(
+            event="warning", code="pattern_hash_unset",
+            message="screen_mapping.expected_pattern_hash is not set; skipping the "
+                    "capture↔pattern binding check. Set it to the generated pattern's "
+                    "hash to verify the captured pattern matches this config."))
+    try:
+        screen_mapping.preflight(pattern_hash(meta))
+    except ScreenMappingError as e:
+        write_event(ErrorEvent(event="error", code="invalid_input", message=str(e), fatal=True))
+        return 1
+
+    sm_by_id = {c.cabinet_id: c for c in screen_mapping.cabinets}
+    for c in meta.cabinets:
+        cid = _cabinet_id(c.col, c.row)
+        sm_cab = sm_by_id.get(cid)
+        if sm_cab is None:
+            continue
+        if sm_cab.rotation != 0 or sm_cab.mirror_x or sm_cab.mirror_y:
+            write_event(ErrorEvent(event="error", code="invalid_input",
+                message=(f"cabinet '{cid}' has rotation={sm_cab.rotation}, "
+                         f"mirror_x={sm_cab.mirror_x}, mirror_y={sm_cab.mirror_y}; "
+                         "rotation/mirror not yet supported in VP-QSP local-mm mapping "
+                         "(fail loud, not silent)"), fatal=True))
+            return 1
+        for axis, name in ((0, "width"), (1, "height")):
+            implied = c.resolution_px[axis] * c.pixel_pitch_mm[axis]
+            active = sm_cab.active_size_mm[axis]
+            if abs(implied - active) > 0.01 * active:
+                write_event(ErrorEvent(event="error", code="invalid_input",
+                    message=(f"cabinet '{cid}' {name} scale mismatch: vpqsp pattern_meta "
+                             f"resolution_px {c.resolution_px[axis]} x pixel_pitch_mm "
+                             f"{c.pixel_pitch_mm[axis]} = {implied:.3f}mm, but screen_mapping "
+                             f"active_size_mm = {active}mm (>1% apart). These set the BA scale "
+                             "and the pose-report corner scale respectively and must agree."),
+                    fatal=True))
+                return 1
+    return None
+
+
+def _joint_nominal_poses_idx(
+    per_screen_nominal: list[dict[tuple[int, int], tuple[np.ndarray, np.ndarray]]],
+    cab_idx_to_screen: dict[int, int],
+    cab_idx_to_cr: dict[int, tuple[int, int]],
+) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+    """Nominal SE(3) per global cabinet idx for init / disambiguation.
+
+    Screen-0 cabinets use model-frame nominal directly (joint frame = screen-0
+    root). Other screens use pose relative to that screen's root — sufficient
+    for normal-based IPPE disambiguation (translation only used on fallback).
+    """
+    out: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    for idx, cr in cab_idx_to_cr.items():
+        si = cab_idx_to_screen[idx]
+        nom = per_screen_nominal[si]
+        if si == 0:
+            if cr in nom:
+                out[idx] = nom[cr]
+        elif cr in nom:
+            out[idx] = _nominal_init_root_frame(nom, ROOT_CABINET, cr)
+    return out
+
+
+def _joint_init_cabinet_pose(
+    idx: int,
+    cr: tuple[int, int],
+    si: int,
+    *,
+    gauge_idx: int,
+    screen_root_indices: dict[int, int],
+    init_cabinets: dict[int, tuple[np.ndarray, np.ndarray]],
+    bridge: dict[int, tuple[np.ndarray, np.ndarray]],
+    per_screen_nominal: list[dict[tuple[int, int], tuple[np.ndarray, np.ndarray]]],
+    idx_to_cr: dict[int, tuple[int, int]],
+) -> tuple[np.ndarray, np.ndarray]:
+    if idx == gauge_idx:
+        return np.eye(3), np.zeros(3)
+    if idx in bridge:
+        return bridge[idx]
+    nom = per_screen_nominal[si]
+    if cr not in nom:
+        return np.eye(3), np.zeros(3)
+    if si == 0:
+        gauge_cr = idx_to_cr[gauge_idx]
+        return _nominal_init_root_frame(nom, gauge_cr, cr)
+    R_loc, t_loc = _nominal_init_root_frame(nom, ROOT_CABINET, cr)
+    R_sr, t_sr = init_cabinets.get(screen_root_indices[si], (np.eye(3), np.zeros(3)))
+    return R_sr @ R_loc, R_sr @ t_loc + t_sr
+
+
+def run_reconstruct_vpqsp_joint(cmd: ReconstructInput, manifest) -> int:
+    """Joint multi-screen VP-QSP reconstruct: shared cameras + K, screen-0 root gauge."""
+    from lmt_vba_sidecar.vpqsp_detect import detect_vpqsp_markers
+    from lmt_vba_sidecar.vpqsp_layout import marker_local_mm
+
+    try:
+        screen_projects = _resolve_joint_screen_projects(cmd, manifest)
+    except ValueError as e:
+        write_event(ErrorEvent(event="error", code="invalid_input", message=str(e), fatal=True))
+        return 1
+
+    if not cmd.screen_transforms_path:
+        write_event(ErrorEvent(
+            event="error", code="invalid_input",
+            message="screen_transforms_path is required for joint multi-screen reconstruct",
+            fatal=True))
+        return 1
+
+    n_screens = len(screen_projects)
+    code_to_screen: dict[int, int] = {
+        sp.screen_id_code: si for si, sp in enumerate(screen_projects)
+    }
+    target_codes = set(code_to_screen)
+
+    screen_metas: list[VpqspPatternMeta] = []
+    screen_mappings: list[ScreenMapping] = []
+    grid_by_screen: list[dict[tuple[int, int], tuple]] = []
+    per_screen_nominal: list[dict[tuple[int, int], tuple[np.ndarray, np.ndarray]]] = []
+
+    for si, sp in enumerate(screen_projects):
+        sm_path = sp.screen_mapping_path or cmd.screen_mapping_path
+        pm_path = sp.pattern_meta_path
+        if not sm_path or not pm_path:
+            write_event(ErrorEvent(
+                event="error", code="invalid_input",
+                message=f"screen '{sp.screen_id}' missing pattern_meta_path or screen_mapping_path",
+                fatal=True))
+            return 1
+        try:
+            screen_mapping = ScreenMapping.model_validate(
+                json.loads(pathlib.Path(sm_path).read_text(encoding="utf-8")))
+            meta = VpqspPatternMeta.model_validate(
+                json.loads(pathlib.Path(pm_path).read_text(encoding="utf-8")))
+            nominal_poses = nominal_cabinet_poses_model_frame(
+                sp.cabinet_array, sp.shape_prior)
+        except (OSError, json.JSONDecodeError, KeyError, ValueError, ScreenMappingError) as e:
+            write_event(ErrorEvent(event="error", code="invalid_input",
+                message=f"failed to load screen '{sp.screen_id}': {e}", fatal=True))
+            return 1
+
+        fatal = _vpqsp_preflight_screen_mapping(screen_mapping, meta)
+        if fatal is not None:
+            return fatal
+
+        screen_metas.append(meta)
+        screen_mappings.append(screen_mapping)
+        per_screen_nominal.append(nominal_poses)
+        grid_by_screen.append({
+            (c.col, c.row): (c.markers_x, c.markers_y, c.marker_px,
+                             (c.resolution_px[0], c.resolution_px[1]),
+                             (c.pixel_pitch_mm[0], c.pixel_pitch_mm[1]))
+            for c in meta.cabinets
+        })
+
+    # Global cabinet index: (screen_idx, col, row) -> idx; screen-0 (0,0) is gauge.
+    cab_to_idx: dict[tuple[int, int, int], int] = {}
+    cab_idx_to_screen: dict[int, int] = {}
+    cab_idx_to_cr: dict[int, tuple[int, int]] = {}
+    screen_root_indices: dict[int, int] = {}
+    idx = 0
+    for si in range(n_screens):
+        present = sorted(
+            ((c.col, c.row) for c in screen_metas[si].cabinets),
+            key=lambda cr: (cr[1], cr[0]),
+        )
+        if ROOT_CABINET not in present:
+            write_event(ErrorEvent(
+                event="error", code="invalid_input",
+                message=(f"root cabinet {_cabinet_id(*ROOT_CABINET)} not present on "
+                         f"screen '{screen_projects[si].screen_id}'"),
+                fatal=True))
+            return 1
+        for cr in present:
+            cab_to_idx[(si, cr[0], cr[1])] = idx
+            cab_idx_to_screen[idx] = si
+            cab_idx_to_cr[idx] = cr
+            if cr == ROOT_CABINET:
+                screen_root_indices[si] = idx
+            idx += 1
+    root_idx = cab_to_idx[(0, ROOT_CABINET[0], ROOT_CABINET[1])]
+    n_cabinets = idx
+
+    write_event(ProgressEvent(event="progress", stage="detect_vpqsp", percent=0.2,
+                              message="detecting VP-QSP markers (joint multi-screen)"))
+    view_images: list[list[str]] = [list(v.images) for v in manifest.views]
+    all_paths = [p for imgs in view_images for p in imgs]
+    detections = detect_vpqsp_markers(all_paths, screen_id_code=None)
+
+    # Dead-weight views + unknown screen_id codes.
+    paths_with_target = set()
+    n_unknown_code = 0
+    for path, dets in detections.items():
+        for det in dets:
+            sid_code = int(det.get("screen_id", -1))
+            if sid_code in target_codes:
+                paths_with_target.add(path)
+            else:
+                n_unknown_code += 1
+    if n_unknown_code:
+        write_event(WarningEvent(
+            event="warning", code="unknown_screen_id",
+            message=(f"discarded {n_unknown_code} marker(s) with screen_id not in the "
+                     f"target set {sorted(target_codes)}")))
+    dead_paths = [path for path in all_paths if path not in paths_with_target]
+    ignored_photos = [pathlib.Path(p).name for p in dead_paths]
+    photos_total = len(all_paths)
+    photos_used = photos_total - len(ignored_photos)
+    if dead_paths:
+        sample = dead_paths[:3]
+        sample_txt = ", ".join(sample)
+        more = len(dead_paths) - len(sample)
+        if more > 0:
+            sample_txt += f", … (+{more} more)"
+        write_event(WarningEvent(
+            event="warning", code="dead_weight_image",
+            message=(f"{len(dead_paths)} image(s) have no markers for any target screen "
+                     f"(e.g. {sample_txt})")))
+
+    intrinsics_spec = cmd.intrinsics_path or manifest.intrinsics
+    if intrinsics_spec is None:
+        write_event(ErrorEvent(event="error", code="invalid_input",
+            message="no intrinsics: set the capture manifest's `intrinsics` field, or pass "
+                    "--intrinsics <path|auto>", fatal=True))
+        return 1
+
+    # Self-cal uses all screens' marker geometry.
+    if intrinsics_spec == "auto":
+        try:
+            image_size = _validated_image_size(view_images)
+        except IntrinsicsRefused as e:
+            write_event(ErrorEvent(event="error", code=e.code, message=e.message, fatal=True))
+            return 1
+        if image_size is None:
+            write_event(ErrorEvent(event="error", code="invalid_input",
+                message="--intrinsics auto: cannot read any capture image to determine frame size",
+                fatal=True))
+            return 1
+        try:
+            # Use first screen meta for self-cal grid lookup; detections carry screen_id.
+            K, dist = _self_calibrate_vpqsp_joint(
+                screen_metas, grid_by_screen, code_to_screen, detections, view_images,
+                image_size, cmd)
+            intrinsics_source = "auto_self_calibrated"
+        except IntrinsicsRefused as e:
+            write_event(ErrorEvent(event="error", code=e.code, message=e.message, fatal=True))
+            return 1
+    else:
+        try:
+            intr = json.loads(pathlib.Path(intrinsics_spec).read_text(encoding="utf-8"))
+            K = np.array(intr["K"], dtype=float)
+            prob = intrinsics_K_problem(K)
+            if prob is not None:
+                raise ValueError(prob)
+            dist = np.array(intr["dist_coeffs"], dtype=float)
+            intrinsics_source = "file"
+        except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
+            write_event(ErrorEvent(event="error", code="intrinsics_invalid",
+                message=f"intrinsics load failed: {e}", fatal=True))
+            return 1
+
+    observations: list[Observation] = []
+    per_view_cab_corners: dict[tuple[int, int], list[tuple[np.ndarray, np.ndarray]]] = {}
+    per_cabinet_views: dict[int, set[int]] = {}
+    per_cabinet_points: dict[int, int] = {}
+    for cam_idx, imgs in enumerate(view_images):
+        for path in imgs:
+            for det in detections.get(path, []):
+                sid_code = int(det.get("screen_id", -1))
+                if sid_code not in code_to_screen:
+                    continue
+                si = code_to_screen[sid_code]
+                cab_cr = tuple(det["cabinet"])
+                key = (si, cab_cr[0], cab_cr[1])
+                if key not in cab_to_idx or cab_cr not in grid_by_screen[si]:
+                    continue
+                cab_idx = cab_to_idx[key]
+                mx, my, mpx, res_px, pitch = grid_by_screen[si][cab_cr]
+                p_local = marker_local_mm(
+                    int(det["local_id"]), markers_x=mx, markers_y=my, marker_px=mpx,
+                    resolution_px=res_px, pixel_pitch_mm=pitch,
+                )
+                pixel = _undistort_obs(np.array(det["corner_px"], dtype=float), K, dist)
+                sigma = float(det.get("sigma_px", 1.0))
+                observations.append(Observation(
+                    camera_idx=cam_idx, cabinet_idx=cab_idx, p_local=p_local, pixel=pixel,
+                    sigma_px=sigma))
+                per_view_cab_corners.setdefault((cam_idx, cab_idx), []).append((p_local, pixel))
+                per_cabinet_views.setdefault(cab_idx, set()).add(cam_idx)
+                per_cabinet_points[cab_idx] = per_cabinet_points.get(cab_idx, 0) + 1
+
+    if not observations:
+        write_event(ErrorEvent(event="error", code="detection_failed",
+            message="no VP-QSP markers detected for any target screen", fatal=True))
+        return 1
+
+    (observations, per_view_cab_corners, per_cabinet_views, per_cabinet_points,
+     n_rej_stage_a, rej_per_cab_stage_a) = stage_a_prune(observations, per_view_cab_corners, K)
+
+    try:
+        check_observability(observations, n_cabinets, min_views=2, min_points=8,
+                            check_connectivity=False)
+    except ObservabilityError as e:
+        write_event(ErrorEvent(event="error", code="observability_failed", message=str(e), fatal=True))
+        return 1
+
+    try:
+        conn = check_screen_connectivity(
+            observations, cab_idx_to_screen, n_screens,
+            screen_labels=[sp.screen_id for sp in screen_projects],
+        )
+    except ScreenConnectivityError as e:
+        write_event(ErrorEvent(event="error", code="screens_disconnected", message=str(e), fatal=True))
+        return 1
+
+    per_screen_pose_paths: dict[int, str | None] = {
+        si: sp.pose_report_path for si, sp in enumerate(screen_projects)
+    }
+
+    corners_providers = {
+        si: (lambda cid, sm=screen_mappings[si]: _active_surface_corners_mm(sm, cid))
+        for si in range(n_screens)
+    }
+
+    return joint_solve_and_emit(
+        K=K,
+        observations=observations,
+        per_view_cab_corners=per_view_cab_corners,
+        n_cameras=len(view_images),
+        root_idx=root_idx,
+        n_cabinets=n_cabinets,
+        cab_idx_to_screen=cab_idx_to_screen,
+        cab_idx_to_cr=cab_idx_to_cr,
+        screen_root_indices=screen_root_indices,
+        screen_projects=screen_projects,
+        per_screen_nominal=per_screen_nominal,
+        corners_local_providers=corners_providers,
+        per_screen_pose_paths=per_screen_pose_paths,
+        screen_transforms_path=cmd.screen_transforms_path,
+        conn_info=conn,
+        n_rejected_pre=n_rej_stage_a,
+        rejected_per_cab_pre=rej_per_cab_stage_a,
+        intrinsics_source=intrinsics_source,
+    )
+
+
+def _self_calibrate_vpqsp_joint(
+    screen_metas, grid_by_screen, code_to_screen, detections, view_images, image_size, cmd,
+):
+    """Self-cal for joint VP-QSP: route each detection to its screen's grid."""
+    from lmt_vba_sidecar.vpqsp_layout import marker_local_mm
+
+    object_points, image_points = [], []
+    for imgs in view_images:
+        per_cab: dict[tuple[int, int, int], tuple[list, list]] = {}
+        for path in imgs:
+            for det in detections.get(path, []):
+                sid_code = int(det.get("screen_id", -1))
+                if sid_code not in code_to_screen:
+                    continue
+                si = code_to_screen[sid_code]
+                cab_cr = (int(det["cabinet"][0]), int(det["cabinet"][1]))
+                if cab_cr not in grid_by_screen[si]:
+                    continue
+                mx, my, mpx, res_px, pitch = grid_by_screen[si][cab_cr]
+                p_local = marker_local_mm(
+                    int(det["local_id"]), markers_x=mx, markers_y=my, marker_px=mpx,
+                    resolution_px=res_px, pixel_pitch_mm=pitch)
+                key = (si, cab_cr[0], cab_cr[1])
+                per_cab.setdefault(key, ([], []))
+                per_cab[key][0].append(p_local)
+                per_cab[key][1].append([det["corner_px"][0], det["corner_px"][1]])
+        for objp, imgp in per_cab.values():
+            if len(objp) >= 8:
+                object_points.append(np.asarray(objp, dtype=np.float32))
+                image_points.append(np.asarray(imgp, dtype=np.float32))
+
+    MAX_CAL_POSES = 200
+    if len(object_points) > MAX_CAL_POSES:
+        rng = np.random.default_rng(0)
+        idx = rng.choice(len(object_points), MAX_CAL_POSES, replace=False)
+        idx.sort()
+        object_points = [object_points[i] for i in idx]
+        image_points = [image_points[i] for i in idx]
+
+    has_anchor = bool(cmd.crosscheck_intrinsics_path)
+    pp_gate = max(5.0, 3.0 * max(image_size) / 4000)
+    res = solve_sl_intrinsics(object_points, image_points, image_size,
+                              max_rms_px=1.5, allow_full_distortion=has_anchor,
+                              max_pp_std_px=pp_gate, try_zero_distortion=True)
+    if has_anchor:
+        try:
+            anchor = json.loads(pathlib.Path(cmd.crosscheck_intrinsics_path).read_text())
+            anchor_K = np.array(anchor["K"], float)
+            anchor_dist = np.array(anchor.get("dist_coeffs", [0, 0, 0, 0, 0]), float)
+        except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
+            raise IntrinsicsRefused("invalid_input", f"crosscheck intrinsics load failed: {e}")
+        refusal = crosscheck_intrinsics(res, anchor_K=anchor_K, anchor_dist=anchor_dist)
+        if refusal is not None:
+            raise refusal
+    else:
+        write_event(WarningEvent(event="warning", code="no_intrinsics_anchor",
+            message="VP-QSP auto intrinsics solved from the displayed marker wall without an "
+                    "independent anchor; assumes the screen is driven pixel-exact (1:1). "
+                    "Anisotropic pitch / non-1:1 scaling is unguarded — pass "
+                    "--intrinsics-crosscheck <anchor.json> to validate."))
+    return res.K, res.dist
+
+
+def joint_solve_and_emit(
+    *,
+    K: np.ndarray,
+    observations: list[Observation],
+    per_view_cab_corners: dict[tuple[int, int], list[tuple[np.ndarray, np.ndarray]]],
+    n_cameras: int,
+    root_idx: int,
+    n_cabinets: int,
+    cab_idx_to_screen: dict[int, int],
+    cab_idx_to_cr: dict[int, tuple[int, int]],
+    screen_root_indices: dict[int, int],
+    screen_projects: list[ReconstructProject],
+    per_screen_nominal: list[dict[tuple[int, int], tuple[np.ndarray, np.ndarray]]],
+    corners_local_providers: dict[int, Callable[[str], np.ndarray]],
+    per_screen_pose_paths: dict[int, str | None],
+    screen_transforms_path: str,
+    conn_info: dict,
+    n_rejected_pre: int = 0,
+    rejected_per_cab_pre: dict[int, int] | None = None,
+    intrinsics_source: str = "file",
+) -> int:
+    """Joint multi-screen BA + per-screen pose reports + screen transforms."""
+    write_event(ProgressEvent(event="progress", stage="bundle_adjustment", percent=0.5,
+                              message="initializing joint multi-screen solve"))
+    gauge_idx = root_idx
+    nominal_poses_idx = _joint_nominal_poses_idx(
+        per_screen_nominal, cab_idx_to_screen, cab_idx_to_cr)
+
+    bridge, undecidable_cabs = estimate_nonroot_cabinet_init(
+        per_view_cab_corners, gauge_idx, K, nominal_poses=nominal_poses_idx)
+    if undecidable_cabs:
+        ids = sorted(_cabinet_id(*cab_idx_to_cr[j]) for j in undecidable_cabs)
+        write_event(ErrorEvent(
+            event="error", code="observability_failed",
+            message=(f"convex/concave undecidable for cabinet(s) {ids}: planar-PnP "
+                     f"mirror branches equally match nominal and no redundant view "
+                     f"breaks the tie; add a camera that sees these cabinets"),
+            fatal=True))
+        return 1
+
+    init_cabinets: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    fallback_ids: list[str] = []
+    for idx in range(n_cabinets):
+        cr = cab_idx_to_cr[idx]
+        si = cab_idx_to_screen[idx]
+        if idx == gauge_idx:
+            init_cabinets[idx] = (np.eye(3), np.zeros(3))
+        elif idx in bridge:
+            init_cabinets[idx] = bridge[idx]
+        else:
+            init_cabinets[idx] = _joint_init_cabinet_pose(
+                idx, cr, si, gauge_idx=gauge_idx,
+                screen_root_indices=screen_root_indices,
+                init_cabinets=init_cabinets, bridge=bridge,
+                per_screen_nominal=per_screen_nominal, idx_to_cr=cab_idx_to_cr)
+            fallback_ids.append(_cabinet_id(*cr))
+    if fallback_ids:
+        write_event(WarningEvent(
+            event="warning", code="init_fallback_nominal",
+            message=(f"{len(fallback_ids)} cabinet(s) share no bridged view chain with the "
+                     f"root; initialized from the nominal model (BA must absorb any "
+                     f"as-built deviation): {', '.join(sorted(fallback_ids))}")))
+
+    init_cameras: list[tuple[np.ndarray, np.ndarray]] = []
+    for cam_idx in range(n_cameras):
+        init_cameras.append(
+            _pnp_camera(cam_idx, gauge_idx, init_cabinets, per_view_cab_corners, K))
+
+    result, rejected_per_cab_stage_b, n_rej_stage_b, surviving_observations = \
+        stage_b_robust_solve(
+            K=K, observations=observations, n_cameras=n_cameras,
+            n_cabinets=n_cabinets, root_cabinet_idx=gauge_idx,
+            init_cameras=init_cameras, init_cabinets=init_cabinets,
+            per_cabinet_min_points=8,
+            max_nfev=max(200, 50 * n_cabinets * n_cameras))
+
+    rejected_per_cab_pre = rejected_per_cab_pre or {}
+    n_used = len(surviving_observations)
+    n_rej = n_rejected_pre + n_rej_stage_b
+    n_total = n_used + n_rej
+
+    write_event(ProgressEvent(event="progress", stage="output", percent=0.9,
+                              message="building joint multi-screen output"))
+    per_cabinet_views: dict[int, set[int]] = {}
+    per_cabinet_points: dict[int, int] = {}
+    for o in surviving_observations:
+        per_cabinet_views.setdefault(o.cabinet_idx, set()).add(o.camera_idx)
+        per_cabinet_points[o.cabinet_idx] = per_cabinet_points.get(o.cabinet_idx, 0) + 1
+
+    for idx in range(n_cabinets):
+        n_pts = per_cabinet_points.get(idx, 0)
+        n_views = len(per_cabinet_views.get(idx, set()))
+        if n_pts < 8 or n_views < 2:
+            cid = _cabinet_id(*cab_idx_to_cr[idx])
+            write_event(ErrorEvent(
+                event="error", code="observability_failed",
+                message=(f"after rejecting {n_rej_stage_b} outliers, cabinet {cid} "
+                         f"has only {n_pts} observations across {n_views} view(s) "
+                         f"(needs >=8 points and >=2 views)"),
+                fatal=True))
+            return 1
+
+    if not result.converged:
+        write_event(ErrorEvent(
+            event="error", code="ba_diverged",
+            message=f"BA did not converge (rms={result.rms_reprojection_px:.2f}px after {result.iterations} iters)",
+            fatal=True))
+        return 1
+    if result.rms_reprojection_px > BA_RMS_FATAL_PX:
+        write_event(ErrorEvent(
+            event="error", code="ba_diverged",
+            message=(f"BA converged but reprojection rms {result.rms_reprojection_px:.2f}px "
+                     f"exceeds {BA_RMS_FATAL_PX}px: the model does not explain the "
+                     f"observations (wrong shape_prior / intrinsics / capture geometry)"),
+            fatal=True))
+        return 1
+
+    per_cabinet_rms = _per_cabinet_reproj_rms(
+        K, result.camera_poses, result.cabinet_poses, surviving_observations)
+
+    n_screens = len(screen_projects)
+    screen_cab_indices: dict[int, list[int]] = {si: [] for si in range(n_screens)}
+    for idx in range(n_cabinets):
+        screen_cab_indices[cab_idx_to_screen[idx]].append(idx)
+
+    measured_points: list[MeasuredPoint] = []
+    screen_summaries: list[ScreenResultSummary] = []
+    transform_entries: list[ScreenTransformEntry] = []
+    quality_issues: list[tuple[str, str]] = []
+
+    for si in range(n_screens):
+        sp = screen_projects[si]
+        screen_root_idx = screen_root_indices[si]
+        screen_result = _reexpress_result_in_cabinet_frame(result, screen_root_idx)
+
+        cabinet_poses: list[CabinetPose] = []
+        corners_provider = corners_local_providers[si]
+        for idx in screen_cab_indices[si]:
+            col, row = cab_idx_to_cr[idx]
+            cid = _cabinet_id(col, row)
+            R, t = screen_result.cabinet_poses[idx]
+            corners_local = corners_provider(cid)
+            center, normal, _size, world_corners = reconstruct_cabinet_geometry(R, t, corners_local)
+            n_views = len(per_cabinet_views.get(idx, set()))
+            n_points = per_cabinet_points.get(idx, 0)
+            cab_rms = per_cabinet_rms[idx]
+            quality = _classify_cabinet_quality(n_views, cab_rms)
+            rejected_points = rejected_per_cab_pre.get(idx, 0) + rejected_per_cab_stage_b.get(idx, 0)
+
+            cov_mm = result.cabinet_covariances.get(idx)
+            cov_ok = cov_mm is not None and np.isfinite(cov_mm).all()
+            cabinet_poses.append(CabinetPose(
+                cabinet_id=cid,
+                position_mm=center.tolist(),
+                rotation_matrix=R.tolist(),
+                normal=normal.tolist(),
+                corners_mm=[c.tolist() for c in world_corners],
+                reprojection_rms_px=cab_rms,
+                observed_views=n_views,
+                observed_points=n_points,
+                rejected_points=rejected_points,
+                quality=quality,
+                covariance_mm2=np.asarray(cov_mm, dtype=float).tolist() if cov_ok else None,
+            ))
+            if quality != "ok":
+                quality_issues.append((f"{sp.screen_id}/{cid}", quality))
+
+            if cov_ok:
+                cov_m = np.asarray(cov_mm, dtype=float) / 1.0e6
+                uncertainty = Uncertainty(covariance=cov_m.tolist())
+            else:
+                uncertainty = Uncertainty(isotropic=FALLBACK_ISOTROPIC_M)
+            measured_points.append(MeasuredPoint(
+                name=f"MAIN_{sp.screen_id}_{cid}",
+                position=(center / 1000.0).tolist(),
+                uncertainty=uncertainty,
+                source=PointSource(visual_ba=PointSourceVisualBa(camera_count=max(1, n_views))),
+            ))
+
+        pose_path = per_screen_pose_paths.get(si)
+        if pose_path:
+            report = CabinetPoseReport(
+                schema_version="visual_pose_report.v1",
+                frame=FrameSpec(gauge_strategy="fix_root_cabinet", root_cabinet=list(ROOT_CABINET)),
+                cabinet_poses=cabinet_poses,
+            )
+            _atomic_write_json(pose_path, report.model_dump_json(indent=2))
+
+        screen_cab_rms = [per_cabinet_rms[i] for i in screen_cab_indices[si]]
+        screen_rms = float(np.sqrt(np.mean(np.square(screen_cab_rms)))) if screen_cab_rms else 0.0
+        bridge_views = int(conn_info.get("bridge_views", {}).get(si, 0))
+        screen_summaries.append(ScreenResultSummary(
+            screen_id=sp.screen_id,
+            pose_report_path=pose_path,
+            ba_rms_px=screen_rms,
+            cabinet_count=len(screen_cab_indices[si]),
+            bridge_views=bridge_views,
+        ))
+
+        if si == 0:
+            transform_entries.append(ScreenTransformEntry(
+                screen_id=sp.screen_id,
+                R=np.eye(3).tolist(),
+                t_mm=[0.0, 0.0, 0.0],
+                rms_px=screen_rms,
+                bridge_views=bridge_views,
+            ))
+        else:
+            R_joint, t_joint = result.cabinet_poses[screen_root_idx]
+            transform_entries.append(ScreenTransformEntry(
+                screen_id=sp.screen_id,
+                R=np.asarray(R_joint, dtype=float).tolist(),
+                t_mm=np.asarray(t_joint, dtype=float).tolist(),
+                rms_px=screen_rms,
+                bridge_views=bridge_views,
+            ))
+
+    _emit_cabinet_quality_summary(quality_issues)
+
+    transforms_report = ScreenTransformsReport(
+        schema_version="visual_screen_transforms.v1",
+        frame_screen_id=screen_projects[0].screen_id,
+        transforms=transform_entries,
+    )
+    _atomic_write_json(screen_transforms_path, transforms_report.model_dump_json(indent=2))
+
+    write_event(ResultEvent(
+        event="result",
+        data=ResultData(
+            measured_points=measured_points,
+            ba_stats=BaStats(
+                rms_reprojection_px=float(result.rms_reprojection_px),
+                iterations=int(result.iterations),
+                converged=bool(result.converged),
+                n_observations_total=n_total,
+                n_observations_used=n_used,
+                n_rejected=n_rej,
+            ),
+            frame_strategy_used="nominal_anchoring",
+            procrustes_align_rms_m=0.0,
+            intrinsics_source=intrinsics_source,
+            screen_transforms_path=screen_transforms_path,
+            screens=screen_summaries,
+            ignored_photos=ignored_photos,
+            photos_used=photos_used,
+            photos_total=photos_total,
+        ),
+    ))
+    return 0
 
 
 def _reexpress_result_in_cabinet_frame(result: "BAResult", frame_idx: int) -> "BAResult":
@@ -883,6 +1630,9 @@ def solve_and_emit(
     rejected_per_cab_pre: dict[int, int] | None = None,
     gauge_strategy: str = "fix_root_cabinet",
     intrinsics_source: str = "file",
+    ignored_photos: list[str] | None = None,
+    photos_used: int = 0,
+    photos_total: int = 0,
 ) -> int:
     """Shared init -> model_constrained_ba -> per-cabinet geometry -> report ->
     ResultEvent. Used by both run_reconstruct (charuco) and
@@ -1080,6 +1830,7 @@ def solve_and_emit(
 
     cabinet_poses: list[CabinetPose] = []
     measured_points: list[MeasuredPoint] = []
+    quality_issues: list[tuple[str, str]] = []
     for idx in range(n_cabinets):
         col, row = idx_to_cab[idx]
         cid = _cabinet_id(col, row)
@@ -1120,11 +1871,7 @@ def solve_and_emit(
             covariance_mm2=np.asarray(cov_mm, dtype=float).tolist() if cov_ok else None,
         ))
         if quality != "ok":
-            write_event(WarningEvent(
-                event="warning", code="cabinet_quality",
-                message=f"cabinet {cid}: {quality} (views={n_views}, rms={cab_rms:.2f}px)",
-                cabinet=cid,
-            ))
+            quality_issues.append((cid, quality))
         if rejected_points and rejected_points / (rejected_points + n_points) > 0.30:
             write_event(WarningEvent(
                 event="warning", code="high_rejection",
@@ -1149,6 +1896,8 @@ def solve_and_emit(
             uncertainty=uncertainty,
             source=PointSource(visual_ba=PointSourceVisualBa(camera_count=max(1, n_views))),
         ))
+
+    _emit_cabinet_quality_summary(quality_issues)
 
     # --- 10. write pose report ---
     if pose_report_path:
@@ -1175,6 +1924,9 @@ def solve_and_emit(
             frame_strategy_used="nominal_anchoring",  # vestigial label; see gauge_strategy
             procrustes_align_rms_m=align_rms_mm / 1000.0,  # mm -> m (0.0 for fix_root_cabinet)
             intrinsics_source=intrinsics_source,
+            ignored_photos=list(ignored_photos or []),
+            photos_used=int(photos_used),
+            photos_total=int(photos_total),
         ),
     ))
     return 0

@@ -1152,7 +1152,32 @@ export interface CabinetPoseSummary {
   normal: [number, number, number];
   reprojection_rms_px: number;
   observed_views: number;
+  observed_points?: number;
   quality: string;
+}
+
+export interface VisualScreenSummary {
+  screen_id: string;
+  pose_report_path?: string | null;
+  ba_rms_px: number;
+  cabinet_count: number;
+  bridge_views?: number;
+  cabinets?: CabinetPoseSummary[];
+}
+
+export interface ScreenTransformEntry {
+  screen_id: string;
+  /** Sidecar field `R` — 3×3 rotation. */
+  R: [[number, number, number], [number, number, number], [number, number, number]];
+  t_mm: [number, number, number];
+  rms_px: number;
+  bridge_views: number;
+}
+
+export interface ScreenTransformsFile {
+  schema_version: string;
+  frame_screen_id: string;
+  transforms: ScreenTransformEntry[];
 }
 
 export interface VisualReconstructResult {
@@ -1168,6 +1193,48 @@ export interface VisualReconstructResult {
   intrinsics_source: string;
   warnings: WarningDto[];
   cabinets: CabinetPoseSummary[];
+  screen_transforms_path?: string | null;
+  screens?: VisualScreenSummary[] | null;
+  ignored_photos?: string[];
+  photos_used?: number;
+  photos_total?: number;
+}
+
+export interface VisualSolveCabinetDigest {
+  cabinet_id: string;
+  observed_views: number;
+  observed_points: number;
+  /** ok | warn | fail */
+  quality: string;
+}
+
+export interface VisualSolveScreenDigest {
+  screen_id: string;
+  ba_rms_px: number;
+  /** ok | warn | fail */
+  status: string;
+  n_ok: number;
+  n_warn: number;
+  n_fail: number;
+  cabinets: VisualSolveCabinetDigest[];
+}
+
+export interface VisualSolveDigest {
+  schema_version: string;
+  /** success | partial | failed */
+  status: string;
+  empty?: boolean;
+  ba_rms_px?: number | null;
+  photos_used: number;
+  photos_total: number;
+  observation_points: number;
+  finished_at: string;
+  ignored_photos?: string[];
+  ref_screen_id: string;
+  screen_transforms_path?: string | null;
+  screens: VisualSolveScreenDigest[];
+  warnings?: WarningDto[];
+  intrinsics_source?: string;
 }
 
 export interface CalibrateResult {
@@ -1562,6 +1629,8 @@ export interface ReconstructionRun {
   created_at: string;
   /** Explicit "pinned as current" flag; absent/false → caller falls back to newest by created_at. */
   is_current: boolean;
+  /** Path to visual_solve_digest.v1 JSON (visual BA runs). */
+  visual_solve_path?: string | null;
 }
 
 export interface ReconstructionReport {

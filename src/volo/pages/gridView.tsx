@@ -186,13 +186,27 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
     };
   }
 
+  /** Joint visual SE(3): p' = R·p + t_m（相对基准屏 screen_local）。 */
+  function applySe3Transform(p, R, tM) {
+    return {
+      x: R[0][0] * p.x + R[0][1] * p.y + R[0][2] * p.z + tM[0],
+      y: R[1][0] * p.x + R[1][1] * p.y + R[1][2] * p.z + tM[1],
+      z: R[2][0] * p.x + R[2][1] * p.y + R[2][2] * p.z + tM[2],
+    };
+  }
+
   /* ---------- 已重建几何：读真实 ReconstructedSurface ---------- */
-  function buildRealBoxes(surface, m) {
+  function buildRealBoxes(surface, m, se3) {
     const cols = surface.topology.cols, rows = surface.topology.rows;
     const verts = surface.vertices;
     const prov = surface.vertex_provenance || [];
     const vi = (c, r) => r * (cols + 1) + c;
-    const at = (c, r) => { const v = verts[vi(c, r)]; return applyScreenTransform({ x: v[0], y: v[1], z: v[2] }, m); };
+    const at = (c, r) => {
+      const v = verts[vi(c, r)];
+      const local = { x: v[0], y: v[1], z: v[2] };
+      if (se3 && se3.R && se3.tM) return applySe3Transform(local, se3.R, se3.tM);
+      return applyScreenTransform(local, m);
+    };
     const provAt = (c, r) => prov.length ? prov[vi(c, r)] : null;
     const boxes = [];
     for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
@@ -347,6 +361,20 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
 
     if (!proj_.config) return h('svg', { className: 'gw-svp', ref: stageRef, viewBox: '0 0 1000 700' });
 
+    /* 联合视觉求解的屏间 SE(3)：新建/叠加的重建网格用它摆放；原始与幽灵仍走名义 position/yaw。 */
+    const xfFile = proj_.visualSession && proj_.visualSession.screenTransforms;
+    const se3ByScreen = {};
+    if (xfFile && xfFile.transforms) {
+      xfFile.transforms.forEach((t) => {
+        const R = t.R;
+        if (!R) return;
+        se3ByScreen[t.screen_id] = {
+          R,
+          tM: [(t.t_mm[0] || 0) / 1000, (t.t_mm[1] || 0) / 1000, (t.t_mm[2] || 0) / 1000],
+        };
+      });
+    }
+
     /* 每块屏幕：激活屏用草稿（若有）+ 已重建版本切换；其余屏幕恒用已保存配置 + 原始网格。 */
     const sbuilt = screens.map((id) => {
       const isActive = id === s.calActiveScreen;
@@ -354,7 +382,10 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       const report = s.calScreenReports && s.calScreenReports[id];
       const built = !!report;
       const version = built ? s.calMeshVersion : 'original';
-      const g = (version === 'rebuilt' || version === 'overlay') ? buildRealBoxes(report.surface, cfg) : buildNominalBoxes(cfg);
+      const se3 = se3ByScreen[id] || null;
+      const g = (version === 'rebuilt' || version === 'overlay')
+        ? buildRealBoxes(report.surface, cfg, se3)
+        : buildNominalBoxes(cfg);
       const ghost = version === 'overlay' ? buildNominalBoxes(cfg) : null;
       return { id, cfg, isActive, g, ghost, built, version };
     });
@@ -750,6 +781,23 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
         h('span', { className: 'sw', style: { background: PROV[k].color } }), PROV[k].label)));
   }
 
+  /* 摆放图例：解算结果生效时，说明「新建=解算摆放 / 原始=设计摆放」 */
+  function PlacementLegend({ s }) {
+    const proj_ = CX.useProj();
+    const built = s.calScreenReports && s.calScreenReports[s.calActiveScreen];
+    const v = s.calMeshVersion;
+    if (!built || v === 'original') return null;
+    const multi = proj_.config && Object.keys(proj_.config.screens || {}).length > 1;
+    const overlay = v === 'overlay';
+    return h('div', { className: 'gw-glass gw-plegend' },
+      h('div', { className: 'gw-plegend-h' }, h(Icon, { name: 'cube3', size: 12 }), '网格摆放'),
+      h('div', { className: 'li' }, h('span', { className: 'sw solid' }), h('span', null, '新建网格 · 解算摆放')),
+      overlay ? h('div', { className: 'li' }, h('span', { className: 'sw ghost' }), h('span', null, '原始网格 · 设计摆放')) : null,
+      h('div', { className: 'note' }, overlay
+        ? '两套摆放之差即为解算修正量。'
+        : (multi ? '各屏已按联合解算位置摆放。' : '已按解算位置摆放。')));
+  }
+
   function BoxBar({ s }) {
     const proj_ = CX.useProj();
     const m = (proj_.config && proj_.config.screens[s.calActiveScreen]) || {};
@@ -871,7 +919,7 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
         h('div', { className: 'gw-ov gw-ov--tl' }, h(CtxCard, { s }), h(Coords)),
         h('div', { className: 'gw-ov gw-ov--tr' }, h(DisplayToggles, { s })),
         h('div', { className: 'gw-ov gw-ov--bc' }, h(HintBar, { s }), h(VersionSwitcher, { s })),
-        h('div', { className: 'gw-ov gw-ov--bl' }, h(Legend, { s })),
+        h('div', { className: 'gw-ov gw-ov--bl', style: { display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' } }, h(PlacementLegend, { s }), h(Legend, { s })),
         h('div', { className: 'gw-ov gw-ov--br' }, h(Receipt, { s }))));
   }
 

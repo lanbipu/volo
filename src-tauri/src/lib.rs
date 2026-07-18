@@ -385,6 +385,11 @@ pub fn run() {
             commands::mesh_visual::mesh_visual_plan_capture,
             commands::mesh_visual::mesh_visual_capture_card,
             commands::mesh_visual::mesh_visual_load_pose_report,
+            commands::mesh_visual::mesh_visual_load_screen_transforms,
+            commands::mesh_visual::mesh_visual_register_run,
+            commands::mesh_visual::mesh_visual_persist_solve,
+            commands::mesh_visual::mesh_visual_load_solve,
+            commands::mesh_visual::mesh_visual_register_empty_run,
             commands::mesh_visual::mesh_visual_export_pose_obj,
             // W6 R1: M1+M2 fuse (backend-only; no UI wiring this pass).
             commands::mesh_fuse::mesh_fuse_run,

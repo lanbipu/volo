@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 
 class CaptureManifestError(Exception):
@@ -34,6 +34,15 @@ class CaptureView(BaseModel):
     frames: list[dict] | None = None
 
 
+class CaptureManifestScreen(BaseModel):
+    """Per-screen refs inside a multi-screen capture manifest."""
+
+    screen_id: str
+    screen_id_code: int = Field(ge=0, le=15)
+    pattern_meta: str
+    screen_mapping: str
+
+
 class CaptureManifest(BaseModel):
     """Top-level capture manifest model."""
 
@@ -43,9 +52,26 @@ class CaptureManifest(BaseModel):
     # `--intrinsics auto` self-calibration from the captured markers (vpqsp). A
     # null is preserved verbatim through load (not path-resolved).
     intrinsics: str | None = None
-    pattern_meta: str
-    screen_mapping: str
+    # Single-screen refs. Optional when `screens` is present (joint multi-screen);
+    # for single-screen they remain required (enforced by validator).
+    pattern_meta: str | None = None
+    screen_mapping: str | None = None
+    # Multi-screen joint capture: one entry per screen with its own pattern_meta /
+    # screen_mapping / screen_id_code. When present, preferred over top-level refs.
+    screens: list[CaptureManifestScreen] | None = None
     views: list[CaptureView]
+
+    @model_validator(mode="after")
+    def _require_screen_refs(self) -> "CaptureManifest":
+        if self.screens:
+            if len(self.screens) == 0:
+                raise ValueError("screens must be non-empty when provided")
+            return self
+        if not self.pattern_meta or not self.screen_mapping:
+            raise ValueError(
+                "pattern_meta and screen_mapping are required unless screens[] is set"
+            )
+        return self
 
 
 def _resolve(path: str, base: Path) -> str:
@@ -112,8 +138,14 @@ def load_capture_manifest(path: str) -> CaptureManifest:
     # path references are absolutized.
     if manifest.intrinsics is not None and manifest.intrinsics != "auto":
         manifest.intrinsics = _resolve(manifest.intrinsics, base)
-    manifest.pattern_meta = _resolve(manifest.pattern_meta, base)
-    manifest.screen_mapping = _resolve(manifest.screen_mapping, base)
+    if manifest.pattern_meta is not None:
+        manifest.pattern_meta = _resolve(manifest.pattern_meta, base)
+    if manifest.screen_mapping is not None:
+        manifest.screen_mapping = _resolve(manifest.screen_mapping, base)
+    if manifest.screens:
+        for sc in manifest.screens:
+            sc.pattern_meta = _resolve(sc.pattern_meta, base)
+            sc.screen_mapping = _resolve(sc.screen_mapping, base)
 
     for view in manifest.views:
         view.images = [_resolve(img, base) for img in view.images]

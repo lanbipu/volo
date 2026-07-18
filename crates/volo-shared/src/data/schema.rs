@@ -89,6 +89,13 @@ const MIGRATIONS: &[(&str, &str)] = &[
         ALTER TABLE reconstruction_runs ADD COLUMN is_current INTEGER NOT NULL DEFAULT 0;
         "#,
     ),
+    (
+        // Visual BA solve digest path (timestamped JSON) for「重建记录」UI.
+        "005_run_visual_solve_path",
+        r#"
+        ALTER TABLE reconstruction_runs ADD COLUMN visual_solve_path TEXT;
+        "#,
+    ),
 ];
 
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {

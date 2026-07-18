@@ -106,7 +106,21 @@ import { meshFuseRun } from "../api/meshFuseCommands";
             h('div', { className: 'gw-metric' }, h('div', { className: 'k' }, 'measured/expected'), h('div', { className: 'v' }, qm.measured_count + '/' + qm.expected_count)),
             h('div', { className: 'gw-metric' }, h('div', { className: 'k' }, 'middle_max_dev'), h('div', { className: 'v' }, qm.middle_max_dev_mm.toFixed(2), h('span', { style: { fontSize: 11, marginLeft: 3, color: 'var(--chrome-faint)' } }, 'mm')))) : null),
         h('div', { className: 'drawer-f' },
-          h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'eye', size: 15 }), onPress: () => { close(); s.setCalFlow(null); s.setCalMeshVersion('rebuilt'); } }, '在视口中查看')));
+          h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'eye', size: 15 }), onPress: () => {
+            close();
+            s.setCalFlow(null);
+            s.setCalMeshVersion('rebuilt');
+            const list = (CX.projStore.get().runs || []);
+            const cur = list.find((r) => r.is_current) || list[0];
+            if (cur) {
+              s.setCalSurveyRun(cur.id);
+              s.setCalSel({ type: 'run', id: cur.id });
+            }
+            const rmsTxt = cur && cur.estimated_rms_mm != null
+              ? ' · RMS ' + cur.estimated_rms_mm.toFixed(2) + ' mm'
+              : '';
+            s.setCalReceipt({ tone: 'ok', text: '新建网格已就绪' + rmsTxt });
+          } }, '查看重建摘要')));
     }
     if (phase === 'done') {
       return h('div', { className: 'drawer drawer--preview' },

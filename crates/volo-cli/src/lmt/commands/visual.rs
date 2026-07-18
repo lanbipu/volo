@@ -267,7 +267,7 @@ fn reconstruct(
         DestructiveDecision::Execute => {
             match mesh_app::visual::run_reconstruct(
                 Path::new(project_path),
-                screen_id,
+                &[screen_id.to_string()],
                 Path::new(&manifest),
                 intrinsics,
                 intrinsics_crosscheck,

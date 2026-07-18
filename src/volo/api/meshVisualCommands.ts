@@ -18,25 +18,61 @@ import { call } from "./invoke";
 import type {
   CabinetPoseReportFile, CalibrateResult, CaptureCardResult, CapturePlan, CompareKnownResult,
   DecodeStructuredLightResult, EvalResult, ExportPoseObjResult, GeneratePatternResult,
-  GenerateStructuredLightResult, MeshVisualJobResponse, SimulateResult, VisualReconstructResult,
+  GenerateStructuredLightResult, MeshVisualJobResponse, ReconstructionResult, ScreenTransformsFile,
+  SimulateResult, VisualReconstructResult, VisualSolveDigest,
 } from "./types";
 
 /* ----------------------------- reconstruct (streaming) + cancel ----------------------------- */
 // ✅ wired: gridTree.tsx + gridInsp.tsx；进度/完成经 mesh-visual-progress / mesh-visual-reconstruct-done
 export const meshVisualReconstruct = (
   projectPath: string,
-  screenId: string,
+  screenIds: string[],
   captureManifest: string,
   intrinsics?: string | null,
   intrinsicsCrosscheck?: string | null,
 ) =>
   call<MeshVisualJobResponse>("mesh_visual_reconstruct", {
-    projectPath, screenId, captureManifest,
+    projectPath, screenIds, captureManifest,
     intrinsics: intrinsics ?? null,
     intrinsicsCrosscheck: intrinsicsCrosscheck ?? null,
   });
 // 📝 no-ui: 取消 mesh_visual_reconstruct 在飞 job；job 已结束返回 false（非错误）
 export const meshVisualCancel = (jobId: string) => call<boolean>("mesh_visual_cancel", { jobId });
+
+/** pose report → MeasuredPoints → surface run（视口三态对比数据源） */
+export const meshVisualRegisterRun = (
+  projectPath: string,
+  screenId: string,
+  poseReportPath: string,
+  visualSolvePath?: string | null,
+) =>
+  call<ReconstructionResult>("mesh_visual_register_run", {
+    projectPath, screenId, poseReportPath,
+    visualSolvePath: visualSolvePath ?? null,
+  });
+
+/** 读 visual_screen_transforms.v1（联合求解屏间 SE(3)） */
+export const meshVisualLoadScreenTransforms = (path: string) =>
+  call<ScreenTransformsFile>("mesh_visual_load_screen_transforms", { path });
+
+/** Persist timestamped visual_solve_digest.v1 for reconstruct-records UI. */
+export const meshVisualPersistSolve = (
+  projectPath: string,
+  result: VisualReconstructResult,
+) => call<string>("mesh_visual_persist_solve", { projectPath, result });
+
+export const meshVisualLoadSolve = (path: string) =>
+  call<VisualSolveDigest>("mesh_visual_load_solve", { path });
+
+/** Stub surface run for empty visual BA (zero cabinets). */
+export const meshVisualRegisterEmptyRun = (
+  projectPath: string,
+  screenId: string,
+  visualSolvePath: string,
+) =>
+  call<number>("mesh_visual_register_empty_run", {
+    projectPath, screenId, visualSolvePath,
+  });
 
 /* ----------------------------- pattern / structured-light generation ----------------------------- */
 /**

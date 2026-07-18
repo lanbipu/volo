@@ -4,6 +4,7 @@
    on `window` (as in the prototype) so the other ported modules reach them as
    bare globals at render time. */
 import * as React from "react";
+import { GRID_CAB_QUALITY, GRID_SOLVE_STATUS } from "./api/visualSolveUi";
 
 /* ---------- Icons (single-color line, inherit currentColor) ---------- */
 const ICON_PATHS = {
@@ -430,9 +431,12 @@ function stageScreenForOutput(config, topology) {
   };
 }
 
+/* 重建记录 · 求解状态 / 箱体质量三通道 — single source: api/visualSolveUi */
+
 Object.assign(window, {
   GRID_SHAPES, GRID_SCREEN_TYPES, GRID_CAB_PRESETS, GRID_DISPLAY_DEFAULT, GRID_DISPLAY_ITEMS,
   GRID_VIEWS, GRID_STAGE_ACTIONS, GRID_MEAS_TYPES, GRID_RECON_STAGES, GRID_EXPORT_TARGETS,
+  GRID_CAB_QUALITY, GRID_SOLVE_STATUS,
   buildStageComposite, buildStageNdisplayTopo, resolveProjectTopology, stageScreenForOutput,
   Icon, STAGES, PAGES,
   /* machines / creds / shares / projects are loaded from the backend by the

@@ -8,7 +8,16 @@
    箱体选中/run 质量指标/阶段动作面板同样只读写真实数据，无自造 mock。 */
 import * as React from "react";
 import { saveProjectYaml, setRunCurrent, getRunReport, exportObj } from "../api/meshCommands";
-import { generatedPatternImagePath, meshVisualGeneratePattern, meshVisualReconstruct, vpqspScreenIdCode } from "../api/meshVisualCommands";
+import {
+  generatedPatternImagePath, meshVisualGeneratePattern,
+  meshVisualLoadScreenTransforms, meshVisualReconstruct, vpqspScreenIdCode,
+} from "../api/meshVisualCommands";
+import {
+  applyReconstructDone, errMsg, formatReconstructWarning,
+} from "../api/visualReconstructLanding";
+import {
+  loadSolveDigestCached, relRowsFromTransforms, runMethodLabel, runStatus,
+} from "../api/visualSolveUi";
 import { getMachineDetail, listMachines, pickDirectory, pickFile, revealPath } from "../api/commands";
 import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern, playerClear } from "../api/player";
 import {
@@ -391,60 +400,224 @@ import { listen } from "@tauri-apps/api/event";
           h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'x', size: 13 }), onPress: () => batch(false) }, '取消遮罩'))));
   }
 
-  /* ================= 重建 run 质量 ================= */
-  function RunInsp({ s }) {
-    const proj = CX.useProj();
-    const r = (proj.runs || []).find((x) => x.id === s.calSel.id);
-    const [report, setReport] = useState(null);
-    const [compareId, setCompareId] = useState(null);
-    useEffect(() => {
-      if (!s.calSel || s.calSel.type !== 'run') return undefined;
-      let alive = true;
-      getRunReport(s.calSel.id).then((rep) => { if (alive) setReport(rep); }).catch(() => {});
-      return () => { alive = false; };
-    }, [s.calSel && s.calSel.id]);
-    if (!r) return CX.inspEmpty('选择一次重建查看报告');
+  /* ================= 重建记录 · 列表 + 二级详情（handoff RunListInsp / SolveDetail） ================= */
+  const solveKV = (k, v) => h('div', { className: 'gw-field', style: { minHeight: 24 } },
+    h('span', { className: 'lb', style: { fontFamily: 'var(--font-code)', fontSize: 11.5 } }, k),
+    h('span', { style: { fontSize: 12, color: 'var(--chrome-text)', fontFamily: 'var(--font-code)', textAlign: 'right' } }, v));
+
+  function QPill({ q, mini }) {
+    const c = GRID_CAB_QUALITY[q] || GRID_CAB_QUALITY.ok;
+    return h('span', { className: 'spill spill--' + c.tone + (mini ? ' spill--mini' : '') }, h(Icon, { name: c.icon, size: mini ? 10 : 12 }), c.label);
+  }
+
+  function IgnoredPhotos({ list }) {
+    const [open, setOpen] = useState(false);
+    return h('div', { className: 'gw-solve-warn' },
+      h('button', { className: 'gw-solve-warn-h', type: 'button', onClick: () => setOpen((v) => !v) },
+        h(Icon, { name: 'alert', size: 15 }),
+        h('span', { className: 'm' }, h('b', null, list.length), ' 张照片未检测到标记，已被忽略'),
+        h('span', { className: 'car' + (open ? ' open' : '') }, h(Icon, { name: 'chevd', size: 13 }))),
+      open ? h('div', { className: 'gw-solve-warn-b' },
+        list.map((f, i) => h('div', { key: i, className: 'f' }, h(Icon, { name: 'doc', size: 12 }), f))) : null);
+  }
+
+  function SolveScreen({ sc }) {
+    const [open, setOpen] = useState(sc.status !== 'ok');
+    const [onlyBad, setOnlyBad] = useState(false);
+    const st = GRID_SOLVE_STATUS[sc.status] || GRID_SOLVE_STATUS.warn;
+    const cabs = sc.cabinets || [];
+    const rows = onlyBad ? cabs.filter((x) => x.quality !== 'ok') : cabs;
+    const nOk = sc.n_ok || 0;
+    const nWarn = sc.n_warn || 0;
+    const nFail = sc.n_fail || 0;
+    return h('div', { className: 'gw-solve-scr' + (open ? ' open' : '') },
+      h('button', { className: 'gw-solve-scr-h', type: 'button', onClick: () => setOpen((v) => !v) },
+        h('span', { className: 'car' }, h(Icon, { name: 'chevd', size: 13 })),
+        h(Icon, { name: 'panel', size: 14 }),
+        h('span', { className: 'nm' }, sc.name || sc.screen_id),
+        h('span', { className: 'rms' }, Number(sc.ba_rms_px).toFixed(2), h('i', null, 'px')),
+        h('span', { className: 'spill spill--' + st.tone + ' spill--mini' }, h(Icon, { name: st.icon, size: 11 }), st.label)),
+      open ? h('div', { className: 'gw-solve-scr-b' },
+        h('div', { className: 'gw-solve-tally' },
+          h('span', { style: { color: 'var(--positive-visual)' } }, h(Icon, { name: 'check', size: 12 }), nOk),
+          nWarn ? h('span', { style: { color: 'var(--notice-visual)' } }, h(Icon, { name: 'alert', size: 12 }), nWarn) : null,
+          nFail ? h('span', { style: { color: 'var(--negative-visual)' } }, h(Icon, { name: 'x', size: 12 }), nFail) : null,
+          (nWarn || nFail) ? h('button', { type: 'button', className: 'gw-solve-filter' + (onlyBad ? ' on' : ''), onClick: () => setOnlyBad((v) => !v) }, onlyBad ? '显示全部' : '仅异常') : null),
+        h('table', { className: 'gw-cabtbl' },
+          h('thead', null, h('tr', null, h('th', null, '箱体'), h('th', { className: 'r' }, '视角'), h('th', { className: 'r' }, '观测点'), h('th', null, '质量'))),
+          h('tbody', null, rows.map((cb) => {
+            const q = cb.quality || 'ok';
+            return h('tr', { key: cb.cabinet_id, className: q !== 'ok' ? 'is-' + q : '' },
+              h('td', { className: 'id' }, cb.cabinet_id),
+              h('td', { className: 'num' }, cb.observed_views),
+              h('td', { className: 'num' }, cb.observed_points),
+              h('td', null, h(QPill, { q, mini: true })));
+          })))) : null);
+  }
+
+  function SolveDetailBody({ s, r, digest, report, transforms }) {
+    /* 视觉联合解算 digest */
+    if (digest) {
+      if (digest.empty) {
+        return h('div', { className: 'gw-solve-empty' },
+          h('div', { className: 'ic' }, h(Icon, { name: 'alert', size: 22 })),
+          h('div', { className: 'tt' }, '求解结果为空'),
+          h('div', { className: 'ds' }, '本次求解未能重建任何箱体。请检查：'),
+          h('ul', null,
+            h('li', null, '测试图是否已正确上屏 —— 屏幕应显示 ChArUco 图案'),
+            h('li', null, '照片是否对准屏幕、标记清晰可辨'),
+            h('li', null, '拍摄角度与覆盖是否充足')));
+      }
+      const ids = (digest.screens || []).map((x) => x.screen_id);
+      const multi = ids.length > 1;
+      const rms = digest.ba_rms_px;
+      const rtone = rms == null ? 'notice' : rms < 1 ? 'positive' : rms < 3 ? 'notice' : 'negative';
+      const refName = digest.ref_screen_id || '基准屏';
+      const rel = relRowsFromTransforms(transforms || null);
+      const finished = digest.finished_at
+        ? String(digest.finished_at).replace('T', ' ').slice(0, 16)
+        : r.created_at;
+      return h(React.Fragment, null,
+        h('div', { className: 'gw-solve-ov' },
+          h('div', { className: 'lead' },
+            h('div', { className: 'rms', style: { color: 'var(--' + rtone + '-visual)' } },
+              rms == null ? '—' : Number(rms).toFixed(2), h('i', null, 'px')),
+            h('div', { className: 'lead-m' }, h('div', { className: 'k' }, '总重投影误差 · RMS'), h('div', { className: 'd' }, '所有观测点的整体拟合优度'))),
+          h('div', { className: 'gw-solve-ovstats' },
+            h('div', null, h('span', { className: 'v' }, (digest.photos_used || 0) + ' / ' + (digest.photos_total || 0)), h('span', { className: 'k' }, '参与照片')),
+            h('div', null, h('span', { className: 'v' }, Number(digest.observation_points || 0).toLocaleString()), h('span', { className: 'k' }, '观测点')),
+            h('div', null, h('span', { className: 'v tsm' }, finished), h('span', { className: 'k' }, '完成时间')))),
+        digest.ignored_photos && digest.ignored_photos.length
+          ? h(IgnoredPhotos, { list: digest.ignored_photos }) : null,
+        h(Fold, { label: multi ? '逐屏明细 · ' + ids.length + ' 屏' : '逐屏明细' },
+          h('div', { className: 'gw-solve-scrs' }, (digest.screens || []).map((sc) => h(SolveScreen, { key: sc.screen_id, sc })))),
+        multi ? h(Fold, { label: '屏间关系 · 基准 ' + refName },
+          h('div', { className: 'gw-solve-relnote' }, h(Icon, { name: 'info', size: 13 }),
+            h('span', null, '以 ', h('b', null, refName), ' 为参照的相对位姿。视口中新建网格已按解算位置摆放。')),
+          rel.length
+            ? h('div', { className: 'gw-solve-rel' }, rel.map((rl) => h('div', { key: rl.id, className: 'gw-solve-rel-r' },
+                h('div', { className: 'nm' }, h(Icon, { name: 'panel', size: 13 }), rl.name, h('span', { className: 'k' }, rl.key)),
+                h('div', { className: 'gw-solve-rel-kvs' },
+                  h('div', { className: 'kv' }, h('i', null, '相对平移'), h('b', null, rl.dist.toFixed(1), h('u', null, 'mm'))),
+                  h('div', { className: 'kv' }, h('i', null, '旋转角'), h('b', null, (rl.rot > 0 ? '+' : '') + rl.rot.toFixed(1), h('u', null, '°')))))))
+            : h('div', { style: { fontSize: 11.5, color: 'var(--chrome-faint)' } }, digest.screen_transforms_path ? '屏间变换未加载' : '无屏间变换产物')) : null,
+        h(Fold, { label: '产物与元信息', defOpen: false },
+          solveKV('method', runMethodLabel(r)), solveKV('测量来源', '视觉校正'),
+          solveKV('内参来源', digest.intrinsics_source === 'auto_self_calibrated' ? '自动标定' : '文件'),
+          solveKV('时间', r.created_at), solveKV('产物', r.output_obj_path || '—')));
+    }
+    /* 全站仪 / 表面 run：质量指标 */
     const qm = report ? report.quality_metrics : null;
-    const metric = (k, v, unit, exp, tone) => h('div', { className: 'gw-metric' },
-      h('div', { className: 'k' }, k), h('div', { className: 'v', style: tone ? { color: 'var(--' + tone + '-visual)' } : null }, v, unit ? h('span', { style: { fontSize: 11, color: 'var(--chrome-faint)', marginLeft: 3 } }, unit) : null), h('div', { className: 'exp' }, exp));
     const rms = r.estimated_rms_mm;
     const rtone = rms == null ? null : CX.rmsTone(rms, 'mm');
-    const compare = (proj.runs || []).find((x) => x.id === Number(compareId));
-    const delta = (a, b, digits) => a == null || b == null ? 'n/a' : ((a - b) >= 0 ? '+' : '') + (a - b).toFixed(digits == null ? 2 : digits);
-    const KV = (k, v) => h('div', { className: 'gw-field', style: { minHeight: 24 } }, h('span', { className: 'lb', style: { fontFamily: 'var(--font-code)', fontSize: 11.5 } }, k), h('span', { style: { fontSize: 12, color: 'var(--chrome-text)', fontFamily: 'var(--font-code)', textAlign: 'right' } }, v));
-    const setCurrent = async () => {
-      try {
-        await s.runCmd({ domain: 'calibrate', action: '设为当前 run', target: 'run #' + r.id, chan: 'local' }, () => setRunCurrent(r.id), { okMsg: () => `run #${r.id} 已设为当前` });
-        await CX.reloadRuns(proj.path, s.calActiveScreen);
-      } catch (e) { /* runCmd 已记录失败 */ }
-    };
+    const metric = (k, v, unit, exp, tone) => h('div', { className: 'gw-metric' },
+      h('div', { className: 'k' }, k),
+      h('div', { className: 'v', style: tone ? { color: 'var(--' + tone + '-visual)' } : null }, v,
+        unit ? h('span', { style: { fontSize: 11, color: 'var(--chrome-faint)', marginLeft: 3 } }, unit) : null),
+      h('div', { className: 'exp' }, exp));
     return h(React.Fragment, null,
-      head('cube3', 'run #' + r.id, r.created_at, r.is_current ? h('span', { className: 'spill spill--positive' }, h(Icon, { name: 'check', size: 12 }), '当前') : null),
-      h(Fold, { label: '质量指标' },
-        qm ? h('div', { className: 'gw-metrics' },
-          metric('RMS', rms == null ? 'n/a' : rms.toFixed(2), rms == null ? null : 'mm', '交叉验证真值：整体拟合优度', rtone),
-          metric('middle_max_dev', qm.middle_max_dev_mm.toFixed(2), 'mm', '中段最大偏差'),
-          metric('顶点数', r.vertex_count ? (r.vertex_count / 1000).toFixed(1) + 'k' : '—', null, '重建网格顶点规模'),
-          metric('measured/expected', qm.measured_count + '/' + qm.expected_count, null, '实测/期望点数占比')) : h('div', { style: { fontSize: 11.5, color: 'var(--chrome-faint)' } }, '加载中…')),
-      h(Fold, { label: '元信息' },
-        KV('method', r.method), KV('screen', r.screen_id), KV('时间', r.created_at), KV('产物', r.output_obj_path || '未导出')),
-      h(Fold, { label: 'Run A/B 指标对比' },
-        h('div', { className: 'lens-nanote' }, h(Icon, { name: 'info', size: 13 }), '仅比较 run 质量指标与产物状态，不是几何叠加对比。'),
-        h('div', { className: 'cap-field' }, h('span', { className: 'cap-lbl' }, 'Run B'),
-          h('select', { className: 'ar-select', value: compareId || '', onChange: (e) => setCompareId(e.target.value || null) },
-            h('option', { value: '' }, '选择另一 run…'), (proj.runs || []).filter((x) => x.id !== r.id).map((x) => h('option', { key: x.id, value: x.id }, 'run #' + x.id)))),
-        compare ? h('div', { className: 'lens-mon-table' },
-          h('div', { className: 'lens-mon-head', style: { gridTemplateColumns: '1fr repeat(3,80px)' } }, h('span', null, '指标'), h('span', null, 'Run A'), h('span', null, 'Run B'), h('span', null, 'A−B')),
-          [['RMS mm', r.estimated_rms_mm, compare.estimated_rms_mm, 2], ['vertices', r.vertex_count, compare.vertex_count, 0]].map(([k, a, b, d]) => h('div', { key: k, className: 'lens-mon-row', style: { gridTemplateColumns: '1fr repeat(3,80px)' } }, h('span', null, k), h('span', { className: 'mono' }, a == null ? 'n/a' : Number(a).toFixed(d)), h('span', { className: 'mono' }, b == null ? 'n/a' : Number(b).toFixed(d)), h('span', { className: 'mono' }, delta(a, b, d)))),
-          h('div', { className: 'lens-mon-row', style: { gridTemplateColumns: '1fr repeat(3,80px)' } }, h('span', null, 'OBJ'), h('span', null, r.output_obj_path ? '有' : '无'), h('span', null, compare.output_obj_path ? '有' : '无'), h('span', null, '—'))) : null),
-      h(Fold, { label: '动作' },
-        h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
-          h('div', { style: { display: 'flex', gap: 8 } },
-            h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'eye', size: 13 }), onPress: () => { CX.viewRunInPreview(s, proj, r.id); s.setCalMeshVersion('rebuilt'); } }, '在视口中查看'),
-            h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'star', size: 13 }), isDisabled: r.is_current, onPress: setCurrent }, '设为当前')),
-          h('div', { style: { display: 'flex', gap: 8 } },
-            h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'layers', size: 13 }), onPress: () => s.setCalMeshVersion('overlay') }, '与另一 run 比对'),
-            h(Button, { variant: 'accent', size: 'S', icon: h(Icon, { name: 'external', size: 13 }), onPress: () => s.setModal({ wide: true, render: ({ close }) => window.VOLO_GRID_MODALS.exportDlg(s, close) }) }, '导出')))));
+      h('div', { className: 'gw-metrics' },
+        metric('RMS', rms == null ? 'n/a' : rms.toFixed(2), rms == null ? null : 'mm', '交叉验证真值：整体拟合优度', rtone),
+        metric('最大偏差', qm ? qm.middle_max_dev_mm.toFixed(2) : '—', 'mm', '中段最大偏差'),
+        metric('顶点数', r.vertex_count ? (r.vertex_count / 1000).toFixed(1) + 'k' : '—', null, '重建网格顶点规模'),
+        metric('实测占比', qm ? Math.round((qm.measured_count / Math.max(1, qm.expected_count)) * 100) + '%' : '—', null, '实测（非插值/外推）顶点比例')),
+      h('div', { className: 'gw-insp-sep' }),
+      solveKV('method', runMethodLabel(r)), solveKV('测量来源', r.screen_id),
+      solveKV('内参来源', '—'), solveKV('时间', r.created_at), solveKV('产物', r.output_obj_path || '—'));
+  }
+
+  function SolveDetail({ s, r, digest, report, transforms, close }) {
+    const rs = runStatus(r, digest);
+    const empty = digest && digest.empty;
+    const di = rs.tone === 'positive' ? 'ok' : rs.tone === 'negative' ? 'danger' : 'info';
+    const multiN = digest && digest.screens && digest.screens.length > 1 ? digest.screens.length : 0;
+    return h('div', { className: 'drawer drawer--preview drawer--solvedetail' },
+      h('div', { className: 'drawer-h' },
+        h('span', { className: 'di ' + di }, h(Icon, { name: empty ? 'alert' : 'cube3', size: 17 })),
+        h('div', { style: { minWidth: 0, flex: 1 } },
+          h('h2', null, 'run #' + r.id + ' · 重建摘要'),
+          h('div', { className: 'sub' }, runMethodLabel(r) + ' · ' + r.created_at + (multiN ? ' · ' + multiN + ' 屏联合求解' : ''))),
+        h('span', { className: 'spill spill--' + rs.tone }, h(Icon, { name: rs.icon, size: 12 }), rs.label),
+        h('button', { className: 'iconbtn x', type: 'button', style: { width: 26, height: 26, marginLeft: 8 }, onClick: close }, h(Icon, { name: 'x', size: 16 }))),
+      h('div', { className: 'drawer-b drawer-b--solvedetail' }, h(SolveDetailBody, { s, r, digest, report, transforms })),
+      h('div', { className: 'drawer-f' }, empty
+        ? h(React.Fragment, null,
+            h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'camera', size: 15 }), onPress: () => { close(); s.setCalFlow('visual'); } }, '重新采集'),
+            h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'grid', size: 15 }), onPress: () => { close(); s.setCalSel({ type: 'pattern' }); } }, '检查测试图'))
+        : h(React.Fragment, null,
+            h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'layers', size: 15 }), onPress: () => s.setCalMeshVersion('overlay') }, '与原始叠加'),
+            h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'eye', size: 15 }), onPress: () => { const proj = CX.projStore.get(); CX.viewRunInPreview(s, proj, r.id); s.setCalMeshVersion('rebuilt'); close(); } }, '在视口中查看'),
+            h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'external', size: 15 }), onPress: () => s.setModal({ wide: true, render: ({ close: c }) => window.VOLO_GRID_MODALS.exportDlg(s, c) }) }, '导出'))));
+  }
+
+  function RunListInsp({ s }) {
+    const proj = CX.useProj();
+    const runs = proj.runs || [];
+    const [digests, setDigests] = useState({});
+    useEffect(() => {
+      let alive = true;
+      const paths = runs.filter((r) => r.visual_solve_path).map((r) => r.visual_solve_path);
+      const uniq = [...new Set(paths)];
+      if (!uniq.length) { setDigests({}); return undefined; }
+      Promise.all(uniq.map((p) => loadSolveDigestCached(p, { pushLog: s.pushLog }))).then((ds) => {
+        if (!alive) return;
+        const map = {};
+        uniq.forEach((p, i) => { map[p] = ds[i]; });
+        setDigests(map);
+      });
+      return () => { alive = false; };
+    }, [runs.map((r) => r.id + ':' + (r.visual_solve_path || '')).join('|')]);
+
+    const openDetail = async (r) => {
+      /* Prefer shared cache (also warmed by list preload / tree). */
+      const digest = r.visual_solve_path
+        ? await loadSolveDigestCached(r.visual_solve_path, { pushLog: s.pushLog })
+        : null;
+      let report = null;
+      if (!digest) {
+        try { report = await getRunReport(r.id); } catch (e) { report = null; }
+      }
+      let transforms = null;
+      const xfPath = (digest && digest.screen_transforms_path)
+        || (CX.projStore.get().visualSession && CX.projStore.get().visualSession.screenTransformsPath)
+        || null;
+      if (xfPath) {
+        try { transforms = await meshVisualLoadScreenTransforms(xfPath); } catch (e) { transforms = null; }
+      } else if (CX.projStore.get().visualSession && CX.projStore.get().visualSession.screenTransforms) {
+        transforms = CX.projStore.get().visualSession.screenTransforms;
+      }
+      s.setModal({ wide: true, render: ({ close }) => h(SolveDetail, { s, r, digest, report, transforms, close }) });
+    };
+
+    return h(React.Fragment, null,
+      h(Fold, { label: '重建记录 · ' + runs.length, defOpen: true },
+        h('div', { className: 'gw-runlist-note' }, h(Icon, { name: 'info', size: 12 }),
+          h('span', null, '双击记录查看该次重建的详细摘要。历次重建均保留于此，便于查阅与比对。')),
+        runs.length
+          ? h('div', { className: 'gw-runlist' }, runs.map((r) => {
+              const digest = r.visual_solve_path ? digests[r.visual_solve_path] : null;
+              const st = runStatus(r, digest);
+              const failed = (digest && digest.empty) || (r.vertex_count === 0 && r.visual_solve_path);
+              const isVisual = !!r.visual_solve_path || (r.method && String(r.method).indexOf('visual') >= 0);
+              const rmsVal = isVisual
+                ? (digest && digest.ba_rms_px != null ? digest.ba_rms_px : null)
+                : r.estimated_rms_mm;
+              const rmsTxt = (failed || rmsVal == null) ? '—' : Number(rmsVal).toFixed(2) + (isVisual ? ' px' : ' mm');
+              return h('div', {
+                key: r.id,
+                className: 'gw-runrow' + (r.is_current ? ' is-current' : '') + (s.calSel && s.calSel.type === 'run' && s.calSel.id === r.id ? ' is-sel' : ''),
+                onClick: () => { s.setCalSurveyRun(r.id); s.setCalSel({ type: 'run', id: r.id }); },
+                onDoubleClick: () => openDetail(r),
+                title: '双击查看详细摘要',
+              },
+                h('span', { className: 'ic' }, h(Icon, { name: failed ? 'alert' : 'cube3', size: 15 })),
+                h('div', { className: 'm' },
+                  h('div', { className: 'n' }, 'run #' + r.id, r.is_current ? h('span', { className: 'cur' }, '当前') : null),
+                  h('div', { className: 'd' }, runMethodLabel(r) + ' · ' + r.created_at + ' · RMS ' + rmsTxt)),
+                h('span', { className: 'spill spill--' + st.tone + ' spill--mini' }, h(Icon, { name: st.icon, size: 11 }), st.label),
+                h('button', { type: 'button', className: 'gw-runrow-open', onClick: (e) => { e.stopPropagation(); openDetail(r); }, title: '查看详细摘要' }, h(Icon, { name: 'external', size: 14 })));
+            }))
+          : h('div', { style: { fontSize: 11.5, color: 'var(--chrome-faint)' } }, '尚无重建结果')));
   }
 
   /* ================= 测试图（共享状态：PatternPanel 与 StagePanel「测试图」折叠共用） ================= */
@@ -734,6 +907,12 @@ import { listen } from "@tauri-apps/api/event";
         if (detail.event === 'progress') {
           setBaPct(Math.max(0, Math.min(100, detail.percent || 0)));
           setBaStage(detail.stage || '');
+        } else if (detail.event === 'warning') {
+          s.pushLog({
+            lv: 'warn',
+            cat: 'survey',
+            msg: formatReconstructWarning('视觉重建', detail),
+          });
         }
       }).then(add);
       listen('mesh-visual-reconstruct-done', (event) => {
@@ -743,9 +922,29 @@ import { listen } from "@tauri-apps/api/event";
         if (payload.result) {
           const result = payload.result;
           setBaState('done'); setBaPct(100); setBaErr('');
-          CX.projStore.patch({ visualSession: { screenId, poses: (result.cabinets || []).length || 1, posePath: result.pose_report_path, sessionDir: visualCapturePath } });
-          s.setCalReceipt({ tone: 'ok', text: `视觉重建完成 · BA RMS ${result.ba_rms_px.toFixed(2)} px` });
-          s.pushLog({ lv: 'ok', cat: 'survey', msg: `视觉重建完成 · ba_rms <b>${result.ba_rms_px.toFixed(2)} px</b>` });
+          (async () => {
+            await applyReconstructDone({
+              projectPath: proj.path,
+              screenId,
+              result,
+              label: '视觉重建',
+              pushLog: s.pushLog,
+              reloadRuns: CX.reloadRuns,
+              reloadScreenReports: CX.reloadScreenReports,
+              projConfig: proj.config,
+              s,
+              patchVisualSession: (visualSession) => CX.projStore.patch({ visualSession }),
+              sessionDir: visualCapturePath,
+              includeScreenIds: true,
+              richSummary: true,
+              setCalReceipt: s.setCalReceipt,
+              onSelectCurrentRun: (runId) => {
+                s.setCalSurveyRun(runId);
+                s.setCalSel({ type: 'run', id: runId });
+                s.setCalMeshVersion('rebuilt');
+              },
+            });
+          })();
         } else {
           const msg = payload.error || '视觉重建失败';
           setBaState('idle'); setBaErr(msg);
@@ -753,13 +952,13 @@ import { listen } from "@tauri-apps/api/event";
         }
       }).then(add);
       return () => { alive = false; cleanups.forEach((fn) => fn()); };
-    }, [screenId, visualCapturePath]);
+    }, [screenId, visualCapturePath, multiIds.join('|')]);
     const pickCaptureDir = async () => {
       try {
         const dir = await pickDirectory();
         if (dir) setCaptureDirs((current) => Object.assign({}, current, { [screenId]: dir }));
       } catch (e) {
-        s.pushLog({ lv: 'err', cat: 'survey', msg: `选择照片文件夹失败 · ${e && e.message ? e.message : e}` });
+        s.pushLog({ lv: 'err', cat: 'survey', msg: `选择照片文件夹失败 · ${errMsg(e)}` });
       }
     };
     const pickIntrinsics = async () => {
@@ -767,17 +966,24 @@ import { listen } from "@tauri-apps/api/event";
         const path = await pickFile('相机内参 (JSON)', ['json']);
         if (path) { setIntrFile(path); setIntr('file'); }
       } catch (e) {
-        s.pushLog({ lv: 'err', cat: 'survey', msg: `选择内参文件失败 · ${e && e.message ? e.message : e}` });
+        s.pushLog({ lv: 'err', cat: 'survey', msg: `选择内参文件失败 · ${errMsg(e)}` });
       }
     };
     const runVisualReconstruct = async () => {
       if (!visualCapturePath || (intr === 'file' && !intrFile)) return;
       setBaState('running'); setBaPct(0); setBaStage(''); setBaErr('');
       try {
-        const response = await meshVisualReconstruct(proj.path, screenId, visualCapturePath, intr === 'auto' ? 'auto' : intrFile, null);
+        const ids = multiIds.filter(Boolean);
+        const response = await meshVisualReconstruct(
+          proj.path,
+          ids.length ? ids : [screenId],
+          visualCapturePath,
+          intr === 'auto' ? 'auto' : intrFile,
+          null,
+        );
         visualJobRef.current = response.job_id;
       } catch (e) {
-        const msg = e && e.message ? e.message : String(e);
+        const msg = errMsg(e);
         setBaState('idle'); setBaErr(msg);
         s.pushLog({ lv: 'err', cat: 'survey', msg: `视觉重建启动失败 · ${msg}` });
       }
@@ -889,10 +1095,11 @@ import { listen } from "@tauri-apps/api/event";
     }
     const body = t === 'cabinet' ? h(BoxSingle, { s })
       : t === 'cabinetMulti' ? h(BoxMulti, { s })
-      : t === 'run' ? h(RunInsp, { s })
+      : t === 'run' ? h(RunListInsp, { s })
       : t === 'pattern' ? h(PatternPanel, { s })
       : null;
-    return h('div', { className: 'gw-insp' }, h(StagePanel, { s }), body ? h('div', { className: 'gw-insp-sep' }) : null, body);
+    /* handoff：选中重建 run 时不画顶部分隔线（列表紧贴阶段动作） */
+    return h('div', { className: 'gw-insp' }, h(StagePanel, { s }), (body && t !== 'run') ? h('div', { className: 'gw-insp-sep' }) : null, body);
   }
 
   window.VOLO_GRID = Object.assign(window.VOLO_GRID || {}, { inspector, ScreenForm });

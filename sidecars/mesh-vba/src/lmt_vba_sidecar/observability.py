@@ -17,8 +17,109 @@ class ObservabilityError(Exception):
     pass
 
 
+class ScreenConnectivityError(Exception):
+    """Screens are not connected via enough co-visible bridge views."""
+
+
+def check_screen_connectivity(
+    observations,
+    cabinet_to_screen: dict[int, int],
+    n_screens: int,
+    *,
+    screen_labels: list[str] | None = None,
+    min_bridge_views: int = 2,
+) -> dict:
+    """Verify screens form one connected component via bridge views.
+
+    A bridge view is a camera that observes markers from at least two screens.
+    Screens A and B are adjacent when >= ``min_bridge_views`` cameras see both.
+
+    Returns a dict with ``pair_bridge_counts`` and per-screen ``bridge_views``
+    (cameras that see that screen together with at least one other screen).
+
+    Raises
+    ------
+    ScreenConnectivityError
+        When the screen graph is disconnected, listing pairs that lack bridges.
+    """
+    if n_screens <= 1:
+        return {"connected": True, "pair_bridge_counts": {}, "bridge_views": {}}
+
+    labels = screen_labels or [str(i) for i in range(n_screens)]
+    cam_screens: dict[int, set[int]] = collections.defaultdict(set)
+    for o in observations:
+        si = cabinet_to_screen.get(o.cabinet_idx)
+        if si is None:
+            continue
+        cam_screens[o.camera_idx].add(si)
+
+    pair_counts: dict[tuple[int, int], int] = collections.defaultdict(int)
+    bridge_views_per_screen: dict[int, int] = collections.defaultdict(int)
+    for screens in cam_screens.values():
+        if len(screens) < 2:
+            continue
+        sl = sorted(screens)
+        for i in range(len(sl)):
+            for j in range(i + 1, len(sl)):
+                pair_counts[(sl[i], sl[j])] += 1
+        for si in screens:
+            bridge_views_per_screen[si] += 1
+
+    adj: list[set[int]] = [set() for _ in range(n_screens)]
+    for (a, b), count in pair_counts.items():
+        if count >= min_bridge_views:
+            adj[a].add(b)
+            adj[b].add(a)
+
+    seen = {0}
+    stack = [0]
+    while stack:
+        u = stack.pop()
+        for v in adj[u]:
+            if v not in seen:
+                seen.add(v)
+                stack.append(v)
+
+    if len(seen) == n_screens:
+        return {
+            "connected": True,
+            "pair_bridge_counts": dict(pair_counts),
+            "bridge_views": dict(bridge_views_per_screen),
+        }
+
+    # Collect component ids, then list cross-component pairs lacking bridges.
+    comp = [-1] * n_screens
+    for cid, start in enumerate(range(n_screens)):
+        if comp[start] >= 0:
+            continue
+        comp_ids = {start}
+        stack = [start]
+        while stack:
+            u = stack.pop()
+            for v in adj[u]:
+                if v not in comp_ids:
+                    comp_ids.add(v)
+                    stack.append(v)
+        for si in comp_ids:
+            comp[si] = cid
+
+    missing: list[str] = []
+    for a in range(n_screens):
+        for b in range(a + 1, n_screens):
+            if comp[a] == comp[b]:
+                continue
+            count = pair_counts.get((a, b), 0)
+            missing.append(
+                f"{labels[a]}↔{labels[b]} ({count} bridge view(s), need {min_bridge_views})"
+            )
+    raise ScreenConnectivityError(
+        "screens_disconnected: " + "; ".join(sorted(missing))
+    )
+
+
 def check_observability(observations, n_cabinets: int,
-                        min_views: int = 2, min_points: int = 8) -> dict:
+                        min_views: int = 2, min_points: int = 8,
+                        *, check_connectivity: bool = True) -> dict:
     """Check per-cabinet observability and bipartite graph connectivity.
 
     Parameters
@@ -92,10 +193,10 @@ def check_observability(observations, n_cabinets: int,
         node[1] for node in cab_nodes if node not in seen
     )
 
-    if weak or not connected:
+    if weak or (check_connectivity and not connected):
         raise ObservabilityError(
             f"observability failed: weak={weak}, connected={connected}, "
             f"isolated_cabinets={isolated}"
         )
 
-    return {"connected": True, "weak": weak}
+    return {"connected": connected if check_connectivity else True, "weak": weak}

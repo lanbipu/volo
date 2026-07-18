@@ -292,6 +292,9 @@ pub struct ReconstructionRun {
     /// existed, so older DBs need no backfill.
     #[serde(default)]
     pub is_current: bool,
+    /// Path to `visual_solve_digest.v1` JSON (visual BA runs only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visual_solve_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -335,6 +338,9 @@ pub struct CabinetPoseSummary {
     pub normal: [f64; 3],
     pub reprojection_rms_px: f64,
     pub observed_views: u32,
+    /// Pose-report `observed_points`; older summaries omit → 0.
+    #[serde(default)]
+    pub observed_points: u32,
     pub quality: String,
 }
 
@@ -353,6 +359,40 @@ pub struct WarningDto {
     pub message: String,
     #[serde(default)]
     pub cabinet: Option<String>,
+}
+
+/// Per-screen digest for joint multi-screen visual reconstruct.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct VisualScreenSummary {
+    pub screen_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pose_report_path: Option<String>,
+    pub ba_rms_px: f64,
+    pub cabinet_count: usize,
+    #[serde(default)]
+    pub bridge_views: usize,
+    #[serde(default)]
+    pub cabinets: Vec<CabinetPoseSummary>,
+}
+
+/// `visual_screen_transforms.v1` — joint-frame SE(3) of each screen relative
+/// to `frame_screen_id` (first screen / gauge).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ScreenTransformsFile {
+    pub schema_version: String,
+    pub frame_screen_id: String,
+    pub transforms: Vec<ScreenTransformEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ScreenTransformEntry {
+    pub screen_id: String,
+    /// 3×3 rotation (row-major nested arrays). Sidecar field name is `R`.
+    #[serde(rename = "R")]
+    pub rotation: [[f64; 3]; 3],
+    pub t_mm: [f64; 3],
+    pub rms_px: f64,
+    pub bridge_views: usize,
 }
 
 /// FIX-13 ④: `measured_yaml_path` 字段已删除 —— visual 重建不再写
@@ -382,6 +422,66 @@ pub struct VisualReconstructResult {
     #[serde(default)]
     pub warnings: Vec<WarningDto>,
     pub cabinets: Vec<CabinetPoseSummary>,
+    /// Joint multi-screen: path to `visual_screen_transforms.v1` JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_transforms_path: Option<String>,
+    /// Joint multi-screen: per-screen summaries (None for single-screen).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screens: Option<Vec<VisualScreenSummary>>,
+    /// Basenames of photos with no markers (ignored by BA).
+    #[serde(default)]
+    pub ignored_photos: Vec<String>,
+    #[serde(default)]
+    pub photos_used: u32,
+    #[serde(default)]
+    pub photos_total: u32,
+}
+
+/// Durable visual-BA solve digest for the「重建记录」UI (timestamped, not overwritten).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct VisualSolveDigest {
+    pub schema_version: String,
+    /// success | partial | failed
+    pub status: String,
+    #[serde(default)]
+    pub empty: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ba_rms_px: Option<f64>,
+    pub photos_used: u32,
+    pub photos_total: u32,
+    pub observation_points: usize,
+    pub finished_at: String,
+    #[serde(default)]
+    pub ignored_photos: Vec<String>,
+    pub ref_screen_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_transforms_path: Option<String>,
+    pub screens: Vec<VisualSolveScreenDigest>,
+    #[serde(default)]
+    pub warnings: Vec<WarningDto>,
+    #[serde(default = "default_intrinsics_source")]
+    pub intrinsics_source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct VisualSolveScreenDigest {
+    pub screen_id: String,
+    pub ba_rms_px: f64,
+    /// ok | warn | fail
+    pub status: String,
+    pub n_ok: usize,
+    pub n_warn: usize,
+    pub n_fail: usize,
+    pub cabinets: Vec<VisualSolveCabinetDigest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct VisualSolveCabinetDigest {
+    pub cabinet_id: String,
+    pub observed_views: u32,
+    pub observed_points: u32,
+    /// ok | warn | fail (UI tri-state; mapped from pose-report quality)
+    pub quality: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -526,6 +626,10 @@ pub struct CabinetPoseReportFile {
 pub struct CabinetPoseEntry {
     pub cabinet_id: String,
     pub corners_mm: [[f64; 3]; 4],
+    /// Views that observed this cabinet (from full pose report). Absent in
+    /// older reports → 0; callers that need a camera_count floor use max(..., 1).
+    #[serde(default)]
+    pub observed_views: u32,
     /// FIX-13 ④: BA 输出的逐箱体 3×3 平移协方差（mm²，箱体中心）。
     /// 旧 report / 协方差不可用（>2400 参数跳过等）时为 None。
     /// 此前协方差只活在被覆盖的 measured.yaml 死端里——现在 pose report
@@ -680,6 +784,7 @@ shape_mode: rectangle
             normal: [0.0, 0.0, 1.0],
             reprojection_rms_px: 0.42,
             observed_views: 8,
+            observed_points: 120,
             quality: "good".into(),
         };
         let vr = VisualReconstructResult {
@@ -698,6 +803,11 @@ shape_mode: rectangle
                 cabinet: None,
             }],
             cabinets: vec![cabinet],
+            screen_transforms_path: None,
+            screens: None,
+            ignored_photos: vec!["DSC04412.ARW".into()],
+            photos_used: 42,
+            photos_total: 45,
         };
         let json = serde_json::to_string(&vr).unwrap();
         assert!(json.contains("\"screen_id\":\"MAIN\""));

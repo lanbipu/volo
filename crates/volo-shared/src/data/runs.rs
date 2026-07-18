@@ -15,6 +15,8 @@ pub struct NewRun {
     pub vertex_count: usize,
     pub report_json_path: String,
     pub warnings_json: String,
+    /// Absolute or project-relative path to `visual_solve_digest.v1` (visual BA).
+    pub visual_solve_path: Option<String>,
 }
 
 pub fn insert(conn: &Connection, run: &NewRun) -> VoloResult<i64> {
@@ -22,8 +24,8 @@ pub fn insert(conn: &Connection, run: &NewRun) -> VoloResult<i64> {
         "INSERT INTO reconstruction_runs(
             project_path, screen_id, measurements_path, method,
             measured_count, expected_count, estimated_rms_mm, estimated_p95_mm,
-            vertex_count, report_json_path, warnings_json
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            vertex_count, report_json_path, warnings_json, visual_solve_path
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
         params![
             run.project_path,
             run.screen_id,
@@ -36,9 +38,25 @@ pub fn insert(conn: &Connection, run: &NewRun) -> VoloResult<i64> {
             run.vertex_count as i64,
             run.report_json_path,
             run.warnings_json,
+            run.visual_solve_path,
         ],
     )?;
     Ok(conn.last_insert_rowid())
+}
+
+pub fn set_visual_solve_path(
+    conn: &Connection,
+    run_id: i64,
+    visual_solve_path: &str,
+) -> VoloResult<()> {
+    let n = conn.execute(
+        "UPDATE reconstruction_runs SET visual_solve_path = ?1 WHERE id = ?2",
+        params![visual_solve_path, run_id],
+    )?;
+    if n == 0 {
+        return Err(crate::error::VoloError::NotFound(format!("run id {run_id}")));
+    }
+    Ok(())
 }
 
 pub fn update_export(
@@ -65,7 +83,7 @@ pub fn list_by_project(
     screen_id: Option<&str>,
 ) -> VoloResult<Vec<ReconstructionRun>> {
     let mut sql = String::from(
-        "SELECT id, screen_id, method, estimated_rms_mm, vertex_count, target, output_obj_path, created_at, is_current
+        "SELECT id, screen_id, method, estimated_rms_mm, vertex_count, target, output_obj_path, created_at, is_current, visual_solve_path
          FROM reconstruction_runs WHERE project_path = ?1",
     );
     if screen_id.is_some() {
@@ -84,6 +102,7 @@ pub fn list_by_project(
             output_obj_path: r.get(6)?,
             created_at: r.get(7)?,
             is_current: r.get::<_, i64>(8)? != 0,
+            visual_solve_path: r.get(9)?,
         })
     };
     let rows: Vec<_> = if let Some(s) = screen_id {
@@ -153,6 +172,7 @@ mod tests {
                 vertex_count: 200,
                 report_json_path: "reports/r.json".into(),
                 warnings_json: "[]".into(),
+                visual_solve_path: None,
             },
         )
         .unwrap();
@@ -199,6 +219,7 @@ mod tests {
             vertex_count: 20,
             report_json_path: "r.json".into(),
             warnings_json: "[]".into(),
+            visual_solve_path: None,
         };
         let a = insert(&conn, &new_run("MAIN")).unwrap();
         let b = insert(&conn, &new_run("MAIN")).unwrap();
@@ -252,6 +273,7 @@ mod tests {
                 vertex_count: 50,
                 report_json_path: "reports/rep.json".into(),
                 warnings_json: "[]".into(),
+                visual_solve_path: None,
             },
         )
         .unwrap();

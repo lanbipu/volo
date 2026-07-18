@@ -24,7 +24,8 @@ use mesh_adapter_visual_ba::ipc;
 use volo_shared::dto::{
     CabinetPoseReportFile, CabinetPoseSummary, CabinetSizeCheck, CalibrateResult,
     CompareKnownResult, DecodeStructuredLightResult, EvalResult, GeneratePatternResult,
-    GenerateStructuredLightResult, PairCheck, SimulateResult, VisualReconstructResult, WarningDto,
+    GenerateStructuredLightResult, PairCheck, ReconstructionResult, ScreenTransformsFile,
+    SimulateResult, VisualReconstructResult, VisualScreenSummary, WarningDto,
 };
 use volo_shared::error::{VoloError, VoloResult};
 
@@ -178,31 +179,69 @@ fn load_screen<'a>(
         .ok_or_else(|| VoloError::NotFound(format!("screen '{screen_id}' not in project")))
 }
 
-/// Normalize the Calibrate UI's "photo folder" into the sidecar's durable
-/// `capture_manifest.json` contract. Existing manifests pass through; a plain
-/// image directory (including vpcal's `captures/normal` session layout) gets a
-/// generated manifest plus a uniform screen mapping derived from project.yaml.
-pub fn prepare_capture_manifest(
-    project_path: &Path,
-    screen_id: &str,
-    input: &Path,
-) -> VoloResult<PathBuf> {
-    if input.is_file() {
-        return Ok(input.to_path_buf());
-    }
-    if !input.is_dir() {
-        return Err(VoloError::NotFound(format!(
-            "capture photo folder not found: {}",
-            input.display()
-        )));
-    }
-    let existing = input.join("capture_manifest.json");
-    if existing.is_file() {
-        return Ok(existing);
-    }
+fn sorted_project_screen_ids(cfg: &volo_shared::dto::ProjectConfig) -> Vec<String> {
+    let mut ids: Vec<String> = cfg.screens.keys().cloned().collect();
+    ids.sort();
+    ids
+}
 
-    let cfg = load_project_yaml_from_path(project_path)?;
-    let screen = load_screen(&cfg, screen_id)?;
+/// Stable VP-QSP 4-bit screen id: sorted index among all project screen keys
+/// (mirrors frontend `vpqspScreenIdCode`).
+fn vpqsp_screen_id_code(screen_id: &str, all_ids: &[String]) -> u8 {
+    all_ids
+        .iter()
+        .position(|id| id == screen_id)
+        .unwrap_or(0) as u8
+}
+
+fn read_screen_id_code(
+    pattern_meta: &Path,
+    screen_id: &str,
+    all_ids: &[String],
+) -> VoloResult<u8> {
+    if let Ok(raw) = std::fs::read_to_string(pattern_meta) {
+        if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(code) = meta.get("screen_id_code").and_then(|v| v.as_u64()) {
+                if code <= 15 {
+                    return Ok(code as u8);
+                }
+            }
+        }
+    }
+    Ok(vpqsp_screen_id_code(screen_id, all_ids))
+}
+
+fn screen_ids_label(screen_ids: &[String]) -> String {
+    screen_ids.join("+")
+}
+
+fn visual_identity_frame() -> mesh_core::coordinate::CoordinateFrame {
+    mesh_core::coordinate::CoordinateFrame {
+        origin_world: [0.0, 0.0, 0.0],
+        basis: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    }
+}
+
+fn make_reconstruct_project(
+    screen_id: &str,
+    screen_cfg: &volo_shared::dto::ScreenConfig,
+) -> VoloResult<ipc::ReconstructProject> {
+    Ok(ipc::ReconstructProject {
+        screen_id: screen_id.to_string(),
+        cabinet_array: ipc_cabinet_array(screen_cfg),
+        shape_prior: ipc_shape_prior(screen_cfg)?,
+        screen_id_code: None,
+        pattern_meta_path: None,
+        screen_mapping_path: None,
+        pose_report_path: None,
+    })
+}
+
+fn write_screen_mapping(
+    screen_id: &str,
+    screen: &volo_shared::dto::ScreenConfig,
+    generated_dir: &Path,
+) -> VoloResult<PathBuf> {
     let [cols, rows] = screen.cabinet_count;
     let [px_w, px_h] = screen.pixels_per_cabinet.ok_or_else(|| {
         VoloError::InvalidInput(format!(
@@ -211,66 +250,6 @@ pub fn prepare_capture_manifest(
     })?;
     let [mm_w, mm_h] = screen.cabinet_size_mm;
 
-    let pattern_meta = project_path
-        .join("patterns")
-        .join(screen_id)
-        .join("pattern_meta.json");
-    let meta: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&pattern_meta).map_err(|e| {
-            VoloError::NotFound(format!(
-                "generated pattern metadata unreadable at {}: {e}",
-                pattern_meta.display()
-            ))
-        })?)?;
-    let method = match meta.get("schema_version") {
-        Some(serde_json::Value::String(v)) if v.starts_with("vpqsp") => "vpqsp",
-        Some(serde_json::Value::Number(_)) => "charuco",
-        _ if meta
-            .get("cabinets")
-            .and_then(|v| v.as_array())
-            .is_some_and(|cabs| {
-                cabs.first()
-                    .is_some_and(|cab| cab.get("markers_x").is_some())
-            }) =>
-        {
-            "vpqsp"
-        }
-        _ => {
-            return Err(VoloError::InvalidInput(format!(
-                "cannot determine pattern method from {}",
-                pattern_meta.display()
-            )))
-        }
-    };
-
-    let image_root = if input.join("captures/normal").is_dir() {
-        input.join("captures/normal")
-    } else {
-        input.to_path_buf()
-    };
-    let mut images = std::fs::read_dir(&image_root)?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.is_file()
-                && path
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| {
-                        matches!(ext.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg")
-                    })
-        })
-        .collect::<Vec<_>>();
-    images.sort();
-    if images.is_empty() {
-        return Err(VoloError::InvalidInput(format!(
-            "no PNG/JPEG photos found in {}",
-            image_root.display()
-        )));
-    }
-
-    let generated_dir = project_path.join("measurements").join("capture_imports");
-    std::fs::create_dir_all(&generated_dir)?;
     let mapping_path = generated_dir.join(format!("{screen_id}_screen_mapping.json"));
     let absent = |col: u32, row: u32| {
         use volo_shared::dto::ShapeMode;
@@ -304,7 +283,98 @@ pub fn prepare_capture_manifest(
             "expected_pattern_hash": null
         }))?,
     )?;
+    Ok(mapping_path)
+}
 
+fn detect_pattern_method(pattern_meta: &Path) -> VoloResult<&'static str> {
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(pattern_meta).map_err(|e| {
+            VoloError::NotFound(format!(
+                "generated pattern metadata unreadable at {}: {e}",
+                pattern_meta.display()
+            ))
+        })?)?;
+    match meta.get("schema_version") {
+        Some(serde_json::Value::String(v)) if v.starts_with("vpqsp") => Ok("vpqsp"),
+        Some(serde_json::Value::Number(_)) => Ok("charuco"),
+        _ if meta
+            .get("cabinets")
+            .and_then(|v| v.as_array())
+            .is_some_and(|cabs| {
+                cabs.first()
+                    .is_some_and(|cab| cab.get("markers_x").is_some())
+            }) =>
+        {
+            Ok("vpqsp")
+        }
+        _ => Err(VoloError::InvalidInput(format!(
+            "cannot determine pattern method from {}",
+            pattern_meta.display()
+        ))),
+    }
+}
+
+fn collect_capture_images(image_root: &Path) -> VoloResult<Vec<PathBuf>> {
+    let mut images = std::fs::read_dir(image_root)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| {
+                        matches!(ext.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg")
+                    })
+        })
+        .collect::<Vec<_>>();
+    images.sort();
+    if images.is_empty() {
+        return Err(VoloError::InvalidInput(format!(
+            "no PNG/JPEG photos found in {}",
+            image_root.display()
+        )));
+    }
+    Ok(images)
+}
+
+/// Normalize the Calibrate UI's "photo folder" into the sidecar's durable
+/// `capture_manifest.json` contract. Existing manifests pass through; a plain
+/// image directory (including vpcal's `captures/normal` session layout) gets a
+/// generated manifest plus a uniform screen mapping derived from project.yaml.
+pub fn prepare_capture_manifest(
+    project_path: &Path,
+    screen_ids: &[String],
+    input: &Path,
+) -> VoloResult<PathBuf> {
+    if screen_ids.is_empty() {
+        return Err(VoloError::InvalidInput(
+            "screen_ids must be non-empty".into(),
+        ));
+    }
+    if input.is_file() {
+        return Ok(input.to_path_buf());
+    }
+    if !input.is_dir() {
+        return Err(VoloError::NotFound(format!(
+            "capture photo folder not found: {}",
+            input.display()
+        )));
+    }
+    let existing = input.join("capture_manifest.json");
+    if existing.is_file() {
+        return Ok(existing);
+    }
+
+    let cfg = load_project_yaml_from_path(project_path)?;
+    let all_ids = sorted_project_screen_ids(&cfg);
+
+    let image_root = if input.join("captures/normal").is_dir() {
+        input.join("captures/normal")
+    } else {
+        input.to_path_buf()
+    };
+    let images = collect_capture_images(&image_root)?;
     let views = images
         .iter()
         .enumerate()
@@ -315,14 +385,69 @@ pub fn prepare_capture_manifest(
             })
         })
         .collect::<Vec<_>>();
-    let manifest_path = generated_dir.join(format!("{screen_id}_capture_manifest.json"));
+
+    let generated_dir = project_path.join("measurements").join("capture_imports");
+    std::fs::create_dir_all(&generated_dir)?;
+
+    if screen_ids.len() == 1 {
+        let screen_id = &screen_ids[0];
+        let screen = load_screen(&cfg, screen_id)?;
+        let pattern_meta = project_path
+            .join("patterns")
+            .join(screen_id)
+            .join("pattern_meta.json");
+        let method = detect_pattern_method(&pattern_meta)?;
+        let mapping_path = write_screen_mapping(screen_id, screen, &generated_dir)?;
+        let manifest_path = generated_dir.join(format!("{screen_id}_capture_manifest.json"));
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "method": method,
+                "intrinsics": null,
+                "pattern_meta": pattern_meta,
+                "screen_mapping": mapping_path,
+                "views": views
+            }))?,
+        )?;
+        return Ok(manifest_path);
+    }
+
+    let mut screens = Vec::with_capacity(screen_ids.len());
+    let mut first_pattern_meta = None;
+    let mut first_mapping_path = None;
+    for screen_id in screen_ids {
+        let screen = load_screen(&cfg, screen_id)?;
+        let pattern_meta = project_path
+            .join("patterns")
+            .join(screen_id)
+            .join("pattern_meta.json");
+        let method = detect_pattern_method(&pattern_meta)?;
+        let screen_id_code = read_screen_id_code(&pattern_meta, screen_id, &all_ids)?;
+        let mapping_path = write_screen_mapping(screen_id, screen, &generated_dir)?;
+        if first_pattern_meta.is_none() {
+            first_pattern_meta = Some((method, pattern_meta.clone()));
+            first_mapping_path = Some(mapping_path.clone());
+        }
+        screens.push(serde_json::json!({
+            "screen_id": screen_id,
+            "screen_id_code": screen_id_code,
+            "pattern_meta": pattern_meta,
+            "screen_mapping": mapping_path,
+        }));
+    }
+    let (method, first_meta) = first_pattern_meta.expect("screen_ids non-empty");
+    let manifest_path = generated_dir.join(format!(
+        "{}_capture_manifest.json",
+        screen_ids_label(screen_ids)
+    ));
     std::fs::write(
         &manifest_path,
         serde_json::to_vec_pretty(&serde_json::json!({
             "method": method,
             "intrinsics": null,
-            "pattern_meta": pattern_meta,
-            "screen_mapping": mapping_path,
+            "pattern_meta": first_meta,
+            "screen_mapping": first_mapping_path,
+            "screens": screens,
             "views": views
         }))?,
     )?;
@@ -387,34 +512,109 @@ pub fn normalize_reconstruct_intrinsics(
 /// streaming variant overrides them after the fact).
 fn build_reconstruct_args(
     project_path: &Path,
-    screen_id: &str,
+    screen_ids: &[String],
     capture_manifest: &Path,
     intrinsics: Option<&str>,
     intrinsics_crosscheck: Option<&str>,
 ) -> VoloResult<ReconstructArgs> {
+    if screen_ids.is_empty() {
+        return Err(VoloError::InvalidInput(
+            "screen_ids must be non-empty".into(),
+        ));
+    }
+
     let cfg = load_project_yaml_from_path(project_path)?;
-    let screen_cfg = load_screen(&cfg, screen_id)?;
+    let all_ids = sorted_project_screen_ids(&cfg);
+    let primary_id = &screen_ids[0];
+    let primary_screen = load_screen(&cfg, primary_id)?;
+    let project = make_reconstruct_project(primary_id, primary_screen)?;
 
-    let project = ipc::ReconstructProject {
-        screen_id: screen_id.to_string(),
-        cabinet_array: ipc_cabinet_array(screen_cfg),
-        shape_prior: ipc_shape_prior(screen_cfg)?,
-    };
-
-    // The sidecar writes the cabinet pose report here; the adapter reads it back
-    // for the per-cabinet summaries.
     let measurements_dir = project_path.join("measurements");
     std::fs::create_dir_all(&measurements_dir)?;
-    let pose_report_path = measurements_dir.join(format!("{screen_id}_cabinet_pose_report.json"));
+    let pose_report_path = measurements_dir.join(format!("{primary_id}_cabinet_pose_report.json"));
+
+    if screen_ids.len() == 1 {
+        return Ok(ReconstructArgs {
+            project,
+            screens: None,
+            capture_manifest_path: capture_manifest.display().to_string(),
+            screen_mapping_path: None,
+            intrinsics_path: intrinsics.map(str::to_string),
+            crosscheck_intrinsics_path: intrinsics_crosscheck.map(str::to_string),
+            pose_report_path: pose_report_path.display().to_string(),
+            screen_transforms_path: None,
+            progress_tx: None,
+            cancel: None,
+        });
+    }
+
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(capture_manifest).map_err(|e| {
+            VoloError::InvalidInput(format!(
+                "capture manifest unreadable at {}: {e}",
+                capture_manifest.display()
+            ))
+        })?,
+    )?;
+    let screens_json = manifest
+        .get("screens")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| {
+            VoloError::InvalidInput(
+                "joint reconstruct requires a multi-screen capture manifest with screens[]"
+                    .into(),
+            )
+        })?;
+
+    let mut screens = Vec::with_capacity(screen_ids.len());
+    for screen_id in screen_ids {
+        let screen_cfg = load_screen(&cfg, screen_id)?;
+        let entry = screens_json.iter().find(|e| {
+            e.get("screen_id")
+                .and_then(|v| v.as_str())
+                .is_some_and(|id| id == screen_id)
+        });
+        let pattern_meta_path = entry
+            .and_then(|e| e.get("pattern_meta"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let screen_mapping_path = entry
+            .and_then(|e| e.get("screen_mapping"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let screen_id_code = entry
+            .and_then(|e| e.get("screen_id_code"))
+            .and_then(|v| v.as_u64())
+            .map(|c| c as u8)
+            .or_else(|| {
+                pattern_meta_path.as_ref().and_then(|p| {
+                    read_screen_id_code(Path::new(p), screen_id, &all_ids).ok()
+                })
+            })
+            .unwrap_or_else(|| vpqsp_screen_id_code(screen_id, &all_ids));
+        let per_pose_report = measurements_dir.join(format!("{screen_id}_cabinet_pose_report.json"));
+        let mut screen_proj = make_reconstruct_project(screen_id, screen_cfg)?;
+        screen_proj.screen_id_code = Some(screen_id_code);
+        screen_proj.pattern_meta_path = pattern_meta_path;
+        screen_proj.screen_mapping_path = screen_mapping_path;
+        screen_proj.pose_report_path = Some(per_pose_report.display().to_string());
+        screens.push(screen_proj);
+    }
+
+    let screen_transforms_path = measurements_dir.join(format!(
+        "{}_screen_transforms.json",
+        screen_ids_label(screen_ids)
+    ));
 
     Ok(ReconstructArgs {
-        project,
+        project: screens[0].clone(),
+        screens: Some(screens),
         capture_manifest_path: capture_manifest.display().to_string(),
         screen_mapping_path: None,
-        // `intrinsics` (CLI override) > manifest reference; "auto" = self-cal.
         intrinsics_path: intrinsics.map(str::to_string),
         crosscheck_intrinsics_path: intrinsics_crosscheck.map(str::to_string),
         pose_report_path: pose_report_path.display().to_string(),
+        screen_transforms_path: Some(screen_transforms_path.display().to_string()),
         progress_tx: None,
         cancel: None,
     })
@@ -422,20 +622,20 @@ fn build_reconstruct_args(
 
 pub fn run_reconstruct(
     project_path: &Path,
-    screen_id: &str,
+    screen_ids: &[String],
     capture_manifest: &Path,
     intrinsics: Option<&str>,
     intrinsics_crosscheck: Option<&str>,
 ) -> VoloResult<VisualReconstructResult> {
     let args = build_reconstruct_args(
         project_path,
-        screen_id,
+        screen_ids,
         capture_manifest,
         intrinsics,
         intrinsics_crosscheck,
     )?;
     let out = block_on_future(reconstruct(args))?.map_err(map_vba_err)?;
-    Ok(build_reconstruct_result(screen_id, out))
+    Ok(build_reconstruct_result(screen_ids, out))
 }
 
 /// Streaming variant for async (Tauri) callers: the caller is already inside a
@@ -446,7 +646,7 @@ pub fn run_reconstruct(
 /// cancel token.
 pub async fn run_reconstruct_streaming(
     project_path: &Path,
-    screen_id: &str,
+    screen_ids: &[String],
     capture_manifest: &Path,
     intrinsics: Option<&str>,
     intrinsics_crosscheck: Option<&str>,
@@ -455,7 +655,7 @@ pub async fn run_reconstruct_streaming(
 ) -> VoloResult<VisualReconstructResult> {
     let mut args = build_reconstruct_args(
         project_path,
-        screen_id,
+        screen_ids,
         capture_manifest,
         intrinsics,
         intrinsics_crosscheck,
@@ -464,7 +664,7 @@ pub async fn run_reconstruct_streaming(
     args.cancel = cancel;
 
     let out = reconstruct(args).await.map_err(map_vba_err)?;
-    Ok(build_reconstruct_result(screen_id, out))
+    Ok(build_reconstruct_result(screen_ids, out))
 }
 
 /// Map the adapter's `ReconstructOut` → public `VisualReconstructResult`.
@@ -472,12 +672,37 @@ pub async fn run_reconstruct_streaming(
 ///
 /// FIX-13 ④: 纯映射,不再落任何 `measured.yaml`(见 [`run_reconstruct`] 注释);
 /// M1 全站仪的 `measurements/measured.yaml` 在 visual 重建后保持原样。
+fn map_cabinet_summary(s: &ipc::CabinetSummary) -> CabinetPoseSummary {
+    CabinetPoseSummary {
+        cabinet_id: s.cabinet_id.clone(),
+        position_mm: s.position_mm,
+        normal: s.normal,
+        reprojection_rms_px: s.reprojection_rms_px,
+        observed_views: s.observed_views,
+        observed_points: s.observed_points,
+        quality: s.quality.clone(),
+    }
+}
+
+fn map_cabinet_ui_quality(q: &str) -> &'static str {
+    match q {
+        "ok" => "ok",
+        "low_observation" => "warn",
+        "high_residual" => "fail",
+        _ => "warn",
+    }
+}
+
 fn build_reconstruct_result(
-    screen_id: &str,
+    screen_ids: &[String],
     out: ReconstructOut,
 ) -> VisualReconstructResult {
+    let primary_id = screen_ids
+        .first()
+        .cloned()
+        .unwrap_or_else(|| out.measured_points.screen_id.clone());
     VisualReconstructResult {
-        screen_id: screen_id.to_string(),
+        screen_id: primary_id,
         pose_report_path: out.pose_report_path,
         cabinet_count: out.measured_points.points.len(),
         ba_rms_px: out.ba_rms_px,
@@ -490,16 +715,154 @@ fn build_reconstruct_result(
         cabinets: out
             .cabinet_summaries
             .iter()
-            .map(|s| CabinetPoseSummary {
-                cabinet_id: s.cabinet_id.clone(),
-                position_mm: s.position_mm,
-                normal: s.normal,
-                reprojection_rms_px: s.reprojection_rms_px,
-                observed_views: s.observed_views,
-                quality: s.quality.clone(),
-            })
+            .map(map_cabinet_summary)
             .collect(),
+        screen_transforms_path: out.screen_transforms_path,
+        screens: out.screens.map(|screens| {
+            screens
+                .into_iter()
+                .map(|s| VisualScreenSummary {
+                    screen_id: s.screen_id,
+                    pose_report_path: s.pose_report_path,
+                    ba_rms_px: s.ba_rms_px,
+                    cabinet_count: s.cabinet_count,
+                    bridge_views: s.bridge_views,
+                    cabinets: s
+                        .cabinet_summaries
+                        .iter()
+                        .map(map_cabinet_summary)
+                        .collect(),
+                })
+                .collect()
+        }),
+        ignored_photos: out.ignored_photos,
+        photos_used: out.photos_used,
+        photos_total: out.photos_total,
     }
+}
+
+/// Persist a timestamped visual-solve digest for the reconstruct-records UI.
+/// Returns an absolute path under `<project>/measurements/visual_solves/`.
+pub fn persist_visual_solve_digest(
+    project_path: &Path,
+    result: &VisualReconstructResult,
+) -> VoloResult<PathBuf> {
+    use volo_shared::dto::{VisualSolveDigest, VisualSolveScreenDigest};
+
+    let dir = project_path.join("measurements").join("visual_solves");
+    std::fs::create_dir_all(&dir)?;
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S");
+    let label = if let Some(screens) = &result.screens {
+        screens
+            .iter()
+            .map(|s| s.screen_id.as_str())
+            .collect::<Vec<_>>()
+            .join("+")
+    } else {
+        result.screen_id.clone()
+    };
+    let path = dir.join(format!("{stamp}_{label}_solve.json"));
+
+    let screen_summaries: Vec<&VisualScreenSummary> = if let Some(ref screens) = result.screens {
+        screens.iter().collect()
+    } else {
+        Vec::new()
+    };
+
+    let mut digest_screens: Vec<VisualSolveScreenDigest> = Vec::new();
+    if screen_summaries.is_empty() {
+        digest_screens.push(screen_digest_from_cabinets(
+            &result.screen_id,
+            result.ba_rms_px,
+            &result.cabinets,
+        ));
+    } else {
+        for sc in screen_summaries {
+            digest_screens.push(screen_digest_from_cabinets(
+                &sc.screen_id,
+                sc.ba_rms_px,
+                &sc.cabinets,
+            ));
+        }
+    }
+
+    let empty = digest_screens.iter().all(|s| s.cabinets.is_empty())
+        || result.cabinet_count == 0;
+    let status = if empty {
+        "failed".to_string()
+    } else if digest_screens.iter().any(|s| s.status == "fail") {
+        "failed".to_string()
+    } else if digest_screens.iter().any(|s| s.status == "warn") {
+        "partial".to_string()
+    } else {
+        "success".to_string()
+    };
+
+    let digest = VisualSolveDigest {
+        schema_version: "visual_solve_digest.v1".into(),
+        status,
+        empty,
+        ba_rms_px: if empty { None } else { Some(result.ba_rms_px) },
+        photos_used: result.photos_used,
+        photos_total: result.photos_total,
+        observation_points: result.ba_observations_used,
+        finished_at: chrono::Utc::now().to_rfc3339(),
+        ignored_photos: result.ignored_photos.clone(),
+        ref_screen_id: result.screen_id.clone(),
+        screen_transforms_path: result.screen_transforms_path.clone(),
+        screens: digest_screens,
+        warnings: result.warnings.clone(),
+        intrinsics_source: result.intrinsics_source.clone(),
+    };
+
+    std::fs::write(&path, serde_json::to_vec_pretty(&digest)?)?;
+    Ok(path)
+}
+
+fn screen_digest_from_cabinets(
+    screen_id: &str,
+    ba_rms_px: f64,
+    cabinets: &[CabinetPoseSummary],
+) -> volo_shared::dto::VisualSolveScreenDigest {
+    use volo_shared::dto::{VisualSolveCabinetDigest, VisualSolveScreenDigest};
+    let mapped: Vec<VisualSolveCabinetDigest> = cabinets
+        .iter()
+        .map(|c| VisualSolveCabinetDigest {
+            cabinet_id: c.cabinet_id.clone(),
+            observed_views: c.observed_views,
+            observed_points: c.observed_points,
+            quality: map_cabinet_ui_quality(&c.quality).to_string(),
+        })
+        .collect();
+    let n_ok = mapped.iter().filter(|c| c.quality == "ok").count();
+    let n_warn = mapped.iter().filter(|c| c.quality == "warn").count();
+    let n_fail = mapped.iter().filter(|c| c.quality == "fail").count();
+    let status = if mapped.is_empty() {
+        "fail"
+    } else if n_fail > 0 || n_warn > 0 {
+        "warn"
+    } else {
+        "ok"
+    };
+    VisualSolveScreenDigest {
+        screen_id: screen_id.to_string(),
+        ba_rms_px,
+        status: status.to_string(),
+        n_ok,
+        n_warn,
+        n_fail,
+        cabinets: mapped,
+    }
+}
+
+pub fn load_visual_solve_digest(path: &Path) -> VoloResult<volo_shared::dto::VisualSolveDigest> {
+    let raw = std::fs::read(path)?;
+    serde_json::from_slice(&raw).map_err(|e| {
+        VoloError::InvalidInput(format!(
+            "visual solve digest '{}' invalid: {e}",
+            path.display()
+        ))
+    })
 }
 
 /// Multi-view structured-light reconstruction: N correspondence files (decode
@@ -516,11 +879,7 @@ pub fn run_reconstruct_structured_light(
 ) -> VoloResult<VisualReconstructResult> {
     let cfg = load_project_yaml_from_path(project_path)?;
     let screen_cfg = load_screen(&cfg, screen_id)?;
-    let project = ipc::ReconstructProject {
-        screen_id: screen_id.to_string(),
-        cabinet_array: ipc_cabinet_array(screen_cfg),
-        shape_prior: ipc_shape_prior(screen_cfg)?,
-    };
+    let project = make_reconstruct_project(screen_id, screen_cfg)?;
 
     let measurements_dir = project_path.join("measurements");
     std::fs::create_dir_all(&measurements_dir)?;
@@ -538,7 +897,7 @@ pub fn run_reconstruct_structured_light(
     };
 
     let out = block_on_future(reconstruct_structured_light(args))?.map_err(map_vba_err)?;
-    Ok(build_reconstruct_result(screen_id, out))
+    Ok(build_reconstruct_result(&[screen_id.to_string()], out))
 }
 
 // ---------------------------------------------------------------------------
@@ -562,11 +921,7 @@ pub fn run_calibrate_structured_light(
 ) -> VoloResult<CalibrateResult> {
     let cfg = load_project_yaml_from_path(project_path)?;
     let screen_cfg = load_screen(&cfg, screen_id)?;
-    let project = ipc::ReconstructProject {
-        screen_id: screen_id.to_string(),
-        cabinet_array: ipc_cabinet_array(screen_cfg),
-        shape_prior: ipc_shape_prior(screen_cfg)?,
-    };
+    let project = make_reconstruct_project(screen_id, screen_cfg)?;
 
     let calibration_dir = project_path.join("calibration");
     std::fs::create_dir_all(&calibration_dir)?;
@@ -1053,6 +1408,127 @@ pub fn run_compare_known(
 }
 
 // ---------------------------------------------------------------------------
+// load_pose_report / screen transforms / register visual run
+// ---------------------------------------------------------------------------
+
+/// Read a `visual_screen_transforms.v1` JSON file.
+pub fn load_screen_transforms(path: &Path) -> VoloResult<ScreenTransformsFile> {
+    let raw = std::fs::read(path)?;
+    serde_json::from_slice(&raw).map_err(|e| {
+        VoloError::InvalidInput(format!(
+            "screen transforms '{}' invalid: {e}",
+            path.display()
+        ))
+    })
+}
+
+fn max_observed_views(report: &CabinetPoseReportFile) -> u32 {
+    report
+        .cabinet_poses
+        .iter()
+        .map(|e| e.observed_views)
+        .max()
+        .filter(|&v| v > 0)
+        .unwrap_or(1)
+}
+
+/// Convert a visual `cabinet_pose_report.json` into grid-vertex `MeasuredPoints`
+/// and run the core surface reconstructor (M1 pipeline) on the derived YAML.
+pub fn register_visual_run(
+    db: volo_shared::data::Db,
+    project_path: &Path,
+    screen_id: &str,
+    pose_report_path: &Path,
+    visual_solve_path: Option<&Path>,
+) -> VoloResult<ReconstructionResult> {
+    use mesh_core::measured_points::MeasuredPoints;
+    use mesh_core::point::{MeasuredPoint, PointSource};
+    use mesh_core::sampling::SamplingMode;
+    use mesh_core::uncertainty::Uncertainty;
+
+    const VISUAL_VERTEX_UNCERTAINTY_M: f64 = 0.005;
+
+    let report = load_pose_report(pose_report_path)?;
+    let camera_count = max_observed_views(&report);
+    let vertices_mm = crate::fuse::build_visual_vertex_points(screen_id, &report)?;
+
+    let cfg = load_project_yaml_from_path(project_path)?;
+    let screen_cfg = load_screen(&cfg, screen_id)?;
+    let cabinet_array = crate::export::build_cabinet_array(screen_cfg)?;
+    let shape_prior = crate::export::build_shape_prior(screen_cfg)?;
+
+    let mut points: Vec<MeasuredPoint> = vertices_mm
+        .into_iter()
+        .map(|(name, p_mm)| MeasuredPoint {
+            name,
+            position: p_mm / 1000.0,
+            uncertainty: Uncertainty::Isotropic(VISUAL_VERTEX_UNCERTAINTY_M),
+            source: PointSource::VisualBA { camera_count },
+        })
+        .collect();
+    points.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let measured = MeasuredPoints {
+        screen_id: screen_id.to_string(),
+        coordinate_frame: visual_identity_frame(),
+        cabinet_array,
+        shape_prior,
+        points,
+        sampling_mode: SamplingMode::Grid,
+    };
+
+    let rel_path = format!("measurements/{screen_id}_visual_measured.yaml");
+    let abs = project_path.join(&rel_path);
+    std::fs::create_dir_all(abs.parent().unwrap())?;
+    std::fs::write(
+        &abs,
+        serde_yaml::to_string(&measured)
+            .map_err(|e| VoloError::Yaml(format!("visual measured yaml: {e}")))?,
+    )?;
+
+    let result = crate::reconstruct::run_reconstruction(db.clone(), project_path, screen_id, &rel_path)?;
+    if let Some(solve_path) = visual_solve_path {
+        let conn = db.lock().unwrap();
+        volo_shared::data::runs::set_visual_solve_path(
+            &conn,
+            result.run_id,
+            &solve_path.display().to_string(),
+        )?;
+    }
+    Ok(result)
+}
+
+/// Insert a stub surface run for empty / failed visual BA (zero cabinets).
+pub fn register_empty_visual_run(
+    db: volo_shared::data::Db,
+    project_path: &Path,
+    screen_id: &str,
+    visual_solve_path: &Path,
+) -> VoloResult<i64> {
+    use volo_shared::data::runs::{self, NewRun};
+    let conn = db.lock().unwrap();
+    let id = runs::insert(
+        &conn,
+        &NewRun {
+            project_path: project_path.display().to_string(),
+            screen_id: screen_id.to_string(),
+            measurements_path: format!("measurements/{screen_id}_visual_measured.yaml"),
+            method: "visual_ba".into(),
+            measured_count: 0,
+            expected_count: 0,
+            estimated_rms_mm: None,
+            estimated_p95_mm: None,
+            vertex_count: 0,
+            report_json_path: String::new(),
+            warnings_json: "[]".into(),
+            visual_solve_path: Some(visual_solve_path.display().to_string()),
+        },
+    )?;
+    runs::set_current(&conn, id)?;
+    Ok(id)
+}
+
+// ---------------------------------------------------------------------------
 // load_pose_report
 // ---------------------------------------------------------------------------
 
@@ -1140,11 +1616,7 @@ pub fn run_plan_capture(
 
     let cfg = load_project_yaml_from_path(project_path)?;
     let screen_cfg = load_screen(&cfg, screen_id)?;
-    let project = ipc::ReconstructProject {
-        screen_id: screen_id.to_string(),
-        cabinet_array: ipc_cabinet_array(screen_cfg),
-        shape_prior: ipc_shape_prior(screen_cfg)?,
-    };
+    let project = make_reconstruct_project(screen_id, screen_cfg)?;
 
     let args = PlanCaptureArgs {
         project,
@@ -1642,7 +2114,7 @@ output:
         std::fs::write(photos.join("pose-01.png"), b"png").unwrap();
         std::fs::write(photos.join("pose-02.jpg"), b"jpg").unwrap();
 
-        let manifest = prepare_capture_manifest(dir.path(), "MAIN", &photos).unwrap();
+        let manifest = prepare_capture_manifest(dir.path(), &[String::from("MAIN")], &photos).unwrap();
         let value: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(manifest).unwrap()).unwrap();
         assert_eq!(value["method"], "vpqsp");
@@ -1676,7 +2148,7 @@ output:
         std::fs::write(session.join("debug.png"), b"debug").unwrap();
         assert!(!session.join("capture_manifest.json").is_file());
 
-        let manifest = prepare_capture_manifest(dir.path(), "MAIN", &session).unwrap();
+        let manifest = prepare_capture_manifest(dir.path(), &[String::from("MAIN")], &session).unwrap();
         assert!(
             manifest
                 .to_string_lossy()
@@ -1744,7 +2216,7 @@ output:
         let dir = tempdir().unwrap();
         seed_project(dir.path());
         let manifest = dir.path().join("capture_manifest.json");
-        let err = run_reconstruct(dir.path(), "FLOOR", &manifest, None, None).unwrap_err();
+        let err = run_reconstruct(dir.path(), &[String::from("FLOOR")], &manifest, None, None).unwrap_err();
         assert!(matches!(err, VoloError::NotFound(_)), "got: {err:?}");
         assert!(format!("{err}").contains("FLOOR"), "got: {err}");
     }
@@ -1753,7 +2225,7 @@ output:
     fn reconstruct_missing_project_yaml_errors() {
         let dir = tempdir().unwrap();
         let manifest = dir.path().join("capture_manifest.json");
-        let err = run_reconstruct(dir.path(), "MAIN", &manifest, None, None).unwrap_err();
+        let err = run_reconstruct(dir.path(), &[String::from("MAIN")], &manifest, None, None).unwrap_err();
         assert!(format!("{err}").contains("project.yaml"), "got: {err}");
     }
 
@@ -1797,5 +2269,134 @@ output:
         assert_eq!(parse_inner_corners("7X5").unwrap(), [7, 5]);
         assert!(parse_inner_corners("9").is_err());
         assert!(parse_inner_corners("0x5").is_err());
+    }
+
+    fn write_pose_report_fixture(path: &Path, cabinets: &[(&str, [[f64; 3]; 4])]) {
+        let poses: Vec<serde_json::Value> = cabinets
+            .iter()
+            .map(|(id, corners)| {
+                serde_json::json!({
+                    "cabinet_id": id,
+                    "position_mm": [0.0, 0.0, 0.0],
+                    "normal": [0.0, 0.0, 1.0],
+                    "rotation_matrix": [[1,0,0],[0,1,0],[0,0,1]],
+                    "corners_mm": corners,
+                    "observed_views": 5,
+                    "quality": "ok"
+                })
+            })
+            .collect();
+        let report = serde_json::json!({
+            "schema_version": "visual_pose_report.v1",
+            "frame": {},
+            "cabinet_poses": poses
+        });
+        std::fs::write(path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn register_visual_run_builds_grid_vertices_in_meters() {
+        let dir = tempdir().unwrap();
+        let project_yaml = r#"
+project:
+  name: VBA_Test
+  unit: mm
+screens:
+  MAIN:
+    cabinet_count: [2, 1]
+    cabinet_size_mm: [500.0, 500.0]
+    pixels_per_cabinet: [256, 256]
+    shape_prior:
+      type: flat
+    shape_mode: rectangle
+    irregular_mask: []
+coordinate_system:
+  origin_point: MAIN_V001_R001
+  x_axis_point: MAIN_V003_R001
+  xy_plane_point: MAIN_V001_R002
+output:
+  target: neutral
+  obj_filename: "{screen_id}.obj"
+  weld_vertices_tolerance_mm: 1.0
+  triangulate: true
+"#;
+        std::fs::write(dir.path().join("project.yaml"), project_yaml).unwrap();
+        let report_path = dir.path().join("measurements/MAIN_cabinet_pose_report.json");
+        std::fs::create_dir_all(report_path.parent().unwrap()).unwrap();
+        write_pose_report_fixture(
+            &report_path,
+            &[
+                (
+                    "V000_R000",
+                    [[0.0, 0.0, 0.0], [500.0, 0.0, 0.0], [500.0, 500.0, 0.0], [0.0, 500.0, 0.0]],
+                ),
+                (
+                    "V001_R000",
+                    [[500.0, 0.0, 0.0], [1000.0, 0.0, 0.0], [1000.0, 500.0, 0.0], [500.0, 500.0, 0.0]],
+                ),
+            ],
+        );
+
+        let measured_path = dir.path().join("measurements/MAIN_visual_measured.yaml");
+        let vertices_mm = crate::fuse::build_visual_vertex_points("MAIN", &load_pose_report(&report_path).unwrap()).unwrap();
+        assert_eq!(vertices_mm.len(), 6, "2x1 wall has 6 grid vertices");
+        assert!(vertices_mm.contains_key("MAIN_V001_R001"));
+        assert!(vertices_mm.contains_key("MAIN_V003_R002"));
+        assert!((vertices_mm["MAIN_V002_R001"].x - 500.0).abs() < 1e-6, "shared vertex averaged");
+
+        use volo_shared::data;
+        let db = data::open(&dir.path().join("test.sqlite")).unwrap();
+        {
+            let mut conn = db.lock().unwrap();
+            data::schema::migrate(&mut conn).unwrap();
+        }
+        let _ = register_visual_run(db, dir.path(), "MAIN", &report_path, None).unwrap();
+        let yaml = std::fs::read_to_string(&measured_path).unwrap();
+        assert!(yaml.contains("MAIN_V001_R001"));
+        assert!(yaml.contains("camera_count: 5"));
+        assert!(yaml.contains("0.005"), "uncertainty in meters");
+        assert!(yaml.contains("0.5"), "500mm corner → 0.5m vertex");
+    }
+
+    #[test]
+    fn register_visual_run_irregular_mask_skips_absent_cabinets() {
+        let dir = tempdir().unwrap();
+        let project_yaml = r#"
+project:
+  name: VBA_Test
+  unit: mm
+screens:
+  MAIN:
+    cabinet_count: [2, 1]
+    cabinet_size_mm: [500.0, 500.0]
+    pixels_per_cabinet: [256, 256]
+    shape_prior:
+      type: flat
+    shape_mode: irregular
+    irregular_mask: [[1, 0]]
+coordinate_system:
+  origin_point: MAIN_V001_R001
+  x_axis_point: MAIN_V002_R001
+  xy_plane_point: MAIN_V001_R002
+output:
+  target: neutral
+  obj_filename: "{screen_id}.obj"
+  weld_vertices_tolerance_mm: 1.0
+  triangulate: true
+"#;
+        std::fs::write(dir.path().join("project.yaml"), project_yaml).unwrap();
+        let report_path = dir.path().join("measurements/MAIN_cabinet_pose_report.json");
+        std::fs::create_dir_all(report_path.parent().unwrap()).unwrap();
+        write_pose_report_fixture(
+            &report_path,
+            &[(
+                "V000_R000",
+                [[0.0, 0.0, 0.0], [500.0, 0.0, 0.0], [500.0, 500.0, 0.0], [0.0, 500.0, 0.0]],
+            )],
+        );
+
+        let vertices = crate::fuse::build_visual_vertex_points("MAIN", &load_pose_report(&report_path).unwrap()).unwrap();
+        assert_eq!(vertices.len(), 4, "single present cabinet → 4 corners, 4 unique vertices");
+        assert!(!vertices.contains_key("MAIN_V003_R001"));
     }
 }
