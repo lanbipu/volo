@@ -156,6 +156,10 @@ fn stderr_tail(buf: &Option<Arc<Mutex<Vec<u8>>>>) -> String {
 pub async fn run_sidecar(req: SidecarRequest) -> VbaResult<SidecarOutput> {
     let exe: PathBuf = locate_sidecar()?;
     let mut cmd = Command::new(&exe);
+    // Windows CJK locales default Python's std streams to the ANSI code page
+    // (GBK on zh-CN), which cannot encode every character the NDJSON events
+    // may carry — force UTF-8 like the vpcal/tracksim spawn path does.
+    cmd.env("PYTHONUTF8", "1");
     cmd.arg(&req.subcommand)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

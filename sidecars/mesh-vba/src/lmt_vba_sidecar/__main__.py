@@ -35,6 +35,13 @@ def _read_stdin_json() -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # NDJSON events must be UTF-8 no matter how the sidecar is launched —
+    # Windows CJK locales default std streams to the ANSI code page (GBK on
+    # zh-CN), which cannot encode e.g. "↔" in warning messages.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
+
     parser = argparse.ArgumentParser(prog="lmt-vba-sidecar")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("calibrate")
