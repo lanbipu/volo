@@ -39,9 +39,9 @@ from lmt_vba_sidecar.ipc import (
 )
 from lmt_vba_sidecar.pattern import (
     ABSENT_CELL_FILL,
-    ATOMIC_BACKUP_SUFFIX,
     _assemble_screen,
     _resolve_cabinet_specs,
+    publish_staging_dir,
 )
 from lmt_vba_sidecar.vpqsp_codec import MAX_COL, MAX_ROW
 from lmt_vba_sidecar.vpqsp_layout import choose_marker_grid, render_cabinet_tile
@@ -200,20 +200,7 @@ def run_generate_pattern_vpqsp(cmd: GeneratePatternInput) -> int:
             cabinets=cabinets_meta)
         (staging / "pattern_meta.json").write_text(meta.model_dump_json(indent=2))
 
-        backup: pathlib.Path | None = None
-        if out_dir.exists():
-            backup = out_dir.with_suffix(out_dir.suffix + ATOMIC_BACKUP_SUFFIX)
-            if backup.exists():
-                shutil.rmtree(backup)
-            out_dir.rename(backup)
-        try:
-            staging.rename(out_dir)
-        except OSError:
-            if backup is not None and not out_dir.exists():
-                backup.rename(out_dir)
-            raise
-        if backup is not None:
-            shutil.rmtree(backup, ignore_errors=True)
+        publish_staging_dir(staging, out_dir)
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise

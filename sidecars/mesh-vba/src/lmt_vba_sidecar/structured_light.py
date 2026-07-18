@@ -24,7 +24,7 @@ from lmt_vba_sidecar.io_utils import write_event
 from lmt_vba_sidecar.ipc import (
     BaStats, ErrorEvent, GenerateStructuredLightInput, ProgressEvent, ResultData, ResultEvent,
 )
-from lmt_vba_sidecar.pattern import _resolve_cabinet_specs
+from lmt_vba_sidecar.pattern import _resolve_cabinet_specs, publish_staging_dir
 from lmt_vba_sidecar.sl_codec import build_dots_in_rect, data_bits_for, encode_id
 
 ATOMIC_BACKUP_SUFFIX = ".lmt-sl-old"
@@ -166,20 +166,7 @@ def run_generate_structured_light(cmd: GenerateStructuredLightInput) -> int:
         }
         (staging / "sl_meta.json").write_text(json.dumps(meta, indent=2))
 
-        backup: pathlib.Path | None = None
-        if out_dir.exists():
-            backup = out_dir.with_suffix(out_dir.suffix + ATOMIC_BACKUP_SUFFIX)
-            if backup.exists():
-                shutil.rmtree(backup)
-            out_dir.rename(backup)
-        try:
-            staging.rename(out_dir)
-        except OSError:
-            if backup is not None and not out_dir.exists():
-                backup.rename(out_dir)
-            raise
-        if backup is not None:
-            shutil.rmtree(backup, ignore_errors=True)
+        publish_staging_dir(staging, out_dir, backup_suffix=ATOMIC_BACKUP_SUFFIX)
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise

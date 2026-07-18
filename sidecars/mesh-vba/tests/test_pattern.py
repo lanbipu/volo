@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -15,6 +16,7 @@ from lmt_vba_sidecar.ipc import (
 from lmt_vba_sidecar.pattern import (
     DEFAULT_ARUCO_DICT,
     generate_cabinet_png,
+    publish_staging_dir,
     run_generate_pattern,
 )
 
@@ -152,3 +154,34 @@ def test_existing_output_preserved_when_generation_fails(tmp_out: pathlib.Path) 
     assert run_generate_pattern(cmd) != 0
     assert sentinel.exists()
     assert sentinel.read_text() == "prior content"
+
+
+def test_publish_staging_falls_back_when_outdir_rename_denied(tmp_out: pathlib.Path) -> None:
+    """Windows WinError 5 on directory rename must still publish via file merge."""
+    out = tmp_out / "ASUS"
+    out.mkdir()
+    (out / "full_screen.png").write_bytes(b"old")
+    (out / "stale.txt").write_text("remove-me")
+
+    staging = tmp_out / ".ASUS-staging"
+    staging.mkdir()
+    (staging / "cabinets").mkdir()
+    (staging / "cabinets" / "V000_R000.png").write_bytes(b"tile")
+    (staging / "full_screen.png").write_bytes(b"new")
+    (staging / "pattern_meta.json").write_text("{}")
+
+    original_rename = pathlib.Path.rename
+
+    def rename_deny_outdir(self: pathlib.Path, target):  # type: ignore[no-untyped-def]
+        if self.resolve() == out.resolve():
+            raise PermissionError(13, "Access is denied", str(self), 5)
+        return original_rename(self, target)
+
+    with patch.object(pathlib.Path, "rename", rename_deny_outdir):
+        publish_staging_dir(staging, out)
+
+    assert (out / "full_screen.png").read_bytes() == b"new"
+    assert (out / "cabinets" / "V000_R000.png").read_bytes() == b"tile"
+    assert (out / "pattern_meta.json").read_text() == "{}"
+    assert not (out / "stale.txt").exists()
+    assert not staging.exists()

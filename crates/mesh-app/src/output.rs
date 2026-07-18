@@ -33,9 +33,16 @@ pub struct PublishResult {
     pub nodes: Vec<NodeResult>,
 }
 
-pub trait OutputTransport {
+pub trait OutputTransport: Sync {
     fn preflight(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<String, String>;
-    fn launch(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<String, String>;
+    /// `clear_manifest_json`: when set, the node writes this clear manifest
+    /// atomically before launching UE so start does not need a separate SSH hop.
+    fn launch(
+        &self,
+        node: &OutputNode,
+        paths: &RuntimePaths,
+        clear_manifest_json: Option<&str>,
+    ) -> Result<String, String>;
     fn wait_evidence(
         &self,
         node: &OutputNode,
@@ -56,6 +63,33 @@ pub trait OutputTransport {
         manifest_path: &str,
         manifest_json: &str,
     ) -> Result<String, String>;
+}
+
+/// Run `f` on every node in parallel; aggregate all errors (no fail-fast).
+fn map_nodes_parallel<R: Send>(
+    nodes: &[OutputNode],
+    f: impl Fn(&OutputNode) -> VoloResult<R> + Sync,
+) -> VoloResult<Vec<R>> {
+    let mut slots: Vec<Option<VoloResult<R>>> = nodes.iter().map(|_| None).collect();
+    std::thread::scope(|scope| {
+        for (slot, node) in slots.iter_mut().zip(nodes.iter()) {
+            scope.spawn(|| {
+                *slot = Some(f(node));
+            });
+        }
+    });
+    let mut out = Vec::with_capacity(nodes.len());
+    let mut errors = Vec::new();
+    for slot in slots {
+        match slot.expect("parallel node slot filled") {
+            Ok(value) => out.push(value),
+            Err(error) => errors.push(error.to_string()),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(VoloError::Other(errors.join("; ")));
+    }
+    Ok(out)
 }
 
 pub fn ordered_nodes(screen: &ScreenConfig) -> VoloResult<Vec<OutputNode>> {
@@ -85,10 +119,8 @@ pub fn preflight<T: OutputTransport>(
     screen: &ScreenConfig,
     paths: &RuntimePaths,
 ) -> VoloResult<Vec<NodeResult>> {
-    ordered_nodes(screen)?
-        .iter()
-        .map(|node| map_node(node, transport.preflight(node, paths)))
-        .collect()
+    let nodes = ordered_nodes(screen)?;
+    map_nodes_parallel(&nodes, |node| map_node(node, transport.preflight(node, paths)))
 }
 
 pub fn deploy<T: OutputTransport>(
@@ -138,8 +170,7 @@ pub fn deploy<T: OutputTransport>(
         ue_version,
     )?)?;
 
-    let mut results = Vec::with_capacity(nodes.len());
-    for node in &nodes {
+    map_nodes_parallel(&nodes, |node| {
         transport
             .prepare_deploy(node, paths)
             .map_err(|error| VoloError::Other(format!("prepare {}: {error}", node.node_id)))?;
@@ -148,57 +179,62 @@ pub fn deploy<T: OutputTransport>(
                 .push_file(node, local, remote)
                 .map_err(|error| VoloError::Other(format!("deploy {}: {error}", node.node_id)))?;
         }
-        results.push(map_node(
+        map_node(
             node,
             transport.publish_text(node, &paths.config_path, &config),
-        )?);
-    }
-    Ok(results)
+        )
+    })
 }
 
-/// Launches every node secondary-first/primary-last before waiting for evidence.
-/// This two-phase shape is required because secondaries cannot cross the game-start
-/// barrier until the primary is running. A live process alone is not success.
+/// Two-phase start: parallel launch on every node, then parallel wait for
+/// cluster evidence. A live process alone is not success.
 pub fn start<T: OutputTransport>(
     transport: &T,
     screen: &ScreenConfig,
     paths: &RuntimePaths,
+    clear_revision: Option<u64>,
 ) -> VoloResult<Vec<NodeResult>> {
     let nodes = ordered_nodes(screen)?;
-    let mut launch_messages = BTreeMap::new();
-    for node in &nodes {
-        let message = transport.launch(node, paths).map_err(|error| {
-            VoloError::Other(format!("{} ({}): {error}", node.node_id, node_host(node)))
-        })?;
-        launch_messages.insert(node.node_id.clone(), message);
-    }
-    nodes
-        .iter()
-        .map(|node| {
-            let (cluster_connected, evidence) =
-                transport.wait_evidence(node, paths).map_err(|error| {
-                    VoloError::Other(format!("{} ({}): {error}", node.node_id, node_host(node)))
-                })?;
-            if !cluster_connected {
-                return Err(VoloError::Other(format!(
-                    "{} ({}) started without cluster render evidence: {evidence}",
-                    node.node_id,
-                    node_host(node)
-                )));
-            }
-            Ok(NodeResult {
-                node_id: node.node_id.clone(),
-                host: node_host(node),
-                message: format!(
-                    "{}; {}",
-                    launch_messages
-                        .get(&node.node_id)
-                        .expect("launch message recorded for every node"),
-                    evidence
-                ),
+    // Clear payloads are identical across nodes; serialize once for every launch.
+    let clear_json = match clear_revision {
+        Some(revision) => Some(clear_manifest_json(screen, revision)?),
+        None => None,
+    };
+
+    let launch_messages = map_nodes_parallel(&nodes, |node| {
+        transport
+            .launch(node, paths, clear_json.as_deref())
+            .map(|message| (node.node_id.clone(), message))
+            .map_err(|error| {
+                VoloError::Other(format!("{} ({}): {error}", node.node_id, node_host(node)))
             })
+    })?;
+    let launch_messages: BTreeMap<_, _> = launch_messages.into_iter().collect();
+
+    map_nodes_parallel(&nodes, |node| {
+        let (cluster_connected, evidence) =
+            transport.wait_evidence(node, paths).map_err(|error| {
+                VoloError::Other(format!("{} ({}): {error}", node.node_id, node_host(node)))
+            })?;
+        if !cluster_connected {
+            return Err(VoloError::Other(format!(
+                "{} ({}) started without cluster render evidence: {evidence}",
+                node.node_id,
+                node_host(node)
+            )));
+        }
+        Ok(NodeResult {
+            node_id: node.node_id.clone(),
+            host: node_host(node),
+            message: format!(
+                "{}; {}",
+                launch_messages
+                    .get(&node.node_id)
+                    .expect("launch message recorded for every node"),
+                evidence
+            ),
         })
-        .collect()
+    })
 }
 
 pub fn stop<T: OutputTransport>(
@@ -206,12 +242,8 @@ pub fn stop<T: OutputTransport>(
     screen: &ScreenConfig,
     paths: &RuntimePaths,
 ) -> VoloResult<Vec<NodeResult>> {
-    let mut nodes = ordered_nodes(screen)?;
-    nodes.reverse();
-    nodes
-        .iter()
-        .map(|node| map_node(node, transport.stop(node, paths)))
-        .collect()
+    let nodes = ordered_nodes(screen)?;
+    map_nodes_parallel(&nodes, |node| map_node(node, transport.stop(node, paths)))
 }
 
 /// Publishes a never-reused PNG name to every node before atomically replacing
@@ -240,12 +272,12 @@ pub fn show<T: OutputTransport>(
     // 泛红（lanPC 实测）；推送前统一转成 RGB。
     let local_png = ensure_rgb_png(local_png, revision)?;
 
-    // Phase 1: immutable payload everywhere. No visible state changes here.
-    for node in &nodes {
+    // Phase 1: immutable payload everywhere (parallel). No visible state changes.
+    map_nodes_parallel(&nodes, |node| {
         transport
             .push_file(node, &local_png, &remote_image_path)
-            .map_err(|error| VoloError::Other(format!("push {}: {error}", node.node_id)))?;
-    }
+            .map_err(|error| VoloError::Other(format!("push {}: {error}", node.node_id)))
+    })?;
 
     let image_paths = nodes
         .iter()
@@ -254,7 +286,7 @@ pub fn show<T: OutputTransport>(
     let manifests =
         generate_manifest_json(screen, revision, OutputManifestMode::Show, &image_paths)?;
 
-    // Phase 2: atomic manifest replacement. Secondary-first, primary-last.
+    // Phase 2: atomic manifest replacement. Secondary-first, primary-last (serial).
     let mut results = Vec::with_capacity(nodes.len());
     for node in &nodes {
         let manifest = manifests
@@ -280,28 +312,34 @@ pub fn clear<T: OutputTransport>(
     revision: u64,
 ) -> VoloResult<PublishResult> {
     let nodes = ordered_nodes(screen)?;
+    let manifest = clear_manifest_json(screen, revision)?;
+    // Clear has no cross-node barrier; publish in parallel.
+    let results = map_nodes_parallel(&nodes, |node| {
+        map_node(
+            node,
+            transport.publish_manifest(node, &paths.manifest_path, &manifest),
+        )
+    })?;
+    Ok(PublishResult {
+        revision,
+        remote_image_path: None,
+        nodes: results,
+    })
+}
+
+/// Clear-mode manifests are node-identical; one JSON string is enough for every node.
+fn clear_manifest_json(screen: &ScreenConfig, revision: u64) -> VoloResult<String> {
     let manifests = generate_manifest_json(
         screen,
         revision,
         OutputManifestMode::Clear,
         &BTreeMap::new(),
     )?;
-    let mut results = Vec::with_capacity(nodes.len());
-    for node in &nodes {
-        let manifest = manifests
-            .get(&node.node_id)
-            .expect("manifest generated for every validated node");
-        let manifest = serde_json::to_string(manifest)?;
-        results.push(map_node(
-            node,
-            transport.publish_manifest(node, &paths.manifest_path, &manifest),
-        )?);
-    }
-    Ok(PublishResult {
-        revision,
-        remote_image_path: None,
-        nodes: results,
-    })
+    let manifest = manifests
+        .values()
+        .next()
+        .ok_or_else(|| VoloError::InvalidInput("output topology has no nodes".into()))?;
+    Ok(serde_json::to_string(manifest)?)
 }
 
 fn map_node(node: &OutputNode, result: Result<String, String>) -> VoloResult<NodeResult> {
@@ -336,6 +374,7 @@ pub fn show_stage<T: OutputTransport>(
 ) -> VoloResult<PublishResult> {
     let nodes = ordered_nodes(screen)?;
     let mut decoded: BTreeMap<&str, image::RgbImage> = BTreeMap::new();
+    let mut rgb_paths: BTreeMap<&str, std::path::PathBuf> = BTreeMap::new();
     for layer in layers {
         if !layer.image_path.is_file() {
             return Err(VoloError::InvalidInput(format!(
@@ -350,11 +389,17 @@ pub fn show_stage<T: OutputTransport>(
             })?
             .to_rgb8();
         decoded.insert(layer.screen_id.as_str(), img);
+        // Pre-convert once before parallel push; tag by screen so grayscale
+        // temps do not collide across layers.
+        rgb_paths.insert(
+            layer.screen_id.as_str(),
+            ensure_rgb_png_tagged(&layer.image_path, revision, &layer.screen_id)?,
+        );
     }
 
     let remote_image_path = win_join(&paths.image_dir, &format!("frame-{revision}.png"));
-    // Phase 1: per-node image compose + push. No visible state changes here.
-    for node in &nodes {
+    // Phase 1: per-node image compose + push in parallel. No visible state changes.
+    map_nodes_parallel(&nodes, |node| {
         let [cx, cy, cw, ch] = node.viewport_rect_px;
         // Fast path: crop exactly matches one screen's layer -> push that
         // screen's pattern PNG as-is (no re-encode, pixel-identical).
@@ -362,11 +407,10 @@ pub fn show_stage<T: OutputTransport>(
             let img = &decoded[layer.screen_id.as_str()];
             layer.origin_px == [cx, cy] && img.width() == cw && img.height() == ch
         }) {
-            let local = ensure_rgb_png(&exact.image_path, revision)?;
-            transport
-                .push_file(node, &local, &remote_image_path)
-                .map_err(|error| VoloError::Other(format!("push {}: {error}", node.node_id)))?;
-            continue;
+            let local = &rgb_paths[exact.screen_id.as_str()];
+            return transport
+                .push_file(node, local, &remote_image_path)
+                .map_err(|error| VoloError::Other(format!("push {}: {error}", node.node_id)));
         }
         let mut canvas = image::RgbImage::new(cw.max(1), ch.max(1));
         for layer in layers {
@@ -397,8 +441,8 @@ pub fn show_stage<T: OutputTransport>(
             .map_err(|error| VoloError::Other(format!("encode {}: {error}", local.display())))?;
         transport
             .push_file(node, &local, &remote_image_path)
-            .map_err(|error| VoloError::Other(format!("push {}: {error}", node.node_id)))?;
-    }
+            .map_err(|error| VoloError::Other(format!("push {}: {error}", node.node_id)))
+    })?;
 
     let image_paths = nodes
         .iter()
@@ -406,7 +450,7 @@ pub fn show_stage<T: OutputTransport>(
         .collect::<BTreeMap<_, _>>();
     let manifests = generate_manifest_json_node_relative(screen, revision, &image_paths)?;
 
-    // Phase 2: atomic manifest replacement. Secondary-first, primary-last.
+    // Phase 2: atomic manifest replacement. Secondary-first, primary-last (serial).
     let mut results = Vec::with_capacity(nodes.len());
     for node in &nodes {
         let manifest = manifests
@@ -428,6 +472,14 @@ pub fn show_stage<T: OutputTransport>(
 /// Returns a path to an RGB8/RGBA8 PNG: the input itself when already
 /// multi-channel, otherwise a converted copy under the OS temp dir.
 fn ensure_rgb_png(local_png: &Path, revision: u64) -> VoloResult<std::path::PathBuf> {
+    ensure_rgb_png_tagged(local_png, revision, "frame")
+}
+
+fn ensure_rgb_png_tagged(
+    local_png: &Path,
+    revision: u64,
+    tag: &str,
+) -> VoloResult<std::path::PathBuf> {
     let decoded = image::open(local_png)
         .map_err(|error| VoloError::Other(format!("decode {}: {error}", local_png.display())))?;
     match decoded {
@@ -435,7 +487,12 @@ fn ensure_rgb_png(local_png: &Path, revision: u64) -> VoloResult<std::path::Path
             Ok(local_png.to_path_buf())
         }
         other => {
-            let out = std::env::temp_dir().join(format!("volo-output-frame-{revision}-rgb.png"));
+            let safe_tag: String = tag
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .collect();
+            let out = std::env::temp_dir()
+                .join(format!("volo-output-frame-{revision}-{safe_tag}-rgb.png"));
             other
                 .to_rgb8()
                 .save(&out)
@@ -480,11 +537,18 @@ mod tests {
                 .push(format!("preflight:{}", n.node_id));
             Ok("ok".into())
         }
-        fn launch(&self, n: &OutputNode, _: &RuntimePaths) -> Result<String, String> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(format!("launch:{}", n.node_id));
+        fn launch(
+            &self,
+            n: &OutputNode,
+            _: &RuntimePaths,
+            clear_manifest_json: Option<&str>,
+        ) -> Result<String, String> {
+            let tag = if clear_manifest_json.is_some() {
+                format!("launch:{}:clear", n.node_id)
+            } else {
+                format!("launch:{}", n.node_id)
+            };
+            self.calls.lock().unwrap().push(tag);
             Ok("PID=1".into())
         }
         fn wait_evidence(
@@ -589,21 +653,35 @@ mod tests {
             calls: Mutex::new(vec![]),
             connected: true,
         };
-        start(&fake, &screen(), &paths()).unwrap();
+        start(&fake, &screen(), &paths(), Some(1)).unwrap();
+        let calls = fake.calls.lock().unwrap().clone();
+        let first_wait = calls
+            .iter()
+            .position(|call| call.starts_with("wait:"))
+            .expect("wait phase");
+        let launch_phase: std::collections::HashSet<_> =
+            calls[..first_wait].iter().cloned().collect();
+        let wait_phase: std::collections::HashSet<_> =
+            calls[first_wait..].iter().cloned().collect();
         assert_eq!(
-            *fake.calls.lock().unwrap(),
-            vec![
-                "launch:secondary",
-                "launch:primary",
-                "wait:secondary",
-                "wait:primary"
-            ]
+            launch_phase,
+            ["launch:secondary:clear", "launch:primary:clear"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        );
+        assert_eq!(
+            wait_phase,
+            ["wait:secondary", "wait:primary"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
         );
         let bad = Fake {
             calls: Mutex::new(vec![]),
             connected: false,
         };
-        assert!(start(&bad, &screen(), &paths()).is_err());
+        assert!(start(&bad, &screen(), &paths(), None).is_err());
     }
     #[test]
     fn show_pushes_all_images_before_any_manifest() {
@@ -624,7 +702,9 @@ mod tests {
             .position(|x| x.starts_with("manifest:"))
             .unwrap();
         assert_eq!(first_manifest, 2);
-        assert!(calls[0].contains("frame-7.png"));
+        assert!(calls[..first_manifest]
+            .iter()
+            .all(|call| call.contains("frame-7.png")));
         let secondary: serde_json::Value = serde_json::from_str(
             calls[first_manifest]
                 .strip_prefix("manifest:secondary:")

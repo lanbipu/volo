@@ -7,6 +7,7 @@ Outputs three artifacts:
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import shutil
 import tempfile
@@ -174,6 +175,67 @@ def _assemble_screen(
 ATOMIC_BACKUP_SUFFIX = ".lmt-vba-old"
 
 
+def publish_staging_dir(
+    staging: pathlib.Path,
+    out_dir: pathlib.Path,
+    *,
+    backup_suffix: str = ATOMIC_BACKUP_SUFFIX,
+) -> None:
+    """Atomically publish ``staging`` → ``out_dir`` (rename; WinError 5 → file merge)."""
+    backup: pathlib.Path | None = None
+    if out_dir.exists():
+        backup = out_dir.with_suffix(out_dir.suffix + backup_suffix)
+        if backup.exists():
+            shutil.rmtree(backup)
+        try:
+            out_dir.rename(backup)
+        except OSError:
+            _merge_staging_into(staging, out_dir)
+            shutil.rmtree(staging, ignore_errors=True)
+            return
+
+    try:
+        staging.rename(out_dir)
+    except OSError:
+        if backup is not None and not out_dir.exists():
+            backup.rename(out_dir)
+        raise
+    if backup is not None:
+        shutil.rmtree(backup, ignore_errors=True)
+
+
+def _merge_staging_into(staging: pathlib.Path, out_dir: pathlib.Path) -> None:
+    """Best-effort in-place publish when the output directory cannot be renamed."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    published: set[pathlib.Path] = set()
+    for src in staging.rglob("*"):
+        if not src.is_file():
+            continue
+        rel = src.relative_to(staging)
+        dest = out_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_name(dest.name + ".lmt-vba-tmp")
+        if tmp.exists():
+            tmp.unlink()
+        try:
+            src.rename(tmp)
+        except OSError:
+            shutil.copy2(src, tmp)
+            src.unlink(missing_ok=True)
+        os.replace(tmp, dest)
+        published.add(rel)
+
+    for existing in list(out_dir.rglob("*")):
+        if not existing.is_file():
+            continue
+        rel = existing.relative_to(out_dir)
+        if rel not in published:
+            try:
+                existing.unlink()
+            except OSError:
+                pass
+
+
 def run_generate_pattern(cmd: GeneratePatternInput) -> int:
     # VP-QSP: self-encoding markers, no ArUco dictionary capacity ceiling.
     if cmd.method == "vpqsp":
@@ -309,21 +371,9 @@ def run_generate_pattern(cmd: GeneratePatternInput) -> int:
         meta = PatternMeta(schema_version=2, aruco_dict=DEFAULT_ARUCO_DICT, cabinets=cabinets_meta)
         (staging / "pattern_meta.json").write_text(meta.model_dump_json(indent=2))
 
-        # Atomic publish: move existing out_dir aside, rename staging into place.
-        backup: pathlib.Path | None = None
-        if out_dir.exists():
-            backup = out_dir.with_suffix(out_dir.suffix + ATOMIC_BACKUP_SUFFIX)
-            if backup.exists():
-                shutil.rmtree(backup)
-            out_dir.rename(backup)
-        try:
-            staging.rename(out_dir)
-        except OSError:
-            if backup is not None and not out_dir.exists():
-                backup.rename(out_dir)
-            raise
-        if backup is not None:
-            shutil.rmtree(backup, ignore_errors=True)
+        # Atomic publish: move existing out_dir aside, rename staging into place
+        # (Windows falls back to per-file replace — see publish_staging_dir).
+        publish_staging_dir(staging, out_dir)
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise

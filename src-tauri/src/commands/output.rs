@@ -250,9 +250,17 @@ impl OutputTransport for SshOutputTransport {
         self.run(node, "preflight", paths, serde_json::json!({}))
             .map(|x| x.message)
     }
-    fn launch(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<String, String> {
-        self.run(node, "launch", paths, serde_json::json!({}))
-            .map(|x| x.message)
+    fn launch(
+        &self,
+        node: &OutputNode,
+        paths: &RuntimePaths,
+        clear_manifest_json: Option<&str>,
+    ) -> Result<String, String> {
+        let extra = match clear_manifest_json {
+            Some(manifest_json) => serde_json::json!({ "clear_manifest_json": manifest_json }),
+            None => serde_json::json!({}),
+        };
+        self.run(node, "launch", paths, extra).map(|x| x.message)
     }
     fn wait_evidence(
         &self,
@@ -547,13 +555,17 @@ pub async fn output_start(
         None,
     );
     // 上一会话的 manifest（mode=show）残留在节点上；新 UE 的 LastRevision=-1
-    // 会把它当新指令立即上屏旧图。启动前先发布 clear，保证起始为黑场。
+    // 会把它当新指令立即上屏旧图。clear 合入 launch（同一次 SSH），保证起始为黑场。
     let clear_revision = sessions.reserve_revision(&request.session_id)?;
     let session_id = request.session_id.clone();
     let result = tokio::task::spawn_blocking(move || {
         let transport = transport(request.ssh_user)?;
-        output::clear(&transport, &request.screen, &request.paths, clear_revision)?;
-        output::start(&transport, &request.screen, &request.paths)
+        output::start(
+            &transport,
+            &request.screen,
+            &request.paths,
+            Some(clear_revision),
+        )
     })
     .await
     .map_err(|error| VoloError::Other(format!("output start task failed: {error}")))?;

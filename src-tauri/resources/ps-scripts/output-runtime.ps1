@@ -7,6 +7,21 @@ function Reply([bool]$Ok, [string]$Message, [bool]$ClusterConnected = $false) {
         ConvertTo-Json -Compress -Depth 8
 }
 
+function Write-VoloUtf8FileAtomically {
+    param(
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][string]$Content
+    )
+    $parent = Split-Path -Parent $Destination
+    if (-not [string]::IsNullOrWhiteSpace($parent)) {
+        New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    }
+    $temp = "$Destination.tmp"
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($temp, $Content, $utf8NoBom)
+    Move-Item -LiteralPath $temp -Destination $Destination -Force
+}
+
 function Grant-VoloUsersModify {
     param([Parameter(Mandatory = $true)][string]$Path)
     # SSH / admin-created files under ProgramData default to Users:RX only.
@@ -20,6 +35,64 @@ function Grant-VoloUsersModify {
             & icacls.exe $Path /grant '*S-1-5-32-545:M' /C /Q 2>$null | Out-Null
         }
     } catch {}
+}
+
+function Clear-VoloOutputOverlay {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$NodeId
+    )
+    # Signal backdrop watchers to exit, then force-kill leftover helpers so
+    # stop / re-start never leaves a residual black TOPMOST window.
+    $marker = Join-Path $ProjectDir ("backdrop-{0}.marker" -f $NodeId)
+    try {
+        $parent = Split-Path -Parent $marker
+        if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+        Set-Content -LiteralPath $marker -Value 'done' -Encoding ASCII
+    } catch {}
+    $backdropNeedle = "backdrop-$NodeId.ps1"
+    $pinNeedle = "pin-window-$NodeId.ps1"
+    Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.CommandLine -and (
+                $_.CommandLine.IndexOf($backdropNeedle, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+                $_.CommandLine.IndexOf($pinNeedle, [StringComparison]::OrdinalIgnoreCase) -ge 0
+            )
+        } |
+        ForEach-Object {
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+    try {
+        Add-Type -TypeDefinition @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public class VoloOverlayCleanup {
+  public delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);
+  [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool DestroyWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+  public static void CloseByTitle(string title) {
+    EnumWindows((h, l) => {
+      int len = GetWindowTextLength(h);
+      if (len <= 0) return true;
+      var sb = new StringBuilder(len + 1);
+      GetWindowText(h, sb, sb.Capacity);
+      if (string.Equals(sb.ToString(), title, StringComparison.OrdinalIgnoreCase)) {
+        PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero); // WM_CLOSE
+        DestroyWindow(h);
+      }
+      return true;
+    }, IntPtr.Zero);
+  }
+}
+"@ -ErrorAction SilentlyContinue
+        [VoloOverlayCleanup]::CloseByTitle(("VoloBlackBackdrop-{0}" -f $NodeId))
+    } catch {}
+    Start-Sleep -Milliseconds 120
+    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
 }
 
 function Write-VoloGameUserSettings {
@@ -142,13 +215,7 @@ try {
     }
 
     if ($action -eq "publish_text") {
-        $destination = [string]$request.config_path
-        $parent = Split-Path -Parent $destination
-        New-Item -ItemType Directory -Force -Path $parent | Out-Null
-        $temp = "$destination.tmp"
-        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-        [System.IO.File]::WriteAllText($temp, [string]$request.content, $utf8NoBom)
-        Move-Item -LiteralPath $temp -Destination $destination -Force
+        Write-VoloUtf8FileAtomically -Destination ([string]$request.config_path) -Content ([string]$request.content)
         Reply $true "nDisplay config deployed"
         exit 0
     }
@@ -165,6 +232,11 @@ try {
         )) {
             if (-not (Test-Path -LiteralPath $item.Path -PathType Leaf)) { throw "start gate missing $($item.Name): $($item.Path)" }
         }
+        # Optional clear-manifest publish folded into launch (saves a per-node SSH hop).
+        # Must happen before UE starts so LastRevision=-1 does not flash a stale show.
+        if ($null -ne $request.clear_manifest_json -and -not [string]::IsNullOrWhiteSpace([string]$request.clear_manifest_json)) {
+            Write-VoloUtf8FileAtomically -Destination ([string]$request.manifest_path) -Content ([string]$request.clear_manifest_json)
+        }
         $logDir = Join-Path (Split-Path -Parent $project) "Saved\Logs"
         New-Item -ItemType Directory -Force -Path $logDir | Out-Null
         $logPath = Join-Path $logDir "VoloOutput-$nodeId.log"
@@ -174,6 +246,8 @@ try {
             $pids = ($existing | ForEach-Object { $_.ProcessId }) -join ', '
             throw "VoloOutput project is already running (PID=$pids); stop it before starting again: $project"
         }
+        # Drop any leftover black backdrop / pin helper from a prior run.
+        Clear-VoloOutputOverlay -ProjectDir $projectDir -NodeId $nodeId
         $arguments = @(
             ('"{0}"' -f $project),
             '-game', '-messaging', '-dc_cluster', '-dc_dev_mono',
@@ -200,6 +274,9 @@ try {
             # "StereoView / Stereo rendering method" on-screen debug lines
             # (SceneRendering.cpp, !UE_BUILD_SHIPPING). Not acceptable on an LED wall.
             '-NoScreenMessages',
+            # Kill the white UE splash; Phase A2' black backdrop still covers any
+            # residual first-present / mode-switch flash on the target Bounds.
+            '-nosplash',
             ('-abslog="{0}"' -f $logPath)
         )
         # SSH runs as a network logon (session 0): Start-Process there has no desktop
@@ -221,19 +298,33 @@ try {
         # DisplayIndex once monitor enumeration sees the real desktop.
         Write-VoloGameUserSettings -ProjectDir $projectDir -WinX $winX -WinY $winY -WinW $winW -WinH $winH
         # The task action is a small launcher running IN the interactive session.
-        # It rewrites GUS with the resolved monitor index, starts UE, then detaches
-        # a pin watchdog that keeps the outer HWND on the target monitor bounds.
+        # It rewrites GUS with the resolved monitor index, starts a black backdrop
+        # (Phase A1), starts UE, then detaches a pin watchdog (Phase A2'): UE may
+        # show early under the cover; backdrop lifts only after render evidence.
         $launcherPath = Join-Path $projectDir "launch-$nodeId.ps1"
         $pinPath = Join-Path $projectDir "pin-window-$nodeId.ps1"
+        $backdropPath = Join-Path $projectDir "backdrop-$nodeId.ps1"
+        $backdropMarker = Join-Path $projectDir "backdrop-$nodeId.marker"
+        $backdropTitle = "VoloBlackBackdrop-$nodeId"
         $exeQ = ([string]$request.editor_path) -replace "'", "''"
         $argQ = ($arguments -join ' ') -replace "'", "''"
         $projectDirQ = $projectDir -replace "'", "''"
         $pinPathQ = $pinPath -replace "'", "''"
-        # Pin for process lifetime (cap 600s). EnumWindows (not MainWindowHandle)
-        # so we catch the HWND before first paint; strip OS chrome; hide→move→show
-        # onto monitor Bounds to avoid laptop↔LG bounce. FullscreenMode stays 2.
+        $backdropPathQ = $backdropPath -replace "'", "''"
+        $backdropMarkerQ = $backdropMarker -replace "'", "''"
+        $logPathQ = $logPath -replace "'", "''"
+        $backdropTitleQ = $backdropTitle -replace "'", "''"
+        # Pin for process lifetime (cap 600s). Phase A2': UE may SW_SHOW early
+        # (needed for D3D present) but stays HWND_NOTOPMOST under a black TOPMOST
+        # backdrop until abslog evidence + grace — never SW_HIDE (that exposed the
+        # desktop when backdrop lost Z-order). FullscreenMode stays 2.
         $pinBody = @'
-param([Parameter(Mandatory=$true)][int]$UePid, [int]$WinX, [int]$WinY, [int]$WinW, [int]$WinH)
+param(
+  [Parameter(Mandatory=$true)][int]$UePid,
+  [int]$WinX, [int]$WinY, [int]$WinW, [int]$WinH,
+  [string]$LogPath = '',
+  [string]$BackdropMarker = ''
+)
 Add-Type -TypeDefinition @"
 using System;
 using System.Text;
@@ -264,7 +355,7 @@ public class VoloWin {
       RECT wr; GetWindowRect(h, out wr);
       int ow = wr.R - wr.L, oh = wr.B - wr.T;
       if (ow < 64 || oh < 64) return true;
-      // Skip IME / tool windows; keep untitled splash / game HWNDs.
+      // Skip IME / tool / our own backdrop; keep splash / game HWNDs.
       int len = GetWindowTextLength(h);
       if (len > 0) {
         var sb = new StringBuilder(len + 1);
@@ -272,8 +363,7 @@ public class VoloWin {
         string t = sb.ToString();
         if (t.IndexOf("IME", StringComparison.OrdinalIgnoreCase) >= 0) return true;
         if (t.IndexOf("MSCTF", StringComparison.OrdinalIgnoreCase) >= 0) return true;
-      } else if (!IsWindowVisible(h)) {
-        return true;
+        if (t.IndexOf("VoloBlackBackdrop", StringComparison.OrdinalIgnoreCase) >= 0) return true;
       }
       list.Add(h);
       return true;
@@ -286,9 +376,33 @@ public class VoloWin {
 $deadline = (Get-Date).AddSeconds(600)
 $t0 = Get-Date
 $log = Join-Path $PSScriptRoot ('pin-window-{0}.log' -f $UePid)
-('pin start pid={0} target={1},{2} {3}x{4}' -f $UePid, $WinX, $WinY, $WinW, $WinH) | Set-Content -LiteralPath $log -Encoding ASCII
+('pin start A2prime pid={0} target={1},{2} {3}x{4} log={5}' -f $UePid, $WinX, $WinY, $WinW, $WinH, $LogPath) | Set-Content -LiteralPath $log -Encoding ASCII
 $script:firstPlaced = $false
+$script:revealed = $false
+$script:evidenceAt = $null
+$script:evidenceSeen = $false
+$script:lastEvidenceCheck = [DateTime]::MinValue
 $script:lastTopmost = Get-Date
+# Grace after Create viewport manager before lifting the black cover.
+$script:revealGraceMs = 1500
+function Test-VoloRenderEvidence {
+    if ($script:evidenceSeen) { return $true }
+    if ([string]::IsNullOrWhiteSpace($LogPath)) { return $false }
+    # Window pin loops at 1-8ms; only rescan the UE log every 250ms.
+    if (((Get-Date) - $script:lastEvidenceCheck).TotalMilliseconds -lt 250) { return $false }
+    $script:lastEvidenceCheck = Get-Date
+    if (-not (Test-Path -LiteralPath $LogPath)) { return $false }
+    $match = Select-String -LiteralPath $LogPath -Pattern 'LogDisplayClusterGame:.*Create viewport manager' -CaseSensitive:$false |
+        Select-Object -Last 1
+    if ($null -ne $match) { $script:evidenceSeen = $true; return $true }
+    return $false
+}
+function Signal-VoloBackdropDone {
+    if ([string]::IsNullOrWhiteSpace($BackdropMarker)) { return }
+    try {
+        Set-Content -LiteralPath $BackdropMarker -Value 'done' -Encoding ASCII
+    } catch {}
+}
 function Apply-VoloBorderless([IntPtr]$Hwnd) {
     $GWL_STYLE = -16
     # Chrome bits to clear (caption/thickframe/sysmenu/minmax/border/dlgframe).
@@ -306,7 +420,7 @@ function Apply-VoloBorderless([IntPtr]$Hwnd) {
     }
     return ($hadChrome -or ($newStyle -ne $style))
 }
-function Place-VoloWindow([IntPtr]$Hwnd, [bool]$Initial) {
+function Place-VoloWindow([IntPtr]$Hwnd, [bool]$Initial, [bool]$Covered) {
     $rect = New-Object VoloWin+RECT
     [void][VoloWin]::GetWindowRect($Hwnd, [ref]$rect)
     $ow = $rect.R - $rect.L; $oh = $rect.B - $rect.T
@@ -316,24 +430,28 @@ function Place-VoloWindow([IntPtr]$Hwnd, [bool]$Initial) {
     $styleChanged = Apply-VoloBorderless $Hwnd
     $posBad = ($rect.L -ne $WinX) -or ($rect.T -ne $WinY) -or ($ow -ne $WinW) -or ($oh -ne $WinH)
     $clientBad = ($cw -ne $WinW) -or ($ch -ne $WinH)
-    if (-not ($Initial -or $styleChanged -or $posBad -or $clientBad)) { return $false }
-    # Hide when first placing or when the window is off the target monitor Bounds
-    # so the user never sees the primary-monitor splash cross the desktop.
-    $onTarget = ($rect.L -ge $WinX) -and ($rect.T -ge $WinY) -and ($rect.R -le ($WinX + $WinW)) -and ($rect.B -le ($WinY + $WinH))
-    if ($Initial -or (-not $onTarget)) {
-        [void][VoloWin]::ShowWindow($Hwnd, 0) # SW_HIDE
+    $vis = [VoloWin]::IsWindowVisible($Hwnd)
+    if (-not ($Initial -or $styleChanged -or $posBad -or $clientBad -or (-not $vis))) {
+        return $false
     }
-    # 0x0020 FRAMECHANGED + 0x0040 SHOWWINDOW; HWND_TOPMOST=-1
-    [void][VoloWin]::SetWindowPos($Hwnd, [IntPtr](-1), $WinX, $WinY, $WinW, $WinH, 0x0060)
-    [void][VoloWin]::ShowWindow($Hwnd, 5) # SW_SHOW
-    ('{0:o} place outer ({1},{2}) {3}x{4} client {5}x{6} initial={7} style={8} -> ({9},{10}) {11}x{12}' -f `
-        (Get-Date), $rect.L, $rect.T, $ow, $oh, $cw, $ch, $Initial, $styleChanged, $WinX, $WinY, $WinW, $WinH) |
+    # A2': always show (UE needs a visible HWND to present). While Covered, park
+    # under the black TOPMOST backdrop via HWND_NOTOPMOST — never SW_HIDE.
+    # 0x0060 = SWP_FRAMECHANGED|SWP_SHOWWINDOW; insertAfter -2=HWND_NOTOPMOST, -1=TOPMOST
+    if ($Covered) {
+        [void][VoloWin]::SetWindowPos($Hwnd, [IntPtr](-2), $WinX, $WinY, $WinW, $WinH, 0x0060)
+        [void][VoloWin]::ShowWindow($Hwnd, 5) # SW_SHOW
+    } else {
+        [void][VoloWin]::SetWindowPos($Hwnd, [IntPtr](-1), $WinX, $WinY, $WinW, $WinH, 0x0060)
+        [void][VoloWin]::ShowWindow($Hwnd, 5)
+    }
+    ('{0:o} place outer ({1},{2}) {3}x{4} client {5}x{6} initial={7} style={8} covered={9} -> ({10},{11}) {12}x{13}' -f `
+        (Get-Date), $rect.L, $rect.T, $ow, $oh, $cw, $ch, $Initial, $styleChanged, $Covered, $WinX, $WinY, $WinW, $WinH) |
         Add-Content -LiteralPath $log -Encoding ASCII
     return $true
 }
 while ((Get-Date) -lt $deadline) {
-    try { $proc = Get-Process -Id $UePid -ErrorAction Stop } catch { exit 0 }
-    if ($proc.HasExited) { exit 0 }
+    try { $proc = Get-Process -Id $UePid -ErrorAction Stop } catch { Signal-VoloBackdropDone; exit 0 }
+    if ($proc.HasExited) { Signal-VoloBackdropDone; exit 0 }
     $hwnds = [VoloWin]::FindGameHwnds([uint32]$UePid)
     try {
         $proc.Refresh()
@@ -341,28 +459,130 @@ while ((Get-Date) -lt $deadline) {
             $hwnds.Add($proc.MainWindowHandle)
         }
     } catch {}
-    foreach ($hwnd in $hwnds) {
-        $isInitial = -not $script:firstPlaced
-        if (Place-VoloWindow $hwnd $isInitial) {
-            if ($isInitial) {
-                [void][VoloWin]::SetForegroundWindow($hwnd)
-                $script:firstPlaced = $true
+
+    if (-not $script:revealed) {
+        $forceReveal = ((Get-Date) - $t0).TotalSeconds -ge 240
+        if ($hwnds.Count -gt 0 -and ((Test-VoloRenderEvidence) -or $forceReveal)) {
+            if ($null -eq $script:evidenceAt) {
+                $script:evidenceAt = Get-Date
+                ('{0:o} evidence seen force={1}' -f (Get-Date), $forceReveal) |
+                    Add-Content -LiteralPath $log -Encoding ASCII
             }
-        } elseif (((Get-Date) - $script:lastTopmost).TotalSeconds -ge 2) {
-            # Reassert TOPMOST without moving (avoids 16ms SetWindowPos flicker).
-            [void][VoloWin]::SetWindowPos($hwnd, [IntPtr](-1), 0, 0, 0, 0, 0x0013) # NOSIZE|NOMOVE|NOACTIVATE
-            $script:lastTopmost = Get-Date
+            if ($forceReveal -or (((Get-Date) - $script:evidenceAt).TotalMilliseconds -ge $script:revealGraceMs)) {
+                # Lift cover only after UE has had time to present under it.
+                # Order: mark revealed → promote UE → THEN drop backdrop.
+                $script:revealed = $true
+                foreach ($hwnd in $hwnds) {
+                    Apply-VoloBorderless $hwnd | Out-Null
+                    [void][VoloWin]::SetWindowPos($hwnd, [IntPtr](-1), $WinX, $WinY, $WinW, $WinH, 0x0060)
+                    [void][VoloWin]::ShowWindow($hwnd, 5)
+                    [void][VoloWin]::SetForegroundWindow($hwnd)
+                }
+                ('{0:o} reveal A2prime evidence={1} force={2} hwnds={3} graceMs={4}' -f `
+                    (Get-Date), (-not $forceReveal), $forceReveal, $hwnds.Count, $script:revealGraceMs) |
+                    Add-Content -LiteralPath $log -Encoding ASCII
+                Start-Sleep -Milliseconds 50
+                Signal-VoloBackdropDone
+            }
+        }
+    }
+
+    foreach ($hwnd in $hwnds) {
+        if (-not $script:revealed) {
+            $isInitial = -not $script:firstPlaced
+            if (Place-VoloWindow $hwnd $isInitial $true) {
+                $script:firstPlaced = $true
+            } else {
+                # Stay shown + NOTOPMOST under backdrop (no hide).
+                [void][VoloWin]::SetWindowPos($hwnd, [IntPtr](-2), 0, 0, 0, 0, 0x0013)
+            }
+        } else {
+            if (-not (Place-VoloWindow $hwnd $false $false) -and (((Get-Date) - $script:lastTopmost).TotalSeconds -ge 2)) {
+                [void][VoloWin]::SetWindowPos($hwnd, [IntPtr](-1), 0, 0, 0, 0, 0x0013) # NOSIZE|NOMOVE|NOACTIVATE
+                $script:lastTopmost = Get-Date
+            }
         }
     }
     $elapsed = ((Get-Date) - $t0).TotalSeconds
-    $sleepMs = if (-not $script:firstPlaced) { 1 } elseif ($elapsed -lt 120) { 8 } else { 100 }
+    $sleepMs = if (-not $script:firstPlaced) { 1 } elseif (-not $script:revealed) { 8 } elseif ($elapsed -lt 120) { 8 } else { 100 }
     Start-Sleep -Milliseconds $sleepMs
 }
+Signal-VoloBackdropDone
+'@
+        $backdropBody = @'
+param(
+  [Parameter(Mandatory=$true)][int]$WinX,
+  [Parameter(Mandatory=$true)][int]$WinY,
+  [Parameter(Mandatory=$true)][int]$WinW,
+  [Parameter(Mandatory=$true)][int]$WinH,
+  [Parameter(Mandatory=$true)][string]$MarkerPath,
+  [Parameter(Mandatory=$true)][string]$Title
+)
+$ErrorActionPreference = 'Continue'
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class VoloBackdropNative {
+  [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int w, int hh, uint f);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+}
+"@
+[VoloBackdropNative]::SetProcessDpiAwarenessContext([IntPtr](-4)) | Out-Null
+$bdLog = ($MarkerPath -replace '\.marker$', '.log')
+try {
+  $parent = Split-Path -Parent $MarkerPath
+  if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+  Set-Content -LiteralPath $MarkerPath -Value 'starting' -Encoding ASCII
+  ('{0:o} backdrop start bounds={1},{2} {3}x{4} title={5}' -f (Get-Date), $WinX, $WinY, $WinW, $WinH, $Title) |
+    Set-Content -LiteralPath $bdLog -Encoding ASCII
+} catch {}
+$form = New-Object System.Windows.Forms.Form
+$form.Text = $Title
+$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
+$form.ShowInTaskbar = $false
+$form.TopMost = $true
+$form.ControlBox = $false
+$form.BackColor = [System.Drawing.Color]::Black
+$form.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
+$form.Bounds = New-Object System.Drawing.Rectangle($WinX, $WinY, $WinW, $WinH)
+# Show without stealing focus from the upcoming UE launch.
+$form.Show()
+[void][VoloBackdropNative]::ShowWindow($form.Handle, 4) # SW_SHOWNOACTIVATE
+# HWND_TOPMOST every tick — UE splash / game also fight for Z-order.
+[void][VoloBackdropNative]::SetWindowPos($form.Handle, [IntPtr](-1), $WinX, $WinY, $WinW, $WinH, 0x0040)
+try {
+  Set-Content -LiteralPath $MarkerPath -Value 'ready' -Encoding ASCII
+  ('{0:o} backdrop ready hwnd={1}' -f (Get-Date), $form.Handle) | Add-Content -LiteralPath $bdLog -Encoding ASCII
+} catch {}
+$deadline = (Get-Date).AddSeconds(600)
+while ((Get-Date) -lt $deadline) {
+  $state = ''
+  if (Test-Path -LiteralPath $MarkerPath) {
+    try { $state = (Get-Content -LiteralPath $MarkerPath -Raw -ErrorAction SilentlyContinue) } catch {}
+    if ($state -match 'done') { break }
+  } else {
+    break
+  }
+  if ($form.IsDisposed) { break }
+  # Reassert TOPMOST every loop (~40ms). A1 failed when UE briefly stole Z-order
+  # between 1s reasserts and the white flash was visible above the cover.
+  [void][VoloBackdropNative]::SetWindowPos($form.Handle, [IntPtr](-1), $WinX, $WinY, $WinW, $WinH, 0x0013)
+  $form.TopMost = $true
+  [System.Windows.Forms.Application]::DoEvents()
+  Start-Sleep -Milliseconds 40
+}
+try { ('{0:o} backdrop exit state={1}' -f (Get-Date), $state) | Add-Content -LiteralPath $bdLog -Encoding ASCII } catch {}
+try { $form.Hide(); $form.Close(); $form.Dispose() } catch {}
+Remove-Item -LiteralPath $MarkerPath -Force -ErrorAction SilentlyContinue
 '@
         # ASCII / UTF8-no-BOM: Windows PowerShell -Encoding UTF8 writes a BOM that
         # breaks `param()` as the first token of the generated pin script.
         $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
         [System.IO.File]::WriteAllText($pinPath, $pinBody, $utf8NoBom)
+        [System.IO.File]::WriteAllText($backdropPath, $backdropBody, $utf8NoBom)
         $launcherLines = @(
             # GUS rewrite is best-effort: SSH-seeded files under ProgramData may be
             # Administrators-owned (Users:RX). Never block Start-Process on that.
@@ -392,6 +612,10 @@ while ((Get-Date) -lt $deadline) {
             '    $pinX = $b.X; $pinY = $b.Y; $pinW = $b.Width; $pinH = $b.Height',
             '}',
             ('$projectDir = ''{0}''' -f $projectDirQ),
+            ('$backdropPath = ''{0}''' -f $backdropPathQ),
+            ('$backdropMarker = ''{0}''' -f $backdropMarkerQ),
+            ('$backdropTitle = ''{0}''' -f $backdropTitleQ),
+            ('$logPath = ''{0}''' -f $logPathQ),
             '$gusDirs = @(',
             '    (Join-Path $projectDir ''Saved\Config\WindowsEditor''),',
             '    (Join-Path $projectDir ''Saved\Config\Windows''),',
@@ -437,12 +661,28 @@ while ((Get-Date) -lt $deadline) {
             '        # Keep going — SSH seed + -WinX/-WinY/-ForceRes still apply.',
             '    }',
             '}',
+            # Phase A1: black TOPMOST backdrop on target Bounds BEFORE Start-Process.
+            # Wait until marker=ready so the cover is painted before UE can flash.
+            'Remove-Item -LiteralPath $backdropMarker -Force -ErrorAction SilentlyContinue',
+            'Remove-Item -LiteralPath ($backdropMarker -replace ''\.marker$'', ''.log'') -Force -ErrorAction SilentlyContinue',
+            '$bdArgs = ''-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -WinX {1} -WinY {2} -WinW {3} -WinH {4} -MarkerPath "{5}" -Title "{6}"'' -f $backdropPath, $pinX, $pinY, $pinW, $pinH, $backdropMarker, $backdropTitle',
+            'Start-Process -FilePath ''powershell.exe'' -ArgumentList $bdArgs -WindowStyle Hidden | Out-Null',
+            '$bdWait = (Get-Date).AddSeconds(5)',
+            '$bdReady = $false',
+            'while ((Get-Date) -lt $bdWait) {',
+            '    if (Test-Path -LiteralPath $backdropMarker) {',
+            '        $st = ''''',
+            '        try { $st = Get-Content -LiteralPath $backdropMarker -Raw -ErrorAction SilentlyContinue } catch {}',
+            '        if ($st -match ''ready'') { $bdReady = $true; break }',
+            '    }',
+            '    Start-Sleep -Milliseconds 40',
+            '}',
+            # Even if marker race fails, give the form one frame to paint.
+            'if (-not $bdReady) { Start-Sleep -Milliseconds 200 }',
             ('$p = Start-Process -FilePath ''{0}'' -ArgumentList ''{1}'' -PassThru' -f $exeQ, $argQ),
             'if (-not $p) { throw ''Start-Process UnrealEditor returned no process'' }',
-            # Detached pin covers the full process lifetime; the sync burst below
-            # covers the ~0.5s second-PowerShell cold start so the first HWND is
-            # already hidden+moved before it can paint on the primary monitor.
-            ('$pinArgs = ''-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -UePid '' + $p.Id + '' -WinX '' + $pinX + '' -WinY '' + $pinY + '' -WinW '' + $pinW + '' -WinH '' + $pinH' -f $pinPathQ),
+            # Detached pin: A2' — show UE under backdrop (NOTOPMOST), lift cover after evidence.
+            ('$pinArgs = ''-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -UePid '' + $p.Id + '' -WinX '' + $pinX + '' -WinY '' + $pinY + '' -WinW '' + $pinW + '' -WinH '' + $pinH + '' -LogPath "{1}" -BackdropMarker "{2}"''' -f $pinPathQ, $logPathQ, $backdropMarkerQ),
             'Start-Process -FilePath ''powershell.exe'' -ArgumentList $pinArgs -WindowStyle Hidden | Out-Null',
             'Add-Type -TypeDefinition ''using System; using System.Collections.Generic; using System.Runtime.InteropServices; public class VoloBurst { public delegate bool EnumProc(IntPtr h, IntPtr l); [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid); [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r); [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int n); [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr h, int n, int v); [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int w, int hh, uint f); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd); [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr h); [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L; public int T; public int R; public int B; } }''',
             '$burstEnd = (Get-Date).AddSeconds(5)',
@@ -465,15 +705,16 @@ while ((Get-Date) -lt $deadline) {
             '    foreach ($h in $script:burstHwnds) {',
             '        $st = [VoloBurst]::GetWindowLong($h, -16)',
             '        $chrome = [int]0x00CF0000',
-            '        $ns = [int](($st -band (-bnot $chrome)) -bor [int]0x80000000 -bor [int]0x02000000 -bor [int]0x04000000 -bor ($st -band [int]0x10000000))',
+            '        # Strip chrome; keep/force visible under backdrop (A2'' — no SW_HIDE).',
+            '        $ns = [int](($st -band (-bnot $chrome)) -bor [int]0x80000000 -bor [int]0x02000000 -bor [int]0x04000000 -bor [int]0x10000000)',
             '        if ($ns -ne $st) { [void][VoloBurst]::SetWindowLong($h, -16, $ns) }',
             '        $wr = New-Object VoloBurst+RECT',
             '        [void][VoloBurst]::GetWindowRect($h, [ref]$wr)',
             '        $onTarget = ($wr.L -ge $pinX) -and ($wr.T -ge $pinY) -and ($wr.R -le ($pinX + $pinW)) -and ($wr.B -le ($pinY + $pinH))',
             '        $sizeOk = (($wr.R - $wr.L) -eq $pinW) -and (($wr.B - $wr.T) -eq $pinH)',
             '        if ((-not $onTarget) -or (-not $sizeOk) -or (($st -band $chrome) -ne 0)) {',
-            '            if (-not $onTarget) { [void][VoloBurst]::ShowWindow($h, 0) }',
-            '            [void][VoloBurst]::SetWindowPos($h, [IntPtr](-1), $pinX, $pinY, $pinW, $pinH, 0x0060)',
+            '            # HWND_NOTOPMOST + SHOW — stay under VoloBlackBackdrop.',
+            '            [void][VoloBurst]::SetWindowPos($h, [IntPtr](-2), $pinX, $pinY, $pinW, $pinH, 0x0060)',
             '            [void][VoloBurst]::ShowWindow($h, 5)',
             '        }',
             '    }',
@@ -490,8 +731,10 @@ while ((Get-Date) -lt $deadline) {
         Start-ScheduledTask -TaskName $taskName
         $process = $null
         $deadline = (Get-Date).AddSeconds(90)
+        $pollMs = 200
         while ((Get-Date) -lt $deadline) {
-            Start-Sleep -Milliseconds 1500
+            Start-Sleep -Milliseconds $pollMs
+            $pollMs = 300
             $process = Get-CimInstance Win32_Process -Filter "Name='UnrealEditor.exe'" |
                 Where-Object {
                     $_.CommandLine -and
@@ -504,6 +747,7 @@ while ((Get-Date) -lt $deadline) {
         if (-not $process) {
             Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
             Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+            Clear-VoloOutputOverlay -ProjectDir $projectDir -NodeId $nodeId
             throw "UnrealEditor did not appear within 90s of task start (task instance stopped); log=$logPath"
         }
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
@@ -547,21 +791,26 @@ while ((Get-Date) -lt $deadline) {
 
     if ($action -eq "stop") {
         $project = [string]$request.project_path
+        $nodeId = [string]$request.node_id
+        $projectDir = Split-Path -Parent $project
+        # Always tear down Phase A overlay helpers first so stop/re-start never
+        # leaves a residual black TOPMOST window on the LED wall.
+        if (-not [string]::IsNullOrWhiteSpace($nodeId)) {
+            Clear-VoloOutputOverlay -ProjectDir $projectDir -NodeId $nodeId
+        }
         $processes = @(Get-CimInstance Win32_Process -Filter "Name='UnrealEditor.exe'" |
             Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($project, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
         foreach ($process in $processes) { Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop }
+        # Second pass after UE death — pin may still be exiting.
+        if (-not [string]::IsNullOrWhiteSpace($nodeId)) {
+            Clear-VoloOutputOverlay -ProjectDir $projectDir -NodeId $nodeId
+        }
         Reply $true "stopped $($processes.Count) matching UE process(es)"
         exit 0
     }
 
     if ($action -eq "publish") {
-        $destination = [string]$request.manifest_path
-        $parent = Split-Path -Parent $destination
-        New-Item -ItemType Directory -Force -Path $parent | Out-Null
-        $temp = "$destination.tmp"
-        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-        [System.IO.File]::WriteAllText($temp, [string]$request.manifest_json, $utf8NoBom)
-        Move-Item -LiteralPath $temp -Destination $destination -Force
+        Write-VoloUtf8FileAtomically -Destination ([string]$request.manifest_path) -Content ([string]$request.manifest_json)
         Reply $true "manifest atomically replaced"
         exit 0
     }
