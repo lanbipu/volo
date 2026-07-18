@@ -32,8 +32,11 @@ import {
     settling: { tone: 'notice',   text: '稳定中', hint: '画面渐稳，即将可拍' },
     ready:    { tone: 'positive', text: '待拍',   hint: '画面已稳定，可拍摄' },
     shake:    { tone: 'negative', text: '画面晃动', hint: '画面持续晃动，无法稳定' },
+    nomarker: { tone: 'notice',   text: '未识别测试图', hint: '请确认画面对准测试图，检查对焦与曝光' },
   };
   const MOTION_FROM_AUTO = { moving: 'moving', stabilizing: 'settling', stable: 'ready' };
+  /** UI is-low threshold; CLI `--min-markers` default is the gate source of truth. */
+  const MIN_MARKERS = 4;
 
   function joinPath(dir, name) {
     const sep = dir.indexOf('\\') >= 0 ? '\\' : '/';
@@ -106,6 +109,7 @@ import {
     const [autoShots, setAutoShots] = useState(0);
     const [manualShots, setManualShots] = useState(0);
     const [lastFile, setLastFile] = useState('');
+    const [lastFileNoMarker, setLastFileNoMarker] = useState(false);
     const [flash, setFlash] = useState(false);
     const [sig, setSig] = useState('waiting');
     const [url, setUrl] = useState(null);
@@ -113,6 +117,9 @@ import {
     const [taskId, setTaskId] = useState(null);
     const [spawnError, setSpawnError] = useState(null);
     const [captureResult, setCaptureResult] = useState(null);
+    const [markerCount, setMarkerCount] = useState(0);
+    const [markerStale, setMarkerStale] = useState(true);
+    const [gateNoPattern, setGateNoPattern] = useState(false);
 
     const rootRef = useRef(null);
     const pfRef = useRef(null);
@@ -237,9 +244,18 @@ import {
         }
         if (p.type === 'progress') lastFrame.current = Date.now();
 
+        if (p.type === 'detect_state') {
+          const n = typeof p.markers === 'number' ? p.markers : 0;
+          const stale = !!p.stale;
+          setMarkerCount((cur) => (cur === n ? cur : n));
+          setMarkerStale((cur) => (cur === stale ? cur : stale));
+        }
+
         if (p.type === 'auto_state' && phaseRef.current === 'capturing') {
           const m = MOTION_FROM_AUTO[p.state] || 'moving';
+          const blocked = p.gate === 'no_pattern';
           setMotion((cur) => (cur === m ? cur : m));
+          setGateNoPattern((cur) => (cur === blocked ? cur : blocked));
         }
         if (p.type === 'warning' && p.code === 'never_stable') {
           setMotion('shake');
@@ -250,12 +266,21 @@ import {
           if (seenSnapSeq.current.has(key)) continue;
           seenSnapSeq.current.add(key);
           const name = baseName(p.path) || '000000.png';
+          const noMk = !p.auto && p.markers === 0;
           setLastFile(name);
+          setLastFileNoMarker(noMk);
           setShots((n) => n + 1);
           if (p.auto) setAutoShots((n) => n + 1); else setManualShots((n) => n + 1);
           setFlash(true);
           clearTimeout(flashT.current);
           flashT.current = setTimeout(() => setFlash(false), 200);
+          if (noMk) {
+            s.pushLog({
+              lv: 'warn', cat: 'capture',
+              msg: '手动快拍 · 已保存 ' + name + ' · 未检测到标记，重建时将被忽略',
+            });
+          }
+          setGateNoPattern(false);
         }
         if (p.type === 'result' && p.data && !seenResult.current
             && (phaseRef.current === 'capturing' || finishingRef.current)) {
@@ -368,6 +393,9 @@ import {
 
     const rearm = ({ clearSession }) => {
       setShots(0); setAutoShots(0); setManualShots(0); setLastFile('');
+      setLastFileNoMarker(false);
+      setGateNoPattern(false);
+      setMarkerCount(0); setMarkerStale(true);
       setCaptureResult(null); setMotion('ready'); setAutoSnap(true);
       seenSnapSeq.current = new Set();
       seenResult.current = false;
@@ -403,7 +431,10 @@ import {
     const locked = phase === 'capturing';
     const displaySig = backend === 'synthetic' && url ? 'ok' : sig;
     const sigMeta = SIGNAL[displaySig] || SIGNAL.waiting;
-    const mstate = MOTION[phase === 'capturing' ? motion : 'ready'] || MOTION.ready;
+    const lowMarkers = displaySig === 'ok' && !markerStale && markerCount < MIN_MARKERS;
+    const effMotion = (phase === 'capturing' && motion === 'ready'
+      && (gateNoPattern || lowMarkers)) ? 'nomarker' : (phase === 'capturing' ? motion : 'ready');
+    const mstate = MOTION[effMotion] || MOTION.ready;
 
     /* ---------- 头部 ---------- */
     const head = h('div', { className: 'drawer-h' },
@@ -423,7 +454,7 @@ import {
       h('div', { className: 'capw-feed' },
         h(CamFeed, {
           signal: displaySig, url, synthetic: backend === 'synthetic',
-          phase, motion: phase === 'capturing' ? motion : 'ready', flash,
+          phase, motion: effMotion, flash,
         }),
         h('div', { className: 'capw-sigbadge' },
           h('span', { className: 'cap-pill cap-pill--' + (backend === 'synthetic' ? 'informative' : sigMeta.tone) + ' is-lg' },
@@ -431,6 +462,18 @@ import {
               ? h('span', { className: 'capw-pill-spin' }, h(Icon, { name: 'sync', size: 13 }))
               : h(Icon, { name: backend === 'synthetic' ? 'grid' : sigMeta.icon, size: 13 }),
             backend === 'synthetic' ? '合成源' : sigMeta.text)),
+        (displaySig === 'ok' || backend === 'synthetic')
+          ? h('div', {
+              className: 'gcapw-markerread'
+                + (markerStale ? ' is-stale' : '')
+                + (lowMarkers ? ' is-low' : ''),
+              title: 'VP-QSP 标定标记实时检测数 · 内容门够数才自动拍摄',
+            },
+              h(Icon, { name: 'grid', size: 12 }),
+              h('span', { className: 'k' }, '检测到'),
+              h('span', { className: 'n mono' }, markerStale ? '—' : markerCount),
+              h('span', { className: 'k' }, '个标记'))
+          : null,
         (displaySig === 'ok' || backend === 'synthetic')
           ? h('span', { className: 'capw-livedot' }, h('i', null), locked ? 'REC' : 'LIVE')
           : null),
@@ -524,7 +567,7 @@ import {
           h('div', { className: 'cap-tg-s' }, '画面稳定后自动拍摄一张，无需手动')),
         h(Switch, { isSelected: autoSnap, onChange: toggleAuto, isDisabled: finishing })),
       h('div', { className: 'gcapw-statusbadge gcapw-statusbadge--' + mstate.tone },
-        motion === 'ready' ? h(Icon, { name: 'check', size: 14 }) : h('span', { className: 'gcapw-mdot' }),
+        effMotion === 'ready' ? h(Icon, { name: 'check', size: 14 }) : h('span', { className: 'gcapw-mdot' }),
         h('span', { className: 'gcapw-status-t' }, mstate.text),
         h('span', { className: 'gcapw-status-h' }, mstate.hint)),
       h('div', { className: 'gcapw-shutterwrap' },
@@ -544,6 +587,11 @@ import {
           h('div', { className: 'gcapw-count-file' }, lastFile
             ? h(React.Fragment, null, h('span', { className: 'k' }, '最近'), h('span', { className: 'mono' }, lastFile))
             : h('span', { className: 'dim' }, '尚未拍摄')))),
+      (lastFile && lastFileNoMarker)
+        ? h('div', { className: 'gcapw-nomkwarn' },
+            h(Icon, { name: 'alert', size: 13 }),
+            h('span', null, '该张未检测到标记，重建时将被忽略'))
+        : null,
       motion === 'shake'
         ? h('div', { className: 'capw-note capw-note--negative gcapw-warn' },
             h(Icon, { name: 'alert', size: 14 }),

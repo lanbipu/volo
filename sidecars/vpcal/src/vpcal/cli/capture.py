@@ -370,16 +370,18 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
               help="Min mean-abs-diff vs last saved frame to accept an auto snap.")
 @click.option("--min-interval", type=float, default=1.0, show_default=True,
               help="Minimum seconds between auto snaps (manual snap ignores this).")
+@click.option("--min-markers", type=int, default=4, show_default=True,
+              help="Min VP-QSP markers required for auto snap (0 = disable content gate).")
 @common_options
 @click.pass_context
 def stills(ctx, backend, device, width, height, fps, transfer_function, preview_port,
            allow_hx, out_dir, auto, stable_ms, motion_thresh, novelty_thresh,
-           min_interval, **flags) -> None:
+           min_interval, min_markers, **flags) -> None:
     """Tracker-free stills capture → ``<out>/captures/normal/{n:06d}.png``.
 
     Single process owns the device for MJPEG preview + stills. Emits NDJSON
     events (preview_ready | source_info | progress | snap_saved | auto_state |
-    warning | result) and accepts JSON control lines on stdin:
+    detect_state | warning | result) and accepts JSON control lines on stdin:
 
     \b
       {"cmd": "snap"}                 save immediately (bypasses thresholds)
@@ -393,12 +395,14 @@ def stills(ctx, backend, device, width, height, fps, transfer_function, preview_
         import cv2
 
         from vpcal.core.capture_backend import CaptureConfig, open_backend
-        from vpcal.core.stills import AutoSnapDetector
+        from vpcal.core.detector import detect_markers
+        from vpcal.core.stills import AutoSnapDetector, DetectionGate, gray_to_uint8
 
         if flags.get("dry_run"):
             return OperationOutput(
                 data={"dry_run_plan": {"backend": backend, "device": device,
-                                       "out": out_dir, "auto": auto}},
+                                       "out": out_dir, "auto": auto,
+                                       "min_markers": min_markers}},
                 text="Dry run OK.")
 
         session_dir = Path(out_dir)
@@ -417,30 +421,42 @@ def stills(ctx, backend, device, width, height, fps, transfer_function, preview_
             novelty_thresh=novelty_thresh, min_interval=min_interval,
             enabled=auto,
         )
+        gate = DetectionGate(
+            min_markers=min_markers,
+            detect_fn=lambda g: len(detect_markers(gray_to_uint8(g))),
+        )
 
         finish = threading.Event()
         cmds: queue.Queue[tuple] = queue.Queue()
+        mailbox: dict[str, object] = {"gray": None, "t": 0.0}
+        mailbox_lock = threading.Lock()
         last_auto_state: str | None = None
+        gate_blocked = False
         last_motion = 0.0
         last_novelty = 0.0
         frames_seen = 0
         auto_snaps = 0
         manual_snaps = 0
+        gated_rejects = 0
         source_info = None
         latest_gray = None
         t0 = time.monotonic()
         last_report = t0
+        last_gated_emit = 0.0
 
-        def _emit_auto_state() -> None:
-            emitter.emit("auto_state", {
+        def _emit_auto_state(*, gate_flag: str | None = None) -> None:
+            payload = {
                 "enabled": detector.enabled,
                 "state": detector.state,
                 "motion": last_motion,
                 "novelty": last_novelty,
-            })
+            }
+            if gate_flag is not None:
+                payload["gate"] = gate_flag
+            emitter.emit("auto_state", payload)
 
         def _save(gray, *, is_auto: bool) -> None:
-            nonlocal auto_snaps, manual_snaps
+            nonlocal auto_snaps, manual_snaps, gate_blocked
             idx = auto_snaps + manual_snaps
             path = normal_dir / f"{idx:06d}.png"
             cv2.imwrite(str(path), gray)
@@ -454,8 +470,10 @@ def stills(ctx, backend, device, width, height, fps, transfer_function, preview_
                 auto_snaps += 1
             else:
                 manual_snaps += 1
+            gate_blocked = False
             emitter.emit("snap_saved", {
                 "index": idx, "path": str(path), "auto": is_auto,
+                "markers": gate.markers_for_event(now),
             }, text=f"snap {idx:06d} ({'auto' if is_auto else 'manual'}) → {path}")
 
         def _drain_cmds(gray) -> None:
@@ -494,13 +512,41 @@ def stills(ctx, backend, device, width, height, fps, transfer_function, preview_
                     emitter.emit("warning", {"message": f"unknown control cmd: {cmd}"})
             finish.set()
 
+        def _detect_worker() -> None:
+            last_emit: tuple[int, bool] | None = None
+            last_heartbeat = 0.0
+            while not finish.is_set():
+                with mailbox_lock:
+                    gray = mailbox["gray"]
+                    t = mailbox["t"]
+                if gray is None:
+                    finish.wait(0.05)
+                    continue
+                snap = gate.poll(gray, float(t))
+                markers = 0 if snap["markers"] is None else int(snap["markers"])
+                stale = bool(snap["stale"] or snap["markers"] is None)
+                payload = (markers, stale)
+                now_hb = time.monotonic()
+                if payload != last_emit or (now_hb - last_heartbeat) >= 1.0:
+                    emitter.emit("detect_state", {
+                        "markers": markers, "stale": stale,
+                    })
+                    last_emit = payload
+                    last_heartbeat = now_hb
+                finish.wait(gate.interval_s)
+
         threading.Thread(target=_stdin_pump, name="vpcal-stills-control", daemon=True).start()
+        threading.Thread(target=_detect_worker, name="vpcal-stills-detect", daemon=True).start()
 
         try:
             for frame in src.frames():
                 now = time.monotonic()
                 latest_gray = frame.gray
                 frames_seen += 1
+
+                with mailbox_lock:
+                    mailbox["gray"] = frame.gray
+                    mailbox["t"] = now
 
                 first_info = source_info is None
                 source_info = _source_info(frame, fps=fps, transfer_function=transfer_function)
@@ -520,11 +566,22 @@ def stills(ctx, backend, device, width, height, fps, transfer_function, preview_
                 last_novelty = result["novelty"]
                 if result["state"] != last_auto_state:
                     last_auto_state = result["state"]
+                    gate_blocked = False
                     _emit_auto_state()
                 if result.get("warning"):
                     emitter.emit("warning", result["warning"])
                 if result["snap"]:
-                    _save(frame.gray, is_auto=True)
+                    if gate.allow(now):
+                        _save(frame.gray, is_auto=True)
+                    elif (
+                        not gate_blocked
+                        or (now - last_gated_emit) >= gate.interval_s
+                    ):
+                        # No mark_saved — motion gate stays armed; detect cache retries.
+                        gated_rejects += 1
+                        last_gated_emit = now
+                        gate_blocked = True
+                        _emit_auto_state(gate_flag="no_pattern")
 
                 if now - last_report >= 1.0:
                     elapsed = max(now - t0, 1e-9)
@@ -550,13 +607,15 @@ def stills(ctx, backend, device, width, height, fps, transfer_function, preview_
             "frames_captured": auto_snaps + manual_snaps,
             "auto_snaps": auto_snaps,
             "manual_snaps": manual_snaps,
+            "gated_rejects": gated_rejects,
             "source": source_info,
         }
         return OperationOutput(
             data=data,
             text=(f"Stills complete: {data['frames_captured']} frames → "
                   f"{session_dir / 'captures' / 'normal'} "
-                  f"(auto={auto_snaps}, manual={manual_snaps})"),
+                  f"(auto={auto_snaps}, manual={manual_snaps}, "
+                  f"gated_rejects={gated_rejects})"),
         )
 
     run_streaming_operation("capture.stills", body, **flags)

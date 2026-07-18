@@ -85,4 +85,19 @@
 .gcapw-reset:hover { color: var(--negative-visual); border-color: color-mix(in srgb, var(--negative-visual) 40%, var(--chrome-line)); background: color-mix(in srgb, var(--negative-visual) 7%, transparent); }
 .gcapw-reset svg { flex: 0 0 auto; }
 
+/* ---------- 标记检测读数（现场画面左上，信号徽章下方） ---------- */
+.gcapw-markerread { position: absolute; left: 12px; top: 46px; z-index: 3; display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; color: #e6eaf2; background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.14); padding: 4px 10px; border-radius: 8px; backdrop-filter: blur(6px); box-shadow: 0 1px 8px rgba(0,0,0,.4); -webkit-user-select: none; user-select: none; }
+.gcapw-markerread svg { color: #8fb4e6; flex: 0 0 auto; }
+.gcapw-markerread .k { color: rgba(255,255,255,.6); }
+.gcapw-markerread .n { font-weight: 800; color: #fff; font-variant-numeric: tabular-nums; min-width: 12px; text-align: center; }
+.gcapw-markerread.is-low .n, .gcapw-markerread.is-low svg { color: color-mix(in srgb, var(--notice-visual) 72%, #fff); }
+.gcapw-markerread.is-stale { opacity: .62; }
+.gcapw-markerread.is-stale .n { color: rgba(255,255,255,.5); }
+
+/* ---------- 手动零标记警示 ---------- */
+.gcapw-nomkwarn { margin-top: 9px; display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--notice-visual);
+  background: color-mix(in srgb, var(--notice-visual) 11%, transparent); border: 1px solid color-mix(in srgb, var(--notice-visual) 28%, var(--chrome-line)); padding: 7px 10px; border-radius: 8px; text-wrap: pretty; }
+.gcapw-nomkwarn svg { flex: 0 0 auto; }
+
 .drawer--gcapw .mono { font-family: var(--font-code); }

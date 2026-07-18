@@ -1,11 +1,14 @@
 """Auto-snap detector for tracker-free stills capture (grid screen rebuild).
 
 Downsample + blur + EMA motion gate → novelty vs last saved frame. Pure logic;
-no I/O. Used by ``vpcal capture stills``.
+no I/O. Used by ``vpcal capture stills``. Also hosts :class:`DetectionGate` —
+VP-QSP content gate layered on top of the motion gate (does not replace it).
 """
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Callable
 from typing import Any
 
 import cv2
@@ -14,6 +17,17 @@ import numpy as np
 _EMA_ALPHA = 0.3
 _PREVIEW_WIDTH = 160
 _NEVER_STABLE_S = 15.0
+_GATE_FRESH_S = 1.0
+
+
+def gray_to_uint8(gray: np.ndarray) -> np.ndarray:
+    """Normalize capture gray (uint8 / left-aligned uint16 / other) to uint8."""
+    g = np.asarray(gray)
+    if g.dtype == np.uint16 or (g.dtype.kind == "u" and g.dtype.itemsize > 1):
+        return (g >> 8).astype(np.uint8)
+    if g.dtype != np.uint8:
+        return np.clip(g, 0, 255).astype(np.uint8)
+    return g
 
 
 class AutoSnapDetector:
@@ -67,11 +81,7 @@ class AutoSnapDetector:
         if w != _PREVIEW_WIDTH:
             nh = max(1, int(round(h * (_PREVIEW_WIDTH / w))))
             g = cv2.resize(g, (_PREVIEW_WIDTH, nh), interpolation=cv2.INTER_AREA)
-        if g.dtype == np.uint16 or (g.dtype.kind == "u" and g.dtype.itemsize > 1):
-            g = (g >> 8).astype(np.uint8)
-        elif g.dtype != np.uint8:
-            g = np.clip(g, 0, 255).astype(np.uint8)
-        return cv2.GaussianBlur(g, (3, 3), 0)
+        return cv2.GaussianBlur(gray_to_uint8(g), (3, 3), 0)
 
     def update(self, gray: np.ndarray, t: float) -> dict[str, Any]:
         t = float(t)
@@ -166,3 +176,74 @@ class AutoSnapDetector:
             and (t - self._stable_since) * 1000.0 >= self.stable_ms
         ):
             self._state = "stable"
+
+
+class DetectionGate:
+    """VP-QSP marker content gate for auto stills.
+
+    Pure logic + injectable ``detect_fn`` (returns marker count). Call
+    ``poll(gray, t)`` from a throttled worker on full-resolution gray;
+    ``allow(t)`` / ``snapshot(t)`` are cheap reads for the frame loop.
+    ``min_markers <= 0`` bypasses the gate (escape hatch).
+    """
+
+    def __init__(
+        self,
+        *,
+        min_markers: int = 4,
+        detect_fn: Callable[[np.ndarray], int],
+        interval_s: float = 0.5,
+        fresh_s: float = _GATE_FRESH_S,
+    ) -> None:
+        self.min_markers = int(min_markers)
+        self.detect_fn = detect_fn
+        self.interval_s = float(interval_s)
+        self.fresh_s = float(fresh_s)
+        self._count: int | None = None
+        self._detect_t: float | None = None
+        self._lock = threading.Lock()
+
+    @property
+    def bypass(self) -> bool:
+        return self.min_markers <= 0
+
+    def poll(self, gray: np.ndarray, t: float) -> dict[str, Any]:
+        """Run ``detect_fn`` when the throttle interval elapses; cache count.
+
+        Returns ``{markers, stale}`` reflecting the cache after this call
+        (``markers`` is ``None`` until the first successful detect).
+        """
+        t = float(t)
+        with self._lock:
+            due = self._detect_t is None or (t - self._detect_t) >= self.interval_s
+        if due:
+            count = int(self.detect_fn(gray))
+            with self._lock:
+                self._count = count
+                self._detect_t = t
+        return self.snapshot(t)
+
+    def snapshot(self, t: float) -> dict[str, Any]:
+        """Current cached readout without running detection."""
+        t = float(t)
+        with self._lock:
+            count = self._count
+            detect_t = self._detect_t
+        if count is None or detect_t is None:
+            return {"markers": None, "stale": True}
+        stale = (t - detect_t) > self.fresh_s
+        return {"markers": count, "stale": stale}
+
+    def markers_for_event(self, t: float) -> int | None:
+        """Marker count for ``snap_saved`` — ``None`` when stale / never run."""
+        snap = self.snapshot(t)
+        if snap["stale"] or snap["markers"] is None:
+            return None
+        return int(snap["markers"])
+
+    def allow(self, t: float) -> bool:
+        """True when the latest detect is fresh and meets ``min_markers``."""
+        if self.bypass:
+            return True
+        markers = self.markers_for_event(t)
+        return markers is not None and markers >= self.min_markers

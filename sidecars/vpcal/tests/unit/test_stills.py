@@ -1,10 +1,10 @@
-"""AutoSnapDetector — stills capture motion/novelty gate (grid rebuild path)."""
+"""AutoSnapDetector / DetectionGate — stills capture gates (grid rebuild path)."""
 
 from __future__ import annotations
 
 import numpy as np
 
-from vpcal.core.stills import AutoSnapDetector
+from vpcal.core.stills import AutoSnapDetector, DetectionGate
 
 
 def _gray(value: int = 96, w: int = 320, h: int = 240) -> np.ndarray:
@@ -115,3 +115,71 @@ def test_never_stable_warning_once_after_15s():
         if r.get("warning"):
             warnings.append(r["warning"])
     assert warnings == [{"code": "never_stable"}]
+
+
+# ---------- DetectionGate (VP-QSP content gate) ----------
+
+
+def test_detection_gate_throttles_detect_fn():
+    calls = []
+
+    def detect_fn(gray):
+        calls.append(int(gray[0, 0]))
+        return 8
+
+    gate = DetectionGate(min_markers=4, detect_fn=detect_fn, interval_s=0.5)
+    frame = _gray(10)
+    assert gate.poll(frame, 0.0) == {"markers": 8, "stale": False}
+    assert len(calls) == 1
+    assert gate.poll(frame, 0.2)["markers"] == 8
+    assert len(calls) == 1
+    assert gate.poll(frame, 0.5)["markers"] == 8
+    assert len(calls) == 2
+
+
+def test_detection_gate_freshness_and_threshold():
+    frame = _gray()
+    low = DetectionGate(min_markers=4, detect_fn=lambda _g: 3)
+    low.poll(frame, 0.0)
+    assert low.allow(0.0) is False
+    assert low.snapshot(0.0) == {"markers": 3, "stale": False}
+    assert low.snapshot(1.1)["stale"] is True
+    assert low.allow(1.1) is False
+
+    ok = DetectionGate(min_markers=4, detect_fn=lambda _g: 6)
+    ok.poll(frame, 0.0)
+    assert ok.allow(0.5) is True
+    assert ok.markers_for_event(0.5) == 6
+    assert ok.markers_for_event(1.5) is None
+
+
+def test_detection_gate_stable_zero_markers_blocks_without_mark_saved():
+    det = AutoSnapDetector(stable_ms=200, motion_thresh=1.5, novelty_thresh=6.0, min_interval=0.5)
+    gate = DetectionGate(min_markers=4, detect_fn=lambda _g: 0)
+    frame = _gray(100)
+    gate.poll(frame, 0.0)
+    last = _feed_still(det, frame, t0=0.0, n=10, dt=0.05)
+    assert last["snap"] is True
+    assert gate.allow(0.45) is False
+    assert det.state == "stable"
+
+
+def test_detection_gate_enough_markers_allows_auto_save():
+    det = AutoSnapDetector(stable_ms=200, motion_thresh=1.5, novelty_thresh=6.0, min_interval=0.5)
+    gate = DetectionGate(min_markers=4, detect_fn=lambda _g: 12)
+    frame = _gray(110)
+    gate.poll(frame, 0.0)
+    last = _feed_still(det, frame, t0=0.0, n=10, dt=0.05)
+    assert last["snap"] is True
+    assert gate.allow(0.45) is True
+    det.mark_saved(frame, 0.45)
+    assert det.state == "moving"
+
+
+def test_detection_gate_min_markers_zero_bypasses():
+    gate = DetectionGate(min_markers=0, detect_fn=lambda _g: 0)
+    assert gate.bypass is True
+    assert gate.allow(0.0) is True
+    gate.poll(_gray(), 0.0)
+    assert gate.allow(0.0) is True
+    assert gate.snapshot(0.0)["markers"] == 0
