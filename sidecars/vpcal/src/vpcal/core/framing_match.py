@@ -87,19 +87,7 @@ def apply_match_hysteresis(
     return float(score) >= float(enter)
 
 
-def missing_cabinets_hint(
-    expected: Iterable[Cabinet],
-    observed: Iterable[Cabinet],
-) -> str:
-    """Short Chinese hint listing missing expected cabinets."""
-    exp = {(int(c), int(r)) for c, r in expected}
-    obs = {(int(c), int(r)) for c, r in observed}
-    miss = sorted(exp - obs)
-    if not miss:
-        return "匹配达标 · 画面稳定即自动拍摄"
-    sample = ", ".join(f"{c}×{r}" for c, r in miss[:3])
-    more = f" 等 {len(miss)} 个" if len(miss) > 3 else f" · 共 {len(miss)} 个"
-    return f"还差箱体 {sample}{more}"
+# UI Chinese hints (region / matched copy) live in the frontend framingMatch.ts.
 
 
 def summarize_detections(dets, image_shape) -> dict:

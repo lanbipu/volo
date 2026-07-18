@@ -16,15 +16,17 @@ import {
 } from "../api/sidecarStream";
 import {
   applyMatchHysteresis,
+  bboxToXywh,
   cabinetsNormBBox,
   computeFramingScore,
-  missingCabinetsHint,
-  roleLabel,
+  FRAMING_MATCHED_HINT,
+  framingDiffHint,
+  stationRegionLabel,
 } from "../lib/framingMatch";
 
 (function () {
   const { Button, Switch } = window.Spectrum2DesignSystem_b6d1b3;
-  const { useState, useEffect, useRef, memo } = React;
+  const { useState, useEffect, useRef } = React;
   const h = React.createElement;
   const CX = window.VOLO_CAL2;
 
@@ -54,10 +56,17 @@ import {
   function makeStamp() {
     return new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
   }
-  function profileHfov(p) {
-    if (!p || p.hfovDeg == null || p.hfovDeg === '') return null;
-    const n = Number(p.hfovDeg);
-    return Number.isFinite(n) && n > 0 ? n : null;
+  /** Parse Profile lens once: numeric hfov for planning + display labels. */
+  function profileLens(p) {
+    if (!p) return { hfov: null, focal: null, fov: null };
+    const focalN = p.focalMm != null && p.focalMm !== '' ? Number(p.focalMm) : NaN;
+    const hfovN = p.hfovDeg != null && p.hfovDeg !== '' ? Number(p.hfovDeg) : NaN;
+    const hfov = Number.isFinite(hfovN) && hfovN > 0 ? hfovN : null;
+    return {
+      hfov,
+      focal: Number.isFinite(focalN) && focalN > 0 ? focalN + ' mm' : null,
+      fov: hfov != null ? hfov + '°' : null,
+    };
   }
   function imageSizeOf(profile, fmt) {
     if (fmt && fmt.res) return String(fmt.res).replace(/[×xX]/, 'x');
@@ -65,37 +74,23 @@ import {
     return '1920x1080';
   }
 
-  /* 参考画幅缩略图：屏幕箱体网格 + 当前机位期望覆盖高亮 */
-  const GuideThumb = memo(function GuideThumb({ cols, rows, covers }) {
-    const cN = Math.max(1, cols | 0), rN = Math.max(1, rows | 0);
-    const pad = 8, W = 200, H = 120;
-    const gw = W - pad * 2, gh = H - pad * 2;
-    const cabW = gw / cN, cabH = gh / rN;
-    const coverSet = new Set((covers || []).map(([c, r]) => c + ',' + r));
-    const cells = [];
-    for (let r = 0; r < rN; r++) {
-      for (let c = 0; c < cN; c++) {
-        const on = coverSet.has(c + ',' + r);
-        cells.push(h('rect', {
-          key: c + '-' + r, className: on ? 'gt-cab' : 'gt-panel',
-          x: pad + c * cabW + 0.5, y: pad + r * cabH + 0.5,
-          width: Math.max(1, cabW - 1), height: Math.max(1, cabH - 1), rx: 1.5,
-        }));
-      }
-    }
-    const box = cabinetsNormBBox(covers || [], cN, rN);
-    const frame = box
+  /* 参考画幅线框缩略图：两块屏幕示意 + 当前机位推荐取景框（handoff GuideThumb） */
+  function GuideThumb({ box }) {
+    const frame = box && box.length >= 4
       ? h('rect', {
           className: 'gt-frame',
-          x: pad + box[0] * gw, y: pad + box[1] * gh,
-          width: Math.max(2, (box[2] - box[0]) * gw),
-          height: Math.max(2, (box[3] - box[1]) * gh),
-          rx: 3,
+          x: box[0] * 200, y: box[1] * 120,
+          width: Math.max(2, box[2] * 200), height: Math.max(2, box[3] * 120),
+          rx: 4,
         })
       : null;
-    return h('svg', { className: 'gcapw-guide-svg', viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'none' },
-      cells, frame);
-  });
+    return h('svg', { className: 'gcapw-guide-svg', viewBox: '0 0 200 120', preserveAspectRatio: 'none' },
+      h('rect', { className: 'gt-panel', x: 12, y: 26, width: 82, height: 70, rx: 3 }),
+      h('rect', { className: 'gt-panel', x: 106, y: 26, width: 82, height: 70, rx: 3 }),
+      h('text', { className: 'gcapw-guide-lb', x: 53, y: 18 }, 'A'),
+      h('text', { className: 'gcapw-guide-lb', x: 147, y: 18 }, 'B'),
+      frame);
+  }
 
   /* ---------- 现场画面：真实 MJPEG + 稳定度浮标 / 快门白闪 ---------- */
   function CamFeed({ signal, url, synthetic, phase, motion, flash }) {
@@ -205,12 +200,19 @@ import {
       ? proj.config.screens[screenId] : null;
     const screenCols = screenCfg && screenCfg.cabinet_count ? screenCfg.cabinet_count[0] : 8;
     const screenRows = screenCfg && screenCfg.cabinet_count ? screenCfg.cabinet_count[1] : 4;
-    const hfov = profileHfov(profile);
+    const lens = profileLens(profile);
+    const hfov = lens.hfov;
     const planImageSize = imageSizeOf(profile, fmt);
     const guideOn = guideStations.length > 0;
     guideOnRef.current = guideOn;
-    const curStation = guideStations[poseIdx] || null;
+    const curStation = guideStations.length
+      ? guideStations[poseIdx % guideStations.length]
+      : null;
     const curCovers = (curStation && curStation.covers_cabinets) || [];
+    const curExpBox = curStation
+      ? cabinetsNormBBox(curCovers, screenCols, screenRows)
+      : null;
+    const curGuideBox = bboxToXywh(curExpBox);
 
     const sessionRoot = hasRoot ? profile.outputRoot : outputDir;
     const sessionDir = sessionRoot ? joinPath(sessionRoot, 'stills_' + sessionStamp) : '';
@@ -282,6 +284,7 @@ import {
         '--allow-hx', '--preview-port', '0',
         '--out', outDir,
         '--no-auto',
+        '--min-markers', String(MIN_MARKERS),
         '--output', 'ndjson',
       ];
       if (profile.fmtMode === 'manual' && profile.width) args.push('--width', String(profile.width));
@@ -343,16 +346,16 @@ import {
 
     /* 匹配分：期望箱体 ∩ 实测箱体 + bbox 占比容差；滞回防闪烁 */
     useEffect(() => {
-      if (!guideOn || poseIdx >= guideStations.length) {
-        if (poseIdx >= guideStations.length) { setMatchPct(0); setMatched(false); }
+      if (!guideOn || !guideStations.length) {
+        setMatchPct(0); setMatched(false);
         return;
       }
-      const station = guideStations[poseIdx];
+      const station = guideStations[poseIdx % guideStations.length];
       if (!station || markerStale) return;
       const expected = station.covers_cabinets || [];
       const expBox = cabinetsNormBBox(expected, screenCols, screenRows);
       const score = computeFramingScore(expected, obsCabinets, expBox, obsBbox);
-      setMatchPct(score);
+      setMatchPct((cur) => (cur === score ? cur : score));
       setMatched((prev) => applyMatchHysteresis(score, prev));
     }, [guideOn, guideStations, poseIdx, obsCabinets, obsBbox, markerStale, screenCols, screenRows]);
 
@@ -442,7 +445,10 @@ import {
           }
           setGateNoPattern(false);
           if (p.auto && guideOnRef.current) {
-            setPoseIdx((i) => Math.min(i + 1, Math.max(0, guideLenRef.current)));
+            setPoseIdx((i) => {
+              const n = guideLenRef.current;
+              return n ? (i + 1) % n : i;
+            });
             setMatched(false);
             setMatchPct(0);
           }
@@ -628,9 +634,8 @@ import {
 
     /* ---------- 左侧现场画面 ---------- */
     const guideActive = guideOn && phase === 'capturing' && displaySig === 'ok';
-    const guideDone = guideOn && poseIdx >= guideStations.length;
-    const diffHint = guideActive && curStation && !guideDone
-      ? missingCabinetsHint(curCovers, obsCabinets)
+    const diffHint = (guideActive && curStation && !matched)
+      ? framingDiffHint(curCovers, obsCabinets, screenCols, screenRows)
       : '';
     const stage = h('div', { className: 'capw-stage' },
       h('div', { className: 'capw-feed' },
@@ -638,11 +643,11 @@ import {
           signal: displaySig, url, synthetic: backend === 'synthetic',
           phase, motion: effMotion, flash,
         }),
-        guideActive && !guideDone
+        guideActive
           ? h('div', { className: 'gcapw-matchframe gcapw-matchframe--' + (matched ? 'ok' : 'no') },
               h('div', { className: 'gcapw-matchbadge gcapw-matchbadge--' + (matched ? 'ok' : 'no') },
                 h(Icon, { name: matched ? 'check' : 'target', size: 13 }),
-                h('span', null, matched ? '构图匹配' : diffHint),
+                h('span', null, matched ? '构图匹配' : (diffHint || '继续对准')),
                 h('span', { className: 'gcapw-match-pct mono' }, Math.round(matchPct) + '%')))
           : null,
         h('div', { className: 'capw-sigbadge' },
@@ -684,7 +689,9 @@ import {
         ? h('div', { className: 'gcapw-lenslock' },
             h(Icon, { name: 'pin', size: 13 }),
             h('span', { className: 'gcapw-lenslock-t' }, '引导会话进行中 · 本次会话请保持焦距不变'),
-            h('span', { className: 'gcapw-lenslock-v mono' }, hfov + '° hfov'))
+            (lens.focal || lens.fov)
+              ? h('span', { className: 'gcapw-lenslock-v mono' }, lens.focal || lens.fov)
+              : null)
         : null);
 
     /* ---------- 右栏：信号源 ---------- */
@@ -727,17 +734,19 @@ import {
                 }
               },
             }, h(Icon, { name: 'sliders', size: 14 }), '管理采集配置…')) : null)),
-      hfov != null
+      (lens.focal || lens.fov)
         ? h('div', { className: 'capw-pick gcapw-lensrow' },
             h('span', { className: 'capw-pick-lb' }, '镜头参数', h('span', { className: 'capw-opt' }, '来自 Profile')),
             h('div', { className: 'gcapw-lens-vals' },
-              h('div', { className: 'gcapw-lens-v' }, h('span', { className: 'k' }, 'hfov'), h('span', { className: 'v mono' }, hfov + '°')),
+              lens.focal
+                ? h('div', { className: 'gcapw-lens-v' }, h('span', { className: 'k' }, '焦距'), h('span', { className: 'v mono' }, lens.focal))
+                : null,
+              lens.fov
+                ? h('div', { className: 'gcapw-lens-v' }, h('span', { className: 'k' }, '视场角'), h('span', { className: 'v mono' }, lens.fov))
+                : null,
               h('span', { className: 'gcapw-lens-note' }, h(Icon, { name: 'pin', size: 12 }),
-                guidePlanning ? '正在规划参考画幅…'
-                  : (guideOn ? '引导拍摄须保持不变' : '已设 hfov · 规划未就绪'))))
-        : h('div', { className: 'capw-pick' },
-            h('span', { className: 'capw-pick-lb' }, '镜头参数', h('span', { className: 'capw-opt' }, '可选')),
-            h('div', { className: 'cap-tg-s' }, '未设置 hfov · 参考画幅引导已隐藏，仍可纯快拍')),
+                guidePlanning ? '正在规划参考画幅…' : '引导拍摄须保持不变')))
+        : null,
       hasRoot
         ? h('div', { className: 'capw-pick' },
             h('span', { className: 'capw-pick-lb' }, '输出目录', h('span', { className: 'capw-opt' }, '来自 Profile')),
@@ -764,32 +773,30 @@ import {
 
     /* ---------- 参考画幅引导卡 ---------- */
     const poseLabel = curStation
-      ? (roleLabel(curStation.role) + ' · ' + (curCovers.length || 0) + ' 箱体')
+      ? stationRegionLabel(curStation.role, curCovers, screenCols, screenRows, curExpBox)
       : '—';
     const guideCard = guideOn ? h('div', { className: 'cap-card gcapw-guide' },
       h('div', { className: 'cap-card-h' }, h(Icon, { name: 'target', size: 15 }), '参考画幅',
         h('span', { className: 'gcapw-guide-prog' }, '机位 ',
-          h('b', { className: 'mono' }, Math.min(poseIdx + 1, guideStations.length)),
+          h('b', { className: 'mono' }, (poseIdx % guideStations.length) + 1),
           ' / ', h('span', { className: 'mono' }, guideStations.length))),
-      guideDone
-        ? h('div', { className: 'gcapw-guide-diff', style: { marginTop: 10 } },
-            '全部引导机位已拍完。可继续手动补拍，或点「完成并保存」。')
-        : h(React.Fragment, null,
-            h('div', { className: 'gcapw-guide-body' },
-              h('div', { className: 'gcapw-guide-thumbwrap' },
-                h(GuideThumb, { cols: screenCols, rows: screenRows, covers: curCovers }),
-                h('span', { className: 'gcapw-guide-region' }, poseLabel)),
-              h('div', { className: 'gcapw-guide-side' },
-                h('div', { className: 'gcapw-guide-match gcapw-guide-match--' + (matched ? 'ok' : 'no') },
-                  h(Icon, { name: matched ? 'check' : 'target', size: 13 }),
-                  h('span', null, matched ? '构图匹配' : '继续对准'),
-                  h('span', { className: 'gcapw-guide-match-pct mono' }, Math.round(matchPct) + '%')),
-                h('div', { className: 'gcapw-guide-diff' }, diffHint || '移动相机使检测到的箱体覆盖推荐区域'))),
-            h('div', { className: 'gcapw-guide-nav' },
-              h('button', { className: 'gcapw-guide-btn', onClick: () => advancePose(-1) },
-                h(Icon, { name: 'arrowl', size: 14 }), '上一个'),
-              h('button', { className: 'gcapw-guide-btn', onClick: () => advancePose(1) },
-                '下一个', h(Icon, { name: 'arrowr', size: 14 })))))
+      h('div', { className: 'gcapw-guide-body' },
+        h('div', { className: 'gcapw-guide-thumbwrap' },
+          h(GuideThumb, { box: curGuideBox }),
+          h('span', { className: 'gcapw-guide-region' }, poseLabel)),
+        h('div', { className: 'gcapw-guide-side' },
+          h('div', { className: 'gcapw-guide-match gcapw-guide-match--' + (matched ? 'ok' : 'no') },
+            h(Icon, { name: matched ? 'check' : 'target', size: 13 }),
+            h('span', { className: 'gcapw-guide-match-t' }, matched ? '构图匹配' : '继续对准'),
+            h('span', { className: 'gcapw-guide-match-pct mono' }, Math.round(matchPct) + '%')),
+          h('div', { className: 'gcapw-guide-diff' },
+            matched ? FRAMING_MATCHED_HINT : (diffHint || '继续对准推荐区域')))),
+      h('div', { className: 'gcapw-guide-nav' },
+        h('button', { className: 'gcapw-guide-btn', onClick: () => advancePose(-1) },
+          h(Icon, { name: 'arrowl', size: 14 }), '上一个'),
+        h('button', { className: 'gcapw-guide-btn', onClick: () => advancePose(1) },
+          '下一个', h(Icon, { name: 'arrowr', size: 14 })),
+        h('button', { className: 'gcapw-guide-btn gcapw-guide-skip', onClick: () => advancePose(1) }, '跳过此机位')))
       : null;
 
     /* ---------- 采集控制卡 ---------- */

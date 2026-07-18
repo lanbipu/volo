@@ -10,8 +10,8 @@
 
    Profile 瘦身：poses/settleMs/burst/inverted/graycodeSync/patternsDir/lensPath 这组
    「采集参数」已下沉到实时采集窗口（localStorage 持久化，grid/lens 入口共享，与
-   Profile 身份解耦）；Profile 保留 名称 + 视频源 + 可选 hfovDeg（快拍参考画幅）+
-   输出目录，即信号源身份本身。
+   Profile 身份解耦）；Profile 保留 名称 + 视频源 + 可选 focalMm / hfovDeg
+   （快拍参考画幅）+ 输出目录，即信号源身份本身。
 
    持久化：Profile 由 Rust 写入 app data；localStorage 仅作为同步 cache，供现有同步式
    Lens 页面在同一 WebView 内立即读取。首次使用不预置假数据。 */
@@ -41,7 +41,8 @@ import { listCaptureProfiles, saveCaptureProfiles } from "../api/captureProfiles
   const blankForm = () => ({ name: '', videoBackend: 'uvc', device: '0', trackProtocol: 'freed', trackPort: 6301,
     trackHost: '0.0.0.0', trackCameraId: null,
     fmtMode: 'auto', width: '', height: '', fps: '', transferFunction: 'sdr',
-    /* 水平视场角（度）：快拍参考画幅引导用；留空则引导层隐藏 */
+    /* 镜头标称：焦距 + 水平视场角；hfov 留空则快拍引导层隐藏 */
+    focalMm: '',
     hfovDeg: '',
     outputRoot: '' });
 
@@ -142,14 +143,20 @@ import { listCaptureProfiles, saveCaptureProfiles } from "../api/captureProfiles
         h('div', { className: 'cap-card-h' }, h(Icon, { name: 'sliders', size: 15 }), '镜头标称',
           h('span', { className: 'capw-opt', style: { marginLeft: 'auto' } }, '可选 · 快拍引导')),
         h('div', { className: 'cap-lens' },
-          h('label', null, '水平视场角 hfov（度）'),
+          h('label', null, '焦距（mm）'),
+          h('input', {
+            className: 'cap-tf', type: 'number', min: 1, max: 400, step: '0.1',
+            value: form.focalMm, placeholder: '如 35 · 仅展示，会话内请保持不变',
+            onChange: (e) => set('focalMm', e.target.value),
+          }),
+          h('label', { style: { marginTop: 10 } }, '水平视场角 hfov（度）'),
           h('input', {
             className: 'cap-tf', type: 'number', min: 1, max: 180, step: '0.1',
             value: form.hfovDeg, placeholder: '如 54.4 · 留空则不用参考画幅引导',
             onChange: (e) => set('hfovDeg', e.target.value),
           }),
           h('div', { className: 'cap-tg-s', style: { marginTop: 6 } },
-            '会话内请保持焦距不变。重建自标定假设全部视图共享同一内参。'))),
+            '会话内请保持焦距不变。重建自标定假设全部视图共享同一内参；规划参考画幅需要 hfov。'))),
       h('div', { className: 'cap-card' },
         h('div', { className: 'cap-card-h' }, h(Icon, { name: 'folder', size: 15 }), '输出'),
         h('div', { className: 'cap-lens' },

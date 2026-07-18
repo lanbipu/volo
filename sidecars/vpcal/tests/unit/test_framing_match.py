@@ -6,7 +6,6 @@ from vpcal.core.framing_match import (
     apply_match_hysteresis,
     cabinets_norm_bbox,
     compute_framing_score,
-    missing_cabinets_hint,
     summarize_detections,
 )
 from vpcal.core.observations import Detection, MarkerId
@@ -53,12 +52,6 @@ def test_hysteresis_avoids_flicker():
     assert apply_match_hysteresis(79, False) is False
     assert apply_match_hysteresis(70, True) is True
     assert apply_match_hysteresis(69, True) is False
-
-
-def test_missing_cabinets_hint():
-    assert "匹配达标" in missing_cabinets_hint([(1, 0)], [(1, 0)])
-    hint = missing_cabinets_hint([(1, 0), (2, 0), (5, 1)], [(1, 0)])
-    assert "2×0" in hint and "5×1" in hint
 
 
 def test_summarize_detections():

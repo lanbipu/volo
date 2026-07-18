@@ -132,8 +132,8 @@
 .gcapw-guide-thumbwrap { position: relative; border-radius: 9px; overflow: hidden; border: 1px solid var(--chrome-line); background: var(--wash-2); aspect-ratio: 5 / 3; }
 .gcapw-guide-svg { width: 100%; height: 100%; display: block; }
 .gcapw-guide-svg .gt-panel { fill: var(--wash); stroke: var(--chrome-line-2); stroke-width: 1; }
-.gcapw-guide-svg .gt-cab { fill: color-mix(in srgb, var(--volo-500) 22%, transparent); stroke: var(--volo-500); stroke-width: 1.2; }
 .gcapw-guide-svg .gt-frame { fill: color-mix(in srgb, var(--volo-500) 14%, transparent); stroke: var(--volo-500); stroke-width: 2; stroke-dasharray: 6 4; }
+.gcapw-guide-lb { fill: var(--chrome-faint); font-size: 9px; font-family: var(--font-code); text-anchor: middle; }
 .gcapw-guide-region { position: absolute; left: 6px; bottom: 6px; font-size: 10px; font-weight: 700; color: var(--chrome-text); background: color-mix(in srgb, var(--chrome-card) 82%, transparent); padding: 2px 7px; border-radius: 6px; backdrop-filter: blur(3px); }
 .gcapw-guide-side { display: flex; flex-direction: column; gap: 8px; justify-content: center; min-width: 0; }
 .gcapw-guide-match { display: inline-flex; align-items: center; gap: 7px; padding: 7px 10px; border-radius: 8px; font-size: 12px; font-weight: 700; }
@@ -147,5 +147,9 @@
   font-size: 11.5px; font-weight: 600; color: var(--chrome-dim); padding: 7px 8px; border-radius: 8px; border: 1px solid var(--chrome-line); -webkit-user-select: none; user-select: none; }
 .gcapw-guide-btn:hover { color: var(--chrome-text); border-color: var(--chrome-line-2); background: var(--wash); }
 .gcapw-guide-btn svg { flex: 0 0 auto; }
+.gcapw-guide-skip { flex: 0 0 auto; color: var(--chrome-faint); }
+.gcapw-guide-skip:hover { color: var(--notice-visual); border-color: color-mix(in srgb, var(--notice-visual) 40%, var(--chrome-line)); background: color-mix(in srgb, var(--notice-visual) 7%, transparent); }
 
 .drawer--gcapw .mono { font-family: var(--font-code); }
+
+.drawer--gcapw .capw-fmtbar { flex-wrap: wrap; row-gap: 8px; }
