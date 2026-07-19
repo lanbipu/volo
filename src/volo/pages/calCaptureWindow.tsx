@@ -231,6 +231,9 @@ import { lensWorkspacePaths } from "../api/lensWorkspace";
     const pfRef = useRef(null);
     const patternAckSeq = useRef(new Set());
     const capturePlayerOpen = useRef(false);
+    /* 重入护栏：ref 挡同帧重入，state 驱动按钮禁用/文案 */
+    const startingRef = useRef(false);
+    const [starting, setStarting] = useState(false);
 
     const locked = phase === 'capturing';
     const monitor = useMonitor(profile, phase === 'config' && backend !== 'synthetic');
@@ -332,6 +335,13 @@ import { lensWorkspacePaths } from "../api/lensWorkspace";
 
     const start = async () => {
       if (!canStart) return;
+      /* 入口护栏：点击到 setPhase('capturing') 之间隔着播放器开窗 + monitor.stop
+         （等进程真退出，最长 5s），期间重复点击会 spawn 第二个会话抢占独占设备——
+         ref 挡同帧重入，state 驱动按钮禁用/文案 */
+      if (startingRef.current || phase !== 'config') return;
+      startingRef.current = true;
+      setStarting(true);
+      try {
       saveParams(params);
       /* 输出会话根固定 = <project>/vpcal/captures/（§3.4） */
       const capturesRoot = wsPaths ? wsPaths.capturesDir : (profile.outputRoot || '');
@@ -363,6 +373,10 @@ import { lensWorkspacePaths } from "../api/lensWorkspace";
         width: profile.fmtMode === 'manual' ? profile.width : null, height: profile.fmtMode === 'manual' ? profile.height : null,
         fps: profile.fmtMode === 'manual' ? profile.fps : null, transferFunction: profile.transferFunction || 'sdr',
       });
+      } finally {
+        startingRef.current = false;
+        setStarting(false);
+      }
     };
     const skip = () => session.sendCmd({ cmd: 'skip_pose' });
     const finish = () => session.sendCmd({ cmd: 'finish' });
@@ -519,8 +533,8 @@ import { lensWorkspacePaths } from "../api/lensWorkspace";
                 h('div', { className: 'capw-start' },
                   h(Button, { variant: 'accent', size: 'L',
                     icon: ag.preparing ? h('span', { className: 'ag-spin' }, h(Icon, { name: 'sync', size: 16 })) : h(Icon, { name: 'camera', size: 16 }),
-                    isDisabled: !canStart || ag.preparing, onPress: () => ag.beginCapture(start) },
-                    ag.preparing ? '生成图案中…' : '开始采集'),
+                    isDisabled: !canStart || ag.preparing || starting, onPress: () => ag.beginCapture(start) },
+                    ag.preparing ? '生成图案中…' : starting ? '正在启动…' : '开始采集'),
                   !canStart
                     ? h(React.Fragment, null,
                         h('div', { className: 'capw-note capw-note--notice' }, h(Icon, { name: 'info', size: 14 }),

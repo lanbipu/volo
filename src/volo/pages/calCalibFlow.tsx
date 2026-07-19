@@ -14,7 +14,7 @@ import {
 } from "../api/lensCommands";
 import { probeTrackingSource } from "../api/captureProfiles";
 import {
-  spawnSidecarStreaming, cancelSidecarTask, useSidecarStream, listenSidecarStream,
+  spawnSidecarStreaming, cancelSidecarTask, cancelSidecarTaskAwaitExit, useSidecarStream, listenSidecarStream,
 } from "../api/sidecarStream";
 import { useCaptureSession } from "./devCapture";
 import { playerShowPattern, playerClear } from "../api/player";
@@ -202,6 +202,13 @@ import {
     /** Active SL nDisplay play-sequence request; cleared when play finishes/fails. */
     const slPlayReqRef = useRef(null);
     const [stillsTaskId, setStillsTaskId] = useState(null);
+    /* stillsTaskRef 与 state 同步：换任务前必须先杀旧任务（DeckLink/UVC 独占，
+       裸覆盖 id 会留下独占设备的孤儿进程）；写入一律走 setStillsTask */
+    const stillsTaskRef = useRef(null);
+    const setStillsTask = (id) => { stillsTaskRef.current = id; setStillsTaskId(id); };
+    /* 重入护栏：ref 挡同帧重入（state 更新是异步的），state 驱动按钮禁用/文案 */
+    const startingRef = useRef(false);
+    const [starting, setStarting] = useState(false);
     const [stillsSnapN, setStillsSnapN] = useState(0);
     const stillsStream = useSidecarStream(stillsTaskId);
     const cam = (camSnap.cameras || []).find((c) => c.id === camId) || camSnap.cameras[0] || CAL_CAMERAS[0];
@@ -358,7 +365,7 @@ import {
             camera_id: camId, screen: screenFile, method: 'qsp',
           }).then(() => refreshSessions());
           s.setCapState('idle');
-          setStillsTaskId(null);
+          setStillsTask(null);
           void playerClear().catch(() => {});
           if (s.setDeployState && s.deployState !== 'idle') s.setDeployState('standby');
           s.pushLog({ lv: 'ok', cat: 'lens', msg: '固定机位采集完成 · ' + (p.data.frames_captured || snaps) + ' 帧 · <b>' + dir + '</b>' });
@@ -371,7 +378,7 @@ import {
       }
       if (stillsStream.state.exit && stillsStream.state.exit.fatal) {
         s.setCapState('idle');
-        setStillsTaskId(null);
+        setStillsTask(null);
         s.pushLog({ lv: 'err', cat: 'lens', msg: '固定机位采集异常 · ' + (stillsStream.state.exit.stderr_tail || '') });
       }
     }, [stillsTaskId, capturing, tracked, stillsStream.state.lines, stillsStream.state.exit, targetM]);
@@ -467,6 +474,13 @@ import {
     };
     const start = async () => {
       if (!ready) return;
+      /* 公共入口护栏（fixed / tracked / SL 三分支共用）：从点击到 capState 落定之间
+         隔着推图 + monitor.stop 两个异步步骤（真机约 2.5s），期间再点会完整跑第二遍、
+         第二个会话独占设备并把第一个变孤儿——ref 同帧生效，state 禁用按钮 */
+      if (startingRef.current || capturing) return;
+      startingRef.current = true;
+      setStarting(true);
+      try {
       saveCapParams(params);
       patternAckSeq.current.clear();
       stillsResultHandledRef.current.clear();
@@ -523,7 +537,7 @@ import {
           if (profile.transferFunction) vArgs.push('--transfer-function', profile.transferFunction);
           const vResp = await spawnSidecarStreaming('vpcal', vArgs);
           videoTaskId = vResp.task_id;
-          setStillsTaskId(vResp.task_id);
+          setStillsTask(vResp.task_id);
           /* 略等录像落盘，再起播（哨兵软同步，起点偏差无影响） */
           await new Promise((r) => setTimeout(r, 800));
           s.pushLog({ lv: 'info', cat: 'lens', msg: '结构光 · nDisplay 播放序列 · ' + gen.n_frames + ' 帧 @ ' + fps + ' fps' });
@@ -545,7 +559,7 @@ import {
           if (s.setDeployState) s.setDeployState('showing');
           try { await cancelSidecarTask(videoTaskId); } catch (e) { /* ignore */ }
           videoTaskId = null;
-          setStillsTaskId(null);
+          setStillsTask(null);
           const corrOut = joinPath(sessionOut, 'corr.json');
           s.pushLog({ lv: 'info', cat: 'lens', msg: '结构光 · 解码…' });
           const dec = await meshVisualDecodeStructuredLight(
@@ -561,7 +575,7 @@ import {
           await abortSlPlayback();
           if (videoTaskId) {
             try { await cancelSidecarTask(videoTaskId); } catch (e2) { /* ignore */ }
-            setStillsTaskId(null);
+            setStillsTask(null);
           }
           s.setCapState('idle');
           s.pushLog({ lv: 'err', cat: 'lens', msg: '结构光采集失败 · ' + (e && e.message ? e.message : e) });
@@ -590,7 +604,11 @@ import {
         stillsOutRef.current = sessionOut;
         s.setCapTrack('fixed');
         s.pushLog({ lv: 'info', cat: 'lens', msg: '开始固定机位采集 · <b>capture stills</b> · ' + (profile.name || 'Profile') });
+        let spawnedId = null;
         try {
+          /* 换任务前先等旧任务真正退出（独占设备），护栏兜不住的残留也在这兜 */
+          const prev = stillsTaskRef.current;
+          if (prev) { try { await cancelSidecarTaskAwaitExit(prev); } catch (e) { /* ignore */ } }
           const resp = await startCaptureStills({
             backend: profile.videoBackend, device: String(profile.device),
             outDir: sessionOut, auto: true, minMarkers: 4,
@@ -599,8 +617,12 @@ import {
             fps: profile.fmtMode === 'manual' ? profile.fps : null,
             transferFunction: profile.transferFunction || 'sdr',
           });
-          setStillsTaskId(resp.task_id);
+          spawnedId = resp.task_id;
+          setStillsTask(resp.task_id);
         } catch (e) {
+          /* 本次已 spawn 的任务必须杀掉再回 idle，否则孤儿独占设备、监看永远拉不起来 */
+          if (spawnedId) { try { await cancelSidecarTaskAwaitExit(spawnedId); } catch (e2) { /* ignore */ } }
+          if (stillsTaskRef.current === spawnedId) setStillsTask(null);
           s.setCapState('idle');
           s.pushLog({ lv: 'err', cat: 'lens', msg: '固定机位启动失败 · ' + (e && e.message ? e.message : e) });
         }
@@ -627,13 +649,17 @@ import {
         transferFunction: profile.transferFunction || 'sdr',
       });
       s.setCapTrack('connected');
+      } finally {
+        startingRef.current = false;
+        setStarting(false);
+      }
     };
     const stop = async () => {
       await abortSlPlayback();
       if (!tracked && stillsTaskId) {
         try { await stillsFinish(stillsTaskId); } catch (e) { /* ignore */ }
         try { await cancelSidecarTask(stillsTaskId); } catch (e) { /* ignore */ }
-        setStillsTaskId(null);
+        setStillsTask(null);
       } else {
         session.cancel();
       }
@@ -855,8 +881,8 @@ import {
             h('div', { className: 'lc-start' },
               h(Button, { variant: 'accent', size: 'L',
                 icon: ag.preparing ? h('span', { className: 'ag-spin' }, h(Icon, { name: 'sync', size: 16 })) : h(Icon, { name: isSl ? 'play' : 'camera', size: 16 }),
-                isDisabled: !ready || ag.preparing, onPress: () => ag.beginCapture(start) },
-                ag.preparing ? '生成图案中…' : (isSl ? '开始采集 · 播放序列' : '开始采集'))),
+                isDisabled: !ready || ag.preparing || starting || capturing, onPress: () => ag.beginCapture(start) },
+                ag.preparing ? '生成图案中…' : starting ? '正在启动…' : (isSl ? '开始采集 · 播放序列' : '开始采集'))),
             reasons.length
               ? h('div', { className: 'lc-reasons' },
                   reasons.map((r, i) => h('span', { key: i, className: 'lc-reason' }, h(Icon, { name: 'info', size: 12 }), r)),
