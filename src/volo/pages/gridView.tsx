@@ -724,21 +724,16 @@ import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
     if (disp.ground) {
       const AG = 8, M = 16;
       /* preferRight：X 贴屏幕右侧端；否则 Z 贴上方端；再钳 16px */
-      const mkAxisLabel = (pos, neg, col, lbl, preferRight) => {
-        const a = P(neg), b = P(pos);
-        if (!a || !b) return;
-        const posEnd = preferRight ? (b[0] >= a[0] ? pos : neg) : (b[1] <= a[1] ? pos : neg);
-        const t0 = P({
-          x: posEnd.x + Math.sign(posEnd.x) * 0.55,
-          y: posEnd.y + Math.sign(posEnd.y) * 0.55,
-          z: 0,
-        });
+      /* 标签固定钉在世界正向端（+X / +Y）随场景一起转，端点转到相机背后时隐藏。
+         旧逻辑按「哪端在屏幕更靠右/靠上」动态选端，自由旋转时两端不断易主 → 标签跳动。 */
+      const mkAxisLabel = (end, col, lbl) => {
+        const t0 = P({ x: end.x * 1.07, y: end.y * 1.07, z: 0 });
         if (!t0) return;
         const t = [Math.max(M, Math.min(W - M, t0[0])), Math.max(M, Math.min(H - M, t0[1]))];
         axisLabels.push(h('text', { key: 'axl' + lbl, x: t[0], y: t[1], fill: col, fontSize: 15, fontWeight: 700, textAnchor: 'middle', dominantBaseline: 'central', style: { fontFamily: 'ui-monospace, monospace', userSelect: 'none' } }, lbl));
       };
-      mkAxisLabel({ x: AG, y: 0, z: 0 }, { x: -AG, y: 0, z: 0 }, WORLD_AXIS.x, 'X', true);
-      mkAxisLabel({ x: 0, y: AG, z: 0 }, { x: 0, y: -AG, z: 0 }, WORLD_AXIS.y, 'Z', false);
+      mkAxisLabel({ x: AG, y: 0 }, WORLD_AXIS.x, 'X');
+      mkAxisLabel({ x: 0, y: AG }, WORLD_AXIS.y, 'Z');
     }
 
     const labels = sbuilt.length > 1 ? sbuilt.map((entry) => {

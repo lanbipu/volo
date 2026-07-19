@@ -278,6 +278,7 @@ function GroundGrid({ rig }: { rig: CameraRig }) {
     fragmentShader: GRID_FRAG,
     transparent: true,
     depthWrite: false,
+    side: THREE.DoubleSide, /* 相机低于地面时仍渲染（默认 FrontSide 会整面背剔，地下视角网格消失） */
     uniforms: {
       uCam: { value: new THREE.Vector3() },
       uLevel: { value: 0 },
