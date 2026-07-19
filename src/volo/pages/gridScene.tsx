@@ -198,6 +198,8 @@ export interface SceneStore {
   invalidate: () => void;
 }
 const _raycaster = new THREE.Raycaster();
+/* 拾取网格专用材质：Mesh.raycast 尊重 material.side，必须 DoubleSide 才能从墙两侧命中 */
+const PICK_MAT = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
 
 /** 视口 client 坐标 → 命中的箱体（不可见 pick mesh 全量拾取，含镂空块）。 */
 export function pickBoxAt(rig: CameraRig, store: SceneStore, rect: DOMRect, clientX: number, clientY: number): PickHit | null {
@@ -507,7 +509,7 @@ function ScreenObjects({ e, store, selColor }: { e: SceneEntry; store: SceneStor
       {ghostSegs ? <primitive object={ghostSegs} /> : null}
       {geo.pattern && patMat ? <mesh geometry={geo.pattern} material={patMat} /> : null}
       {geo.sel ? <lineSegments geometry={geo.sel} material={selMat} renderOrder={5} /> : null}
-      <mesh ref={pickRef} geometry={geo.pick} visible={false} />
+      <mesh ref={pickRef} geometry={geo.pick} material={PICK_MAT} visible={false} />
     </group>
   );
 }
