@@ -497,7 +497,8 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       el.addEventListener('wheel', onWheel, { passive: false });
       const move = (e) => {
         if (marqueeRef.current) { marqueeRef.current = Object.assign({}, marqueeRef.current, { cx1: e.clientX, cy1: e.clientY }); setMarquee(marqueeRef.current); return; }
-        if (orbitRef.current) { const o = orbitRef.current; setOrbit({ az: o.az - (e.clientX - o.x) * 0.3, el: Math.max(-15, Math.min(88, o.el + (e.clientY - o.y) * 0.3)) }); return; }
+        /* el 下限 0°：正交投影下视线穿过地平面时网格会瞬间镜像（观感=视口翻转 180°），不放行仰视。 */
+        if (orbitRef.current) { const o = orbitRef.current; setOrbit({ az: o.az - (e.clientX - o.x) * 0.3, el: Math.max(0, Math.min(88, o.el + (e.clientY - o.y) * 0.3)) }); return; }
         if (!panRef.current) return; setPan({ x: panRef.current.px + (e.clientX - panRef.current.x), y: panRef.current.py + (e.clientY - panRef.current.y) });
       };
       const up = () => {
