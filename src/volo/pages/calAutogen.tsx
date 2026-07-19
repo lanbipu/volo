@@ -239,6 +239,12 @@ import { ensureScreenPatterns, lensWorkspacePaths } from "../api/lensWorkspace";
     let patRow;
     if (ag.syncing) {
       patRow = row("校正图案", { skeleton: true });
+    } else if (ag.screenDef === "exportFail") {
+      /* 导出失败时生成链路被卡在前置，不能显示「已自动触发重新生成」 */
+      patRow = row("校正图案", {
+        badge: pill("neutral", "minus", "等待屏幕定义"),
+        note: "屏幕定义导出失败，修复后将自动生成图案。",
+      });
     } else if (ag.pattern === "unsupported") {
       patRow = row("校正图案", {
         badge: pill("notice", "alert", "折面屏不支持"),
