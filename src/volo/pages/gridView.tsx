@@ -10,10 +10,13 @@
    - 模型坐标系（与 crates/mesh-core/src/coordinate.rs::from_three_points_m01 +
      shape_grid.rs 的既有约定一致，经 apply_world_transform 的坐标系推导核对）：
      X = 列（横向）· Y = 弯曲/深度（曲面外凸方向）· Z = 行（竖直，随 row 递增）。
-     视口据此把 Z 当"上"来摆相机，不是设计稿原型的 Y-up 摆法。 */
+   - 渲染/交互底层在 gridScene.tsx：Blender 视口模型（转台轨道、缩放到光标、
+     轴向 gizmo、无限地面网格）+ three.js GPU 管线；本文件持有业务几何与叠加层。 */
 import * as React from "react";
+import * as THREE from "three";
 import { computeRebuiltAlignment, saveProjectYaml } from "../api/meshCommands";
 import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api/meshVisualCommands";
+import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
 
 (function () {
   const { useState, useRef, useEffect, useMemo, useCallback } = React;
@@ -22,9 +25,9 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
   const Icon = window.Icon;
 
   const ROLE = {
-    origin: { short: 'O', label: 'origin', color: '#3ddc84' },
+    origin: { short: 'O', label: 'origin', color: '#f5c542' },
     x_axis: { short: 'X', label: 'x_axis', color: '#ff5a4d' },
-    xy_plane: { short: 'Y', label: 'xy_plane', color: '#5aa2ff' },
+    xy_plane: { short: 'Y', label: 'xy_plane', color: '#3ddc84' },
   };
   const PROV = {
     measured: { color: '#46c882', label: 'measured 实测' },
@@ -62,58 +65,42 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
     return null;
   }
 
-  /* ---------- 投影（模型 Z=竖直/行，Y=弯曲深度，X=列） ---------- */
-  const VIEW_CAM = {
-    persp: { S: 72, ox: 500, oy: 350 },
-    front: { S: 96, ox: 500, oy: 415 },
-    top: { S: 74, ox: 500, oy: 320 },
-    side: { S: 96, ox: 500, oy: 415 },
-  };
-  let ORBIT = { az: 30, el: 22 };
-  /* 转台视图透视相机到轨道目标的距离（米）。正交投影下"仰视抬头屏"与"俯视低头屏"
-     成像逐像素相同，穿过地平面时观感必然翻转；近大远小是唯一能区分二者的几何线索。 */
-  const PERSP_DIST = 16;
-  /* 轨道目标点：场景内容（全部屏幕箱体）包围盒中心。相机绕它旋转、视口以它取景，
-     与传统三维软件的 turntable 相机一致；设计稿原型把几何居中到原点等效于此。 */
-  let TARGET = { x: 0, y: 0, z: 0 };
-  function proj(p, view) {
-    const x = p.x - TARGET.x, y = p.y - TARGET.y, z = p.z - TARGET.z;
-    let u, v;
-    if (view === 'front') { u = x; v = -z; }
-    else if (view === 'top') { u = x; v = y; }
-    else if (view === 'side') { u = -y; v = -z; }
-    else {
-      /* 转台式相机环绕：方位角 az 绕竖直轴 Z 旋转（X/Y 弯曲平面），俯仰角 el 再把
-         结果与 Z 混合 —— 与传统三维软件的轨道相机一致。 */
-      const a = ORBIT.az * Math.PI / 180, e = ORBIT.el * Math.PI / 180;
-      const x1 = x * Math.cos(a) - y * Math.sin(a);
-      const y1 = x * Math.sin(a) + y * Math.cos(a);
-      const z2 = z * Math.cos(e) - y1 * Math.sin(e);
-      const w = y1 * Math.cos(e) + z * Math.sin(e);
-      const k = PERSP_DIST / Math.max(1, PERSP_DIST - w);
-      u = x1 * k; v = -z2 * k;
-    }
-    const c = VIEW_CAM[view] || VIEW_CAM.persp;
-    return [c.ox + u * c.S, c.oy + v * c.S];
-  }
-  const pstr = (pts) => pts.map((p) => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+  /* ---------- 相机 rig（模块级单例：跨挂载保留视角，同旧版模块级 ORBIT 约定） ---------- */
+  const RIG = new CameraRig();
+  const SCENE_STORE = { pickMeshes: [], setHover: () => {}, invalidate: () => {} };
 
-  /* Map one source-image triangle to one projected triangle. Splitting every
-     cabinet into two triangles keeps the real PNG exact even when a rebuilt
-     cabinet projects to a non-parallelogram quad. */
-  function affineFromTriangles(src, dst) {
-    const [p0, p1, p2] = src, [q0, q1, q2] = dst;
-    const det = p0[0] * (p1[1] - p2[1]) + p1[0] * (p2[1] - p0[1]) + p2[0] * (p0[1] - p1[1]);
-    if (Math.abs(det) < 1e-9) return null;
-    const solve = (v0, v1, v2) => {
-      const a = (v0 * (p1[1] - p2[1]) + v1 * (p2[1] - p0[1]) + v2 * (p0[1] - p1[1])) / det;
-      const c = (v0 * (p2[0] - p1[0]) + v1 * (p0[0] - p2[0]) + v2 * (p1[0] - p0[0])) / det;
-      const e = (v0 * (p1[0] * p2[1] - p2[0] * p1[1]) + v1 * (p2[0] * p0[1] - p0[0] * p2[1]) + v2 * (p0[0] * p1[1] - p1[0] * p0[1])) / det;
-      return [a, c, e];
-    };
-    const x = solve(q0[0], q1[0], q2[0]), y = solve(q0[1], q1[1], q2[1]);
-    return `matrix(${x[0]} ${y[0]} ${x[1]} ${y[1]} ${x[2]} ${y[2]})`;
+  /* 世界轴色：地面轴端 / gizmo 共用（显示 Z = 世界 Y） */
+  const WORLD_AXIS = { x: '#c74436', y: '#3f74c4' };
+  const GIZMO_AXES = [
+    { dir: [1, 0, 0], col: WORLD_AXIS.x, label: 'X' },
+    { dir: [-1, 0, 0], col: WORLD_AXIS.x, label: null },
+    { dir: [0, 0, 1], col: '#3f9c46', label: 'Y' },   /* 显示 Y（向上）= 世界 Z */
+    { dir: [0, 0, -1], col: '#3f9c46', label: null },
+    { dir: [0, 1, 0], col: WORLD_AXIS.y, label: 'Z' },   /* 显示 Z（深度）= 世界 Y */
+    { dir: [0, -1, 0], col: WORLD_AXIS.y, label: null },
+  ];
+
+  /** Overlay / NavGizmo：相机变化经 rAF 节流触发重渲 */
+  function useRigTick() {
+    const [, setTick] = useState(0);
+    useEffect(() => {
+      let raf = null;
+      const off = RIG.onChange(() => {
+        if (raf != null) return;
+        raf = requestAnimationFrame(() => { raf = null; setTick((t) => t + 1); });
+      });
+      return () => { off(); if (raf != null) cancelAnimationFrame(raf); };
+    }, []);
   }
+
+  const pstr = (pts) => pts.map((p) => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+  const boxCenter = (b) => b.corners.reduce((p, q) => ({ x: p.x + q.x / 4, y: p.y + q.y / 4, z: p.z + q.z / 4 }), { x: 0, y: 0, z: 0 });
+  /** 箱体外法线（面内水平，含 normal_flip） */
+  const boxNormalOf = (b, cfg) => {
+    const dx = b.corners[1].x - b.corners[0].x, dy = b.corners[1].y - b.corners[0].y;
+    const len = Math.hypot(dx, dy) || 1, sign = cfg && cfg.normal_flip ? -1 : 1;
+    return { x: sign * -dy / len, y: sign * dx / len, z: 0 };
+  };
 
   /* ---------- 名义（未重建）几何：镜像 shape_grid.rs 的逐列朝向角骨架 ---------- */
   function columnHeadingsDeg(m, cols) {
@@ -385,35 +372,28 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
     s.setCalSel({ type: 'screenMulti', ids: base });
   }
 
-  /* ---------- 视口 SVG ---------- */
-  const VIEWPORT_MIN_ZOOM = 0.5;
-  const VIEWPORT_MAX_ZOOM = 16;
+  /* ---------- 视口（three.js Canvas + SVG 叠加层） ---------- */
 
   function Viewport({ s }) {
     const proj_ = CX.useProj();
-    const screens = proj_.config ? Object.keys(proj_.config.screens) : [];
-    const view = s.calView;
     const disp = s.calDisplay;
     const cabinet = s.calMode === 'cabinet';
-    const [zoom, setZoom] = useState(1);
-    const [pan, setPan] = useState({ x: 0, y: 0 });
-    const [orbit, setOrbit] = useState({ az: 30, el: 22 });
-    const [marquee, setMarquee] = useState(null); /* {x0,y0,x1,y1} SVG 外层坐标 */
-    const panRef = useRef(null);
-    const orbitRef = useRef(null);
-    const stageRef = useRef(null);
-    const marqueeRef = useRef(null); /* {cx0,cy0,cx1,cy1} client 坐标 */
-    const marqueeFinalizeRef = useRef(null); /* 每次渲染更新，up 时用当前几何做框选命中 */
-    const paintRef = useRef(null); /* 遮罩拖刷：{ to: boolean } */
-    const innerRef = useRef(null); /* 内层 pan/zoom <g>，命中转换用其真实 CTM */
-    const touchedRef = useRef(false); /* 用户手动操作过视口后停用自动取景 */
-    const prevPreviewRef = useRef(false); /* 轴向预览刚出现时弹一次 Receipt */
+    const [marquee, setMarquee] = useState(null); /* {cx0,cy0,cx1,cy1} client 坐标 */
+    const hostRef = useRef(null);
+    const panDragRef = useRef(null);
+    const orbitDragRef = useRef(null);
+    const marqueeRef = useRef(null);
+    const marqueeFinalizeRef = useRef(null);
+    const paintRef = useRef(null); /* { to: boolean, last: key } */
+    const paintMoveRef = useRef(null);
+    const hoverRafRef = useRef(null);
+    const bboxRef = useRef(null);
+    const prevPreviewRef = useRef(false);
     const patternByScreen = proj_.patternGenByScreen || {};
     const patternPathKey = Object.keys(patternByScreen).sort()
       .map((id) => id + '=' + ((patternByScreen[id] && patternByScreen[id].output_dir) || '')).join('|');
     const [patternImages, setPatternImages] = useState({}); /* { [screenId]: { path, dataUrl } } */
     const patternImagesRef = useRef({});
-    ORBIT = orbit;
 
     useEffect(() => { patternImagesRef.current = patternImages; }, [patternImages]);
 
@@ -468,114 +448,134 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       return () => { active = false; };
     }, [disp.pattern, patternPathKey]);
 
-    /* client 坐标 → 指定元素（外层 svg / 内层 g）局部坐标，走引擎 CTM，
-       避免手写反演与 transform-origin 实现差异打架。 */
-    const toLocal = (el, cx, cyv) => {
-      const svg = stageRef.current;
-      if (!svg || !svg.createSVGPoint || !el) return [0, 0];
-      const pt = svg.createSVGPoint(); pt.x = cx; pt.y = cyv;
-      const ctm = el.getScreenCTM();
-      if (!ctm) return [0, 0];
-      const p = pt.matrixTransform(ctm.inverse());
-      return [p.x, p.y];
-    };
+    /* 每块屏幕：激活屏用草稿（若有）+ 已重建版本切换；其余屏幕恒用已保存配置 + 原始网格。
+       新建/叠加：P_s = A ∘ B_s（A=rebuilt_alignment，B=屏间 SE3 或名义摆放）；ghost/原始不变。
+       memo 化：相机拖拽/框选期间的叠加层 tick 不触发几何重建。 */
+    const built = useMemo(() => {
+      if (!proj_.config) return { sbuilt: [], bbox: null, se3ByScreen: null };
+      const screens = Object.keys(proj_.config.screens);
+      const se3ByScreen = se3ByScreenFromFile(proj_.visualSession && proj_.visualSession.screenTransforms);
+      const se3Lookup = se3ByScreen || {};
+      const sbuilt = screens.map((id) => {
+        const isActive = id === s.calActiveScreen;
+        const cfg = (isActive && s.calDraftScreen) ? s.calDraftScreen : proj_.config.screens[id];
+        const report = s.calScreenReports && s.calScreenReports[id];
+        const hasBuilt = !!report;
+        const version = hasBuilt ? s.calMeshVersion : 'original';
+        const se3 = se3Lookup[id] || null;
+        const alignment = (version === 'rebuilt' || version === 'overlay')
+          ? alignmentForScreen(proj_.config, id)
+          : null;
+        const g = (version === 'rebuilt' || version === 'overlay')
+          ? buildRealBoxes(report.surface, cfg, se3, alignment)
+          : buildNominalBoxes(cfg);
+        const ghost = version === 'overlay' ? buildNominalBoxes(cfg) : null;
+        return { id, cfg, isActive, g, ghost, built: hasBuilt, version, vmap: boxesVertexMap(g.boxes) };
+      });
+      let bboxMin = null, bboxMax = null;
+      sbuilt.forEach((entry) => entry.g.boxes.forEach((b) => b.corners.forEach((p) => {
+        if (!bboxMin) { bboxMin = { x: p.x, y: p.y, z: p.z }; bboxMax = { x: p.x, y: p.y, z: p.z }; }
+        else {
+          bboxMin.x = Math.min(bboxMin.x, p.x); bboxMin.y = Math.min(bboxMin.y, p.y); bboxMin.z = Math.min(bboxMin.z, p.z);
+          bboxMax.x = Math.max(bboxMax.x, p.x); bboxMax.y = Math.max(bboxMax.y, p.y); bboxMax.z = Math.max(bboxMax.z, p.z);
+        }
+      })));
+      return { sbuilt, bbox: bboxMin ? { min: bboxMin, max: bboxMax } : null, se3ByScreen };
+    }, [
+      proj_.config, proj_.visualSession, s.calDraftScreen, s.calScreenReports,
+      s.calMeshVersion, s.calActiveScreen,
+    ]);
+    const sbuilt = built.sbuilt;
 
-    const reset = useCallback(() => { touchedRef.current = false; setZoom(1); setPan({ x: 0, y: 0 }); setOrbit({ az: 30, el: 22 }); }, []);
+    /* 自动取景：用户手动操作前跟随内容包围盒（旧 fitZoom 语义）。 */
+    useEffect(() => {
+      bboxRef.current = built.bbox;
+      if (!RIG.touched && built.bbox) RIG.fit(built.bbox.min, built.bbox.max);
+    }, [built]);
+
+    const reset = useCallback(() => {
+      RIG.touched = false;
+      RIG.ortho = false;
+      RIG.setAzEl(30, 22);
+      if (bboxRef.current) RIG.fit(bboxRef.current.min, bboxRef.current.max); else RIG.apply();
+    }, []);
     useEffect(() => {
       const onReset = () => reset();
-      const onFocus = () => setZoom((z) => Math.min(VIEWPORT_MAX_ZOOM, z + 0.5));
+      const onFocus = () => RIG.smoothTo({ dist: Math.max(0.05, RIG.dist * 0.7) });
       window.addEventListener('volo-gw-reset', onReset);
       window.addEventListener('volo-gw-focus', onFocus);
       return () => { window.removeEventListener('volo-gw-reset', onReset); window.removeEventListener('volo-gw-focus', onFocus); };
     }, [reset]);
 
+    /* 滚轮：Blender ×1.2/格 + 缩放到光标。 */
     useEffect(() => {
-      const el = stageRef.current; if (!el) return undefined;
+      const el = hostRef.current; if (!el) return undefined;
       const onWheel = (e) => {
         e.preventDefault();
-        touchedRef.current = true;
-        setZoom((z) => {
-          const step = z > 3 ? 0.24 : 0.12;
-          return Math.max(VIEWPORT_MIN_ZOOM, Math.min(VIEWPORT_MAX_ZOOM, +(z - Math.sign(e.deltaY) * step).toFixed(2)));
-        });
+        const rect = el.getBoundingClientRect();
+        const ndc = {
+          x: ((e.clientX - rect.left) / rect.width) * 2 - 1,
+          y: -(((e.clientY - rect.top) / rect.height) * 2 - 1),
+        };
+        RIG.zoomStep(e.deltaY > 0 ? 1 : -1, ndc);
       };
       el.addEventListener('wheel', onWheel, { passive: false });
+      return () => el.removeEventListener('wheel', onWheel);
+    }, []);
+
+    /* 全局拖拽：框选 → 轨道 → 平移 → 遮罩拖刷（增量喂给 rig，即时生效无插值）。 */
+    useEffect(() => {
       const move = (e) => {
         if (marqueeRef.current) { marqueeRef.current = Object.assign({}, marqueeRef.current, { cx1: e.clientX, cy1: e.clientY }); setMarquee(marqueeRef.current); return; }
-        if (orbitRef.current) { const o = orbitRef.current; setOrbit({ az: o.az - (e.clientX - o.x) * 0.3, el: Math.max(-88, Math.min(88, o.el + (e.clientY - o.y) * 0.3)) }); return; }
-        if (!panRef.current) return; setPan({ x: panRef.current.px + (e.clientX - panRef.current.x), y: panRef.current.py + (e.clientY - panRef.current.y) });
+        if (orbitDragRef.current) { const o = orbitDragRef.current; RIG.orbit(e.clientX - o.x, e.clientY - o.y); o.x = e.clientX; o.y = e.clientY; return; }
+        if (panDragRef.current) { const o = panDragRef.current; RIG.pan(e.clientX - o.x, e.clientY - o.y); o.x = e.clientX; o.y = e.clientY; return; }
+        if (paintRef.current && paintMoveRef.current) paintMoveRef.current(e);
       };
       const up = () => {
         if (marqueeRef.current) { const r = marqueeRef.current; marqueeRef.current = null; setMarquee(null); if (marqueeFinalizeRef.current) marqueeFinalizeRef.current(r); }
-        if (paintRef.current) paintRef.current = null;
-        if (panRef.current) { el.classList.remove('is-panning'); panRef.current = null; }
-        if (orbitRef.current) { el.classList.remove('is-orbiting'); orbitRef.current = null; }
+        paintRef.current = null;
+        panDragRef.current = null;
+        orbitDragRef.current = null;
       };
       window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
-      return () => { el.removeEventListener('wheel', onWheel); window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
-    }, [pan]);
+      return () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+    }, []);
 
-    const startPan = (e) => { touchedRef.current = true; panRef.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y }; stageRef.current.classList.add('is-panning'); };
-    const startOrbit = (e) => { touchedRef.current = true; orbitRef.current = { x: e.clientX, y: e.clientY, az: orbit.az, el: orbit.el }; stageRef.current.classList.add('is-orbiting'); };
-    const onBg = (e) => {
-      if (e.target.closest && e.target.closest('.gw-box')) return;
-      if (e.button === 2) { startPan(e); return; }
-      if (e.button === 0) {
-        /* 箱体模式·选择工具：Shift+左拖 = 框选多选；纯左拖恒为轨道旋转（传统 DCC 习惯）。 */
-        if (cabinet && s.calBoxTool === 'select' && e.shiftKey) { marqueeRef.current = { cx0: e.clientX, cy0: e.clientY, cx1: e.clientX, cy1: e.clientY }; setMarquee(marqueeRef.current); return; }
-        if (!cabinet) s.setCalSel(null);
-        startOrbit(e);
-      }
-    };
+    const selKey = s.calSel && s.calSel.type === 'cabinet' ? s.calSel.c + ',' + s.calSel.r : null;
+    const multiKeys = s.calSel && s.calSel.type === 'cabinetMulti' ? new Set(s.calSel.keys || []) : null;
 
-    if (!proj_.config) return h('svg', { className: 'gw-svp', ref: stageRef, viewBox: '0 0 1000 700' });
+    /* three 场景数据（与业务 sbuilt 解耦的纯渲染描述）。必须在 early return 之前（Hooks 顺序）。 */
+    const [selColor] = useState(() =>
+      getComputedStyle(document.documentElement).getPropertyValue('--volo-500').trim() || 'rgb(224,70,38)');
+    const sceneData = useMemo(() => ({
+      entries: sbuilt.map((entry) => {
+        const ppc = entry.cfg.pixels_per_cabinet;
+        const img = patternImages[entry.id];
+        const provByKey = disp.provenance
+          ? entry.g.boxes.reduce((acc, b) => { if (b.prov) acc[b.key] = PROV[b.prov].color; return acc; }, {})
+          : null;
+        return {
+          id: entry.id,
+          isActive: entry.isActive,
+          boxes: entry.g.boxes,
+          ghostBoxes: entry.ghost ? entry.ghost.boxes : null,
+          provByKey,
+          cutout: disp.maskStyle === 'cutout' && !(entry.isActive && cabinet),
+          patternUrl: (disp.pattern && img && ppc && ppc[0] && ppc[1]) ? img.dataUrl : null,
+          normalSign: entry.cfg.normal_flip ? -1 : 1,
+          selKeys: entry.isActive
+            ? (multiKeys ? [...multiKeys] : (selKey ? [selKey] : []))
+            : [],
+        };
+      }),
+      showGround: !!disp.ground,
+      selColor,
+    }), [sbuilt, patternImages, disp.pattern, disp.provenance, disp.maskStyle, disp.ground, cabinet, s.calSel, selColor]);
 
-    /* 联合视觉求解的屏间 SE(3)：新建/叠加的重建网格用它摆放；原始与幽灵仍走名义 position/yaw。
-       null = session 尚未加载（alignmentGroup 可回退 yaml）；{} = 已加载但无联合成员。 */
-    const se3ByScreen = se3ByScreenFromFile(proj_.visualSession && proj_.visualSession.screenTransforms);
-    const se3Lookup = se3ByScreen || {};
-
-    /* 每块屏幕：激活屏用草稿（若有）+ 已重建版本切换；其余屏幕恒用已保存配置 + 原始网格。
-       新建/叠加：P_s = A ∘ B_s（A=rebuilt_alignment，B=屏间 SE3 或名义摆放）；ghost/原始不变。 */
-    const sbuilt = screens.map((id) => {
-      const isActive = id === s.calActiveScreen;
-      const cfg = (isActive && s.calDraftScreen) ? s.calDraftScreen : proj_.config.screens[id];
-      const report = s.calScreenReports && s.calScreenReports[id];
-      const built = !!report;
-      const version = built ? s.calMeshVersion : 'original';
-      const se3 = se3Lookup[id] || null;
-      const alignment = (version === 'rebuilt' || version === 'overlay')
-        ? alignmentForScreen(proj_.config, id)
-        : null;
-      const g = (version === 'rebuilt' || version === 'overlay')
-        ? buildRealBoxes(report.surface, cfg, se3, alignment)
-        : buildNominalBoxes(cfg);
-      const ghost = version === 'overlay' ? buildNominalBoxes(cfg) : null;
-      return { id, cfg, isActive, g, ghost, built, version, vmap: boxesVertexMap(g.boxes) };
-    });
-
-    /* 轨道目标 + 自动取景：内容包围盒中心为旋转枢轴；未手动操作视口时按内容尺度取景。 */
-    let bboxMin = null, bboxMax = null;
-    sbuilt.forEach((entry) => entry.g.boxes.forEach((b) => b.corners.forEach((p) => {
-      if (!bboxMin) { bboxMin = { x: p.x, y: p.y, z: p.z }; bboxMax = { x: p.x, y: p.y, z: p.z }; }
-      else {
-        bboxMin.x = Math.min(bboxMin.x, p.x); bboxMin.y = Math.min(bboxMin.y, p.y); bboxMin.z = Math.min(bboxMin.z, p.z);
-        bboxMax.x = Math.max(bboxMax.x, p.x); bboxMax.y = Math.max(bboxMax.y, p.y); bboxMax.z = Math.max(bboxMax.z, p.z);
-      }
-    })));
-    TARGET = bboxMin ? { x: (bboxMin.x + bboxMax.x) / 2, y: (bboxMin.y + bboxMax.y) / 2, z: (bboxMin.z + bboxMax.z) / 2 } : { x: 0, y: 0, z: 0 };
-    /* 内容对角线（米）→ 期望占视口宽 ~55%（1000 单位 · S=72/米），夹在滚轮缩放范围内。 */
-    const diagM = bboxMin ? Math.max(0.5, Math.hypot(bboxMax.x - bboxMin.x, bboxMax.y - bboxMin.y, bboxMax.z - bboxMin.z)) : 4;
-    const fitZoom = Math.max(VIEWPORT_MIN_ZOOM, Math.min(VIEWPORT_MAX_ZOOM, +(550 / (diagM * 72)).toFixed(2)));
-    /* 渲染期校正（非 hook，规避早退分支的 Hooks 顺序问题）：用户未手动缩放/旋转/平移
-       前，跟随内容自动取景。 */
-    if (!touchedRef.current && Math.abs(zoom - fitZoom) > 0.01) setZoom(fitZoom);
+    if (!proj_.config) return h('div', { className: 'gw-svp', ref: hostRef });
 
     const activeEntry = sbuilt.find((x) => x.isActive) || sbuilt[0];
     const m = activeEntry ? activeEntry.cfg : null;
-    const coord = proj_.config.coordinate_system;
-    const selKey = s.calSel && s.calSel.type === 'cabinet' ? s.calSel.c + ',' + s.calSel.r : null;
-    const multiKeys = s.calSel && s.calSel.type === 'cabinetMulti' ? new Set(s.calSel.keys || []) : null;
 
     const setBoxMask = (b, to) => {
       const cur = s.calDraftScreen || m;
@@ -586,13 +586,12 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       return set.has(b.key);
     };
     const clickBox = (b, e) => {
-      e.stopPropagation();
       if (!cabinet) { s.setCalSel({ type: 'screen' }); return; }
       const tool = s.calBoxTool;
       if (tool === 'mask') {
         if (m.shape_mode !== 'irregular') { s.setCalReceipt({ tone: 'notice', text: '矩形屏不支持遮罩，仅异形屏可镂空' }); return; }
         const nowMasked = setBoxMask(b, null);
-        paintRef.current = { to: nowMasked }; /* 拖刷：后续划过的箱体统一设为首格的新状态 */
+        paintRef.current = { to: nowMasked, last: b.key };
         s.setCalSel({ type: 'cabinet', c: b.c, r: b.r });
       } else if (tool === 'refs') {
         s.setCalSel({ type: 'cabinet', c: b.c, r: b.r });
@@ -604,12 +603,107 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       }
     };
 
+    /* 遮罩拖刷（raycast 版）：拖动划过的箱体统一设为首格新状态。 */
+    paintMoveRef.current = (e) => {
+      const host = hostRef.current;
+      if (!host || !paintRef.current) return;
+      if (!cabinet || s.calBoxTool !== 'mask' || !m || m.shape_mode !== 'irregular') return;
+      const hit = pickBoxAt(RIG, SCENE_STORE, host.getBoundingClientRect(), e.clientX, e.clientY);
+      if (!hit || !activeEntry || hit.entryId !== activeEntry.id) return;
+      if (hit.box.key === paintRef.current.last) return;
+      paintRef.current.last = hit.box.key;
+      setBoxMask(hit.box, paintRef.current.to);
+    };
+
+    const startPan = (e) => { RIG.cancelAnim(); RIG.touched = true; panDragRef.current = { x: e.clientX, y: e.clientY }; };
+    const startOrbit = (e) => { RIG.cancelAnim(); RIG.touched = true; orbitDragRef.current = { x: e.clientX, y: e.clientY }; };
+
+    const onHostDown = (e) => {
+      const host = hostRef.current; if (!host) return;
+      if (e.button === 2) { startPan(e); return; }
+      if (e.button !== 0) return;
+      const hit = pickBoxAt(RIG, SCENE_STORE, host.getBoundingClientRect(), e.clientX, e.clientY);
+      if (hit) {
+        const entry = sbuilt.find((x) => x.id === hit.entryId);
+        if (!entry) return;
+        if (!cabinet || s.calBoxTool === 'select') startOrbit(e);
+        if (e.ctrlKey || e.metaKey) { toggleScreenSel(s, entry.id); return; }
+        if (entry.isActive) { clickBox(hit.box, e); return; }
+        s.setCalActiveScreen(entry.id); s.setCalDraftScreen(null); s.setCalMode('object'); s.setCalSel({ type: 'screen' });
+        return;
+      }
+      /* 箱体模式·选择工具：Shift+左拖 = 框选多选；纯左拖恒为轨道旋转（传统 DCC 习惯）。 */
+      if (cabinet && s.calBoxTool === 'select' && e.shiftKey) {
+        marqueeRef.current = { cx0: e.clientX, cy0: e.clientY, cx1: e.clientX, cy1: e.clientY };
+        setMarquee(marqueeRef.current);
+        return;
+      }
+      if (!cabinet) s.setCalSel(null);
+      startOrbit(e);
+    };
+
+    /* hover 高亮 + 箱体点名 tooltip（rAF 节流 raycast；拖拽期间关闭）。 */
+    const onHostMove = (e) => {
+      if (hoverRafRef.current != null) return;
+      const cx = e.clientX, cyv = e.clientY;
+      hoverRafRef.current = requestAnimationFrame(() => {
+        hoverRafRef.current = null;
+        const host = hostRef.current; if (!host) return;
+        if (orbitDragRef.current || panDragRef.current || marqueeRef.current || paintRef.current) { SCENE_STORE.setHover(null); return; }
+        const hit = pickBoxAt(RIG, SCENE_STORE, host.getBoundingClientRect(), cx, cyv);
+        SCENE_STORE.setHover(hit);
+        host.title = hit
+          ? hit.entryId + ' V' + String(hit.box.c + 1).padStart(2, '0') + '_R' + String(hit.box.r + 1).padStart(2, '0')
+          : '';
+      });
+    };
+    const onHostLeave = () => { SCENE_STORE.setHover(null); };
+
+    /* 框选命中：client → 视口像素，与激活屏各箱体的投影质心比较。 */
+    marqueeFinalizeRef.current = (r) => {
+      const host = hostRef.current; if (!host) return;
+      const w = Math.abs(r.cx1 - r.cx0), hgt = Math.abs(r.cy1 - r.cy0);
+      if (w < 4 && hgt < 4) { s.setCalSel(null); return; } /* 视为空点击 */
+      const rect = host.getBoundingClientRect();
+      const ax = Math.min(r.cx0, r.cx1) - rect.left, bx = Math.max(r.cx0, r.cx1) - rect.left;
+      const ay = Math.min(r.cy0, r.cy1) - rect.top, by = Math.max(r.cy0, r.cy1) - rect.top;
+      const keys = [];
+      if (activeEntry) activeEntry.g.boxes.forEach((b) => {
+        const q = RIG.project(boxCenter(b));
+        if (q && q[0] >= ax && q[0] <= bx && q[1] >= ay && q[1] <= by) keys.push(b.key);
+      });
+      if (keys.length > 1) { s.setCalSel({ type: 'cabinetMulti', keys }); s.setCalReceipt({ tone: 'ok', text: '框选 ' + keys.length + ' 个箱体' }); }
+      else if (keys.length === 1) { const [c, r2] = keys[0].split(',').map(Number); s.setCalSel({ type: 'cabinet', c, r: r2 }); }
+      else s.setCalSel(null);
+    };
+
+    return h('div', {
+      className: 'gw-svp', ref: hostRef,
+      onMouseDown: onHostDown, onMouseMove: onHostMove, onMouseLeave: onHostLeave,
+      onContextMenu: (e) => e.preventDefault(),
+      style: { overflow: 'hidden' },
+    },
+      h(SceneCanvas, { rig: RIG, data: sceneData, store: SCENE_STORE }),
+      h(OverlayLayer, { s, proj_, sbuilt, se3ByScreen: built.se3ByScreen, cabinet, disp, marquee, hostRef }));
+  }
+
+  /* ---------- SVG 叠加层：世界锚定的标注（点/参考点/法线/轮廓/预览轴/标签/框选） ----------
+     相机每帧变化经 rAF 节流只重渲本层（元素量小），三维场景与业务树不动。 */
+  function OverlayLayer({ s, proj_, sbuilt, se3ByScreen, cabinet, disp, marquee, hostRef }) {
+    useRigTick();
+    const W = Math.max(1, RIG.width), H = Math.max(1, RIG.height);
+    const P = (p) => RIG.project(p);
+
+    const activeEntry = sbuilt.find((x) => x.isActive) || sbuilt[0];
+    const coord = proj_.config && proj_.config.coordinate_system;
+    const screenIds = sbuilt.map((x) => x.id);
+
     const assignReferenceVertex = (screenId, c, r, e) => {
       e.stopPropagation();
       const role = s.calRefRole;
       const name = pointName(screenId, c, r);
       const entry = sbuilt.find((x) => x.id === screenId);
-      const screenCfg = entry ? entry.cfg : (proj_.config.screens[screenId] || m);
+      const screenCfg = entry ? entry.cfg : (proj_.config.screens[screenId] || (activeEntry && activeEntry.cfg));
       const nextCoord = Object.assign({}, coord, { [role + '_point']: name });
       const nextScreens = role === 'origin'
         ? Object.assign({}, proj_.config.screens, { [screenId]: Object.assign({}, screenCfg, { origin_aligned: false }) })
@@ -618,143 +712,40 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       s.runCmd({ domain: 'calibrate', action: '指派参考点', target: name, chan: 'local' },
         () => saveProjectYaml(proj_.path, nextConfig),
         { okMsg: () => `已指派 ${ROLE[role].label} → ${name}` })
-        .then(() => CX.openProjectPath(proj_.path, s)).catch(() => {});
+        .then(() => CX.openProjectPath(proj_.path, s))
+        .catch((err) => {
+          const msg = err && err.message ? err.message : String(err);
+          s.setCalReceipt({ tone: 'err', text: '指派参考点失败 · ' + msg });
+        });
     };
 
-    /* Blender-style 地面细网格：0.5m 次要线、1m 主要线，世界原点轴线另绘。
-       视线贴近地平面（|el|→0）时网格与面内轴线淡出：正交投影下穿越 el=0 网格
-       会瞬间镜像重展（观感=视口翻转 180°），淡出让钻到地面下仰视的过渡连续。 */
-    const groundFade = view === 'front' || view === 'top' || view === 'side' ? 1 : Math.min(1, Math.abs(orbit.el) / 8);
-    const ground = [];
+    /* 轴端 X/Z 标记：屏幕空间渲染、贴边钳制（轴线本体在网格 shader 里） */
+    const axisLabels = [];
     if (disp.ground) {
-      const G = 8, step = 0.5;
-      for (let i = -G; i <= G; i += step) {
-        if (Math.abs(i) < 1e-6) continue;
-        const cls = 'gw-grid-l' + (Math.abs(i % 1) < 1e-6 ? ' maj' : '');
-        ground.push(h('line', { key: 'gx' + i, className: cls, x1: proj({ x: i, y: -G, z: 0 }, view)[0], y1: proj({ x: i, y: -G, z: 0 }, view)[1], x2: proj({ x: i, y: G, z: 0 }, view)[0], y2: proj({ x: i, y: G, z: 0 }, view)[1] }));
-        ground.push(h('line', { key: 'gz' + i, className: cls, x1: proj({ x: -G, y: i, z: 0 }, view)[0], y1: proj({ x: -G, y: i, z: 0 }, view)[1], x2: proj({ x: G, y: i, z: 0 }, view)[0], y2: proj({ x: G, y: i, z: 0 }, view)[1] }));
-      }
+      const AG = 8, M = 16;
+      /* preferRight：X 贴屏幕右侧端；否则 Z 贴上方端；再钳 16px */
+      const mkAxisLabel = (pos, neg, col, lbl, preferRight) => {
+        const a = P(neg), b = P(pos);
+        if (!a || !b) return;
+        const posEnd = preferRight ? (b[0] >= a[0] ? pos : neg) : (b[1] <= a[1] ? pos : neg);
+        const t0 = P({
+          x: posEnd.x + Math.sign(posEnd.x) * 0.55,
+          y: posEnd.y + Math.sign(posEnd.y) * 0.55,
+          z: 0,
+        });
+        if (!t0) return;
+        const t = [Math.max(M, Math.min(W - M, t0[0])), Math.max(M, Math.min(H - M, t0[1]))];
+        axisLabels.push(h('text', { key: 'axl' + lbl, x: t[0], y: t[1], fill: col, fontSize: 15, fontWeight: 700, textAnchor: 'middle', dominantBaseline: 'central', style: { fontFamily: 'ui-monospace, monospace', userSelect: 'none' } }, lbl));
+      };
+      mkAxisLabel({ x: AG, y: 0, z: 0 }, { x: -AG, y: 0, z: 0 }, WORLD_AXIS.x, 'X', true);
+      mkAxisLabel({ x: 0, y: AG, z: 0 }, { x: 0, y: -AG, z: 0 }, WORLD_AXIS.y, 'Z', false);
     }
-    /* 显示 X（红）= stage X；显示 Z（蓝）= stage Y；显示 Y（绿向上）= stage Z。 */
-    const axes = [];
-    if (disp.ground) {
-      const G = 8;
-      const axis = (id, a, b, color, op) => { const p0 = proj(a, view), p1 = proj(b, view); axes.push(h('line', { key: id, x1: p0[0], y1: p0[1], x2: p1[0], y2: p1[1], stroke: color, strokeWidth: 1, strokeLinecap: 'round', opacity: op })); };
-      axis('axis-x', { x: -G, y: 0, z: 0 }, { x: G, y: 0, z: 0 }, '#c74436', .8 * groundFade);
-      axis('axis-z', { x: 0, y: -G, z: 0 }, { x: 0, y: G, z: 0 }, '#3f74c4', .8 * groundFade);
-      axis('axis-y', { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 2 }, '#3f9c46', .8);
-    }
-
-    const onBoxDown = (b, entry, e) => {
-      e.stopPropagation();
-      if (e.button === 2) { startPan(e); return; }
-      if (e.button !== 0) return;
-      if (!cabinet || s.calBoxTool === 'select') startOrbit(e);
-      if (e.ctrlKey || e.metaKey) { window.VOLO_GRID.toggleScreenSel(s, entry.id); return; }
-      if (entry.isActive) { clickBox(b, e); return; }
-      s.setCalActiveScreen(entry.id); s.setCalDraftScreen(null); s.setCalMode('object'); s.setCalSel({ type: 'screen' });
-    };
-    const paintEnter = (b, entry) => {
-      if (!entry.isActive || !cabinet || s.calBoxTool !== 'mask' || !paintRef.current) return;
-      if (m.shape_mode !== 'irregular') return;
-      setBoxMask(b, paintRef.current.to);
-    };
-    const cameraToViewer = (() => {
-      if (view === 'front') return { x: 0, y: 1, z: 0 };
-      if (view === 'top') return { x: 0, y: 0, z: 1 };
-      if (view === 'side') return { x: 1, y: 0, z: 0 };
-      const a = orbit.az * Math.PI / 180, e = orbit.el * Math.PI / 180;
-      return { x: Math.sin(a) * Math.cos(e), y: Math.cos(a) * Math.cos(e), z: Math.sin(e) };
-    })();
-    const boxCenter = (b) => b.corners.reduce((p, q) => ({ x: p.x + q.x / 4, y: p.y + q.y / 4, z: p.z + q.z / 4 }), { x: 0, y: 0, z: 0 });
-    const boxNormal = (b, entry) => {
-      const dx = b.corners[1].x - b.corners[0].x, dy = b.corners[1].y - b.corners[0].y;
-      const len = Math.hypot(dx, dy) || 1, sign = entry.cfg.normal_flip ? -1 : 1;
-      return { x: sign * -dy / len, y: sign * dx / len, z: 0 };
-    };
-    const faceToCamera = (b, entry) => {
-      const n = boxNormal(b, entry);
-      return n.x * cameraToViewer.x + n.y * cameraToViewer.y + n.z * cameraToViewer.z > 1e-6;
-    };
-    const patternDefs = [];
-    const patternForBox = (b, entry, projected) => {
-      const patternImage = patternImages[entry.id];
-      if (!disp.pattern || !patternImage || b.masked || !faceToCamera(b, entry)) return null;
-      const ppc = entry.cfg.pixels_per_cabinet;
-      if (!ppc || !ppc[0] || !ppc[1]) return null;
-      const sx0 = b.c * ppc[0], sx1 = sx0 + ppc[0];
-      /* Generator canvas uses row 0 at wall TOP; viewport geometry uses row 0
-         at wall BOTTOM. This conversion is required for physical orientation. */
-      const canvasRow = entry.g.rows - 1 - b.r;
-      const sy0 = canvasRow * ppc[1], sy1 = sy0 + ppc[1];
-      const [pBL, pBR, pTR, pTL] = projected;
-      const triangles = [
-        { src: [[sx0, sy0], [sx1, sy0], [sx1, sy1]], dst: [pTL, pTR, pBR] },
-        { src: [[sx0, sy0], [sx1, sy1], [sx0, sy1]], dst: [pTL, pBR, pBL] },
-      ];
-      const safeId = entry.id.replace(/[^a-zA-Z0-9_-]/g, '_');
-      return triangles.map((tri, i) => {
-        const clipId = `gw-pat-${safeId}-${b.c}-${b.r}-${i}`;
-        patternDefs.push(h('clipPath', { id: clipId, key: clipId }, h('polygon', { points: pstr(tri.dst) })));
-        const transform = affineFromTriangles(tri.src, tri.dst);
-        return transform ? h('g', { key: clipId + '-group', clipPath: `url(#${clipId})` },
-          h('image', {
-            className: 'gw-box-pat', href: patternImage.dataUrl,
-            x: 0, y: 0,
-            width: ppc[0] * entry.g.cols, height: ppc[1] * entry.g.rows,
-            preserveAspectRatio: 'none', transform,
-          })) : null;
-      });
-    };
-    const mkBox = (b, entry) => {
-      const isActive = entry.isActive;
-      const projected = b.corners.map((p) => proj(p, view));
-      const pts = pstr(projected);
-      if (b.masked && disp.maskStyle === 'cutout' && !(isActive && cabinet)) return h('polygon', { key: entry.id + b.key, className: 'gw-box gw-box--cut' + (isActive ? '' : ' gw-box--dim'), points: pts, onMouseDown: (e) => onBoxDown(b, entry, e), onMouseEnter: () => paintEnter(b, entry) });
-      let fill = '#45464a';
-      if (disp.provenance && b.prov) fill = PROV[b.prov].color;
-      if (b.masked) fill = 'rgba(120,124,134,0.28)';
-      let cls = 'gw-box' + (b.masked ? ' gw-box--masked' : '') + (isActive ? '' : ' gw-box--dim');
-      if (isActive && (b.key === selKey || (multiKeys && multiKeys.has(b.key)))) cls += ' is-sel';
-      const pattern = patternForBox(b, entry, projected);
-      return h('g', { key: entry.id + b.key },
-        h('polygon', { className: cls, points: pts, style: { fill }, onMouseDown: (e) => onBoxDown(b, entry, e), onMouseEnter: () => paintEnter(b, entry), title: entry.id + ' V' + String(b.c + 1).padStart(2, '0') + '_R' + String(b.r + 1).padStart(2, '0') }),
-        pattern,
-        pattern ? h('polygon', { className: cls, points: pts, style: { fill: 'none', pointerEvents: 'none' } }) : null);
-    };
-
-    let allBoxes = [];
-    sbuilt.forEach((entry) => entry.g.boxes.forEach((b) => allBoxes.push({ b, entry })));
-    const cameraDepth = (b) => { const p = boxCenter(b); return p.x * cameraToViewer.x + p.y * cameraToViewer.y + p.z * cameraToViewer.z; };
-    allBoxes.sort((x, y) => cameraDepth(x.b) - cameraDepth(y.b));
-    const boxEls = allBoxes.map(({ b, entry }) => mkBox(b, entry));
-
-    /* 框选命中：外层 SVG 坐标 → 反演 pan/zoom（内层 transform 以 (500,350) 为原点）
-       后与激活屏各箱体的投影质心比较。 */
-    marqueeFinalizeRef.current = (r) => {
-      const w = Math.abs(r.cx1 - r.cx0), hgt = Math.abs(r.cy1 - r.cy0);
-      if (w < 4 && hgt < 4) { s.setCalSel(null); return; } /* 视为空点击 */
-      const g = innerRef.current;
-      const [ax0, ay0] = toLocal(g, Math.min(r.cx0, r.cx1), Math.min(r.cy0, r.cy1));
-      const [bx0, by0] = toLocal(g, Math.max(r.cx0, r.cx1), Math.max(r.cy0, r.cy1));
-      const ax = Math.min(ax0, bx0), bx = Math.max(ax0, bx0), ay = Math.min(ay0, by0), by = Math.max(ay0, by0);
-      const keys = [];
-      if (activeEntry) activeEntry.g.boxes.forEach((b) => {
-        const c = b.corners.reduce((acc, p) => { const q = proj(p, view); return [acc[0] + q[0] / 4, acc[1] + q[1] / 4]; }, [0, 0]);
-        if (c[0] >= ax && c[0] <= bx && c[1] >= ay && c[1] <= by) keys.push(b.key);
-      });
-      if (keys.length > 1) { s.setCalSel({ type: 'cabinetMulti', keys }); s.setCalReceipt({ tone: 'ok', text: '框选 ' + keys.length + ' 个箱体' }); }
-      else if (keys.length === 1) { const [c, r2] = keys[0].split(',').map(Number); s.setCalSel({ type: 'cabinet', c, r: r2 }); }
-      else s.setCalSel(null);
-    };
-
-    const ghost = [];
-    sbuilt.forEach((entry) => { if (entry.ghost) entry.ghost.boxes.forEach((b) => ghost.push(h('polygon', { key: 'gh' + entry.id + b.key, className: 'gw-ghost', points: pstr(b.corners.map((p) => proj(p, view))) }))); });
 
     const labels = sbuilt.length > 1 ? sbuilt.map((entry) => {
       const g = entry.g;
       const midCorner = g.boxes.length ? g.boxes[Math.floor(g.boxes.length / 2)].corners[3] : { x: 0, y: 0, z: 0 };
-      const p = proj({ x: midCorner.x, y: midCorner.y, z: midCorner.z + 0.28 }, view);
+      const p = P({ x: midCorner.x, y: midCorner.y, z: midCorner.z + 0.28 });
+      if (!p) return null;
       return h('text', { key: 'lb' + entry.id, x: p[0], y: p[1], textAnchor: 'middle', className: 'gw-wall-lb' + (entry.isActive ? ' on' : '') }, entry.id);
     }) : null;
 
@@ -764,7 +755,8 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       const seen = new Set();
       proj_.measured.points.forEach((pt) => {
         if (!pt.name.startsWith(s.calActiveScreen + '_V')) return;
-        const p = proj({ x: pt.position[0], y: pt.position[1], z: pt.position[2] }, view);
+        const p = P({ x: pt.position[0], y: pt.position[1], z: pt.position[2] });
+        if (!p) return;
         const outlier = pt.uncertainty && 'isotropic' in pt.uncertainty && pt.uncertainty.isotropic > 5;
         points.push(h('circle', { key: 'p' + pt.name, cx: p[0], cy: p[1], r: outlier ? 3.4 : 2.4, className: 'gw-pt' + (outlier ? ' gw-pt--out' : '') }));
         if (disp.pointLabels && !seen.has(pt.name)) { seen.add(pt.name); points.push(h('text', { key: 'pl' + pt.name, x: p[0] + 5, y: p[1] - 4, className: 'gw-pt-lb' }, pt.name)); }
@@ -780,21 +772,23 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
     const refsActive = cabinet && s.calBoxTool === 'refs' && groupEntries.length > 0;
     if (refsActive) groupEntries.forEach((entry) => {
       entry.vmap.forEach((v, key) => {
-        const [c, r] = key.split(',').map(Number), p = proj(v, view);
+        const [c, r] = key.split(',').map(Number), p = P(v);
+        if (!p) return;
         const hitKey = entry.id + ':' + key;
         refPoints.push(h('circle', { key: 'rv-' + hitKey, cx: p[0], cy: p[1], r: 2, className: 'gw-pt gw-pt--pick' }));
         refPoints.push(h('circle', { key: 'rh-' + hitKey, cx: p[0], cy: p[1], r: 8, fill: 'transparent', className: 'gw-pt-hit', style: { pointerEvents: 'all' }, onMouseDown: (e) => { e.stopPropagation(); }, onClick: (e) => assignReferenceVertex(entry.id, c, r, e) }));
       });
     });
     if (coord) {
-      const allIds = sbuilt.map((x) => x.id);
       Object.entries({ origin: coord.origin_point, x_axis: coord.x_axis_point, xy_plane: coord.xy_plane_point }).forEach(([role, name]) => {
-        const at = resolvePointName(name, allIds);
+        const at = resolvePointName(name, screenIds);
         if (!at) return;
         const entry = sbuilt.find((x) => x.id === at.screenId);
         const v = entry && entry.vmap.get(at.c + ',' + at.r);
         if (!v) return;
-        const p = proj(v, view), meta = ROLE[role];
+        const p = P(v);
+        if (!p) return;
+        const meta = ROLE[role];
         refMarks.push(h('g', { key: 'ref-' + role + '-' + at.screenId },
           h('circle', { cx: p[0], cy: p[1], r: 5.5, fill: meta.color, stroke: '#0c0c10', strokeWidth: .8 }),
           h('text', { x: p[0], y: p[1] + 2.4, fill: '#0c0c10', fontSize: 6.5, fontWeight: 800, textAnchor: 'middle' }, meta.short)));
@@ -807,10 +801,9 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
     const versionNow = activeBuilt ? s.calMeshVersion : 'original';
     const alignGroup = activeEntry ? alignmentForScreen(proj_.config, activeEntry.id) : null;
     const alignedNow = !!(alignGroup && versionNow !== 'original');
-    const allIdsForRefs = sbuilt.map((x) => x.id);
-    const oAt = coord && resolvePointName(coord.origin_point, allIdsForRefs);
-    const xAt = coord && resolvePointName(coord.x_axis_point, allIdsForRefs);
-    const yAt = coord && resolvePointName(coord.xy_plane_point, allIdsForRefs);
+    const oAt = coord && resolvePointName(coord.origin_point, screenIds);
+    const xAt = coord && resolvePointName(coord.x_axis_point, screenIds);
+    const yAt = coord && resolvePointName(coord.xy_plane_point, screenIds);
     const allThree = !!(oAt && xAt && yAt);
     const showPreview = refsActive && allThree && !alignedNow && versionNow !== 'original' && activeBuilt;
     if (showPreview) {
@@ -826,7 +819,8 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
         const L = 1.6;
         const arrow = (dir, col, label, k) => {
           const tip = { x: O.x + dir.x * L, y: O.y + dir.y * L, z: O.z + dir.z * L };
-          const P0 = proj(O, view), P1 = proj(tip, view);
+          const P0 = P(O), P1 = P(tip);
+          if (!P0 || !P1) return;
           const ang = Math.atan2(P1[1] - P0[1], P1[0] - P0[0]);
           const hl = 7, hw = 0.42;
           const a1 = [P1[0] - hl * Math.cos(ang - hw), P1[1] - hl * Math.sin(ang - hw)];
@@ -848,8 +842,10 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       const masked = new Set((activeEntry.cfg.irregular_mask || []).map(([c, r]) => c + ',' + r));
       activeEntry.g.boxes.forEach((b) => {
         if (b.masked || masked.has(b.key)) return;
-        const center = boxCenter(b), n = boxNormal(b, activeEntry), tip = { x: center.x + n.x * .24, y: center.y + n.y * .24, z: center.z };
-        const p0 = proj(center, view), p1 = proj(tip, view), ang = Math.atan2(p1[1] - p0[1], p1[0] - p0[0]);
+        const center = boxCenter(b), n = boxNormalOf(b, activeEntry.cfg), tip = { x: center.x + n.x * .24, y: center.y + n.y * .24, z: center.z };
+        const p0 = P(center), p1 = P(tip);
+        if (!p0 || !p1) return;
+        const ang = Math.atan2(p1[1] - p0[1], p1[0] - p0[0]);
         const hl = 4.5, hw = .5;
         const a1 = [p1[0] - hl * Math.cos(ang - hw), p1[1] - hl * Math.sin(ang - hw)];
         const a2 = [p1[0] - hl * Math.cos(ang + hw), p1[1] - hl * Math.sin(ang + hw)];
@@ -872,26 +868,92 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
         for (let r = 1; r <= rows; r++) ring.push(vmap.get(cols + ',' + r));
         for (let c = cols - 1; c >= 0; c--) ring.push(vmap.get(c + ',' + rows));
         for (let r = rows - 1; r > 0; r--) ring.push(vmap.get('0,' + r));
-        objOutline.push(h('polygon', { key: 'objol-' + sid, className: 'gw-obj-outline', points: pstr(ring.filter(Boolean).map((p) => proj(p, view))) }));
+        const projected = ring.filter(Boolean).map((p) => P(p)).filter(Boolean);
+        if (projected.length > 2) objOutline.push(h('polygon', { key: 'objol-' + sid, className: 'gw-obj-outline', points: pstr(projected) }));
       });
     }
 
-    return h('svg', { className: 'gw-svp', ref: stageRef, viewBox: '0 0 1000 700', preserveAspectRatio: 'xMidYMid meet', onMouseDown: onBg, onContextMenu: (e) => e.preventDefault() },
-      h('defs', null, patternDefs),
-      /* 缩放以视口中心 (500,350) 为基准，直接烘进 translate（不依赖各引擎对 SVG
-         transform-origin 的实现差异）。 */
-      h('g', { ref: innerRef, transform: 'translate(' + (pan.x + 500 * (1 - zoom)) + ',' + (pan.y + 350 * (1 - zoom)) + ') scale(' + zoom + ')' },
-        h('g', { className: 'gw-ground', opacity: groundFade }, ground),
-        axes, ghost, boxEls, objOutline, labels, points, refPoints, normals, previewAxes, refMarks),
-      marquee ? (function () {
-        const [x0, y0] = toLocal(stageRef.current, marquee.cx0, marquee.cy0);
-        const [x1, y1] = toLocal(stageRef.current, marquee.cx1, marquee.cy1);
-        return h('rect', {
-          x: Math.min(x0, x1), y: Math.min(y0, y1),
-          width: Math.abs(x1 - x0), height: Math.abs(y1 - y0),
-          fill: 'rgba(214,84,45,0.10)', stroke: 'var(--volo-500)', strokeWidth: 1, strokeDasharray: '4 3', pointerEvents: 'none',
-        });
-      })() : null);
+    /* 框选矩形（client → 视口局部坐标） */
+    let marqueeEl = null;
+    if (marquee && hostRef.current) {
+      const rect = hostRef.current.getBoundingClientRect();
+      const x0 = marquee.cx0 - rect.left, y0 = marquee.cy0 - rect.top;
+      const x1 = marquee.cx1 - rect.left, y1 = marquee.cy1 - rect.top;
+      marqueeEl = h('rect', {
+        x: Math.min(x0, x1), y: Math.min(y0, y1),
+        width: Math.abs(x1 - x0), height: Math.abs(y1 - y0),
+        fill: 'rgba(214,84,45,0.10)', stroke: 'var(--volo-500)', strokeWidth: 1, strokeDasharray: '4 3', pointerEvents: 'none',
+      });
+    }
+
+    return h('svg', {
+      className: 'gw-ovl',
+      viewBox: '0 0 ' + W + ' ' + H,
+      preserveAspectRatio: 'none',
+      style: { position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block', pointerEvents: 'none' },
+    },
+      objOutline, labels, points, refPoints, normals, previewAxes, refMarks, axisLabels, marqueeEl);
+  }
+
+  /* ---------- 导航 gizmo（Blender 右上角轴向球）：点轴 200ms 吸附正交视图，拖拽轨道 ---------- */
+  function NavGizmo() {
+    useRigTick();
+    const dragRef = useRef(null);
+    useEffect(() => {
+      const move = (e) => {
+        const d = dragRef.current; if (!d) return;
+        d.moved = Math.max(d.moved, Math.abs(e.clientX - d.x0) + Math.abs(e.clientY - d.y0));
+        RIG.orbit(e.clientX - d.x, e.clientY - d.y);
+        d.x = e.clientX; d.y = e.clientY;
+      };
+      const up = () => { dragRef.current = null; };
+      window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
+      return () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+    }, []);
+
+    const size = 88, c = size / 2, R = 32;
+    const inv = RIG.quat.clone().invert();
+    const balls = GIZMO_AXES.map((ax) => {
+      const d = new THREE.Vector3(ax.dir[0], ax.dir[1], ax.dir[2]).applyQuaternion(inv);
+      return { ...ax, sx: c + d.x * R, sy: c - d.y * R, z: d.z };
+    }).sort((a, b) => a.z - b.z);
+
+    const snap = (ax) => {
+      const back = new THREE.Vector3(ax.dir[0], ax.dir[1], ax.dir[2]);
+      /* 顶/底视图 up 取 +Y（Blender 顶视图约定：+Y 朝画面上），其余取世界 Z。 */
+      const up = Math.abs(back.z) > 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, 1);
+      RIG.axisView(back, up);
+    };
+    const onBallUp = (ax) => {
+      const d = dragRef.current;
+      if (!d || d.moved < 3) snap(ax);
+    };
+
+    return h('svg', {
+      className: 'gw-gizmo', width: size, height: size, viewBox: '0 0 ' + size + ' ' + size,
+      style: { display: 'block', cursor: 'default' },
+      onMouseDown: (e) => {
+        e.preventDefault(); e.stopPropagation();
+        RIG.cancelAnim(); RIG.touched = true;
+        dragRef.current = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, moved: 0 };
+      },
+    },
+      h('circle', { cx: c, cy: c, r: c - 1, fill: 'rgba(20,20,26,0.35)' }),
+      balls.map((b, i) => {
+        const front = b.z >= -0.02;
+        const op = front ? 1 : 0.45;
+        return h('g', { key: 'gz' + i, style: { cursor: 'pointer' }, onMouseUp: () => onBallUp(b) },
+          h('line', { x1: c, y1: c, x2: b.sx, y2: b.sy, stroke: b.col, strokeWidth: b.label ? 1.6 : 0, opacity: 0.7 * op }),
+          h('circle', {
+            cx: b.sx, cy: b.sy, r: b.label ? 8.5 : 6.5,
+            fill: b.label ? b.col : 'rgba(20,20,26,0.55)',
+            stroke: b.col, strokeWidth: b.label ? 0 : 1.4, opacity: op,
+          }),
+          b.label ? h('text', {
+            x: b.sx, y: b.sy, fill: '#101014', fontSize: 9.5, fontWeight: 800,
+            textAnchor: 'middle', dominantBaseline: 'central', style: { userSelect: 'none', pointerEvents: 'none' },
+          }, b.label) : null);
+      }));
   }
 
   /* ================= 四角叠加 + 工具条 + 状态栏 ================= */
@@ -1250,7 +1312,7 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
         cabinet && s.calBoxTool === 'refs' && isSolo && !alignedNow
           ? h('div', { className: 'gw-glass gw-solonote' }, h(Icon, { name: 'info', size: 13 }), '当前屏为单独重建 · 多屏联动需联合重建') : null,
         h('div', { className: 'gw-ov gw-ov--tl' }, h(CtxCard, { s }), h(Coords)),
-        h('div', { className: 'gw-ov gw-ov--tr' }, h(DisplayToggles, { s })),
+        h('div', { className: 'gw-ov gw-ov--tr' }, h(DisplayToggles, { s }), h(NavGizmo)),
         h('div', { className: 'gw-ov gw-ov--bc' }, h(HintBar, { s }), h(VersionSwitcher, { s })),
         h('div', { className: 'gw-ov gw-ov--bl', style: { display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' } }, h(PlacementLegend, { s }), h(Legend, { s })),
         h('div', { className: 'gw-ov gw-ov--br' }, h(Receipt, { s }))));
@@ -1261,5 +1323,6 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
     buildNominalBoxes, buildRealBoxes, applyRowMajorRigid, applyAlignmentTransform, se3ByScreenFromFile,
     alignmentGroupScreenIds, alignmentForScreen, alignmentIsStale, alignmentApproxEq,
     groupAlignmentsConsistent, selectedScreenIds, toggleScreenSel,
+    rig: RIG,
   });
 })();

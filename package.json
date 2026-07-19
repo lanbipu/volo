@@ -11,16 +11,19 @@
   },
   "dependencies": {
     "@react-spectrum/s2": "^1.4.0",
+    "@react-three/fiber": "^9.6.1",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "tauri-plugin-snap-layout": "^1.0.9"
+    "tauri-plugin-snap-layout": "^1.0.9",
+    "three": "^0.185.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
+    "@types/three": "^0.185.1",
     "@vitejs/plugin-react": "^4.6.0",
     "@webgpu/types": "^0.1.71",
     "lightningcss": "^1.32.0",
