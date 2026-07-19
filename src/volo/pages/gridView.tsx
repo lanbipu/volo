@@ -497,8 +497,7 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       el.addEventListener('wheel', onWheel, { passive: false });
       const move = (e) => {
         if (marqueeRef.current) { marqueeRef.current = Object.assign({}, marqueeRef.current, { cx1: e.clientX, cy1: e.clientY }); setMarquee(marqueeRef.current); return; }
-        /* el 下限 0°：正交投影下视线穿过地平面时网格会瞬间镜像（观感=视口翻转 180°），不放行仰视。 */
-        if (orbitRef.current) { const o = orbitRef.current; setOrbit({ az: o.az - (e.clientX - o.x) * 0.3, el: Math.max(0, Math.min(88, o.el + (e.clientY - o.y) * 0.3)) }); return; }
+        if (orbitRef.current) { const o = orbitRef.current; setOrbit({ az: o.az - (e.clientX - o.x) * 0.3, el: Math.max(-88, Math.min(88, o.el + (e.clientY - o.y) * 0.3)) }); return; }
         if (!panRef.current) return; setPan({ x: panRef.current.px + (e.clientX - panRef.current.x), y: panRef.current.py + (e.clientY - panRef.current.y) });
       };
       const up = () => {
@@ -617,7 +616,10 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
         .then(() => CX.openProjectPath(proj_.path, s)).catch(() => {});
     };
 
-    /* Blender-style 地面细网格：0.5m 次要线、1m 主要线，世界原点轴线另绘。 */
+    /* Blender-style 地面细网格：0.5m 次要线、1m 主要线，世界原点轴线另绘。
+       视线贴近地平面（|el|→0）时网格与面内轴线淡出：正交投影下穿越 el=0 网格
+       会瞬间镜像重展（观感=视口翻转 180°），淡出让钻到地面下仰视的过渡连续。 */
+    const groundFade = view === 'front' || view === 'top' || view === 'side' ? 1 : Math.min(1, Math.abs(orbit.el) / 8);
     const ground = [];
     if (disp.ground) {
       const G = 8, step = 0.5;
@@ -632,10 +634,10 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
     const axes = [];
     if (disp.ground) {
       const G = 8;
-      const axis = (id, a, b, color) => { const p0 = proj(a, view), p1 = proj(b, view); axes.push(h('line', { key: id, x1: p0[0], y1: p0[1], x2: p1[0], y2: p1[1], stroke: color, strokeWidth: 1, strokeLinecap: 'round', opacity: .8 })); };
-      axis('axis-x', { x: -G, y: 0, z: 0 }, { x: G, y: 0, z: 0 }, '#c74436');
-      axis('axis-z', { x: 0, y: -G, z: 0 }, { x: 0, y: G, z: 0 }, '#3f74c4');
-      axis('axis-y', { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 2 }, '#3f9c46');
+      const axis = (id, a, b, color, op) => { const p0 = proj(a, view), p1 = proj(b, view); axes.push(h('line', { key: id, x1: p0[0], y1: p0[1], x2: p1[0], y2: p1[1], stroke: color, strokeWidth: 1, strokeLinecap: 'round', opacity: op })); };
+      axis('axis-x', { x: -G, y: 0, z: 0 }, { x: G, y: 0, z: 0 }, '#c74436', .8 * groundFade);
+      axis('axis-z', { x: 0, y: -G, z: 0 }, { x: 0, y: G, z: 0 }, '#3f74c4', .8 * groundFade);
+      axis('axis-y', { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 2 }, '#3f9c46', .8);
     }
 
     const onBoxDown = (b, entry, e) => {
@@ -874,7 +876,7 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       /* 缩放以视口中心 (500,350) 为基准，直接烘进 translate（不依赖各引擎对 SVG
          transform-origin 的实现差异）。 */
       h('g', { ref: innerRef, transform: 'translate(' + (pan.x + 500 * (1 - zoom)) + ',' + (pan.y + 350 * (1 - zoom)) + ') scale(' + zoom + ')' },
-        h('g', { className: 'gw-ground' }, ground),
+        h('g', { className: 'gw-ground', opacity: groundFade }, ground),
         axes, ghost, boxEls, objOutline, labels, points, refPoints, normals, previewAxes, refMarks),
       marquee ? (function () {
         const [x0, y0] = toLocal(stageRef.current, marquee.cx0, marquee.cy0);
