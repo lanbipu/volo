@@ -70,6 +70,9 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
     side: { S: 96, ox: 500, oy: 415 },
   };
   let ORBIT = { az: 30, el: 22 };
+  /* 转台视图透视相机到轨道目标的距离（米）。正交投影下"仰视抬头屏"与"俯视低头屏"
+     成像逐像素相同，穿过地平面时观感必然翻转；近大远小是唯一能区分二者的几何线索。 */
+  const PERSP_DIST = 16;
   /* 轨道目标点：场景内容（全部屏幕箱体）包围盒中心。相机绕它旋转、视口以它取景，
      与传统三维软件的 turntable 相机一致；设计稿原型把几何居中到原点等效于此。 */
   let TARGET = { x: 0, y: 0, z: 0 };
@@ -86,7 +89,9 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
       const x1 = x * Math.cos(a) - y * Math.sin(a);
       const y1 = x * Math.sin(a) + y * Math.cos(a);
       const z2 = z * Math.cos(e) - y1 * Math.sin(e);
-      u = x1; v = -z2;
+      const w = y1 * Math.cos(e) + z * Math.sin(e);
+      const k = PERSP_DIST / Math.max(1, PERSP_DIST - w);
+      u = x1 * k; v = -z2 * k;
     }
     const c = VIEW_CAM[view] || VIEW_CAM.persp;
     return [c.ox + u * c.S, c.oy + v * c.S];
