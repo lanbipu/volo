@@ -117,6 +117,21 @@ impl SidecarEventSink for TauriEventSink {
 #[derive(Default)]
 pub struct ApprovedImagePaths(pub(crate) StdMutex<std::collections::HashSet<std::path::PathBuf>>);
 
+/// Preview/thumbnail extensions accepted by `read_image_as_data_url` allowlist.
+pub(crate) fn is_preview_image_ext(ext: &str) -> bool {
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "png" | "jpg" | "jpeg" | "webp"
+    )
+}
+
+pub(crate) fn is_preview_image_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|x| x.to_str())
+        .map(is_preview_image_ext)
+        .unwrap_or(false)
+}
+
 /// Approve an image path that Rust itself produced or observed. Besides streamed
 /// vpcal overlays, synchronous generators use this for their own image artifacts
 /// so the renderer can preview them without receiving arbitrary filesystem read
@@ -138,22 +153,35 @@ pub(crate) fn approve_image_path(app: &AppHandle, path: &Path) -> VoloResult<()>
 }
 
 fn register_approved_images(app: &AppHandle, envelope: &serde_json::Value) {
-    let Some(images) = envelope
-        .get("data")
-        .and_then(|d| d.get("annotated_images"))
-        .and_then(|a| a.as_array())
-    else {
-        return;
-    };
     let registry = app.state::<ApprovedImagePaths>();
     let Ok(mut approved) = registry.0.lock() else {
         return;
     };
-    for image in images {
-        if let Some(raw) = image.as_str() {
-            if let Ok(canon) = Path::new(raw).canonicalize() {
-                approved.insert(canon);
+    let mut insert = |raw: &str| {
+        if let Ok(canon) = Path::new(raw).canonicalize() {
+            approved.insert(canon);
+        }
+    };
+    /* verify overlay 等：data.annotated_images[] */
+    if let Some(images) = envelope
+        .get("data")
+        .and_then(|d| d.get("annotated_images"))
+        .and_then(|a| a.as_array())
+    {
+        for image in images {
+            if let Some(raw) = image.as_str() {
+                insert(raw);
             }
+        }
+    }
+    /* capture stills：snap_saved.path（顶层或 data 内） */
+    let path = envelope
+        .get("path")
+        .or_else(|| envelope.get("data").and_then(|d| d.get("path")))
+        .and_then(|v| v.as_str());
+    if let Some(raw) = path {
+        if is_preview_image_path(Path::new(raw)) {
+            insert(raw);
         }
     }
 }

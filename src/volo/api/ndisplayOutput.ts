@@ -8,9 +8,20 @@ import type {
   NDisplayOutputEvent,
   NDisplayOutputRunnerEvent,
   OutputCommandResult,
+  RuntimePaths,
   RuntimeRequest,
   ShowRequest,
 } from "./types";
+
+/** 节点侧 nDisplay 会话路径（三处 UI 共用；preflight 会按机器库覆盖 editor_paths） */
+export const DEFAULT_NDISPLAY_OUTPUT_PATHS: RuntimePaths = {
+  editor_path: "D:\\Program Files\\Epic Games\\UE_5.8\\Engine\\Binaries\\Win64\\UnrealEditor.exe",
+  editor_paths: {},
+  project_path: "C:\\ProgramData\\UECM\\ndisplay-output\\VoloOutput\\VoloOutput.uproject",
+  config_path: "C:\\ProgramData\\UECM\\ndisplay-output\\VoloOutput\\Config\\VoloOutput.ndisplay",
+  manifest_path: "C:\\ProgramData\\UECM\\ndisplay-output\\session\\manifest.json",
+  image_dir: "C:\\ProgramData\\UECM\\ndisplay-output\\session\\frames",
+};
 
 export const outputPreflight = (request: RuntimeRequest) =>
   call<OutputCommandResult>("output_preflight", { request });

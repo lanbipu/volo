@@ -155,6 +155,34 @@ def test_opentrackio_null_rotation_handled():
     np.testing.assert_allclose(quat_to_matrix(f.rotation.values), np.eye(3), atol=1e-9)
 
 
+def test_opentrackio_lens_fields_passthrough():
+    from vpcal.core.capture import opentrackio_sample_to_frame
+    sample = {
+        "transforms": [{"translation": {"x": 0.0, "y": 0.0, "z": 0.0}}],
+        "lens": {
+            "pinholeFocalLength": 35.0,
+            "projectionOffset": {"x": 0.3, "y": -0.2},
+            "distortion": [{"model": "Brown-Conrady U-D", "radial": [-0.06 / 35.0**2, 0.01 / 35.0**4], "tangential": [0.0, 0.0]}],
+        },
+        "camera": {"activeSensorPhysicalDimensions": {"width": 0.02376, "height": 0.013365}},
+    }
+    f = opentrackio_sample_to_frame(sample, 0, 0.0)
+    assert f.focal_length_mm == 35.0
+    assert f.projection_offset_mm == [0.3, -0.2]
+    assert abs(f.distortion_k1 - (-0.06)) < 1e-9
+    assert abs(f.distortion_k2 - 0.01) < 1e-9
+    assert abs(f.sensor_width_mm - 23.76) < 1e-6
+    assert abs(f.sensor_height_mm - 13.365) < 1e-6
+
+
+def test_opentrackio_lens_fields_absent_omitted():
+    from vpcal.core.capture import opentrackio_sample_to_frame
+    f = opentrackio_sample_to_frame({"transforms": [{"translation": {"x": 0, "y": 0, "z": 0}}]}, 0, 0.0)
+    assert f.focal_length_mm is None
+    assert f.projection_offset_mm is None
+    assert f.sensor_width_mm is None
+
+
 def test_record_packets_skips_decode_errors_broadly():
     # A transform that is not a dict → AttributeError inside decode; must be
     # skipped under skip_invalid (broadened catch), not crash the capture.

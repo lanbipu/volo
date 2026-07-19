@@ -347,6 +347,7 @@ pub fn run() {
             commands::vpcal_runs::list_lens_sessions,
             commands::vpcal_runs::read_image_as_data_url,
             commands::vpcal_runs::read_lens_qa_report,
+            commands::vpcal_runs::write_fixed_run_meta,
             commands::capture_profiles::list_capture_profiles,
             commands::capture_profiles::save_capture_profiles,
             commands::capture_profiles::probe_tracking_source,

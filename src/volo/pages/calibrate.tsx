@@ -11,18 +11,19 @@ import "../ds";
 import { pickFile, pickDirectory } from "../api/commands";
 import { isTauri } from "../api/invoke";
 import {
-  loadProjectYaml, listRecentProjects, addRecentProject, seedExampleProject,
+  loadProjectYaml, saveProjectYaml, listRecentProjects, addRecentProject, seedExampleProject,
   reconstructSurface, listRuns, getRunReport, setRunCurrent,
 } from "../api/meshCommands";
 import { meshVisualLoadScreenTransforms } from "../api/meshVisualCommands";
 import { loadSolveDigestCached, peekSolveDigestCache } from "../api/visualSolveUi";
+import { RMS_PX_THRESHOLDS } from "../api/lensCommands";
 
 (function () {
   const { Button, Badge } = window.Spectrum2DesignSystem_b6d1b3;
   const { useState, useRef, useEffect, useSyncExternalStore } = React;
   const h = React.createElement;
 
-  const RMS_THRESHOLDS = Object.freeze({ mm: [3, 8], px: [1, 2] });
+  const RMS_THRESHOLDS = Object.freeze({ mm: [3, 8], px: [...RMS_PX_THRESHOLDS] });
   function rmsTone(rms, unit) {
     if (rms == null) return 'neutral';
     const lim = RMS_THRESHOLDS[unit || 'mm'] || RMS_THRESHOLDS.mm;
@@ -93,7 +94,18 @@ import { loadSolveDigestCached, peekSolveDigestCache } from "../api/visualSolveU
        否则每次保存屏幕设计都会丢测试图状态；只有真正切换项目才全量重置。 */
     const samePath = projStore.get().path === absPath;
     projStore.patch({ path: absPath, config, error: null, ...(samePath ? {} : derivedResetFields()) });
+    if (window.camStore) window.camStore.loadFromProject(absPath, config);
     return config;
+  }
+
+  /** 读改写 project.yaml 的 cameras 列表（camStore 防抖落盘）。 */
+  async function saveProjectCameras(absPath, cameras) {
+    const latest = await loadProjectYaml(absPath);
+    const next = Object.assign({}, latest, { cameras: cameras || [] });
+    await saveProjectYaml(absPath, next);
+    const samePath = projStore.get().path === absPath;
+    if (samePath) projStore.patch({ config: next });
+    return next;
   }
 
   /* 「返回项目总览」：回到未打开项目时的着陆页（Empty），只清视图态，不动
@@ -349,5 +361,6 @@ import { loadSolveDigestCached, peekSolveDigestCache } from "../api/visualSolveU
     Pill, RMS_THRESHOLDS, rmsTone, rmsBadge, confBadge, statusPill, inspEmpty, CalController,
     useProj, projStore, openProjectPath, closeProject, reloadRuns, reloadScreenReports,
     pickAndOpenProject, pickAndSeedExample, rebuildMesh, viewRunInPreview, setRunCurrentAction, PROJ_LS_KEY,
+    saveProjectCameras,
   });
 })();

@@ -179,10 +179,8 @@ import { exportVpcalScreen } from "../api/meshCommands";
         children(() => setOpen(false))) : null);
   }
 
-  /* ---------- 摄影机画面：纯装饰性示意背景 ----------
-     1:1 移植自设计稿 CameraFeed —— SVG（LED 墙 + ChArUco 结构光 + 检测叠加），不代表真实
-     数据。capturing 态的真实 MJPEG 预览已收在 calCaptureWindow.tsx 的共享单窗口里，本页
-     非 idle 时（captured/solving/solved）只用这个示意背景衬托浮层。 */
+  /* ---------- CameraFeed：本页非 idle 态的示意背景（装饰 SVG，非真预览）----------
+     实时 MJPEG 在 calCalibFlow 大窗；此处故意画示意图 + 「无真实预览信号」文案。 */
   function CameraFeed({ live, detect }) {
     const TL = [232, 150], TR = [726, 138], BR = [760, 412], BL = [198, 424];
     const bilerp = (u, v) => { const top = lerp(TL, TR, u), bot = lerp(BL, BR, u); return lerp(top, bot, v); };
@@ -219,28 +217,30 @@ import { exportVpcalScreen } from "../api/meshCommands";
     solved: { label: '已求解', tone: 'positive', icon: 'check' },
   };
 
-  /* Lens 主页与校正页检查器共用的 openLens 入口 */
-  function openLensCapture(s, { profileId, screenPath, screenSourceSnapshot }) {
-    const proj = CX.projStore ? CX.projStore.get() : { path: null };
-    window.VOLO_CAPTURE.openLens(s, {
-      profileId,
-      screenPath,
-      onScreenPathChange: (p, fingerprint) => {
-        const patch = { screenPath: p };
-        if (fingerprint !== undefined) {
-          patch.screenFingerprint = fingerprint;
-          if (screenSourceSnapshot !== undefined) patch.screenSourceSnapshot = screenSourceSnapshot;
-        }
-        lensStore.patch(patch);
-        if (proj.path) saveScreenPath(proj.path, p);
-      },
-      onSaved: (resultData) => {
-        const sessionJsonPath = joinPath(resultData.session_dir, 'session.json');
-        lensStore.patch({ phase: 'captured', captureResult: resultData, solveResult: null, solveError: null, sessionPathForSolve: sessionJsonPath });
-        s.setCalLensState('running');
-        s.pushLog({ lv: 'ok', cat: 'lens', msg: '采集完成 · ' + resultData.poses_captured + ' pose 已写入 <b>' + resultData.session_dir + '</b>' });
-      },
-    });
+  /* 旧独立采集窗入口已退役 → 统一跳转 VOLO_CALFLOW 大窗（handoff / 规格 Q7）。
+     打开前把 screen/profile/outDir 写入 shell 状态，供大窗读 capScreenFile 等。 */
+  function openLensCapture(s, opts) {
+    opts = opts || {};
+    const live = lensStore.get();
+    const screenPath = opts.screenPath || live.screenPath || null;
+    const profileId = opts.profileId || live.profileId || null;
+    if (screenPath) s.setCapScreenFile(screenPath);
+    if (profileId) {
+      s.setCapProfileId(profileId);
+      const profiles = CX.loadProfiles ? CX.loadProfiles() : [];
+      const p = profiles.find((x) => x.id === profileId);
+      if (p) {
+        s.setCapProfileLabel(p.name || '');
+        if (p.outputRoot) s.setCapOutDir(p.outputRoot);
+      }
+    }
+    if (opts.capOutDir) s.setCapOutDir(opts.capOutDir);
+    if (window.VOLO_CALFLOW && window.VOLO_CALFLOW.openLensWindow) {
+      window.VOLO_CALFLOW.openLensWindow(s);
+      s.pushLog({ lv: 'info', cat: 'lens', msg: '打开镜头校正采集窗口' });
+      return;
+    }
+    s.pushLog({ lv: 'err', cat: 'lens', msg: '镜头校正流程未加载（VOLO_CALFLOW）' });
   }
 
   /* ================= 主页面 ================= */
@@ -490,42 +490,27 @@ import { exportVpcalScreen } from "../api/meshCommands";
       h('span', { className: 'lens-entry-ic' }, h(Icon, { name: icon, size: 15 })), h('span', null, label), h(Icon, { name: 'chevr', size: 14 }));
   }
 
-  /* ================= 校正页检查器（与三维主视图并列，不挂 Lens 主画面） ================= */
+  /* ================= 校正页检查器后备（主路径 = VOLO_CALFLOW.lensInspector） ================= */
   function lensPageInspector(s, live) {
+    if (window.VOLO_CALFLOW && window.VOLO_CALFLOW.lensInspector) {
+      return window.VOLO_CALFLOW.lensInspector(s);
+    }
     live = live || lensStore.get();
     const phase = live.phase;
     const solved = phase === 'solved';
-    const profiles = CX.loadProfiles ? CX.loadProfiles() : [];
-    const pill = solved
-      ? h('span', { className: 'spill spill--positive' }, h(Icon, { name: 'check', size: 12 }), '已求解')
-      : phase === 'capturing' ? h('span', { className: 'spill spill--notice' }, h(Icon, { name: 'camera', size: 12 }), '采集中')
-      : phase === 'captured' ? h('span', { className: 'spill spill--notice' }, h(Icon, { name: 'info', size: 12 }), '待求解')
-      : h('span', { className: 'spill spill--neutral' }, h('span', { style: { fontWeight: 700 } }, '—'), '未开始');
-    const startLens = () => {
-      const pid = live.profileId || (profiles[0] && profiles[0].id);
-      if (!pid) {
-        s.setCalReceipt && s.setCalReceipt({ tone: 'notice', text: '请先在采集设置中创建采集配置' });
-        if (CX.openCaptureModal) CX.openCaptureModal(s);
-        return;
-      }
-      if (!live.profileId) lensStore.patch({ profileId: pid });
-      openLensCapture(s, { profileId: pid, screenPath: live.screenPath });
-    };
     return h(React.Fragment, null,
       h('div', { className: 'insp-head' },
         h('div', { style: { display: 'flex', alignItems: 'center', gap: 9, marginBottom: 6 } },
           h('span', { className: 'step-ico', style: { width: 30, height: 30, borderRadius: 8, background: 'var(--wash)', display: 'grid', placeItems: 'center' } }, h(Icon, { name: 'camera', size: 16 })),
           h('h2', { style: { margin: 0, fontSize: 15, fontWeight: 700 } }, '镜头校正')),
-        pill),
+        solved
+          ? h('span', { className: 'spill spill--positive' }, h(Icon, { name: 'check', size: 12 }), '已求解')
+          : h('span', { className: 'spill spill--neutral' }, h('span', { style: { fontWeight: 700 } }, '—'), '未开始')),
       h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '镜头校正'),
-        h('div', { style: { display: 'grid' } }, h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'camera', size: 15 }), onPress: startLens }, phase === 'idle' ? '开始镜头校正' : '继续镜头校正 · 采集')),
+        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'camera', size: 15 }), onPress: () => openLensCapture(s) }, '镜头校正'),
         h('div', { className: 'lens-entry-list', style: { marginTop: 8 } },
           entryBtn('doc', '从已有 session 求解', () => CX.openSolveFromSession(s)),
-          entryBtn('target', '求解结果报告', () => CX.openReport(s), !solved))),
-      h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '校正后 · 后续功能'),
-        h('div', { className: 'lens-entry-list' },
-          entryBtn('external', '导出 OpenTrackIO · 导入引擎', () => CX.openExport(s), !solved),
-          entryBtn('panel', '播放器自检', () => CX.openPlayerCheck(s)))));
+          entryBtn('target', '求解结果报告', () => CX.openReport(s), !solved))));
   }
 
   window.VOLO_CAL2 = Object.assign(window.VOLO_CAL2 || {}, {

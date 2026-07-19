@@ -19,7 +19,7 @@ import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api
 import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
 
 (function () {
-  const { useState, useRef, useEffect, useMemo, useCallback } = React;
+  const { useState, useRef, useEffect, useMemo, useCallback, useSyncExternalStore } = React;
   const h = React.createElement;
   const CX = window.VOLO_CAL2;
   const Icon = window.Icon;
@@ -556,6 +556,14 @@ import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
     /* three 场景数据（与业务 sbuilt 解耦的纯渲染描述）。必须在 early return 之前（Hooks 顺序）。 */
     const [selColor] = useState(() =>
       getComputedStyle(document.documentElement).getPropertyValue('--volo-500').trim() || 'rgb(224,70,38)');
+    const camSnap = useSyncExternalStore(
+      (window.camStore && window.camStore.subscribe) || (() => () => {}),
+      () => (window.camStore ? window.camStore.get() : { cameras: [], selectedId: null }),
+    );
+    const sceneCams = useMemo(
+      () => (window.camStore ? window.camStore.sceneCameras() : []),
+      [camSnap],
+    );
     const sceneData = useMemo(() => ({
       entries: sbuilt.map((entry) => {
         const ppc = entry.cfg.pixels_per_cabinet;
@@ -579,7 +587,8 @@ import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
       }),
       showGround: !!disp.ground,
       selColor,
-    }), [sbuilt, patternImages, disp.pattern, disp.provenance, disp.maskStyle, disp.ground, cabinet, s.calSel, selColor]);
+      cameras: sceneCams,
+    }), [sbuilt, patternImages, disp.pattern, disp.provenance, disp.maskStyle, disp.ground, cabinet, s.calSel, selColor, sceneCams]);
 
     if (!proj_.config) return h('div', { className: 'gw-svp', ref: hostRef });
 

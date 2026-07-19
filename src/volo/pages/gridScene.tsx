@@ -326,10 +326,25 @@ export interface SceneEntry {
   normalSign: number;                         /* normal_flip → -1 */
   selKeys: string[];                          /* 选中箱体 key（激活屏才非空） */
 }
+/** 镜头校正机位可视化（stage 世界系 · m · Z-up）。 */
+export interface SceneCamera {
+  id: string;
+  name: string;
+  selected: boolean;
+  /** 位置 m */
+  t_m: [number, number, number];
+  /** Pan / Tilt / Roll °（与面板一致；近似外旋） */
+  euler_deg: [number, number, number];
+  hfovDeg: number;
+  solved?: boolean;
+  mode?: string;
+  dragEnabled?: boolean;
+}
 export interface SceneData {
   entries: SceneEntry[];
   showGround: boolean;
   selColor: string;
+  cameras?: SceneCamera[];
 }
 
 const BOX_FILL = new THREE.Color('#45464a');
@@ -573,6 +588,78 @@ function RigBridge({ rig }: { rig: CameraRig }) {
   return null;
 }
 
+/** 机位 frustum 线框（近/远矩形 + 锥体棱）+ 简易拖拽写回 camStore。 */
+function CameraFrustum({ cam }: { cam: SceneCamera }) {
+  const invalidate = useThree((s) => s.invalidate);
+  const group = React.useRef<THREE.Group>(null);
+  const drag = React.useRef<{ x: number; y: number; ox: number; oy: number; oz: number } | null>(null);
+  const near = 0.15, far = 1.8;
+  const aspect = 16 / 9;
+  const hfov = (cam.hfovDeg || 40) * DEG;
+  const hwN = near * Math.tan(hfov / 2), hhN = hwN / aspect;
+  const hwF = far * Math.tan(hfov / 2), hhF = hwF / aspect;
+  const geo = React.useMemo(() => {
+    const n = [
+      [-hwN, -hhN, -near], [hwN, -hhN, -near], [hwN, hhN, -near], [-hwN, hhN, -near],
+    ];
+    const f = [
+      [-hwF, -hhF, -far], [hwF, -hhF, -far], [hwF, hhF, -far], [-hwF, hhF, -far],
+    ];
+    const pos: number[] = [];
+    const push = (a: number[], b: number[]) => { pos.push(a[0], a[1], a[2], b[0], b[1], b[2]); };
+    for (let i = 0; i < 4; i++) { push(n[i], n[(i + 1) % 4]); push(f[i], f[(i + 1) % 4]); push(n[i], f[i]); }
+    push([0, 0, 0], [0, 0, -near]);
+    return geomFrom(pos);
+  }, [hwN, hhN, hwF, hhF, near, far]);
+  const color = cam.selected
+    ? (cam.solved ? '#3f9c46' : '#e04626')
+    : (cam.solved ? '#6a9e72' : '#8a90a0');
+  const mat = React.useMemo(() => new THREE.LineBasicMaterial({
+    color: new THREE.Color(color), transparent: true, opacity: cam.selected ? 0.95 : 0.55,
+  }), [color, cam.selected]);
+  React.useEffect(() => () => { geo.dispose(); mat.dispose(); }, [geo, mat]);
+
+  /* 欧拉 PTR ≈ ZYX extrinsic（与面板约定；近似可视化） */
+  const quat = React.useMemo(() => {
+    const [pan, tilt, roll] = cam.euler_deg;
+    const q = new THREE.Quaternion();
+    q.setFromEuler(new THREE.Euler(tilt * DEG, pan * DEG, roll * DEG, 'YXZ'));
+    return q;
+  }, [cam.euler_deg[0], cam.euler_deg[1], cam.euler_deg[2]]);
+
+  React.useEffect(() => { invalidate(); }, [cam.t_m[0], cam.t_m[1], cam.t_m[2], quat, invalidate]);
+
+  const onPointerDown = (e: any) => {
+    if (!cam.dragEnabled || !cam.selected) return;
+    e.stopPropagation();
+    (e.target as any).setPointerCapture?.(e.pointerId);
+    drag.current = { x: e.clientX, y: e.clientY, ox: cam.t_m[0], oy: cam.t_m[1], oz: cam.t_m[2] };
+  };
+  const onPointerMove = (e: any) => {
+    const store = (window as unknown as { camStore?: { setManualPose: (id: string, t: number[], e: number[]) => void } }).camStore;
+    if (!drag.current || !store) return;
+    const dx = (e.clientX - drag.current.x) * 0.002;
+    const dy = -(e.clientY - drag.current.y) * 0.002;
+    const t_m: [number, number, number] = [drag.current.ox + dx, drag.current.oy + dy, drag.current.oz];
+    const euler = cam.euler_deg.slice() as [number, number, number];
+    store.setManualPose(cam.id, [t_m[0] * 1000, t_m[1] * 1000, t_m[2] * 1000], euler);
+    invalidate();
+  };
+  const onPointerUp = () => { drag.current = null; };
+
+  return (
+    <group ref={group} position={cam.t_m} quaternion={quat}
+      onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}>
+      <lineSegments geometry={geo} material={mat} renderOrder={20} />
+    </group>
+  );
+}
+
+function CameraLayer({ cameras }: { cameras?: SceneCamera[] }) {
+  if (!cameras || !cameras.length) return null;
+  return <group>{cameras.map((c) => <CameraFrustum key={c.id} cam={c} />)}</group>;
+}
+
 export function SceneCanvas({ rig, data, store }: { rig: CameraRig; data: SceneData; store: SceneStore }) {
   return (
     <Canvas
@@ -585,6 +672,7 @@ export function SceneCanvas({ rig, data, store }: { rig: CameraRig; data: SceneD
       {data.showGround ? <GroundGrid rig={rig} /> : null}
       {data.showGround ? <VerticalAxis /> : null}
       {data.entries.map((e) => <ScreenObjects key={e.id} e={e} store={store} selColor={data.selColor} />)}
+      <CameraLayer cameras={data.cameras} />
       <HoverQuad store={store} />
     </Canvas>
   );

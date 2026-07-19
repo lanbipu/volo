@@ -241,6 +241,7 @@ mod tests {
             },
             output_topology: None,
             rebuilt_alignment: None,
+            cameras: vec![],
         }
     }
 

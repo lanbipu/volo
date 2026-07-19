@@ -150,8 +150,14 @@ import { listMonitors, openPatternPlayer, closePatternPlayer } from "../api/play
 
     const scan = (r) => {
       if (!r) { setSessions([]); return; }
-      listLensSessions(r).then((list) => { setSessions(list); setScanErr(null); if (list.length && !sel) setSel(list[0].id); })
-        .catch((e) => { setSessions([]); setScanErr(e && e.message ? e.message : String(e)); });
+      /* 本对话框只走 quick run --config（session.json）；fixed / fixed_run.json 排除，
+         固定机位求解在采集大窗走 tracker-free。 */
+      listLensSessions(r).then((list) => {
+        const trackedOnly = (list || []).filter((x) => x.mode !== 'fixed');
+        setSessions(trackedOnly);
+        setScanErr(null);
+        if (trackedOnly.length && !sel) setSel(trackedOnly[0].id);
+      }).catch((e) => { setSessions([]); setScanErr(e && e.message ? e.message : String(e)); });
     };
     useEffect(() => { scan(root); }, [root]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -163,15 +169,16 @@ import { listMonitors, openPatternPlayer, closePatternPlayer } from "../api/play
       try { const p = await pickFile('vpcal session 配置 (session.json)', ['json']); if (p) { setManualPath(p); setSel(null); } }
       catch (e) { s.pushLog({ lv: 'err', cat: 'lens', msg: `选择 session.json 失败 · ${e && e.message ? e.message : e}` }); }
     };
-    const cur = manualPath ? { id: '__manual__', session_json_path: manualPath, session_dir: manualPath.replace(/[\\/][^\\/]*$/, '') }
+    const cur = manualPath ? { id: '__manual__', session_json_path: manualPath, session_dir: manualPath.replace(/[\\/][^\\/]*$/, ''), mode: 'tracked' }
       : sessions.find((x) => x.id === sel);
 
     /* SessionConfig.lens 必填（models/session.py:243）——扫描到的 session 明确 lens_ready===false
        时求解必然 validation fail，禁用而不是让用户点了才看到必然失败的报错。手选文件（manualPath）
        没有扫描出的 lens_ready 信息，无法预判，不在此拦截。 */
     const noLens = cur && cur.lens_ready === false;
+    const isFixedSel = cur && (cur.mode === 'fixed' || /fixed_run\.json$/i.test(String(cur.session_json_path || '')));
     const start = () => {
-      if (!cur || noLens) return;
+      if (!cur || noLens || isFixedSel) return;
       setPhase('solving'); setErr(null);
       s.pushLog({ lv: 'info', cat: 'lens', msg: '从 session 求解 · <b>' + CX.baseName(cur.session_json_path) + '</b>' });
       CX.lensStore.patch({ estimateLens });
@@ -224,12 +231,13 @@ import { listMonitors, openPatternPlayer, closePatternPlayer } from "../api/play
         phase === 'error' && err ? h('div', { style: { marginTop: 14 } },
           h(InlineAlert, { variant: err.tone === 'negative' ? 'negative' : 'notice', title: err.title + ' · exit ' + err.exitCode }, err.msg)) : null,
         noLens && phase === 'pick' ? h('div', { style: { marginTop: 10, fontSize: 12, color: 'var(--notice-visual)' } }, '该 session 缺 lens profile，需先补上才能求解。') : null,
+        isFixedSel && phase === 'pick' ? h('div', { style: { marginTop: 10, fontSize: 12, color: 'var(--notice-visual)' } }, '固定机位 session 不走 quick run；请在镜头校正采集窗用 tracker-free 求解。') : null,
         phase === 'pick' ? h('label', { className: 'cap-toggle-row', style: { marginTop: 12 } },
           h('input', { type: 'checkbox', checked: estimateLens, onChange: (e) => setEstimateLens(e.target.checked) }),
           h('div', null, h('div', { className: 'cap-tg-t' }, '联合估计镜头（QLE）'), h('div', { className: 'cap-tg-s' }, '--estimate-lens · session-coupled，非 master lens'))) : null),
       h('div', { className: 'drawer-f' },
         h(Button, { variant: 'secondary', size: 'M', onPress: close }, phase === 'error' ? '关闭' : '取消'),
-        phase !== 'error' ? h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: phase === 'solving' ? 'sync' : 'target', size: 15 }), isDisabled: !cur || noLens || phase === 'solving', onPress: start }, phase === 'solving' ? '求解中…' : '开始求解')
+        phase !== 'error' ? h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: phase === 'solving' ? 'sync' : 'target', size: 15 }), isDisabled: !cur || noLens || isFixedSel || phase === 'solving', onPress: start }, phase === 'solving' ? '求解中…' : '开始求解')
           : h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'sync', size: 15 }), onPress: () => { setErr(null); setPhase('pick'); } }, '重新选择')));
   }
 

@@ -18,17 +18,14 @@ import {
 import {
   loadSolveDigestCached, relRowsFromTransforms, runMethodLabel, runStatus,
 } from "../api/visualSolveUi";
-import { getMachineDetail, listMachines, pickDirectory, pickFile, revealPath } from "../api/commands";
+import { pickDirectory, pickFile, revealPath } from "../api/commands";
 import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern, playerClear } from "../api/player";
-import {
-  listenNDisplayOutputEvent, listenNDisplayOutputRunner, outputDeploy,
-  outputPreflight, outputShow, outputStart, outputStop,
-} from "../api/ndisplayOutput";
+import { DEFAULT_NDISPLAY_OUTPUT_PATHS, outputShow } from "../api/ndisplayOutput";
 import { listen } from "@tauri-apps/api/event";
 
 (function () {
   const { Button, Switch } = window.Spectrum2DesignSystem_b6d1b3;
-  const { useState, useRef, useEffect, useMemo } = React;
+  const { useState, useRef, useEffect } = React;
   const h = React.createElement;
   const CX = window.VOLO_CAL2;
   const ROLE = (window.VOLO_GRID && window.VOLO_GRID.ROLE) || {};
@@ -704,15 +701,7 @@ import { listen } from "@tauri-apps/api/event";
   /* 后端 run_generate_pattern 只认 charuco | vpqsp；handoff 里的「密集编码点」即 VP-QSP。
      screen_id_code 必须按屏唯一（vpqspScreenIdCode），不可再写死为 1。 */
   const PATTERN_SCHEMES = [{ id: 'charuco', label: 'ChArUco' }, { id: 'vpqsp', label: '密集编码点' }];
-  const OUTPUT_PATHS = {
-    /* Compatibility fallback only; preflight resolves editor_paths per node from the machine library. */
-    editor_path: 'D:\\Program Files\\Epic Games\\UE_5.8\\Engine\\Binaries\\Win64\\UnrealEditor.exe',
-    editor_paths: {},
-    project_path: 'C:\\ProgramData\\UECM\\ndisplay-output\\VoloOutput\\VoloOutput.uproject',
-    config_path: 'C:\\ProgramData\\UECM\\ndisplay-output\\VoloOutput\\Config\\VoloOutput.ndisplay',
-    manifest_path: 'C:\\ProgramData\\UECM\\ndisplay-output\\session\\manifest.json',
-    image_dir: 'C:\\ProgramData\\UECM\\ndisplay-output\\session\\frames',
-  };
+  const OUTPUT_PATHS = DEFAULT_NDISPLAY_OUTPUT_PATHS;
   function usePattern(s, screenIds) {
     const proj = CX.useProj();
     const ids = (screenIds && screenIds.length) ? screenIds : [s.calActiveScreen];
@@ -783,134 +772,6 @@ import { listen } from "@tauri-apps/api/event";
     return h('span', { className: 'spill spill--positive' }, h(Icon, { name: 'check', size: 12 }), '已生成');
   }
 
-  /* 「去向」段（本机显示器 / nDisplay 集群）—— PatternPanel 内复用 */
-  function OutputDestination({ s, p }) {
-    const [destination, setDestination] = useState('local');
-    const [clusterPhase, setClusterPhase] = useState('idle');
-    const [clusterBusy, setClusterBusy] = useState(false);
-    const [nodeStates, setNodeStates] = useState({});
-    const [outputLogs, setOutputLogs] = useState([]);
-    const [runtimePaths, setRuntimePaths] = useState(OUTPUT_PATHS);
-    const topology = useMemo(() => window.resolveProjectTopology(p.proj.config), [p.proj.config]);
-    const nodes = (topology && topology.nodes) || [];
-    const screen = useMemo(() => topology
-      ? window.stageScreenForOutput(p.proj.config, topology)
-      : (p.proj.config && p.proj.config.screens[p.screenId]), [p.proj.config, topology, p.screenId]);
-    const sessionId = `${p.proj.path}::stage`;
-    const appendOutputLog = (entry) => setOutputLogs((current) => current.concat(entry).slice(-80));
-    useEffect(() => {
-      let alive = true;
-      const cleanups = [];
-      listenNDisplayOutputEvent((payload) => {
-        if (!alive || payload.session_id !== sessionId) return;
-        setNodeStates((current) => Object.assign({}, current, { [payload.node_id]: payload }));
-        appendOutputLog(payload);
-      }).then((fn) => alive ? cleanups.push(fn) : fn());
-      listenNDisplayOutputRunner((payload) => {
-        if (!alive || payload.session_id !== sessionId) return;
-        appendOutputLog(payload);
-      }).then((fn) => alive ? cleanups.push(fn) : fn());
-      return () => { alive = false; cleanups.forEach((fn) => fn()); };
-    }, [sessionId]);
-    const runtimeRequest = (paths) => ({ session_id: sessionId, screen, paths: paths || runtimePaths, ssh_user: null });
-    const resolveEditorPaths = async () => {
-      const machines = await listMachines();
-      const resolved = {};
-      for (const node of nodes) {
-        const hostname = (node.machine.hostname || '').trim().toLowerCase();
-        const ip = (node.machine.ip || '').trim().toLowerCase();
-        const machine = machines.find((candidate) =>
-          (hostname && (candidate.hostname || '').trim().toLowerCase() === hostname) ||
-          (ip && (candidate.ip || '').trim().toLowerCase() === ip));
-        if (!machine || machine.id == null) throw new Error(`${node.node_id}：机器库中找不到 ${node.machine.ip || node.machine.hostname}`);
-        const detail = await getMachineDetail(machine.id);
-        const install = detail.ue_installs
-          .filter((item) => /^5\.8(?:\.|$)/.test(item.version))
-          .sort((a, b) => Number(b.is_primary) - Number(a.is_primary))[0];
-        if (!install) throw new Error(`${node.node_id}：机器库未探测到 UE 5.8`);
-        resolved[node.node_id] = `${install.install_path.replace(/[\\/]+$/, '')}\\Engine\\Binaries\\Win64\\UnrealEditor.exe`;
-      }
-      const paths = Object.assign({}, OUTPUT_PATHS, { editor_paths: resolved });
-      setRuntimePaths(paths);
-      return paths;
-    };
-    const runCluster = async (operation, fn, nextPhase) => {
-      if (clusterBusy || !screen) return;
-      setClusterBusy(true);
-      try {
-        const result = await fn();
-        setClusterPhase(nextPhase);
-        s.setCalReceipt({ tone: 'ok', text: `nDisplay ${operation} 完成 · ${result.nodes.length} 节点` });
-      } catch (e) {
-        const message = e && e.message ? e.message : String(e);
-        appendOutputLog({ operation, state: 'error', message, timestamp_ms: Date.now() });
-        s.setCalReceipt({ tone: 'err', text: `nDisplay ${operation} 失败 · ${message}` });
-      } finally { setClusterBusy(false); }
-    };
-    const openTopology = () => s.setModal({ xwide: true, render: ({ close }) => window.VOLO_GRID_MODALS.topology(s, close) });
-    const preflight = () => runCluster('预检', async () => {
-      const paths = await resolveEditorPaths();
-      return outputPreflight(runtimeRequest(paths));
-    }, 'preflight');
-    const deploy = () => runCluster('部署', () => outputDeploy(Object.assign(runtimeRequest(), { ue_version: '5.8' })), 'deployed');
-    const startCluster = () => runCluster('启动', () => outputStart(runtimeRequest()), 'running');
-    const showCluster = () => runCluster('显示', () => {
-      const comp = window.buildStageComposite((p.proj.config && p.proj.config.screens) || {});
-      const stage = {
-        project_path: p.proj.path,
-        screens: comp.screens.map((r) => ({ screen_id: r.id, x: r.x, y: r.y })),
-      };
-      return outputShow(Object.assign(runtimeRequest(), { mode: 'show', image_path: null, stage }));
-    }, 'running');
-    const clearCluster = () => runCluster('清空', () => outputShow(Object.assign(runtimeRequest(), { mode: 'clear', image_path: null })), 'running');
-    const stopCluster = () => runCluster('停止', () => outputStop(runtimeRequest()), 'idle');
-    const phaseRank = { idle: 0, preflight: 1, deployed: 2, running: 3 };
-    return h('div', { className: 'nd-deliver' },
-      h('div', { className: 'nd-target' },
-        h('button', { className: 'nd-tbtn' + (destination === 'local' ? ' on' : ''), onClick: () => setDestination('local') },
-          h(Icon, { name: 'panel', size: 15 }), h('div', { className: 'm' }, h('b', null, '本机显示器'), h('span', null, '投到本机 HDMI'))),
-        h('button', { className: 'nd-tbtn' + (destination === 'cluster' ? ' on' : ''), onClick: () => setDestination('cluster') },
-          h(Icon, { name: 'net', size: 15 }), h('div', { className: 'm' }, h('b', null, 'nDisplay 集群'), h('span', null, '渲染服务器上墙')))),
-      destination === 'local' ? h('div', { className: 'nd-monitor', style: { display: 'flex', flexDirection: 'column', gap: 8 } },
-          h(Button, { variant: p.playing ? 'negative' : 'accent', size: 'S', isDisabled: !p.res, icon: h(Icon, { name: p.playing ? 'pause' : 'play', size: 13 }), onPress: p.togglePlayer }, p.playing ? '停止投放' : '投放到显示器'),
-          h(Button, { variant: 'secondary', size: 'S', isDisabled: !p.res, icon: h(Icon, { name: 'external', size: 13 }), onPress: p.openFolder }, '打开输出文件夹'))
-          : h('div', { className: 'nd-cluster' },
-              !nodes.length
-                ? h('div', { className: 'nd-guide' },
-                    h('div', { className: 'nd-guide-ic' }, h(Icon, { name: 'net', size: 26 })),
-                    h('div', { className: 'nd-guide-t' }, '该 Stage 尚未配置输出拓扑'),
-                    h('div', { className: 'nd-guide-d' }, '整个 Stage 只有一份 nDisplay 集群配置：需先在复合画布上定义哪几台渲染服务器、各驱动哪个像素区域（可跨屏），才能把测试图上墙。'),
-                    h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'net', size: 15 }), onPress: openTopology }, '配置输出拓扑…'))
-                : h(React.Fragment, null,
-                    h('button', { className: 'nd-summary', onClick: openTopology, title: '点击重新打开输出拓扑配置' },
-                      h('span', { className: 'nd-summary-ic' }, h(Icon, { name: 'panel', size: 15 })),
-                      h('div', { className: 'nd-summary-m' },
-                        h('div', { className: 'nd-summary-t' }, nodes.length + ' 节点 · Stage 级'),
-                        h('div', { className: 'nd-summary-s' }, '复合画布拓扑')),
-                      h(Icon, { name: 'settings', size: 14, style: { color: 'var(--chrome-faint)' } })),
-                    h('div', { className: 'gw-output-flow' },
-                      h(Button, { variant: 'secondary', size: 'S', isDisabled: clusterBusy || !nodes.length, icon: h(Icon, { name: 'check', size: 13 }), onPress: preflight }, '预检'),
-                      h(Button, { variant: 'secondary', size: 'S', isDisabled: clusterBusy || phaseRank[clusterPhase] < 1, icon: h(Icon, { name: 'download', size: 13 }), onPress: deploy }, '部署'),
-                      h(Button, { variant: 'accent', size: 'S', isDisabled: clusterBusy || phaseRank[clusterPhase] < 2, icon: h(Icon, { name: 'play', size: 13 }), onPress: startCluster }, '启动')),
-                    h('div', { className: 'gw-output-flow' },
-                      h(Button, { variant: 'secondary', size: 'S', isDisabled: clusterBusy || clusterPhase !== 'running', icon: h(Icon, { name: 'eye', size: 13 }), onPress: showCluster }, '显示测试图'),
-                      h(Button, { variant: 'secondary', size: 'S', isDisabled: clusterBusy || clusterPhase !== 'running', icon: h(Icon, { name: 'minus', size: 13 }), onPress: clearCluster }, '清空'),
-                      h(Button, { variant: 'negative', size: 'S', isDisabled: clusterBusy || clusterPhase !== 'running', icon: h(Icon, { name: 'pause', size: 13 }), onPress: stopCluster }, '停止')),
-                    h('div', { className: 'gw-output-nodes' }, nodes.map((node) => {
-                      const state = nodeStates[node.node_id];
-                      const tone = state && state.state === 'ok' ? 'positive' : state && state.state === 'error' ? 'negative' : clusterBusy ? 'notice' : 'neutral';
-                      const label = state ? state.message : node.primary ? 'Primary · 待命' : 'Secondary · 待命';
-                      return h('div', { key: node.node_id, className: 'gw-output-node' },
-                        h('span', { className: `cap-pill cap-pill--${tone}` }, h(Icon, { name: tone === 'positive' ? 'check' : tone === 'negative' ? 'alert' : 'info', size: 11 }), node.node_id),
-                        h('span', { className: 'host' }, node.machine.ip || node.machine.hostname),
-                        h('span', { className: 'msg', title: label }, label));
-                    })),
-                    h('details', { className: 'gw-output-log' },
-                      h('summary', null, h(Icon, { name: 'doc', size: 12 }), `运行日志 (${outputLogs.length})`),
-                      h('div', { className: 'gw-output-logbody' }, outputLogs.length ? outputLogs.map((entry, index) => h('div', { key: index, className: `row ${entry.state || ''}` },
-                        h('span', { className: 'op' }, entry.operation || 'output'), h('span', { className: 'tx' }, entry.message || '—'))) : h('div', { className: 'empty' }, '暂无日志'))))));
-  }
-
   /* screenIds 省略 = 当前激活屏；测试图页传入全部 screen id。 */
   function PatternPanel({ s, screenIds }) {
     const proj = CX.useProj();
@@ -975,9 +836,62 @@ import { listen } from "@tauri-apps/api/event";
           h('div', { className: 'm' },
             h('div', { className: 'n' }, p.res.output_dir.split(/[\\/]/).pop() + '/'),
             h('div', { className: 'd' }, p.res.output_dir))) : null) : null,
-      multi
-        ? h(Fold, { label: '上屏与输出' }, h(OutputDestination, { s, p }))
-        : (p.gen ? h(OutputDestination, { s, p }) : null));
+      h(Fold, { label: '上屏' }, h(PatternDeployShow, { s, p })));
+  }
+
+  /* 测试图页收编：不再自管部署配置；按 deployStore / shell.deployState 走既有通道上屏 */
+  function PatternDeployShow({ s, p }) {
+    const [busy, setBusy] = useState(false);
+    const deployed = s.deployState && s.deployState !== 'idle';
+    const channel = (window.deployStore && window.deployStore.get().channel)
+      || (s.calOutTarget === 'cluster' ? 'ndisplay' : 'monitor');
+    const show = async () => {
+      if (!deployed || !p.res || !p.res.output_dir || busy) return;
+      setBusy(true);
+      try {
+        const imagePath = generatedPatternImagePath(p.res.output_dir);
+        if (channel === 'ndisplay') {
+          /* 测试图上屏走 stage 复合（各屏 patterns/<id>/full_screen.png）；勿同时传 image_path（会被忽略且误导）。 */
+          const proj = p.proj;
+          const topology = window.resolveProjectTopology && window.resolveProjectTopology(proj.config);
+          const screen = topology
+            ? window.stageScreenForOutput(proj.config, topology)
+            : (proj.config && proj.config.screens[p.screenId]);
+          if (!screen) throw new Error('无可用输出屏幕');
+          const sessionId = proj.path + '::stage';
+          const paths = Object.assign({}, OUTPUT_PATHS);
+          const comp = window.buildStageComposite ? window.buildStageComposite((proj.config && proj.config.screens) || {}) : { screens: [] };
+          const stage = {
+            project_path: proj.path,
+            screens: (comp.screens || []).map((r) => ({ screen_id: r.id, x: r.x, y: r.y })),
+          };
+          await outputShow({ session_id: sessionId, screen, paths, ssh_user: null, mode: 'show', stage });
+        } else {
+          await playerShowPattern(imagePath, 'full_screen');
+        }
+        s.setDeployState('showing');
+        s.setCalReceipt({ tone: 'ok', text: '已上屏当前测试图' });
+        s.pushLog({ lv: 'ok', cat: 'deploy', msg: '测试图上屏 · ' + (channel === 'ndisplay' ? 'nDisplay' : '显示器直连') });
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        s.pushLog({ lv: 'err', cat: 'deploy', msg: '测试图上屏失败 · ' + msg });
+        s.setCalReceipt({ tone: 'err', text: '上屏失败 · ' + msg });
+      } finally { setBusy(false); }
+    };
+    return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+      h(Button, {
+        variant: 'accent', size: 'S',
+        isDisabled: !p.res || !deployed || busy,
+        icon: h(Icon, { name: 'external', size: 13 }),
+        onPress: show,
+      }, busy ? '上屏中…' : '上屏当前测试图'),
+      !deployed
+        ? h('div', { style: { fontSize: 11.5, color: 'var(--notice-visual)', lineHeight: 1.5, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' } },
+            h(Icon, { name: 'info', size: 12 }), '未部署上屏通道。',
+            h('button', { className: 'flow-back', style: { padding: '2px 8px' }, onClick: () => s.setCalSection('deploy') }, '去上屏部署'))
+        : h('div', { style: { fontSize: 11.5, color: 'var(--chrome-faint)', lineHeight: 1.5 } },
+            '经 ', h('b', null, channel === 'ndisplay' ? 'nDisplay' : '显示器直连'), ' 通道推送（部署页配置）。'),
+      p.res ? h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'folder', size: 13 }), onPress: p.openFolder }, '打开输出文件夹') : null);
   }
 
   /* ================= 阶段动作面板（顶部重建方法 + 折叠子项） ================= */

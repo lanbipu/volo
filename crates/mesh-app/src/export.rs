@@ -1873,6 +1873,7 @@ mod tests {
                     applied_at: "2026-07-19T00:00:00Z".into(),
                 }],
             }),
+            cameras: vec![],
         };
 
         let loaded = load_screen_transforms_for_export(

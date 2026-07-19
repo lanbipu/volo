@@ -1449,6 +1449,43 @@ export interface ProjectConfig {
   output_topology?: OutputTopology;
   /** Rigid alignment for rebuilt meshes; absent on legacy projects. */
   rebuilt_alignment?: RebuiltAlignment;
+  /** Stage cameras for lens calibration; absent/[] on legacy projects. */
+  cameras?: ProjectCamera[];
+}
+
+/** `project.yaml` → `cameras[]` 条目（镜头校正多相机）。 */
+export interface ProjectCamera {
+  id: string;
+  name: string;
+  lens?: ProjectCameraLens | null;
+  tracking?: ProjectCameraTracking | null;
+  video_profile_id?: string | null;
+  manual_pose?: ProjectCameraPose | null;
+  solve_pose?: ProjectCameraPose | null;
+  active_run_id?: string | null;
+}
+
+export interface ProjectCameraLens {
+  sensor_w_mm?: number | null;
+  sensor_h_mm?: number | null;
+  focal_mm?: number | null;
+  k1?: number | null;
+  k2?: number | null;
+  k3?: number | null;
+  cx?: number | null;
+  cy?: number | null;
+}
+
+export interface ProjectCameraTracking {
+  protocol: string;
+  host?: string | null;
+  port?: number | null;
+  camera_id?: number | null;
+}
+
+export interface ProjectCameraPose {
+  t_mm: [number, number, number];
+  euler_deg: [number, number, number];
 }
 
 /** Per-project rebuilt-mesh alignment (`P_s = A ∘ B_s`). */
@@ -1553,9 +1590,16 @@ export interface DeployRequest extends RuntimeRequest {
   ue_version: string;
 }
 
+export interface StageShowLayout {
+  project_path: string;
+  screens: Array<{ screen_id: string; x: number; y: number }>;
+}
+
 export interface ShowRequest extends RuntimeRequest {
   mode: OutputMode;
   image_path?: string | null;
+  /** 存在时后端按各屏 patterns/<id>/full_screen.png 拼复合大图，忽略 image_path */
+  stage?: StageShowLayout | null;
 }
 
 export interface OutputNodeResult {

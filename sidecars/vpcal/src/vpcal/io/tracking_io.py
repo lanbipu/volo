@@ -20,10 +20,13 @@ from numpy.typing import NDArray
 from vpcal.core.coordinates import convert_pose, opentrackio_euler_to_matrix
 from vpcal.core.errors import ArgumentError, ResourceNotFoundError
 from vpcal.core.transforms import matrix_to_quat, quat_to_matrix
-from vpcal.models.tracking import RotationData, RotationOrder, TrackingFrame
-
-# OpenTrackIO expresses translations in metres; vpcal works in millimetres.
-_M_TO_MM = 1000.0
+from vpcal.models.tracking import (
+    RotationData,
+    RotationOrder,
+    TrackingFrame,
+    _M_TO_MM,
+    extract_opentrackio_lens_fields,
+)
 
 
 def detect_format(first_line: str) -> str:
@@ -72,6 +75,7 @@ def _frame_from_opentrackio(obj: dict, fallback_id: int) -> TrackingFrame:
     for tr in transforms:
         compound = compound @ _transform_matrix(tr)
     q = matrix_to_quat(compound[:3, :3])
+    lens_fields = extract_opentrackio_lens_fields(obj)
     return TrackingFrame(
         frame_id=int(frame_id),
         timestamp_s=ts,
@@ -79,6 +83,7 @@ def _frame_from_opentrackio(obj: dict, fallback_id: int) -> TrackingFrame:
         position=[float(x) for x in compound[:3, 3]],
         rotation=RotationData(order=RotationOrder.QUATERNION, values=[float(x) for x in q]),
         confidence=1.0,
+        **lens_fields,
     )
 
 

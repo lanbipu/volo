@@ -612,9 +612,9 @@ function App() {
   const [conTab, setConTab] = useState('stream');
   const [logSearch, setLogSearch] = useState('');
   const [logPaused, setLogPaused] = useState(false);
-  /* calibrate：概览 / 屏幕设计 / 测试图 / 重建 / 校正；后四页共用同一三维主视图。
+  /* calibrate：概览 / 屏幕设计 / 测试图 / 上屏部署 / 重建 / 校正；后五页共用同一三维主视图。
      「网格已重建」派生自 projStore.proj.reconstruction。 */
-  const CAL_SECTIONS = ['overview', 'screen', 'pattern', 'rebuild', 'lens'];
+  const CAL_SECTIONS = ['overview', 'screen', 'pattern', 'deploy', 'rebuild', 'lens'];
   const [calSection, setCalSection] = useState(CAL_SECTIONS.includes(persisted.calSection) ? persisted.calSection : 'overview');
   /* 当前激活屏幕（工作区视口高亮项 · 检查器/流程面板作用目标）。真实屏幕列表来自
      proj.config.screens（见 pages/calibrate.tsx 的 projStore），此处只存 id。 */
@@ -660,6 +660,29 @@ function App() {
   const [calArNav, setCalArNav] = useState(CAL_AR_NAVS.includes(persisted.calArNav) ? persisted.calArNav : 'overview');
   const [calArToolsOpen, setCalArToolsOpen] = useState(persisted.calArToolsOpen != null ? persisted.calArToolsOpen : true);
   const [calLensState, setCalLensState] = useState(persisted.calLensState || 'idle');
+  /* ---- 上屏部署 + 镜头校正二级流程（handoff cal_flow）---- */
+  const [calOutTarget, setCalOutTarget] = useState(persisted.calOutTarget === 'cluster' ? 'cluster' : 'monitor');
+  const [deployState, setDeployState] = useState('idle'); /* idle | standby | showing */
+  const [deployMeta, setDeployMeta] = useState(null); /* { channel, target, monitorIndex?, nodeCount? } */
+  const [lensFlow, setLensFlow] = useState(null); /* null | 'capture'：嵌套流程标记；主 UI 走 VOLO_CALFLOW 大窗 */
+  const [lensCalMethod, setLensCalMethod] = useState('qsp'); /* qsp | charuco | sl */
+  const [capState, setCapState] = useState('idle'); /* idle | capturing */
+  const [capDetail, setCapDetail] = useState(null); /* null | { runId, poseId } */
+  const [capCam, setCapCam] = useState('cam1');
+  const [capTrack, setCapTrack] = useState('fixed'); /* connected | fixed | lost — 默认无追踪=固定机位 */
+  const [capSignalReady, setCapSignalReady] = useState(false); /* 由采集窗监看流 / Profile 驱动 */
+  const [capScreenFile, setCapScreenFile] = useState(null); /* null | string path */
+  const [capProfileId, setCapProfileId] = useState(null);
+  const [capProfileLabel, setCapProfileLabel] = useState('');
+  const [capOutDir, setCapOutDir] = useState('');
+  const [calSlUnlock, setCalSlUnlock] = useState(false);
+
+  /* deployStore 会话态镜像（测试图 / 采集前置共用） */
+  useEffect(() => {
+    if (window.deployStore && window.deployStore.syncFromShell) {
+      window.deployStore.syncFromShell({ deployState, calOutTarget, deployMeta });
+    }
+  }, [deployState, calOutTarget, deployMeta]);
   /* 集群总览：全新设置演示（无机器 → 引导扫描添加）+ 本会话已添加机器标记 */
   const [freshSetup, setFreshSetup] = useState(!!persisted.freshSetup);
   const [machinesAdded, setMachinesAdded] = useState(false);
@@ -961,16 +984,22 @@ function App() {
 
   const cluster = deriveCluster(machines, healthChecks, healthRunAt);
 
-  /* 检查器：目标消失时自动收起。屏幕设计 / 测试图 / 重建 / 校正 页常显检查器。 */
+  /* 检查器：目标消失时自动收起。屏幕设计 / 测试图 / 上屏部署 / 重建 页常显检查器。
+     校正（镜头）页完全手动：选/不选屏幕都不自动弹出，空白点击不关闭（仅 DrawerToggle）。 */
   const inspectorHasTargetRef = useRef(false);
   useEffect(() => {
-    const calPinned = page === 'calibrate' && (calSection === 'rebuild' || calSection === 'pattern' || calSection === 'screen' || calSection === 'lens');
+    /* 镜头校正页：不自动开合；ref 置 true，离开时若落到无目标页会走下降沿收起。 */
+    if (page === 'calibrate' && calStageType === 'led' && calSection === 'lens') {
+      inspectorHasTargetRef.current = true;
+      return;
+    }
+    const calPinned = page === 'calibrate' && (calSection === 'rebuild' || calSection === 'pattern' || calSection === 'screen' || calSection === 'deploy');
     const hasTarget = !!drawer || !!psoSel || !!calSel || calPinned;
     if (!hasTarget && inspectorHasTargetRef.current) setRightCollapsed(true);
     /* 进入常显页时若检查器仍收起则展开一次（上升沿）。 */
     if (hasTarget && !inspectorHasTargetRef.current && calPinned) setRightCollapsed(false);
     inspectorHasTargetRef.current = hasTarget;
-  }, [drawer, psoSel, calSel, page, calSection]);
+  }, [drawer, psoSel, calSel, page, calSection, calStageType]);
 
   /* 切缓存子页：清掉不属于目标子页的检查器目标（drawer），检查器保持收起。 */
   const goCacheNav = (v) => {
@@ -1017,6 +1046,12 @@ function App() {
     calDraftScreen, setCalDraftScreen, calScreenReports, setCalScreenReports,
     calArNav, setCalArNav, calArToolsOpen, setCalArToolsOpen,
     calLensState, setCalLensState,
+    calOutTarget, setCalOutTarget, deployState, setDeployState, deployMeta, setDeployMeta,
+    lensFlow, setLensFlow, lensCalMethod, setLensCalMethod,
+    capState, setCapState, capDetail, setCapDetail, capCam, setCapCam,
+    capTrack, setCapTrack, capSignalReady, setCapSignalReady, capScreenFile, setCapScreenFile,
+    capProfileId, setCapProfileId, capProfileLabel, setCapProfileLabel,
+    capOutDir, setCapOutDir, calSlUnlock, setCalSlUnlock,
     leftCollapsed, setLeftCollapsed, rightCollapsed, setRightCollapsed, maximized,
     machines, setMachines, shares, setShares, projects, setProjects, gpuMatrix, cluster, cacheLoading, cacheError, reloadCache };
 
@@ -1064,12 +1099,18 @@ function App() {
         options: [{ value: 'top', label: '顶栏分类' }, { value: 'left', label: '左侧列表' }],
         onChange: setToolsNav }),
       h(TweakSection, { label: '校正 · Calibrate' }),
-      /* 仅保留舞台类型这一项 Tweak——项目是否打开 / 网格是否已重建等其余设计稿 Tweak 项
-         在本仓都已是真实派生数据（projStore.reconstruction 等），没有可独立拨动的影子开关，
-         强行加一个不联动真实状态的开关只会显得能操作却什么都不做，故不搬。 */
       h(TweakRadio, { label: '舞台类型', value: calStageType,
         options: [{ value: 'led', label: 'LED' }, { value: 'ar', label: 'AR' }],
         onChange: setCalStageType }),
+      h(TweakSection, { label: '镜头校正流程 · Lens flow' }),
+      TweakToggle ? h(TweakToggle, { label: '上屏已部署（黑场待机）', value: deployState !== 'idle', onChange: (v) => setDeployState(v ? 'standby' : 'idle') }) : null,
+      TweakToggle ? h(TweakToggle, { label: '信号源就绪', value: capSignalReady, onChange: setCapSignalReady }) : null,
+      TweakToggle ? h(TweakToggle, { label: '已选屏幕文件', value: !!capScreenFile, onChange: (v) => setCapScreenFile(v ? '<demo>' : null) }) : null,
+      h(TweakRadio, { label: '追踪状态', value: capTrack,
+        options: [{ value: 'connected', label: '已接入' }, { value: 'lost', label: '断流' }, { value: 'fixed', label: '固定机位' }], onChange: setCapTrack }),
+      TweakToggle ? h(TweakToggle, { label: '结构光方式可选（演示播放采集态）', value: calSlUnlock, onChange: setCalSlUnlock }) : null,
+      h(TweakRadio, { label: '输出目标', value: calOutTarget,
+        options: [{ value: 'monitor', label: '本机显示器' }, { value: 'cluster', label: 'nDisplay 集群' }], onChange: setCalOutTarget }),
       h(TweakSection, { label: '外观 · Appearance' }),
       h(TweakRadio, { label: '显示密度', value: density,
         options: [{ value: 'clean', label: '简洁' }, { value: 'rich', label: '丰富' }],

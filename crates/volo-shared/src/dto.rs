@@ -25,6 +25,67 @@ pub struct ProjectConfig {
     /// projects; see `docs/calibrate/rebuilt-alignment-spec.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rebuilt_alignment: Option<RebuiltAlignment>,
+    /// Stage cameras for lens calibration (pose / lens / tracking). Absent on
+    /// legacy projects; see `docs/calibrate/lens-calibration-redesign-spec.md` §8.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cameras: Vec<ProjectCamera>,
+}
+
+/// One stage camera persisted in `project.yaml` (`cameras:` list).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProjectCamera {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lens: Option<ProjectCameraLens>,
+    /// `null` / omitted = no tracking (fixed pose).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracking: Option<ProjectCameraTracking>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_profile_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual_pose: Option<ProjectCameraPose>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solve_pose: Option<ProjectCameraPose>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProjectCameraLens {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensor_w_mm: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensor_h_mm: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focal_mm: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub k1: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub k2: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub k3: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cx: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cy: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProjectCameraTracking {
+    pub protocol: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProjectCameraPose {
+    pub t_mm: [f64; 3],
+    pub euler_deg: [f64; 3],
 }
 
 /// Per-project rebuilt-mesh alignment groups (`A` in `P_s = A ∘ B_s`).

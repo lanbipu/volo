@@ -105,18 +105,51 @@ pub struct LensSessionSummary {
     pub id: String,
     /// Absolute path to the session directory.
     pub session_dir: String,
-    /// Absolute path to the session's `session.json`.
+    /// Absolute path to the session's `session.json` (tracked) or
+    /// `fixed_run.json` (fixed / tracker-free). Empty string if neither.
     pub session_json_path: String,
-    /// True when `session.json` carries an inline `lens` profile (a session
-    /// captured without one still solves via `quick run`, just without a
-    /// known lens to disambiguate QLE from).
+    /// `"tracked"` (`session.json`) or `"fixed"` (`fixed_run.json` / stills).
+    pub mode: String,
+    /// True when `session.json` carries an inline `lens` profile, or when a
+    /// fixed run already has `lens.json` from tracker-free lens-cal.
     pub lens_ready: bool,
-    /// Captured pose count — counted from `tracking/poses.jsonl` lines (one
-    /// JSON line per pose). Not persisted anywhere else in the session, so
-    /// this is the only honest source; `None` if the file is missing/unreadable.
+    /// Captured pose/frame count — tracked: `tracking/poses.jsonl` lines;
+    /// fixed: `captures/normal/*.png` count (or `fixed_run.json` frames).
     pub poses_captured: Option<u64>,
-    /// `session.json` mtime, RFC3339 (best-effort; `None` if unreadable).
+    /// Meta mtime, RFC3339 (best-effort; `None` if unreadable).
     pub modified_at: Option<String>,
+    /// Absolute path to quick-run / fixed output dir when known
+    /// (`<session>/output` or stills dir itself).
+    pub output_dir: Option<String>,
+    /// Non-fatal scan issue (e.g. corrupt `fixed_run.json`); entry is still listed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+fn count_normal_pngs(session_dir: &Path) -> Option<u64> {
+    let dir = session_dir.join("captures").join("normal");
+    if !dir.is_dir() {
+        return None;
+    }
+    let n = fs::read_dir(&dir)
+        .ok()?
+        .flatten()
+        .filter(|e| {
+            e.path()
+                .extension()
+                .and_then(|x| x.to_str())
+                .map(|x| x.eq_ignore_ascii_case("png"))
+                .unwrap_or(false)
+        })
+        .count() as u64;
+    Some(n)
+}
+
+fn file_mtime_rfc3339(path: &Path) -> Option<String> {
+    fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339())
 }
 
 fn summarize_session(session_json: &Path) -> Option<LensSessionSummary> {
@@ -127,29 +160,139 @@ fn summarize_session(session_json: &Path) -> Option<LensSessionSummary> {
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "session".to_string());
+    /* Tracked: lens profile inline in session.json (SessionConfig.lens).
+       Do NOT treat output/result.json alone as ready — that is solve output,
+       not the lens profile quick-run requires. */
     let lens_ready = v.get("lens").is_some();
     let poses_captured = fs::read_to_string(session_dir.join("tracking").join("poses.jsonl"))
         .ok()
         .map(|txt| txt.lines().filter(|l| !l.trim().is_empty()).count() as u64);
-    let modified_at = fs::metadata(session_json)
-        .ok()
-        .and_then(|m| m.modified().ok())
-        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
+    let output = session_dir.join("output");
     Some(LensSessionSummary {
         id,
         session_dir: session_dir.to_string_lossy().into_owned(),
         session_json_path: session_json.to_string_lossy().into_owned(),
+        mode: "tracked".into(),
         lens_ready,
         poses_captured,
-        modified_at,
+        modified_at: file_mtime_rfc3339(session_json),
+        output_dir: if output.is_dir() {
+            Some(output.to_string_lossy().into_owned())
+        } else {
+            None
+        },
+        error: None,
     })
 }
 
+fn summarize_fixed_run(dir: &Path) -> Option<LensSessionSummary> {
+    let fixed_meta = dir.join("fixed_run.json");
+    let has_meta = fixed_meta.is_file();
+    let png_count = count_normal_pngs(dir).unwrap_or(0);
+    if !has_meta && png_count == 0 {
+        return None;
+    }
+    /* Prefer fixed_run.json; also accept stills dirs that only have captures. */
+    if !has_meta {
+        /* Avoid treating tracked sessions (session.json) as fixed. */
+        if dir.join("session.json").is_file() {
+            return None;
+        }
+    }
+    let id = dir
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "fixed".to_string());
+    let mut meta_error: Option<String> = None;
+    let meta_value = if has_meta {
+        match fs::read_to_string(&fixed_meta) {
+            Ok(txt) => match serde_json::from_str::<Value>(&txt) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    meta_error = Some(format!("fixed_run.json 损坏: {e}"));
+                    None
+                }
+            },
+            Err(e) => {
+                meta_error = Some(format!("无法读取 fixed_run.json: {e}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let (frames, modified_at, meta_path) = if let Some(ref v) = meta_value {
+        let frames = v
+            .get("frames_captured")
+            .and_then(Value::as_u64)
+            .or(Some(png_count));
+        (
+            frames,
+            file_mtime_rfc3339(&fixed_meta),
+            fixed_meta.to_string_lossy().into_owned(),
+        )
+    } else {
+        (
+            Some(png_count),
+            if has_meta {
+                file_mtime_rfc3339(&fixed_meta)
+            } else {
+                file_mtime_rfc3339(dir)
+            },
+            if has_meta {
+                fixed_meta.to_string_lossy().into_owned()
+            } else {
+                String::new()
+            },
+        )
+    };
+    let lens_ready = dir.join("lens.json").is_file()
+        || meta_value
+            .as_ref()
+            .and_then(|v| v.get("lens_json").and_then(Value::as_str).map(|s| !s.is_empty()))
+            .unwrap_or(false);
+    Some(LensSessionSummary {
+        id,
+        session_dir: dir.to_string_lossy().into_owned(),
+        session_json_path: meta_path,
+        mode: "fixed".into(),
+        lens_ready,
+        poses_captured: frames,
+        modified_at,
+        output_dir: Some(dir.to_string_lossy().into_owned()),
+        error: meta_error,
+    })
+}
+
+fn approve_capture_pngs(
+    approved: &tauri::State<'_, crate::commands::sidecar_stream::ApprovedImagePaths>,
+    session_dir: &Path,
+) {
+    let dir = session_dir.join("captures").join("normal");
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return;
+    };
+    let Ok(mut guard) = approved.0.lock() else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if crate::commands::sidecar_stream::is_preview_image_path(&p) {
+            if let Ok(canon) = p.canonicalize() {
+                guard.insert(canon);
+            }
+        }
+    }
+}
+
 /// List lens capture sessions under `sessions_root` by scanning for
-/// `session.json` files (the root itself and its immediate child
-/// directories, matching `list_ar_runs`'s convention). Newest-first.
+/// `session.json` (tracked) and `fixed_run.json` / stills dirs (fixed).
+/// Newest-first. Also approves `captures/normal/*` images for thumbnail reads.
 #[tauri::command]
-pub fn list_lens_sessions(sessions_root: String) -> VoloResult<Vec<LensSessionSummary>> {
+pub fn list_lens_sessions(
+    approved: tauri::State<'_, crate::commands::sidecar_stream::ApprovedImagePaths>,
+    sessions_root: String,
+) -> VoloResult<Vec<LensSessionSummary>> {
     let root = Path::new(&sessions_root);
     if !root.is_dir() {
         return Err(VoloError::InvalidInput(format!(
@@ -157,24 +300,33 @@ pub fn list_lens_sessions(sessions_root: String) -> VoloResult<Vec<LensSessionSu
         )));
     }
 
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    let root_session = root.join("session.json");
-    if root_session.is_file() {
-        candidates.push(root_session);
-    }
+    let mut sessions: Vec<LensSessionSummary> = Vec::new();
+    let mut seen = std::collections::HashSet::<PathBuf>::new();
+
+    let mut consider_dir = |dir: &Path| {
+        let canon = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+        if !seen.insert(canon.clone()) {
+            return;
+        }
+        if let Some(s) = summarize_session(&dir.join("session.json")) {
+            approve_capture_pngs(&approved, dir);
+            sessions.push(s);
+            return;
+        }
+        if let Some(s) = summarize_fixed_run(dir) {
+            approve_capture_pngs(&approved, dir);
+            sessions.push(s);
+        }
+    };
+
+    consider_dir(root);
     for entry in fs::read_dir(root)?.flatten() {
         let p = entry.path();
         if p.is_dir() {
-            let sj = p.join("session.json");
-            if sj.is_file() {
-                candidates.push(sj);
-            }
+            consider_dir(&p);
         }
     }
 
-    let mut sessions: Vec<LensSessionSummary> =
-        candidates.iter().filter_map(|p| summarize_session(p)).collect();
-    // Newest first; entries without a readable mtime sort last.
     sessions.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
     Ok(sessions)
 }
@@ -294,6 +446,24 @@ pub fn read_lens_qa_report(run_dir: String) -> VoloResult<Value> {
     let bytes = fs::read(&report)?;
     serde_json::from_slice(&bytes)
         .map_err(|e| VoloError::InvalidInput(format!("invalid qa/reprojection.json: {e}")))
+}
+
+/// Persist fixed-pose stills run metadata (`fixed_run.json`) next to
+/// `captures/normal/`. Thin transport for the lens-calibration flow.
+#[tauri::command]
+pub fn write_fixed_run_meta(session_dir: String, meta: Value) -> VoloResult<()> {
+    let dir = Path::new(&session_dir);
+    if !dir.is_dir() {
+        fs::create_dir_all(dir).map_err(|e| {
+            VoloError::Io(format!("failed to create session dir {session_dir}: {e}"))
+        })?;
+    }
+    let path = dir.join("fixed_run.json");
+    let bytes = serde_json::to_vec_pretty(&meta)
+        .map_err(|e| VoloError::InvalidInput(format!("invalid fixed_run meta: {e}")))?;
+    fs::write(&path, bytes)
+        .map_err(|e| VoloError::Io(format!("failed to write {}: {e}", path.display())))?;
+    Ok(())
 }
 
 #[cfg(test)]

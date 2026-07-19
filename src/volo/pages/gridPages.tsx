@@ -1,6 +1,6 @@
 // @ts-nocheck
 /* Volo — 网格校正 · 页面装配（gridPages.tsx）
-   覆盖 window.VOLO_PAGES.calibrate；屏幕设计 / 测试图 / 重建 / 校正共用同一三维
+   覆盖 window.VOLO_PAGES.calibrate；屏幕设计 / 测试图 / 上屏部署 / 重建 / 校正共用同一三维
    Center（切换 section 不卸载），仅右侧检查器不同。 */
 import * as React from "react";
 
@@ -9,11 +9,12 @@ import * as React from "react";
   const G = window.VOLO_GRID;
   const CX = window.VOLO_CAL2;
 
-  /* 扁平页面导航（无层级）。屏幕设计 / 测试图 / 重建 / 校正 共用同一三维视图，仅右侧检查器不同。 */
+  /* 扁平页面导航（无层级）。上屏部署位于测试图与重建之间（handoff）。 */
   const NAV = [
     { id: 'overview', label: '概览', icon: 'grid' },
     { id: 'screen',   label: '屏幕设计', icon: 'panel' },
     { id: 'pattern',  label: '测试图', icon: 'grid' },
+    { id: 'deploy',   label: '上屏部署', icon: 'external' },
     { id: 'rebuild',  label: '重建', icon: 'cube3' },
     { id: 'lens',     label: '校正', icon: 'camera' },
   ];
@@ -22,7 +23,13 @@ import * as React from "react";
     s.setCalFlow(null);
     s.setCalDraftScreen(null);
     s.setLeftCollapsed(false);
+    if (id !== 'lens') {
+      if (s.setLensFlow) s.setLensFlow(null);
+      if (s.setCapDetail) s.setCapDetail(null);
+      if (s.setCapState) s.setCapState('idle');
+    }
     if (id === 'overview') { s.setCalSel(null); }
+    else if (id === 'deploy') { s.setCalSel({ type: 'screen' }); }
     else if (id === 'rebuild' || id === 'screen') { s.setCalSel({ type: 'screen' }); }
     else if (id === 'pattern') { s.setCalSel({ type: 'pattern' }); }
     else { s.setCalSel(null); }
@@ -53,12 +60,12 @@ import * as React from "react";
   }
 
   /* ---------- ctx 工具栏 ----------
-     镜头校正 / 屏幕设计 / 测试图 仅保留 StageSeg，不显示页面名称文案。 */
+     镜头校正 / 屏幕设计 / 测试图 / 上屏部署 仅保留 StageSeg。 */
   function ctx(s) {
     const seg = h(StageSeg, { s });
     if (s.calStageType === 'ar') return h('div', { className: 'gw-tb' }, seg, h('div', { className: 'gw-tb-group is-fill' }));
     if (s.calSection === 'overview') return h('div', { className: 'gw-tb' }, seg);
-    if (s.calSection === 'lens' || s.calSection === 'screen' || s.calSection === 'pattern')
+    if (s.calSection === 'lens' || s.calSection === 'screen' || s.calSection === 'pattern' || s.calSection === 'deploy')
       return h('div', { className: 'gw-tb' }, seg);
     return h('div', { className: 'gw-tb' },
       seg,
@@ -83,7 +90,7 @@ import * as React from "react";
   }
 
   /* ---------- center ----------
-     概览以外全部复用 G.Center：切换 screen/pattern/rebuild/lens 时三维主视图不卸载。 */
+     概览以外全部复用 G.Center：切换 screen/pattern/deploy/rebuild/lens 时三维主视图不卸载。 */
   function center(s) {
     /* CalController 挂载于此（不随 calSection 切换卸载）：首次自动打开最近项目 + 刷新 runs。 */
     const controller = h(CX.CalController, { s });
@@ -98,7 +105,8 @@ import * as React from "react";
     const arWs = window.VOLO_CAL_AR.useArWorkspace();
     const lensLive = CX.useLensLive();
     if (s.calStageType === 'ar') return window.VOLO_CAL_AR.inspector(s, arWs);
-    if (s.calSection === 'lens') return CX.lensPageInspector(s, lensLive);
+    if (s.calSection === 'deploy') return (window.VOLO_DEPLOY && window.VOLO_DEPLOY.deployInspector) ? window.VOLO_DEPLOY.deployInspector(s) : null;
+    if (s.calSection === 'lens') return (window.VOLO_CALFLOW && window.VOLO_CALFLOW.lensInspector) ? window.VOLO_CALFLOW.lensInspector(s) : CX.lensPageInspector(s, lensLive);
     if (s.calSection === 'overview') return CX.inspEmpty ? CX.inspEmpty('概览页无检查器') : null;
     if (s.calSection === 'screen') return G.screenInspector(s);
     if (s.calSection === 'pattern') return G.patternInspector(s);

@@ -17,9 +17,14 @@ from pathlib import Path
 from typing import Iterable
 
 from vpcal.core.freed import decode_freed_d1
-from vpcal.models.tracking import RotationData, RotationOrder, TrackingFrame
+from vpcal.models.tracking import (
+    RotationData,
+    RotationOrder,
+    TrackingFrame,
+    _M_TO_MM,
+    extract_opentrackio_lens_fields,
+)
 
-_M_PER_MM = 1000.0
 PROTOCOLS = ("freed", "opentrackio")
 
 # OpenTrackIO UDP transport header (OTrk): 16 bytes, payload may be JSON or CBOR,
@@ -137,7 +142,7 @@ def freed_to_frame(packet: bytes, frame_id: int, timestamp_s: float) -> Tracking
         zoom_raw=p.zoom_raw,
         focus_raw=p.focus_raw,
         camera_id=p.camera_id,
-        position=[p.x * _M_PER_MM, p.y * _M_PER_MM, p.z * _M_PER_MM],
+        position=[p.x * _M_TO_MM, p.y * _M_TO_MM, p.z * _M_TO_MM],
         rotation=RotationData(order=RotationOrder.EULER_PTR, values=[p.pan, p.tilt, p.roll]),
         confidence=1.0,
     )
@@ -175,13 +180,15 @@ def opentrackio_sample_to_frame(sample: dict, frame_id: int, timestamp_s: float)
     if isinstance(sample_ts, dict):
         protocol_ts_s = (float(sample_ts.get("seconds", 0))
                          + float(sample_ts.get("nanoseconds", 0)) * 1e-9)
+    lens_fields = extract_opentrackio_lens_fields(sample)
     return TrackingFrame(
         frame_id=frame_id,
         timestamp_s=timestamp_s,
         protocol_ts_s=protocol_ts_s,
-        position=[float(M[0, 3]) * _M_PER_MM, float(M[1, 3]) * _M_PER_MM, float(M[2, 3]) * _M_PER_MM],
+        position=[float(M[0, 3]) * _M_TO_MM, float(M[1, 3]) * _M_TO_MM, float(M[2, 3]) * _M_TO_MM],
         rotation=RotationData(order=RotationOrder.QUATERNION, values=[float(x) for x in q]),
         confidence=1.0,
+        **lens_fields,
     )
 
 

@@ -570,10 +570,15 @@ import { exportVpcalScreen } from "../api/meshCommands";
   }
 
   function openCaptureWindow(s, opts) {
+    /* 镜头校正独立窗已退役：产品入口走 VOLO_CALFLOW 大窗；本函数仅保留给调试 / 数据层 hooks。 */
+    if (window.VOLO_CALFLOW && window.VOLO_CALFLOW.openLensWindow) {
+      window.VOLO_CALFLOW.openLensWindow(s);
+      return;
+    }
     opts = opts || {};
     s.setModal({ xwide: true, render: ({ s: st, close }) => h(CaptureWindow, Object.assign({ s: st, close }, opts)) });
   }
   const openLens = (s, opts) => openCaptureWindow(s, opts || {});
 
-  window.VOLO_CAPTURE = { openCaptureWindow, openLens, CaptureWindow };
+  window.VOLO_CAPTURE = { openCaptureWindow, openLens, CaptureWindow, useMonitor, recomputeCoverage };
 })();
