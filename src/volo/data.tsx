@@ -312,6 +312,11 @@ const GRID_SCREEN_TYPES = [
   { id: 'u_shape', label: 'U 形墙', icon: 'reg', shape: 'u_shape' },
   { id: 'custom_segments', label: '自定义分段墙', icon: 'sliders', shape: 'custom_segments' },
 ];
+/* 屏幕预设（父级）：每个预设含一个或多个屏幕 id 集合。真实屏幕列表来自
+   proj.config.screens；此处只提供默认空壳，打开项目后由 shell/检查器按屏同步填充。 */
+const GRID_SCREEN_PRESETS = [
+  { id: 'preset_main', name: '默认预设', screenIds: [] },
+];
 /* 箱体预设库（厂商尺寸/像素）—— 后端无此能力（CALIBRATE-UX.md G8），纯前端静态表，
    选中即回填 cabinet_size_mm / pixels_per_cabinet，改回「自定义」解锁手填。 */
 const GRID_CAB_PRESETS = [
@@ -434,7 +439,7 @@ function stageScreenForOutput(config, topology) {
 /* 重建记录 · 求解状态 / 箱体质量三通道 — single source: api/visualSolveUi */
 
 Object.assign(window, {
-  GRID_SHAPES, GRID_SCREEN_TYPES, GRID_CAB_PRESETS, GRID_DISPLAY_DEFAULT, GRID_DISPLAY_ITEMS,
+  GRID_SHAPES, GRID_SCREEN_TYPES, GRID_SCREEN_PRESETS, GRID_CAB_PRESETS, GRID_DISPLAY_DEFAULT, GRID_DISPLAY_ITEMS,
   GRID_VIEWS, GRID_STAGE_ACTIONS, GRID_MEAS_TYPES, GRID_RECON_STAGES, GRID_EXPORT_TARGETS,
   GRID_CAB_QUALITY, GRID_SOLVE_STATUS,
   buildStageComposite, buildStageNdisplayTopo, resolveProjectTopology, stageScreenForOutput,

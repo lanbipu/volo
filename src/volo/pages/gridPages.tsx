@@ -1,33 +1,31 @@
 // @ts-nocheck
 /* Volo — 网格校正 · 页面装配（gridPages.tsx）
-   1:1 port of the Claude Design handoff `src/grid_pages.jsx`（含随之核对的死代码剔除：
-   原型里的 StageActions/ProjSwitch/ScreenSel/ResultsBtn/ViewControls/DisplayMenu 几个
-   组件定义了但从未被 ctx/left/center/inspector 实际调用——「阶段动作从顶栏移入检查器」
-   本就是这次改动说明原文，工具栏因此保持精简，不搬这些死代码）。
-   覆盖 window.VOLO_PAGES.calibrate，在 index.tsx 里排在 calibrate.tsx 之后加载，
-   借其 window.VOLO_CAL2 共享基础设施（projStore / rebuildMesh / …）；lens/AR 分支
-   委托现状不变（calLens.tsx / calAr*.tsx，本次改动范围之外）。 */
+   覆盖 window.VOLO_PAGES.calibrate；屏幕设计 / 测试图 / 重建 / 校正共用同一三维
+   Center（切换 section 不卸载），仅右侧检查器不同。 */
 import * as React from "react";
 
 (function () {
-  const { useState, useRef, useEffect } = React;
   const h = React.createElement;
   const G = window.VOLO_GRID;
   const CX = window.VOLO_CAL2;
 
+  /* 扁平页面导航（无层级）。屏幕设计 / 测试图 / 重建 / 校正 共用同一三维视图，仅右侧检查器不同。 */
   const NAV = [
     { id: 'overview', label: '概览', icon: 'grid' },
-    { id: 'rebuild', label: '重建', icon: 'cube3' },
-    { id: 'lens', label: '校正', icon: 'camera' },
+    { id: 'screen',   label: '屏幕设计', icon: 'panel' },
+    { id: 'pattern',  label: '测试图', icon: 'grid' },
+    { id: 'rebuild',  label: '重建', icon: 'cube3' },
+    { id: 'lens',     label: '校正', icon: 'camera' },
   ];
   function go(s, id) {
     s.setCalSection(id);
     s.setCalFlow(null);
     s.setCalDraftScreen(null);
     s.setLeftCollapsed(false);
-    if (id === 'overview') s.setCalSel(null);
-    else if (id === 'rebuild') s.setCalSel({ type: 'screen' });
-    else s.setCalSel(null);
+    if (id === 'overview') { s.setCalSel(null); }
+    else if (id === 'rebuild' || id === 'screen') { s.setCalSel({ type: 'screen' }); }
+    else if (id === 'pattern') { s.setCalSel({ type: 'pattern' }); }
+    else { s.setCalSel(null); }
   }
   function NavList({ s }) {
     const sec = s.calSection;
@@ -54,14 +52,14 @@ import * as React from "react";
       }));
   }
 
-  /* ---------- ctx 工具栏 ---------- */
+  /* ---------- ctx 工具栏 ----------
+     镜头校正 / 屏幕设计 / 测试图 仅保留 StageSeg，不显示页面名称文案。 */
   function ctx(s) {
     const seg = h(StageSeg, { s });
     if (s.calStageType === 'ar') return h('div', { className: 'gw-tb' }, seg, h('div', { className: 'gw-tb-group is-fill' }));
     if (s.calSection === 'overview') return h('div', { className: 'gw-tb' }, seg);
-    if (s.calSection === 'lens') return h('div', { className: 'gw-tb' }, seg, h('div', { className: 'gw-tb-div' }),
-      h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 700, color: 'var(--chrome-text)' } },
-        h(Icon, { name: 'camera', size: 15, style: { color: 'var(--volo-500)' } }), '镜头校正'));
+    if (s.calSection === 'lens' || s.calSection === 'screen' || s.calSection === 'pattern')
+      return h('div', { className: 'gw-tb' }, seg);
     return h('div', { className: 'gw-tb' },
       seg,
       h('div', { className: 'gw-tb-group is-fill' }),
@@ -79,37 +77,31 @@ import * as React from "react";
     const proj = CX.useProj();
     if (s.calStageType === 'ar') return window.VOLO_CAL_AR.left(s, arWs);
     if (!proj.path) return null;
-    /* 设计稿（grid_pages.jsx）：重建页左栏保持三页扁平导航，仅当测量导入流程
-       进行中（calFlow 非空）才切到 gridTree 的流程面板；场景树不再作为常驻左栏。 */
+    /* 重建页左栏保持扁平导航，仅当测量导入流程进行中（calFlow 非空）才切到流程面板。 */
     if (s.calSection === 'rebuild' && s.calFlow) return G.left(s);
     return h(NavList, { s });
   }
 
-  /* ---------- center ---------- */
-  function LensPage({ s }) {
-    useEffect(() => { s.setLeftCollapsed(false); }, []);
-    return CX.Lens ? h(CX.Lens, { s }) : h('div', { className: 'insp-empty' }, '镜头校正');
-  }
+  /* ---------- center ----------
+     概览以外全部复用 G.Center：切换 screen/pattern/rebuild/lens 时三维主视图不卸载。 */
   function center(s) {
-    /* CalController 挂载于此（不随 calSection 切换卸载/重挂）：首次自动打开最近
-       项目 + 项目/屏幕变化时刷新 runs 列表与多屏视口摘要。同旧 pages/calibrate.tsx
-       的既定挂载点，只是路由从这里的 center() 接管。 */
+    /* CalController 挂载于此（不随 calSection 切换卸载）：首次自动打开最近项目 + 刷新 runs。 */
     const controller = h(CX.CalController, { s });
     if (s.calStageType === 'ar') return h(React.Fragment, null, controller, window.VOLO_CAL_AR.center(s));
     if (s.calSection === 'overview') return h(React.Fragment, null, controller, h(G.Overview, { s }));
-    if (s.calSection === 'lens') return h(React.Fragment, null, controller, h(LensPage, { s }));
     return h(React.Fragment, null, controller, h(G.Center, { s }));
   }
 
   /* ---------- inspector ----------
-     CX.useLensLive() 同理无条件调用：calSection 在 lens⇄其它 之间切换不改变这个
-     Slot fiber 的 hook 调用次序。 */
+     CX.useLensLive() 同理无条件调用：calSection 在 lens⇄其它 之间切换不改变 hook 次序。 */
   function inspector(s) {
     const arWs = window.VOLO_CAL_AR.useArWorkspace();
     const lensLive = CX.useLensLive();
     if (s.calStageType === 'ar') return window.VOLO_CAL_AR.inspector(s, arWs);
-    if (s.calSection === 'lens') return CX.lensInspector ? CX.lensInspector(s, lensLive) : (CX.inspEmpty ? CX.inspEmpty('镜头校正细节在页内查看') : null);
+    if (s.calSection === 'lens') return CX.lensPageInspector(s, lensLive);
     if (s.calSection === 'overview') return CX.inspEmpty ? CX.inspEmpty('概览页无检查器') : null;
+    if (s.calSection === 'screen') return G.screenInspector(s);
+    if (s.calSection === 'pattern') return G.patternInspector(s);
     return G.inspector(s);
   }
 

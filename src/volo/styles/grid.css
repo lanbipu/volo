@@ -478,19 +478,22 @@
 .gw-method-note { font-size: 11px; color: var(--chrome-faint); line-height: 1.5; margin-top: 8px; }
 .gw-insp-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
 .gw-parent { background: var(--wash-3); border: 1px solid var(--chrome-line-2); border-radius: 9px; padding: 9px 11px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 8px; }
-.gw-parent-h { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--chrome-faint); }
-.gw-parent-h svg { color: var(--volo-500); }
-.gw-presets { display: flex; flex-direction: column; gap: 5px; }
-.gw-preset { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--chrome-line); background: var(--wash); cursor: pointer; }
-.gw-preset:hover { border-color: var(--chrome-line-2); }
-.gw-preset.on { border-color: color-mix(in srgb, var(--volo-700) 50%, transparent); background: var(--highlight-selected); }
-.gw-preset .ic { color: var(--chrome-dim); display: grid; place-items: center; flex: 0 0 auto; }
-.gw-preset.on .ic { color: var(--volo-500); }
-.gw-preset .nm { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 600; color: var(--chrome-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.gw-preset .mt { font-size: 10.5px; font-family: var(--font-code); color: var(--chrome-faint); flex: 0 0 auto; }
-.gw-preset .rm { all: unset; cursor: pointer; color: var(--chrome-faint); display: grid; place-items: center; width: 20px; height: 20px; border-radius: 5px; flex: 0 0 auto; }
-.gw-preset .rm:hover { color: var(--negative-visual); background: var(--wash-2); }
 .gw-preset-edit { flex: 1; min-width: 0; all: unset; box-sizing: border-box; font-size: 12.5px; font-weight: 600; color: var(--chrome-text); background: var(--chrome-card); border: 1.5px solid var(--volo-600); border-radius: 6px; padding: 2px 6px; }
+/* 屏幕预设 · 紧凑父子列表 */
+.gw-parent--compact { padding: 7px 8px; gap: 3px; }
+.gw-psub { font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--chrome-faint); padding: 2px 7px 3px; display: flex; }
+.gw-psub .c { margin-left: auto; font-weight: 500; text-transform: none; letter-spacing: 0; }
+.gw-plist { display: flex; flex-direction: column; gap: 1px; }
+.gw-prow { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px; cursor: pointer; color: var(--chrome-dim); font-size: 12.5px; }
+.gw-prow:hover { background: var(--wash-2); color: var(--chrome-text); }
+.gw-prow.on { background: var(--highlight-selected); color: var(--chrome-text); font-weight: 600; }
+.gw-prow .nm { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gw-prow .rm { all: unset; cursor: pointer; color: var(--chrome-faint); display: none; place-items: center; width: 18px; height: 18px; border-radius: 4px; flex: 0 0 auto; }
+.gw-prow:hover .rm { display: grid; }
+.gw-prow .rm:hover { color: var(--negative-visual); background: var(--wash-3); }
+.gw-padd { all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: center; gap: 5px; padding: 4px 8px; margin-top: 2px; font-size: 11.5px; color: var(--chrome-faint); border-radius: 6px; }
+.gw-padd:hover { color: var(--volo-500); background: var(--wash-2); }
+.gw-prow-div { height: 1px; background: var(--chrome-line); margin: 7px 3px; }
 .gw-box--dim { opacity: .38; }
 .gw-box--dim:hover { opacity: .6; }
 .gw-wall-lb { fill: #c4c8d0; font-size: 11px; font-weight: 700; opacity: .55; }

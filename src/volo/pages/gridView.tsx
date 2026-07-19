@@ -389,6 +389,8 @@ import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
     const hoverRafRef = useRef(null);
     const bboxRef = useRef(null);
     const prevPreviewRef = useRef(false);
+    /* 背景左键按下 → 延迟到松开才判定「取消选中」：期间若拖动（旋转视图）则不取消 */
+    const bgDownRef = useRef(null);
     const patternByScreen = proj_.patternGenByScreen || {};
     const patternPathKey = Object.keys(patternByScreen).sort()
       .map((id) => id + '=' + ((patternByScreen[id] && patternByScreen[id].output_dir) || '')).join('|');
@@ -526,6 +528,8 @@ import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
     /* 全局拖拽：框选 → 轨道 → 平移 → 遮罩拖刷（增量喂给 rig，即时生效无插值）。 */
     useEffect(() => {
       const move = (e) => {
+        if (bgDownRef.current && (Math.abs(e.clientX - bgDownRef.current.x) > 3 || Math.abs(e.clientY - bgDownRef.current.y) > 3))
+          bgDownRef.current.moved = true;
         if (marqueeRef.current) { marqueeRef.current = Object.assign({}, marqueeRef.current, { cx1: e.clientX, cy1: e.clientY }); setMarquee(marqueeRef.current); return; }
         if (orbitDragRef.current) { const o = orbitDragRef.current; RIG.orbit(e.clientX - o.x, e.clientY - o.y); o.x = e.clientX; o.y = e.clientY; return; }
         if (panDragRef.current) { const o = panDragRef.current; RIG.pan(e.clientX - o.x, e.clientY - o.y); o.x = e.clientX; o.y = e.clientY; return; }
@@ -536,6 +540,11 @@ import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
         paintRef.current = null;
         panDragRef.current = null;
         orbitDragRef.current = null;
+        /* 松开鼠标才生效：仅当是「未拖动的背景左键单击」时才取消选中 */
+        if (bgDownRef.current) {
+          if (bgDownRef.current.canDeselect && !bgDownRef.current.moved) s.setCalSel(null);
+          bgDownRef.current = null;
+        }
       };
       window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
       return () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
@@ -638,7 +647,8 @@ import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
         setMarquee(marqueeRef.current);
         return;
       }
-      if (!cabinet) s.setCalSel(null);
+      /* 取消选中推迟到 mouseup：长按左键旋转视图不再取消选中 */
+      bgDownRef.current = { x: e.clientX, y: e.clientY, moved: false, canDeselect: !cabinet };
       startOrbit(e);
     };
 

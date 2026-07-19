@@ -69,15 +69,53 @@ import { listen } from "@tauri-apps/api/event";
     h('div', { className: 'gw-insp-tt' }, h('h2', null, title), sub ? h('div', { className: 'sub' }, sub) : null),
     pill || null);
 
-  /* ================= 屏幕预设（多屏列表 · 切换/重命名/删除/新建） ================= */
-  function ScreenPresets({ s, proj, editingId, setEditingId }) {
-    const screens = Object.keys(proj.config.screens);
-    const active = s.calActiveScreen;
-    const selectedIds = (window.VOLO_GRID && window.VOLO_GRID.selectedScreenIds)
-      ? window.VOLO_GRID.selectedScreenIds(s) : [];
-    const switchTo = (id, e) => {
-      if (e && (e.ctrlKey || e.metaKey)) { window.VOLO_GRID.toggleScreenSel(s, id); return; }
-      s.setCalActiveScreen(id); s.setCalDraftScreen(null); s.setCalSel({ type: 'screen' });
+  /* ================= 屏幕预设面板（两模块：选择预设 / 该预设下的屏幕列表 · 紧凑样式） ================= */
+  function defaultScreenCfg(nExisting) {
+    return {
+      cabinet_count: [8, 3], cabinet_size_mm: [500, 500], pixels_per_cabinet: [176, 176],
+      shape_prior: { type: 'flat' }, shape_mode: 'rectangle', irregular_mask: [], bottom_completion: null,
+      position_m: [nExisting * 3.2, 0, 0], yaw_deg: 0, height_offset_mm: 0, origin_aligned: false,
+    };
+  }
+  function PresetPanel({ s, proj, editingId, setEditingId }) {
+    const [editingPreset, setEditingPreset] = useState(null);
+    const allIds = Object.keys((proj.config && proj.config.screens) || {});
+    const presets = s.calPresets || [];
+    const activePresetId = s.calActivePreset;
+    /* 打开项目后把 YAML 屏幕同步进预设分组（删已不存在的、补孤儿屏到当前预设）。 */
+    useEffect(() => {
+      if (!allIds.length) return;
+      const idSet = new Set(allIds);
+      let changed = false;
+      let next = (presets.length ? presets : structuredClone(GRID_SCREEN_PRESETS)).map((p) => {
+        const filtered = (p.screenIds || []).filter((x) => idSet.has(x));
+        if (filtered.length !== (p.screenIds || []).length) changed = true;
+        return Object.assign({}, p, { screenIds: filtered });
+      });
+      if (!next.length) {
+        next = structuredClone(GRID_SCREEN_PRESETS);
+        if (next[0]) next[0] = Object.assign({}, next[0], { screenIds: allIds.slice() });
+        else next = [{ id: 'preset_main', name: '默认预设', screenIds: allIds.slice() }];
+        changed = true;
+      }
+      const covered = new Set();
+      next.forEach((p) => p.screenIds.forEach((x) => covered.add(x)));
+      const orphans = allIds.filter((x) => !covered.has(x));
+      if (orphans.length) {
+        const targetId = next.some((p) => p.id === activePresetId) ? activePresetId : next[0].id;
+        next = next.map((p) => p.id === targetId ? Object.assign({}, p, { screenIds: p.screenIds.concat(orphans) }) : p);
+        changed = true;
+      }
+      if (changed) s.setCalPresets(next);
+    }, [allIds.join('|')]);
+    const activePreset = presets.find((p) => p.id === activePresetId) || presets[0];
+    const presetScreens = activePreset ? (activePreset.screenIds || []).filter((id) => allIds.includes(id)) : [];
+    const renamePreset = (id, name) => s.setCalPresets((list) => list.map((p) => p.id === id ? Object.assign({}, p, { name }) : p));
+    const selectPreset = (p) => {
+      s.setCalActivePreset(p.id);
+      const first = (p.screenIds || []).find((id) => allIds.includes(id));
+      if (first) { s.setCalActiveScreen(first); s.setCalDraftScreen(null); }
+      s.setCalSel({ type: 'screen' });
     };
     const renameScreen = async (oldId, rawName) => {
       const name = (rawName || '').trim();
@@ -86,7 +124,6 @@ import { listen } from "@tauri-apps/api/event";
       if (proj.config.screens[name]) { s.setCalReceipt({ tone: 'notice', text: '已存在同名屏幕 · ' + name }); return; }
       const nextScreens = {};
       Object.entries(proj.config.screens).forEach(([k, v]) => { nextScreens[k === oldId ? name : k] = v; });
-      /* 参考点名以 <screenId>_Vxxx_Rxxx 编码，重命名须同步改写 coordinate_system。 */
       const ren = (p) => (p && p.indexOf(oldId + '_') === 0) ? name + p.slice(oldId.length) : p;
       const coord = proj.config.coordinate_system;
       const nextConfig = Object.assign({}, proj.config, { screens: nextScreens },
@@ -94,13 +131,66 @@ import { listen } from "@tauri-apps/api/event";
       try {
         await s.runCmd({ domain: 'calibrate', action: '重命名屏幕', target: oldId + ' → ' + name, chan: 'local' },
           () => saveProjectYaml(proj.path, nextConfig), { okMsg: () => `已重命名屏幕 <b>${oldId}</b> → <b>${name}</b>` });
+        s.setCalPresets((list) => list.map((p) => Object.assign({}, p, { screenIds: (p.screenIds || []).map((id) => id === oldId ? name : id) })));
         await CX.openProjectPath(proj.path, s);
         if (s.calActiveScreen === oldId) s.setCalActiveScreen(name);
         s.setCalDraftScreen(null);
       } catch (e) { /* runCmd 已记录失败 */ }
     };
+    const createScreenYaml = async (id) => {
+      const cfg = defaultScreenCfg(allIds.length);
+      const nextConfig = Object.assign({}, proj.config, { screens: Object.assign({}, proj.config.screens, { [id]: cfg }) });
+      await s.runCmd({ domain: 'calibrate', action: '新建屏幕', target: id, chan: 'local' },
+        () => saveProjectYaml(proj.path, nextConfig), { okMsg: () => `已新建屏幕 <b>${id}</b>` });
+      await CX.openProjectPath(proj.path, s);
+    };
+    const allocScreenId = () => {
+      let id = 'SCREEN'; let n = 1;
+      while (proj.config.screens[id]) { n += 1; id = 'SCREEN' + n; }
+      return id;
+    };
+    const addPreset = async () => {
+      const id = allocScreenId();
+      const pid = 'preset' + Date.now();
+      try {
+        await createScreenYaml(id);
+        s.setCalPresets((list) => [...list, { id: pid, name: '新预设 ' + (list.length + 1), screenIds: [id] }]);
+        s.setCalActivePreset(pid); s.setCalActiveScreen(id); s.setCalDraftScreen(null); s.setCalSel({ type: 'screen' });
+        s.setCalReceipt({ tone: 'ok', text: '已新建预设 · 含 1 块屏幕' }); setEditingPreset(pid);
+      } catch (e) { /* runCmd 已记录失败 */ }
+    };
+    const delPreset = async (p) => {
+      if (presets.length <= 1) { s.setCalReceipt({ tone: 'notice', text: '至少保留一个预设' }); return; }
+      const restIds = allIds.filter((id) => !(p.screenIds || []).includes(id));
+      if (!restIds.length) { s.setCalReceipt({ tone: 'notice', text: '至少保留一块屏幕' }); return; }
+      const nextScreens = Object.assign({}, proj.config.screens);
+      (p.screenIds || []).forEach((id) => { delete nextScreens[id]; });
+      try {
+        await s.runCmd({ domain: 'calibrate', action: '删除预设屏幕', target: p.name, chan: 'local' },
+          () => saveProjectYaml(proj.path, Object.assign({}, proj.config, { screens: nextScreens })),
+          { okMsg: () => `已删除预设 <b>${p.name}</b>` });
+        const nl = presets.filter((x) => x.id !== p.id);
+        s.setCalPresets(nl);
+        if (p.id === activePresetId && nl[0]) {
+          s.setCalActivePreset(nl[0].id);
+          const first = (nl[0].screenIds || [])[0] || restIds[0];
+          s.setCalActiveScreen(first); s.setCalSel({ type: 'screen' });
+        }
+        await CX.openProjectPath(proj.path, s);
+        s.setCalDraftScreen(null);
+      } catch (e) { /* runCmd 已记录失败 */ }
+    };
+    const addScreen = async () => {
+      const id = allocScreenId();
+      try {
+        await createScreenYaml(id);
+        s.setCalPresets((list) => list.map((p) => p.id === activePresetId ? Object.assign({}, p, { screenIds: [...(p.screenIds || []), id] }) : p));
+        s.setCalActiveScreen(id); s.setCalDraftScreen(null); s.setCalSel({ type: 'screen' });
+        s.setCalReceipt({ tone: 'ok', text: '已新建屏幕 · ' + id }); setEditingId(id);
+      } catch (e) { /* runCmd 已记录失败 */ }
+    };
     const delScreen = async (id) => {
-      if (screens.length <= 1) { s.setCalReceipt({ tone: 'notice', text: '至少保留一块屏幕' }); return; }
+      if (allIds.length <= 1) { s.setCalReceipt({ tone: 'notice', text: '至少保留一块屏幕' }); return; }
       const nextScreens = Object.assign({}, proj.config.screens);
       delete nextScreens[id];
       const nextId = Object.keys(nextScreens)[0];
@@ -108,46 +198,36 @@ import { listen } from "@tauri-apps/api/event";
         await s.runCmd({ domain: 'calibrate', action: '删除屏幕', target: id, chan: 'local' },
           () => saveProjectYaml(proj.path, Object.assign({}, proj.config, { screens: nextScreens })),
           { okMsg: () => `已删除屏幕 <b>${id}</b>` });
+        s.setCalPresets((list) => list.map((p) => Object.assign({}, p, { screenIds: (p.screenIds || []).filter((x) => x !== id) })));
         await CX.openProjectPath(proj.path, s);
         if (s.calActiveScreen === id) s.setCalActiveScreen(nextId);
         s.setCalDraftScreen(null);
       } catch (e) { /* runCmd 已记录失败 */ }
     };
-    const createScreen = async () => {
-      let id = 'SCREEN'; let n = 1;
-      while (proj.config.screens[id]) { n += 1; id = 'SCREEN' + n; }
-      const cfg = {
-        cabinet_count: [8, 3], cabinet_size_mm: [500, 500], pixels_per_cabinet: [176, 176],
-        shape_prior: { type: 'flat' }, shape_mode: 'rectangle', irregular_mask: [], bottom_completion: null,
-        position_m: [Object.keys(proj.config.screens).length * 3.2, 0, 0], yaw_deg: 0, height_offset_mm: 0,
-        origin_aligned: false,
-      };
-      const nextConfig = Object.assign({}, proj.config, { screens: Object.assign({}, proj.config.screens, { [id]: cfg }) });
-      try {
-        await s.runCmd({ domain: 'calibrate', action: '新建屏幕', target: id, chan: 'local' },
-          () => saveProjectYaml(proj.path, nextConfig), { okMsg: () => `已新建屏幕 <b>${id}</b>` });
-        await CX.openProjectPath(proj.path, s);
-        s.setCalActiveScreen(id); s.setCalDraftScreen(null); s.setCalSel({ type: 'screen' });
-        s.setCalReceipt({ tone: 'ok', text: '已新建屏幕预设 · ' + id });
-        setEditingId(id);
-      } catch (e) { /* runCmd 已记录失败 */ }
-    };
-    return h('div', { className: 'gw-parent' },
-      h('div', { className: 'gw-parent-h' }, h(Icon, { name: 'panel', size: 14 }), '屏幕预设'),
-      h('div', { className: 'gw-presets' }, screens.map((id) => {
-        const sc = proj.config.screens[id];
-        const on = selectedIds.includes(id) || id === active;
-        return h('div', { key: id, className: 'gw-preset' + (on ? ' on' : ''), onClick: (e) => switchTo(id, e), onDoubleClick: () => setEditingId(id) },
-          h('span', { className: 'ic' }, h(Icon, { name: 'panel', size: 14 })),
+    return h('div', { className: 'gw-parent gw-parent--compact' },
+      h('div', { className: 'gw-psub' }, '预设', h('span', { className: 'c' }, presets.length + ' 个')),
+      h('div', { className: 'gw-plist' },
+        presets.map((p) => h('div', { key: p.id, className: 'gw-prow' + (p.id === activePresetId ? ' on' : ''), onClick: () => selectPreset(p), onDoubleClick: () => setEditingPreset(p.id) },
+          editingPreset === p.id
+            ? h('input', { className: 'gw-preset-edit', autoFocus: true, defaultValue: p.name, onClick: (e) => e.stopPropagation(),
+                onKeyDown: (e) => { if (e.key === 'Enter') { renamePreset(p.id, e.target.value.trim() || p.name); setEditingPreset(null); } else if (e.key === 'Escape') setEditingPreset(null); },
+                onBlur: (e) => { renamePreset(p.id, e.target.value.trim() || p.name); setEditingPreset(null); } })
+            : h('span', { className: 'nm', title: '双击重命名' }, p.name),
+          presets.length > 1 ? h('button', { className: 'rm', title: '删除预设', onClick: (e) => { e.stopPropagation(); delPreset(p); } }, h(Icon, { name: 'x', size: 12 })) : null)),
+        h('button', { className: 'gw-padd', onClick: addPreset }, h(Icon, { name: 'plus', size: 12 }), '新建预设')),
+      h('div', { className: 'gw-prow-div' }),
+      h('div', { className: 'gw-psub' }, '屏幕' + (activePreset ? ' · ' + activePreset.name : ''), h('span', { className: 'c' }, 'Ctrl 多选')),
+      h('div', { className: 'gw-plist' },
+        presetScreens.map((id) => h('div', { key: id, className: 'gw-prow' + (id === s.calActiveScreen ? ' on' : ''),
+          onClick: (e) => { if (e.ctrlKey || e.metaKey || e.shiftKey) { window.VOLO_GRID.toggleScreenSel(s, id); return; } s.setCalActiveScreen(id); s.setCalDraftScreen(null); s.setCalSel({ type: 'screen' }); },
+          onDoubleClick: () => setEditingId(id) },
           editingId === id
             ? h('input', { className: 'gw-preset-edit', autoFocus: true, defaultValue: id, onClick: (e) => e.stopPropagation(),
                 onKeyDown: (e) => { if (e.key === 'Enter') renameScreen(id, e.target.value); else if (e.key === 'Escape') setEditingId(null); },
                 onBlur: (e) => renameScreen(id, e.target.value) })
-            : h('span', { className: 'nm', title: '双击或 F2 重命名 · Ctrl/⌘ 多选' }, id),
-          h('span', { className: 'mt' }, sc.cabinet_count[0] + '×' + sc.cabinet_count[1]),
-          screens.length > 1 ? h('button', { className: 'rm', title: '删除预设', onClick: (e) => { e.stopPropagation(); delScreen(id); } }, h(Icon, { name: 'trash', size: 12 })) : null);
-      })),
-      h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'plus', size: 13 }), onPress: createScreen }, '新建预设'));
+            : h('span', { className: 'nm', title: '双击或 F2 重命名' }, id),
+          presetScreens.length > 1 ? h('button', { className: 'rm', title: '删除屏幕', onClick: (e) => { e.stopPropagation(); delScreen(id); } }, h(Icon, { name: 'x', size: 12 })) : null)),
+        h('button', { className: 'gw-padd', onClick: addScreen }, h(Icon, { name: 'plus', size: 12 }), '新建屏幕')));
   }
 
   /* ================= 屏幕建模参数表单 ================= */
@@ -217,7 +297,7 @@ import { listen } from "@tauri-apps/api/event";
 
     return h(React.Fragment, null,
       noHead ? null : head('panel', screenId, cols + '×' + rows, h('span', { className: 'spill spill--informative' }, h(Icon, { name: 'check', size: 12 }), '对象')),
-      h(ScreenPresets, { s, proj, editingId, setEditingId }),
+      h(PresetPanel, { s, proj, editingId, setEditingId }),
       h(Fold, { n: '①', label: '箱体' },
         Field('预设', h(Sel, {
           value: m.__cabPreset || 'custom',
@@ -620,7 +700,7 @@ import { listen } from "@tauri-apps/api/event";
           : h('div', { style: { fontSize: 11.5, color: 'var(--chrome-faint)' } }, '尚无重建结果')));
   }
 
-  /* ================= 测试图（共享状态：PatternPanel 与 StagePanel「测试图」折叠共用） ================= */
+  /* ================= 测试图 ================= */
   /* 后端 run_generate_pattern 只认 charuco | vpqsp；handoff 里的「密集编码点」即 VP-QSP。
      screen_id_code 必须按屏唯一（vpqspScreenIdCode），不可再写死为 1。 */
   const PATTERN_SCHEMES = [{ id: 'charuco', label: 'ChArUco' }, { id: 'vpqsp', label: '密集编码点' }];
@@ -660,11 +740,11 @@ import { listen } from "@tauri-apps/api/event";
             nextGen[id] = result;
             nextStale[id] = false;
             last = result;
-            CX.projStore.patch({ patternGenByScreen: Object.assign({}, nextGen), patternStaleByScreen: Object.assign({}, nextStale) });
           } catch (e) {
             if (!failed) failed = e;
           }
         }));
+        CX.projStore.patch({ patternGenByScreen: nextGen, patternStaleByScreen: nextStale });
         if (failed) throw failed;
         s.setCalReceipt({ tone: 'ok', text: ids.length > 1 ? `已生成测试图 · ${ids.length} 块屏幕` : `已生成测试图 · ${last.cabinet_count} 箱体` });
       } catch (e) {
@@ -703,7 +783,7 @@ import { listen } from "@tauri-apps/api/event";
     return h('span', { className: 'spill spill--positive' }, h(Icon, { name: 'check', size: 12 }), '已生成');
   }
 
-  /* 「去向」段（本机显示器 / nDisplay 集群）—— PatternPanel 与 StagePanel 的测试图段共用 */
+  /* 「去向」段（本机显示器 / nDisplay 集群）—— PatternPanel 内复用 */
   function OutputDestination({ s, p }) {
     const [destination, setDestination] = useState('local');
     const [clusterPhase, setClusterPhase] = useState('idle');
@@ -831,34 +911,73 @@ import { listen } from "@tauri-apps/api/event";
                         h('span', { className: 'op' }, entry.operation || 'output'), h('span', { className: 'tx' }, entry.message || '—'))) : h('div', { className: 'empty' }, '暂无日志'))))));
   }
 
-  function PatternPanel({ s }) {
-    const p = usePattern(s);
+  /* screenIds 省略 = 当前激活屏；测试图页传入全部 screen id。 */
+  function PatternPanel({ s, screenIds }) {
+    const proj = CX.useProj();
+    const screensMap = (proj.config && proj.config.screens) || {};
+    const p = usePattern(s, screenIds);
+    const ids = p.screenIds;
+    const multi = ids.length > 1;
+    const cabTotal = multi
+      ? ids.reduce((a, id) => {
+          const sc = screensMap[id]; if (!sc) return a;
+          const cols = (sc.cabinet_count && sc.cabinet_count[0]) || 0;
+          const rows = (sc.cabinet_count && sc.cabinet_count[1]) || 0;
+          return a + cols * rows - ((sc.irregular_mask || []).length);
+        }, 0)
+      : (p.res && p.res.cabinet_count) || 0;
+    const markerTotal = multi
+      ? ids.reduce((a, id) => {
+          const res = proj.patternGenByScreen && proj.patternGenByScreen[id];
+          return a + (res && res.total_markers != null ? res.total_markers : 0);
+        }, 0)
+      : (p.res && p.res.total_markers) || 0;
+    const btnSize = multi ? 'S' : 'M';
+    const iconSz = multi ? 14 : 15;
     return h(React.Fragment, null,
-      head('grid', '测试图', 'ChArUco 校正图案', p.gen ? patternBadge(p.stale, p.genN, 1) : null),
+      head('grid', '测试图',
+        multi ? (ids.length + ' 块屏幕 · 全部 · 校正图案') : 'ChArUco 校正图案',
+        patternBadge(p.stale, p.genN, ids.length)),
       h(Fold, { label: '参数' },
         Field('图案方案', h(Sel, { value: p.scheme, options: PATTERN_SCHEMES, onChange: p.setScheme, w: 150 })),
-        Field('屏幕标识码', h('input', { className: 'gw-txt', value: p.screenIdCodes.join(', '), readOnly: true, style: { width: 70, textAlign: 'center' }, title: 'VP-QSP 每屏唯一 0–15，按项目屏幕名排序分配' })),
-        Field('目标屏幕', h('span', { style: { fontSize: 12.5, color: 'var(--chrome-text)', fontFamily: 'var(--font-code)' } }, p.screenIds.join(', ')))),
-      p.busy
-        ? h('div', { className: 'gw-grp-body' }, h('div', { style: { fontSize: 11.5, color: 'var(--chrome-dim)', marginBottom: 6 } }, '生成中…'),
-            h('div', { className: 'vmeter vmeter--accent ar-indeterminate' }, h('div', { className: 'vmeter__fill' })))
-        : h('div', { className: 'gw-grp-body', style: { display: 'flex', gap: 8 } },
-            h(Button, { variant: p.gen ? 'secondary' : 'accent', size: 'M', icon: h(Icon, { name: p.gen ? 'sync' : 'grid', size: 15 }), onPress: p.runGen }, p.gen ? '重新生成' : '生成'),
-            p.gen ? h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'eye', size: 14 }), onPress: () => s.setCalDisplay(Object.assign({}, s.calDisplay, { pattern: true })) }, '预览') : null),
-      p.res ? h(Fold, { label: '完成摘要' },
+        multi
+          ? Field('目标屏幕 · ' + ids.length + ' 块',
+              h('span', { style: { fontSize: 12.5, color: 'var(--chrome-text)', fontFamily: 'var(--font-code)', textAlign: 'right', textWrap: 'balance' } },
+                ids.join(' · ') || '—'))
+          : h(React.Fragment, null,
+              Field('屏幕标识码', h('input', { className: 'gw-txt', value: p.screenIdCodes.join(', '), readOnly: true, style: { width: 70, textAlign: 'center' }, title: 'VP-QSP 每屏唯一 0–15，按项目屏幕名排序分配' })),
+              Field('目标屏幕', h('span', { style: { fontSize: 12.5, color: 'var(--chrome-text)', fontFamily: 'var(--font-code)' } }, ids.join(', '))))),
+      h(Fold, { label: '生成' },
+        multi ? h('div', { className: 'gw-field', style: { minHeight: 24 } },
+          h('span', { className: 'lb' }, '已生成'),
+          patternBadge(p.stale, p.genN, ids.length)) : null,
+        p.busy
+          ? h('div', { style: { marginTop: multi ? 4 : 0 } },
+              h('div', { style: { fontSize: 11.5, color: 'var(--chrome-dim)', marginBottom: 6 } }, '生成中…'),
+              h('div', { className: 'vmeter vmeter--accent ar-indeterminate' }, h('div', { className: 'vmeter__fill' })))
+          : h('div', { style: { display: 'flex', gap: 8, marginTop: multi ? 4 : 0 } },
+              h(Button, {
+                variant: p.gen ? 'secondary' : 'accent', size: btnSize,
+                icon: h(Icon, { name: p.gen ? 'sync' : 'grid', size: iconSz }),
+                onPress: p.runGen,
+              }, multi
+                ? (p.gen ? '重新生成 ' + ids.length + ' 屏' : '一键生成 ' + ids.length + ' 屏测试图')
+                : (p.gen ? '重新生成' : '生成')),
+              (multi ? p.genN > 0 : p.gen)
+                ? h(Button, { variant: 'secondary', size: btnSize, icon: h(Icon, { name: 'eye', size: multi ? 13 : 14 }), onPress: () => s.setCalDisplay(Object.assign({}, s.calDisplay, { pattern: true })) }, '预览')
+                : null)),
+      p.gen ? h(Fold, { label: '完成摘要', defOpen: multi ? false : undefined },
         h('div', { className: 'gw-derived' },
-          h('div', { className: 'gw-dcell' }, h('div', { className: 'k' }, '覆盖箱体'), h('div', { className: 'v' }, p.res.cabinet_count)),
-          h('div', { className: 'gw-dcell' }, h('div', { className: 'k' }, '标记总数'), h('div', { className: 'v' }, p.res.total_markers))),
-        h('div', { className: 'gw-fileref', style: { marginTop: 8 } }, h('span', { className: 'ic' }, h(Icon, { name: 'folder', size: 14 })),
-          h('div', { className: 'm' }, h('div', { className: 'n' }, p.res.output_dir.split(/[\\/]/).pop() + '/'), h('div', { className: 'd' }, p.res.output_dir)))) : null,
-      p.gen ? h(OutputDestination, { s, p }) : null);
-  }
-
-  /* ================= 全局校正细节选项（无选中默认） ================= */
-  function GlobalOptions({ s }) {
-    return h(React.Fragment, null,
-      head('sliders', '校正细节选项', '全局默认 · 可忽略'),
-      h('div', { className: 'gw-optnote' }, h(Icon, { name: 'info', size: 13, style: { verticalAlign: '-2px', marginRight: 5 } }), '未选中任何对象。标定/重建方法在「测量导入」流程内按需选择，此处无需额外配置。'));
+          multi ? h('div', { className: 'gw-dcell' }, h('div', { className: 'k' }, '覆盖屏幕'), h('div', { className: 'v' }, ids.length)) : null,
+          h('div', { className: 'gw-dcell' }, h('div', { className: 'k' }, '覆盖箱体'), h('div', { className: 'v' }, cabTotal)),
+          h('div', { className: 'gw-dcell' }, h('div', { className: 'k' }, '标记总数'), h('div', { className: 'v' }, markerTotal || (multi ? cabTotal * 16 : markerTotal)))),
+        p.res ? h('div', { className: 'gw-fileref', style: { marginTop: 8 } }, h('span', { className: 'ic' }, h(Icon, { name: 'folder', size: 14 })),
+          h('div', { className: 'm' },
+            h('div', { className: 'n' }, p.res.output_dir.split(/[\\/]/).pop() + '/'),
+            h('div', { className: 'd' }, p.res.output_dir))) : null) : null,
+      multi
+        ? h(Fold, { label: '上屏与输出' }, h(OutputDestination, { s, p }))
+        : (p.gen ? h(OutputDestination, { s, p }) : null));
   }
 
   /* ================= 阶段动作面板（顶部重建方法 + 折叠子项） ================= */
@@ -867,7 +986,6 @@ import { listen } from "@tauri-apps/api/event";
     const selected = (window.VOLO_GRID && window.VOLO_GRID.selectedScreenIds)
       ? window.VOLO_GRID.selectedScreenIds(s) : [];
     const multiIds = selected.length ? selected : [s.calActiveScreen];
-    const isMulti = multiIds.length > 1;
     const screenId = s.calActiveScreen;
     const m = proj.config && proj.config.screens[screenId];
     const built = s.calScreenReports && !!s.calScreenReports[screenId];
@@ -888,9 +1006,6 @@ import { listen } from "@tauri-apps/api/event";
     const measured = isTS ? !!proj.measurementsAbsPath : !!visualCapturePath;
     const runs = (proj.runs || []);
     const curRun = runs.find((r) => r.is_current) || runs[0] || null;
-
-    /* 测试图（仅视觉法）—— 多选时批量作用于全部选中屏 */
-    const p = usePattern(s, multiIds);
 
     /* 导出（内联，同 exportDlg 的真实 exportObj） */
     const [target, setTarget] = useState('disguise');
@@ -1007,21 +1122,7 @@ import { listen } from "@tauri-apps/api/event";
         h('div', { className: 'gw-method-note' }, isTS ? t_isTsNote() : (newShapeVisualBlocked ? GRID_MEAS_TYPES.find((x) => x.id === 'visual').disabledMsg : '屏幕显示测试图 + 摄影机多角度拍摄，自动稠密重建。')),
       ),
       h('div', { className: 'gw-stages-h' }, h(Icon, { name: 'bolt', size: 13 }), '阶段动作'),
-      h(Fold, { label: '屏幕设计', defOpen: false }, h(ScreenForm, { s, noHead: true })),
-      /* ① 测试图 —— 仅视觉校正需要 */
-      !isTS ? h(Fold, { label: '测试图', defOpen: false },
-        h('div', { className: 'gw-stage-badge' }, patternBadge(p.stale, p.genN, multiIds.length)),
-        Field('图案方案', h(Sel, { value: p.scheme, options: PATTERN_SCHEMES, onChange: (scheme) => { p.setScheme(scheme); if (scheme === 'charuco' && intr === 'auto') setIntr('file'); }, w: 150 })),
-        Field('屏幕标识码', h('input', { className: 'gw-txt', value: p.screenIdCodes.join(', '), readOnly: true, style: { width: 70, textAlign: 'center' }, title: 'VP-QSP 每屏唯一 0–15，按项目屏幕名排序分配' })),
-        Field(isMulti ? '目标屏幕 · ' + multiIds.length + ' 块' : '目标屏幕',
-          h('span', { style: { fontSize: 12.5, color: 'var(--chrome-text)', fontFamily: 'var(--font-code)', textAlign: 'right', textWrap: 'balance' } },
-            isMulti ? multiIds.join(' · ') : screenId)),
-        p.busy
-          ? h('div', null, h('div', { style: { fontSize: 11.5, color: 'var(--chrome-dim)', marginBottom: 6 } }, '生成中…'), h('div', { className: 'vmeter vmeter--accent ar-indeterminate' }, h('div', { className: 'vmeter__fill' })))
-          : h('div', { style: { display: 'flex', gap: 8 } },
-              h(Button, { variant: p.gen ? 'secondary' : 'accent', size: 'S', icon: h(Icon, { name: p.gen ? 'sync' : 'grid', size: 14 }), onPress: p.runGen }, p.gen ? '重新生成' : '生成'),
-              p.genN > 0 ? h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'eye', size: 13 }), onPress: () => s.setCalDisplay(Object.assign({}, s.calDisplay, { pattern: true })) }, '预览') : null),
-        p.genN > 0 ? h('div', { style: { marginTop: 8 } }, h(OutputDestination, { s, p })) : null) : null,
+      /* 屏幕设计 / 测试图已抽到各自侧栏页检查器，重建页不再包含这两块 */
       h(Fold, { label: '测量导入', defOpen: false },
         isTS
           ? (window.VOLO_GRID.flows ? window.VOLO_GRID.flows.total(s) : null)
@@ -1096,11 +1197,157 @@ import { listen } from "@tauri-apps/api/event";
     const body = t === 'cabinet' ? h(BoxSingle, { s })
       : t === 'cabinetMulti' ? h(BoxMulti, { s })
       : t === 'run' ? h(RunListInsp, { s })
-      : t === 'pattern' ? h(PatternPanel, { s })
       : null;
     /* handoff：选中重建 run 时不画顶部分隔线（列表紧贴阶段动作） */
     return h('div', { className: 'gw-insp' }, h(StagePanel, { s }), (body && t !== 'run') ? h('div', { className: 'gw-insp-sep' }) : null, body);
   }
 
-  window.VOLO_GRID = Object.assign(window.VOLO_GRID || {}, { inspector, ScreenForm });
+  /* ================= 屏幕设计 / 测试图 · 页面专属检查器 ================= */
+  /* 多屏聚合编辑（屏幕设计页多选）：本地 draft，blur / Enter /「应用」再落盘 */
+  function ScreenMultiForm({ s }) {
+    const proj = CX.useProj();
+    const ids = (s.calSel && s.calSel.ids) || [];
+    const screensMap = (proj.config && proj.config.screens) || {};
+    const [saving, setSaving] = useState(false);
+    const [draft, setDraft] = useState({});
+    const draftRef = useRef(draft);
+    draftRef.current = draft;
+    const savingRef = useRef(false);
+    const pendingRef = useRef(false);
+    useEffect(() => { draftRef.current = {}; setDraft({}); }, [ids.join('|')]);
+    const common = (getter) => {
+      if (!ids.length) return undefined;
+      const v0 = getter(screensMap[ids[0]]);
+      return ids.every((id) => {
+        const a = getter(screensMap[id]), b = v0;
+        return Array.isArray(a) && Array.isArray(b) ? a[0] === b[0] && a[1] === b[1] : a === b;
+      }) ? v0 : undefined;
+    };
+    const applyDraft = (baseScreens, d) => {
+      const nextScreens = Object.assign({}, baseScreens);
+      ids.forEach((id) => {
+        if (!nextScreens[id]) return;
+        let sc = nextScreens[id];
+        if (d.cabW !== undefined) sc = Object.assign({}, sc, { cabinet_size_mm: [d.cabW, sc.cabinet_size_mm[1]] });
+        if (d.cabH !== undefined) sc = Object.assign({}, sc, { cabinet_size_mm: [sc.cabinet_size_mm[0], d.cabH] });
+        if (d.pxW !== undefined) sc = Object.assign({}, sc, { pixels_per_cabinet: [d.pxW, sc.pixels_per_cabinet[1]] });
+        if (d.pxH !== undefined) sc = Object.assign({}, sc, { pixels_per_cabinet: [sc.pixels_per_cabinet[0], d.pxH] });
+        if (d.heightOff !== undefined) sc = Object.assign({}, sc, { height_offset_mm: d.heightOff });
+        if (d.yaw !== undefined) sc = Object.assign({}, sc, { yaw_deg: d.yaw });
+        nextScreens[id] = sc;
+      });
+      return nextScreens;
+    };
+    const flush = async () => {
+      if (!Object.keys(draftRef.current).length) return;
+      if (savingRef.current) { pendingRef.current = true; return; }
+      savingRef.current = true;
+      setSaving(true);
+      const latest = Object.assign({}, draftRef.current);
+      try {
+        const live = CX.projStore.get();
+        const liveScreens = (live.config && live.config.screens) || {};
+        const nextScreens = applyDraft(liveScreens, latest);
+        await s.runCmd({ domain: 'calibrate', action: '批量编辑屏幕', target: ids.length + ' 屏', chan: 'local' },
+          () => saveProjectYaml(live.path, Object.assign({}, live.config, { screens: nextScreens })),
+          { okMsg: () => `已批量更新 <b>${ids.length}</b> 块屏幕` });
+        await CX.openProjectPath(live.path, s);
+        const remain = {};
+        Object.keys(draftRef.current).forEach((k) => {
+          if (draftRef.current[k] !== latest[k]) remain[k] = draftRef.current[k];
+        });
+        draftRef.current = remain;
+        setDraft(remain);
+      } catch (e) { /* runCmd 已记录 */ } finally {
+        savingRef.current = false;
+        setSaving(false);
+        if (pendingRef.current || Object.keys(draftRef.current).length) {
+          pendingRef.current = false;
+          if (Object.keys(draftRef.current).length) flush();
+        }
+      }
+    };
+    const setField = (field, v) => {
+      const next = Object.assign({}, draftRef.current, { [field]: v });
+      draftRef.current = next;
+      setDraft(next);
+    };
+    const clearField = (field) => {
+      const next = Object.assign({}, draftRef.current);
+      delete next[field];
+      draftRef.current = next;
+      setDraft(next);
+    };
+    const MultiNum = ({ field, value, w }) => {
+      const shown = field in draft ? draft[field] : value;
+      const mixed = !(field in draft) && value === undefined;
+      return h('input', {
+        className: 'gw-num' + (mixed ? ' gw-num--mixed' : ''), type: 'number',
+        value: shown === undefined ? '' : shown, placeholder: mixed ? '多个值' : '',
+        style: w ? { width: w } : null,
+        onChange: (e) => {
+          if (e.target.value === '') { clearField(field); return; }
+          setField(field, parseFloat(e.target.value));
+        },
+        onBlur: () => { if (field in draftRef.current) flush(); },
+        onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } },
+      });
+    };
+    const cabW = common((sc) => sc && sc.cabinet_size_mm && sc.cabinet_size_mm[0]);
+    const cabH = common((sc) => sc && sc.cabinet_size_mm && sc.cabinet_size_mm[1]);
+    const pxW = common((sc) => sc && sc.pixels_per_cabinet && sc.pixels_per_cabinet[0]);
+    const pxH = common((sc) => sc && sc.pixels_per_cabinet && sc.pixels_per_cabinet[1]);
+    const heightOff = common((sc) => sc && (sc.height_offset_mm || 0));
+    const yaw = common((sc) => sc && sc.yaw_deg);
+    const dirty = Object.keys(draft).length > 0;
+    return h(React.Fragment, null,
+      head('panel', '已选 ' + ids.length + ' 块屏幕', '多屏聚合视图', h('span', { className: 'spill spill--informative' }, h(Icon, { name: 'check', size: 12 }), '多选')),
+      h(Fold, { label: '选区 · 点击加入/移出' },
+        h('div', { className: 'gw-msel-chips' }, Object.keys(screensMap).map((id) => {
+          const on = ids.includes(id);
+          return h('span', { key: id, className: 'gw-msel-chip' + (on ? ' on' : ' off'), onClick: on ? null : () => window.VOLO_GRID.toggleScreenSel(s, id) },
+            h(Icon, { name: 'panel', size: 12 }), id,
+            on ? h('button', { title: '移出选区', onClick: (e) => { e.stopPropagation(); window.VOLO_GRID.toggleScreenSel(s, id); } }, h(Icon, { name: 'x', size: 11 })) : h(Icon, { name: 'plus', size: 11, style: { color: 'var(--chrome-faint)' } }));
+        }))),
+      h(Fold, { label: '共同属性 · 批量编辑' },
+        h('div', { className: 'gw-optnote', style: { marginBottom: 8 } }, h(Icon, { name: 'info', size: 12, style: { verticalAlign: '-2px', marginRight: 5 } }), '失焦、回车或点「应用」后写入全部选中屏幕；「多个值」表示各屏当前不一致。'),
+        Field('箱体尺寸', h('span', { className: 'gw-dual' },
+          h(MultiNum, { field: 'cabW', value: cabW }),
+          h('span', { className: 'x' }, '×'),
+          h(MultiNum, { field: 'cabH', value: cabH }),
+          h('span', { className: 'gw-unit' }, 'mm'))),
+        Field('箱体像素', h('span', { className: 'gw-dual' },
+          h(MultiNum, { field: 'pxW', value: pxW }),
+          h('span', { className: 'x' }, '×'),
+          h(MultiNum, { field: 'pxH', value: pxH }),
+          h('span', { className: 'gw-unit' }, 'px'))),
+        Field('离地高度', h('span', { className: 'gw-dual' },
+          h(MultiNum, { field: 'heightOff', value: heightOff }),
+          h('span', { className: 'gw-unit' }, 'mm'))),
+        Field('朝向角', h('span', { className: 'gw-dual' },
+          h(MultiNum, { field: 'yaw', value: yaw }),
+          h('span', { className: 'gw-unit' }, '°'))),
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 } },
+          dirty ? h('span', { style: { fontSize: 11, color: 'var(--notice-visual)' } }, '未应用') : null,
+          h('div', { style: { flex: 1 } }),
+          h(Button, { variant: dirty ? 'accent' : 'secondary', size: 'S', isDisabled: !dirty || saving, icon: h(Icon, { name: saving ? 'sync' : 'check', size: 13 }), onPress: flush }, saving ? '保存中…' : '应用'))));
+  }
+
+  function screenInspector(s) {
+    const sel = s.calSel;
+    if (sel && sel.type === 'screenMulti') return h('div', { className: 'gw-insp' }, h(ScreenMultiForm, { s }));
+    return h('div', { className: 'gw-insp' }, h(ScreenForm, { s }));
+  }
+
+  function PatternInspectorBody({ s }) {
+    const proj = CX.useProj();
+    const allIds = Object.keys((proj.config && proj.config.screens) || {});
+    return h('div', { className: 'gw-insp' }, h(PatternPanel, { s, screenIds: allIds }));
+  }
+
+  function patternInspector(s) {
+    return h(PatternInspectorBody, { s });
+  }
+
+  window.VOLO_GRID = Object.assign(window.VOLO_GRID || {}, { inspector, screenInspector, patternInspector, ScreenForm });
 })();

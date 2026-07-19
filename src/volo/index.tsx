@@ -48,14 +48,14 @@ import "./pages/calTrackingSource"; // window.VoloTrackingSource.{TrackingSource
 import "./pages/calCapture";    // window.VOLO_CAL2.{openCaptureModal,CaptureModal,loadProfiles}（采集设置 · Profile CRUD，非实时采集会话）
 import "./pages/calCaptureWindow"; // window.VOLO_CAPTURE.{openCaptureWindow,openLens}（镜头标定实时采集窗；须在 calCapture 之后）
 import "./pages/gridCaptureWindow"; // window.VOLO_GRID_CAPTURE.{openGridCapture,openGrid}（网格屏幕重建快拍窗；须在 calCapture 之后，供 loadProfiles/openCaptureModal）
-import "./pages/calLens";        // window.VOLO_CAL2.{Lens,lensInspector,useLensLive,lensStore,useLensSolve,...}（镜头校正单页，真接 vpcal；本轮网格校正 IA 改动不涉及）
+import "./pages/calLens";        // window.VOLO_CAL2.{Lens,lensInspector,lensPageInspector,useLensLive,lensStore,useLensSolve,...}
 import "./pages/calLensDialogs"; // window.VOLO_CAL2.{openSolveFromSession,openReport,openExport,openPlayerCheck}
-import "./pages/calAr";          // window.VOLO_CAL_AR 基座（arStore/atoms/useVpcalRun + left/center/inspector 路由 + Overview；本轮改动不涉及）
+import "./pages/calAr";          // window.VOLO_CAL_AR 基座（arStore/atoms/useVpcalRun + left/center/inspector 路由 + Overview）
 import "./pages/calArTools";     // window.VOLO_CAL_AR.{Markers,Lens,Spatial,Delay}
 import "./pages/calArVerify";    // window.VOLO_CAL_AR.{Verify,verifyInspector,Runs}
 import "./pages/gridView";       // window.VOLO_GRID.{Center,center,ROLE,PROV,pointName,roleAtCabinet,buildNominalBoxes,buildRealBoxes}（网格校正三维视口）
 import "./pages/gridTree";       // window.VOLO_GRID.{left,flows}（场景树 + 测量导入流程面板，须在 gridView 之后，供其 ROLE 引用）
-import "./pages/gridInsp";       // window.VOLO_GRID.{inspector,ScreenForm}
+import "./pages/gridInsp";       // window.VOLO_GRID.{inspector,screenInspector,patternInspector,ScreenForm}
 import "./pages/gridOverview";   // window.VOLO_GRID.{Overview,enterWorkspace}
 import "./pages/gridModals";     // window.VOLO_GRID_MODALS.{measSelector,guideCard,reconstruct,fuse,exportDlg,topology}
 import "./pages/gridNdisplay";   // window.VOLO_NDISPLAY（Stage 级拓扑对话框；须在 gridModals 之前亦可，topology 懒取）

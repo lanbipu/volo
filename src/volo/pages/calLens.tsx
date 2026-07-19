@@ -219,6 +219,30 @@ import { exportVpcalScreen } from "../api/meshCommands";
     solved: { label: '已求解', tone: 'positive', icon: 'check' },
   };
 
+  /* Lens 主页与校正页检查器共用的 openLens 入口 */
+  function openLensCapture(s, { profileId, screenPath, screenSourceSnapshot }) {
+    const proj = CX.projStore ? CX.projStore.get() : { path: null };
+    window.VOLO_CAPTURE.openLens(s, {
+      profileId,
+      screenPath,
+      onScreenPathChange: (p, fingerprint) => {
+        const patch = { screenPath: p };
+        if (fingerprint !== undefined) {
+          patch.screenFingerprint = fingerprint;
+          if (screenSourceSnapshot !== undefined) patch.screenSourceSnapshot = screenSourceSnapshot;
+        }
+        lensStore.patch(patch);
+        if (proj.path) saveScreenPath(proj.path, p);
+      },
+      onSaved: (resultData) => {
+        const sessionJsonPath = joinPath(resultData.session_dir, 'session.json');
+        lensStore.patch({ phase: 'captured', captureResult: resultData, solveResult: null, solveError: null, sessionPathForSolve: sessionJsonPath });
+        s.setCalLensState('running');
+        s.pushLog({ lv: 'ok', cat: 'lens', msg: '采集完成 · ' + resultData.poses_captured + ' pose 已写入 <b>' + resultData.session_dir + '</b>' });
+      },
+    });
+  }
+
   /* ================= 主页面 ================= */
   function Lens({ s }) {
     const proj = CX.useProj();
@@ -234,26 +258,13 @@ import { exportVpcalScreen } from "../api/meshCommands";
     /* 切工程 → 重新读取该工程的 screen.json 选择 */
     useEffect(() => { lensStore.patch({ screenPath: loadScreenPath(proj.path) }); }, [proj.path]);
 
-    /* 「开始采集」打开共享实时采集单窗口（lens 变体）；capturing 态的会话驱动/图案
-       播放器/覆盖度反馈全部收在 calCaptureWindow.tsx 里，本页只在窗口「保存会话」后
-       通过 onSaved 拿到真实 result.data，直接进 captured 态。 */
+    const sourceSnapshot = proj.config && proj.config.screens && proj.config.screens[s.calActiveScreen]
+      ? JSON.stringify(proj.config.screens[s.calActiveScreen]) : null;
+
+    /* 「开始采集」打开共享实时采集单窗口（lens 变体）；capturing 态收在 calCaptureWindow。 */
     const startCapture = () => {
       if (!profile) return;
-      window.VOLO_CAPTURE.openLens(s, {
-        profileId: profile.id,
-        screenPath: live.screenPath,
-        onScreenPathChange: (p, fingerprint) => {
-          lensStore.patch(Object.assign({ screenPath: p },
-            fingerprint !== undefined ? { screenFingerprint: fingerprint, screenSourceSnapshot: sourceSnapshot } : null));
-          saveScreenPath(proj.path, p);
-        },
-        onSaved: (resultData) => {
-          const sessionJsonPath = joinPath(resultData.session_dir, 'session.json');
-          lensStore.patch({ phase: 'captured', captureResult: resultData, solveResult: null, solveError: null, sessionPathForSolve: sessionJsonPath });
-          s.setCalLensState('running');
-          s.pushLog({ lv: 'ok', cat: 'lens', msg: '采集完成 · ' + resultData.poses_captured + ' pose 已写入 <b>' + resultData.session_dir + '</b>' });
-        },
-      });
+      openLensCapture(s, { profileId: profile.id, screenPath: live.screenPath, screenSourceSnapshot: sourceSnapshot });
     };
 
     const solveNow = () => {
@@ -266,8 +277,6 @@ import { exportVpcalScreen } from "../api/meshCommands";
     };
     const cancelSolve = () => { solve.cancel(); lensStore.patch({ phase: 'captured' }); s.pushLog({ lv: 'warn', cat: 'lens', msg: '求解已取消 · 后台进程已终止' }); };
 
-    const sourceSnapshot = proj.config && proj.config.screens && proj.config.screens[s.calActiveScreen]
-      ? JSON.stringify(proj.config.screens[s.calActiveScreen]) : null;
     const sourceChanged = !!(live.screenSourceSnapshot && sourceSnapshot && live.screenSourceSnapshot !== sourceSnapshot);
     const generateScreen = async () => {
       if (!proj.path || !s.calActiveScreen || screenExportBusy) return;
@@ -481,8 +490,46 @@ import { exportVpcalScreen } from "../api/meshCommands";
       h('span', { className: 'lens-entry-ic' }, h(Icon, { name: icon, size: 15 })), h('span', null, label), h(Icon, { name: 'chevr', size: 14 }));
   }
 
+  /* ================= 校正页检查器（与三维主视图并列，不挂 Lens 主画面） ================= */
+  function lensPageInspector(s, live) {
+    live = live || lensStore.get();
+    const phase = live.phase;
+    const solved = phase === 'solved';
+    const profiles = CX.loadProfiles ? CX.loadProfiles() : [];
+    const pill = solved
+      ? h('span', { className: 'spill spill--positive' }, h(Icon, { name: 'check', size: 12 }), '已求解')
+      : phase === 'capturing' ? h('span', { className: 'spill spill--notice' }, h(Icon, { name: 'camera', size: 12 }), '采集中')
+      : phase === 'captured' ? h('span', { className: 'spill spill--notice' }, h(Icon, { name: 'info', size: 12 }), '待求解')
+      : h('span', { className: 'spill spill--neutral' }, h('span', { style: { fontWeight: 700 } }, '—'), '未开始');
+    const startLens = () => {
+      const pid = live.profileId || (profiles[0] && profiles[0].id);
+      if (!pid) {
+        s.setCalReceipt && s.setCalReceipt({ tone: 'notice', text: '请先在采集设置中创建采集配置' });
+        if (CX.openCaptureModal) CX.openCaptureModal(s);
+        return;
+      }
+      if (!live.profileId) lensStore.patch({ profileId: pid });
+      openLensCapture(s, { profileId: pid, screenPath: live.screenPath });
+    };
+    return h(React.Fragment, null,
+      h('div', { className: 'insp-head' },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: 9, marginBottom: 6 } },
+          h('span', { className: 'step-ico', style: { width: 30, height: 30, borderRadius: 8, background: 'var(--wash)', display: 'grid', placeItems: 'center' } }, h(Icon, { name: 'camera', size: 16 })),
+          h('h2', { style: { margin: 0, fontSize: 15, fontWeight: 700 } }, '镜头校正')),
+        pill),
+      h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '镜头校正'),
+        h('div', { style: { display: 'grid' } }, h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'camera', size: 15 }), onPress: startLens }, phase === 'idle' ? '开始镜头校正' : '继续镜头校正 · 采集')),
+        h('div', { className: 'lens-entry-list', style: { marginTop: 8 } },
+          entryBtn('doc', '从已有 session 求解', () => CX.openSolveFromSession(s)),
+          entryBtn('target', '求解结果报告', () => CX.openReport(s), !solved))),
+      h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '校正后 · 后续功能'),
+        h('div', { className: 'lens-entry-list' },
+          entryBtn('external', '导出 OpenTrackIO · 导入引擎', () => CX.openExport(s), !solved),
+          entryBtn('panel', '播放器自检', () => CX.openPlayerCheck(s)))));
+  }
+
   window.VOLO_CAL2 = Object.assign(window.VOLO_CAL2 || {}, {
-    Lens, lensInspector, useLensLive, lensStore, useLensSolve,
+    Lens, lensInspector, lensPageInspector, useLensLive, lensStore, useLensSolve,
     buildSolveResult, classifySolveFailure, deriveOutputDir, deriveResultPath, joinPath, baseName, dirName,
     loadScreenPath, saveScreenPath, loadSessRoot, saveSessRoot,
   });

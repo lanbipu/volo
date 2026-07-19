@@ -612,16 +612,21 @@ function App() {
   const [conTab, setConTab] = useState('stream');
   const [logSearch, setLogSearch] = useState('');
   const [logPaused, setLogPaused] = useState(false);
-  /* calibrate（网格校正新 IA · 2026-07：概览 / 单一三维工作区[重建] / 镜头校正三页扁平导航，
-     取代旧 calNav 的 5 页折叠结构，见 docs/design/CALIBRATE-UX.md）。
-     旧 calStep/calArStep/calArMap 随 AR 六步页 + 旧 step-based 布局一起移除；
-     「网格已重建」不再是独立持久 state —— 直接派生自 projStore 的 proj.reconstruction（真实数据），
-     避免出现一份可能与后端脱节的影子布尔值（旧 calMeshState 定义了但从未被任何页面读取，见此次重构前审计）。 */
-  const CAL_SECTIONS = ['overview', 'rebuild', 'lens'];
+  /* calibrate：概览 / 屏幕设计 / 测试图 / 重建 / 校正；后四页共用同一三维主视图。
+     「网格已重建」派生自 projStore.proj.reconstruction。 */
+  const CAL_SECTIONS = ['overview', 'screen', 'pattern', 'rebuild', 'lens'];
   const [calSection, setCalSection] = useState(CAL_SECTIONS.includes(persisted.calSection) ? persisted.calSection : 'overview');
   /* 当前激活屏幕（工作区视口高亮项 · 检查器/流程面板作用目标）。真实屏幕列表来自
      proj.config.screens（见 pages/calibrate.tsx 的 projStore），此处只存 id。 */
   const [calActiveScreen, setCalActiveScreen] = useState(persisted.calActiveScreen || 'main');
+  /* 屏幕预设（父级分组）：{ id, name, screenIds[] }。屏幕实体仍存项目 YAML；
+     预设只是 UI 分组，本地持久化到 volo2.calPresets。 */
+  const [calPresets, setCalPresets] = useState(() => {
+    const raw = persisted.calPresets;
+    if (Array.isArray(raw) && raw.length) return raw;
+    return structuredClone(GRID_SCREEN_PRESETS);
+  });
+  const [calActivePreset, setCalActivePreset] = useState(persisted.calActivePreset || 'preset_main');
   /* calSel 不持久化：检查器初始必收起（见上方 rightCollapsed 注释），若挂载时恢复选中，
      详情会卡在 0 宽列里不可见，且重点同一对象不产生上升沿、弹不开。 */
   const [calSel, setCalSel] = useState(null);
@@ -696,10 +701,10 @@ function App() {
   useEffect(() => {
     clearTimeout(persistTimer.current);
     persistTimer.current = setTimeout(() => {
-      try { localStorage.setItem('volo2', JSON.stringify({ page, selNode, cacheNav, ddcOpen, calSection, calActiveScreen, calStageType, calMode, calMeshVersion, calView, calArNav, calArToolsOpen, calLensState, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed })); } catch (e) {}
+      try { localStorage.setItem('volo2', JSON.stringify({ page, selNode, cacheNav, ddcOpen, calSection, calActiveScreen, calPresets, calActivePreset, calStageType, calMode, calMeshVersion, calView, calArNav, calArToolsOpen, calLensState, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed })); } catch (e) {}
     }, 150);
     return () => clearTimeout(persistTimer.current);
-  }, [page, selNode, cacheNav, ddcOpen, calSection, calActiveScreen, calStageType, calMode, calMeshVersion, calView, calArNav, calArToolsOpen, calLensState, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed]);
+  }, [page, selNode, cacheNav, ddcOpen, calSection, calActiveScreen, calPresets, calActivePreset, calStageType, calMode, calMeshVersion, calView, calArNav, calArToolsOpen, calLensState, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed]);
 
   /* 禁掉桌面 WebView 的右键菜单（reload / 检查）；calibrate 画布另有本地 preventDefault */
   useEffect(() => {
@@ -956,13 +961,16 @@ function App() {
 
   const cluster = deriveCluster(machines, healthChecks, healthRunAt);
 
-  /* 检查器不随目标出现自动展开；目标消失时仍自动收起，避免留下与当前选择无关的旧内容。 */
+  /* 检查器：目标消失时自动收起。屏幕设计 / 测试图 / 重建 / 校正 页常显检查器。 */
   const inspectorHasTargetRef = useRef(false);
   useEffect(() => {
-    const hasTarget = !!drawer || !!psoSel || !!calSel;
+    const calPinned = page === 'calibrate' && (calSection === 'rebuild' || calSection === 'pattern' || calSection === 'screen' || calSection === 'lens');
+    const hasTarget = !!drawer || !!psoSel || !!calSel || calPinned;
     if (!hasTarget && inspectorHasTargetRef.current) setRightCollapsed(true);
+    /* 进入常显页时若检查器仍收起则展开一次（上升沿）。 */
+    if (hasTarget && !inspectorHasTargetRef.current && calPinned) setRightCollapsed(false);
     inspectorHasTargetRef.current = hasTarget;
-  }, [drawer, psoSel, calSel, page]);
+  }, [drawer, psoSel, calSel, page, calSection]);
 
   /* 切缓存子页：清掉不属于目标子页的检查器目标（drawer），检查器保持收起。 */
   const goCacheNav = (v) => {
@@ -1002,6 +1010,7 @@ function App() {
     enrolled, setEnrolled, creds, setCreds,
     tasks, setTasks, runTask, runCmd, runStreamingCmd, cancelTask, suppressRunPop, conTab, setConTab, logSearch, setLogSearch, logPaused, setLogPaused,
     calSection, setCalSection, calActiveScreen, setCalActiveScreen, calSel, setCalSel,
+    calPresets, setCalPresets, calActivePreset, setCalActivePreset,
     calStageType, setCalStageType, calMode, setCalMode, calBoxTool, setCalBoxTool, calRefRole, setCalRefRole,
     calMeshVersion, setCalMeshVersion, calView, setCalView, calDisplay, setCalDisplay,
     calFlow, setCalFlow, calSurveyRun, setCalSurveyRun, calReceipt, setCalReceipt,
