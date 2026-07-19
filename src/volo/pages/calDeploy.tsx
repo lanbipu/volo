@@ -254,12 +254,14 @@ import { generatedPatternImagePath } from "../api/meshVisualCommands";
         wide: true,
         render: ({ close }) => h(PreflightModal, {
           s, close, sessionId, runtimeRequest, resolveEditorPaths,
-          onDeploy: () => { close(); startDeploy(); },
+          onDeploy: (paths) => { close(); startDeploy(paths); },
         }),
       });
     };
 
-    const startDeploy = async () => {
+    /* paths 必须显式传入：setRuntimePaths 更新不到本轮 render 已捕获的闭包，
+       只靠 state 会让 deploy/start 拿到默认 editor_path（预检过、启动挂）。 */
+    const startDeploy = async (paths) => {
       if (busy) return;
       setPhase('deploying'); setDep({ done: 0 }); setBusy(true);
       clearInterval(timer.current);
@@ -270,8 +272,8 @@ import { generatedPatternImagePath } from "../api/meshVisualCommands";
       }), 180);
       s.pushLog({ lv: 'info', cat: 'deploy', msg: '开始部署到 <b>' + topo.nodes.length + '</b> 个渲染节点' });
       try {
-        await outputDeploy(Object.assign(runtimeRequest(), { ue_version: '5.8' }));
-        await outputStart(runtimeRequest());
+        await outputDeploy(Object.assign(runtimeRequest(paths), { ue_version: '5.8' }));
+        await outputStart(runtimeRequest(paths));
         clearInterval(timer.current);
         setDep({ done: total });
         setPhase('deployed');
@@ -292,8 +294,9 @@ import { generatedPatternImagePath } from "../api/meshVisualCommands";
     const startDeployWithPreflight = async () => {
       if (busy || deploying) return;
       setBusy(true);
+      let paths;
       try {
-        const paths = await resolveEditorPaths();
+        paths = await resolveEditorPaths();
         await outputPreflight(runtimeRequest(paths));
         s.pushLog({ lv: 'ok', cat: 'deploy', msg: 'nDisplay 预检通过 · 开始部署' });
       } catch (e) {
@@ -305,7 +308,7 @@ import { generatedPatternImagePath } from "../api/meshVisualCommands";
       }
       /* 预检已占用 busy；交给 startDeploy 前清掉，避免其入口 `if (busy)` 误拒 */
       setBusy(false);
-      await startDeploy();
+      await startDeploy(paths);
     };
 
     const nodeStatus = (nd, i) => {
@@ -421,11 +424,13 @@ import { generatedPatternImagePath } from "../api/meshVisualCommands";
     const [state, setState] = useState('running'); /* running | ok | err */
     const [msg, setMsg] = useState('正在预检节点与 UE 路径…');
     const [detail, setDetail] = useState(null);
+    const pathsRef = useRef(null); /* 「继续部署」须复用预检解析的 paths，不能靠外层 state */
     useEffect(() => {
       let alive = true;
       (async () => {
         try {
           const paths = await resolveEditorPaths();
+          pathsRef.current = paths;
           const result = await outputPreflight(runtimeRequest(paths));
           if (!alive) return;
           setDetail(result);
@@ -456,7 +461,7 @@ import { generatedPatternImagePath } from "../api/meshVisualCommands";
             h('span', { className: 'dep-node-h' }, n.message || n.state || 'ok')))) : null),
       h('div', { className: 'drawer-f', style: { display: 'flex', gap: 10, justifyContent: 'flex-end', padding: '12px 16px' } },
         h(Button, { variant: 'secondary', size: 'M', onPress: close }, '关闭'),
-        h(Button, { variant: 'accent', size: 'M', isDisabled: state !== 'ok', icon: h(Icon, { name: 'download', size: 15 }), onPress: onDeploy }, '继续部署')));
+        h(Button, { variant: 'accent', size: 'M', isDisabled: state !== 'ok', icon: h(Icon, { name: 'download', size: 15 }), onPress: () => onDeploy(pathsRef.current) }, '继续部署')));
   }
 
   function DeploySummaryRows({ s }) {
