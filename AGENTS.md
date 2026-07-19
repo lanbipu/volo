@@ -53,3 +53,17 @@ Volo —— LanX 出品的虚拟制作桌面工具（**Tauri 2 + React + Adobe R
 - 返回 DTO 字段 = **snake_case**（crates 全 `#[derive(Serialize)]` 无 rename_all）；例外看各自 `#[serde(rename)]`（如 `ProjectDir.Path` 是 PascalCase）/ enum `rename_all`。前端封装见 `src/features/cache/api/commands.ts`。
 - 无边框窗口拖动用 `data-tauri-drag-region` 属性（不是 `-webkit-app-region`），需在 `src-tauri/capabilities/default.json` 开 `core:window:allow-start-dragging`（+ close/minimize/toggle-maximize）。
 - 禁界面文字选中用 `-webkit-user-select`（macOS WKWebView 不认裸 `user-select`）。
+
+## Cursor Cloud specific instructions
+
+云端环境是 **headless Linux (Ubuntu 24.04)**，非 mac。跑 App / 验证要点（依赖已由启动脚本 + 快照装好，勿在此列安装步骤）：
+
+- **跑原生 App（headless）**：必须先设 `DISPLAY=:1`，并禁掉 webkit GPU 合成，否则 WebView 白屏 / 崩：
+  ```bash
+  DISPLAY=:1 WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 pnpm tauri dev
+  ```
+  `pnpm tauri dev` 会自动起 vite(:1420) 再编译并运行 Rust host（首次冷编 ~1min，增量数秒）。窗口标题 `Volo`，可用 computerUse 在 `:1` 上截图/交互。
+- **Rust 版本**：某传递依赖（`zvariant` 需 edition2024）要求 **Rust ≥ 1.85**；快照里 `rustup default stable` 已切到新版（默认镜像的 1.83 会编不过）。
+- **验证命令**（源见 README / `package.json` / `AGENTS.md` 上文）：前端 `pnpm exec tsc --noEmit` + `pnpm exec vite build`；后端 `cargo check --manifest-path src-tauri/Cargo.toml`。无 ESLint/Prettier/husky——`tsc --noEmit` 即前端 lint。
+- **本地可跑的核心流**：Cache/Tools 页「新增部署机」用扫描向导即可在无真机时把机器写入本地 sqlite（`~/.local/share/com.lanbipu.uecm/uecm.sqlite`），计数 0→1、进机器列表——可作冒烟。真实渲染集群 / DDC / SSH 目标在云端不可达，属可选。
+- **Python sidecars（mesh-vba / vpcal / tracksim）默认未装**，由 Rust 按需 spawn；未建各自 `.venv` 前，sidecar 相关动作会报 "sidecar not found"，不影响 App 启动与上述冒烟。
