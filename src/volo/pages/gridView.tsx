@@ -95,11 +95,12 @@ import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
 
   const pstr = (pts) => pts.map((p) => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
   const boxCenter = (b) => b.corners.reduce((p, q) => ({ x: p.x + q.x / 4, y: p.y + q.y / 4, z: p.z + q.z / 4 }), { x: 0, y: 0, z: 0 });
-  /** 箱体外法线（面内水平，含 normal_flip） */
+  /** 箱体出光面法线（面内水平，含 normal_flip）。约定：模型系 +Y = 深度轴（入墙，
+   *  与重建对齐 m01 一致），出光面 = −Y = 列方向顺时针 90°。 */
   const boxNormalOf = (b, cfg) => {
     const dx = b.corners[1].x - b.corners[0].x, dy = b.corners[1].y - b.corners[0].y;
     const len = Math.hypot(dx, dy) || 1, sign = cfg && cfg.normal_flip ? -1 : 1;
-    return { x: sign * -dy / len, y: sign * dx / len, z: 0 };
+    return { x: sign * dy / len, y: sign * -dx / len, z: 0 };
   };
 
   /* ---------- 名义（未重建）几何：镜像 shape_grid.rs 的逐列朝向角骨架 ---------- */
