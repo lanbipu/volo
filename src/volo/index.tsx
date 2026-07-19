@@ -47,6 +47,7 @@ import "./pages/calibrate";     // window.VOLO_CAL2 基座（projStore/CalContro
 import "./pages/calVideoSource";   // window.VoloVideoSource.{VideoSourceCard}（须在 calCapture 之前，供其渲染时引用）
 import "./pages/calTrackingSource"; // window.VoloTrackingSource.{TrackingSourceCard} + window.VOLO_CAL2.openTrackingModal（须在 calCapture 之前）
 import "./pages/calCapture";    // window.VOLO_CAL2.{openCaptureModal,CaptureModal,loadProfiles}（采集设置 · Profile CRUD，非实时采集会话）
+import "./pages/calAutogen";    // window.VoloAutoGen.{useAutoGen,ScreenChips,AutoStatusRows}（路径全自动化共享模块；须在两个采集窗口之前）
 import "./pages/calCaptureWindow"; // window.VOLO_CAPTURE.{openCaptureWindow,openLens}（镜头标定实时采集窗；须在 calCapture 之后）
 import "./pages/gridCaptureWindow"; // window.VOLO_GRID_CAPTURE.{openGridCapture,openGrid}（网格屏幕重建快拍窗；须在 calCapture 之后，供 loadProfiles/openCaptureModal）
 import "./pages/calLens";        // window.VOLO_CAL2.{Lens,lensInspector,lensPageInspector,useLensLive,lensStore,useLensSolve,...}

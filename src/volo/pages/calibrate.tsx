@@ -15,6 +15,7 @@ import {
   reconstructSurface, listRuns, getRunReport, setRunCurrent,
 } from "../api/meshCommands";
 import { meshVisualLoadScreenTransforms } from "../api/meshVisualCommands";
+import { lensWorkspaceEnsure, lensAssignmentSync } from "../api/lensWorkspace";
 import { loadSolveDigestCached, peekSolveDigestCache } from "../api/visualSolveUi";
 import { RMS_PX_THRESHOLDS } from "../api/lensCommands";
 
@@ -95,6 +96,13 @@ import { RMS_PX_THRESHOLDS } from "../api/lensCommands";
     const samePath = projStore.get().path === absPath;
     projStore.patch({ path: absPath, config, error: null, ...(samePath ? {} : derivedResetFields()) });
     if (window.camStore) window.camStore.loadFromProject(absPath, config);
+    /* 路径全自动化（F4/F6）：预热 vpcal/ 骨架 + 同步 assignment.json。幂等、非阻塞、
+       失败仅日志。gridInsp 每次屏幕设计保存都走 openProjectPath 回读，故此处同时覆盖
+       「项目打开」与「屏幕设计保存后」两条路径。 */
+    void lensWorkspaceEnsure(absPath).catch(() => {});
+    void lensAssignmentSync(absPath).catch((e) => {
+      if (s && s.pushLog) s.pushLog({ lv: 'warn', cat: 'lens', msg: '镜头分配表同步跳过 · ' + (e && e.message ? e.message : e) });
+    });
     return config;
   }
 

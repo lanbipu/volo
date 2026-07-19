@@ -415,3 +415,55 @@
   .mth-grid { grid-template-columns: 1fr; }
   .lc-body { grid-template-columns: minmax(0,1fr) 340px; }
 }
+
+/* ============================================================
+   路径全自动化：标定屏幕 chips + 三个自动状态行（ag-*）
+   1:1 移植自 Claude Design handoff `cal_flow.css`（演示状态条 .ag-demo* 非产品
+   控件，未移植）。token 全部对齐本仓既有 CSS 变量。
+   ============================================================ */
+.ag-block { display: flex; flex-direction: column; gap: 10px; }
+.ag-sublbl { font-size: 11px; color: var(--chrome-dim); font-weight: 600; }
+.ag-chips { }
+.ag-chips-empty { font-size: 11.5px; color: var(--chrome-faint); padding: 2px 0; }
+.ag-chip-ic { display: inline-grid; place-items: center; color: currentColor; opacity: .8; }
+
+.ag-rows { display: flex; flex-direction: column; gap: 8px; }
+.ag-row { display: flex; flex-direction: column; gap: 7px; padding: 9px 11px; border-radius: 9px;
+  background: var(--wash); border: 1px solid var(--chrome-line-2); }
+.ag-row.is-pending { border-color: color-mix(in srgb, var(--negative-visual) 40%, var(--chrome-line-2)); background: color-mix(in srgb, var(--negative-visual) 5%, var(--wash)); }
+.ag-row-top { display: flex; align-items: center; gap: 8px; min-height: 22px; }
+.ag-row-lb { font-size: 12px; font-weight: 600; color: var(--chrome-text); }
+.ag-row-top .ag-sp { flex: 1; }
+.ag-row-top .cap-pill { flex: 0 0 auto; }
+.ag-row-note { font-size: 11px; color: var(--chrome-faint); line-height: 1.5; text-wrap: pretty; }
+.ag-row-err { display: flex; align-items: flex-start; gap: 6px; font-size: 10.5px; font-family: var(--font-code); line-height: 1.55;
+  color: color-mix(in srgb, var(--negative-visual) 76%, var(--chrome-text)); word-break: break-word;
+  background: color-mix(in srgb, var(--negative-visual) 9%, transparent); border-radius: 7px; padding: 7px 9px; }
+.ag-row-err svg { flex: 0 0 auto; margin-top: 1px; color: var(--negative-visual); }
+.ag-path { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--chrome-text); }
+.ag-path svg { color: var(--chrome-faint); flex: 0 0 auto; }
+.ag-path .mono { font-family: var(--font-code); font-weight: 600; }
+
+.ag-auto-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 9999px;
+  color: var(--chrome-dim); background: var(--wash-2); border: 1px solid var(--chrome-line-2); }
+.ag-auto-tag svg { flex: 0 0 auto; color: var(--positive-visual); }
+
+.ag-iconbtn { all: unset; box-sizing: border-box; cursor: pointer; display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 7px;
+  color: var(--chrome-dim); border: 1px solid var(--chrome-line-2); background: var(--wash-2); flex: 0 0 auto; }
+.ag-iconbtn:hover { color: var(--chrome-text); background: var(--wash-3); border-color: var(--chrome-line); }
+
+.ag-spin { display: inline-flex; }
+@media (prefers-reduced-motion: no-preference) { .ag-spin { animation: spin360 1.1s linear infinite; } }
+.ag-skel { margin-left: auto; height: 22px; width: 128px; border-radius: 9999px; background: linear-gradient(90deg, var(--wash-2) 25%, var(--wash-3) 50%, var(--wash-2) 75%); background-size: 200% 100%; }
+@media (prefers-reduced-motion: no-preference) { .ag-skel { animation: agSkel 1.15s ease infinite; } }
+@keyframes agSkel { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+.ag-indet { height: 6px; border-radius: 3px; background: var(--wash-2); overflow: hidden; position: relative; }
+.ag-indet-bar { position: absolute; top: 0; height: 100%; width: 38%; border-radius: 3px; background: var(--volo-600); }
+@media (prefers-reduced-motion: no-preference) { .ag-indet-bar { animation: agIndet 1.3s var(--ease-default, ease) infinite; } }
+@keyframes agIndet { 0% { left: -40%; } 100% { left: 100%; } }
+@media (prefers-reduced-motion: reduce) { .ag-indet-bar { left: 31%; } }
+
+/* 折面屏不支持提示（禁用原因附注） */
+.lc-cli-note { display: flex; align-items: flex-start; gap: 7px; font-size: 11px; color: var(--chrome-faint); line-height: 1.5; width: 100%; margin-top: 2px; }
+.lc-cli-note svg { flex: 0 0 auto; margin-top: 1px; color: var(--chrome-dim); }
+.lc-cli-note code { font-family: var(--font-code); font-size: 10.5px; background: var(--wash-2); border-radius: 4px; padding: 1px 5px; color: var(--chrome-dim); }

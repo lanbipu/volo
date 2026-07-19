@@ -12,6 +12,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
+use mesh_app::lens_workspace::{
+    assignment_from_screens, LensAssignment, LensPatternsMeta, PATTERNS_META_SCHEMA,
+};
+use mesh_app::projects::load_project_yaml_from_path;
 use serde::Serialize;
 use serde_json::Value;
 use volo_shared::error::{VoloError, VoloResult};
@@ -461,6 +465,116 @@ pub fn write_fixed_run_meta(session_dir: String, meta: Value) -> VoloResult<()> 
     let path = dir.join("fixed_run.json");
     let bytes = serde_json::to_vec_pretty(&meta)
         .map_err(|e| VoloError::InvalidInput(format!("invalid fixed_run meta: {e}")))?;
+    fs::write(&path, bytes)
+        .map_err(|e| VoloError::Io(format!("failed to write {}: {e}", path.display())))?;
+    Ok(())
+}
+
+/* ============================================================================
+   Lens capture auto-path workspace (B1–B3)
+   ————————————————————————————————————————————————————————————————————————————
+   Directory skeleton (§2), assignment.json sync (§3.3) and patterns meta.json
+   read/write (§3.2). Paths are derived from `project_path` here so no page can
+   drift on layout; pattern generation itself stays in the frontend sidecar path.
+   ========================================================================== */
+
+fn vpcal_dir(project_path: &str) -> PathBuf {
+    Path::new(project_path).join("vpcal")
+}
+
+fn patterns_dir(project_path: &str, screen_id: &str) -> PathBuf {
+    vpcal_dir(project_path).join("patterns").join(screen_id)
+}
+
+/// B1 — create the §2 directory skeleton (idempotent). Called at project
+/// open/create as a pre-warm; every writer still `create_dir_all`s lazily.
+#[tauri::command]
+pub fn lens_workspace_ensure(project_path: String) -> VoloResult<()> {
+    let root = vpcal_dir(&project_path);
+    for sub in ["patterns", "captures"] {
+        fs::create_dir_all(root.join(sub)).map_err(|e| {
+            VoloError::Io(format!(
+                "failed to create {}: {e}",
+                root.join(sub).display()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+/// B3 — recompute the deterministic screen-id / cab-col-offset assignment from
+/// `project.yaml` and persist `<project>/vpcal/assignment.json`. Returns the
+/// full table so the caller can pick per-screen `{code, offset}`.
+#[tauri::command]
+pub fn lens_assignment_sync(project_path: String) -> VoloResult<LensAssignment> {
+    let config = load_project_yaml_from_path(Path::new(&project_path))?;
+    let assignment = assignment_from_screens(&config.screens)?;
+    let root = vpcal_dir(&project_path);
+    fs::create_dir_all(&root)
+        .map_err(|e| VoloError::Io(format!("failed to create {}: {e}", root.display())))?;
+    let path = root.join("assignment.json");
+    let bytes = serde_json::to_vec_pretty(&assignment)
+        .map_err(|e| VoloError::InvalidInput(format!("invalid assignment: {e}")))?;
+    fs::write(&path, bytes)
+        .map_err(|e| VoloError::Io(format!("failed to write {}: {e}", path.display())))?;
+    Ok(assignment)
+}
+
+/// B2 (read) — parse `patterns/<screen_id>/meta.json` plus a disk stat of the
+/// referenced PNGs, so the frontend freshness check (§3.2) can also detect a
+/// meta whose image files were deleted. A missing / unparseable / wrong-schema
+/// meta returns `meta: None` (treated as stale → regenerate).
+#[derive(Debug, Clone, Serialize)]
+pub struct LensPatternsMetaStatus {
+    pub meta: Option<LensPatternsMeta>,
+    pub files_present: bool,
+}
+
+#[tauri::command]
+pub fn lens_patterns_meta_read(
+    project_path: String,
+    screen_id: String,
+) -> VoloResult<LensPatternsMetaStatus> {
+    let dir = patterns_dir(&project_path, &screen_id);
+    let meta_path = dir.join("meta.json");
+    let meta: Option<LensPatternsMeta> = match fs::read_to_string(&meta_path) {
+        Ok(txt) => match serde_json::from_str::<LensPatternsMeta>(&txt) {
+            Ok(m) if m.schema_version == PATTERNS_META_SCHEMA => Some(m),
+            _ => None,
+        },
+        Err(_) => None,
+    };
+    let files_present = match &meta {
+        Some(m) if !m.files.is_empty() => m.files.iter().all(|f| dir.join(f).is_file()),
+        _ => false,
+    };
+    Ok(LensPatternsMetaStatus {
+        meta,
+        files_present,
+    })
+}
+
+/// B2 (write) — persist `patterns/<screen_id>/meta.json` after a successful
+/// generation. `create_dir_all` covers the lazy-creation contract (D1). The
+/// typed input makes serde reject a malformed meta; schema_version is enforced.
+#[tauri::command]
+pub fn lens_patterns_meta_write(
+    project_path: String,
+    screen_id: String,
+    meta: LensPatternsMeta,
+) -> VoloResult<()> {
+    if meta.schema_version != PATTERNS_META_SCHEMA {
+        return Err(VoloError::InvalidInput(format!(
+            "lens patterns meta schema_version must be {PATTERNS_META_SCHEMA}, got {}",
+            meta.schema_version
+        )));
+    }
+    let dir = patterns_dir(&project_path, &screen_id);
+    fs::create_dir_all(&dir)
+        .map_err(|e| VoloError::Io(format!("failed to create {}: {e}", dir.display())))?;
+    let path = dir.join("meta.json");
+    let bytes = serde_json::to_vec_pretty(&meta)
+        .map_err(|e| VoloError::InvalidInput(format!("invalid patterns meta: {e}")))?;
     fs::write(&path, bytes)
         .map_err(|e| VoloError::Io(format!("failed to write {}: {e}", path.display())))?;
     Ok(())
