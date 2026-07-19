@@ -1,15 +1,19 @@
 # Volo Output A-P2 编排契约
 
-## 五个命令
+## 命令
 
-Tauri 暴露以下五个命令，均以 `request` 作为唯一顶层参数。JS 调用形态固定为
+Tauri 暴露以下命令，均以 `request` 作为唯一顶层参数。JS 调用形态固定为
 `invoke(command, { request })`；`request` 内部字段保持 Rust/serde 的 snake_case。
 
 1. `output_preflight`：逐节点验证 SSH、UE 5.8 与目录可写性。它不要求模板已部署；非 5.8 直接拒绝。UE 版本以 `Engine/Build/Build.version` JSON（Major/Minor/Patch）为准；exe 的 ProductVersion 是 `++UE5+Release-5.8-CL-...` 格式，不能做前缀比较。
-2. `output_deploy`：把 bundle 内最小模板和由当前 topology 生成的 `.ndisplay` config 部署到全部节点。
+2. `output_deploy`：把 bundle 内最小模板和由当前 topology 生成的 `.ndisplay` config 部署到全部节点。`renderSyncPolicy` 取自拓扑 `render_sync`（默认 `ethernet_barrier`）。
 3. `output_start`：secondary-first、primary-last 启动；每节点必须在 UE log 中找到 DisplayCluster 连接/同步证据。
-4. `output_show`：统一承载 `show` / `clear`；show 先推新 PNG 再原子切 manifest，clear 只原子切 manifest。
+4. `output_show`：统一承载 `show` / `clear`；show 先推新 PNG 再原子切 manifest，clear 只原子切 manifest。**勿**用它播序列（`stage` 存在时会忽略 `image_path`）。
 5. `output_stop`：按工程路径精确筛选并停止 UE 进程。
+6. `output_play_sequence`：推送 v2 `mode=sequence` 帧目录 → 等 ready → 等 done；runner 阶段 `pushing` / `preloading` / `playing` / `done` / `failed`。详见 `docs/calibrate/ndisplay-sequence-playback-spec.md`。
+7. `output_sequence_abort`：转发 clear 中止序列。
+
+CLI：`voloctl output play-sequence` / `voloctl output abort`（同核）。
 
 所有阻塞 SSH/SCP 工作均在 `spawn_blocking` 中执行。核心顺序与发布语义位于零 Tauri 依赖的 `mesh-app::output`；`src-tauri` 只负责 SSH transport 和 command DTO。
 

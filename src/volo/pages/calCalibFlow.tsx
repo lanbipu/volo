@@ -18,7 +18,16 @@ import {
 } from "../api/sidecarStream";
 import { useCaptureSession } from "./devCapture";
 import { playerShowPattern, playerClear } from "../api/player";
-import { DEFAULT_NDISPLAY_OUTPUT_PATHS, outputShow } from "../api/ndisplayOutput";
+import {
+  DEFAULT_NDISPLAY_OUTPUT_PATHS,
+  outputShow,
+  outputPlaySequence,
+  outputSequenceAbort,
+} from "../api/ndisplayOutput";
+import {
+  meshVisualGenerateStructuredLight,
+  meshVisualDecodeStructuredLight,
+} from "../api/meshVisualCommands";
 
 (function () {
   const { Button, Switch } = window.Spectrum2DesignSystem_b6d1b3;
@@ -190,6 +199,8 @@ import { DEFAULT_NDISPLAY_OUTPUT_PATHS, outputShow } from "../api/ndisplayOutput
     const stillsFinishingRef = useRef(false);
     const stillsResultHandledRef = useRef(new Set());
     const trackedResultHandledRef = useRef(false);
+    /** Active SL nDisplay play-sequence request; cleared when play finishes/fails. */
+    const slPlayReqRef = useRef(null);
     const [stillsTaskId, setStillsTaskId] = useState(null);
     const [stillsSnapN, setStillsSnapN] = useState(0);
     const stillsStream = useSidecarStream(stillsTaskId);
@@ -229,11 +240,20 @@ import { DEFAULT_NDISPLAY_OUTPUT_PATHS, outputShow } from "../api/ndisplayOutput
     const outDir = projectPath ? lensWorkspacePaths(projectPath).capturesDir : '';
     const deployed = s.deployState !== 'idle';
     const signalReady = backend === 'synthetic' || monitor.sig === 'ok' || (!!monitor.url && monitor.sig !== 'lost');
-    /* §3.5：部署 + profile + 屏幕定义已同步 + 单 section + 图案未失败（生成中 / 需重生成仍可点，
-       beginCapture 会先补生成）。screenFile 由 ag 系统写入 s.capScreenFile。 */
-    const ready = deployed && !!profile && method === 'qsp'
+    const deployStoreSnap = window.deployStore && window.deployStore.get();
+    const deployChannel = (deployStoreSnap && deployStoreSnap.channel)
+      || (s.calOutTarget === 'cluster' ? 'ndisplay' : 'monitor');
+    /* §3.5 qsp：部署 + profile + 屏幕定义已同步 + 单 section + 图案未失败（生成中 / 需重生成仍可点，
+       beginCapture 会先补生成）。screenFile 由 ag 系统写入 s.capScreenFile。
+       SL×nDisplay：不依赖校正图案 auto-gen，走序列播放通道。 */
+    const readyQsp = method === 'qsp'
       && (backend === 'synthetic' || signalReady)
       && ag.screenDef === 'synced' && !ag.multiSection && ag.pattern !== 'genFail';
+    const readySl = method === 'sl'
+      && deployChannel === 'ndisplay'
+      && (backend === 'synthetic' || signalReady)
+      && !!screenFile && !!outDir;
+    const ready = deployed && !!profile && (readyQsp || readySl);
 
     /* 同步 shell 前置徽标 / Profile 标签 */
     useEffect(() => {
@@ -439,8 +459,14 @@ import { DEFAULT_NDISPLAY_OUTPUT_PATHS, outputShow } from "../api/ndisplayOutput
       }
     }, [capturing, tracked, session.spawnError, session.state.exit]);
 
+    const abortSlPlayback = async () => {
+      const abortReq = slPlayReqRef.current;
+      if (!abortReq) return;
+      slPlayReqRef.current = null;
+      try { await outputSequenceAbort(abortReq); } catch (e) { /* ignore */ }
+    };
     const start = async () => {
-      if (!ready || isSl) return;
+      if (!ready) return;
       saveCapParams(params);
       patternAckSeq.current.clear();
       stillsResultHandledRef.current.clear();
@@ -448,6 +474,101 @@ import { DEFAULT_NDISPLAY_OUTPUT_PATHS, outputShow } from "../api/ndisplayOutput
       setBanner(0);
       setStillsSnapN(0);
       stillsFinishingRef.current = false;
+
+      /* —— 结构光 × nDisplay：生成 → 起录像 → play-sequence → 停录像 → 解码 —— */
+      if (isSl) {
+        const proj = CX().projStore ? CX().projStore.get() : null;
+        if (!proj || !proj.path) {
+          s.pushLog({ lv: 'err', cat: 'lens', msg: '无打开项目，无法生成结构光序列' });
+          return;
+        }
+        const screenId = s.calActiveScreen;
+        if (!screenId) {
+          s.pushLog({ lv: 'err', cat: 'lens', msg: '未选活动屏幕' });
+          return;
+        }
+        const topology = window.resolveProjectTopology && window.resolveProjectTopology(proj.config);
+        const screen = topology
+          ? window.stageScreenForOutput(proj.config, topology)
+          : (proj.config && proj.config.screens[screenId]);
+        if (!screen) {
+          s.pushLog({ lv: 'err', cat: 'lens', msg: '无可用输出屏幕' });
+          return;
+        }
+        await monitor.stop();
+        s.setCapState('capturing');
+        if (CX().lensStore) CX().lensStore.patch({ phase: 'capturing', screenPath: screenFile });
+        s.setCapTrack('fixed');
+        const sessionOut = joinPath(outDir, 'sl_' + new Date().toISOString().replace(/[:.]/g, '-'));
+        let videoTaskId = null;
+        try {
+          s.pushLog({ lv: 'info', cat: 'lens', msg: '结构光 · 生成序列…' });
+          const gen = await meshVisualGenerateStructuredLight(
+            proj.path, screenId, null, 6, null, false, null);
+          const framesDir = joinPath(gen.output_dir, 'frames');
+          const slMeta = joinPath(gen.output_dir, 'sl_meta.json');
+          /* sidecar 默认 hold_ms=500 → 播放 fps=2（与 sl_meta.sequence.hold_ms 一致） */
+          const fps = 2.0;
+          const durationS = Math.max(12, (Number(gen.n_frames) || 12) / fps + 8);
+          const videoOut = joinPath(sessionOut, 'video');
+          s.pushLog({ lv: 'info', cat: 'lens', msg: '结构光 · 开始录像 · <b>' + (profile.name || 'Profile') + '</b>' });
+          const vArgs = ['capture', 'video',
+            '--backend', profile.videoBackend, '--device', String(profile.device),
+            '--duration', String(durationS), '--out', videoOut, '--output', 'json'];
+          if (profile.fmtMode === 'manual') {
+            if (profile.width) vArgs.push('--width', String(profile.width));
+            if (profile.height) vArgs.push('--height', String(profile.height));
+            if (profile.fps) vArgs.push('--fps', String(profile.fps));
+          }
+          if (profile.transferFunction) vArgs.push('--transfer-function', profile.transferFunction);
+          const vResp = await spawnSidecarStreaming('vpcal', vArgs);
+          videoTaskId = vResp.task_id;
+          setStillsTaskId(vResp.task_id);
+          /* 略等录像落盘，再起播（哨兵软同步，起点偏差无影响） */
+          await new Promise((r) => setTimeout(r, 800));
+          s.pushLog({ lv: 'info', cat: 'lens', msg: '结构光 · nDisplay 播放序列 · ' + gen.n_frames + ' 帧 @ ' + fps + ' fps' });
+          const screenOrigin = window.stageScreenOriginPx
+            ? window.stageScreenOriginPx(proj.config.screens, screenId)
+            : [0, 0];
+          const playReq = {
+            session_id: proj.path + '::stage',
+            screen,
+            paths: Object.assign({}, DEFAULT_NDISPLAY_OUTPUT_PATHS),
+            ssh_user: null,
+            sequence_dir: framesDir,
+            fps,
+            screen_origin_px: screenOrigin,
+          };
+          slPlayReqRef.current = playReq;
+          await outputPlaySequence(playReq);
+          slPlayReqRef.current = null;
+          if (s.setDeployState) s.setDeployState('showing');
+          try { await cancelSidecarTask(videoTaskId); } catch (e) { /* ignore */ }
+          videoTaskId = null;
+          setStillsTaskId(null);
+          const corrOut = joinPath(sessionOut, 'corr.json');
+          s.pushLog({ lv: 'info', cat: 'lens', msg: '结构光 · 解码…' });
+          const dec = await meshVisualDecodeStructuredLight(
+            videoOut, slMeta, corrOut, null, null, true);
+          s.setCapState('idle');
+          if (CX().lensStore) CX().lensStore.patch({ phase: 'captured' });
+          s.pushLog({
+            lv: 'ok', cat: 'lens',
+            msg: '结构光完成 · 解码 <b>' + dec.n_dots_decoded + '</b> 点 · ' + dec.output_path,
+          });
+          void refreshSessions();
+        } catch (e) {
+          await abortSlPlayback();
+          if (videoTaskId) {
+            try { await cancelSidecarTask(videoTaskId); } catch (e2) { /* ignore */ }
+            setStillsTaskId(null);
+          }
+          s.setCapState('idle');
+          s.pushLog({ lv: 'err', cat: 'lens', msg: '结构光采集失败 · ' + (e && e.message ? e.message : e) });
+        }
+        return;
+      }
+
       try {
         /* 图案由系统自动生成到 ag.patternsDir（含 normal.png）；开始前先推 normal.png 上屏 */
         if (ag.patternsDir) {
@@ -508,6 +629,7 @@ import { DEFAULT_NDISPLAY_OUTPUT_PATHS, outputShow } from "../api/ndisplayOutput
       s.setCapTrack('connected');
     };
     const stop = async () => {
+      await abortSlPlayback();
       if (!tracked && stillsTaskId) {
         try { await stillsFinish(stillsTaskId); } catch (e) { /* ignore */ }
         try { await cancelSidecarTask(stillsTaskId); } catch (e) { /* ignore */ }
@@ -718,7 +840,9 @@ import { DEFAULT_NDISPLAY_OUTPUT_PATHS, outputShow } from "../api/ndisplayOutput
     if (ag.screenDef === 'exportFail') reasons.push('屏幕定义导出失败');
     if (ag.multiSection) reasons.push('折面屏（多 section）图案上屏暂不支持');
     if (ag.pattern === 'genFail') reasons.push('校正图案生成失败');
-    if (isSl) reasons.push('结构光即将支持');
+    if (isSl && deployChannel !== 'ndisplay') reasons.push('结构光目前仅支持 nDisplay 通道');
+    if (isSl && !screenFile) reasons.push('未选屏幕文件');
+    if (isSl && !outDir) reasons.push('未选输出目录');
     if (method === 'charuco') reasons.push('ChArUco 即将支持');
     const actionbar = h('div', { className: 'lc-actionbar' + (capturing ? ' capturing' : '') },
       capturing

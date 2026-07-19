@@ -236,9 +236,32 @@ pub struct ScreenConfig {
     pub origin_aligned: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+/// nDisplay `renderSyncPolicy.type`. Software ethernet barrier is the default
+/// so sequence playback (and static show) present-align across cluster nodes.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderSyncPolicy {
+    None,
+    #[default]
+    EthernetBarrier,
+}
+
+impl RenderSyncPolicy {
+    /// Value written into `.ndisplay` `renderSyncPolicy.type`.
+    pub fn as_ndisplay_type(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::EthernetBarrier => "ethernet_barrier",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema, Default)]
 pub struct OutputTopology {
     pub nodes: Vec<OutputNode>,
+    /// Cluster present alignment. Absent in legacy project.yaml → ethernet_barrier.
+    #[serde(default)]
+    pub render_sync: RenderSyncPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]

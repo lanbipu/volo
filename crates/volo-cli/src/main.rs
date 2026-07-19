@@ -45,6 +45,8 @@ pub mod manifest;
 // step 3c: LMT's CLI layer, platformed as the `lmt` subcommand group (parallel
 // to `cache`). Its clap tree + envelope/dispatch are kept intact under `lmt::`.
 pub mod lmt;
+/// nDisplay output runtime (`voloctl output show|start|stop|play-sequence|…`).
+pub mod ndisplay_output;
 
 // Re-export the emitter trait + the generic extension trait so domain handlers
 // can `use crate::{Emitter, EmitSerialize}` in one line.
@@ -70,6 +72,7 @@ use args::Cli;
 /// drift out of sync with each other.
 const CACHE_SUBCOMMAND: &str = "cache";
 const LMT_SUBCOMMAND: &str = "lmt";
+const OUTPUT_SUBCOMMAND: &str = "output";
 
 /// 顶层 `voloctl` command:含 `cache` 子命令组,body 是 Volo Cache 的 `Cli` 命令树。
 /// `Cli::command()` 直接以 name = "cache" 定义,这里只是把它挂到顶层 `voloctl`
@@ -81,12 +84,14 @@ fn voloctl_command() -> clap::Command {
     // `cache` reparent above, `lmt::cli::Cli::command()` returns the original
     // LMT tree (name = "lmt"); renaming is a no-op but kept explicit for parity.
     let lmt = lmt::cli::Cli::command().name(LMT_SUBCOMMAND);
+    let output = ndisplay_output::Cli::command().name(OUTPUT_SUBCOMMAND);
     clap::Command::new("voloctl")
         .about("VP unified command-line interface")
         .subcommand_required(true)
         .arg_required_else_help(true)
         .subcommand(cache)
         .subcommand(lmt)
+        .subcommand(output)
 }
 
 fn main() {
@@ -154,6 +159,14 @@ fn cli_main() {
                         Err(e) => emit_lmt_parse_error(e, json_mode),
                     };
                     let code = lmt::commands::dispatch(cli);
+                    std::process::exit(code);
+                }
+                Some((OUTPUT_SUBCOMMAND, sub)) => {
+                    let cli = match ndisplay_output::Cli::from_arg_matches(sub) {
+                        Ok(c) => c,
+                        Err(e) => emit_parse_error(e, json_mode),
+                    };
+                    let code = ndisplay_output::dispatch(cli);
                     std::process::exit(code);
                 }
                 // Unreachable while subcommand_required is set.

@@ -1543,8 +1543,13 @@ export interface ScreenConfig {
   origin_aligned?: boolean;
 }
 
+/** nDisplay renderSyncPolicy.type; default ethernet_barrier (sequence + static). */
+export type RenderSyncPolicy = "none" | "ethernet_barrier";
+
 export interface OutputTopology {
   nodes: OutputNode[];
+  /** Absent on legacy project.yaml → backend defaults to ethernet_barrier. */
+  render_sync?: RenderSyncPolicy;
 }
 
 export interface OutputNode {
@@ -1567,8 +1572,26 @@ export interface MachineRef {
 /* ====================== nDisplay output runtime ====================== */
 
 export type OutputMode = "show" | "clear";
-export type OutputOperation = "preflight" | "deploy" | "start" | "show" | "clear" | "stop";
+export type OutputOperation =
+  | "preflight"
+  | "deploy"
+  | "start"
+  | "show"
+  | "clear"
+  | "stop"
+  | "play_sequence"
+  | "sequence_abort";
 export type OutputEventState = "queued" | "running" | "ok" | "error";
+/** Runner phases for `output_play_sequence` (plus legacy running/ok/error). */
+export type OutputRunnerState =
+  | "running"
+  | "ok"
+  | "error"
+  | "pushing"
+  | "preloading"
+  | "playing"
+  | "done"
+  | "failed";
 
 export interface RuntimePaths {
   editor_path: string;
@@ -1602,6 +1625,16 @@ export interface ShowRequest extends RuntimeRequest {
   stage?: StageShowLayout | null;
 }
 
+export interface PlaySequenceRequest extends RuntimeRequest {
+  /** Local directory of contiguous `frame_%04d.png` (mesh-vba naming). */
+  sequence_dir: string;
+  fps: number;
+  /** Paste screen-sized frames onto the topology canvas at this origin. */
+  screen_origin_px?: [number, number];
+}
+
+export interface SequenceAbortRequest extends RuntimeRequest {}
+
 export interface OutputNodeResult {
   node_id: string;
   host: string;
@@ -1630,7 +1663,7 @@ export interface NDisplayOutputEvent {
 export interface NDisplayOutputRunnerEvent {
   session_id: string;
   operation: OutputOperation;
-  state: "running" | "ok" | "error";
+  state: OutputRunnerState;
   completed: number;
   total: number;
   message: string;

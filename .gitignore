@@ -54,9 +54,20 @@ testdata/
 !crates/mesh-app/testdata/ndisplay/
 !crates/mesh-app/testdata/ndisplay/golden-ue58-two-node.ndisplay
 
-# Bundled UE runtime template (binary asset is intentionally versioned)
+# Bundled UE runtime template (binary asset + native module intentionally versioned)
 !src-tauri/resources/ue-template/
 !src-tauri/resources/ue-template/VoloOutput/
 !src-tauri/resources/ue-template/VoloOutput/Content/
 !src-tauri/resources/ue-template/VoloOutput/Content/VoloOutput/
 !src-tauri/resources/ue-template/VoloOutput/Content/VoloOutput/BP_VoloOutput.uasset
+!src-tauri/resources/ue-template/VoloOutput/Source/
+!src-tauri/resources/ue-template/VoloOutput/Source/**
+!src-tauri/resources/ue-template/VoloOutput/Binaries/
+!src-tauri/resources/ue-template/VoloOutput/Binaries/Win64/
+!src-tauri/resources/ue-template/VoloOutput/Binaries/Win64/UnrealEditor-VoloOutput.dll
+!src-tauri/resources/ue-template/VoloOutput/Binaries/Win64/UnrealEditor.modules
+!src-tauri/resources/ue-template/VoloOutput/Binaries/Win64/VoloOutputEditor.target
+# Intermediate: keep TargetInfo.json for deploy; ignore UBT junk
+src-tauri/resources/ue-template/VoloOutput/Intermediate/*
+!src-tauri/resources/ue-template/VoloOutput/Intermediate/TargetInfo.json
+src-tauri/resources/ue-template/VoloOutput/**/*.pdb

@@ -8,8 +8,10 @@ import type {
   NDisplayOutputEvent,
   NDisplayOutputRunnerEvent,
   OutputCommandResult,
+  PlaySequenceRequest,
   RuntimePaths,
   RuntimeRequest,
+  SequenceAbortRequest,
   ShowRequest,
 } from "./types";
 
@@ -37,6 +39,14 @@ export const outputShow = (request: ShowRequest) =>
 
 export const outputStop = (request: RuntimeRequest) =>
   call<OutputCommandResult>("output_stop", { request });
+
+/** Push + play a PNG sequence (v2 manifest). Not routed through output_show. */
+export const outputPlaySequence = (request: PlaySequenceRequest) =>
+  call<OutputCommandResult>("output_play_sequence", { request });
+
+/** Abort sequence playback via mode=clear. */
+export const outputSequenceAbort = (request: SequenceAbortRequest) =>
+  call<OutputCommandResult>("output_sequence_abort", { request });
 
 export const listenNDisplayOutputEvent = (
   handler: (payload: NDisplayOutputEvent) => void,

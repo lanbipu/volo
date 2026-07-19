@@ -54,16 +54,28 @@ pub struct StageComposite {
     pub area: u64,
 }
 
-pub const OUTPUT_MANIFEST_SCHEMA_VERSION: &str = "volo_output.v1";
+/// Current publish-side schema. v2 is a v1 superset (show/clear unchanged;
+/// adds mode=sequence). BP accepts both; Rust always emits v2.
+pub const OUTPUT_MANIFEST_SCHEMA_VERSION: &str = "volo_output.v2";
+
+pub(crate) fn require_positive_fps(fps: f64) -> VoloResult<()> {
+    if !fps.is_finite() || fps <= 0.0 {
+        return Err(VoloError::InvalidInput(
+            "fps must be a finite positive number".into(),
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputManifestMode {
     Show,
     Clear,
+    Sequence,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OutputManifest {
     pub schema_version: String,
     pub revision: u64,
@@ -75,6 +87,13 @@ pub struct OutputManifest {
     /// 契约侧双字段兼容两种命名。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub texture_path: Option<String>,
+    /// Node-local directory of `frame_%04d.png` (mode=sequence only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sequence_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fps: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crop_x: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -411,6 +430,9 @@ pub fn generate_manifest_json(
                     mode,
                     image_path: Some(image_path.clone()),
                     texture_path: Some(image_path.clone()),
+                    sequence_dir: None,
+                    frame_count: None,
+                    fps: None,
                     crop_x: Some(crop_x),
                     crop_y: Some(crop_y),
                     crop_w: Some(crop_w),
@@ -444,6 +466,9 @@ pub fn generate_manifest_json(
                     mode,
                     image_path: None,
                     texture_path: None,
+                    sequence_dir: None,
+                    frame_count: None,
+                    fps: None,
                     crop_x: None,
                     crop_y: None,
                     crop_w: None,
@@ -453,6 +478,67 @@ pub fn generate_manifest_json(
                 manifests.insert(node.node_id.clone(), manifest);
             }
         }
+        OutputManifestMode::Sequence => {
+            return Err(VoloError::InvalidInput(
+                "use generate_sequence_manifest_json for mode=sequence".into(),
+            ));
+        }
+    }
+    Ok(manifests)
+}
+
+/// Per-node v2 sequence manifests. Same `sequence_dir` / fps / frame_count on
+/// every node; crop comes from each node's viewport (v1 show semantics).
+pub fn generate_sequence_manifest_json(
+    screen: &ScreenConfig,
+    revision: u64,
+    sequence_dir: &str,
+    frame_count: u32,
+    fps: f64,
+) -> VoloResult<BTreeMap<String, Value>> {
+    if sequence_dir.trim().is_empty() {
+        return Err(VoloError::InvalidInput(
+            "sequence_dir must not be empty".into(),
+        ));
+    }
+    if frame_count == 0 {
+        return Err(VoloError::InvalidInput(
+            "frame_count must be >= 1".into(),
+        ));
+    }
+    require_positive_fps(fps)?;
+    let validation = validate_topology(screen)?;
+    if !validation.is_valid() {
+        return Err(VoloError::InvalidInput(format!(
+            "invalid output topology: {}",
+            validation
+                .errors
+                .iter()
+                .map(|issue| issue.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; ")
+        )));
+    }
+    let topology = screen.output_topology.as_ref().expect("validated topology");
+    let mut manifests = BTreeMap::new();
+    for node in &topology.nodes {
+        let [crop_x, crop_y, crop_w, crop_h] = node.viewport_rect_px;
+        let manifest = serde_json::to_value(OutputManifest {
+            schema_version: OUTPUT_MANIFEST_SCHEMA_VERSION.to_string(),
+            revision,
+            mode: OutputManifestMode::Sequence,
+            image_path: None,
+            texture_path: None,
+            sequence_dir: Some(sequence_dir.to_string()),
+            frame_count: Some(frame_count),
+            fps: Some(fps),
+            crop_x: Some(crop_x),
+            crop_y: Some(crop_y),
+            crop_w: Some(crop_w),
+            crop_h: Some(crop_h),
+        })
+        .map_err(|error| VoloError::Other(format!("serialize output manifest: {error}")))?;
+        manifests.insert(node.node_id.clone(), manifest);
     }
     Ok(manifests)
 }
@@ -597,7 +683,10 @@ pub fn generate_ndisplay_json(
                     }
                 },
                 "sync": {
-                    "renderSyncPolicy": {"type": "none", "parameters": {}},
+                    "renderSyncPolicy": {
+                        "type": topology.render_sync.as_ndisplay_type(),
+                        "parameters": {}
+                    },
                     "inputSyncPolicy": {"type": "ReplicatePrimary", "parameters": {}}
                 },
                 "network": {
@@ -704,7 +793,10 @@ mod tests {
             cabinet_count: [2, 1],
             cabinet_size_mm: [1000.0, 1000.0],
             pixels_per_cabinet: Some([800, 600]),
-            output_topology: Some(OutputTopology { nodes }),
+            output_topology: Some(OutputTopology {
+                nodes,
+                ..Default::default()
+            }),
             shape_prior: ShapePriorConfig::Flat,
             shape_mode: ShapeMode::Rectangle,
             irregular_mask: Vec::new(),
@@ -814,7 +906,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_show_manifest_matches_v1_contract() {
+    fn generated_show_manifest_matches_v2_contract() {
         let config = screen(vec![
             node("RazerNode", 0, true, "razer"),
             node("LanNode", 800, false, "lanpc"),
@@ -831,11 +923,50 @@ mod tests {
         ]);
         let actual = generate_manifest_json(&config, 42, OutputManifestMode::Show, &paths).unwrap();
         let expected: Value = serde_json::from_str(include_str!(
-            "../testdata/ndisplay/golden-output-manifest-v1.json"
+            "../testdata/ndisplay/golden-output-manifest-v2-show.json"
         ))
         .unwrap();
         assert_eq!(actual["LanNode"], expected);
         assert_eq!(actual["RazerNode"]["crop_x"], 0);
+        assert_eq!(actual["LanNode"]["schema_version"], OUTPUT_MANIFEST_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn generated_sequence_manifest_matches_v2_contract() {
+        let config = screen(vec![
+            node("RazerNode", 0, true, "razer"),
+            node("LanNode", 800, false, "lanpc"),
+        ]);
+        let actual = generate_sequence_manifest_json(
+            &config,
+            44,
+            r"C:\ProgramData\UECM\ndisplay-output\session\seq-44",
+            18,
+            2.0,
+        )
+        .unwrap();
+        let expected: Value = serde_json::from_str(include_str!(
+            "../testdata/ndisplay/golden-output-manifest-v2-sequence.json"
+        ))
+        .unwrap();
+        assert_eq!(actual["LanNode"], expected);
+        assert_eq!(actual["RazerNode"]["crop_x"], 0);
+        assert_eq!(actual["RazerNode"]["frame_count"], 18);
+        assert!(actual["RazerNode"].get("image_path").is_none());
+    }
+
+    #[test]
+    fn render_sync_none_overrides_default_ethernet_barrier() {
+        let mut config = screen(vec![node("LanNode", 0, true, "lanpc")]);
+        if let Some(topology) = config.output_topology.as_mut() {
+            topology.render_sync = volo_shared::dto::RenderSyncPolicy::None;
+        }
+        let resolved = BTreeMap::from([("LanNode".to_string(), "127.0.0.1".to_string())]);
+        let actual = generate_ndisplay_json(&config, &resolved, "5.8").unwrap();
+        assert_eq!(
+            actual["nDisplay"]["cluster"]["sync"]["renderSyncPolicy"]["type"],
+            "none"
+        );
     }
 
     #[test]

@@ -85,7 +85,7 @@ pub fn build_ssh_args(
         "-o".into(),
         "IdentitiesOnly=yes".into(),
         "-o".into(),
-        format!("UserKnownHostsFile={known_hosts}"),
+        format!("UserKnownHostsFile=\"{known_hosts}\""),
         "-o".into(),
         "StrictHostKeyChecking=accept-new".into(),
         "-o".into(),
@@ -118,7 +118,7 @@ pub fn build_ssh_inline_powershell_args(
         "-o".into(),
         "IdentitiesOnly=yes".into(),
         "-o".into(),
-        format!("UserKnownHostsFile={known_hosts}"),
+        format!("UserKnownHostsFile=\"{known_hosts}\""),
         "-o".into(),
         "StrictHostKeyChecking=accept-new".into(),
         "-o".into(),
@@ -223,7 +223,7 @@ pub fn scp_push(
         .arg("IdentitiesOnly=yes")
         .arg("-o")
         .arg(format!(
-            "UserKnownHostsFile={}",
+            "UserKnownHostsFile=\"{}\"",
             known_hosts.to_string_lossy()
         ))
         .arg("-o")
@@ -267,7 +267,7 @@ fn scp_base(key_path: &Path, known_hosts: &Path) -> Command {
         .arg("IdentitiesOnly=yes")
         .arg("-o")
         .arg(format!(
-            "UserKnownHostsFile={}",
+            "UserKnownHostsFile=\"{}\"",
             known_hosts.to_string_lossy()
         ))
         .arg("-o")
@@ -613,7 +613,7 @@ mod tests {
         assert!(args.contains(&"/cfg/uecm_ed25519".to_string()));
         assert!(args
             .iter()
-            .any(|a| a == "UserKnownHostsFile=/cfg/known_hosts"));
+            .any(|a| a == r#"UserKnownHostsFile="/cfg/known_hosts""#));
         assert!(args.iter().any(|a| a == "StrictHostKeyChecking=accept-new"));
         assert!(args.iter().any(|a| a == "BatchMode=yes"));
         assert!(args.iter().any(|a| a == "ServerAliveInterval=30"));
@@ -635,7 +635,9 @@ mod tests {
         );
         assert!(args.contains(&"-i".to_string()));
         assert!(args.contains(&"/cfg/uecm_ed25519".to_string()));
-        assert!(args.iter().any(|a| a == "UserKnownHostsFile=/cfg/known_hosts"));
+        assert!(args
+            .iter()
+            .any(|a| a == r#"UserKnownHostsFile="/cfg/known_hosts""#));
         assert!(args.iter().any(|a| a == "StrictHostKeyChecking=accept-new"));
         assert!(args.iter().any(|a| a == "BatchMode=yes"));
         assert!(args.iter().any(|a| a == "ServerAliveInterval=30"));

@@ -38,7 +38,7 @@
         }
       },
       "sync": {
-        "renderSyncPolicy": {"type": "none", "parameters": {}},
+        "renderSyncPolicy": {"type": "ethernet_barrier", "parameters": {}},
         "inputSyncPolicy": {"type": "ReplicatePrimary", "parameters": {}}
       },
       "network": {

@@ -3,6 +3,13 @@
   "EngineAssociation": "5.8",
   "Category": "Volo",
   "Description": "Minimal nDisplay texture-output runtime bundled with Volo",
+  "Modules": [
+    {
+      "Name": "VoloOutput",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    }
+  ],
   "Plugins": [
     {
       "Name": "nDisplay",

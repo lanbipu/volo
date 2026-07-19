@@ -1,88 +1,109 @@
-# BP_VoloOutput Blueprint 指南
+# BP_VoloOutput / AVoloOutputRoot 指南
 
 ## 1. 目标
 
-`BP_VoloOutput` 是 nDisplay Root Actor Blueprint。它定时轮询 manifest，把节点对应的 PNG 作为 Viewport Texture Replacement 输入，并保留纹理成员引用以避免 GC。
+运行时根演员是 `AVoloOutputRoot`（C++，`VoloOutput` 模块）。`BP_VoloOutput` 是
+其 DisplayClusterBlueprint 子类，保留 `VoloScreen` 等 nDisplay 场景组件；EventGraph
+在 S2 起已清空，轮询 / show / clear / sequence 逻辑全部在 C++ 中。
+
+`.ndisplay` 的 `assetPath` 仍为：
+
+```text
+/Game/VoloOutput/BP_VoloOutput.BP_VoloOutput
+```
+
+（nDisplay 无法把 `/Script/VoloOutput.VoloOutputRoot` 当配置资产加载。）
 
 ## 2. 插件与项目
 
-项目启用：
+`VoloOutput.uproject`：
 
-- nDisplay
-- Json Blueprint Utilities
-- Remote Control
-- Remote Control Web Interface
+- Modules：`VoloOutput`（Runtime）
+- Plugins：nDisplay、TextureShare、Remote Control、Remote Control Web Interface、
+  Json Blueprint Utilities
 
-`DefaultEngine.ini` 使用 `DisplayClusterGameEngine` 与 `DisplayClusterViewportClient`，启动关卡为 `/Engine/Maps/Entry`。
+`DefaultEngine.ini` 使用 `DisplayClusterGameEngine` 与 `DisplayClusterViewportClient`，
+启动关卡为 `/Engine/Maps/Entry`。
 
-## 3. 成员变量
+模板必须附带预编译：
+
+```text
+Binaries/Win64/UnrealEditor-VoloOutput.dll
+Binaries/Win64/UnrealEditor.modules
+Binaries/Win64/VoloOutputEditor.target
+```
+
+缺少 `.target` 时 `UnrealEditor.exe -game` 会卡在 UBT/receipt 探测。
+
+## 3. 成员（C++ `AVoloOutputRoot`）
 
 | 变量 | 类型 | 默认值 |
 | --- | --- | --- |
-| `ManifestPath` | String | `C:\ProgramData\UECM\ndisplay-output\session\manifest.json` |
-| `LastRevision` | Integer | `-1` |
-| `ActiveTexture` | Texture2D Object Reference | 空 |
-| `PollInterval` | Float | `0.5` |
-
-`ActiveTexture` 必须是成员变量，用于持有导入纹理引用，避免运行时 GC 后黑屏。
+| `ManifestPath` | FString | `C:\ProgramData\UECM\ndisplay-output\session\manifest.json` |
+| `LastRevision` | int64 | `-1` |
+| `ActiveTexture` | UTexture2D* | null |
+| `PollInterval` | float | `0.5` |
+| `Frames` | TArray\<UTexture2D*\> | 空（防 GC） |
+| `SeqRevision` / `SeqFps` / `SeqT0` | int64 / float / double | `-1` / `2` / `0` |
+| `SeqState` | Idle / Preloading / Ready / Playing | Idle |
+| `ReadySet` | TSet\<FString\> | 空（primary） |
 
 ## 4. BeginPlay
 
-使用 `Set Timer by Event`：`Time=PollInterval`、`Looping=true`，事件绑定 `PollManifest`。不要使用 Tick。
+- 注册 JSON cluster event listener（`volo.sl.ready` / `volo.sl.start`）
+- `SetTimer` 每 `PollInterval` 调用 `PollManifest`
+- 序列步进在 `Tick`（仅 Playing / Preloading）
 
 ## 5. PollManifest
 
-1. `Load Json from File`；失败立即返回。
-2. 仅当 `revision > LastRevision` 时继续；所有失败路径都不能更新 `LastRevision`。
-3. `mode == "clear"` 时调用 `SetReplaceTextureFlagForAllViewports(false)`，成功后更新 revision。
-4. show 路径调用 `Import File as Texture 2D`，结果写入 `ActiveTexture`，依次设置 `SRGB=true`、`MipGenSettings=NoMipmaps`、`Filter=Nearest`。
-5. 通过 `Get Current Config Data → Cluster → Nodes → Find(Get Node ID) → Viewports → Values → [0]` 定位本节点 viewport。
-6. 从顶层读取 `image_path` 与 `crop_x`、`crop_y`、`crop_w`、`crop_h`。注意：现存手工 `BP_VoloOutput.uasset` 实际读取的字段名是 `texture_path`（偏离本指南），生产 manifest 因此双字段同发；新建/修复 Blueprint 时应统一改回 `image_path`。组装 Replace：`bAllowReplace=true`、`SourceTexture=ActiveTexture`、`bShouldUseTextureRegion=true`，`TextureRegion` 写入这四个 crop 值。
-7. `Set Members in RenderSettings` 后必须连接 `Set Render Settings` 写回；只修改 struct 副本不会生效。
-8. 调用 `SetReplaceTextureFlagForAllViewports(true)`；全部成功后才更新 `LastRevision`。
+1. 读 manifest JSON；失败立即返回。
+2. 仅当 `revision > LastRevision` 时继续。
+3. `mode == clear`：中止序列（若在播）→ 关 replace → 更新 revision。
+4. `mode == sequence`：进入预载（§5.1）。
+5. show：`ImportFileAsTexture2D`（`FImageUtils`）→ SRGB / NoMipmaps / Nearest →
+   写本节点 viewport `Replace` + crop → `SetReplaceTextureFlagForAllViewports(true)`。
 
-`TextureRegion` 在不同 Blueprint UI 中可能显示为 `IntRect`，也可能展开成 `Origin + Size`，按实际引脚形态填写同一组 `crop_x/y/w/h`。
+### 5.1 序列模式
 
-## 6. nDisplay 配置命名
+1. 解析 `sequence_dir` / `frame_count` / `fps` / crop。
+2. Preloading：每 tick 导入 1–2 帧到 `Frames[]`；预载期间黑场。
+3. 完成：日志 `VoloOutput: sequence ready rev=<n> node=<id>`，emit `volo.sl.ready`。
+4. Primary 收齐 cluster node ids → emit `volo.sl.start`。
+5. 全集群收到 start：`SeqT0 = GameTime`，Playing；日志
+   `VoloOutput: sequence start rev=<n>`。
+6. Playing：`idx = floor((t - SeqT0) * fps)` 换 `SourceTexture`；越界 → 黑场 +
+   `VoloOutput: sequence done rev=<n>`。
+7. clear 中途：`VoloOutput: sequence abort rev=<n>`。
 
-Blueprint 与外部 `.ndisplay` 必须一致：
+S2 实测（Razer 单节点，20 帧 @ 2 fps）：预载约 **1.72 s**；start→done ≈ **10.0 s**。
 
-- cluster node：例如 `LanNode`
-- viewport：例如 `LanViewport`
-- Simple Projection screen component：`VoloScreen`
+## 6. 源码位置
 
-外部配置引用 `VoloScreen` 时，Root Actor Blueprint 中也必须存在同名 screen component，否则会持续报 `Couldn't create warp interface`。
-
-## 7. 单节点验收
-
-### 7.1 启动命令
-
-```powershell
-"D:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor.exe" "C:\ProgramData\UECM\ndisplay-spike\VoloOutputSpike.uproject" -game -messaging -dc_cluster -dc_cfg="C:\ProgramData\UECM\ndisplay-spike\lan-rc-only.ndisplay" -dc_node=LanNode -dc_dev_mono -windowed -ResX=800 -ResY=600 -RemoteControlIsHeadless -RCWebControlEnable -ClusterForceApplyResponse -log
+```text
+src-tauri/resources/ue-template/VoloOutput/Source/VoloOutput/
+  VoloOutputRoot.h/.cpp
+  VoloOutput.Build.cs
 ```
 
-UE 5.8 缺少 `-dc_dev_mono` 时不会创建 nDisplay 渲染设备；不能以“进程仍在运行”判断启动成功。
+真机重编：
 
-生产启动参数另需 `-NoScreenMessages`：`dc_dev_mono` 使视图成为 stereo view，引擎会在左上角常驻 `StereoView: Primary` 调试字并上墙。生产启动还必须经 Interactive 计划任务落到交互桌面会话，SSH 网络登录直启会因 session 0 无桌面报 `DXGI_ERROR_NOT_CURRENTLY_AVAILABLE` 秒崩（见 `volo-output-orchestration.md`）。
+```bat
+"%UE%\Engine\Build\BatchFiles\Build.bat" VoloOutputEditor Win64 Development ^
+  -Project="C:\ProgramData\UECM\ndisplay-output\VoloOutput\VoloOutput.uproject" -WaitMutex
+```
 
-### 7.0 revision 门控与日志
+BP 重父类（编辑器，交互桌面会话）：
 
-2026-07-17 晚节点级直测确认：revision 门控**正常**（每个新 revision 恰好 apply 一次，12 个轮询周期零重复；clear 正常清屏）。`Print String` 的 `VOLO_OUTPUT applied revision=` 已改接 manifest 解析出的 revision 值（早期版本恒打印 `1`，后一度接 `Get LastRevision` 导致差一版），2026-07-18 直测确认打印值与实际 apply 的 revision 完全一致，可作为日志侧核对依据。
+```text
+UnrealEditor.exe VoloOutput.uproject -ExecutePythonScript=.../reparent_bp.py
+```
 
-### 7.2 A 图 + crop
+## 7. nDisplay 配置命名
 
-`revision=1`、`mode=show`、A 图、crop `(4,0,4,4)`。应只显示绿/黄区域并 apply 一次。
+- cluster node / viewport 名与拓扑一致
+- Simple Projection screen component：`VoloScreen`（在 BP SCS 上）
 
-### 7.3 B 图与 clear
+## 8. 单节点验收（摘要）
 
-用新 revision 切换 B 图，再用 `mode=clear` 清空；两步 PID 均不得变化。
-
-### 7.4 半写容错
-
-先放入截断 JSON，等待至少三个轮询周期，再以同目录临时文件原子替换完整版。截断期间不得改变画面或 revision；完整版只 apply 一次。
-
-## 8. 像素 1:1
-
-使用 64×64 硬边测试图：1 px 棋盘格、1 px 边框、四角 marker。测试时 crop、viewport region 与窗口输出必须同为 64×64。
-
-nDisplay 在输入输出尺寸不同时会强制使用 `SF_Bilinear`；`Filter=Nearest` 不能覆盖该 copy shader 决策。因此放大 64×64 到 800×600 不是像素 1:1 验收条件。
+生产启动必须经 Interactive 计划任务；缺 `-dc_dev_mono` 不会创建 nDisplay 渲染设备。
+序列验收看固定前缀日志 + 视觉帧序；CLI：`voloctl output play-sequence`。

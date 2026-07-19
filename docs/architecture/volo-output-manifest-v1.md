@@ -1,5 +1,8 @@
 # Volo Output Manifest v1
 
+> 2026-07-19：发布侧已升 [v2](./volo-output-manifest-v2.md)（`volo_output.v2`）。
+> v2 是本契约超集；show/clear 字段语义不变。下文保留为历史 / BP 兼容参照。
+
 ## 契约
 
 生产 manifest 的 schema version 固定为 `volo_output.v1`。每个 nDisplay 节点接收一份只描述本节点的扁平 manifest；例如 `LanNode`：

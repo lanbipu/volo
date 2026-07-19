@@ -159,7 +159,11 @@ import { listMachines } from "../api/commands";
         });
         const next = Object.assign({}, latest, {
           screens: nextScreens,
-          output_topology: { nodes: windowed },
+          output_topology: Object.assign(
+            {},
+            latest.output_topology || {},
+            { nodes: windowed },
+          ),
         });
         await saveProjectYaml(proj.path, next);
         await CX.openProjectPath(proj.path, s);

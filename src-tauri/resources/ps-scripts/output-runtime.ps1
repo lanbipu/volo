@@ -314,6 +314,14 @@ try {
         $backdropMarkerQ = $backdropMarker -replace "'", "''"
         $logPathQ = $logPath -replace "'", "''"
         $backdropTitleQ = $backdropTitle -replace "'", "''"
+        # ethernet_barrier: HWND overlay (backdrop/pin/burst SetWindowPos) races the
+        # first WaitForFrameCompletion and leaves the secondary node off
+        # present_barrier. Auto-skip overlay for that sync policy; `none` keeps A1/A2'.
+        $forceSkipOverlay = $false
+        try {
+            $cfgRaw = Get-Content -LiteralPath ([string]$request.config_path) -Raw -ErrorAction Stop
+            if ($cfgRaw -match '"type"\s*:\s*"ethernet_barrier"') { $forceSkipOverlay = $true }
+        } catch {}
         # Pin for process lifetime (cap 600s). Phase A2': UE may SW_SHOW early
         # (needed for D3D present) but stays HWND_NOTOPMOST under a black TOPMOST
         # backdrop until abslog evidence + grace — never SW_HIDE (that exposed the
@@ -383,8 +391,13 @@ $script:evidenceAt = $null
 $script:evidenceSeen = $false
 $script:lastEvidenceCheck = [DateTime]::MinValue
 $script:lastTopmost = Get-Date
-# Grace after Create viewport manager before lifting the black cover.
-$script:revealGraceMs = 1500
+$script:lastCoverZ = [DateTime]::MinValue
+$script:pinFrozen = $false
+# Lift cover ASAP after Create viewport manager. ethernet_barrier does
+# WaitForFrameCompletion+SyncOnBarrier on the first present; hammering
+# SetWindowPos / TOPMOST during that window left LanNode stuck on the GPU
+# fence while Node1 waited alone at present_barrier (~60s → EngineExit).
+$script:revealGraceMs = 0
 function Test-VoloRenderEvidence {
     if ($script:evidenceSeen) { return $true }
     if ([string]::IsNullOrWhiteSpace($LogPath)) { return $false }
@@ -469,16 +482,13 @@ while ((Get-Date) -lt $deadline) {
                     Add-Content -LiteralPath $log -Encoding ASCII
             }
             if ($forceReveal -or (((Get-Date) - $script:evidenceAt).TotalMilliseconds -ge $script:revealGraceMs)) {
-                # Lift cover only after UE has had time to present under it.
-                # Order: mark revealed → promote UE → THEN drop backdrop.
+                # Drop cover ONLY — do not SetWindowPos/SetForeground here.
+                # Reveal used to promote TOPMOST at Create-viewport time; that
+                # coincides with ethernet_barrier's first WaitForFrameCompletion
+                # and left LanNode off the present_barrier (~60s timeout).
                 $script:revealed = $true
-                foreach ($hwnd in $hwnds) {
-                    Apply-VoloBorderless $hwnd | Out-Null
-                    [void][VoloWin]::SetWindowPos($hwnd, [IntPtr](-1), $WinX, $WinY, $WinW, $WinH, 0x0060)
-                    [void][VoloWin]::ShowWindow($hwnd, 5)
-                    [void][VoloWin]::SetForegroundWindow($hwnd)
-                }
-                ('{0:o} reveal A2prime evidence={1} force={2} hwnds={3} graceMs={4}' -f `
+                $script:pinFrozen = $true
+                ('{0:o} reveal A2prime evidence={1} force={2} hwnds={3} graceMs={4} pinFrozen (no SetWindowPos)' -f `
                     (Get-Date), (-not $forceReveal), $forceReveal, $hwnds.Count, $script:revealGraceMs) |
                     Add-Content -LiteralPath $log -Encoding ASCII
                 Start-Sleep -Milliseconds 50
@@ -487,24 +497,27 @@ while ((Get-Date) -lt $deadline) {
         }
     }
 
+    # Critical: do not touch HWND during first ethernet_barrier presents.
+    if ($script:pinFrozen) {
+        Start-Sleep -Milliseconds 50
+        continue
+    }
+
     foreach ($hwnd in $hwnds) {
         if (-not $script:revealed) {
             $isInitial = -not $script:firstPlaced
             if (Place-VoloWindow $hwnd $isInitial $true) {
                 $script:firstPlaced = $true
-            } else {
-                # Stay shown + NOTOPMOST under backdrop (no hide).
+            } elseif (((Get-Date) - $script:lastCoverZ).TotalMilliseconds -ge 500) {
+                # Stay shown + NOTOPMOST under backdrop — at most 2 Hz (was every 8ms).
                 [void][VoloWin]::SetWindowPos($hwnd, [IntPtr](-2), 0, 0, 0, 0, 0x0013)
-            }
-        } else {
-            if (-not (Place-VoloWindow $hwnd $false $false) -and (((Get-Date) - $script:lastTopmost).TotalSeconds -ge 2)) {
-                [void][VoloWin]::SetWindowPos($hwnd, [IntPtr](-1), 0, 0, 0, 0, 0x0013) # NOSIZE|NOMOVE|NOACTIVATE
-                $script:lastTopmost = Get-Date
+                $script:lastCoverZ = Get-Date
             }
         }
+        # After reveal: pin stays frozen (no Place / TOPMOST refresh).
     }
     $elapsed = ((Get-Date) - $t0).TotalSeconds
-    $sleepMs = if (-not $script:firstPlaced) { 1 } elseif (-not $script:revealed) { 8 } elseif ($elapsed -lt 120) { 8 } else { 100 }
+    $sleepMs = if (-not $script:firstPlaced) { 1 } elseif (-not $script:revealed) { 8 } elseif ($elapsed -lt 120) { 50 } else { 100 }
     Start-Sleep -Milliseconds $sleepMs
 }
 Signal-VoloBackdropDone
@@ -661,6 +674,11 @@ Remove-Item -LiteralPath $MarkerPath -Force -ErrorAction SilentlyContinue
             '        # Keep going — SSH seed + -WinX/-WinY/-ForceRes still apply.',
             '    }',
             '}',
+            # Skip black backdrop + pin when: ethernet_barrier (auto), env, or flag.
+            # Set VOL_SKIP_NDISPLAY_OVERLAY=1 in the interactive launch environment.
+            ('$skipOverlay = {0} -or ($env:VOL_SKIP_NDISPLAY_OVERLAY -eq ''1'') -or (Test-Path -LiteralPath ''C:\ProgramData\UECM\ndisplay-output\session\skip-overlay.flag'')' -f ($(if ($forceSkipOverlay) { '$true' } else { '$false' }))),
+            'if ($skipOverlay) { Write-Output ''skip-overlay: backdrop+pin+burst disabled (ethernet_barrier or flag/env)'' }',
+            'if (-not $skipOverlay) {',
             # Phase A1: black TOPMOST backdrop on target Bounds BEFORE Start-Process.
             # Wait until marker=ready so the cover is painted before UE can flash.
             'Remove-Item -LiteralPath $backdropMarker -Force -ErrorAction SilentlyContinue',
@@ -679,8 +697,10 @@ Remove-Item -LiteralPath $MarkerPath -Force -ErrorAction SilentlyContinue
             '}',
             # Even if marker race fails, give the form one frame to paint.
             'if (-not $bdReady) { Start-Sleep -Milliseconds 200 }',
+            '} else { Write-Output ''VOL_SKIP_NDISPLAY_OVERLAY=1: skipping backdrop'' }',
             ('$p = Start-Process -FilePath ''{0}'' -ArgumentList ''{1}'' -PassThru' -f $exeQ, $argQ),
             'if (-not $p) { throw ''Start-Process UnrealEditor returned no process'' }',
+            'if (-not $skipOverlay) {',
             # Detached pin: A2' — show UE under backdrop (NOTOPMOST), lift cover after evidence.
             ('$pinArgs = ''-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -UePid '' + $p.Id + '' -WinX '' + $pinX + '' -WinY '' + $pinY + '' -WinW '' + $pinW + '' -WinH '' + $pinH + '' -LogPath "{1}" -BackdropMarker "{2}"''' -f $pinPathQ, $logPathQ, $backdropMarkerQ),
             'Start-Process -FilePath ''powershell.exe'' -ArgumentList $pinArgs -WindowStyle Hidden | Out-Null',
@@ -719,7 +739,8 @@ Remove-Item -LiteralPath $MarkerPath -Force -ErrorAction SilentlyContinue
             '        }',
             '    }',
             '    Start-Sleep -Milliseconds 1',
-            '}'
+            '}',
+            '} else { Write-Output (''VOL_SKIP_NDISPLAY_OVERLAY=1: skipping pin+burst for PID={0}'' -f $p.Id) }'
         )
         Set-Content -LiteralPath $launcherPath -Value $launcherLines -Encoding ASCII
         $taskName = "VoloOutput-$nodeId-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
@@ -786,6 +807,34 @@ Remove-Item -LiteralPath $MarkerPath -Force -ErrorAction SilentlyContinue
         }
         if ($null -eq $evidence) { throw "timeout after 240s waiting for cluster render evidence; log=$logPath" }
         Reply $true "$evidence; log=$logPath" $true
+        exit 0
+    }
+
+    if ($action -eq "wait_log") {
+        $project = [string]$request.project_path
+        $nodeId = [string]$request.node_id
+        $pattern = [string]$request.pattern
+        $timeoutSecs = [int]$request.timeout_secs
+        if ([string]::IsNullOrWhiteSpace($pattern)) { throw "wait_log requires pattern" }
+        if ($timeoutSecs -le 0) { $timeoutSecs = 60 }
+        $logDir = Join-Path (Split-Path -Parent $project) "Saved\Logs"
+        $logPath = Join-Path $logDir "VoloOutput-$nodeId.log"
+        $deadline = (Get-Date).AddSeconds($timeoutSecs)
+        $evidence = $null
+        while ((Get-Date) -lt $deadline) {
+            if (Test-Path -LiteralPath $logPath) {
+                # Escape so callers can pass literal "VoloOutput: sequence done rev=N"
+                $escaped = [regex]::Escape($pattern)
+                $match = Select-String -LiteralPath $logPath -Pattern $escaped -CaseSensitive:$false |
+                    Select-Object -Last 1
+                if ($null -ne $match) { $evidence = $match.Line.Trim(); break }
+            }
+            Start-Sleep -Milliseconds 400
+        }
+        if ($null -eq $evidence) {
+            throw "timeout after ${timeoutSecs}s waiting for log pattern '$pattern'; log=$logPath"
+        }
+        Reply $true "$evidence; log=$logPath"
         exit 0
     }
 

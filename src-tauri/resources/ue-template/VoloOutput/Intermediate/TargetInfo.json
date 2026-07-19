@@ -1,0 +1,14 @@
+{
+	"Targets": [
+		{
+			"Name": "VoloOutput",
+			"Path": "..\\Source\\VoloOutput.Target.cs",
+			"Type": "Game"
+		},
+		{
+			"Name": "VoloOutputEditor",
+			"Path": "..\\Source\\VoloOutputEditor.Target.cs",
+			"Type": "Editor"
+		}
+	]
+}

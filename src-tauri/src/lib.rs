@@ -399,12 +399,14 @@ pub fn run() {
             // W6 R1: M1+M2 fuse (backend-only; no UI wiring this pass).
             commands::mesh_fuse::mesh_fuse_run,
             commands::mesh_alignment::mesh_compute_rebuilt_alignment,
-            // nDisplay output runtime: preflight/start/stop/show/clear.
+            // nDisplay output runtime: preflight/start/stop/show/clear + sequence.
             commands::output::output_preflight,
             commands::output::output_deploy,
             commands::output::output_start,
             commands::output::output_stop,
             commands::output::output_show,
+            commands::output::output_play_sequence,
+            commands::output::output_sequence_abort,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

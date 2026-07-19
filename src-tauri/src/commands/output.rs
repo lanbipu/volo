@@ -205,7 +205,7 @@ impl SshOutputTransport {
         paths: &RuntimePaths,
         extra: serde_json::Value,
     ) -> Result<ScriptEnvelope, String> {
-        let editor_path = editor_path_for_node(paths, &node.node_id);
+        let editor_path = paths.editor_for(&node.node_id);
         let mut args = serde_json::json!({
             "action": action,
             "node_id": node.node_id,
@@ -237,14 +237,6 @@ impl SshOutputTransport {
     }
 }
 
-fn editor_path_for_node<'a>(paths: &'a RuntimePaths, node_id: &str) -> &'a str {
-    paths
-        .editor_paths
-        .get(node_id)
-        .map(String::as_str)
-        .unwrap_or(&paths.editor_path)
-}
-
 impl OutputTransport for SshOutputTransport {
     fn preflight(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<String, String> {
         self.run(node, "preflight", paths, serde_json::json!({}))
@@ -269,6 +261,24 @@ impl OutputTransport for SshOutputTransport {
     ) -> Result<(bool, String), String> {
         self.run(node, "wait_evidence", paths, serde_json::json!({}))
             .map(|x| (x.cluster_connected, x.message))
+    }
+    fn wait_log_pattern(
+        &self,
+        node: &OutputNode,
+        paths: &RuntimePaths,
+        pattern: &str,
+        timeout_secs: u64,
+    ) -> Result<String, String> {
+        self.run(
+            node,
+            "wait_log",
+            paths,
+            serde_json::json!({
+                "pattern": pattern,
+                "timeout_secs": timeout_secs
+            }),
+        )
+        .map(|x| x.message)
     }
     fn stop(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<String, String> {
         self.run(node, "stop", paths, serde_json::json!({}))
@@ -703,6 +713,208 @@ pub async fn output_stop(
     finish_operation(&app, session_id, "stop", None, None, total, result)
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlaySequenceRequest {
+    pub session_id: String,
+    pub screen: ScreenConfig,
+    pub paths: RuntimePaths,
+    /// Local directory containing contiguous `frame_%04d.png` (mesh-vba naming).
+    pub sequence_dir: PathBuf,
+    pub fps: f64,
+    /// Where to paste screen-sized frames on the topology canvas.
+    #[serde(default)]
+    pub screen_origin_px: [u32; 2],
+    #[serde(default)]
+    pub ssh_user: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SequenceAbortRequest {
+    pub session_id: String,
+    pub screen: ScreenConfig,
+    pub paths: RuntimePaths,
+    #[serde(default)]
+    pub ssh_user: Option<String>,
+}
+
+/// Push a frame sequence, wait for cluster ready/done milestones, and stream
+/// runner phases: pushing → preloading → playing → done | failed.
+/// Intentionally separate from `output_show` (stage/image_path trap).
+#[tauri::command]
+pub async fn output_play_sequence(
+    app: AppHandle,
+    sessions: State<'_, OutputSessions>,
+    request: PlaySequenceRequest,
+) -> VoloResult<OutputCommandResult> {
+    let revision = sessions.reserve_revision(&request.session_id)?;
+    let total = node_count(&request.screen);
+    let session_id = request.session_id.clone();
+    let operation = "play_sequence";
+
+    emit_runner(
+        &app,
+        &session_id,
+        operation,
+        "pushing",
+        0,
+        total,
+        "正在推送序列帧",
+        Some(revision),
+    );
+
+    let app_push = app.clone();
+    let session_push = session_id.clone();
+    let result: VoloResult<(Vec<output::NodeResult>, Option<String>)> =
+        tokio::task::spawn_blocking(move || {
+            let transport = transport(request.ssh_user)?;
+            let frames = output::list_sequence_frames(&request.sequence_dir)?;
+            let n_frames = u32::try_from(frames.len()).map_err(|_| {
+                VoloError::InvalidInput("sequence frame_count exceeds u32".into())
+            })?;
+            let published = output::push_sequence(
+                &transport,
+                &request.screen,
+                &request.paths,
+                &frames,
+                request.screen_origin_px,
+                request.fps,
+                revision,
+            )?;
+
+            emit_runner(
+                &app_push,
+                &session_push,
+                operation,
+                "preloading",
+                0,
+                total,
+                "节点预载中",
+                Some(revision),
+            );
+            output::wait_sequence_ready(
+                &transport,
+                &request.screen,
+                &request.paths,
+                revision,
+            )?;
+
+            emit_runner(
+                &app_push,
+                &session_push,
+                operation,
+                "playing",
+                0,
+                total,
+                "序列播放中",
+                Some(revision),
+            );
+            let done_nodes = output::wait_sequence_done(
+                &transport,
+                &request.screen,
+                &request.paths,
+                revision,
+                n_frames,
+                request.fps,
+            )?;
+            Ok((done_nodes, published.remote_image_path))
+        })
+        .await
+        .map_err(|error| VoloError::Other(format!("output play_sequence task failed: {error}")))?;
+
+    match result {
+        Ok((nodes, remote_image_path)) => {
+            for node in &nodes {
+                let _ = app.emit(
+                    NODE_EVENT,
+                    NodeEventPayload {
+                        session_id: session_id.clone(),
+                        operation: operation.into(),
+                        node_id: node.node_id.clone(),
+                        host: node.host.clone(),
+                        state: "ok".into(),
+                        message: node.message.clone(),
+                        revision: Some(revision),
+                        timestamp_ms: timestamp_ms(),
+                    },
+                );
+            }
+            emit_runner(
+                &app,
+                &session_id,
+                operation,
+                "done",
+                nodes.len(),
+                total,
+                "序列播放完成",
+                Some(revision),
+            );
+            Ok(OutputCommandResult {
+                session_id,
+                operation: operation.into(),
+                revision: Some(revision),
+                remote_image_path,
+                nodes,
+            })
+        }
+        Err(error) => {
+            tracing::error!("ndisplay output {operation} failed: {error}");
+            emit_runner(
+                &app,
+                &session_id,
+                operation,
+                "failed",
+                0,
+                total,
+                error.to_string(),
+                Some(revision),
+            );
+            Err(error)
+        }
+    }
+}
+
+/// Abort in-flight / pending sequence playback by publishing mode=clear.
+#[tauri::command]
+pub async fn output_sequence_abort(
+    app: AppHandle,
+    sessions: State<'_, OutputSessions>,
+    request: SequenceAbortRequest,
+) -> VoloResult<OutputCommandResult> {
+    let revision = sessions.reserve_revision(&request.session_id)?;
+    let total = node_count(&request.screen);
+    emit_runner(
+        &app,
+        &request.session_id,
+        "sequence_abort",
+        "running",
+        0,
+        total,
+        "正在中止序列",
+        Some(revision),
+    );
+    let session_id = request.session_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let published = output::clear(
+            &transport(request.ssh_user)?,
+            &request.screen,
+            &request.paths,
+            revision,
+        )?;
+        Ok(published.nodes)
+    })
+    .await
+    .map_err(|error| VoloError::Other(format!("output sequence_abort task failed: {error}")))?;
+    finish_operation(
+        &app,
+        session_id,
+        "sequence_abort",
+        Some(revision),
+        None,
+        total,
+        result,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -734,11 +946,11 @@ mod tests {
             image_dir: String::new(),
         };
         assert_eq!(
-            editor_path_for_node(&paths, "RazerNode"),
+            paths.editor_for("RazerNode"),
             r"D:\UE_5.8\Engine\Binaries\Win64\UnrealEditor.exe"
         );
         assert_eq!(
-            editor_path_for_node(&paths, "LanNode"),
+            paths.editor_for("LanNode"),
             r"C:\fallback\UnrealEditor.exe"
         );
     }

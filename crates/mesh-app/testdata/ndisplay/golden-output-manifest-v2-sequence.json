@@ -1,0 +1,12 @@
+{
+  "crop_h": 600,
+  "crop_w": 800,
+  "crop_x": 800,
+  "crop_y": 0,
+  "fps": 2.0,
+  "frame_count": 18,
+  "mode": "sequence",
+  "revision": 44,
+  "schema_version": "volo_output.v2",
+  "sequence_dir": "C:\\ProgramData\\UECM\\ndisplay-output\\session\\seq-44"
+}

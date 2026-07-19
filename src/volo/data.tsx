@@ -389,6 +389,12 @@ function buildStageComposite(screensMap) {
   return { canvas: { w: x || 1, h: H || 1 }, screens: rects, area: rects.reduce((a, r) => a + r.w * r.h, 0) };
 }
 
+/** Screen origin on the stage composite canvas: [x, y] px (defaults [0,0]). */
+function stageScreenOriginPx(screensMap, screenId) {
+  const rect = buildStageComposite(screensMap).screens.find((r) => r.id === screenId);
+  return rect ? [rect.x, rect.y] : [0, 0];
+}
+
 /* Stage 级默认拓扑：每屏一节点，crop = 该屏在复合画布上的区域，window = crop 1:1。 */
 function buildStageNdisplayTopo(screensMap) {
   const comp = buildStageComposite(screensMap);
@@ -442,7 +448,7 @@ Object.assign(window, {
   GRID_SHAPES, GRID_SCREEN_TYPES, GRID_SCREEN_PRESETS, GRID_CAB_PRESETS, GRID_DISPLAY_DEFAULT, GRID_DISPLAY_ITEMS,
   GRID_VIEWS, GRID_STAGE_ACTIONS, GRID_MEAS_TYPES, GRID_RECON_STAGES, GRID_EXPORT_TARGETS,
   GRID_CAB_QUALITY, GRID_SOLVE_STATUS,
-  buildStageComposite, buildStageNdisplayTopo, resolveProjectTopology, stageScreenForOutput,
+  buildStageComposite, stageScreenOriginPx, buildStageNdisplayTopo, resolveProjectTopology, stageScreenForOutput,
   Icon, STAGES, PAGES,
   /* machines / creds / shares / projects are loaded from the backend by the
      shell and mirrored onto window.{RENDER_NODES,CREDS,SHARES,UE_PROJECTS};
