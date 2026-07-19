@@ -5,7 +5,7 @@
    偏离旧 Q3 / spec§4 的独立 MethodSelect / LensSetup 页——已删除死代码。
    采集主页接真：useMonitor MJPEG + useCaptureSession + list_lens_sessions。 */
 import * as React from "react";
-import { pickFile, pickDirectory } from "../api/commands";
+import { lensWorkspacePaths } from "../api/lensWorkspace";
 import {
   listLensSessions, readLensQaReport, readImageAsDataUrl,
   startCaptureStills, stillsFinish,
@@ -28,15 +28,15 @@ import { DEFAULT_NDISPLAY_OUTPUT_PATHS, outputShow } from "../api/ndisplayOutput
   const BACKEND_LABEL = { uvc: 'UVC', ndi: 'NDI', decklink: 'DeckLink', synthetic: '合成' };
   const LS_CAP_PARAMS = 'volo-capw-params';
   const loadCapParams = () => {
-    try { return Object.assign({ poses: 8, settleMs: 300, burst: 5, inverted: true, graycodeSync: true, patternsDir: '', lensPath: '' }, JSON.parse(localStorage.getItem(LS_CAP_PARAMS) || '{}')); }
-    catch (e) { return { poses: 8, settleMs: 300, burst: 5, inverted: true, graycodeSync: true, patternsDir: '', lensPath: '' }; }
+    /* patternsDir 字段已随路径全自动化删除（图案目录由系统推导）；读到旧值忽略。 */
+    try { return Object.assign({ poses: 8, settleMs: 300, burst: 5, inverted: true, graycodeSync: true, lensPath: '' }, JSON.parse(localStorage.getItem(LS_CAP_PARAMS) || '{}')); }
+    catch (e) { return { poses: 8, settleMs: 300, burst: 5, inverted: true, graycodeSync: true, lensPath: '' }; }
   };
   const saveCapParams = (p) => { try { localStorage.setItem(LS_CAP_PARAMS, JSON.stringify(p)); } catch (e) {} };
   const joinPath = (dir, name) => {
     const sep = dir.indexOf('\\') >= 0 ? '\\' : '/';
     return dir.replace(/[\\/]+$/, '') + sep + name;
   };
-  const baseName = (p) => (p ? String(p).split(/[\\/]/).pop() : '');
   const pad6 = (n) => String(n).padStart(6, '0');
   const useCamStore = () => {
     const store = window.camStore;
@@ -219,15 +219,21 @@ import { DEFAULT_NDISPLAY_OUTPUT_PATHS, outputShow } from "../api/ndisplayOutput
     const [sessionsErr, setSessionsErr] = useState(null);
     const [solvingId, setSolvingId] = useState(null);
 
+    /* 路径全自动化：标定屏幕 + 屏幕定义 / 校正图案 / 输出位置自动状态（真实后端） */
+    const ag = window.VoloAutoGen.useAutoGen(s);
+    const proj = CX().useProj ? CX().useProj() : {};
+    const projectPath = proj && proj.path ? proj.path : null;
+
     const screenFile = typeof s.capScreenFile === 'string' ? s.capScreenFile : null;
-    const outDir = s.capOutDir || (profile && profile.outputRoot) || '';
+    /* 输出目录固定 = <project>/vpcal/captures/（§3.4；不再用 profile.outputRoot / 手选） */
+    const outDir = projectPath ? lensWorkspacePaths(projectPath).capturesDir : '';
     const deployed = s.deployState !== 'idle';
     const signalReady = backend === 'synthetic' || monitor.sig === 'ok' || (!!monitor.url && monitor.sig !== 'lost');
-    /* 固定机位须图案目录（start 推 normal.png 上屏）；追踪 + 反相双帧同前 */
-    const ready = deployed && !!profile && !!screenFile && !!outDir && method === 'qsp'
+    /* §3.5：部署 + profile + 屏幕定义已同步 + 单 section + 图案未失败（生成中 / 需重生成仍可点，
+       beginCapture 会先补生成）。screenFile 由 ag 系统写入 s.capScreenFile。 */
+    const ready = deployed && !!profile && method === 'qsp'
       && (backend === 'synthetic' || signalReady)
-      && !(inverted && !params.patternsDir && tracked)
-      && !(!tracked && !params.patternsDir);
+      && ag.screenDef === 'synced' && !ag.multiSection && ag.pattern !== 'genFail';
 
     /* 同步 shell 前置徽标 / Profile 标签 */
     useEffect(() => {
@@ -383,7 +389,7 @@ import { DEFAULT_NDISPLAY_OUTPUT_PATHS, outputShow } from "../api/ndisplayOutput
     /* request_pattern → 按部署通道切图（仅追踪 session） */
     useEffect(() => {
       if (!capturing || !tracked) return;
-      const patternsDir = params.patternsDir;
+      const patternsDir = ag.patternsDir;
       for (const ev of session.events) {
         if (ev.type !== 'request_pattern' || typeof ev.sequence !== 'number') continue;
         if (patternAckSeq.current.has(ev.sequence)) continue;
@@ -404,7 +410,7 @@ import { DEFAULT_NDISPLAY_OUTPUT_PATHS, outputShow } from "../api/ndisplayOutput
           }
         })();
       }
-    }, [capturing, session.events, params.patternsDir]);
+    }, [capturing, session.events, ag.patternsDir]);
 
     useEffect(() => {
       if (!capturing || !tracked) return;
@@ -443,9 +449,9 @@ import { DEFAULT_NDISPLAY_OUTPUT_PATHS, outputShow } from "../api/ndisplayOutput
       setStillsSnapN(0);
       stillsFinishingRef.current = false;
       try {
-        /* 固定机位 ready 已要求图案目录；追踪机位在有目录时同样先推 normal.png */
-        if (params.patternsDir) {
-          const path = joinPath(params.patternsDir, 'normal.png');
+        /* 图案由系统自动生成到 ag.patternsDir（含 normal.png）；开始前先推 normal.png 上屏 */
+        if (ag.patternsDir) {
+          const path = joinPath(ag.patternsDir, 'normal.png');
           await showViaDeploy(s, path, 'normal');
           if (s.setDeployState) s.setDeployState('showing');
         }
@@ -627,29 +633,11 @@ import { DEFAULT_NDISPLAY_OUTPUT_PATHS, outputShow } from "../api/ndisplayOutput
                   h(Icon, { name: 'sliders', size: 14 }), h('span', { className: 'v' }, '管理采集配置…')))
             : h('button', { className: 'lc-selbtn', onClick: () => CX().openCaptureModal && CX().openCaptureModal(s) },
                 h(Icon, { name: 'camera', size: 14 }), h('span', { className: 'v', style: { color: 'var(--notice-visual)' } }, '尚未创建 · 去新建'), h(Icon, { name: 'chevd', size: 13 }))),
-        h('div', { className: 'lc-field' }, h('span', { className: 'k' }, '屏幕定义文件 screen.json'),
-          h('button', { className: 'lc-selbtn', onClick: async () => {
-              try {
-                const p = await pickFile('vpcal screen definition (screen.json)', ['json']);
-                if (p) s.setCapScreenFile(p);
-              } catch (e) { /* ignore */ }
-            }, title: '选择 screen.json' },
-            h(Icon, { name: 'doc', size: 14 }), h('span', { className: 'v', style: screenFile ? null : { color: 'var(--notice-visual)' } }, screenFile ? baseName(screenFile) : '未选择'), h(Icon, { name: 'chevd', size: 13 }))),
-        h('div', { className: 'lc-field' }, h('span', { className: 'k' }, '输出目录'),
-          h('button', { className: 'lc-selbtn', onClick: async () => { try { const p = await pickDirectory(); if (p) s.setCapOutDir(p); } catch (e) {} } },
-            h(Icon, { name: 'folder', size: 14 }), h('span', { className: 'v', style: { fontFamily: 'var(--font-code)', fontWeight: 600, color: outDir ? null : 'var(--notice-visual)' } }, outDir || '未选择'), h(Icon, { name: 'chevd', size: 13 }))),
-        h('div', { className: 'lc-field' }, h('span', { className: 'k' }, '图案目录（normal / inverted）'),
-          h('button', { className: 'lc-selbtn', onClick: async () => {
-              try {
-                if (params.patternsDir) setP('patternsDir', '');
-                else { const p = await pickDirectory(); if (p) setP('patternsDir', p); }
-              } catch (e) {}
-            } },
-            h(Icon, { name: 'folder', size: 14 }),
-            h('span', { className: 'v', style: { fontFamily: 'var(--font-code)', fontWeight: 600, color: params.patternsDir ? null : 'var(--notice-visual)' } },
-              params.patternsDir ? baseName(params.patternsDir)
-                : (!tracked ? '固定机位必选' : (inverted ? '反相双帧时必选' : '可选'))),
-            h(Icon, { name: 'chevd', size: 13 })))),
+        /* 标定屏幕单选 + 三个自动状态行（screen.json / 图案 / 输出位置 由系统自动推导生成） */
+        h('div', { className: 'ag-block' },
+          h('span', { className: 'ag-sublbl' }, '标定屏幕'),
+          h(window.VoloAutoGen.ScreenChips, { ag })),
+        h(window.VoloAutoGen.AutoStatusRows, { ag })),
       /* b 方式参数 */
       grp('method', CAL_METHOD_BADGES[method].icon, '方式参数', open.method, () => tgl('method'),
         h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 } }, methodBadge(method)),
@@ -722,14 +710,14 @@ import { DEFAULT_NDISPLAY_OUTPUT_PATHS, outputShow } from "../api/ndisplayOutput
             h('span', { className: 'lc-pose-rms', style: p.rms == null ? { color: 'var(--chrome-faint)' } : null }, p.rms == null ? '—' : Number(p.rms).toFixed(2))))))) : null));
 
     /* --------- 底部主动作条 --------- */
+    /* §3.5：路径已自动化，禁用原因仅保留系统级阻断（原 screen.json / 输出目录 / 图案目录条目删除） */
     const reasons = [];
     if (!deployed) reasons.push('未部署上屏');
     if (!profile) reasons.push('未选采集配置');
     if (!signalReady && backend !== 'synthetic') reasons.push('信号源未就绪');
-    if (!screenFile) reasons.push('未选屏幕文件');
-    if (!outDir) reasons.push('未选输出目录');
-    if (!tracked && !params.patternsDir) reasons.push('固定机位需图案目录');
-    if (inverted && !params.patternsDir) reasons.push('反相双帧需图案目录');
+    if (ag.screenDef === 'exportFail') reasons.push('屏幕定义导出失败');
+    if (ag.multiSection) reasons.push('折面屏（多 section）图案上屏暂不支持');
+    if (ag.pattern === 'genFail') reasons.push('校正图案生成失败');
     if (isSl) reasons.push('结构光即将支持');
     if (method === 'charuco') reasons.push('ChArUco 即将支持');
     const actionbar = h('div', { className: 'lc-actionbar' + (capturing ? ' capturing' : '') },
@@ -741,10 +729,16 @@ import { DEFAULT_NDISPLAY_OUTPUT_PATHS, outputShow } from "../api/ndisplayOutput
                    : h('span', { className: 'lc-prog-n' }, '已采点位 ', capN, h('span', { className: 'm' }, ' / ' + targetM))))
         : h(React.Fragment, null,
             h('div', { className: 'lc-start' },
-              h(Button, { variant: 'accent', size: 'L', icon: h(Icon, { name: isSl ? 'play' : 'camera', size: 16 }), isDisabled: !ready, onPress: start }, isSl ? '开始采集 · 播放序列' : '开始采集')),
+              h(Button, { variant: 'accent', size: 'L',
+                icon: ag.preparing ? h('span', { className: 'ag-spin' }, h(Icon, { name: 'sync', size: 16 })) : h(Icon, { name: isSl ? 'play' : 'camera', size: 16 }),
+                isDisabled: !ready || ag.preparing, onPress: () => ag.beginCapture(start) },
+                ag.preparing ? '生成图案中…' : (isSl ? '开始采集 · 播放序列' : '开始采集'))),
             reasons.length
-              ? h('div', { className: 'lc-reasons' }, reasons.map((r, i) => h('span', { key: i, className: 'lc-reason' }, h(Icon, { name: 'info', size: 12 }), r)),
-                  !deployed ? h('button', { className: 'flow-back', style: { padding: '3px 9px' }, onClick: () => { close(); s.setCalSection('deploy'); } }, '去上屏部署') : null)
+              ? h('div', { className: 'lc-reasons' },
+                  reasons.map((r, i) => h('span', { key: i, className: 'lc-reason' }, h(Icon, { name: 'info', size: 12 }), r)),
+                  !deployed ? h('button', { className: 'flow-back', style: { padding: '3px 9px' }, onClick: () => { close(); s.setCalSection('deploy'); } }, '去上屏部署') : null,
+                  ag.multiSection ? h('div', { className: 'lc-cli-note' }, h(Icon, { name: 'info', size: 13 }),
+                    h('span', null, '折面屏（多 section）需通过 CLI 手动生成 / 上屏：', h('code', null, 'vpcal pattern generate --screen <screen.json> --output-dir <dir>'), '，暂无 UI 操作入口。')) : null)
               : h('div', { className: 'lc-reasons' }, h('span', { className: 'lc-reason ok' }, h(Icon, { name: 'check', size: 12 }),
                   tracked ? '前置就绪 · 追踪机位' : '前置就绪 · 固定机位（stills · 采集期间须静止）')),
             h('span', { className: 'sp' })));

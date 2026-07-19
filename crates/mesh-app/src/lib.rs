@@ -13,6 +13,7 @@
 pub mod alignment;
 pub mod export;
 pub mod fuse;
+pub mod lens_workspace;
 pub mod measurements;
 pub mod ndisplay;
 pub mod output;

@@ -8,11 +8,11 @@
    - 现场画面：采集前 `vpcal capture video --duration 0` 监看；开始后让出设备给会话 preview。
    - 会话参数 localStorage（volo-capw-params）；screen.json / 图案 / 覆盖度反馈保留给 lens。 */
 import * as React from "react";
-import { pickDirectory, pickFile } from "../api/commands";
+import { pickFile } from "../api/commands";
 import { spawnSidecarStreaming, cancelSidecarTask, cancelSidecarTaskAwaitExit, useSidecarStream } from "../api/sidecarStream";
 import { useCaptureSession } from "./devCapture";
 import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern } from "../api/player";
-import { exportVpcalScreen } from "../api/meshCommands";
+import { lensWorkspacePaths } from "../api/lensWorkspace";
 
 (function () {
   const { Button, Switch } = window.Spectrum2DesignSystem_b6d1b3;
@@ -38,7 +38,6 @@ import { exportVpcalScreen } from "../api/meshCommands";
     const sep = dir.indexOf('\\') >= 0 ? '\\' : '/';
     return dir.replace(/[\\/]+$/, '') + sep + name;
   }
-  function baseName(p) { return p ? p.split(/[\\/]/).pop() : ''; }
 
   /* ================= 常驻监看流（采集前「选定 Profile 即预览」，同 calVideoSource.tsx 的保真监看标准） ================= */
   function useMonitor(profile, active) {
@@ -208,17 +207,20 @@ import { exportVpcalScreen } from "../api/meshCommands";
   function CaptureWindow({ s, close, profileId, screenPath: screenPathProp, onScreenPathChange, onSaved }) {
     const isLens = true; /* grid 入口已迁至 VOLO_GRID_CAPTURE；本窗只服务 lens */
     const proj = CX.useProj();
-    const screenId = s.calActiveScreen;
     const profiles = CX.loadProfiles ? CX.loadProfiles() : [];
     const [pid, setPid] = useState(profileId || (profiles[0] && profiles[0].id) || null);
     const profile = profiles.find((p) => p.id === pid) || null;
     const backend = profile && profile.videoBackend;
 
-    const [screenPath, setScreenPath] = useState(screenPathProp || '');
-    const [screenBusy, setScreenBusy] = useState(false);
-    const [manualOutDir, setManualOutDir] = useState('');
     const [params, setParams] = useState(loadParams);
     const setP = (k, v) => setParams((f) => Object.assign({}, f, { [k]: v }));
+
+    /* 路径全自动化：标定屏幕 + 屏幕定义 / 校正图案 / 输出位置自动状态（真实后端） */
+    const ag = window.VoloAutoGen.useAutoGen(s);
+    const projectPath = proj && proj.path ? proj.path : null;
+    const wsPaths = projectPath ? lensWorkspacePaths(projectPath) : null;
+    /* screen.json 由 ag 系统写入 s.capScreenFile；本窗只读取，不再手选 / 手动生成 */
+    const screenPath = typeof s.capScreenFile === 'string' ? s.capScreenFile : (screenPathProp || '');
 
     const [phase, setPhase] = useState('config'); /* config | capturing | done */
     const [askAbort, setAskAbort] = useState(false);
@@ -272,10 +274,10 @@ import { exportVpcalScreen } from "../api/meshCommands";
         if (ev.type !== 'request_pattern' || typeof ev.sequence !== 'number') continue;
         if (patternAckSeq.current.has(ev.sequence)) continue;
         const pattern = String(ev.pattern || 'normal');
-        if (!params.patternsDir) continue;
+        if (!ag.patternsDir) continue;
         patternAckSeq.current.add(ev.sequence);
-        const sep = String(params.patternsDir).includes('\\') ? '\\' : '/';
-        const path = String(params.patternsDir).replace(/[\\/]+$/, '') + sep + pattern + '.png';
+        const sep = String(ag.patternsDir).includes('\\') ? '\\' : '/';
+        const path = String(ag.patternsDir).replace(/[\\/]+$/, '') + sep + pattern + '.png';
         (async () => {
           let lastError;
           for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -320,40 +322,20 @@ import { exportVpcalScreen } from "../api/meshCommands";
     const cov = phase === 'capturing' ? recomputeCoverage(session) : null;
     const target = params.poses;
 
-    const pickScreen = async () => {
-      try { const p = await pickFile('屏幕定义 (screen.json)', ['json']); if (p) { setScreenPath(p); onScreenPathChange && onScreenPathChange(p); } }
-      catch (e) { s.pushLog({ lv: 'err', cat: 'capture', msg: `选择 screen.json 失败 · ${e && e.message ? e.message : e}` }); }
-    };
-    const generateScreen = async () => {
-      if (!proj.path || !screenId || screenBusy) return;
-      setScreenBusy(true);
-      try {
-        const r = await exportVpcalScreen(proj.path, screenId, null);
-        setScreenPath(r.path); onScreenPathChange && onScreenPathChange(r.path, r.fingerprint);
-        s.pushLog({ lv: 'ok', cat: 'capture', msg: '已从当前屏幕生成 screen.json · fingerprint ' + r.fingerprint });
-      } catch (e) { s.pushLog({ lv: 'err', cat: 'capture', msg: `生成 screen.json 失败 · ${e && e.message ? e.message : e}` }); }
-      finally { setScreenBusy(false); }
-    };
-    const pickOutDir = async () => {
-      try { const p = await pickDirectory(); if (p) setManualOutDir(p); }
-      catch (e) { s.pushLog({ lv: 'err', cat: 'capture', msg: `选择输出目录失败 · ${e && e.message ? e.message : e}` }); }
-    };
-    const hasOutDir = !!(profile && profile.outputRoot) || !!manualOutDir;
-
-    /* ---- 开始采集禁用原因（screen.json 为真实必填参数，与 backend 无关） ---- */
+    /* ---- 开始采集禁用原因（路径已自动化，仅保留系统级阻断） ---- */
     const reasons = [];
     if (!profile) reasons.push('未选择采集配置');
-    if (!screenPath) reasons.push('未选择 screen.json');
-    if (!hasOutDir) reasons.push('未选择输出目录');
-    if (params.inverted && !params.patternsDir) reasons.push('inverted 已开但未选图案目录');
+    if (ag.screenDef === 'exportFail') reasons.push('屏幕定义导出失败');
+    if (ag.multiSection) reasons.push('折面屏（多 section）图案上屏暂不支持');
+    if (ag.pattern === 'genFail') reasons.push('校正图案生成失败');
     const canStart = reasons.length === 0;
 
     const start = async () => {
       if (!canStart) return;
       saveParams(params);
-      const outDir = profile.outputRoot
-        ? joinPath(profile.outputRoot, 'session_' + new Date().toISOString().replace(/[:.]/g, '-'))
-        : manualOutDir;
+      /* 输出会话根固定 = <project>/vpcal/captures/（§3.4） */
+      const capturesRoot = wsPaths ? wsPaths.capturesDir : (profile.outputRoot || '');
+      const outDir = joinPath(capturesRoot, 'session_' + new Date().toISOString().replace(/[:.]/g, '-'));
       if (params.inverted) {
         try {
           const monitors = await listMonitors();
@@ -462,20 +444,11 @@ import { exportVpcalScreen } from "../api/meshCommands";
                   h(Icon, { name: 'sliders', size: 14 }), '管理采集配置…')) : null)
           : h('div', { className: 'capw-note capw-note--notice' }, h(Icon, { name: 'alert', size: 14 }),
               h('span', null, '还没有采集配置，'), h('button', { className: 'gw-tinline', onClick: () => { close(); CX.openCaptureModal(s); } }, '去新建'))),
-      h('div', { className: 'capw-pick' + (!screenPath ? ' is-pending' : '') },
-        h('span', { className: 'capw-pick-lb' }, 'screen.json', h('span', { className: 'capw-req' }, '必填')),
-        h('div', { className: 'capw-pick-row' },
-          h('button', { className: 'cap-file-btn', disabled: locked || screenBusy, onClick: generateScreen },
-            h(Icon, { name: screenBusy ? 'sync' : 'grid', size: 14 }), screenBusy ? '生成中…' : '从当前屏幕生成'),
-          h('button', { className: 'cap-file-btn', disabled: locked, onClick: pickScreen }, h(Icon, { name: 'folder', size: 14 }), '选择…'),
-          screenPath ? h('span', { className: 'capw-pick-val mono' }, baseName(screenPath)) : null)),
-      h('div', { className: 'capw-pick' + (!hasOutDir ? ' is-pending' : '') },
-        h('span', { className: 'capw-pick-lb' }, '输出目录', h('span', { className: 'capw-req' }, '必填')),
-        profile && profile.outputRoot
-          ? h('div', { className: 'capw-pick-row' }, h('span', { className: 'capw-pick-val mono' }, profile.outputRoot), h('span', { className: 'capw-opt' }, '每次采集自动生成子目录'))
-          : h('div', { className: 'capw-pick-row' },
-              h('button', { className: 'cap-file-btn', disabled: locked, onClick: pickOutDir }, h(Icon, { name: 'folder', size: 14 }), manualOutDir || '选择目录…'),
-              manualOutDir ? h('span', { className: 'cap-pill cap-pill--positive' }, h(Icon, { name: 'check', size: 12 }), '已选') : null)));
+      /* 标定屏幕（单选）+ 屏幕定义 / 校正图案 / 输出位置 由系统自动推导生成 */
+      h('div', { className: 'ag-block', style: { marginTop: 4 } },
+        h('span', { className: 'ag-sublbl' }, '标定屏幕'),
+        h(window.VoloAutoGen.ScreenChips, { ag, disabled: locked })),
+      h(window.VoloAutoGen.AutoStatusRows, { ag }));
 
     /* ---------- 右栏 · 会话参数 ---------- */
     const paramsSection = h('div', { className: 'cap-card' + (locked ? ' is-locked' : '') },
@@ -500,14 +473,9 @@ import { exportVpcalScreen } from "../api/meshCommands";
         h('div', { className: 'cap-toggle-row' + (!params.inverted ? ' is-dim' : '') },
           h('div', null, h('div', { className: 'cap-tg-t' }, 'graycodeSync'), h('div', { className: 'cap-tg-s' }, '用 Gray code 确认图案序号')),
           h(Switch, { isSelected: !!params.graycodeSync, isDisabled: !params.inverted, onChange: (v) => setP('graycodeSync', v) }))),
-      h('div', { className: 'cap-lens', style: { marginTop: 13 } },
-        h('label', null, 'patternsDir', params.inverted ? h('span', { className: 'capw-req' }, '必填') : null),
-        h('div', { className: 'cap-lens-pick' },
-          h('button', { className: 'cap-file-btn', onClick: async () => { if (params.patternsDir) setP('patternsDir', ''); else { const p = await pickDirectory(); if (p) setP('patternsDir', p); } } },
-            h(Icon, { name: 'folder', size: 14 }), params.patternsDir || '选择 normal.png / inverted.png 所在目录…'),
-          params.patternsDir ? h('span', { className: 'cap-pill cap-pill--positive' }, h(Icon, { name: 'check', size: 12 }), '已选') : null)),
-      (params.inverted && !params.patternsDir) ? h('div', { className: 'capw-note capw-note--notice' }, h(Icon, { name: 'alert', size: 14 }),
-        h('span', null, 'inverted 需要图案播放器闭环，请选择图案目录，或关闭 inverted。')) : null,
+      /* 图案由系统自动生成（灰码角标内置）；inverted 仍控制正 / 反双帧差分 */
+      params.inverted ? h('div', { className: 'capw-hint' },
+        'normal / inverted 图案由系统自动生成并内置灰码角标，无需手动准备图案目录。') : null,
       isLens ? h('div', { className: 'cap-lens', style: { marginTop: 13, borderTop: '1px solid var(--chrome-line)', paddingTop: 13 } },
         h('label', null, 'lensPath', h('span', { className: 'capw-opt' }, '可选')),
         h('div', { className: 'cap-lens-pick' },
@@ -549,9 +517,17 @@ import { exportVpcalScreen } from "../api/meshCommands";
                 h(Button, { variant: 'secondary', size: 'M', icon: h(Icon, { name: 'check', size: 15 }), onPress: finish }, '完成'))
             : h(React.Fragment, null,
                 h('div', { className: 'capw-start' },
-                  h(Button, { variant: 'accent', size: 'L', icon: h(Icon, { name: 'camera', size: 16 }), isDisabled: !canStart, onPress: start }, '开始采集'),
-                  !canStart ? h('div', { className: 'capw-note capw-note--notice' }, h(Icon, { name: 'info', size: 14 }),
-                    h('span', null, '待补：', reasons.join(' · '))) : h('div', { className: 'capw-hint' }, '选定 Profile 后画面已常驻监看，参数确认无误即可开始。')))));
+                  h(Button, { variant: 'accent', size: 'L',
+                    icon: ag.preparing ? h('span', { className: 'ag-spin' }, h(Icon, { name: 'sync', size: 16 })) : h(Icon, { name: 'camera', size: 16 }),
+                    isDisabled: !canStart || ag.preparing, onPress: () => ag.beginCapture(start) },
+                    ag.preparing ? '生成图案中…' : '开始采集'),
+                  !canStart
+                    ? h(React.Fragment, null,
+                        h('div', { className: 'capw-note capw-note--notice' }, h(Icon, { name: 'info', size: 14 }),
+                          h('span', null, '待补：', reasons.join(' · '))),
+                        ag.multiSection ? h('div', { className: 'capw-hint' }, '折面屏（多 section）请用 CLI ',
+                          h('code', { style: { fontFamily: 'var(--font-code)' } }, 'vpcal pattern generate'), ' 手动生成 / 上屏，暂无 UI 入口。') : null)
+                    : h('div', { className: 'capw-hint' }, '屏幕定义与校正图案已自动就绪，确认参数即可开始。')))));
     }
 
     const rzDirs = [['n', 0, -1], ['s', 0, 1], ['e', 1, 0], ['w', -1, 0], ['ne', 1, -1], ['nw', -1, -1], ['se', 1, 1], ['sw', -1, 1]];
