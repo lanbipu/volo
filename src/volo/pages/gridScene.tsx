@@ -323,7 +323,7 @@ export interface SceneEntry {
   provByKey: Record<string, string> | null;  /* key → measured/interpolated/extrapolated 颜色 */
   cutout: boolean;                            /* masked 块按镂空渲染（否则半透明填充） */
   patternUrl: string | null;
-  normalSign: number;                         /* normal_flip → -1 */
+  normalSign: number;                         /* normal_flip → -1（基准出光面 = 模型 −Y，见 boxFrontNormal） */
   selKeys: string[];                          /* 选中箱体 key（激活屏才非空） */
 }
 /** 镜头校正机位可视化（stage 世界系 · m · Z-up）。 */
@@ -351,10 +351,12 @@ const BOX_FILL = new THREE.Color('#45464a');
 const MASK_FILL = new THREE.Color('rgb(120,124,134)');
 const HOVER_FILL = new THREE.Color('#4e5054');
 
+/* 出光面约定：模型系 +Y = 深度轴（入墙，与重建对齐 m01 一致），出光面 = −Y，
+ * 即列方向顺时针 90°；normal_flip 在此基准上再翻一次。 */
 function boxFrontNormal(b: PickBox, sign: number): THREE.Vector3 {
   const dx = b.corners[1].x - b.corners[0].x, dy = b.corners[1].y - b.corners[0].y;
   const len = Math.hypot(dx, dy) || 1;
-  return new THREE.Vector3((sign * -dy) / len, (sign * dx) / len, 0);
+  return new THREE.Vector3((sign * dy) / len, (sign * -dx) / len, 0);
 }
 
 interface ScreenGeo {
@@ -408,7 +410,7 @@ function buildScreenGeo(e: SceneEntry): ScreenGeo {
       pushQuad(solidPos, solidIdx, b.corners, false);
       pushEdges(b.masked ? dashPos : edgePos, b.corners);
       if (!b.masked && e.patternUrl) {
-        /* 前面 = LED 出光面（含 normal_flip）；纹理只贴前面，背面露底色（= 旧 faceToCamera 行为） */
+        /* 前面 = LED 出光面（−Y 基准，含 normal_flip）；纹理只贴前面，背面露底色 */
         const n = boxFrontNormal(b, e.normalSign);
         const e1 = _v1.set(b.corners[1].x - b.corners[0].x, b.corners[1].y - b.corners[0].y, b.corners[1].z - b.corners[0].z);
         const e2 = _v2.set(b.corners[3].x - b.corners[0].x, b.corners[3].y - b.corners[0].y, b.corners[3].z - b.corners[0].z);
