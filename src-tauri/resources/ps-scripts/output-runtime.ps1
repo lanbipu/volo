@@ -331,7 +331,10 @@ param(
   [Parameter(Mandatory=$true)][int]$UePid,
   [int]$WinX, [int]$WinY, [int]$WinW, [int]$WinH,
   [string]$LogPath = '',
-  [string]$BackdropMarker = ''
+  [string]$BackdropMarker = '',
+  # Finisher mode (ethernet_barrier): no backdrop/cover placement at all —
+  # only wait for render evidence, then the one-shot A3 promote below.
+  [switch]$FinisherOnly
 )
 Add-Type -TypeDefinition @"
 using System;
@@ -384,7 +387,7 @@ public class VoloWin {
 $deadline = (Get-Date).AddSeconds(600)
 $t0 = Get-Date
 $log = Join-Path $PSScriptRoot ('pin-window-{0}.log' -f $UePid)
-('pin start A2prime pid={0} target={1},{2} {3}x{4} log={5}' -f $UePid, $WinX, $WinY, $WinW, $WinH, $LogPath) | Set-Content -LiteralPath $log -Encoding ASCII
+('pin start A2prime pid={0} target={1},{2} {3}x{4} log={5} finisherOnly={6}' -f $UePid, $WinX, $WinY, $WinW, $WinH, $LogPath, [bool]$FinisherOnly) | Set-Content -LiteralPath $log -Encoding ASCII
 $script:firstPlaced = $false
 $script:revealed = $false
 $script:evidenceAt = $null
@@ -393,6 +396,12 @@ $script:lastEvidenceCheck = [DateTime]::MinValue
 $script:lastTopmost = Get-Date
 $script:lastCoverZ = [DateTime]::MinValue
 $script:pinFrozen = $false
+$script:revealedAt = $null
+# A3 one-shot promote: UE clamps the -ResY window to the monitor work area and
+# never sets WS_EX_TOPMOST, while Shell_TrayWnd IS topmost — without a final
+# promote the taskbar keeps a strip over the wall. Wait well past the first
+# presents (the ethernet_barrier-sensitive window) before the single SetWindowPos.
+$script:promoteGraceMs = 10000
 # Lift cover ASAP after Create viewport manager. ethernet_barrier does
 # WaitForFrameCompletion+SyncOnBarrier on the first present; hammering
 # SetWindowPos / TOPMOST during that window left LanNode stuck on the GPU
@@ -462,6 +471,19 @@ function Place-VoloWindow([IntPtr]$Hwnd, [bool]$Initial, [bool]$Covered) {
         Add-Content -LiteralPath $log -Encoding ASCII
     return $true
 }
+function Promote-VoloTopmost {
+    $hwnds = [VoloWin]::FindGameHwnds([uint32]$UePid)
+    if ($hwnds.Count -eq 0) { return $false }
+    foreach ($hwnd in $hwnds) {
+        [void](Apply-VoloBorderless $hwnd)
+        # 0x0060 = SWP_FRAMECHANGED|SWP_SHOWWINDOW; -1 = HWND_TOPMOST.
+        [void][VoloWin]::SetWindowPos($hwnd, [IntPtr](-1), $WinX, $WinY, $WinW, $WinH, 0x0060)
+        [void][VoloWin]::ShowWindow($hwnd, 5)
+        ('{0:o} promote A3 topmost hwnd={1} -> ({2},{3}) {4}x{5}' -f (Get-Date), $hwnd, $WinX, $WinY, $WinW, $WinH) |
+            Add-Content -LiteralPath $log -Encoding ASCII
+    }
+    return $true
+}
 while ((Get-Date) -lt $deadline) {
     try { $proc = Get-Process -Id $UePid -ErrorAction Stop } catch { Signal-VoloBackdropDone; exit 0 }
     if ($proc.HasExited) { Signal-VoloBackdropDone; exit 0 }
@@ -488,6 +510,7 @@ while ((Get-Date) -lt $deadline) {
                 # and left LanNode off the present_barrier (~60s timeout).
                 $script:revealed = $true
                 $script:pinFrozen = $true
+                $script:revealedAt = Get-Date
                 ('{0:o} reveal A2prime evidence={1} force={2} hwnds={3} graceMs={4} pinFrozen (no SetWindowPos)' -f `
                     (Get-Date), (-not $forceReveal), $forceReveal, $hwnds.Count, $script:revealGraceMs) |
                     Add-Content -LiteralPath $log -Encoding ASCII
@@ -499,11 +522,16 @@ while ((Get-Date) -lt $deadline) {
 
     # Critical: do not touch HWND during first ethernet_barrier presents.
     if ($script:pinFrozen) {
-        Start-Sleep -Milliseconds 50
+        if (((Get-Date) - $script:revealedAt).TotalMilliseconds -ge $script:promoteGraceMs) {
+            if (Promote-VoloTopmost) { exit 0 }
+        }
+        Start-Sleep -Milliseconds 250
         continue
     }
 
     foreach ($hwnd in $hwnds) {
+        # Finisher mode never touches the HWND before evidence + grace.
+        if ($FinisherOnly) { break }
         if (-not $script:revealed) {
             $isInitial = -not $script:firstPlaced
             if (Place-VoloWindow $hwnd $isInitial $true) {
@@ -517,7 +545,7 @@ while ((Get-Date) -lt $deadline) {
         # After reveal: pin stays frozen (no Place / TOPMOST refresh).
     }
     $elapsed = ((Get-Date) - $t0).TotalSeconds
-    $sleepMs = if (-not $script:firstPlaced) { 1 } elseif (-not $script:revealed) { 8 } elseif ($elapsed -lt 120) { 50 } else { 100 }
+    $sleepMs = if ($FinisherOnly) { 250 } elseif (-not $script:firstPlaced) { 1 } elseif (-not $script:revealed) { 8 } elseif ($elapsed -lt 120) { 50 } else { 100 }
     Start-Sleep -Milliseconds $sleepMs
 }
 Signal-VoloBackdropDone
@@ -740,7 +768,18 @@ Remove-Item -LiteralPath $MarkerPath -Force -ErrorAction SilentlyContinue
             '    }',
             '    Start-Sleep -Milliseconds 1',
             '}',
-            '} else { Write-Output (''VOL_SKIP_NDISPLAY_OVERLAY=1: skipping pin+burst for PID={0}'' -f $p.Id) }'
+            '} else {',
+            'Write-Output (''skip-overlay: skipping backdrop+pin+burst for PID={0}'' -f $p.Id)',
+            # ethernet_barrier still needs the A3 promote: UE clamps -ResY to the
+            # work area and never sets WS_EX_TOPMOST, so the TOPMOST taskbar keeps
+            # a strip over the wall. FinisherOnly waits for render evidence +10s
+            # (well past the barrier-sensitive first presents) then does ONE
+            # SetWindowPos. Escape hatch: skip-finisher.flag.
+            'if (-not (Test-Path -LiteralPath ''C:\ProgramData\UECM\ndisplay-output\session\skip-finisher.flag'')) {',
+            ('$finArgs = ''-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -UePid '' + $p.Id + '' -WinX '' + $pinX + '' -WinY '' + $pinY + '' -WinW '' + $pinW + '' -WinH '' + $pinH + '' -LogPath "{1}" -FinisherOnly''' -f $pinPathQ, $logPathQ),
+            'Start-Process -FilePath ''powershell.exe'' -ArgumentList $finArgs -WindowStyle Hidden | Out-Null',
+            '}',
+            '}'
         )
         Set-Content -LiteralPath $launcherPath -Value $launcherLines -Encoding ASCII
         $taskName = "VoloOutput-$nodeId-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
