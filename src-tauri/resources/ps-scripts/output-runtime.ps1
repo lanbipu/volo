@@ -389,6 +389,7 @@ $t0 = Get-Date
 $log = Join-Path $PSScriptRoot ('pin-window-{0}.log' -f $UePid)
 ('pin start A2prime pid={0} target={1},{2} {3}x{4} log={5} finisherOnly={6}' -f $UePid, $WinX, $WinY, $WinW, $WinH, $LogPath, [bool]$FinisherOnly) | Set-Content -LiteralPath $log -Encoding ASCII
 $script:firstPlaced = $false
+$script:finisherPlaced = $false
 $script:revealed = $false
 $script:evidenceAt = $null
 $script:evidenceSeen = $false
@@ -476,10 +477,16 @@ function Promote-VoloTopmost {
     if ($hwnds.Count -eq 0) { return $false }
     foreach ($hwnd in $hwnds) {
         [void](Apply-VoloBorderless $hwnd)
-        # 0x0060 = SWP_FRAMECHANGED|SWP_SHOWWINDOW; -1 = HWND_TOPMOST.
-        [void][VoloWin]::SetWindowPos($hwnd, [IntPtr](-1), $WinX, $WinY, $WinW, $WinH, 0x0060)
+        # Z-order ONLY, never resize: a mid-render SetWindowPos that changed the
+        # window size rebuilt the D3D12 backbuffer while Slate's BufferedRT was
+        # still the work-area-clamped height (taskbar) -> CopyBox OOB fatal
+        # (D3D12Texture.cpp:1552). The window is already at final bounds (finisher
+        # early-placed it pre-present, or the covered path did) so only bump Z.
+        # 0x0063 = SWP_FRAMECHANGED|SWP_SHOWWINDOW|SWP_NOSIZE|SWP_NOMOVE;
+        # -1 = HWND_TOPMOST (x/y/w/h ignored under NOSIZE/NOMOVE).
+        [void][VoloWin]::SetWindowPos($hwnd, [IntPtr](-1), 0, 0, 0, 0, 0x0063)
         [void][VoloWin]::ShowWindow($hwnd, 5)
-        ('{0:o} promote A3 topmost hwnd={1} -> ({2},{3}) {4}x{5}' -f (Get-Date), $hwnd, $WinX, $WinY, $WinW, $WinH) |
+        ('{0:o} promote A3 topmost (z-order only, no resize) hwnd={1}' -f (Get-Date), $hwnd) |
             Add-Content -LiteralPath $log -Encoding ASCII
     }
     return $true
@@ -529,8 +536,29 @@ while ((Get-Date) -lt $deadline) {
         continue
     }
 
+    # FinisherOnly: place the window ONCE the moment a game HWND appears, BEFORE
+    # render evidence. UE clamps the -ResY window to the monitor work area (taskbar
+    # steals ~60px) and creates the backbuffer at that clamped height. Deferring
+    # the resize to the post-evidence A3 promote rebuilt the backbuffer mid-render
+    # while Slate's BufferedRT was still the clamped size -> D3D12 CopyBox OOB fatal
+    # (CopyBox.bottom <= SubresourceHeight). Sizing before the first present makes
+    # UE build the backbuffer at final size, so there is no mid-render resize.
+    # NOTOPMOST + pre-present keeps it clear of the ethernet_barrier window.
+    if ($FinisherOnly -and -not $script:revealed -and -not $script:finisherPlaced -and $hwnds.Count -gt 0) {
+        foreach ($hwnd in $hwnds) {
+            [void](Apply-VoloBorderless $hwnd)
+            # 0x0060 = SWP_FRAMECHANGED|SWP_SHOWWINDOW; -2 = HWND_NOTOPMOST.
+            [void][VoloWin]::SetWindowPos($hwnd, [IntPtr](-2), $WinX, $WinY, $WinW, $WinH, 0x0060)
+            [void][VoloWin]::ShowWindow($hwnd, 5)
+            ('{0:o} finisher early place hwnd={1} -> ({2},{3}) {4}x{5} (pre-evidence NOTOPMOST)' -f (Get-Date), $hwnd, $WinX, $WinY, $WinW, $WinH) |
+                Add-Content -LiteralPath $log -Encoding ASCII
+        }
+        $script:finisherPlaced = $true
+    }
+
     foreach ($hwnd in $hwnds) {
-        # Finisher mode never touches the HWND before evidence + grace.
+        # Finisher mode never touches the HWND before evidence + grace (early
+        # one-shot placement above handles pre-present sizing).
         if ($FinisherOnly) { break }
         if (-not $script:revealed) {
             $isInitial = -not $script:firstPlaced
