@@ -111,13 +111,18 @@ function Write-VoloGameUserSettings {
     )
     $gusLines = @(
         '[/Script/Engine.GameUserSettings]',
-        # 2 = EWindowMode::Windowed (0 Fullscreen, 1 WindowedFullscreen)
-        'FullscreenMode=2',
-        'LastConfirmedFullscreenMode=2',
-        # 0 = exclusive fullscreen preference; 1 would steer r.FullScreenMode toward
-        # WindowedFullscreen which always recenters onto a monitor DisplayRect via
-        # SceneViewport::ResizeFrame — unusable for a secondary LED wall.
-        'PreferredFullscreenMode=0',
+        # 1 = EWindowMode::WindowedFullscreen (0 Fullscreen, 2 Windowed). UGameEngine
+        # ::CreateGameWindow calls SetWindowMode(WindowedFullscreen) right after SWindow
+        # creation; FWindowsWindow::SetWindowMode uses MonitorFromWindow (the -WinX/-WinY
+        # landing point) to take the full monitor DisplayRect (taskbar area included) and
+        # sizes the window before the backbuffer exists. This sidesteps SWindow::Construct's
+        # SaneWindowPlacement, which (with -WinX/-WinY -> AutoCenter=None -> clamp on) capped
+        # WindowSize.Y to the work-area height (2560x1380 on a taskbar'd single monitor).
+        'FullscreenMode=1',
+        'LastConfirmedFullscreenMode=1',
+        # 1 = WindowedFullscreen preference, matching FullscreenMode; -WinX/-WinY keep the
+        # window (and thus the monitor it fills) on the target LED wall display.
+        'PreferredFullscreenMode=1',
         ('ResolutionSizeX={0}' -f $WinW),
         ('ResolutionSizeY={0}' -f $WinH),
         ('LastUserConfirmedResolutionSizeX={0}' -f $WinW),
@@ -253,7 +258,9 @@ try {
             '-game', '-messaging', '-dc_cluster', '-dc_dev_mono',
             ('-dc_cfg="{0}"' -f ([string]$request.config_path)),
             ('-dc_node={0}' -f $nodeId),
-            '-windowed',
+            # No -windowed: GUS FullscreenMode=1 drives WindowedFullscreen. -windowed
+            # forces EWindowMode::Windowed, which overrides GUS and re-triggers
+            # SWindow::Construct's SaneWindowPlacement work-area clamp (the 1380 bug).
             ('-ResX={0}' -f [int]$request.window_width),
             ('-ResY={0}' -f [int]$request.window_height),
             # UE only reads .ndisplay window x/y through a launcher (Switchboard
@@ -389,7 +396,6 @@ $t0 = Get-Date
 $log = Join-Path $PSScriptRoot ('pin-window-{0}.log' -f $UePid)
 ('pin start A2prime pid={0} target={1},{2} {3}x{4} log={5} finisherOnly={6}' -f $UePid, $WinX, $WinY, $WinW, $WinH, $LogPath, [bool]$FinisherOnly) | Set-Content -LiteralPath $log -Encoding ASCII
 $script:firstPlaced = $false
-$script:finisherPlaced = $false
 $script:revealed = $false
 $script:evidenceAt = $null
 $script:evidenceSeen = $false
@@ -536,29 +542,12 @@ while ((Get-Date) -lt $deadline) {
         continue
     }
 
-    # FinisherOnly: place the window ONCE the moment a game HWND appears, BEFORE
-    # render evidence. UE clamps the -ResY window to the monitor work area (taskbar
-    # steals ~60px) and creates the backbuffer at that clamped height. Deferring
-    # the resize to the post-evidence A3 promote rebuilt the backbuffer mid-render
-    # while Slate's BufferedRT was still the clamped size -> D3D12 CopyBox OOB fatal
-    # (CopyBox.bottom <= SubresourceHeight). Sizing before the first present makes
-    # UE build the backbuffer at final size, so there is no mid-render resize.
-    # NOTOPMOST + pre-present keeps it clear of the ethernet_barrier window.
-    if ($FinisherOnly -and -not $script:revealed -and -not $script:finisherPlaced -and $hwnds.Count -gt 0) {
-        foreach ($hwnd in $hwnds) {
-            [void](Apply-VoloBorderless $hwnd)
-            # 0x0060 = SWP_FRAMECHANGED|SWP_SHOWWINDOW; -2 = HWND_NOTOPMOST.
-            [void][VoloWin]::SetWindowPos($hwnd, [IntPtr](-2), $WinX, $WinY, $WinW, $WinH, 0x0060)
-            [void][VoloWin]::ShowWindow($hwnd, 5)
-            ('{0:o} finisher early place hwnd={1} -> ({2},{3}) {4}x{5} (pre-evidence NOTOPMOST)' -f (Get-Date), $hwnd, $WinX, $WinY, $WinW, $WinH) |
-                Add-Content -LiteralPath $log -Encoding ASCII
-        }
-        $script:finisherPlaced = $true
-    }
-
     foreach ($hwnd in $hwnds) {
-        # Finisher mode never touches the HWND before evidence + grace (early
-        # one-shot placement above handles pre-present sizing).
+        # Finisher mode never touches the HWND before evidence + grace. An earlier
+        # pre-evidence SetWindowPos raced ethernet_barrier's first present and timed
+        # the secondary node out (60s present_barrier) -> reverted. Window sizing is
+        # now handled by GUS FullscreenMode=1 (WindowedFullscreen) at window-create
+        # time, with no external SetWindowPos before the first present.
         if ($FinisherOnly) { break }
         if (-not $script:revealed) {
             $isInitial = -not $script:firstPlaced
@@ -692,9 +681,9 @@ Remove-Item -LiteralPath $MarkerPath -Force -ErrorAction SilentlyContinue
             ')',
             '$gusLines = @(',
             '    ''[/Script/Engine.GameUserSettings]'',',
-            '    ''FullscreenMode=2'',',
-            '    ''LastConfirmedFullscreenMode=2'',',
-            '    ''PreferredFullscreenMode=0'',',
+            '    ''FullscreenMode=1'',',
+            '    ''LastConfirmedFullscreenMode=1'',',
+            '    ''PreferredFullscreenMode=1'',',
             '    (''ResolutionSizeX={0}'' -f $pinW),',
             '    (''ResolutionSizeY={0}'' -f $pinH),',
             '    (''LastUserConfirmedResolutionSizeX={0}'' -f $pinW),',
