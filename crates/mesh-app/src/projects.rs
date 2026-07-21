@@ -97,6 +97,36 @@ pub fn seed_example_to_dir(
     Ok(dst)
 }
 
+/// GUI「新建项目」:把 example 内容直接释放进 `dest_dir`(该目录本身即项目根),
+/// 并把 project.name 改写为 `dest_dir` 的目录名。拒绝已含 project.yaml 的目录,
+/// 避免覆盖既有项目。
+pub fn seed_example_as_new_project(
+    examples_root: &Path,
+    example_name: &str,
+    dest_dir: &Path,
+) -> VoloResult<PathBuf> {
+    let src = examples_root.join(example_name);
+    if !src.is_dir() {
+        return Err(VoloError::NotFound(format!(
+            "example '{example_name}' (looked in {})",
+            examples_root.display()
+        )));
+    }
+    if dest_dir.join("project.yaml").is_file() {
+        return Err(VoloError::InvalidInput(format!(
+            "destination is already a project: {}",
+            dest_dir.display()
+        )));
+    }
+    copy_dir_recursive(&src, dest_dir)?;
+    let mut config = load_project_yaml_from_path(dest_dir)?;
+    if let Some(name) = dest_dir.file_name().and_then(|n| n.to_str()) {
+        config.project.name = name.to_string();
+    }
+    save_project_yaml_to_path(dest_dir, &config)?;
+    Ok(dest_dir.to_path_buf())
+}
+
 fn copy_dir_recursive(src: &Path, dst: &Path) -> VoloResult<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -243,5 +273,40 @@ output:
         assert_eq!(loaded.project.method, None);
         assert!(!loaded.screens["MAIN"].normal_flip);
         assert!(!loaded.screens["MAIN"].origin_aligned);
+    }
+
+    #[test]
+    fn seed_example_as_new_project_uses_folder_name() {
+        let root = tempdir().unwrap();
+        // 伪造 examples_root/demo,内含 project.yaml + 子目录文件
+        let examples_root = root.path().join("examples");
+        let src = examples_root.join("demo");
+        std::fs::create_dir_all(src.join("measurements")).unwrap();
+        save_project_yaml_to_path(&src, &minimal_config(None)).unwrap();
+        std::fs::write(src.join("measurements/a.csv"), "x").unwrap();
+
+        let dest = root.path().join("MyStage");
+        std::fs::create_dir_all(&dest).unwrap();
+        let out = seed_example_as_new_project(&examples_root, "demo", &dest).unwrap();
+        assert_eq!(out, dest);
+        let loaded = load_project_yaml_from_path(&dest).unwrap();
+        assert_eq!(loaded.project.name, "MyStage");
+        assert!(dest.join("measurements/a.csv").is_file());
+    }
+
+    #[test]
+    fn seed_example_as_new_project_refuses_existing_project() {
+        let root = tempdir().unwrap();
+        let examples_root = root.path().join("examples");
+        let src = examples_root.join("demo");
+        std::fs::create_dir_all(&src).unwrap();
+        save_project_yaml_to_path(&src, &minimal_config(None)).unwrap();
+
+        let dest = root.path().join("Existing");
+        save_project_yaml_to_path(&dest, &minimal_config(None)).unwrap();
+        let err = seed_example_as_new_project(&examples_root, "demo", &dest).unwrap_err();
+        assert!(matches!(err, VoloError::InvalidInput(_)));
+        // 原 project.yaml 未被覆盖
+        assert_eq!(load_project_yaml_from_path(&dest).unwrap().project.name, "X");
     }
 }

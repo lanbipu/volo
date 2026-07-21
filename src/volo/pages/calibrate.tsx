@@ -159,14 +159,15 @@ import { RMS_PX_THRESHOLDS } from "../api/lensCommands";
     try { targetDir = await pickDirectory(); }
     catch (e) { s.pushLog({ lv: 'err', cat: 'calibrate', msg: `选择目标目录失败 · ${e && e.message ? e.message : e}` }); return; }
     if (!targetDir) return;
+    const folderName = targetDir.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || example;
     try {
-      await s.runCmd({ domain: 'calibrate', action: '创建示例项目', target: example, chan: 'local' }, async () => {
+      await s.runCmd({ domain: 'calibrate', action: '新建项目', target: folderName, chan: 'local' }, async () => {
         const outDir = await seedExampleProject(targetDir, example);
         const config = await openProjectPath(outDir, s);
-        const rec = await addRecentProject(outDir, (config.project && config.project.name) || example);
+        const rec = await addRecentProject(outDir, (config.project && config.project.name) || folderName);
         projStore.patch({ recent: [rec, ...projStore.get().recent.filter((r) => r.abs_path !== outDir)] });
         return config;
-      }, { okMsg: (c) => `已创建示例项目 <b>${(c.project && c.project.name) || example}</b>` });
+      }, { okMsg: (c) => `已创建项目 <b>${(c.project && c.project.name) || folderName}</b>` });
     } catch (e) { /* 同上 */ }
   }
 

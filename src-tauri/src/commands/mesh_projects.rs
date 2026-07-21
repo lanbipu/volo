@@ -8,7 +8,7 @@
 //! distinct wrapper type per database.
 
 pub use mesh_app::projects::{
-    load_project_yaml_from_path, save_project_yaml_to_path, seed_example_to_dir,
+    load_project_yaml_from_path, save_project_yaml_to_path, seed_example_as_new_project,
 };
 
 use crate::commands::mesh::MeshDb;
@@ -63,7 +63,7 @@ pub fn seed_example_project(
         .resource_dir()
         .map_err(|e| VoloError::Io(e.to_string()))?;
     let examples_root = resource_dir.join("examples");
-    let out = seed_example_to_dir(&examples_root, &example, Path::new(&target_dir))?;
+    let out = seed_example_as_new_project(&examples_root, &example, Path::new(&target_dir))?;
     let _ = app.emit(
         "project-seeded",
         serde_json::json!({"abs_path": out.display().to_string()}),
