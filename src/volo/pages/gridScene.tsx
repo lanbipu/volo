@@ -129,14 +129,22 @@ export class CameraRig {
     this.apply();
   }
 
-  /** 自动取景：内容包围盒对角线占视口短边 ~55%（沿用旧视口取景比例）。 */
-  fit(min: { x: number; y: number; z: number }, max: { x: number; y: number; z: number }) {
-    this.cancelAnim();
-    this.target.set((min.x + max.x) / 2, (min.y + max.y) / 2, (min.z + max.z) / 2);
+  /** 取景计算：内容包围盒对角线占视口短边 ~55%（沿用旧视口取景比例）。 */
+  fitView(min: { x: number; y: number; z: number }, max: { x: number; y: number; z: number }): { target: THREE.Vector3; dist: number } {
+    const target = new THREE.Vector3((min.x + max.x) / 2, (min.y + max.y) / 2, (min.z + max.z) / 2);
     const halfDiag = Math.max(0.25, Math.hypot(max.x - min.x, max.y - min.y, max.z - min.z) / 2);
     const tanV = Math.tan(this.vfov() / 2);
     const tanH = tanV * (this.width / Math.max(1, this.height));
-    this.dist = Math.max(DIST_MIN, Math.min(DIST_MAX, halfDiag / (0.55 * Math.min(tanV, tanH))));
+    const dist = Math.max(DIST_MIN, Math.min(DIST_MAX, halfDiag / (0.55 * Math.min(tanV, tanH))));
+    return { target, dist };
+  }
+
+  /** 自动取景（即时，无过渡）。 */
+  fit(min: { x: number; y: number; z: number }, max: { x: number; y: number; z: number }) {
+    this.cancelAnim();
+    const v = this.fitView(min, max);
+    this.target.copy(v.target);
+    this.dist = v.dist;
     this.apply();
   }
 

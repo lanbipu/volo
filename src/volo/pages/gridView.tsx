@@ -392,6 +392,8 @@ import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
     const prevPreviewRef = useRef(false);
     /* 背景左键按下 → 延迟到松开才判定「取消选中」：期间若拖动（旋转视图）则不取消 */
     const bgDownRef = useRef(null);
+    /* 「聚焦选中」：每帧刷新的闭包（事件监听 effect 不随选中/几何重建，避免陈旧闭包） */
+    const focusSelRef = useRef(null);
     const patternByScreen = proj_.patternGenByScreen || {};
     const patternPathKey = Object.keys(patternByScreen).sort()
       .map((id) => id + '=' + ((patternByScreen[id] && patternByScreen[id].output_dir) || '')).join('|');
@@ -504,7 +506,8 @@ import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
     }, []);
     useEffect(() => {
       const onReset = () => reset();
-      const onFocus = () => RIG.smoothTo({ dist: Math.max(0.05, RIG.dist * 0.7) });
+      /* Frame Selected（Blender 语义）：以选中箱体/激活屏为包围盒平滑取景；轴心随之落到选中物 */
+      const onFocus = () => { if (focusSelRef.current) focusSelRef.current(); };
       window.addEventListener('volo-gw-reset', onReset);
       window.addEventListener('volo-gw-focus', onFocus);
       return () => { window.removeEventListener('volo-gw-reset', onReset); window.removeEventListener('volo-gw-focus', onFocus); };
@@ -595,6 +598,28 @@ import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
 
     const activeEntry = sbuilt.find((x) => x.isActive) || sbuilt[0];
     const m = activeEntry ? activeEntry.cfg : null;
+
+    /* 聚焦选中（Frame Selected）：单选箱体 > 多选箱体 > 激活屏 > 全部内容 */
+    focusSelRef.current = () => {
+      let boxes = null;
+      if (activeEntry) {
+        if (selKey) boxes = activeEntry.g.boxes.filter((b) => b.key === selKey);
+        else if (multiKeys && multiKeys.size) boxes = activeEntry.g.boxes.filter((b) => multiKeys.has(b.key));
+        if (!boxes || !boxes.length) boxes = activeEntry.g.boxes;
+      }
+      let min = null, max = null;
+      (boxes || []).forEach((b) => b.corners.forEach((p) => {
+        if (!min) { min = { x: p.x, y: p.y, z: p.z }; max = { x: p.x, y: p.y, z: p.z }; }
+        else {
+          min.x = Math.min(min.x, p.x); min.y = Math.min(min.y, p.y); min.z = Math.min(min.z, p.z);
+          max.x = Math.max(max.x, p.x); max.y = Math.max(max.y, p.y); max.z = Math.max(max.z, p.z);
+        }
+      }));
+      if (!min && bboxRef.current) { min = bboxRef.current.min; max = bboxRef.current.max; }
+      if (!min) return;
+      RIG.touched = true;
+      RIG.smoothTo(RIG.fitView(min, max));
+    };
 
     const setBoxMask = (b, to) => {
       const cur = s.calDraftScreen || m;
