@@ -352,6 +352,7 @@ def solve_with_view_rejection(*, K, observations, per_view_cab_corners,
     pvcc_cur = dict(per_view_cab_corners)
     n_cams = n_cameras
     view_rej_per_cab: dict[int, int] = {}
+    view_rej_cams: set[int] = set()  # original camera indexing (single round)
     for attempt in (1, 2):
         inits = make_inits(pvcc_cur, n_cams)
         if inits is None:
@@ -390,6 +391,7 @@ def solve_with_view_rejection(*, K, observations, per_view_cab_corners,
                      f"(rms {result.rms_reprojection_px:.2f}px > "
                      f"{BA_RMS_FATAL_PX}px gate); re-initializing and "
                      f"re-solving from the remaining views")))
+        view_rej_cams = set(bad_cams)
         for o in obs_cur:
             if o.camera_idx in bad_cams:
                 view_rej_per_cab[o.cabinet_idx] = (
@@ -403,7 +405,7 @@ def solve_with_view_rejection(*, K, observations, per_view_cab_corners,
     for cab, n in view_rej_per_cab.items():
         rej_cab[cab] = rej_cab.get(cab, 0) + n
     n_rej += sum(view_rej_per_cab.values())
-    return result, rej_cab, n_rej, surviving, max_nfev
+    return result, rej_cab, n_rej, surviving, max_nfev, view_rej_cams
 
 
 def _undistort_obs(pix: np.ndarray, K: np.ndarray, dist: np.ndarray) -> np.ndarray:
@@ -1325,134 +1327,155 @@ def run_reconstruct_vpqsp_joint(cmd: ReconstructInput, manifest) -> int:
             message=(f"{len(dead_paths)} image(s) have no markers for any target screen "
                      f"(e.g. {sample_txt})")))
 
-    intrinsics_spec = cmd.intrinsics_path or manifest.intrinsics
-    if intrinsics_spec is None:
-        write_event(ErrorEvent(event="error", code="invalid_input",
-            message="no intrinsics: set the capture manifest's `intrinsics` field, or pass "
-                    "--intrinsics <path|auto>", fatal=True))
-        return 1
-
-    # Self-cal uses all screens' marker geometry.
-    if intrinsics_spec == "auto":
-        try:
-            image_size = _validated_image_size(view_images)
-        except IntrinsicsRefused as e:
-            write_event(ErrorEvent(event="error", code=e.code, message=e.message, fatal=True))
-            return 1
-        if image_size is None:
+    # Two-round runner: round 1 on all views; if the solve is refused by the
+    # rms gate with Stage C having identified rigidly-inconsistent views, redo
+    # EVERYTHING (self-cal K included — its boards are polluted too) without
+    # those views. Mirrors the manually-verified trim (11 views 2.21px fatal →
+    # 9 views 0.31px); re-init alone stays in the polluted-K 2px regime.
+    excluded_views: set[int] = set()
+    code = 1
+    for solve_round in (1, 2):
+        round_view_images = [imgs for i, imgs in enumerate(view_images)
+                             if i not in excluded_views]
+        gate_retry: dict | None = {} if solve_round == 1 else None
+        intrinsics_spec = cmd.intrinsics_path or manifest.intrinsics
+        if intrinsics_spec is None:
             write_event(ErrorEvent(event="error", code="invalid_input",
-                message="--intrinsics auto: cannot read any capture image to determine frame size",
-                fatal=True))
+                message="no intrinsics: set the capture manifest's `intrinsics` field, or pass "
+                        "--intrinsics <path|auto>", fatal=True))
             return 1
+
+        # Self-cal uses all screens' marker geometry.
+        if intrinsics_spec == "auto":
+            try:
+                image_size = _validated_image_size(round_view_images)
+            except IntrinsicsRefused as e:
+                write_event(ErrorEvent(event="error", code=e.code, message=e.message, fatal=True))
+                return 1
+            if image_size is None:
+                write_event(ErrorEvent(event="error", code="invalid_input",
+                    message="--intrinsics auto: cannot read any capture image to determine frame size",
+                    fatal=True))
+                return 1
+            try:
+                # Use first screen meta for self-cal grid lookup; detections carry screen_id.
+                K, dist = _self_calibrate_vpqsp_joint(
+                    screen_metas, grid_by_screen, code_to_screen, detections,
+                    round_view_images, image_size, cmd)
+                intrinsics_source = "auto_self_calibrated"
+            except IntrinsicsRefused as e:
+                write_event(ErrorEvent(event="error", code=e.code, message=e.message, fatal=True))
+                return 1
+        else:
+            try:
+                intr = json.loads(pathlib.Path(intrinsics_spec).read_text(encoding="utf-8"))
+                K = np.array(intr["K"], dtype=float)
+                prob = intrinsics_K_problem(K)
+                if prob is not None:
+                    raise ValueError(prob)
+                dist = np.array(intr["dist_coeffs"], dtype=float)
+                intrinsics_source = "file"
+            except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
+                write_event(ErrorEvent(event="error", code="intrinsics_invalid",
+                    message=f"intrinsics load failed: {e}", fatal=True))
+                return 1
+
+        observations: list[Observation] = []
+        per_view_cab_corners: dict[tuple[int, int], list[tuple[np.ndarray, np.ndarray]]] = {}
+        per_cabinet_views: dict[int, set[int]] = {}
+        per_cabinet_points: dict[int, int] = {}
+        for cam_idx, imgs in enumerate(round_view_images):
+            for path in imgs:
+                for det in detections.get(path, []):
+                    sid_code = int(det.get("screen_id", -1))
+                    if sid_code not in code_to_screen:
+                        continue
+                    si = code_to_screen[sid_code]
+                    cab_cr = tuple(det["cabinet"])
+                    key = (si, cab_cr[0], cab_cr[1])
+                    if key not in cab_to_idx or cab_cr not in grid_by_screen[si]:
+                        continue
+                    cab_idx = cab_to_idx[key]
+                    mx, my, mpx, res_px, pitch = grid_by_screen[si][cab_cr]
+                    p_local = marker_local_mm(
+                        int(det["local_id"]), markers_x=mx, markers_y=my, marker_px=mpx,
+                        resolution_px=res_px, pixel_pitch_mm=pitch,
+                    )
+                    pixel = _undistort_obs(np.array(det["corner_px"], dtype=float), K, dist)
+                    sigma = float(det.get("sigma_px", 1.0))
+                    observations.append(Observation(
+                        camera_idx=cam_idx, cabinet_idx=cab_idx, p_local=p_local, pixel=pixel,
+                        sigma_px=sigma))
+                    per_view_cab_corners.setdefault((cam_idx, cab_idx), []).append((p_local, pixel))
+                    per_cabinet_views.setdefault(cab_idx, set()).add(cam_idx)
+                    per_cabinet_points[cab_idx] = per_cabinet_points.get(cab_idx, 0) + 1
+
+        if not observations:
+            write_event(ErrorEvent(event="error", code="detection_failed",
+                message="no VP-QSP markers detected for any target screen", fatal=True))
+            return 1
+
+        (observations, per_view_cab_corners, per_cabinet_views, per_cabinet_points,
+         n_rej_stage_a, rej_per_cab_stage_a) = stage_a_prune(observations, per_view_cab_corners, K)
+
         try:
-            # Use first screen meta for self-cal grid lookup; detections carry screen_id.
-            K, dist = _self_calibrate_vpqsp_joint(
-                screen_metas, grid_by_screen, code_to_screen, detections, view_images,
-                image_size, cmd)
-            intrinsics_source = "auto_self_calibrated"
-        except IntrinsicsRefused as e:
-            write_event(ErrorEvent(event="error", code=e.code, message=e.message, fatal=True))
+            check_observability(observations, n_cabinets, min_views=2, min_points=8,
+                                check_connectivity=False)
+        except ObservabilityError as e:
+            write_event(ErrorEvent(event="error", code="observability_failed", message=str(e), fatal=True))
             return 1
-    else:
+
         try:
-            intr = json.loads(pathlib.Path(intrinsics_spec).read_text(encoding="utf-8"))
-            K = np.array(intr["K"], dtype=float)
-            prob = intrinsics_K_problem(K)
-            if prob is not None:
-                raise ValueError(prob)
-            dist = np.array(intr["dist_coeffs"], dtype=float)
-            intrinsics_source = "file"
-        except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
-            write_event(ErrorEvent(event="error", code="intrinsics_invalid",
-                message=f"intrinsics load failed: {e}", fatal=True))
+            conn = check_screen_connectivity(
+                observations, cab_idx_to_screen, n_screens,
+                screen_labels=[sp.screen_id for sp in screen_projects],
+            )
+        except ScreenConnectivityError as e:
+            write_event(ErrorEvent(event="error", code="screens_disconnected", message=str(e), fatal=True))
             return 1
 
-    observations: list[Observation] = []
-    per_view_cab_corners: dict[tuple[int, int], list[tuple[np.ndarray, np.ndarray]]] = {}
-    per_cabinet_views: dict[int, set[int]] = {}
-    per_cabinet_points: dict[int, int] = {}
-    for cam_idx, imgs in enumerate(view_images):
-        for path in imgs:
-            for det in detections.get(path, []):
-                sid_code = int(det.get("screen_id", -1))
-                if sid_code not in code_to_screen:
-                    continue
-                si = code_to_screen[sid_code]
-                cab_cr = tuple(det["cabinet"])
-                key = (si, cab_cr[0], cab_cr[1])
-                if key not in cab_to_idx or cab_cr not in grid_by_screen[si]:
-                    continue
-                cab_idx = cab_to_idx[key]
-                mx, my, mpx, res_px, pitch = grid_by_screen[si][cab_cr]
-                p_local = marker_local_mm(
-                    int(det["local_id"]), markers_x=mx, markers_y=my, marker_px=mpx,
-                    resolution_px=res_px, pixel_pitch_mm=pitch,
-                )
-                pixel = _undistort_obs(np.array(det["corner_px"], dtype=float), K, dist)
-                sigma = float(det.get("sigma_px", 1.0))
-                observations.append(Observation(
-                    camera_idx=cam_idx, cabinet_idx=cab_idx, p_local=p_local, pixel=pixel,
-                    sigma_px=sigma))
-                per_view_cab_corners.setdefault((cam_idx, cab_idx), []).append((p_local, pixel))
-                per_cabinet_views.setdefault(cab_idx, set()).add(cam_idx)
-                per_cabinet_points[cab_idx] = per_cabinet_points.get(cab_idx, 0) + 1
+        per_screen_pose_paths: dict[int, str | None] = {
+            si: sp.pose_report_path for si, sp in enumerate(screen_projects)
+        }
 
-    if not observations:
-        write_event(ErrorEvent(event="error", code="detection_failed",
-            message="no VP-QSP markers detected for any target screen", fatal=True))
-        return 1
+        corners_providers = {
+            si: (lambda cid, sm=screen_mappings[si]: _active_surface_corners_mm(sm, cid))
+            for si in range(n_screens)
+        }
 
-    (observations, per_view_cab_corners, per_cabinet_views, per_cabinet_points,
-     n_rej_stage_a, rej_per_cab_stage_a) = stage_a_prune(observations, per_view_cab_corners, K)
-
-    try:
-        check_observability(observations, n_cabinets, min_views=2, min_points=8,
-                            check_connectivity=False)
-    except ObservabilityError as e:
-        write_event(ErrorEvent(event="error", code="observability_failed", message=str(e), fatal=True))
-        return 1
-
-    try:
-        conn = check_screen_connectivity(
-            observations, cab_idx_to_screen, n_screens,
-            screen_labels=[sp.screen_id for sp in screen_projects],
+        code = joint_solve_and_emit(
+            K=K,
+            observations=observations,
+            per_view_cab_corners=per_view_cab_corners,
+            n_cameras=len(round_view_images),
+            root_idx=root_idx,
+            n_cabinets=n_cabinets,
+            cab_idx_to_screen=cab_idx_to_screen,
+            cab_idx_to_cr=cab_idx_to_cr,
+            screen_root_indices=screen_root_indices,
+            screen_projects=screen_projects,
+            per_screen_nominal=per_screen_nominal,
+            corners_local_providers=corners_providers,
+            per_screen_pose_paths=per_screen_pose_paths,
+            screen_transforms_path=cmd.screen_transforms_path,
+            conn_info=conn,
+            n_rejected_pre=n_rej_stage_a,
+            rejected_per_cab_pre=rej_per_cab_stage_a,
+            intrinsics_source=intrinsics_source,
+            ignored_photos=ignored_photos,
+            photos_used=photos_used,
+            photos_total=photos_total,
+            gate_retry_out=gate_retry,
         )
-    except ScreenConnectivityError as e:
-        write_event(ErrorEvent(event="error", code="screens_disconnected", message=str(e), fatal=True))
-        return 1
 
-    per_screen_pose_paths: dict[int, str | None] = {
-        si: sp.pose_report_path for si, sp in enumerate(screen_projects)
-    }
-
-    corners_providers = {
-        si: (lambda cid, sm=screen_mappings[si]: _active_surface_corners_mm(sm, cid))
-        for si in range(n_screens)
-    }
-
-    return joint_solve_and_emit(
-        K=K,
-        observations=observations,
-        per_view_cab_corners=per_view_cab_corners,
-        n_cameras=len(view_images),
-        root_idx=root_idx,
-        n_cabinets=n_cabinets,
-        cab_idx_to_screen=cab_idx_to_screen,
-        cab_idx_to_cr=cab_idx_to_cr,
-        screen_root_indices=screen_root_indices,
-        screen_projects=screen_projects,
-        per_screen_nominal=per_screen_nominal,
-        corners_local_providers=corners_providers,
-        per_screen_pose_paths=per_screen_pose_paths,
-        screen_transforms_path=cmd.screen_transforms_path,
-        conn_info=conn,
-        n_rejected_pre=n_rej_stage_a,
-        rejected_per_cab_pre=rej_per_cab_stage_a,
-        intrinsics_source=intrinsics_source,
-        ignored_photos=ignored_photos,
-        photos_used=photos_used,
-        photos_total=photos_total,
-    )
+        if code == 0 or gate_retry is None or not gate_retry.get("bad_views"):
+            return code
+        excluded_views = set(gate_retry["bad_views"])
+        write_event(WarningEvent(
+            event="warning", code="view_excluded_retry",
+            message=(f"re-running joint reconstruct without {len(excluded_views)} "
+                     f"rejected view(s) (self-cal + solve redo)")))
+    return code
 
 
 def _self_calibrate_vpqsp_joint(
@@ -1541,8 +1564,16 @@ def joint_solve_and_emit(
     ignored_photos: list[str] | None = None,
     photos_used: int = 0,
     photos_total: int = 0,
+    gate_retry_out: dict | None = None,
 ) -> int:
-    """Joint multi-screen BA + per-screen pose reports + screen transforms."""
+    """Joint multi-screen BA + per-screen pose reports + screen transforms.
+
+    ``gate_retry_out``: when provided and the solve would be refused by the rms
+    gate AFTER Stage C identified rigidly-inconsistent views, report the bad
+    view indices there and return 1 WITHOUT emitting the fatal event — the
+    runner then redoes everything (self-cal K included; its boards are polluted
+    too) without those views, mirroring the verified manual trim.
+    """
     write_event(ProgressEvent(event="progress", stage="bundle_adjustment", percent=0.5,
                               message="initializing joint multi-screen solve"))
     gauge_idx = root_idx
@@ -1599,7 +1630,7 @@ def joint_solve_and_emit(
         per_cabinet_min_points=8)
     if solved is None:
         return 1
-    result, rejected_per_cab_stage_b, n_rej_stage_b, surviving_observations, max_nfev = solved
+    result, rejected_per_cab_stage_b, n_rej_stage_b, surviving_observations, max_nfev, view_rej_cams = solved
 
     rejected_per_cab_pre = rejected_per_cab_pre or {}
     n_used = len(surviving_observations)
@@ -1627,6 +1658,10 @@ def joint_solve_and_emit(
                 fatal=True))
             return 1
 
+    if (gate_retry_out is not None and view_rej_cams
+            and result.rms_reprojection_px > BA_RMS_FATAL_PX):
+        gate_retry_out["bad_views"] = sorted(view_rej_cams)
+        return 1
     if _ba_acceptance_failed(result, max_nfev):
         return 1
 
@@ -1925,7 +1960,7 @@ def solve_and_emit(
         per_cabinet_min_points=8)
     if solved is None:
         return 1
-    result, rejected_per_cab_stage_b, n_rej_stage_b, surviving_observations, max_nfev = solved
+    result, rejected_per_cab_stage_b, n_rej_stage_b, surviving_observations, max_nfev, view_rej_cams = solved
     # Re-express the solution in the EXTERNAL root cabinet's frame (the gauge sat
     # at the wall center purely for conditioning; reports keep V000_R000 frame
     # semantics).
