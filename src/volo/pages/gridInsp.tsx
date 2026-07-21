@@ -84,8 +84,14 @@ import { listen } from "@tauri-apps/api/event";
       if (!allIds.length) return;
       const idSet = new Set(allIds);
       let changed = false;
+      /* seen 跨预设去重：新建屏幕的手动挂载与本 effect 的孤儿补挂可能竞态重复,
+         这里统一收敛(首见者保留),也顺带治好历史持久化里的重复项。 */
+      const seen = new Set();
       let next = (presets.length ? presets : structuredClone(GRID_SCREEN_PRESETS)).map((p) => {
-        const filtered = (p.screenIds || []).filter((x) => idSet.has(x));
+        const filtered = (p.screenIds || []).filter((x) => {
+          if (!idSet.has(x) || seen.has(x)) return false;
+          seen.add(x); return true;
+        });
         if (filtered.length !== (p.screenIds || []).length) changed = true;
         return Object.assign({}, p, { screenIds: filtered });
       });
@@ -151,7 +157,8 @@ import { listen } from "@tauri-apps/api/event";
       const pid = 'preset' + Date.now();
       try {
         await createScreenYaml(id);
-        s.setCalPresets((list) => [...list, { id: pid, name: '新预设 ' + (list.length + 1), screenIds: [id] }]);
+        /* 新屏可能已被孤儿补挂 effect 塞进旧预设,先从所有预设剥离再归入新预设 */
+        s.setCalPresets((list) => [...list.map((p) => Object.assign({}, p, { screenIds: (p.screenIds || []).filter((x) => x !== id) })), { id: pid, name: '新预设 ' + (list.length + 1), screenIds: [id] }]);
         s.setCalActivePreset(pid); s.setCalActiveScreen(id); s.setCalDraftScreen(null); s.setCalSel({ type: 'screen' });
         s.setCalReceipt({ tone: 'ok', text: '已新建预设 · 含 1 块屏幕' }); setEditingPreset(pid);
       } catch (e) { /* runCmd 已记录失败 */ }
@@ -181,7 +188,8 @@ import { listen } from "@tauri-apps/api/event";
       const id = allocScreenId();
       try {
         await createScreenYaml(id);
-        s.setCalPresets((list) => list.map((p) => p.id === activePresetId ? Object.assign({}, p, { screenIds: [...(p.screenIds || []), id] }) : p));
+        /* 孤儿补挂 effect 可能已抢先把新屏挂进当前预设(openProjectPath 触发),幂等处理 */
+        s.setCalPresets((list) => list.map((p) => p.id === activePresetId && !(p.screenIds || []).includes(id) ? Object.assign({}, p, { screenIds: [...(p.screenIds || []), id] }) : p));
         s.setCalActiveScreen(id); s.setCalDraftScreen(null); s.setCalSel({ type: 'screen' });
         s.setCalReceipt({ tone: 'ok', text: '已新建屏幕 · ' + id }); setEditingId(id);
       } catch (e) { /* runCmd 已记录失败 */ }
