@@ -87,7 +87,13 @@ export class CameraRig {
     this.emit();
   }
 
-  cancelAnim() { if (this.anim != null) { cancelAnimationFrame(this.anim); this.anim = null; } }
+  private zoomTarget: number | null = null;
+  private zoomNdc: { x: number; y: number } | null = null;
+
+  cancelAnim() {
+    if (this.anim != null) { cancelAnimationFrame(this.anim); this.anim = null; }
+    this.zoomTarget = null;
+  }
 
   /** Blender 转台：俯仰绕相机水平轴（无钳制、可翻越），方位角绕世界 Z（倒置时反向）。
       pivot 非空时绕它转（Orbit Around Selection）：target 随姿态一起绕 pivot 旋转,
@@ -121,12 +127,37 @@ export class CameraRig {
     this.apply();
   }
 
-  /** 滚轮缩放 ×1.2/格，锚定光标下世界点（Blender zoom-to-mouse：ofs 朝光标射线重定位）。 */
+  /** 滚轮缩放 ×1.2/格，锚定光标下世界点（Blender zoom-to-mouse：ofs 朝光标射线重定位）。
+      平滑：滚轮只推进目标距离（连续滚动累积），rAF 循环以 ~90ms 时间常数对数趋近，
+      锚定数学逐帧应用 → 快速滚动合并成连贯滑行，停止后自然减速。 */
   zoomStep(dir: 1 | -1, ndc: { x: number; y: number } | null) {
-    this.cancelAnim(); this.touched = true;
+    this.touched = true;
     const dfac = dir > 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
-    const newDist = Math.max(DIST_MIN, Math.min(DIST_MAX, this.dist * dfac));
+    const from = this.zoomTarget != null ? this.zoomTarget : this.dist;
+    const goal = Math.max(DIST_MIN, Math.min(DIST_MAX, from * dfac));
+    this.zoomNdc = ndc;
+    if (this.zoomTarget != null) { this.zoomTarget = goal; return; } /* 循环已在跑，只更新目标 */
+    if (this.anim != null) { cancelAnimationFrame(this.anim); this.anim = null; } /* 打断 smoothTo */
+    this.zoomTarget = goal;
+    let last = performance.now();
+    const tick = () => {
+      if (this.zoomTarget == null) { this.anim = null; return; } /* 被 cancelAnim 终止 */
+      const now = performance.now();
+      const dt = Math.min(100, now - last); last = now;
+      const k = 1 - Math.exp(-dt / 90);
+      let nd = Math.exp(THREE.MathUtils.lerp(Math.log(this.dist), Math.log(this.zoomTarget), k));
+      const done = Math.abs(Math.log(nd / this.zoomTarget)) < 0.003;
+      if (done) nd = this.zoomTarget;
+      this.zoomApply(nd);
+      if (done) { this.zoomTarget = null; this.anim = null; return; }
+      this.anim = requestAnimationFrame(tick);
+    };
+    tick(); /* 首帧立即响应，无一帧延迟 */
+  }
+
+  private zoomApply(newDist: number) {
     const f = newDist / this.dist;
+    const ndc = this.zoomNdc;
     if (ndc && Math.abs(1 - f) > 1e-6) {
       /* 光标下目标深度处的世界点 P：缩放前后保持其屏幕位置不动 */
       const cam = this.camera;
