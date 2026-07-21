@@ -130,7 +130,7 @@
    ============================================================ */
 .gw-center { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 .gw-stage { flex: 1 1 auto; min-height: 0; position: relative; overflow: hidden;
-  background: radial-gradient(140% 120% at 50% 8%, #202127 0%, #121216 55%, #0c0c0f 100%); }
+  background: radial-gradient(140% 120% at 50% 8%, #333438 0%, #292a2e 55%, #232427 100%); }
 .gw-svp { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 
 /* 四角叠加 */
