@@ -752,6 +752,53 @@ def _board_homography_inliers(objp: list, imgp: list, thresh_px: float = 3.0):
             [i for i, k in zip(imgp, keep) if k])
 
 
+def _solve_intrinsics_robust(object_points, image_points, image_size, *,
+                             has_anchor: bool, pp_gate: float):
+    """solve_sl_intrinsics + one robust board-trim pass.
+
+    A motion-distorted (rolling-shutter-sheared) frame passes the per-board
+    homography clean — the shear IS its consensus — yet cannot be explained by
+    any rigid pose under the shared K, so it skews fx/fy/pp while the overall
+    rms stays under the 1.5px gate. Score each board by solvePnP reprojection
+    under the solved K; boards > max(3×median, 1.0px) are re-solved away (kept
+    only if the retry does not worsen rms or trip a gate).
+    """
+    def _solve(objs, imgs):
+        return solve_sl_intrinsics(objs, imgs, image_size,
+                                   max_rms_px=1.5, allow_full_distortion=has_anchor,
+                                   max_pp_std_px=pp_gate, try_zero_distortion=True)
+
+    res = _solve(object_points, image_points)
+    errs = []
+    for obj, img in zip(object_points, image_points):
+        ok, rvec, tvec = cv2.solvePnP(obj, img, res.K, res.dist)
+        if not ok:
+            errs.append(float("inf"))
+            continue
+        proj, _ = cv2.projectPoints(obj, rvec, tvec, res.K, res.dist)
+        errs.append(float(np.sqrt(np.mean(
+            np.sum((proj.reshape(-1, 2) - img) ** 2, axis=1)))))
+    med = float(np.median(errs))
+    thr = max(3.0 * med, 1.0)
+    bad = [i for i, e in enumerate(errs) if e > thr]
+    if not bad or len(object_points) - len(bad) < 3:
+        return res
+    objs2 = [o for i, o in enumerate(object_points) if i not in set(bad)]
+    imgs2 = [m for i, m in enumerate(image_points) if i not in set(bad)]
+    try:
+        res2 = _solve(objs2, imgs2)
+    except IntrinsicsRefused:
+        return res
+    if res2.rms <= res.rms:
+        write_event(WarningEvent(
+            event="warning", code="intrinsics_board_rejected",
+            message=(f"self-cal dropped {len(bad)} inconsistent board(s) "
+                     f"(> {thr:.2f}px under shared K); rms "
+                     f"{res.rms:.2f}px → {res2.rms:.2f}px")))
+        return res2
+    return res
+
+
 def _self_calibrate_vpqsp(meta, detections, view_images, image_size, cmd):
     """Inline self-cal for VP-QSP `--intrinsics auto`. Each captured view is a
     photo of the KNOWN VP-QSP marker wall — a planar (flat) or per-cabinet-tilted
@@ -822,9 +869,8 @@ def _self_calibrate_vpqsp(meta, detections, view_images, image_size, cmd):
     # Per-cabinet poses have fewer points than full-view poses, so pp uncertainty
     # is slightly higher. Scale the pp gate by image size (default 3px @ 4000px).
     pp_gate = max(5.0, 3.0 * max(image_size) / 4000)
-    res = solve_sl_intrinsics(object_points, image_points, image_size,
-                              max_rms_px=1.5, allow_full_distortion=has_anchor,
-                              max_pp_std_px=pp_gate, try_zero_distortion=True)
+    res = _solve_intrinsics_robust(object_points, image_points, image_size,
+                                   has_anchor=has_anchor, pp_gate=pp_gate)
     if has_anchor:
         try:
             anchor = json.loads(pathlib.Path(cmd.crosscheck_intrinsics_path).read_text())
@@ -1423,9 +1469,8 @@ def _self_calibrate_vpqsp_joint(
 
     has_anchor = bool(cmd.crosscheck_intrinsics_path)
     pp_gate = max(5.0, 3.0 * max(image_size) / 4000)
-    res = solve_sl_intrinsics(object_points, image_points, image_size,
-                              max_rms_px=1.5, allow_full_distortion=has_anchor,
-                              max_pp_std_px=pp_gate, try_zero_distortion=True)
+    res = _solve_intrinsics_robust(object_points, image_points, image_size,
+                                   has_anchor=has_anchor, pp_gate=pp_gate)
     if has_anchor:
         try:
             anchor = json.loads(pathlib.Path(cmd.crosscheck_intrinsics_path).read_text())
