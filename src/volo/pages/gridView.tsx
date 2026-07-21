@@ -70,7 +70,7 @@ import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
   const SCENE_STORE = { pickMeshes: [], setHover: () => {}, invalidate: () => {} };
 
   /* 世界轴色：地面轴端 / gizmo 共用（显示 Z = 世界 Y） */
-  const WORLD_AXIS = { x: '#c74436', y: '#3f74c4' };
+  const WORLD_AXIS = { x: '#d9503f', y: '#4f83d9' }; /* 与 gridScene 地面轴线 uniform 同步 */
   const GIZMO_AXES = [
     { dir: [1, 0, 0], col: WORLD_AXIS.x, label: 'X' },
     { dir: [-1, 0, 0], col: WORLD_AXIS.x, label: null },

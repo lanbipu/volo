@@ -272,11 +272,11 @@ void main() {
 
   /* 世界轴线（面内 X 红 / Y 蓝）优先于网格线 */
   vec2 px = fwidth(vW.xy);
-  float axX = 1.0 - min(abs(vW.y) / (px.y * 1.2), 1.0);
-  float axY = 1.0 - min(abs(vW.x) / (px.x * 1.2), 1.0);
+  float axX = 1.0 - min(abs(vW.y) / (px.y * 1.6), 1.0);
+  float axY = 1.0 - min(abs(vW.x) / (px.x * 1.6), 1.0);
   if (axX > 0.0 || axY > 0.0) {
     col = axX >= axY ? uAxisX : uAxisY;
-    alpha = max(alpha, max(axX, axY) * 0.8);
+    alpha = max(alpha, max(axX, axY) * 0.95);
   }
 
   float d = length(vW.xy - uCam.xy);
@@ -300,10 +300,10 @@ function GroundGrid({ rig }: { rig: CameraRig }) {
       uCam: { value: new THREE.Vector3() },
       uLevel: { value: 0 },
       uFade: { value: 40 },
-      uMinorA: { value: 0.05 },   /* = CSS .gw-grid-l */
-      uMajorA: { value: 0.09 },   /* = CSS .gw-grid-l.maj */
-      uAxisX: { value: new THREE.Color('#c74436') },
-      uAxisY: { value: new THREE.Color('#3f74c4') },
+      uMinorA: { value: 0.11 },   /* 背景改深灰(#333438 系)后原 0.05/0.09 对比不足,整体加强一档 */
+      uMajorA: { value: 0.20 },
+      uAxisX: { value: new THREE.Color('#d9503f') },
+      uAxisY: { value: new THREE.Color('#4f83d9') },
     },
   }), []);
   React.useEffect(() => () => { mat.dispose(); }, [mat]);
@@ -585,7 +585,7 @@ function HoverQuad({ store }: { store: SceneStore }) {
 function VerticalAxis() {
   const geo = React.useMemo(() => geomFrom([0, 0, 0, 0, 0, 2]), []);
   const mat = React.useMemo(() => new THREE.LineBasicMaterial({
-    color: new THREE.Color('#3f9c46'), transparent: true, opacity: 0.8,
+    color: new THREE.Color('#4dbb57'), transparent: true, opacity: 0.95,
   }), []);
   React.useEffect(() => () => { geo.dispose(); mat.dispose(); }, [geo, mat]);
   return <lineSegments geometry={geo} material={mat} renderOrder={49} />;
