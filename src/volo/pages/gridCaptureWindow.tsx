@@ -8,7 +8,7 @@
    三阶段态 config → capturing → done；重置通过 onSaved({reset:true}) 清 visualSession。 */
 import * as React from "react";
 import { lensWorkspacePaths } from "../api/lensWorkspace";
-import { meshVisualPlanCapture } from "../api/meshVisualCommands";
+import { meshVisualPlanCapture, vpqspScreenIdCode } from "../api/meshVisualCommands";
 import {
   spawnSidecarStreaming,
   cancelSidecarTaskAwaitExit,
@@ -194,10 +194,14 @@ import {
     const stream = useSidecarStream(taskId);
     const proj = CX.projStore ? CX.projStore.get() : null;
     const projPath = proj && proj.path ? proj.path : null;
-    const screenCfg = (proj && proj.config && proj.config.screens && screenId)
-      ? proj.config.screens[screenId] : null;
-    const screenCols = screenCfg && screenCfg.cabinet_count ? screenCfg.cabinet_count[0] : 8;
-    const screenRows = screenCfg && screenCfg.cabinet_count ? screenCfg.cabinet_count[1] : 4;
+    /* 采集范围 = stage 内全部屏幕（默认行为，无需选择）；引导机位逐屏规划后
+       合并，每站带 screenId，箱体网格 / 匹配都按该站所属屏幕解释。 */
+    const allScreenIds = (proj && proj.config && proj.config.screens)
+      ? Object.keys(proj.config.screens) : (screenId ? [screenId] : []);
+    const colsRowsOf = (id) => {
+      const cfg = (proj && proj.config && proj.config.screens) ? proj.config.screens[id] : null;
+      return (cfg && cfg.cabinet_count) ? [cfg.cabinet_count[0], cfg.cabinet_count[1]] : [8, 4];
+    };
     const lens = profileLens(profile);
     const hfov = lens.hfov;
     const planImageSize = imageSizeOf(profile, fmt);
@@ -206,6 +210,13 @@ import {
     const curStation = guideStations.length
       ? guideStations[poseIdx % guideStations.length]
       : null;
+    const curScreenId = (curStation && curStation.screenId) || screenId;
+    const [screenCols, screenRows] = colsRowsOf(curScreenId);
+    /* 当前站所属屏幕的 VP-QSP 屏标识码 → 从整帧检测里过滤出本屏箱体 */
+    const curScreenCode = vpqspScreenIdCode(curScreenId, allScreenIds);
+    const curObsCabinets = obsCabinets
+      .filter((c) => c.length < 3 || (c[0] | 0) === curScreenCode)
+      .map((c) => (c.length < 3 ? c : [c[1], c[2]]));
     const curCovers = (curStation && curStation.covers_cabinets) || [];
     const curExpBox = curStation
       ? cabinetsNormBBox(curCovers, screenCols, screenRows)
@@ -309,40 +320,45 @@ import {
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [canSpawn, pid, sessionDir, spawnGen]);
 
-    /* 参考画幅规划：需项目路径 + 活跃屏 + Profile.hfovDeg；失败则引导层整体隐藏 */
+    /* 参考画幅规划：stage 全部屏幕逐屏规划后合并（每站带 screenId）；
+       个别屏失败只降级该屏，全部失败才退化为纯快拍。 */
     useEffect(() => {
-      if (!projPath || !screenId || hfov == null) {
+      if (!projPath || !allScreenIds.length || hfov == null) {
         setGuideStations([]);
         setGuidePlanning(false);
         return undefined;
       }
       let cancelled = false;
       setGuidePlanning(true);
-      meshVisualPlanCapture(projPath, screenId, planImageSize, hfov, null).then((plan) => {
+      Promise.all(allScreenIds.map((id) =>
+        meshVisualPlanCapture(projPath, id, planImageSize, hfov, null)
+          .then((plan) => ({ id, stations: (plan && plan.stations) || [], error: null }))
+          .catch((e) => ({ id, stations: [], error: e && e.message ? e.message : String(e) }))
+      )).then((perScreen) => {
         if (cancelled) return;
-        const stations = (plan && plan.stations) || [];
-        setGuideStations(stations);
+        const merged = [];
+        perScreen.forEach(({ id, stations, error }) => {
+          if (error) {
+            s.pushLog({ lv: 'warn', cat: 'capture', msg: '参考画幅规划失败 · 屏 ' + id + ' · ' + error });
+            return;
+          }
+          stations.forEach((st) => merged.push(Object.assign({}, st, { screenId: id })));
+        });
+        setGuideStations(merged);
         setPoseIdx(0);
         resetMatch();
-        if (!stations.length) {
+        if (!merged.length) {
           s.pushLog({ lv: 'warn', cat: 'capture', msg: '参考画幅规划返回 0 机位 · 退化为纯快拍' });
         } else {
           s.pushLog({
             lv: 'ok', cat: 'capture',
-            msg: '参考画幅规划完成 · ' + stations.length + ' 机位 · hfov ' + hfov + '°',
+            msg: '参考画幅规划完成 · ' + allScreenIds.length + ' 屏 · ' + merged.length + ' 机位 · hfov ' + hfov + '°',
           });
         }
-      }).catch((e) => {
-        if (cancelled) return;
-        setGuideStations([]);
-        s.pushLog({
-          lv: 'warn', cat: 'capture',
-          msg: '参考画幅规划失败 · 退化为纯快拍 · ' + (e && e.message ? e.message : e),
-        });
       }).finally(() => { if (!cancelled) setGuidePlanning(false); });
       return () => { cancelled = true; };
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [pid, screenId, hfov, projPath, planImageSize]);
+    }, [pid, allScreenIds.join('|'), hfov, projPath, planImageSize]);
 
     /* 匹配分：期望箱体 ∩ 实测箱体 + bbox 占比容差；滞回防闪烁 */
     useEffect(() => {
@@ -354,10 +370,11 @@ import {
       if (!station || markerStale) return;
       const expected = station.covers_cabinets || [];
       const expBox = cabinetsNormBBox(expected, screenCols, screenRows);
-      const score = computeFramingScore(expected, obsCabinets, expBox, obsBbox);
+      /* 只拿本站所属屏幕的观测箱体参与匹配（多屏同框时其余屏不计入） */
+      const score = computeFramingScore(expected, curObsCabinets, expBox, obsBbox);
       setMatchPct((cur) => (cur === score ? cur : score));
       setMatched((prev) => applyMatchHysteresis(score, prev));
-    }, [guideOn, guideStations, poseIdx, obsCabinets, obsBbox, markerStale, screenCols, screenRows]);
+    }, [guideOn, guideStations, poseIdx, obsCabinets, obsBbox, markerStale, screenCols, screenRows, curScreenCode]);
 
     /* 引导开启时：仅绿框 + 用户开关打开才放行后端自动快门 */
     useEffect(() => {
@@ -395,8 +412,9 @@ import {
           const stale = !!p.stale;
           setMarkerCount((cur) => (cur === n ? cur : n));
           setMarkerStale((cur) => (cur === stale ? cur : stale));
+          /* 保留 [screen_code, col, row] 三元组——多屏匹配需按站所属屏过滤 */
           const cabs = Array.isArray(p.cabinets)
-            ? p.cabinets.map((c) => [c[1] | 0, c[2] | 0])
+            ? p.cabinets.map((c) => [c[0] | 0, c[1] | 0, c[2] | 0])
             : [];
           setObsCabinets((cur) => {
             if (cur.length === cabs.length
@@ -597,7 +615,8 @@ import {
       const msg = '已保存采集会话 · ' + n + ' 张';
       s.pushLog({ lv: 'ok', cat: 'capture', msg });
       s.setCalReceipt({ tone: 'ok', text: msg });
-      CX.projStore.patch({ visualSession: { screenId, poses: n, sessionDir: dir } });
+      /* 采集覆盖 stage 全部屏幕 → 会话记 screenIds,任一屏的重建入口都可复用 */
+      CX.projStore.patch({ visualSession: { screenId, screenIds: allScreenIds, poses: n, sessionDir: dir } });
       close && close();
       onSaved && onSaved({ shots: n, auto: a, manual: m, session_dir: dir });
     };
@@ -626,7 +645,7 @@ import {
     /* ---------- 左侧现场画面 ---------- */
     const guideActive = guideOn && phase === 'capturing' && displaySig === 'ok';
     const diffHint = (guideActive && curStation && !matched)
-      ? framingDiffHint(curCovers, obsCabinets, screenCols, screenRows)
+      ? framingDiffHint(curCovers, curObsCabinets, screenCols, screenRows)
       : '';
     const stage = h('div', { className: 'capw-stage' },
       h('div', { className: 'capw-feed' },
@@ -753,7 +772,8 @@ import {
 
     /* ---------- 参考画幅引导卡 ---------- */
     const poseLabel = curStation
-      ? stationRegionLabel(curStation.role, curCovers, screenCols, screenRows, curExpBox)
+      ? ((allScreenIds.length > 1 ? curScreenId + ' · ' : '')
+        + stationRegionLabel(curStation.role, curCovers, screenCols, screenRows, curExpBox))
       : '—';
     const guideCard = guideOn ? h('div', { className: 'cap-card gcapw-guide' },
       h('div', { className: 'cap-card-h' }, h(Icon, { name: 'target', size: 15 }), '参考画幅',

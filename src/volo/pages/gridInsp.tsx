@@ -13,7 +13,7 @@ import {
   meshVisualLoadScreenTransforms, meshVisualReconstruct, vpqspScreenIdCode,
 } from "../api/meshVisualCommands";
 import {
-  applyReconstructDone, errMsg, formatReconstructWarning,
+  applyReconstructDone, errMsg, formatReconstructWarning, visualSessionCoversScreen,
 } from "../api/visualReconstructLanding";
 import {
   loadSolveDigestCached, relRowsFromTransforms, runMethodLabel, runStatus,
@@ -905,9 +905,10 @@ import { listen } from "@tauri-apps/api/event";
   /* ================= 阶段动作面板（顶部重建方法 + 折叠子项） ================= */
   function StagePanel({ s }) {
     const proj = CX.useProj();
-    const selected = (window.VOLO_GRID && window.VOLO_GRID.selectedScreenIds)
-      ? window.VOLO_GRID.selectedScreenIds(s) : [];
-    const multiIds = selected.length ? selected : [s.calActiveScreen];
+    /* 重建范围 = stage 内全部屏幕（默认行为，与采集一致；跨屏 BA 才能给出
+       屏间变换）。不再按选中集/活跃屏收窄。 */
+    const multiIds = (proj.config && proj.config.screens)
+      ? Object.keys(proj.config.screens) : [s.calActiveScreen];
     const screenId = s.calActiveScreen;
     const m = proj.config && proj.config.screens[screenId];
     const built = s.calScreenReports && !!s.calScreenReports[screenId];
@@ -924,7 +925,7 @@ import { listen } from "@tauri-apps/api/event";
     const isTS = method === 'totalstation';
     const newShapeVisualBlocked = m && GRID_MEAS_TYPES.find((x) => x.id === 'visual').disabledForShapes.includes(m.shape_prior.type);
     const captureDir = captureDirs[screenId] || '';
-    const visualCapturePath = captureDir || (proj.visualSession && proj.visualSession.screenId === screenId && proj.visualSession.sessionDir) || '';
+    const visualCapturePath = captureDir || (visualSessionCoversScreen(proj.visualSession, screenId) && proj.visualSession.sessionDir) || '';
     const measured = isTS ? !!proj.measurementsAbsPath : !!visualCapturePath;
     const runs = (proj.runs || []);
     const curRun = runs.find((r) => r.is_current) || runs[0] || null;
@@ -1065,7 +1066,7 @@ import { listen } from "@tauri-apps/api/event";
                     setCaptureDirs((current) => Object.assign({}, current, { [screenId]: r.session_dir || '' }));
                     setCapMode('offline');
                   }) }, '接入摄影机…'),
-              (captureDir || (proj.visualSession && proj.visualSession.screenId === screenId))
+              (captureDir || visualSessionCoversScreen(proj.visualSession, screenId))
                 ? h('div', { className: 'cal2-switch-ok', style: { marginTop: 8 } }, h(Icon, { name: 'check', size: 14 }), h('span', null, '已采集 · 采集会话'))
                 : null,
               h('div', { style: { marginTop: 10 } }, Field('内参', h(Sel, { value: intr, options: [{ id: 'auto', label: '自动标定' }, { id: 'file', label: '从文件导入' }], onChange: setIntr, w: 150 }))),

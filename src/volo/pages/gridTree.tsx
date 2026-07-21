@@ -19,7 +19,7 @@ import {
   meshVisualGeneratePattern, meshVisualReconstruct, vpqspScreenIdCode,
 } from "../api/meshVisualCommands";
 import {
-  applyReconstructDone, errMsg, formatReconstructWarning,
+  applyReconstructDone, errMsg, formatReconstructWarning, visualSessionCoversScreen,
 } from "../api/visualReconstructLanding";
 import {
   loadSolveDigestCached, screenSolveStatusFromDigest, sessionSolveStatus,
@@ -131,7 +131,7 @@ import { listen } from "@tauri-apps/api/event";
       s.setCalActiveScreen(id); s.setCalDraftScreen(null); s.setCalMode('object'); s.setCalSel({ type: 'screen' });
     };
     const hasTs = !!proj.measurementsAbsPath;
-    const hasVs = !!(proj.visualSession && proj.visualSession.screenId === screenId);
+    const hasVs = visualSessionCoversScreen(proj.visualSession, screenId);
     const fuseReady = hasTs && hasVs;
     /* 测试图生成状态是会话内的临时结果缓存（同 measurementsAbsPath/visualSession
        的既定模式），不是 ScreenConfig 字段——后端没有"是否已生成过测试图"的
@@ -465,7 +465,9 @@ import { listen } from "@tauri-apps/api/event";
       if (!manifestPath) { await pickManifest(); return; }
       setBaErr(null); setBaState('running'); setBaPct(0);
       try {
-        const resp = await meshVisualReconstruct(proj.path, [screenId], manifestPath, intr === 'auto' ? 'auto' : intr, null);
+        /* 重建范围 = stage 全部屏幕（默认行为,与采集一致） */
+        const allIds = (proj.config && proj.config.screens) ? Object.keys(proj.config.screens) : [screenId];
+        const resp = await meshVisualReconstruct(proj.path, allIds, manifestPath, intr === 'auto' ? 'auto' : intr, null);
         jobRef.current = resp.job_id;
       } catch (e) {
         setBaState('idle'); setBaErr(errMsg(e));

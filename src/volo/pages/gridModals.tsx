@@ -10,6 +10,7 @@ import * as React from "react";
 import { pickFile, pickDirectory, revealPath } from "../api/commands";
 import { generateInstructionCard, saveInstructionPdf, exportObj, listRuns, loadProjectYaml, saveProjectYaml } from "../api/meshCommands";
 import { meshFuseRun } from "../api/meshFuseCommands";
+import { visualSessionCoversScreen } from "../api/visualReconstructLanding";
 
 (function () {
   const { Button, Switch } = window.Spectrum2DesignSystem_b6d1b3;
@@ -31,7 +32,7 @@ import { meshFuseRun } from "../api/meshFuseCommands";
       totalstation: proj.config && [proj.config.coordinate_system.origin_point, proj.config.coordinate_system.x_axis_point, proj.config.coordinate_system.xy_plane_point].every((n) => n && n.startsWith(screenId + '_V')),
       visual: !!(proj.patternGenByScreen && proj.patternGenByScreen[screenId]),
     };
-    const has = { totalstation: !!proj.measurementsAbsPath, visual: !!(proj.visualSession && proj.visualSession.screenId === screenId) };
+    const has = { totalstation: !!proj.measurementsAbsPath, visual: visualSessionCoversScreen(proj.visualSession, screenId) };
     const pick = (id) => { close(); s.setCalFlow(id); s.pushLog({ lv: 'info', cat: 'measure', msg: '打开测量流程 · <b>' + GRID_MEAS_TYPES.find((t) => t.id === id).label + '</b>' }); };
     return h('div', { className: 'drawer drawer--cal2cap' },
       dhead('download', 'info', '选择测量方式', '为屏幕重建采集真实数据', close),

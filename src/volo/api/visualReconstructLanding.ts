@@ -29,6 +29,16 @@ export function formatReconstructWarning(
   return `${head} · ${w.code || "warning"}${cab} · ${w.message || ""}`;
 }
 
+/** Stage 级采集/重建会话对某屏是否有效（旧会话无 screenIds 时退回单屏字段）。 */
+export function visualSessionCoversScreen(
+  session: { screenId?: string; screenIds?: string[] } | null | undefined,
+  screenId: string,
+): boolean {
+  if (!session) return false;
+  if (Array.isArray(session.screenIds)) return session.screenIds.includes(screenId);
+  return session.screenId === screenId;
+}
+
 /** Codes already pushLog'd via mesh-visual-progress — skip re-log at done. */
 const STREAMED_WARNING_CODES = new Set(["cabinet_quality", "dead_weight_image"]);
 
