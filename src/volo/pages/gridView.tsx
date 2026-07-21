@@ -535,7 +535,7 @@ import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
         if (bgDownRef.current && (Math.abs(e.clientX - bgDownRef.current.x) > 3 || Math.abs(e.clientY - bgDownRef.current.y) > 3))
           bgDownRef.current.moved = true;
         if (marqueeRef.current) { marqueeRef.current = Object.assign({}, marqueeRef.current, { cx1: e.clientX, cy1: e.clientY }); setMarquee(marqueeRef.current); return; }
-        if (orbitDragRef.current) { const o = orbitDragRef.current; RIG.orbit(e.clientX - o.x, e.clientY - o.y); o.x = e.clientX; o.y = e.clientY; return; }
+        if (orbitDragRef.current) { const o = orbitDragRef.current; RIG.orbit(e.clientX - o.x, e.clientY - o.y, o.pivot || null); o.x = e.clientX; o.y = e.clientY; return; }
         if (panDragRef.current) { const o = panDragRef.current; RIG.pan(e.clientX - o.x, e.clientY - o.y); o.x = e.clientX; o.y = e.clientY; return; }
         if (paintRef.current && paintMoveRef.current) paintMoveRef.current(e);
       };
@@ -599,14 +599,14 @@ import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
     const activeEntry = sbuilt.find((x) => x.isActive) || sbuilt[0];
     const m = activeEntry ? activeEntry.cfg : null;
 
-    /* 聚焦选中（Frame Selected）：单选箱体 > 多选箱体 > 激活屏 > 全部内容 */
-    focusSelRef.current = () => {
-      let boxes = null;
-      if (activeEntry) {
-        if (selKey) boxes = activeEntry.g.boxes.filter((b) => b.key === selKey);
-        else if (multiKeys && multiKeys.size) boxes = activeEntry.g.boxes.filter((b) => multiKeys.has(b.key));
-        if (!boxes || !boxes.length) boxes = activeEntry.g.boxes;
-      }
+    /* 选中集合（单选箱体 > 多选箱体 > 激活屏全部箱体）与其包围盒 */
+    const selBoxes = () => {
+      if (!activeEntry) return null;
+      if (selKey) { const bs = activeEntry.g.boxes.filter((b) => b.key === selKey); if (bs.length) return bs; }
+      else if (multiKeys && multiKeys.size) { const bs = activeEntry.g.boxes.filter((b) => multiKeys.has(b.key)); if (bs.length) return bs; }
+      return activeEntry.g.boxes;
+    };
+    const boxesBBox = (boxes) => {
       let min = null, max = null;
       (boxes || []).forEach((b) => b.corners.forEach((p) => {
         if (!min) { min = { x: p.x, y: p.y, z: p.z }; max = { x: p.x, y: p.y, z: p.z }; }
@@ -615,10 +615,22 @@ import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
           max.x = Math.max(max.x, p.x); max.y = Math.max(max.y, p.y); max.z = Math.max(max.z, p.z);
         }
       }));
-      if (!min && bboxRef.current) { min = bboxRef.current.min; max = bboxRef.current.max; }
-      if (!min) return;
+      return min ? { min, max } : null;
+    };
+
+    /* 聚焦选中（Frame Selected）：飞到选中集合包围盒；无内容退回全场景 */
+    focusSelRef.current = () => {
+      const bb = boxesBBox(selBoxes()) || bboxRef.current;
+      if (!bb) return;
       RIG.touched = true;
-      RIG.smoothTo(RIG.fitView(min, max));
+      RIG.smoothTo(RIG.fitView(bb.min, bb.max));
+    };
+
+    /* Orbit Around Selection：有选中（屏幕/箱体）即以其中心为旋转轴心；无选中回退 target */
+    const orbitPivot = () => {
+      if (!s.calSel) return null;
+      const bb = boxesBBox(selBoxes());
+      return bb ? { x: (bb.min.x + bb.max.x) / 2, y: (bb.min.y + bb.max.y) / 2, z: (bb.min.z + bb.max.z) / 2 } : null;
     };
 
     const setBoxMask = (b, to) => {
@@ -660,7 +672,8 @@ import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
     };
 
     const startPan = (e) => { RIG.cancelAnim(); RIG.touched = true; panDragRef.current = { x: e.clientX, y: e.clientY }; };
-    const startOrbit = (e) => { RIG.cancelAnim(); RIG.touched = true; orbitDragRef.current = { x: e.clientX, y: e.clientY }; };
+    /* 拖拽开始时捕捉轴心（拖拽全程稳定，选中变化不影响进行中的旋转） */
+    const startOrbit = (e) => { RIG.cancelAnim(); RIG.touched = true; orbitDragRef.current = { x: e.clientX, y: e.clientY, pivot: orbitPivot() }; };
 
     const onHostDown = (e) => {
       const host = hostRef.current; if (!host) return;

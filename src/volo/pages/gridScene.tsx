@@ -24,7 +24,7 @@ const DIST_MIN = 0.05, DIST_MAX = 500;
 const SMOOTH_MS = 200;                 /* Blender U.smooth_viewtx */
 
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
-const _q1 = new THREE.Quaternion();
+const _q1 = new THREE.Quaternion(), _q2 = new THREE.Quaternion();
 const _m1 = new THREE.Matrix4();
 const WORLD_Z = new THREE.Vector3(0, 0, 1);
 
@@ -89,16 +89,25 @@ export class CameraRig {
 
   cancelAnim() { if (this.anim != null) { cancelAnimationFrame(this.anim); this.anim = null; } }
 
-  /** Blender 转台：俯仰绕相机水平轴（无钳制、可翻越），方位角绕世界 Z（倒置时反向）。 */
-  orbit(dxPx: number, dyPx: number) {
+  /** Blender 转台：俯仰绕相机水平轴（无钳制、可翻越），方位角绕世界 Z（倒置时反向）。
+      pivot 非空时绕它转（Orbit Around Selection）：target 随姿态一起绕 pivot 旋转,
+      相机等价于绕 pivot 公转,视线中心与 pivot 的相对关系保持不变。 */
+  orbit(dxPx: number, dyPx: number, pivot?: { x: number; y: number; z: number } | null) {
     this.cancelAnim(); this.touched = true;
     if (this.ortho) this.ortho = false; /* USER_AUTOPERSP：轴向正交视图一旦自由旋转即回透视 */
     const right = _v1.set(1, 0, 0).applyQuaternion(this.quat);
-    this.quat.premultiply(_q1.setFromAxisAngle(right, -dyPx * ORBIT_SENS));
+    _q1.setFromAxisAngle(right, -dyPx * ORBIT_SENS);
+    this.quat.premultiply(_q1);
     /* 方位角符号使「场景跟手」（grab-and-spin，Blender 同感）；世界倒置时反向。 */
     const upsideDown = _v2.set(0, 1, 0).applyQuaternion(this.quat).z < 0;
-    this.quat.premultiply(_q1.setFromAxisAngle(WORLD_Z, (upsideDown ? 1 : -1) * dxPx * ORBIT_SENS));
+    _q2.setFromAxisAngle(WORLD_Z, (upsideDown ? 1 : -1) * dxPx * ORBIT_SENS);
+    this.quat.premultiply(_q2);
     this.quat.normalize();
+    if (pivot) {
+      /* target' = P + R_yaw·R_pitch·(target − P)，与姿态用同一组旋转 → 相机绕 P 公转 */
+      _v3.copy(this.target).sub(pivot as THREE.Vector3).applyQuaternion(_q1).applyQuaternion(_q2);
+      this.target.copy(pivot as THREE.Vector3).add(_v3);
+    }
     this.apply();
   }
 
