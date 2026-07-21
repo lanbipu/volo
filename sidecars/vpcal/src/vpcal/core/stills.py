@@ -44,15 +44,18 @@ class AutoSnapDetector:
     def __init__(
         self,
         *,
-        stable_ms: float = 350.0,
-        motion_thresh: float = 5.0,
+        stable_ms: float = 200.0,
+        motion_thresh: float = 12.0,
         novelty_thresh: float = 6.0,
         min_interval: float = 1.0,
         enabled: bool = True,
     ) -> None:
-        # Defaults tuned for handheld: the motion gate only rejects brisk
-        # pans/walks; frame sharpness is guaranteed by DetectionGate.confirm
-        # (snap-time decode of the actual candidate frame), not by stillness.
+        # Defaults tuned for handheld: the motion gate only rejects active
+        # repositioning (walking / fast pans); ordinary handheld sway on busy
+        # marker content easily reaches EMA 5-10 on the 160px diff, so the
+        # ceiling sits above that. Frame sharpness is guaranteed by
+        # DetectionGate.confirm (snap-time decode of the actual candidate
+        # frame), not by stillness.
         self.stable_ms = float(stable_ms)
         self.motion_thresh = float(motion_thresh)
         self.novelty_thresh = float(novelty_thresh)

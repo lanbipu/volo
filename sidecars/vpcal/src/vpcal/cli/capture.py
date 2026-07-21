@@ -362,9 +362,9 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
               help="Session output directory (writes captures/normal/*.png).")
 @click.option("--auto/--no-auto", default=True, show_default=True,
               help="Enable automatic stills detection (frame-diff gate).")
-@click.option("--stable-ms", type=float, default=350.0, show_default=True,
+@click.option("--stable-ms", type=float, default=200.0, show_default=True,
               help="Required calm duration before an auto snap (ms).")
-@click.option("--motion-thresh", type=float, default=5.0, show_default=True,
+@click.option("--motion-thresh", type=float, default=12.0, show_default=True,
               help="EMA motion score above which the camera counts as moving "
                    "(handheld sway passes; frame sharpness is enforced by the "
                    "snap-time marker confirm, not by stillness).")
