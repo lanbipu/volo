@@ -674,6 +674,32 @@ def _validated_image_size(view_images) -> tuple[int, int] | None:
     return sizes.pop()
 
 
+def _board_homography_inliers(objp: list, imgp: list, thresh_px: float = 3.0):
+    """RANSAC-clean one planar board before Zhang self-cal.
+
+    A CRC-valid ghost detection (glossy-screen reflection / decode fluke) can
+    land hundreds of px from its true grid position while every neighbour is
+    sub-pixel; cv2.calibrateCamera has no robust loss, so a single ghost wrecks
+    the whole solve (real case: one duplicated marker id → board RMS 90px →
+    intrinsics gate refusal). A planar board must fit a homography, so drop
+    outliers against the RANSAC consensus. Boards below 8 points pass through
+    (calibration already requires >=8); a board whose consensus collapses is
+    dropped entirely.
+    """
+    if len(objp) < 8:
+        return objp, imgp
+    obj = np.asarray([[p[0], p[1]] for p in objp], dtype=np.float32)
+    img = np.asarray(imgp, dtype=np.float32)
+    H, mask = cv2.findHomography(obj, img, cv2.RANSAC, thresh_px)
+    if H is None or mask is None:
+        return [], []
+    keep = mask.ravel().astype(bool)
+    if int(keep.sum()) < 8:
+        return [], []
+    return ([o for o, k in zip(objp, keep) if k],
+            [i for i, k in zip(imgp, keep) if k])
+
+
 def _self_calibrate_vpqsp(meta, detections, view_images, image_size, cmd):
     """Inline self-cal for VP-QSP `--intrinsics auto`. Each captured view is a
     photo of the KNOWN VP-QSP marker wall — a planar (flat) or per-cabinet-tilted
@@ -724,6 +750,7 @@ def _self_calibrate_vpqsp(meta, detections, view_images, image_size, cmd):
                 per_cab[cab_cr][0].append(p_local)
                 per_cab[cab_cr][1].append([det["corner_px"][0], det["corner_px"][1]])
         for objp, imgp in per_cab.values():
+            objp, imgp = _board_homography_inliers(objp, imgp)
             # FIX-21: require ≥8 points per pose (4 is barely determined for
             # a planar target's 6 DOF — 8 gives 16 constraints, much stabler).
             if len(objp) >= 8:
@@ -1329,6 +1356,7 @@ def _self_calibrate_vpqsp_joint(
                 per_cab[key][0].append(p_local)
                 per_cab[key][1].append([det["corner_px"][0], det["corner_px"][1]])
         for objp, imgp in per_cab.values():
+            objp, imgp = _board_homography_inliers(objp, imgp)
             if len(objp) >= 8:
                 object_points.append(np.asarray(objp, dtype=np.float32))
                 image_points.append(np.asarray(imgp, dtype=np.float32))
