@@ -362,10 +362,12 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
               help="Session output directory (writes captures/normal/*.png).")
 @click.option("--auto/--no-auto", default=True, show_default=True,
               help="Enable automatic stills detection (frame-diff gate).")
-@click.option("--stable-ms", type=float, default=700.0, show_default=True,
-              help="Required stillness duration before an auto snap (ms).")
-@click.option("--motion-thresh", type=float, default=1.5, show_default=True,
-              help="EMA motion score above which the camera counts as moving.")
+@click.option("--stable-ms", type=float, default=350.0, show_default=True,
+              help="Required calm duration before an auto snap (ms).")
+@click.option("--motion-thresh", type=float, default=5.0, show_default=True,
+              help="EMA motion score above which the camera counts as moving "
+                   "(handheld sway passes; frame sharpness is enforced by the "
+                   "snap-time marker confirm, not by stillness).")
 @click.option("--novelty-thresh", type=float, default=6.0, show_default=True,
               help="Min mean-abs-diff vs last saved frame to accept an auto snap.")
 @click.option("--min-interval", type=float, default=1.0, show_default=True,
@@ -434,7 +436,6 @@ def stills(ctx, backend, device, width, height, fps, transfer_function, preview_
         mailbox: dict[str, object] = {"gray": None, "t": 0.0}
         mailbox_lock = threading.Lock()
         last_auto_state: str | None = None
-        gate_blocked = False
         last_motion = 0.0
         last_novelty = 0.0
         frames_seen = 0
@@ -459,7 +460,7 @@ def stills(ctx, backend, device, width, height, fps, transfer_function, preview_
             emitter.emit("auto_state", payload)
 
         def _save(gray, *, is_auto: bool) -> None:
-            nonlocal auto_snaps, manual_snaps, gate_blocked
+            nonlocal auto_snaps, manual_snaps
             idx = auto_snaps + manual_snaps
             path = normal_dir / f"{idx:06d}.png"
             cv2.imwrite(str(path), gray)
@@ -473,7 +474,6 @@ def stills(ctx, backend, device, width, height, fps, transfer_function, preview_
                 auto_snaps += 1
             else:
                 manual_snaps += 1
-            gate_blocked = False
             emitter.emit("snap_saved", {
                 "index": idx, "path": str(path), "auto": is_auto,
                 "markers": gate.markers_for_event(now),
@@ -582,22 +582,24 @@ def stills(ctx, backend, device, width, height, fps, transfer_function, preview_
                 last_novelty = result["novelty"]
                 if result["state"] != last_auto_state:
                     last_auto_state = result["state"]
-                    gate_blocked = False
                     _emit_auto_state()
                 if result.get("warning"):
                     emitter.emit("warning", result["warning"])
                 if result["snap"]:
-                    if gate.allow(now):
+                    # Snap-time confirm decodes THIS frame (motion gate is loose
+                    # for handheld; blur/defocus must fail here, not at solve).
+                    # Sync detect costs ~tens of ms — throttle retries to the
+                    # gate interval so a blocked hold cannot stall the loop.
+                    if gate.bypass:
                         _save(frame.gray, is_auto=True)
-                    elif (
-                        not gate_blocked
-                        or (now - last_gated_emit) >= gate.interval_s
-                    ):
-                        # No mark_saved — motion gate stays armed; detect cache retries.
-                        gated_rejects += 1
-                        last_gated_emit = now
-                        gate_blocked = True
-                        _emit_auto_state(gate_flag="no_pattern")
+                    elif (now - last_gated_emit) >= gate.interval_s:
+                        if gate.confirm(frame.gray, now):
+                            _save(frame.gray, is_auto=True)
+                        else:
+                            # No mark_saved — motion gate stays armed and retries.
+                            gated_rejects += 1
+                            last_gated_emit = now
+                            _emit_auto_state(gate_flag="no_pattern")
 
                 if now - last_report >= 1.0:
                     elapsed = max(now - t0, 1e-9)

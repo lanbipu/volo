@@ -206,3 +206,31 @@ def test_detection_gate_min_markers_zero_bypasses():
     gate.poll(_gray(), 0.0)
     assert gate.allow(0.0) is True
     assert gate.snapshot(0.0)["markers"] == 0
+
+
+def test_detection_gate_confirm_ignores_throttle_and_refreshes_cache():
+    calls = []
+
+    def detect_fn(gray):
+        calls.append(1)
+        return _count(6 if len(calls) > 1 else 2)
+
+    gate = DetectionGate(min_markers=4, detect_fn=detect_fn, interval_s=0.5)
+    frame = _gray(10)
+    assert gate.confirm(frame, 0.0) is False        # count=2 < 4
+    assert gate.confirm(frame, 0.1) is True         # count=6, throttle ignored
+    assert len(calls) == 2
+    snap = gate.snapshot(0.1)
+    assert snap["markers"] == 6 and snap["stale"] is False
+
+
+def test_detection_gate_confirm_bypass_skips_detect():
+    calls = []
+
+    def detect_fn(gray):
+        calls.append(1)
+        return _count(0)
+
+    gate = DetectionGate(min_markers=0, detect_fn=detect_fn)
+    assert gate.confirm(_gray(), 0.0) is True
+    assert calls == []

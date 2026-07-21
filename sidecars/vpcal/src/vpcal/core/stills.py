@@ -44,12 +44,15 @@ class AutoSnapDetector:
     def __init__(
         self,
         *,
-        stable_ms: float = 700.0,
-        motion_thresh: float = 1.5,
+        stable_ms: float = 350.0,
+        motion_thresh: float = 5.0,
         novelty_thresh: float = 6.0,
         min_interval: float = 1.0,
         enabled: bool = True,
     ) -> None:
+        # Defaults tuned for handheld: the motion gate only rejects brisk
+        # pans/walks; frame sharpness is guaranteed by DetectionGate.confirm
+        # (snap-time decode of the actual candidate frame), not by stillness.
         self.stable_ms = float(stable_ms)
         self.motion_thresh = float(motion_thresh)
         self.novelty_thresh = float(novelty_thresh)
@@ -260,3 +263,23 @@ class DetectionGate:
             return True
         markers = self.markers_for_event(t)
         return markers is not None and markers >= self.min_markers
+
+    def confirm(self, gray: np.ndarray, t: float) -> bool:
+        """Snap-time gate: decode the actual candidate frame, ignore throttle.
+
+        Defocus / motion blur breaks VP-QSP decoding, so a passing confirm
+        certifies the frame being saved (not a cached earlier one) is sharp
+        enough for reconstruction. Refreshes the cache for readouts/events.
+        """
+        if self.bypass:
+            return True
+        raw = self.detect_fn(gray)
+        count = int(raw.get("count", 0))
+        cabinets = [list(c) for c in (raw.get("cabinets") or [])]
+        bbox = raw.get("bbox_frac")
+        with self._lock:
+            self._count = count
+            self._detect_t = float(t)
+            self._cabinets = cabinets
+            self._bbox_frac = [float(x) for x in bbox] if bbox is not None else None
+        return count >= self.min_markers
