@@ -633,7 +633,12 @@ function CameraFrustum({ cam }: { cam: SceneCamera }) {
 
   const onPointerDown = (e: any) => {
     if (!cam.dragEnabled || !cam.selected) return;
+    if (e.nativeEvent && e.nativeEvent.button !== 0) return; /* 右键留给视口平移 */
     e.stopPropagation();
+    /* r3f 的 stopPropagation 只设内部 flag,拦不住宿主 div 的 mousedown(startOrbit
+       会同时启动,拖机位与转视图打架)。preventDefault 掉 pointerdown 可按规范抑制
+       兼容 mousedown 事件,让本次拖拽独占。 */
+    e.nativeEvent && e.nativeEvent.preventDefault();
     (e.target as any).setPointerCapture?.(e.pointerId);
     drag.current = { x: e.clientX, y: e.clientY, ox: cam.t_m[0], oy: cam.t_m[1], oz: cam.t_m[2] };
   };
@@ -666,6 +671,9 @@ export function SceneCanvas({ rig, data, store }: { rig: CameraRig; data: SceneD
   return (
     <Canvas
       frameloop="demand"
+      /* Line.threshold 默认 1 世界米:机位 frustum 线框周围 1m 全算命中,视口中央
+         一大片拖拽都会被它劫持 → 收紧到 5cm,只有贴着线框才判定抓取 */
+      raycaster={{ params: { Mesh: {}, Line: { threshold: 0.05 }, LOD: {}, Points: { threshold: 1 }, Sprite: {} } as any }}
       gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
       style={{ position: 'absolute', inset: 0 }}
       onCreated={(state) => { store.invalidate = state.invalidate; }}
