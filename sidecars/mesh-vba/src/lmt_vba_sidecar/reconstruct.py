@@ -30,6 +30,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable
 
+import dataclasses
 import hashlib
 import json
 import os
@@ -322,6 +323,57 @@ def stage_b_robust_solve(*, K, observations, n_cameras, n_cabinets,
             K=K, observations=obs, n_cameras=n_cameras, n_cabinets=n_cabinets,
             root_cabinet_idx=root_cabinet_idx, init_cameras=init_cameras,
             init_cabinets=init_cabinets, loss="huber", max_nfev=max_nfev)
+    # --- Stage C view-level rejection (escalation) ---
+    # A handheld frame captured mid-motion is internally a perfect homography
+    # (rolling-shutter shear) yet unrepresentable by any rigid pose with the
+    # shared K, so its residuals sit BELOW the group-coherence thresholds while
+    # inflating global rms past BA_RMS_FATAL_PX (real case: 2 sheared frames in
+    # 11 → rms 2.21px fatal; without them 0.3px). When the gate would refuse the
+    # solve, drop whole worst cameras (median residual > max(2×global median,
+    # 1.5px)), reindex, re-solve once; guards keep >=2 cameras and every
+    # cabinet at >= per-cabinet floors so observability cannot silently break.
+    if result.rms_reprojection_px > BA_RMS_FATAL_PX:
+        norms = _obs_residual_norms(K, result, obs, root_cabinet_idx)
+        per_cam: dict[int, list[float]] = {}
+        for o, nrm in zip(obs, norms):
+            per_cam.setdefault(o.camera_idx, []).append(nrm)
+        global_med = float(np.median(norms))
+        bad_cams = {c for c, v in per_cam.items()
+                    if float(np.median(v)) > max(2.0 * global_med, 1.5)}
+        if bad_cams and len(per_cam) - len(bad_cams) >= 2:
+            keep = [o for o in obs if o.camera_idx not in bad_cams]
+            pts_per_cab = Counter(o.cabinet_idx for o in keep)
+            views_per_cab: dict[int, set[int]] = {}
+            for o in keep:
+                views_per_cab.setdefault(o.cabinet_idx, set()).add(o.camera_idx)
+            all_cabs = {o.cabinet_idx for o in obs}
+            guards_ok = all(
+                pts_per_cab.get(c, 0) >= per_cabinet_min_points
+                and len(views_per_cab.get(c, set())) >= 2
+                for c in all_cabs)
+            if guards_ok:
+                remap = {c: i for i, c in enumerate(
+                    sorted({o.camera_idx for o in keep}))}
+                obs_c = [dataclasses.replace(o, camera_idx=remap[o.camera_idx])
+                         for o in keep]
+                init_c = [init_cameras[c] for c in sorted(remap)]
+                result_c = model_constrained_ba(
+                    K=K, observations=obs_c, n_cameras=len(remap),
+                    n_cabinets=n_cabinets, root_cabinet_idx=root_cabinet_idx,
+                    init_cameras=init_c, init_cabinets=init_cabinets,
+                    loss="huber", max_nfev=max_nfev)
+                if result_c.rms_reprojection_px < result.rms_reprojection_px:
+                    for o in obs:
+                        if o.camera_idx in bad_cams:
+                            rejected_per_cab[o.cabinet_idx] = (
+                                rejected_per_cab.get(o.cabinet_idx, 0) + 1)
+                    write_event(WarningEvent(
+                        event="warning", code="view_rejected",
+                        message=(f"rejected {len(bad_cams)} inconsistent view(s) "
+                                 f"(motion-distorted / non-rigid frame): rms "
+                                 f"{result.rms_reprojection_px:.2f}px → "
+                                 f"{result_c.rms_reprojection_px:.2f}px")))
+                    result, obs = result_c, obs_c
     total = sum(rejected_per_cab.values())
     return result, rejected_per_cab, total, obs
 
