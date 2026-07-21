@@ -7,7 +7,7 @@
    （`<out>/captures/normal/*.png`，不写 capture_manifest）。
    三阶段态 config → capturing → done；重置通过 onSaved({reset:true}) 清 visualSession。 */
 import * as React from "react";
-import { pickDirectory } from "../api/commands";
+import { lensWorkspacePaths } from "../api/lensWorkspace";
 import { meshVisualPlanCapture } from "../api/meshVisualCommands";
 import {
   spawnSidecarStreaming,
@@ -137,9 +137,7 @@ import {
     const [pid, setPid] = useState(profiles[0] ? profiles[0].id : '');
     const profile = profiles.find((p) => p.id === pid) || profiles[0] || null;
     const backend = profile && profile.videoBackend;
-    const hasRoot = !!(profile && profile.outputRoot);
 
-    const [outputDir, setOutputDir] = useState('');
     const [sessionStamp, setSessionStamp] = useState(() => makeStamp());
     const [spawnGen, setSpawnGen] = useState(0);
     const [phase, setPhase] = useState('config'); /* config | capturing | done */
@@ -214,7 +212,9 @@ import {
       : null;
     const curGuideBox = bboxToXywh(curExpBox);
 
-    const sessionRoot = hasRoot ? profile.outputRoot : outputDir;
+    /* 输出目录固定 = <project>/vpcal/captures/（对齐镜头流程 §3.4；不再用
+       profile.outputRoot / 手选,sidecar 落盘时自动建目录） */
+    const sessionRoot = projPath ? lensWorkspacePaths(projPath).capturesDir : '';
     const sessionDir = sessionRoot ? joinPath(sessionRoot, 'stills_' + sessionStamp) : '';
 
     /* ---- 缩放 / 分栏（同 calCaptureWindow） ---- */
@@ -510,17 +510,8 @@ import {
     const reasons = [];
     if (!profile) reasons.push('未选择采集配置');
     if (sig === 'lost') reasons.push('信号丢失，无法采集');
-    if (!hasRoot && !outputDir) reasons.push('未选择输出目录');
+    if (!projPath) reasons.push('未打开项目，无法定位输出目录');
     const canStart = reasons.length === 0 && !!sessionDir && !!taskId && sig !== 'lost';
-
-    const pickOutDir = async () => {
-      try {
-        const p = await pickDirectory();
-        if (p) { setOutputDir(p); setSessionStamp(makeStamp()); }
-      } catch (e) {
-        s.pushLog({ lv: 'err', cat: 'capture', msg: `选择输出目录失败 · ${e && e.message ? e.message : e}` });
-      }
-    };
 
     const start = async () => {
       if (!canStart) return;
@@ -747,29 +738,18 @@ import {
               h('span', { className: 'gcapw-lens-note' }, h(Icon, { name: 'pin', size: 12 }),
                 guidePlanning ? '正在规划参考画幅…' : '引导拍摄须保持不变')))
         : null,
-      hasRoot
-        ? h('div', { className: 'capw-pick' },
-            h('span', { className: 'capw-pick-lb' }, '输出目录', h('span', { className: 'capw-opt' }, '来自 Profile')),
-            h('div', { className: 'gcapw-autodir' },
-              h('div', { className: 'gcapw-autodir-h' },
-                h(Icon, { name: 'folder', size: 14 }),
-                h('span', { className: 'mono' }, profile.outputRoot),
-                h('span', { className: 'cap-pill cap-pill--positive', style: { marginLeft: 'auto' } },
-                  h(Icon, { name: 'check', size: 12 }), '已就绪')),
-              h('div', { className: 'gcapw-autodir-s' },
-                '每次采集自动生成子目录 · ', h('span', { className: 'mono' }, 'stills_' + sessionStamp))))
-        : h('div', { className: 'capw-pick' + (!outputDir ? ' is-pending' : '') },
-            h('span', { className: 'capw-pick-lb' }, '输出目录', h('span', { className: 'capw-req' }, '必填')),
-            h('div', { className: 'capw-pick-row' },
-              h('button', {
-                className: 'cap-file-btn', disabled: locked,
-                onClick: () => !locked && (outputDir ? (setOutputDir(''), setSessionStamp(makeStamp())) : pickOutDir()),
-              },
-                h(Icon, { name: 'folder', size: 14 }),
-                outputDir ? h('span', { className: 'mono' }, outputDir) : '选择目录…'),
-              outputDir
-                ? h('span', { className: 'cap-pill cap-pill--positive' }, h(Icon, { name: 'check', size: 12 }), '已选')
-                : null)));
+      h('div', { className: 'capw-pick' },
+        h('span', { className: 'capw-pick-lb' }, '输出目录', h('span', { className: 'capw-opt' }, '来自项目')),
+        h('div', { className: 'gcapw-autodir' },
+          h('div', { className: 'gcapw-autodir-h' },
+            h(Icon, { name: 'folder', size: 14 }),
+            h('span', { className: 'mono' }, sessionRoot || '—'),
+            sessionRoot
+              ? h('span', { className: 'cap-pill cap-pill--positive', style: { marginLeft: 'auto' } },
+                  h(Icon, { name: 'check', size: 12 }), '已就绪')
+              : null),
+          h('div', { className: 'gcapw-autodir-s' },
+            '每次采集自动生成子目录 · ', h('span', { className: 'mono' }, 'stills_' + sessionStamp)))));
 
     /* ---------- 参考画幅引导卡 ---------- */
     const poseLabel = curStation
