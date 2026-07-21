@@ -211,6 +211,23 @@ pub fn mesh_visual_generate_pattern(
     Ok(result)
 }
 
+/// App 重启后恢复「已生成测试图」状态：扫描 patterns/ 并把每张 full_screen.png
+/// 重新放行进预览读图 allowlist（否则恢复后的预览会被 read_image_as_data_url 拒绝）。
+#[tauri::command]
+pub fn mesh_visual_scan_patterns(
+    app: AppHandle,
+    project_path: String,
+) -> VoloResult<std::collections::BTreeMap<String, GeneratePatternResult>> {
+    let found = mesh_app::visual::run_scan_patterns(Path::new(&project_path))?;
+    for r in found.values() {
+        crate::commands::sidecar_stream::approve_image_path(
+            &app,
+            &Path::new(&r.output_dir).join("full_screen.png"),
+        )?;
+    }
+    Ok(found)
+}
+
 #[tauri::command]
 pub fn mesh_visual_generate_structured_light(
     project_path: String,

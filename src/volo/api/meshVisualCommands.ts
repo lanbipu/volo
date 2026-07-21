@@ -106,6 +106,10 @@ export const meshVisualGeneratePattern = (
     screenMappingPath: screenMappingPath ?? null,
   });
 
+// ✅ wired: calibrate.tsx openProjectPath —— App 重启后从磁盘恢复「已生成」状态
+export const meshVisualScanPatterns = (projectPath: string) =>
+  call<Record<string, GeneratePatternResult>>("mesh_visual_scan_patterns", { projectPath });
+
 /**
  * Build the generated composite-image path without corrupting Windows verbatim
  * paths (`\\?\C:\...`). Those paths reject a `/` appended by string concatenation.

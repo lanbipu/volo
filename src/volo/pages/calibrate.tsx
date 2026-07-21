@@ -14,7 +14,7 @@ import {
   loadProjectYaml, saveProjectYaml, listRecentProjects, addRecentProject, seedExampleProject,
   reconstructSurface, listRuns, getRunReport, setRunCurrent,
 } from "../api/meshCommands";
-import { meshVisualLoadScreenTransforms } from "../api/meshVisualCommands";
+import { meshVisualLoadScreenTransforms, meshVisualScanPatterns } from "../api/meshVisualCommands";
 import { lensWorkspaceEnsure, lensAssignmentSync } from "../api/lensWorkspace";
 import { loadSolveDigestCached, peekSolveDigestCache } from "../api/visualSolveUi";
 import { RMS_PX_THRESHOLDS } from "../api/lensCommands";
@@ -79,7 +79,8 @@ import { RMS_PX_THRESHOLDS } from "../api/lensCommands";
   /* 打开新项目 / 返回总览共用的「清空派生视图态」——每次都建新对象，避免多次
      patch 共享同一个 runs: [] 数组引用。patternGenByScreen/visualSession 同
      measured/surveyReport 一样是会话内临时结果缓存（无对应 project.yaml 持久
-     字段，见 pages/gridTree.tsx 顶部注释），切项目时一并清空。 */
+     字段，见 pages/gridTree.tsx 顶部注释），切项目时一并清空；测试图状态随后
+     由 openProjectPath 的 meshVisualScanPatterns 从 patterns/ 磁盘目录恢复。 */
   const derivedResetFields = () => ({
     measured: null, surveyReport: null, measurementsAbsPath: null, reconstruction: null, runs: [],
     patternGenByScreen: {}, patternStaleByScreen: {}, visualSession: null,
@@ -96,6 +97,22 @@ import { RMS_PX_THRESHOLDS } from "../api/lensCommands";
     const samePath = projStore.get().path === absPath;
     projStore.patch({ path: absPath, config, error: null, ...(samePath ? {} : derivedResetFields()) });
     if (window.camStore) window.camStore.loadFromProject(absPath, config);
+    /* 测试图文件持久在 <project>/patterns/，App 重启后扫盘恢复「已生成」状态
+       （UI 即显示重新生成 / 预览，而非强制再生成）。会话内新结果优先。 */
+    if (!samePath) {
+      void meshVisualScanPatterns(absPath).then((found) => {
+        if (projStore.get().path !== absPath) return; /* 期间已切走 */
+        const ids = Object.keys(found || {});
+        if (!ids.length) return;
+        const cur = projStore.get();
+        const stale = {};
+        ids.forEach((id) => { stale[id] = false; });
+        projStore.patch({
+          patternGenByScreen: Object.assign({}, found, cur.patternGenByScreen),
+          patternStaleByScreen: Object.assign({}, stale, cur.patternStaleByScreen),
+        });
+      }).catch(() => { /* 扫描失败不阻塞打开项目 */ });
+    }
     /* 路径全自动化（F4/F6）：预热 vpcal/ 骨架 + 同步 assignment.json。幂等、非阻塞、
        失败仅日志。gridInsp 每次屏幕设计保存都走 openProjectPath 回读，故此处同时覆盖
        「项目打开」与「屏幕设计保存后」两条路径。 */

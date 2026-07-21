@@ -559,8 +559,11 @@ function HoverQuad({ store }: { store: SceneStore }) {
     g.setIndex([0, 1, 2, 0, 2, 3]);
     return g;
   }, []);
+  /* 加色混合：hover 提亮箱体而非盖一层实色——普通填充遮挡测试图纹理
+     （polygonOffset -2 在纹理 -1 之上），悬停处图案会被抹掉。 */
   const mat = React.useMemo(() => new THREE.MeshBasicMaterial({
-    color: HOVER_FILL, transparent: true, opacity: 0.5, side: THREE.DoubleSide,
+    color: HOVER_FILL, transparent: true, opacity: 0.35, side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending, depthWrite: false,
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
   }), []);
   React.useEffect(() => () => { geo.dispose(); mat.dispose(); }, [geo, mat]);

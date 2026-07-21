@@ -1193,6 +1193,53 @@ pub fn run_generate_pattern(
     })
 }
 
+/// Scan `<project>/patterns/*/` for previously generated patterns (App 重启后
+/// 恢复「已生成」状态：full_screen.png 在即视为有效，cabinet_count / total_markers
+/// 从 pattern_meta.json 还原——charuco v2 用 aruco id 区间、vpqsp 用 markers_x*y）。
+pub fn run_scan_patterns(
+    project_path: &Path,
+) -> VoloResult<std::collections::BTreeMap<String, GeneratePatternResult>> {
+    let mut out = std::collections::BTreeMap::new();
+    let root = project_path.join("patterns");
+    let rd = match std::fs::read_dir(&root) {
+        Ok(rd) => rd,
+        Err(_) => return Ok(out), /* 无 patterns 目录 = 从未生成 */
+    };
+    for entry in rd.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() || !dir.join("full_screen.png").is_file() {
+            continue;
+        }
+        let screen_id = match entry.file_name().to_str() {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let (mut cabinet_count, mut total_markers) = (0usize, 0u32);
+        if let Ok(txt) = std::fs::read_to_string(dir.join("pattern_meta.json")) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+                if let Some(cabs) = v.get("cabinets").and_then(|c| c.as_array()) {
+                    cabinet_count = cabs.len();
+                    for c in cabs {
+                        let n = |k: &str| c.get(k).and_then(|x| x.as_u64());
+                        if let (Some(mx), Some(my)) = (n("markers_x"), n("markers_y")) {
+                            total_markers += (mx * my) as u32;
+                        } else if let (Some(s), Some(e)) = (n("aruco_id_start"), n("aruco_id_end")) {
+                            total_markers += e.saturating_sub(s) as u32 + 1;
+                        }
+                    }
+                }
+            }
+        }
+        out.insert(screen_id, GeneratePatternResult {
+            output_dir: dir.display().to_string(),
+            cabinet_count,
+            total_markers,
+            warnings: vec![],
+        });
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // generate_structured_light
 // ---------------------------------------------------------------------------
@@ -2398,5 +2445,35 @@ output:
         let vertices = crate::fuse::build_visual_vertex_points("MAIN", &load_pose_report(&report_path).unwrap()).unwrap();
         assert_eq!(vertices.len(), 4, "single present cabinet → 4 corners, 4 unique vertices");
         assert!(!vertices.contains_key("MAIN_V003_R001"));
+    }
+
+    #[test]
+    fn scan_patterns_restores_from_disk() {
+        let proj = tempdir().unwrap();
+        // MAIN: vpqsp meta（markers_x*y）；SIDE: charuco v2 meta（aruco id 区间）；
+        // BAD: 无 full_screen.png 应被跳过
+        let mk = |id: &str, meta: Option<&str>, with_png: bool| {
+            let d = proj.path().join("patterns").join(id);
+            std::fs::create_dir_all(&d).unwrap();
+            if with_png { std::fs::write(d.join("full_screen.png"), b"png").unwrap(); }
+            if let Some(m) = meta { std::fs::write(d.join("pattern_meta.json"), m).unwrap(); }
+        };
+        mk("MAIN", Some(r#"{"schema_version":"vpqsp.v1","screen_id_code":0,"cabinets":[
+            {"col":0,"row":0,"markers_x":4,"markers_y":4},
+            {"col":1,"row":0,"markers_x":3,"markers_y":4}]}"#), true);
+        mk("SIDE", Some(r#"{"schema_version":2,"cabinets":[
+            {"col":0,"row":0,"aruco_id_start":0,"aruco_id_end":11}]}"#), true);
+        mk("BAD", None, false);
+
+        let out = run_scan_patterns(proj.path()).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out["MAIN"].cabinet_count, 2);
+        assert_eq!(out["MAIN"].total_markers, 28);
+        assert_eq!(out["SIDE"].cabinet_count, 1);
+        assert_eq!(out["SIDE"].total_markers, 12);
+        assert!(!out.contains_key("BAD"));
+        // 无 patterns 目录 = 空表不报错
+        let empty = tempdir().unwrap();
+        assert!(run_scan_patterns(empty.path()).unwrap().is_empty());
     }
 }
