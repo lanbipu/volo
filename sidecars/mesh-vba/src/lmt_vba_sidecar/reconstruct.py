@@ -323,59 +323,87 @@ def stage_b_robust_solve(*, K, observations, n_cameras, n_cabinets,
             K=K, observations=obs, n_cameras=n_cameras, n_cabinets=n_cabinets,
             root_cabinet_idx=root_cabinet_idx, init_cameras=init_cameras,
             init_cabinets=init_cabinets, loss="huber", max_nfev=max_nfev)
-    # --- Stage C view-level rejection (escalation) ---
-    # A handheld frame captured mid-motion is internally a perfect homography
-    # (rolling-shutter shear) yet unrepresentable by any rigid pose with the
-    # shared K, so its residuals sit BELOW the group-coherence thresholds while
-    # inflating global rms past BA_RMS_FATAL_PX (real case: 2 sheared frames in
-    # 11 → rms 2.21px fatal; without them 0.3px). When the gate would refuse the
-    # solve, drop whole worst cameras (median residual > max(2×global median,
-    # 1.5px)), reindex, re-solve once; guards keep >=2 cameras and every
-    # cabinet at >= per-cabinet floors so observability cannot silently break.
-    if result.rms_reprojection_px > BA_RMS_FATAL_PX:
-        norms = _obs_residual_norms(K, result, obs, root_cabinet_idx)
+    total = sum(rejected_per_cab.values())
+    return result, rejected_per_cab, total, obs
+
+
+def solve_with_view_rejection(*, K, observations, per_view_cab_corners,
+                              n_cameras, n_cabinets, root_cabinet_idx,
+                              make_inits, per_cabinet_min_points):
+    """stage_b_robust_solve + one whole-view rejection retry (Stage C).
+
+    A frame captured while the scene/lens state differed (bumped screen, AF
+    focal drift, motion distortion) is internally consistent — homography clean
+    and per-board PnP both pass — yet jointly inconsistent with the other
+    views, so Stage B's point/group trims cannot reach it and the global rms
+    fails BA_RMS_FATAL_PX (real dual-screen case: 2 bad frames in 11 → 2.21px
+    fatal; without them 0.31px). When the gate would refuse: drop cameras whose
+    median residual > max(2×global median, 1.5px), then RE-INITIALIZE from the
+    surviving views (bridge + PnP via ``make_inits``) and re-solve — continuing
+    from the polluted solution's init only walks back into its 2px basin.
+
+    ``make_inits(pvcc, n_cams) -> (init_cameras, init_cabinets) | None`` (None =
+    caller already emitted a fatal event). Guards: >=2 surviving cameras and
+    every cabinet keeps >= per-cabinet floors, else the first result stands.
+    Returns (result, rejected_per_cab, n_rejected, surviving_obs, max_nfev)
+    or None when make_inits failed.
+    """
+    obs_cur = list(observations)
+    pvcc_cur = dict(per_view_cab_corners)
+    n_cams = n_cameras
+    view_rej_per_cab: dict[int, int] = {}
+    for attempt in (1, 2):
+        inits = make_inits(pvcc_cur, n_cams)
+        if inits is None:
+            return None
+        init_cameras, init_cabinets = inits
+        max_nfev = _ba_max_nfev(n_cabinets, n_cams)
+        result, rej_cab, n_rej, surviving = stage_b_robust_solve(
+            K=K, observations=obs_cur, n_cameras=n_cams, n_cabinets=n_cabinets,
+            root_cabinet_idx=root_cabinet_idx, init_cameras=init_cameras,
+            init_cabinets=init_cabinets,
+            per_cabinet_min_points=per_cabinet_min_points, max_nfev=max_nfev)
+        if attempt == 2 or result.rms_reprojection_px <= BA_RMS_FATAL_PX:
+            break
+        norms = _obs_residual_norms(K, result, surviving, root_cabinet_idx)
         per_cam: dict[int, list[float]] = {}
-        for o, nrm in zip(obs, norms):
+        for o, nrm in zip(surviving, norms):
             per_cam.setdefault(o.camera_idx, []).append(nrm)
         global_med = float(np.median(norms))
         bad_cams = {c for c, v in per_cam.items()
                     if float(np.median(v)) > max(2.0 * global_med, 1.5)}
-        if bad_cams and len(per_cam) - len(bad_cams) >= 2:
-            keep = [o for o in obs if o.camera_idx not in bad_cams]
-            pts_per_cab = Counter(o.cabinet_idx for o in keep)
-            views_per_cab: dict[int, set[int]] = {}
-            for o in keep:
-                views_per_cab.setdefault(o.cabinet_idx, set()).add(o.camera_idx)
-            all_cabs = {o.cabinet_idx for o in obs}
-            guards_ok = all(
-                pts_per_cab.get(c, 0) >= per_cabinet_min_points
-                and len(views_per_cab.get(c, set())) >= 2
-                for c in all_cabs)
-            if guards_ok:
-                remap = {c: i for i, c in enumerate(
-                    sorted({o.camera_idx for o in keep}))}
-                obs_c = [dataclasses.replace(o, camera_idx=remap[o.camera_idx])
-                         for o in keep]
-                init_c = [init_cameras[c] for c in sorted(remap)]
-                result_c = model_constrained_ba(
-                    K=K, observations=obs_c, n_cameras=len(remap),
-                    n_cabinets=n_cabinets, root_cabinet_idx=root_cabinet_idx,
-                    init_cameras=init_c, init_cabinets=init_cabinets,
-                    loss="huber", max_nfev=max_nfev)
-                if result_c.rms_reprojection_px < result.rms_reprojection_px:
-                    for o in obs:
-                        if o.camera_idx in bad_cams:
-                            rejected_per_cab[o.cabinet_idx] = (
-                                rejected_per_cab.get(o.cabinet_idx, 0) + 1)
-                    write_event(WarningEvent(
-                        event="warning", code="view_rejected",
-                        message=(f"rejected {len(bad_cams)} inconsistent view(s) "
-                                 f"(motion-distorted / non-rigid frame): rms "
-                                 f"{result.rms_reprojection_px:.2f}px → "
-                                 f"{result_c.rms_reprojection_px:.2f}px")))
-                    result, obs = result_c, obs_c
-    total = sum(rejected_per_cab.values())
-    return result, rejected_per_cab, total, obs
+        if not bad_cams or len(per_cam) - len(bad_cams) < 2:
+            break
+        keep = [o for o in obs_cur if o.camera_idx not in bad_cams]
+        pts_per_cab = Counter(o.cabinet_idx for o in keep)
+        views_per_cab: dict[int, set[int]] = {}
+        for o in keep:
+            views_per_cab.setdefault(o.cabinet_idx, set()).add(o.camera_idx)
+        all_cabs = {o.cabinet_idx for o in obs_cur}
+        if not all(pts_per_cab.get(c, 0) >= per_cabinet_min_points
+                   and len(views_per_cab.get(c, set())) >= 2
+                   for c in all_cabs):
+            break
+        write_event(WarningEvent(
+            event="warning", code="view_rejected",
+            message=(f"rejected {len(bad_cams)} rigidly-inconsistent view(s) "
+                     f"(rms {result.rms_reprojection_px:.2f}px > "
+                     f"{BA_RMS_FATAL_PX}px gate); re-initializing and "
+                     f"re-solving from the remaining views")))
+        for o in obs_cur:
+            if o.camera_idx in bad_cams:
+                view_rej_per_cab[o.cabinet_idx] = (
+                    view_rej_per_cab.get(o.cabinet_idx, 0) + 1)
+        remap = {c: i for i, c in enumerate(sorted({o.camera_idx for o in keep}))}
+        obs_cur = [dataclasses.replace(o, camera_idx=remap[o.camera_idx])
+                   for o in keep]
+        pvcc_cur = {(remap[cam], cab): v
+                    for (cam, cab), v in pvcc_cur.items() if cam in remap}
+        n_cams = len(remap)
+    for cab, n in view_rej_per_cab.items():
+        rej_cab[cab] = rej_cab.get(cab, 0) + n
+    n_rej += sum(view_rej_per_cab.values())
+    return result, rej_cab, n_rej, surviving, max_nfev
 
 
 def _undistort_obs(pix: np.ndarray, K: np.ndarray, dist: np.ndarray) -> np.ndarray:
@@ -1521,54 +1549,57 @@ def joint_solve_and_emit(
     nominal_poses_idx = _joint_nominal_poses_idx(
         per_screen_nominal, cab_idx_to_screen, cab_idx_to_cr)
 
-    bridge, undecidable_cabs = estimate_nonroot_cabinet_init(
-        per_view_cab_corners, gauge_idx, K, nominal_poses=nominal_poses_idx)
-    if undecidable_cabs:
-        ids = sorted(_cabinet_id(*cab_idx_to_cr[j]) for j in undecidable_cabs)
-        write_event(ErrorEvent(
-            event="error", code="observability_failed",
-            message=(f"convex/concave undecidable for cabinet(s) {ids}: planar-PnP "
-                     f"mirror branches equally match nominal and no redundant view "
-                     f"breaks the tie; add a camera that sees these cabinets"),
-            fatal=True))
+    def make_inits(pvcc, n_cams):
+        bridge, undecidable_cabs = estimate_nonroot_cabinet_init(
+            pvcc, gauge_idx, K, nominal_poses=nominal_poses_idx)
+        if undecidable_cabs:
+            ids = sorted(_cabinet_id(*cab_idx_to_cr[j]) for j in undecidable_cabs)
+            write_event(ErrorEvent(
+                event="error", code="observability_failed",
+                message=(f"convex/concave undecidable for cabinet(s) {ids}: planar-PnP "
+                         f"mirror branches equally match nominal and no redundant view "
+                         f"breaks the tie; add a camera that sees these cabinets"),
+                fatal=True))
+            return None
+
+        init_cabinets: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+        fallback_ids: list[str] = []
+        for idx in range(n_cabinets):
+            cr = cab_idx_to_cr[idx]
+            si = cab_idx_to_screen[idx]
+            if idx == gauge_idx:
+                init_cabinets[idx] = (np.eye(3), np.zeros(3))
+            elif idx in bridge:
+                init_cabinets[idx] = bridge[idx]
+            else:
+                init_cabinets[idx] = _joint_init_cabinet_pose(
+                    idx, cr, si, gauge_idx=gauge_idx,
+                    screen_root_indices=screen_root_indices,
+                    init_cabinets=init_cabinets, bridge=bridge,
+                    per_screen_nominal=per_screen_nominal, idx_to_cr=cab_idx_to_cr)
+                fallback_ids.append(_cabinet_id(*cr))
+        if fallback_ids:
+            write_event(WarningEvent(
+                event="warning", code="init_fallback_nominal",
+                message=(f"{len(fallback_ids)} cabinet(s) share no bridged view chain with the "
+                         f"root; initialized from the nominal model (BA must absorb any "
+                         f"as-built deviation): {', '.join(sorted(fallback_ids))}")))
+
+        init_cameras: list[tuple[np.ndarray, np.ndarray]] = []
+        for cam_idx in range(n_cams):
+            init_cameras.append(
+                _pnp_camera(cam_idx, gauge_idx, init_cabinets, pvcc, K))
+        return init_cameras, init_cabinets
+
+    solved = solve_with_view_rejection(
+        K=K, observations=observations,
+        per_view_cab_corners=per_view_cab_corners,
+        n_cameras=n_cameras, n_cabinets=n_cabinets,
+        root_cabinet_idx=gauge_idx, make_inits=make_inits,
+        per_cabinet_min_points=8)
+    if solved is None:
         return 1
-
-    init_cabinets: dict[int, tuple[np.ndarray, np.ndarray]] = {}
-    fallback_ids: list[str] = []
-    for idx in range(n_cabinets):
-        cr = cab_idx_to_cr[idx]
-        si = cab_idx_to_screen[idx]
-        if idx == gauge_idx:
-            init_cabinets[idx] = (np.eye(3), np.zeros(3))
-        elif idx in bridge:
-            init_cabinets[idx] = bridge[idx]
-        else:
-            init_cabinets[idx] = _joint_init_cabinet_pose(
-                idx, cr, si, gauge_idx=gauge_idx,
-                screen_root_indices=screen_root_indices,
-                init_cabinets=init_cabinets, bridge=bridge,
-                per_screen_nominal=per_screen_nominal, idx_to_cr=cab_idx_to_cr)
-            fallback_ids.append(_cabinet_id(*cr))
-    if fallback_ids:
-        write_event(WarningEvent(
-            event="warning", code="init_fallback_nominal",
-            message=(f"{len(fallback_ids)} cabinet(s) share no bridged view chain with the "
-                     f"root; initialized from the nominal model (BA must absorb any "
-                     f"as-built deviation): {', '.join(sorted(fallback_ids))}")))
-
-    init_cameras: list[tuple[np.ndarray, np.ndarray]] = []
-    for cam_idx in range(n_cameras):
-        init_cameras.append(
-            _pnp_camera(cam_idx, gauge_idx, init_cabinets, per_view_cab_corners, K))
-
-    max_nfev = _ba_max_nfev(n_cabinets, n_cameras)
-    result, rejected_per_cab_stage_b, n_rej_stage_b, surviving_observations = \
-        stage_b_robust_solve(
-            K=K, observations=observations, n_cameras=n_cameras,
-            n_cabinets=n_cabinets, root_cabinet_idx=gauge_idx,
-            init_cameras=init_cameras, init_cabinets=init_cabinets,
-            per_cabinet_min_points=8,
-            max_nfev=max_nfev)
+    result, rejected_per_cab_stage_b, n_rej_stage_b, surviving_observations, max_nfev = solved
 
     rejected_per_cab_pre = rejected_per_cab_pre or {}
     n_used = len(surviving_observations)
@@ -1840,57 +1871,61 @@ def solve_and_emit(
     # chains that connect it to the gauge (transitive co-visibility), resolving the
     # IPPE convex/concave mirror against nominal model-frame normals. Cabinets with
     # no chain fall back to the nominal pose rotated into the gauge frame (warned).
-    bridge, undecidable_cabs = estimate_nonroot_cabinet_init(
-        per_view_cab_corners, gauge_idx, K,
-        nominal_poses=nominal_poses_idx,
-    )
-    if undecidable_cabs:
-        ids = sorted(_cabinet_id(*idx_to_cab[j]) for j in undecidable_cabs)
-        write_event(ErrorEvent(
-            event="error", code="observability_failed",
-            message=(f"convex/concave undecidable for cabinet(s) {ids}: planar-PnP "
-                     f"mirror branches equally match nominal and no redundant view "
-                     f"breaks the tie; add a camera that sees these cabinets"),
-            fatal=True))
+    def make_inits(pvcc, n_cams):
+        bridge, undecidable_cabs = estimate_nonroot_cabinet_init(
+            pvcc, gauge_idx, K,
+            nominal_poses=nominal_poses_idx,
+        )
+        if undecidable_cabs:
+            ids = sorted(_cabinet_id(*idx_to_cab[j]) for j in undecidable_cabs)
+            write_event(ErrorEvent(
+                event="error", code="observability_failed",
+                message=(f"convex/concave undecidable for cabinet(s) {ids}: planar-PnP "
+                         f"mirror branches equally match nominal and no redundant view "
+                         f"breaks the tie; add a camera that sees these cabinets"),
+                fatal=True))
+            return None
+        init_cabinets: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+        fallback_ids: list[str] = []
+        for cr, idx in cab_to_idx.items():
+            if idx == gauge_idx:
+                init_cabinets[idx] = (np.eye(3), np.zeros(3))
+            elif idx in bridge:
+                init_cabinets[idx] = bridge[idx]
+            elif cr in nominal_poses:
+                init_cabinets[idx] = _nominal_init_root_frame(nominal_poses, gauge_cr, cr)
+                fallback_ids.append(_cabinet_id(*cr))
+            else:
+                init_cabinets[idx] = (np.eye(3), np.zeros(3))
+                fallback_ids.append(_cabinet_id(*cr))
+        if fallback_ids:
+            write_event(WarningEvent(
+                event="warning", code="init_fallback_nominal",
+                message=(f"{len(fallback_ids)} cabinet(s) share no bridged view chain with the "
+                         f"root; initialized from the nominal model (BA must absorb any "
+                         f"as-built deviation): {', '.join(sorted(fallback_ids))}")))
+
+        # Camera init via PnP. Object points are local mm; the root cabinet frame is
+        # world, so PnP against the root gives camera_from_world directly. For views
+        # that don't see the root well, PnP against any seen cabinet, then compose
+        # with that cabinet's nominal world pose: T_cam_world = T_cam_cab @ T_cab_world.
+        init_cameras: list[tuple[np.ndarray, np.ndarray]] = []
+        for cam_idx in range(n_cams):
+            pose = _pnp_camera(cam_idx, gauge_idx, init_cabinets, pvcc, K)
+            init_cameras.append(pose)
+        return init_cameras, init_cabinets
+
+    # --- 8. BA (Stage B robust-residual trim — PRIMARY geometric authority;
+    #     Stage C whole-view rejection retry on gate failure) ---
+    solved = solve_with_view_rejection(
+        K=K, observations=observations,
+        per_view_cab_corners=per_view_cab_corners,
+        n_cameras=n_cameras, n_cabinets=n_cabinets,
+        root_cabinet_idx=gauge_idx, make_inits=make_inits,
+        per_cabinet_min_points=8)
+    if solved is None:
         return 1
-    init_cabinets: dict[int, tuple[np.ndarray, np.ndarray]] = {}
-    fallback_ids: list[str] = []
-    for cr, idx in cab_to_idx.items():
-        if idx == gauge_idx:
-            init_cabinets[idx] = (np.eye(3), np.zeros(3))
-        elif idx in bridge:
-            init_cabinets[idx] = bridge[idx]
-        elif cr in nominal_poses:
-            init_cabinets[idx] = _nominal_init_root_frame(nominal_poses, gauge_cr, cr)
-            fallback_ids.append(_cabinet_id(*cr))
-        else:
-            init_cabinets[idx] = (np.eye(3), np.zeros(3))
-            fallback_ids.append(_cabinet_id(*cr))
-    if fallback_ids:
-        write_event(WarningEvent(
-            event="warning", code="init_fallback_nominal",
-            message=(f"{len(fallback_ids)} cabinet(s) share no bridged view chain with the "
-                     f"root; initialized from the nominal model (BA must absorb any "
-                     f"as-built deviation): {', '.join(sorted(fallback_ids))}")))
-
-    # Camera init via PnP. Object points are local mm; the root cabinet frame is
-    # world, so PnP against the root gives camera_from_world directly. For views
-    # that don't see the root well, PnP against any seen cabinet, then compose
-    # with that cabinet's nominal world pose: T_cam_world = T_cam_cab @ T_cab_world.
-    init_cameras: list[tuple[np.ndarray, np.ndarray]] = []
-    for cam_idx in range(n_cameras):
-        pose = _pnp_camera(cam_idx, gauge_idx, init_cabinets, per_view_cab_corners, K)
-        init_cameras.append(pose)
-
-    # --- 8. BA (Stage B robust-residual trim — PRIMARY geometric authority) ---
-    max_nfev = _ba_max_nfev(n_cabinets, n_cameras)
-    result, rejected_per_cab_stage_b, n_rej_stage_b, surviving_observations = \
-        stage_b_robust_solve(
-            K=K, observations=observations, n_cameras=n_cameras,
-            n_cabinets=n_cabinets, root_cabinet_idx=gauge_idx,
-            init_cameras=init_cameras, init_cabinets=init_cabinets,
-            per_cabinet_min_points=8,
-            max_nfev=max_nfev)
+    result, rejected_per_cab_stage_b, n_rej_stage_b, surviving_observations, max_nfev = solved
     # Re-express the solution in the EXTERNAL root cabinet's frame (the gauge sat
     # at the wall center purely for conditioning; reports keep V000_R000 frame
     # semantics).
