@@ -139,6 +139,35 @@ def _lens_qualification_reasons(data: dict) -> list[str]:
     return reasons
 
 
+def _stage_pose_qualification_reasons(data: dict) -> list[str]:
+    reasons: list[str] = []
+    if data.get("schema_version") != "volo_stage_pose.v2":
+        reasons.append("schema_version must be volo_stage_pose.v2")
+    if data.get("solve_kind") != "fixed_extrinsics_only":
+        reasons.append("solve_kind must be fixed_extrinsics_only")
+    if data.get("formal") is not True:
+        reasons.append("formal must be true")
+    image_size = data.get("image_size")
+    if not (
+        isinstance(image_size, (list, tuple)) and len(image_size) >= 2
+        and int(image_size[0]) > 0 and int(image_size[1]) > 0
+    ):
+        reasons.append("image_size must be present and positive")
+    rms = float(data.get("rms_reprojection_px", float("inf")))
+    if not np.isfinite(rms) or rms >= 2.0:
+        reasons.append("rms_reprojection_px must be < 2.0 px")
+    if data.get("preflight", {}).get("passed") is not True:
+        reasons.append("preflight.passed must be true")
+    qualification = data.get("qualification", {})
+    if qualification.get("passed") is not True:
+        reasons.append("qualification.passed must be true")
+    if qualification.get("master_lens") is not True:
+        reasons.append("qualification.master_lens must be true")
+    if qualification.get("fail_closed") is not True:
+        reasons.append("qualification.fail_closed must be true")
+    return reasons
+
+
 @tracker_free.command(name="lens-info")
 @click.option("--lens", "lens_path", required=True, type=click.Path(exists=True))
 @common_options
@@ -509,11 +538,15 @@ def spatial(ctx, images, screen_a, screen_b, lens_path, offset_a, offset_b, scre
 @click.option("--k3", type=float, default=0.0, show_default=True)
 @click.option("--image-width", type=click.IntRange(min=1), default=None)
 @click.option("--image-height", type=click.IntRange(min=1), default=None)
+@click.option(
+    "--debug-unqualified", is_flag=True,
+    help="Allow legacy/debug pose and explicit intrinsics for diagnostic overlay only.",
+)
 @click.option("--no-markers", is_flag=True, help="Omit cabinet-corner / cell marker points.")
 @common_options
 @click.pass_context
 def grid(ctx, screen_targets, pose_path, lens_path, fx, fy, cx, cy, k1, k2, k3,
-         image_width, image_height, no_markers, **flags) -> None:
+         image_width, image_height, debug_unqualified, no_markers, **flags) -> None:
     """Project cabinet-grid wireframes through a solved Stage pose (normalised 2D)."""
 
     def body() -> OperationOutput:
@@ -523,6 +556,15 @@ def grid(ctx, screen_targets, pose_path, lens_path, fx, fy, cx, cy, k1, k2, k3,
         from vpcal.io.screen_io import load_screen
 
         pose = json.loads(Path(pose_path).read_text(encoding="utf-8"))
+        if not debug_unqualified:
+            pose_reasons = _stage_pose_qualification_reasons(pose)
+            if pose_reasons:
+                from vpcal.core.errors import FormalStagePoseRequired
+                raise FormalStagePoseRequired(
+                    "grid overlay requires a qualified formal Stage pose: "
+                    + "; ".join(pose_reasons),
+                    details={"reasons": pose_reasons},
+                )
         pixel_values = (fx, fy, cx, cy)
         has_any_pixel = any(value is not None for value in pixel_values)
         has_all_pixel = all(value is not None for value in pixel_values)
@@ -531,8 +573,24 @@ def grid(ctx, screen_targets, pose_path, lens_path, fx, fy, cx, cy, k1, k2, k3,
                 "provide exactly one intrinsics source: --lens or --fx/--fy/--cx/--cy"
             )
         if lens_path:
+            if not debug_unqualified:
+                raw_lens = json.loads(Path(lens_path).read_text(encoding="utf-8"))
+                lens_reasons = _lens_qualification_reasons(raw_lens)
+                if lens_reasons:
+                    from vpcal.core.errors import MasterLensRequired
+                    raise MasterLensRequired(
+                        "grid overlay requires a qualified master lens: "
+                        + "; ".join(lens_reasons),
+                        details={"reasons": lens_reasons},
+                    )
             lens = _load_lens(lens_path)
         else:
+            if not debug_unqualified:
+                from vpcal.core.errors import MasterLensRequired
+                raise MasterLensRequired(
+                    "formal grid overlay requires --lens <qualified master>; "
+                    "explicit pixel intrinsics are debug-only"
+                )
             if not has_all_pixel:
                 raise click.UsageError("--fx, --fy, --cx and --cy must be provided together")
             if (image_width is None) != (image_height is None):
@@ -571,6 +629,14 @@ def grid(ctx, screen_targets, pose_path, lens_path, fx, fy, cx, cy, k1, k2, k3,
         lw, lh = (int(lens.image_size[0]), int(lens.image_size[1]))
         if lw <= 0 or lh <= 0:
             raise click.UsageError("lens profile must contain a positive image_size")
+        pose_image_size = pose.get("image_size")
+        if (
+            isinstance(pose_image_size, list) and len(pose_image_size) >= 2
+            and [lw, lh] != [int(pose_image_size[0]), int(pose_image_size[1])]
+        ):
+            raise click.UsageError(
+                "lens image_size does not match stage_pose.json image_size"
+            )
         dist = list(lens.dist_coeffs) + [0.0] * 5
         intr = CameraIntrinsics(
             fx=lens.fx, fy=lens.fy, cx=lens.cx, cy=lens.cy,

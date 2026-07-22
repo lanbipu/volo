@@ -674,8 +674,8 @@ import {
     /* 当前机位 AR 可用性：固定=本机位 stage_pose；追踪=result.json + session */
     const fixedSolvedRun = (liveRuns || []).find((r) => (
       (r.modeFixed || r.mode === 'fixed') && r.stagePose
-      && (!r.cameraId || r.cameraId === camId)
-    )) || (liveRuns || []).find((r) => (r.modeFixed || r.mode === 'fixed') && r.stagePose);
+      && r.cameraId === camId
+    ));
     const lensLiveSnap = CX().lensStore ? CX().lensStore.get() : null;
     const trackedSolve = lensLiveSnap && lensLiveSnap.solveResult ? lensLiveSnap.solveResult : null;
     const trackedSolvedRun = (liveRuns || []).find((r) => (
@@ -1284,6 +1284,11 @@ import {
               rms_reprojection_px: solved.rms_reprojection_px,
               image_size: solved.image_size,
               preflight_passed: !!(solved.preflight && solved.preflight.passed),
+              schema_version: solved.schema_version,
+              qualification_passed: !!(solved.qualification && solved.qualification.passed),
+              master_lens: !!(solved.qualification && solved.qualification.master_lens),
+              solve_kind: solved.solve_kind,
+              fail_closed: !!(solved.qualification && solved.qualification.fail_closed),
             },
           );
         }

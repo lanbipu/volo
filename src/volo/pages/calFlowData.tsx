@@ -201,20 +201,45 @@
   });
   let camSnap = { cameras: [defaultCamUi()], selectedId: 'cam-01', projectPath: null, dirty: false, saveTimer: null };
 
+  const qualifiedMasterFromYaml = (lens) => {
+    const L = lens || {};
+    const imageSize = Array.isArray(L.image_size) && L.image_size.length >= 2
+      && Number(L.image_size[0]) > 0 && Number(L.image_size[1]) > 0;
+    const rms = Number(L.calibration_rms_px);
+    return !!(L.is_master === true && L.profile_path
+      && L.session_coupled !== true
+      && ['multi_view_intrinsics', 'offline_chart'].includes(L.calibration_kind)
+      && Number(L.calibration_poses) >= 8
+      && Number(L.calibration_points) >= 60
+      && L.calibration_rms_px != null && Number.isFinite(rms) && rms < 2
+      && imageSize);
+  };
+  const formalSolveFromYaml = (camera) => {
+    const pose = camera && camera.solve_pose;
+    const imageSize = pose && Array.isArray(pose.image_size) && pose.image_size.length >= 2
+      && Number(pose.image_size[0]) > 0 && Number(pose.image_size[1]) > 0;
+    const rms = Number(pose && pose.rms_reprojection_px);
+    return !!(pose
+      && pose.schema_version === 'volo_stage_pose.v2'
+      && pose.solve_kind === 'fixed_extrinsics_only'
+      && pose.formal === true
+      && pose.preflight_passed === true
+      && pose.qualification_passed === true
+      && pose.master_lens === true
+      && pose.fail_closed === true
+      && typeof pose.source_artifact === 'string' && pose.source_artifact.length > 0
+      && pose.rms_reprojection_px != null && Number.isFinite(rms) && rms < 2
+      && imageSize
+      && qualifiedMasterFromYaml(camera.lens));
+  };
+
   const yamlToUi = (c) => {
     const mp = c.manual_pose || { t_mm: [0, 1500, 3200], euler_deg: [0, 0, 0] };
     const rawSolve = c.solve_pose || null;
     const tracked = !!(c.tracking && c.tracking.protocol);
     const L = c.lens || {};
-    const masterImageSize = Array.isArray(L.image_size) && L.image_size.length >= 2
-      && Number(L.image_size[0]) > 0 && Number(L.image_size[1]) > 0;
-    const qualifiedMaster = !!(L.is_master && L.profile_path
-      && ['multi_view_intrinsics', 'offline_chart'].includes(L.calibration_kind)
-      && Number(L.calibration_poses) >= 8
-      && Number(L.calibration_rms_px) < 2
-      && masterImageSize);
-    const useSolve = !!(rawSolve && rawSolve.formal === true
-      && rawSolve.preflight_passed === true && qualifiedMaster);
+    const qualifiedMaster = qualifiedMasterFromYaml(L);
+    const useSolve = formalSolveFromYaml(c);
     const sp = useSolve ? rawSolve : null;
     const t = useSolve ? sp.t_mm : mp.t_mm;
     const e = useSolve ? sp.euler_deg : mp.euler_deg;
@@ -234,6 +259,8 @@
         image_size: L.image_size || null,
         rms: L.calibration_rms_px != null ? L.calibration_rms_px : null,
         num_images: L.calibration_poses != null ? L.calibration_poses : null,
+        num_points: L.calibration_points != null ? L.calibration_points : null,
+        session_coupled: L.session_coupled === true,
       } : null,
       pos: { x: { v: t[0], src }, y: { v: t[1], src }, z: { v: t[2], src } },
       rot: { pan: { v: e[0], src }, tilt: { v: e[1], src }, roll: { v: e[2], src } },
@@ -268,6 +295,8 @@
       image_size: u.masterLensInfo && u.masterLensInfo.image_size || null,
       calibration_rms_px: u.masterLensInfo && u.masterLensInfo.rms != null ? u.masterLensInfo.rms : null,
       calibration_poses: u.masterLensInfo && u.masterLensInfo.num_images != null ? u.masterLensInfo.num_images : null,
+      calibration_points: u.masterLensInfo && u.masterLensInfo.num_points != null ? u.masterLensInfo.num_points : null,
+      session_coupled: !!(u.masterLensInfo && u.masterLensInfo.session_coupled),
     },
     tracking: u.tracking || (u.protocol ? { protocol: u.protocol, host: '0.0.0.0', port: 6301, camera_id: u.cameraId } : null),
     video_profile_id: u.videoProfileId || null,
@@ -288,17 +317,22 @@
     select: (id) => camStore.patch({ selectedId: id }),
     /** 从打开的项目 config.cameras 灌入；无则保留默认一机 */
     loadFromProject: (projectPath, config) => {
-      const list = (config && Array.isArray(config.cameras) && config.cameras.length)
-        ? config.cameras.map(yamlToUi)
+      const configured = config && Array.isArray(config.cameras) ? config.cameras : [];
+      const invalidPersistedSolve = configured.some((camera) => (
+        camera && camera.solve_pose && !formalSolveFromYaml(camera)
+      ));
+      const list = configured.length
+        ? configured.map(yamlToUi)
         : [defaultCamUi()];
       camSnap = {
         cameras: list,
         selectedId: list[0].id,
         projectPath: projectPath || null,
-        dirty: false,
+        dirty: invalidPersistedSolve,
         saveTimer: camSnap.saveTimer,
       };
       camStore.notify();
+      if (invalidPersistedSolve) camStore.scheduleSave();
     },
     upsert: (cam) => {
       const cams = camSnap.cameras.slice();

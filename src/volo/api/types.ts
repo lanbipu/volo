@@ -1480,6 +1480,8 @@ export interface ProjectCameraLens {
   image_size?: [number, number] | null;
   calibration_rms_px?: number | null;
   calibration_poses?: number | null;
+  calibration_points?: number | null;
+  session_coupled?: boolean;
 }
 
 export interface ProjectCameraTracking {
@@ -1497,6 +1499,11 @@ export interface ProjectCameraPose {
   rms_reprojection_px?: number | null;
   image_size?: [number, number] | null;
   preflight_passed?: boolean;
+  schema_version?: string | null;
+  qualification_passed?: boolean;
+  master_lens?: boolean;
+  solve_kind?: string | null;
+  fail_closed?: boolean;
 }
 
 /** Per-project rebuilt-mesh alignment (`P_s = A ∘ B_s`). */

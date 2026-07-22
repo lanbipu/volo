@@ -83,6 +83,10 @@ pub struct ProjectCameraLens {
     pub calibration_rms_px: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calibration_poses: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calibration_points: Option<u32>,
+    #[serde(default)]
+    pub session_coupled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -111,6 +115,16 @@ pub struct ProjectCameraPose {
     pub image_size: Option<[u32; 2]>,
     #[serde(default)]
     pub preflight_passed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<String>,
+    #[serde(default)]
+    pub qualification_passed: bool,
+    #[serde(default)]
+    pub master_lens: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solve_kind: Option<String>,
+    #[serde(default)]
+    pub fail_closed: bool,
 }
 
 /// Per-project rebuilt-mesh alignment groups (`A` in `P_s = A ∘ B_s`).

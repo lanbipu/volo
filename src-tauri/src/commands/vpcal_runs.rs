@@ -196,9 +196,11 @@ fn formal_stage_pose(value: &Value) -> bool {
         .and_then(Value::as_array)
         .is_some_and(|v| v.len() >= 2 && v[0].as_u64().unwrap_or(0) > 0 && v[1].as_u64().unwrap_or(0) > 0);
     value.get("schema_version").and_then(Value::as_str) == Some("volo_stage_pose.v2")
+        && value.get("solve_kind").and_then(Value::as_str) == Some("fixed_extrinsics_only")
         && value.get("formal").and_then(Value::as_bool) == Some(true)
         && value.pointer("/qualification/passed").and_then(Value::as_bool) == Some(true)
         && value.pointer("/qualification/master_lens").and_then(Value::as_bool) == Some(true)
+        && value.pointer("/qualification/fail_closed").and_then(Value::as_bool) == Some(true)
         && value.pointer("/preflight/passed").and_then(Value::as_bool) == Some(true)
         && value.get("rms_reprojection_px").and_then(Value::as_f64).is_some_and(|v| v.is_finite() && v < 2.0)
         && image_size_ok
@@ -888,7 +890,7 @@ mod qa_report_tests {
 
         fs::write(
             run.path().join("stage_pose.json"),
-            br#"{"schema_version":"volo_stage_pose.v2","formal":true,"image_size":[1920,1080],"rms_reprojection_px":0.42,"num_inliers":16,"num_markers":24,"preflight":{"passed":true},"qualification":{"passed":true,"master_lens":true,"fail_closed":true}}"#,
+            br#"{"schema_version":"volo_stage_pose.v2","solve_kind":"fixed_extrinsics_only","formal":true,"image_size":[1920,1080],"rms_reprojection_px":0.42,"num_inliers":16,"num_markers":24,"preflight":{"passed":true},"qualification":{"passed":true,"master_lens":true,"fail_closed":true}}"#,
         )
         .unwrap();
         let solved = summarize_fixed_run(run.path()).unwrap();

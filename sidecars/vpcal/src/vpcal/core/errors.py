@@ -92,6 +92,12 @@ class MasterLensRequired(PreconditionError):
     code = "MASTER_LENS_REQUIRED"
 
 
+class FormalStagePoseRequired(PreconditionError):
+    """A formal overlay/export was requested with a legacy/debug Stage pose."""
+
+    code = "FORMAL_STAGE_POSE_REQUIRED"
+
+
 class LocalizationQualityFailed(PreconditionError):
     """Too few markers have a trustworthy central-locator position."""
 
@@ -125,6 +131,7 @@ __all__ = [
     "PreconditionError",
     "ScreenGeometryInconsistent",
     "MasterLensRequired",
+    "FormalStagePoseRequired",
     "LocalizationQualityFailed",
     "SolverTimeoutError",
     "PartialFailure",

@@ -378,6 +378,7 @@ export async function trackerFreeGrid(opts: {
       "--image-width", String(intr.image_size[0]),
       "--image-height", String(intr.image_size[1]),
     );
+    args.push("--debug-unqualified");
   } else {
     throw new Error("tracker-free grid requires --lens or capture-time pixel intrinsics");
   }

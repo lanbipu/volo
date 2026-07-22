@@ -431,6 +431,10 @@ def _write_stage_pose(path: Path) -> Path:
     M[:3, :3] = R_volo
     M[:3, 3] = cam_pos
     path.write_text(json.dumps({
+        "schema_version": "volo_stage_pose.v2",
+        "solve_kind": "fixed_extrinsics_only",
+        "formal": True,
+        "image_size": [1920, 1080],
         "camera_from_stage": {
             "position_mm": cam_pos.tolist(),
             "matrix_4x4": M.tolist(),
@@ -438,6 +442,8 @@ def _write_stage_pose(path: Path) -> Path:
         "rms_reprojection_px": 0.5,
         "num_markers": 8,
         "num_inliers": 8,
+        "preflight": {"passed": True},
+        "qualification": {"passed": True, "master_lens": True, "fail_closed": True},
     }))
     return path
 
@@ -487,5 +493,23 @@ class TestGridCLI:
             "--screen-target", str(screen), "0", "0", "--pose", str(pose),
             "--fx", "1200", "--fy", "1200", "--cx", "970", "--cy", "535",
             "--image-width", "1920", "--image-height", "1080",
+            "--debug-unqualified",
         )
         assert result["data"]["image_size"] == [1920, 1080]
+
+    def test_legacy_pose_cannot_generate_formal_overlay(self, tmp_path):
+        screen = _write_screen(_screen(), tmp_path / "screen.json")
+        pose = tmp_path / "legacy-stage-pose.json"
+        pose.write_text(json.dumps({
+            "camera_from_stage": {"position_mm": [0, -3000, 1000], "matrix_4x4": np.eye(4).tolist()},
+            "rms_reprojection_px": 0.5,
+        }))
+        lens = _write_lens(tmp_path / "lens.json")
+        result = _run(
+            "--output", "json", "tracker-free", "grid",
+            "--screen-target", str(screen), "0", "0",
+            "--pose", str(pose), "--lens", str(lens),
+        )
+        assert result.returncode != 0
+        envelope = json.loads(result.stdout)
+        assert envelope["error"]["code"] == "FORMAL_STAGE_POSE_REQUIRED"
