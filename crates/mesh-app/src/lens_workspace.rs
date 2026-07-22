@@ -87,7 +87,7 @@ pub fn pattern_grid_for_screen(screen: &ScreenConfig) -> LensPatternGrid {
                         continue;
                     }
                     let long_count = (long_px / cell_px).round().max(2.0) as u32;
-                    if long_px / long_count as f64 < MIN_MARKER_CELL_PX {
+                    if long_px / (long_count as f64) < MIN_MARKER_CELL_PX {
                         continue;
                     }
                     let (columns, rows) = if landscape {
