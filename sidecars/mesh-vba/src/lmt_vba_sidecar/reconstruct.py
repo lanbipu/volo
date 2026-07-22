@@ -269,7 +269,6 @@ def _emit_withheld_validation(
     K: np.ndarray,
     result: "BAResult",
     observations: list[Observation],
-    per_view_cab_corners: dict[tuple[int, int], list[tuple[np.ndarray, np.ndarray]]],
     n_cabinets: int,
     root_idx: int,
     cab_idx_to_screen: dict[int, int],
@@ -293,14 +292,26 @@ def _emit_withheld_validation(
     out_path = f"{screen_transforms_path}.validation.json"
 
     def _write(wv: dict) -> None:
-        _atomic_write_json(out_path, json.dumps(
-            {"schema_version": "withheld_validation.v1", "withheld_validation": wv},
-            indent=2))
+        try:
+            _atomic_write_json(out_path, json.dumps(
+                {"schema_version": "withheld_validation.v1", "withheld_validation": wv},
+                indent=2, allow_nan=False))
+        except Exception:  # a validation-write failure must never block the solve
+            pass
 
     try:
+        # Derive screen coverage, the per-(camera,cabinet) corner map, and the
+        # per-cabinet camera sets all from `observations` (= surviving_observations):
+        # its camera_idx is the reindexed, stage-pruned space, so the corner map
+        # stays consistent with result.camera_poses even after Stage-C view
+        # rejection (and carries only surviving, outlier-free detections).
         cam_screens: dict[int, set[int]] = {}
+        pvcc: dict[tuple[int, int], list[tuple[np.ndarray, np.ndarray]]] = {}
+        cab_cam: dict[int, set[int]] = {}
         for o in observations:
             cam_screens.setdefault(o.camera_idx, set()).add(cab_idx_to_screen[o.cabinet_idx])
+            pvcc.setdefault((o.camera_idx, o.cabinet_idx), []).append((o.p_local, o.pixel))
+            cab_cam.setdefault(o.cabinet_idx, set()).add(o.camera_idx)
         cams = sorted(cam_screens)
         bridges = [c for c in cams if len(cam_screens[c]) >= 2]
         singles = [c for c in cams if len(cam_screens[c]) < 2]
@@ -315,12 +326,12 @@ def _emit_withheld_validation(
         if n_hold_single:
             withheld |= set(singles[-n_hold_single:])
         train = [c for c in cams if c not in withheld]
-        # Every screen must keep >=2 covering train views.
-        train_cover: dict[int, int] = {}
-        for c in train:
-            for s in cam_screens[c]:
-                train_cover[s] = train_cover.get(s, 0) + 1
-        if any(train_cover.get(s, 0) < 2 for s in range(len(screen_ids))):
+        train_set = set(train)
+        # Every CABINET must keep >=2 train views. A cabinet observed only by
+        # withheld views is never re-estimated on train — the warm-started re-solve
+        # leaves it at its full-solve pose, so its withheld reprojection is
+        # trivially ~0 and would spuriously pass. (Per-cabinet, not per-screen.)
+        if any(len(cab_cam[cab] & train_set) < 2 for cab in cab_cam):
             _write({"passed": False, "reason": "insufficient_train_coverage_after_holdout"})
             return
 
@@ -328,12 +339,15 @@ def _emit_withheld_validation(
         remap = {c: i for i, c in enumerate(train)}
         train_obs = [Observation(camera_idx=remap[o.camera_idx], cabinet_idx=o.cabinet_idx,
                                  p_local=o.p_local, pixel=o.pixel, sigma_px=o.sigma_px)
-                     for o in observations if o.camera_idx in remap]
+                     for o in observations if o.camera_idx in train_set]
         train_res = model_constrained_ba(
             K=K, observations=train_obs, n_cameras=len(train), n_cabinets=n_cabinets,
             root_cabinet_idx=root_idx,
             init_cameras=[result.camera_poses[c] for c in train],
             init_cabinets=dict(result.cabinet_poses), compute_covariance=False)
+        if not train_res.converged:
+            _write({"passed": False, "reason": "train_resolve_did_not_converge"})
+            return
         train_cabinets = train_res.cabinet_poses
 
         # PnP each withheld camera against the train geometry; reproject its obs.
@@ -344,7 +358,7 @@ def _emit_withheld_validation(
         norms: list[float] = []
         per_screen_sq: dict[int, list[float]] = {}
         for c in sorted(withheld):
-            Rc, tc = _pnp_camera(c, root_idx, train_cabinets, per_view_cab_corners, K)
+            Rc, tc = _pnp_camera(c, root_idx, train_cabinets, pvcc, K)
             for o in obs_by_cam.get(c, []):
                 Rb, tb = train_cabinets[o.cabinet_idx]
                 p = K @ (Rc @ (Rb @ o.p_local + tb) + tc)
@@ -355,6 +369,9 @@ def _emit_withheld_validation(
             _write({"passed": False, "reason": "no_withheld_observations"})
             return
         arr = np.asarray(norms)
+        if not np.all(np.isfinite(arr)):
+            _write({"passed": False, "reason": "non_finite_reprojection"})
+            return
         combined = float(np.sqrt(np.mean(arr * arr)))
         per_screen = {screen_ids[s]: float(np.sqrt(np.mean(v))) for s, v in per_screen_sq.items()}
         passed = combined < WITHHELD_RMS_MAX_PX and all(
@@ -1889,8 +1906,7 @@ def joint_solve_and_emit(
     _atomic_write_json(screen_transforms_path, transforms_report.model_dump_json(indent=2))
     _emit_withheld_validation(
         K=K, result=result, observations=surviving_observations,
-        per_view_cab_corners=per_view_cab_corners, n_cabinets=n_cabinets,
-        root_idx=root_idx, cab_idx_to_screen=cab_idx_to_screen,
+        n_cabinets=n_cabinets, root_idx=root_idx, cab_idx_to_screen=cab_idx_to_screen,
         screen_ids=[sp.screen_id for sp in screen_projects],
         screen_transforms_path=screen_transforms_path)
 

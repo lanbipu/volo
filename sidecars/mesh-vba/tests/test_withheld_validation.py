@@ -28,8 +28,11 @@ def _project(Rc, tc, Rb, tb, p):
     return q[:2] / q[2]
 
 
-def _two_screen_scene(*, n_bridge=5, n_single0=2, n_single1=2, noise=0.0, seed=0):
-    """Two flat screens (1 cabinet each) folded 15°, cab0 = gauge."""
+def _two_screen_scene(*, n_bridge=5, n_single0=2, n_single1=2, noise=0.0, noisy_cams=None, seed=0):
+    """Two flat screens (1 cabinet each) folded 15°, cab0 = gauge.
+
+    ``noisy_cams`` (None = all) restricts pixel noise to those camera indices, so
+    a test can corrupt only the held-out view."""
     rng = np.random.default_rng(seed)
     pts = _grid()
     boards = {
@@ -44,13 +47,14 @@ def _two_screen_scene(*, n_bridge=5, n_single0=2, n_single1=2, noise=0.0, seed=0
         cams.append((Rc, tc))
     obs, pvcc = [], {}
     for ci, (Rc, tc) in enumerate(cams):
+        cam_noise = noise if (noisy_cams is None or ci in noisy_cams) else 0.0
         for cab in plan[ci]:
             Rb, tb = boards[cab]
             corners = []
             for p in pts:
                 px = _project(Rc, tc, Rb, tb, p)
-                if noise:
-                    px = px + rng.normal(0, noise, 2)
+                if cam_noise:
+                    px = px + rng.normal(0, cam_noise, 2)
                 obs.append(Observation(camera_idx=ci, cabinet_idx=cab, p_local=p.copy(), pixel=px.copy()))
                 corners.append((p.copy(), px.copy()))
             pvcc[(ci, cab)] = corners
@@ -61,10 +65,12 @@ def _two_screen_scene(*, n_bridge=5, n_single0=2, n_single1=2, noise=0.0, seed=0
     return obs, pvcc, {0: 0, 1: 1}, result
 
 
-def _run(tmp_path, obs, pvcc, cab_idx_to_screen, result):
+def _run(tmp_path, obs, _pvcc, cab_idx_to_screen, result):
+    # pvcc is now derived internally from the (reindexed, pruned) observations, so
+    # the harness no longer supplies it — the third arg is kept for call-site parity.
     st = str(tmp_path / "st.json")
     _emit_withheld_validation(
-        K=K, result=result, observations=obs, per_view_cab_corners=pvcc,
+        K=K, result=result, observations=obs,
         n_cabinets=2, root_idx=0, cab_idx_to_screen=cab_idx_to_screen,
         screen_ids=["S0", "S1"], screen_transforms_path=st)
     with open(st + ".validation.json") as fh:
@@ -81,7 +87,10 @@ def test_clean_two_screen_geometry_passes(tmp_path):
 
 
 def test_inconsistent_observations_fail(tmp_path):
-    obs, pvcc, m, result = _two_screen_scene(noise=6.0, seed=1)
+    # Noise only the held-out bridge view (last bridge, index n_bridge-1 = 4): the
+    # train re-solve stays on clean data and converges, but the withheld view
+    # reprojects far past the gate, so it fails via the RMS path (not fail-closed).
+    obs, pvcc, m, result = _two_screen_scene(noise=6.0, noisy_cams={4}, seed=1)
     wv = _run(tmp_path, obs, pvcc, m, result)
     assert wv["passed"] is False, wv
     assert wv["combined_rms_px"] > 2.0
