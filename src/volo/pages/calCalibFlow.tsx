@@ -9,7 +9,7 @@ import { lensWorkspacePaths } from "../api/lensWorkspace";
 import {
   listLensSessions, readLensQaReport, readImageAsDataUrl,
   startCaptureStills, stillsFinish,
-  trackerFreeLensCal, trackerFreeVerify,
+  trackerFreeStagePose,
   qualityFromRms, qualityFromLabel, writeFixedRunMeta,
 } from "../api/lensCommands";
 import { probeTrackingSource } from "../api/captureProfiles";
@@ -47,6 +47,51 @@ import {
     return dir.replace(/[\\/]+$/, '') + sep + name;
   };
   const pad6 = (n) => String(n).padStart(6, '0');
+  const finite = (value, fallback = 0) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  };
+  function capturePixelIntrinsics(lens, source) {
+    const width = finite(source && source.width);
+    const height = finite(source && source.height);
+    const sensorWidth = finite(lens && lens.sensorW && lens.sensorW.v);
+    const sensorHeight = finite(lens && lens.sensorH && lens.sensorH.v);
+    const focal = finite(lens && lens.focal && lens.focal.v);
+    if (width <= 0 || height <= 0) throw new Error('采集结果缺少有效 width/height，无法冻结 pixel intrinsics');
+    if (sensorWidth <= 0 || sensorHeight <= 0 || focal <= 0) {
+      throw new Error('摄影机缺少有效 focal length / active sensor，无法冻结 pixel intrinsics');
+    }
+    const scaleX = width / sensorWidth;
+    const scaleY = height / sensorHeight;
+    const scaleDelta = Math.abs(scaleX - scaleY) / Math.max(scaleX, scaleY);
+    if (scaleDelta > 0.01) {
+      throw new Error(
+        '采集画幅与 active sensor aspect ratio 不一致；请填写实际 active sensor 尺寸，或选择与采集分辨率匹配的 pixel-domain LensProfile',
+      );
+    }
+    const principalXmm = finite(lens && lens.ppx && lens.ppx.v);
+    const principalYmm = finite(lens && lens.ppy && lens.ppy.v);
+    const focalPx = focal * (scaleX + scaleY) / 2;
+    return {
+      fx: focalPx, fy: focalPx,
+      cx: width / 2 + principalXmm * scaleX,
+      cy: height / 2 + principalYmm * scaleY,
+      dist_coeffs: [finite(lens && lens.k1), finite(lens && lens.k2), 0, 0,
+        finite(lens && lens.fovK3 && lens.fovK3.v)],
+      image_size: [Math.round(width), Math.round(height)],
+      source: 'project_camera_capture_snapshot',
+      physical_snapshot: {
+        focal_mm: focal,
+        sensor_width_mm: sensorWidth,
+        sensor_height_mm: sensorHeight,
+        principal_x_mm: principalXmm,
+        principal_y_mm: principalYmm,
+        k1: finite(lens && lens.k1),
+        k2: finite(lens && lens.k2),
+        k3: finite(lens && lens.fovK3 && lens.fovK3.v),
+      },
+    };
+  }
   const useCamStore = () => {
     const store = window.camStore;
     return React.useSyncExternalStore(
@@ -54,34 +99,52 @@ import {
       () => (store ? store.get() : { cameras: CAL_CAMERAS, selectedId: CAL_CAMERAS[0] && CAL_CAMERAS[0].id }),
     );
   };
-  async function writeFixedRunMetaSafe(sessionDir, meta) {
+  async function writeFixedRunMetaSafe(sessionDir, meta, lensSourcePath) {
     try {
-      await writeFixedRunMeta(sessionDir, meta);
-    } catch (e) { /* captures/normal 仍可被 list 扫描 */ }
+      await writeFixedRunMeta(sessionDir, meta, lensSourcePath);
+      return null;
+    } catch (e) {
+      /* captures/normal 仍可被 list 扫描，但求解前必须让操作者看到 snapshot 失败。 */
+      return e && e.message ? e.message : String(e);
+    }
   }
-  async function showViaDeploy(s, imagePath, pattern) {
+  async function showViaDeploy(s, targets, pattern) {
+    if (!targets || !targets.length) throw new Error('没有可用的标定屏幕图案');
+    const imagePath = joinPath(targets[0].patternsDir, pattern + '.png');
     const store = window.deployStore && window.deployStore.get();
     const channel = (store && store.channel) || (s.calOutTarget === 'cluster' ? 'ndisplay' : 'monitor');
     if (channel === 'ndisplay') {
       const proj = CX().projStore ? CX().projStore.get() : null;
       if (!proj || !proj.path) throw new Error('无打开项目，无法 nDisplay 推图');
       const topology = window.resolveProjectTopology && window.resolveProjectTopology(proj.config);
-      const screenId = s.calActiveScreen;
+      if (targets.length > 1 && (!topology || !window.stageScreenOriginPx)) {
+        throw new Error('多屏同步上屏缺少有效 Stage topology');
+      }
+      const screenId = targets[0].id;
       const screen = topology
         ? window.stageScreenForOutput(proj.config, topology)
         : (proj.config && proj.config.screens[screenId]);
       if (!screen) throw new Error('无可用输出屏幕');
-      /* 采集切图必须只传 image_path。后端有 stage 时会忽略 image_path，
-         改拼各屏 patterns/<id>/full_screen.png（测试图），导致切图无效。 */
+      const layers = targets.map((target) => {
+        const origin = window.stageScreenOriginPx
+          ? window.stageScreenOriginPx(proj.config.screens, target.id) : [0, 0];
+        return {
+          screen_id: target.id, x: origin[0], y: origin[1],
+          image_path: joinPath(target.patternsDir, pattern + '.png'),
+        };
+      });
       await outputShow({
         session_id: proj.path + '::stage',
         screen,
         paths: Object.assign({}, DEFAULT_NDISPLAY_OUTPUT_PATHS),
         ssh_user: null,
         mode: 'show',
-        image_path: imagePath,
+        stage: { project_path: proj.path, screens: layers },
       });
       return;
+    }
+    if (targets.length > 1) {
+      throw new Error('多屏同步上屏需要选择 nDisplay 输出通道');
     }
     await playerShowPattern(imagePath, pattern || 'full_screen');
   }
@@ -198,6 +261,7 @@ import {
     const stillsOutRef = useRef(null);
     const stillsFinishingRef = useRef(false);
     const stillsResultHandledRef = useRef(new Set());
+    const fixedInputRef = useRef(null);
     const trackedResultHandledRef = useRef(false);
     /** Active SL nDisplay play-sequence request; cleared when play finishes/fails. */
     const slPlayReqRef = useRef(null);
@@ -212,7 +276,7 @@ import {
     const [stillsSnapN, setStillsSnapN] = useState(0);
     const stillsStream = useSidecarStream(stillsTaskId);
     const cam = (camSnap.cameras || []).find((c) => c.id === camId) || camSnap.cameras[0] || CAL_CAMERAS[0];
-    const targetM = Number(params.poses) || 8;
+    const targetM = tracked ? (Number(params.poses) || 8) : 1;
 
     const profiles = (CX().loadProfiles && CX().loadProfiles()) || [];
     const [pid, setPid] = useState(s.capProfileId || (profiles[0] && profiles[0].id) || null);
@@ -250,12 +314,19 @@ import {
     const deployStoreSnap = window.deployStore && window.deployStore.get();
     const deployChannel = (deployStoreSnap && deployStoreSnap.channel)
       || (s.calOutTarget === 'cluster' ? 'ndisplay' : 'monitor');
+    const fixedLensReady = !!(cam && cam.lens && cam.lensConfirmed
+      && Number(cam.lens.focal && cam.lens.focal.v) > 0
+      && Number(cam.lens.sensorW && cam.lens.sensorW.v) > 0
+      && Number(cam.lens.sensorH && cam.lens.sensorH.v) > 0);
     /* §3.5 qsp：部署 + profile + 屏幕定义已同步 + 单 section + 图案未失败（生成中 / 需重生成仍可点，
        beginCapture 会先补生成）。screenFile 由 ag 系统写入 s.capScreenFile。
        SL×nDisplay：不依赖校正图案 auto-gen，走序列播放通道。 */
     const readyQsp = method === 'qsp'
       && (backend === 'synthetic' || signalReady)
-      && ag.screenDef === 'synced' && !ag.multiSection && ag.pattern !== 'genFail';
+      && ag.screenDef === 'synced' && !ag.multiSection && ag.pattern !== 'genFail'
+      && ag.targets.length === ag.selectedIds.length
+      && (ag.selectedIds.length <= 1 || deployChannel === 'ndisplay')
+      && (tracked || fixedLensReady || !!params.lensPath);
     const readySl = method === 'sl'
       && deployChannel === 'ndisplay'
       && (backend === 'synthetic' || signalReady)
@@ -333,7 +404,17 @@ import {
             sessionJson: sess.session_json_path,
             outputDir: qaDir,
             modeFixed: isFixed,
-            error: sess.error || null,
+            error: sess.error || sess.intrinsics_error || null,
+            cameraId: sess.camera_id || null,
+            lensJson: sess.lens_json || null,
+            intrinsics: sess.intrinsics || null,
+            intrinsicsError: sess.intrinsics_error || null,
+            targets: (sess.targets || []).map((target) => ({
+              id: target.id || '',
+              screenJson: target.screenJson || target.path || '',
+              code: target.code != null ? target.code : (target.screen_id || 0),
+              offset: target.offset != null ? target.offset : (target.cab_col_offset || 0),
+            })).filter((target) => !!target.screenJson),
             poses,
           };
         }));
@@ -360,10 +441,33 @@ import {
           if (stillsResultHandledRef.current.has(key)) continue;
           stillsResultHandledRef.current.add(key);
           const dir = stillsOutRef.current || (p.data.session_dir);
-          void writeFixedRunMetaSafe(dir, {
+          const fixedInput = fixedInputRef.current || {};
+          const meta = {
             mode: 'fixed', frames_captured: p.data.frames_captured || snaps,
-            camera_id: camId, screen: screenFile, method: 'qsp',
-          }).then(() => refreshSessions());
+            camera_id: fixedInput.cameraId || camId,
+            screen: fixedInput.screenFile || screenFile, method: 'qsp',
+            targets: (fixedInput.targets || []).map((target) => ({
+              id: target.id, screenJson: target.screenJson,
+              code: target.code, offset: target.offset,
+            })),
+          };
+          if (!fixedInput.lensPath) {
+            try {
+              meta.intrinsics = capturePixelIntrinsics(fixedInput.lens || {}, p.data.source || {});
+            } catch (e) {
+              meta.intrinsics_error = e && e.message ? e.message : String(e);
+            }
+          }
+          fixedInputRef.current = null;
+          const lensSource = fixedInput.lensSnapshotted ? null : (fixedInput.lensPath || null);
+          void writeFixedRunMetaSafe(dir, meta, lensSource).then((writeError) => {
+            if (writeError) {
+              s.pushLog({ lv: 'err', cat: 'lens', msg: '固定机位采集已保存，但 intrinsics snapshot 失败 · ' + writeError });
+            } else if (meta.intrinsics_error) {
+              s.pushLog({ lv: 'err', cat: 'lens', msg: '固定机位采集已保存，但无法求解 · ' + meta.intrinsics_error });
+            }
+            return refreshSessions();
+          });
           s.setCapState('idle');
           setStillsTask(null);
           void playerClear().catch(() => {});
@@ -416,7 +520,6 @@ import {
     /* request_pattern → 按部署通道切图（仅追踪 session） */
     useEffect(() => {
       if (!capturing || !tracked) return;
-      const patternsDir = ag.patternsDir;
       for (const ev of session.events) {
         if (ev.type !== 'request_pattern' || typeof ev.sequence !== 'number') continue;
         if (patternAckSeq.current.has(ev.sequence)) continue;
@@ -424,11 +527,8 @@ import {
         patternAckSeq.current.add(ev.sequence);
         (async () => {
           try {
-            if (patternsDir) {
-              const path = joinPath(patternsDir, pattern + '.png');
-              /* 按部署通道推图；nDisplay 失败不得静默回落本机 player */
-              await showViaDeploy(s, path, pattern);
-            }
+            /* 按部署通道把同名图案同步推到全部选中屏幕。 */
+            await showViaDeploy(s, ag.targets, pattern);
             await session.sendCmd({ cmd: 'pattern_ready', pattern });
             if (s.setDeployState) s.setDeployState('showing');
           } catch (e) {
@@ -437,7 +537,7 @@ import {
           }
         })();
       }
-    }, [capturing, session.events, ag.patternsDir]);
+    }, [capturing, session.events, ag.targets]);
 
     useEffect(() => {
       if (!capturing || !tracked) return;
@@ -585,9 +685,8 @@ import {
 
       try {
         /* 图案由系统自动生成到 ag.patternsDir（含 normal.png）；开始前先推 normal.png 上屏 */
-        if (ag.patternsDir) {
-          const path = joinPath(ag.patternsDir, 'normal.png');
-          await showViaDeploy(s, path, 'normal');
+        if (ag.targets.length) {
+          await showViaDeploy(s, ag.targets, 'normal');
           if (s.setDeployState) s.setDeployState('showing');
         }
       } catch (e) {
@@ -602,6 +701,16 @@ import {
       if (trackSignal === 'none') {
         const sessionOut = joinPath(outDir, 'fixed_' + new Date().toISOString().replace(/[:.]/g, '-'));
         stillsOutRef.current = sessionOut;
+        fixedInputRef.current = {
+          cameraId: camId,
+          screenFile,
+          lens: JSON.parse(JSON.stringify((cam && cam.lens) || {})),
+          lensPath: params.lensPath || null,
+          targets: ag.targets.map((target) => ({
+            id: target.id, screenJson: target.screenJson,
+            code: target.code, offset: target.offset,
+          })),
+        };
         s.setCapTrack('fixed');
         s.pushLog({ lv: 'info', cat: 'lens', msg: '开始固定机位采集 · <b>capture stills</b> · ' + (profile.name || 'Profile') });
         let spawnedId = null;
@@ -618,11 +727,22 @@ import {
             transferFunction: profile.transferFunction || 'sdr',
           });
           spawnedId = resp.task_id;
+          if (fixedInputRef.current && fixedInputRef.current.lensPath) {
+            const snapshotError = await writeFixedRunMetaSafe(sessionOut, {
+              mode: 'fixed', frames_captured: 0,
+              camera_id: fixedInputRef.current.cameraId,
+              screen: fixedInputRef.current.screenFile, method: 'qsp',
+              targets: fixedInputRef.current.targets,
+            }, fixedInputRef.current.lensPath);
+            if (snapshotError) throw new Error('无法冻结 LensProfile: ' + snapshotError);
+            fixedInputRef.current.lensSnapshotted = true;
+          }
           setStillsTask(resp.task_id);
         } catch (e) {
           /* 本次已 spawn 的任务必须杀掉再回 idle，否则孤儿独占设备、监看永远拉不起来 */
           if (spawnedId) { try { await cancelSidecarTaskAwaitExit(spawnedId); } catch (e2) { /* ignore */ } }
           if (stillsTaskRef.current === spawnedId) setStillsTask(null);
+          fixedInputRef.current = null;
           s.setCapState('idle');
           s.pushLog({ lv: 'err', cat: 'lens', msg: '固定机位启动失败 · ' + (e && e.message ? e.message : e) });
         }
@@ -634,7 +754,7 @@ import {
       const camTrack = cam && cam.tracking;
       s.pushLog({ lv: 'info', cat: 'lens', msg: '开始追踪机位采集 · <b>' + (profile.name || 'Profile') + '</b>' });
       session.start({
-        screenPath: screenFile, outDir: sessionOut,
+        screenTargets: ag.targets, outDir: sessionOut,
         backend: profile.videoBackend, device: String(profile.device),
         trackProtocol: trackSignal,
         trackPort: Number((camTrack && camTrack.port) || profile.trackPort || 6301),
@@ -672,44 +792,60 @@ import {
     };
 
     const solveFixedRun = async (run) => {
-      if (!run || !run.sessionDir || !screenFile) return;
+      const solveTargets = (run && run.targets) || [];
+      if (!run || !run.sessionDir) return;
       setSolvingId(run.id);
       try {
+        if (!solveTargets.length) {
+          throw new Error('该固定机位 run 缺少采集时 screen target snapshot，不能使用当前屏幕选择代替');
+        }
+        if (!run.cameraId) {
+          throw new Error('该固定机位 run 缺少采集时 camera ownership，不能写回当前摄影机');
+        }
+        if (!(camSnap.cameras || []).some((camera) => camera.id === run.cameraId)) {
+          throw new Error('采集该 run 的摄影机已不存在，无法安全写回 Stage pose');
+        }
         const images = joinPath(run.sessionDir, 'captures/normal');
-        const lensJson = joinPath(run.sessionDir, 'lens.json');
-        s.pushLog({ lv: 'info', cat: 'lens', msg: '固定机位求解 · <b>tracker-free lens-cal</b>…' });
-        const cal = await trackerFreeLensCal({ imagesDir: images, screenPath: screenFile, outLensJson: lensJson });
         const firstPng = joinPath(images, '000000.png');
-        s.pushLog({ lv: 'info', cat: 'lens', msg: '固定机位位姿 · <b>tracker-free verify</b>…' });
-        const ver = await trackerFreeVerify({
-          imagePath: firstPng, screenA: screenFile, screenB: screenFile, lensJson,
+        const poseJson = joinPath(run.sessionDir, 'stage_pose.json');
+        if (!run.lensJson && !run.intrinsics) {
+          throw new Error(run.intrinsicsError || '该固定机位 run 缺少采集时 intrinsics snapshot，不能使用当前摄影机参数代替');
+        }
+        s.pushLog({ lv: 'info', cat: 'lens', msg: '固定机位单帧求解 · <b>tracker-free pose</b>…' });
+        const solved = await trackerFreeStagePose({
+          imagePath: firstPng,
+          targets: solveTargets,
+          intrinsics: run.lensJson ? null : run.intrinsics,
+          lensPath: run.lensJson || null,
+          outPath: poseJson,
         });
-        const pose = ver.camera_from_a;
+        const pose = solved.camera_from_stage;
+        const writeError = await writeFixedRunMetaSafe(run.sessionDir, {
+          mode: 'fixed', frames_captured: run.poseCount,
+          camera_id: run.cameraId, method: 'qsp',
+          targets: solveTargets.map((target) => ({
+            id: target.id, screenJson: target.screenJson,
+            code: target.code, offset: target.offset,
+          })),
+          stage_pose_json: poseJson, stage_pose: solved,
+        });
+        if (writeError) throw new Error('无法保存固定机位求解结果: ' + writeError);
         if (pose && window.camStore) {
           const t = pose.position_mm || [0, 0, 0];
-          const e = pose.euler_deg || { rx: 0, ry: 0, rz: 0 };
-          const dist = cal.dist_coeffs || [];
-          /* focal_mm ≈ fx * sensor_w / image_w（用当前相机 sensor 档案） */
-          const ui = window.camStore.selected();
-          const sw = (ui && ui.lens && ui.lens.sensorW && ui.lens.sensorW.v) || 36;
-          const focalMm = (cal.fx && cal.image_size && cal.image_size[0])
-            ? cal.fx * sw / cal.image_size[0] : null;
-          window.camStore.setSolvePose(camId, [t[0], t[1], t[2]], [e.rx, e.ry, e.rz], {
-            focal_mm: focalMm, k1: dist[0], k2: dist[1], k3: dist[4] != null ? dist[4] : null,
-            cx: cal.cx, cy: cal.cy,
-          });
+          const ptr = pose.ptr_deg || { pan: 0, tilt: 0, roll: 0 };
+          window.camStore.setSolvePose(
+            run.cameraId,
+            [t[0], t[1], t[2]],
+            [ptr.pan, ptr.tilt, ptr.roll],
+            null,
+          );
         }
-        await writeFixedRunMetaSafe(run.sessionDir, {
-          mode: 'fixed', frames_captured: run.poseCount,
-          camera_id: camId, screen: screenFile, method: 'qsp',
-          lens_json: lensJson, lens_rms: cal.rms, verify: ver,
-        });
         s.setCalLensState('done');
         if (CX().lensStore) CX().lensStore.patch({ phase: 'solved' });
         s.pushLog({
-          lv: cal.rms < 2 ? 'ok' : 'warn', cat: 'lens',
-          msg: '固定机位求解完成 · RMS <b>' + Number(cal.rms).toFixed(3) + '</b> px'
-            + (pose ? (' · 距屏 ' + Math.round(pose.distance_mm) + ' mm') : ''),
+          lv: solved.rms_reprojection_px < 2 ? 'ok' : 'warn', cat: 'lens',
+          msg: '固定机位单帧求解完成 · RMS <b>' + Number(solved.rms_reprojection_px).toFixed(3)
+            + '</b> px · 可见屏幕 <b>' + solved.visible_screens.join('、') + '</b>',
         });
         void refreshSessions();
       } catch (e) {
@@ -866,6 +1002,8 @@ import {
     if (ag.screenDef === 'exportFail') reasons.push('屏幕定义导出失败');
     if (ag.multiSection) reasons.push('折面屏（多 section）图案上屏暂不支持');
     if (ag.pattern === 'genFail') reasons.push('校正图案生成失败');
+    if (!tracked && !fixedLensReady && !params.lensPath) reasons.push('固定机位单帧求解需要已知镜头参数');
+    if (!isSl && ag.selectedIds.length > 1 && deployChannel !== 'ndisplay') reasons.push('多屏同步上屏需要 nDisplay 通道');
     if (isSl && deployChannel !== 'ndisplay') reasons.push('结构光目前仅支持 nDisplay 通道');
     if (isSl && !screenFile) reasons.push('未选屏幕文件');
     if (isSl && !outDir) reasons.push('未选输出目录');
@@ -890,7 +1028,7 @@ import {
                   ag.multiSection ? h('div', { className: 'lc-cli-note' }, h(Icon, { name: 'info', size: 13 }),
                     h('span', null, '折面屏（多 section）需通过 CLI 手动生成 / 上屏：', h('code', null, 'vpcal pattern generate --screen <screen.json> --output-dir <dir>'), '，暂无 UI 操作入口。')) : null)
               : h('div', { className: 'lc-reasons' }, h('span', { className: 'lc-reason ok' }, h(Icon, { name: 'check', size: 12 }),
-                  tracked ? '前置就绪 · 追踪机位' : '前置就绪 · 固定机位（stills · 采集期间须静止）')),
+                  tracked ? '前置就绪 · 追踪机位' : '前置就绪 · 固定机位（单次采集 · 使用已知镜头参数求 Stage 位姿）')),
             h('span', { className: 'sp' })));
 
     return h('div', { className: 'drawer drawer--lcwin' },
@@ -923,8 +1061,12 @@ import {
     const ro = tracked != null ? tracked : cam.mode === 'tracked';
     const P = cam.pos, R = cam.rot, L = cam.lens;
     const canEdit = !!editable && !ro && cam.pos.x.src === 'manual';
-    const commitPose = (axis, val) => {
+    const commitValue = (axis, val) => {
       if (!window.camStore || !camId) return;
+      if (['sensorW', 'sensorH', 'focal', 'k3', 'ppx', 'ppy'].includes(axis)) {
+        window.camStore.setLensValue(camId, axis, val);
+        return;
+      }
       const t = [P.x.v, P.y.v, P.z.v];
       const e = [R.pan.v, R.tilt.v, R.roll.v];
       if (axis === 'x') t[0] = val; else if (axis === 'y') t[1] = val; else if (axis === 'z') t[2] = val;
@@ -936,7 +1078,7 @@ import {
       canEdit && axis
         ? h('input', {
             className: 'pv', type: 'number', step: 'any', value: typeof o.v === 'number' ? o.v : 0,
-            onChange: (ev) => commitPose(axis, Number(ev.target.value)),
+            onChange: (ev) => commitValue(axis, Number(ev.target.value)),
             style: { width: '100%', border: 'none', background: 'transparent', font: 'inherit', color: 'inherit' },
           })
         : h('span', { className: 'pv' }, (typeof o.v === 'number' ? o.v.toFixed(o.v % 1 === 0 ? 0 : 2) : o.v), u ? h('span', { style: { fontSize: 10, color: 'var(--chrome-faint)', marginLeft: 2 } }, u) : null));
@@ -947,9 +1089,9 @@ import {
       h('div', { className: 'lc-param-grid3' }, cell('Pan', R.pan, '', 'pan'), cell('Tilt', R.tilt, '', 'tilt'), cell('Roll', R.roll, '', 'roll')),
       h('div', { className: 'lc-cam-sub' }, '镜头组'),
       h('div', { className: 'lc-param-grid3' },
-        cell('Sensor 宽', L.sensorW, 'mm'), cell('Sensor 高', L.sensorH, 'mm'), cell('焦距', L.focal, 'mm')),
+        cell('Sensor 宽', L.sensorW, 'mm', 'sensorW'), cell('Sensor 高', L.sensorH, 'mm', 'sensorH'), cell('焦距', L.focal, 'mm', 'focal')),
       h('div', { className: 'lc-param-grid3' },
-        cell('FOV K3', L.fovK3), cell('主点 Δx', L.ppx), cell('主点 Δy', L.ppy)),
+        cell('FOV K3', L.fovK3, '', 'k3'), cell('主点 Δx', L.ppx, '', 'ppx'), cell('主点 Δy', L.ppy, '', 'ppy')),
       cam.protocol === 'freed' ? h(React.Fragment, null,
         h('div', { className: 'lc-cam-sub' }, 'FreeD 编码器原始值'),
         h('div', { className: 'lc-enc' }, h('span', { className: 'k' }, 'zoom'), h('span', { className: 'v' }, L.zoomEnc), h('span', { style: { width: 10 } }), h('span', { className: 'k' }, 'focus'), h('span', { className: 'v' }, L.focusEnc)),

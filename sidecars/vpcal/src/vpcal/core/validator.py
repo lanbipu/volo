@@ -95,13 +95,14 @@ def validate_session(
         raise ResourceNotFoundError(
             f"tracking file not found: {tracking_path}", details={"path": str(tracking_path)}
         )
-    screen_path = None
-    if session.screen is not None:
-        screen_path = _resolve(session_dir, session.screen.path)
+    screen_paths = []
+    for target in session.screen_targets:
+        screen_path = _resolve(session_dir, target.path)
         if not screen_path.exists():
             raise ResourceNotFoundError(
                 f"screen file not found: {screen_path}", details={"path": str(screen_path)}
             )
+        screen_paths.append(screen_path)
     if session.marker_map is not None:
         # AR path (plan A2): load + geometric/degeneracy validation of the map.
         from vpcal.core.marker_map import validate_marker_map
@@ -281,13 +282,21 @@ def validate_session(
         from vpcal.core.processor_check import check_screen_consistency
         from vpcal.io.screen_io import load_screen
 
-        screen = load_screen(str(screen_path)) if screen_path is not None else None
+        screens = [load_screen(str(path)) for path in screen_paths]
     except Exception:
-        screen = None
-    if screen is not None:
-        report["processor_canvas"] = "1:1" if screen.processor is None else "declared"
-        for issue in check_screen_consistency(screen):
-            warnings.append(f"LED processor: {issue}")
+        screens = []
+    if screens:
+        if session.screens is None:
+            report["processor_canvas"] = "1:1" if screens[0].processor is None else "declared"
+        else:
+            report["processor_canvas"] = {
+                screen.name: "1:1" if screen.processor is None else "declared"
+                for screen in screens
+            }
+        for screen in screens:
+            for issue in check_screen_consistency(screen):
+                prefix = "LED processor" if session.screens is None else f"LED processor ({screen.name})"
+                warnings.append(f"{prefix}: {issue}")
 
     # 6c. LED processor mapping verification (architecture §3.3a, W9.1): a
     #     declared processor is a hard precondition for a real capture — a
@@ -296,7 +305,8 @@ def validate_session(
     #     (6b); screens with none are the Phase-1 direct-drive 1:1 assumption
     #     and see no behaviour change.  ``processor_verified=true`` opts out
     #     (self-attested, e.g. a fixed installation verified once out-of-band).
-    if screen is not None and screen.processor is not None:
+    processor_screens = [screen for screen in screens if screen.processor is not None]
+    if processor_screens:
         pc = session.processor_check
         if pc is not None and pc.processor_verified:
             report["processor_mapping_verified"] = "skipped (processor_verified=true)"
@@ -306,20 +316,22 @@ def validate_session(
             # The verification only certifies the canvas it was run at — a
             # pattern generated at some other resolution passing the check says
             # nothing about the declared processor input canvas.
-            declared = (screen.processor.input_width_px, screen.processor.input_height_px)
-            if (pc.expected_width_px, pc.expected_height_px) != declared:
-                raise PreconditionError(
-                    f"processor_check canvas {pc.expected_width_px}x{pc.expected_height_px} "
-                    f"does not match the declared processor input canvas "
-                    f"{declared[0]}x{declared[1]} — regenerate the mapping-verify "
-                    "pattern at the declared resolution (`vpcal verify mapping --generate`)",
-                    details={
-                        "expected_width_px": pc.expected_width_px,
-                        "expected_height_px": pc.expected_height_px,
-                        "declared_input_width_px": declared[0],
-                        "declared_input_height_px": declared[1],
-                    },
-                )
+            for screen in processor_screens:
+                declared = (screen.processor.input_width_px, screen.processor.input_height_px)
+                if (pc.expected_width_px, pc.expected_height_px) != declared:
+                    raise PreconditionError(
+                        f"processor_check canvas {pc.expected_width_px}x{pc.expected_height_px} "
+                        f"does not match screen '{screen.name}' declared processor input canvas "
+                        f"{declared[0]}x{declared[1]} — regenerate the mapping-verify "
+                        "pattern at the declared resolution (`vpcal verify mapping --generate`)",
+                        details={
+                            "screen": screen.name,
+                            "expected_width_px": pc.expected_width_px,
+                            "expected_height_px": pc.expected_height_px,
+                            "declared_input_width_px": declared[0],
+                            "declared_input_height_px": declared[1],
+                        },
+                    )
             mapping_image = _resolve(session_dir, pc.mapping_image)
             mapping = verify_mapping_image(mapping_image, pc.expected_width_px, pc.expected_height_px)
             report["processor_mapping_verified"] = "checked"
@@ -333,7 +345,7 @@ def validate_session(
                 "not verified: set processor_check.processor_verified=true (if "
                 "already verified out-of-band) or processor_check.mapping_image "
                 "+ expected_width_px/expected_height_px (see `vpcal verify mapping`)",
-                details={"screen": screen.name},
+                details={"screens": [screen.name for screen in processor_screens]},
             )
 
     report["passed"] = True

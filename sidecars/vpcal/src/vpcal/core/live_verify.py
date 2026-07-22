@@ -82,19 +82,14 @@ class LiveOverlay:
             self._marker_map = load_marker_map(_resolve(session_dir, session.marker_map.path))
             self._world_map = physical_world_map(self._marker_map)
         else:
-            from vpcal.core.screen_geometry import marker_world_map
-            from vpcal.io.screen_io import load_screen
+            from vpcal.core.session_targets import combined_world_map, load_screen_targets
 
-            assert session.screen is not None
             self._marker_map = None
-            screen = load_screen(_resolve(session_dir, session.screen.path))
             m_ue = m_rh_from_source("unreal")[:3, :3]
-            self._world_map = {
-                marker_id: m_ue @ world
-                for marker_id, world in marker_world_map(
-                    screen, markers_per_cabinet=screen.markers_per_cabinet
-                ).items()
-            }
+            targets = load_screen_targets(session, session_dir)
+            self._world_map, _ = combined_world_map(
+                targets, transform=lambda point: m_ue @ point
+            )
 
     def annotate(self, captured: CapturedFrame, tracking: TrackingFrame) -> LiveFrameResult:
         """Detect and reproject markers into a preview-safe 8-bit BGR image."""

@@ -59,6 +59,33 @@ def _screen_coverage(
     }
 
 
+def _screens_coverage(observations: list[Observation], targets: list) -> dict:
+    """Aggregate coverage for assigned multi-screen targets."""
+    observed_ids = {o.marker_id for o in observations if o.marker_id is not None}
+    per_screen = []
+    all_ids = set()
+    for target in targets:
+        markers = enumerate_markers(
+            target.screen,
+            markers_per_cabinet=target.screen.markers_per_cabinet,
+            screen_id=target.config.screen_id,
+            cab_col_offset=target.config.cab_col_offset,
+        )
+        ids = {marker.marker_id for marker in markers}
+        all_ids.update(ids)
+        seen = len(ids.intersection(observed_ids))
+        per_screen.append({
+            "id": target.label,
+            "percentage": float(seen / max(len(ids), 1)),
+            "observed_markers": seen,
+            "total_markers": len(ids),
+        })
+    return {
+        "percentage": float(len(all_ids.intersection(observed_ids)) / max(len(all_ids), 1)),
+        "per_screen": per_screen,
+    }
+
+
 def _pose_distribution(tracker_poses: list[tuple[Array, Array]]) -> dict:
     pts = np.array([t for (_q, t) in tracker_poses])
     spatial = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))) if len(pts) else 0.0
@@ -105,6 +132,7 @@ def coverage_report(
     *,
     markers_per_cabinet: int | None = None,
     marker_map=None,
+    screens: list | None = None,
 ) -> dict:
     """Build the coverage QA report (spec §9.2).
 
@@ -116,7 +144,9 @@ def coverage_report(
         "sensor_coverage": _sensor_coverage(observations, intr),
         "pose_distribution": _pose_distribution(tracker_poses),
     }
-    if screen is not None:
+    if screens:
+        report["screen_coverage"] = _screens_coverage(observations, screens)
+    elif screen is not None:
         mpc = markers_per_cabinet if markers_per_cabinet is not None else screen.markers_per_cabinet
         report["screen_coverage"] = _screen_coverage(observations, screen, mpc)
     if marker_map is not None:

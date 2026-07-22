@@ -97,6 +97,25 @@ class VerifyResult:
     num_markers_b: int
 
 
+@dataclass(frozen=True)
+class StagePoseTarget:
+    screen: ScreenDefinition
+    screen_id: int
+    cab_col_offset: int
+    label: str
+
+
+@dataclass
+class StagePoseResult:
+    """One fixed-camera pose in the common Stage coordinate frame."""
+
+    camera_from_stage: ScreenPose
+    rms_reprojection_px: float
+    num_markers: int
+    num_inliers: int
+    markers_by_target: dict[str, int]
+
+
 def _average_transforms(
     transforms: list[NDArray[np.float64]],
     weights: list[float],
@@ -509,6 +528,95 @@ def verify_pose(
         camera_pose_from_b=pose_b,
         num_markers_a=len(obj_a),
         num_markers_b=len(obj_b),
+    )
+
+
+def solve_stage_pose(
+    image_path: Path,
+    targets: list[StagePoseTarget],
+    lens: LensCalResult,
+) -> StagePoseResult:
+    """Solve a fixed camera from one image and any visible selected screen.
+
+    Screen definitions are already exported in the common Volo Stage frame.
+    A frame is therefore valid when it contains at least four matched markers
+    from *any subset* of the selected targets.  Targets outside the camera view
+    contribute zero observations and do not fail the solve.
+    """
+    if not targets:
+        raise ValueError("At least one Stage screen target is required")
+
+    world: dict[MarkerId, NDArray[np.float64]] = {}
+    ids_by_target: dict[str, set[MarkerId]] = {}
+    for target in targets:
+        current = _build_world_map(
+            target.screen,
+            cab_col_offset=target.cab_col_offset,
+            screen_id=target.screen_id,
+        )
+        collisions = set(current).intersection(world)
+        if collisions:
+            raise ValueError(
+                f"Marker identity collision for target '{target.label}'; "
+                "screen_id/cab_col_offset assignments must be unique"
+            )
+        world.update(current)
+        ids_by_target[target.label] = set(current)
+
+    image = cv2.imread(str(image_path))
+    if image is None:
+        raise ValueError(f"Cannot read image: {image_path}")
+    detections = detect_markers(image)
+    obj_pts, img_pts = _match_detections(detections, world)
+    if len(obj_pts) < 4:
+        raise ValueError(
+            f"Need >= 4 matched markers from any selected screen; got {len(obj_pts)}"
+        )
+
+    camera_matrix = np.array([
+        [lens.fx, 0, lens.cx],
+        [0, lens.fy, lens.cy],
+        [0, 0, 1],
+    ], dtype=np.float64)
+    dist = np.asarray(lens.dist_coeffs, dtype=np.float64)
+
+    ok, rvec, tvec, inliers = cv2.solvePnPRansac(
+        obj_pts.astype(np.float64),
+        img_pts.astype(np.float64),
+        camera_matrix,
+        dist,
+        iterationsCount=200,
+        reprojectionError=4.0,
+        confidence=0.999,
+        flags=cv2.SOLVEPNP_ITERATIVE,
+    )
+    if not ok:
+        ok, rvec, tvec = cv2.solvePnP(
+            obj_pts.astype(np.float64), img_pts.astype(np.float64),
+            camera_matrix, dist, flags=cv2.SOLVEPNP_ITERATIVE,
+        )
+        inliers = np.arange(len(obj_pts), dtype=np.int32).reshape(-1, 1) if ok else None
+    if not ok:
+        raise ValueError("Stage pose solvePnP failed")
+
+    if inliers is not None and len(inliers) >= 4:
+        keep = inliers.reshape(-1)
+        rvec, tvec = cv2.solvePnPRefineLM(
+            obj_pts[keep], img_pts[keep], camera_matrix, dist, rvec, tvec
+        )
+    projected, _ = cv2.projectPoints(obj_pts, rvec, tvec, camera_matrix, dist)
+    residual = projected.reshape(-1, 2) - img_pts
+    rms = float(np.sqrt(np.mean(np.sum(residual * residual, axis=1))))
+
+    detected_ids = {d.marker_id for d in detections if d.marker_id in world}
+    return StagePoseResult(
+        camera_from_stage=ScreenPose(rvec=rvec, tvec=tvec),
+        rms_reprojection_px=rms,
+        num_markers=len(obj_pts),
+        num_inliers=len(inliers) if inliers is not None else len(obj_pts),
+        markers_by_target={
+            label: len(ids.intersection(detected_ids)) for label, ids in ids_by_target.items()
+        },
     )
 
 

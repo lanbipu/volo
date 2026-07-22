@@ -82,12 +82,191 @@ def lens_cal(ctx, images, screen_path, cab_col_offset, screen_id, out_path, **fl
 def _load_lens(path: str):
     from vpcal.core.tracker_free import LensCalResult
     d = json.loads(Path(path).read_text())
+    if "focal_length_mm" in d:
+        from vpcal.models.lens import LensProfile
+
+        profile = LensProfile.model_validate(d)
+        distortion = profile.distortion
+        return LensCalResult(
+            fx=profile.fx, fy=profile.fy, cx=profile.cx, cy=profile.cy,
+            dist_coeffs=[distortion.k1, distortion.k2, distortion.p1,
+                         distortion.p2, distortion.k3],
+            rms=0.0, num_images=0, num_points=0,
+            image_size=(profile.image_width_px, profile.image_height_px),
+        )
     return LensCalResult(
         fx=d["fx"], fy=d["fy"], cx=d["cx"], cy=d["cy"],
         dist_coeffs=d["dist_coeffs"], rms=d.get("rms", 0.0),
         num_images=d.get("num_images", 0), num_points=d.get("num_points", 0),
         image_size=tuple(d.get("image_size", [0, 0])),
     )
+
+
+@tracker_free.command(name="pose")
+@click.option("--image", required=True, type=click.Path(exists=True), help="Single fixed-camera image.")
+@click.option(
+    "--screen-target", "screen_targets", multiple=True, required=True,
+    type=(click.Path(exists=True), click.IntRange(0, 15), click.IntRange(min=0)),
+    metavar="PATH SCREEN_ID CAB_COL_OFFSET",
+    help="Repeatable Stage screen target; targets may be outside the image.",
+)
+@click.option("--lens", "lens_path", type=click.Path(exists=True), default=None,
+              help="Pixel-domain LensProfile or tracker-free lens JSON.")
+@click.option("--fx", type=click.FloatRange(min=0.0, min_open=True), default=None,
+              help="Capture-domain focal length X in pixels.")
+@click.option("--fy", type=click.FloatRange(min=0.0, min_open=True), default=None,
+              help="Capture-domain focal length Y in pixels.")
+@click.option("--cx", type=float, default=None, help="Capture-domain principal point X in pixels.")
+@click.option("--cy", type=float, default=None, help="Capture-domain principal point Y in pixels.")
+@click.option("--focal-mm", type=float, default=None, help="Known focal length when --lens is omitted.")
+@click.option("--sensor-width-mm", type=float, default=None)
+@click.option("--sensor-height-mm", type=float, default=None)
+@click.option("--principal-x-mm", type=float, default=0.0, show_default=True)
+@click.option("--principal-y-mm", type=float, default=0.0, show_default=True)
+@click.option("--k1", type=float, default=0.0, show_default=True)
+@click.option("--k2", type=float, default=0.0, show_default=True)
+@click.option("--k3", type=float, default=0.0, show_default=True)
+@click.option("--out", "out_path", type=click.Path(), default=None, help="Optional pose result JSON.")
+@common_options
+@click.pass_context
+def pose(ctx, image, screen_targets, lens_path, fx, fy, cx, cy, focal_mm,
+         sensor_width_mm, sensor_height_mm, principal_x_mm, principal_y_mm,
+         k1, k2, k3, out_path, **flags) -> None:
+    """One-shot camera-to-Stage pose from any visible selected screen."""
+
+    def body() -> OperationOutput:
+        import cv2
+
+        from vpcal.core.tracker_free import (
+            LensCalResult,
+            StagePoseTarget,
+            solve_stage_pose,
+        )
+        from vpcal.io.screen_io import load_screen
+
+        loaded = [
+            StagePoseTarget(
+                screen=load_screen(path), screen_id=screen_id,
+                cab_col_offset=offset,
+                label=Path(path).stem.removesuffix(".screen"),
+            )
+            for path, screen_id, offset in screen_targets
+        ]
+        frame = cv2.imread(str(image))
+        if frame is None:
+            raise click.UsageError(f"cannot read image: {image}")
+        height, width = frame.shape[:2]
+
+        pixel_values = (fx, fy, cx, cy)
+        has_any_pixel = any(value is not None for value in pixel_values)
+        has_all_pixel = all(value is not None for value in pixel_values)
+        has_any_physical = any(
+            value is not None for value in (focal_mm, sensor_width_mm, sensor_height_mm)
+        )
+        source_count = int(bool(lens_path)) + int(has_any_pixel) + int(has_any_physical)
+        if source_count != 1:
+            raise click.UsageError(
+                "provide exactly one intrinsics source: --lens, --fx/--fy/--cx/--cy, "
+                "or --focal-mm/--sensor-width-mm/--sensor-height-mm"
+            )
+
+        if lens_path:
+            lens = _load_lens(lens_path)
+        elif has_any_pixel:
+            if not has_all_pixel:
+                raise click.UsageError("--fx, --fy, --cx and --cy must be provided together")
+            lens = LensCalResult(
+                fx=float(fx), fy=float(fy), cx=float(cx), cy=float(cy),
+                dist_coeffs=[k1, k2, 0.0, 0.0, k3],
+                rms=0.0, num_images=0, num_points=0,
+                image_size=(width, height),
+            )
+        else:
+            if not focal_mm or not sensor_width_mm or not sensor_height_mm:
+                raise click.UsageError(
+                    "--focal-mm, --sensor-width-mm and --sensor-height-mm are required "
+                    "when --lens is omitted"
+                )
+            scale_x = width / float(sensor_width_mm)
+            scale_y = height / float(sensor_height_mm)
+            scale_delta = abs(scale_x - scale_y) / max(scale_x, scale_y)
+            if scale_delta > 0.01:
+                raise click.UsageError(
+                    "capture aspect ratio does not match the declared active sensor; "
+                    "use a capture-domain --lens profile or provide active sensor dimensions"
+                )
+            focal_px = float(focal_mm) * (scale_x + scale_y) / 2.0
+            lens = LensCalResult(
+                fx=focal_px,
+                fy=focal_px,
+                cx=width / 2.0 + float(principal_x_mm) * scale_x,
+                cy=height / 2.0 + float(principal_y_mm) * scale_y,
+                dist_coeffs=[k1, k2, 0.0, 0.0, k3],
+                rms=0.0, num_images=0, num_points=0,
+                image_size=(width, height),
+            )
+
+        lens_size = tuple(int(value) for value in lens.image_size)
+        if lens_size != (0, 0) and lens_size != (width, height):
+            raise click.UsageError(
+                f"lens image_size {lens_size[0]}x{lens_size[1]} does not match "
+                f"capture {width}x{height}"
+            )
+
+        if flags.get("dry_run"):
+            return OperationOutput(
+                data={"dry_run_plan": {
+                    "image": image,
+                    "targets": [target.label for target in loaded],
+                    "partial_visibility_allowed": True,
+                    "intrinsics": {
+                        "fx": lens.fx, "fy": lens.fy,
+                        "cx": lens.cx, "cy": lens.cy,
+                        "image_size": list(lens.image_size),
+                    },
+                }},
+                text="Dry run OK.",
+            )
+
+        result = solve_stage_pose(Path(image), loaded, lens)
+        solved = result.camera_from_stage
+        camera_position = solved.camera_position_in_screen
+        # OpenCV camera basis is +X right, +Y down, +Z forward. Volo's Three.js
+        # frustum is +X right, +Y up, -Z forward. Convert the local basis before
+        # exposing a Stage camera transform or decomposing UI Pan/Tilt/Roll.
+        camera_rotation = _volo_camera_rotation(solved.rotation_matrix.T)
+        euler = _rotation_to_euler(camera_rotation)
+        ptr = _rotation_to_ptr(camera_rotation)
+        camera_matrix = np.eye(4, dtype=np.float64)
+        camera_matrix[:3, :3] = camera_rotation
+        camera_matrix[:3, 3] = camera_position
+        out = {
+            "image": image,
+            "camera_from_stage": {
+                "position_mm": camera_position.tolist(),
+                "euler_deg": {"rx": euler[0], "ry": euler[1], "rz": euler[2]},
+                "ptr_deg": {"pan": ptr[0], "tilt": ptr[1], "roll": ptr[2]},
+                "matrix_4x4": camera_matrix.tolist(),
+            },
+            "rms_reprojection_px": result.rms_reprojection_px,
+            "num_markers": result.num_markers,
+            "num_inliers": result.num_inliers,
+            "markers_by_screen": result.markers_by_target,
+            "visible_screens": [
+                label for label, count in result.markers_by_target.items() if count > 0
+            ],
+            "selected_screens": [target.label for target in loaded],
+            "partial_visibility_allowed": True,
+        }
+        if out_path:
+            Path(out_path).write_text(json.dumps(out, indent=2), encoding="utf-8")
+        return OperationOutput(
+            data=out,
+            text=(f"Stage pose OK: {result.num_markers} markers / "
+                  f"{result.num_inliers} inliers, RMS {result.rms_reprojection_px:.3f} px"),
+        )
+
+    run_operation("tracker_free.pose", body, **flags)
 
 
 @tracker_free.command(name="spatial")
@@ -300,3 +479,33 @@ def _rotation_to_euler(R: np.ndarray) -> tuple[float, float, float]:
         ry = np.arctan2(-R[2, 0], sy)
         rz = 0.0
     return (float(np.degrees(rx)), float(np.degrees(ry)), float(np.degrees(rz)))
+
+
+def _volo_camera_rotation(stage_from_cv_camera: np.ndarray) -> np.ndarray:
+    """Convert OpenCV camera-local basis to Volo/Three.js camera-local basis."""
+    cv_from_volo_camera = np.diag([1.0, -1.0, -1.0])
+    return np.asarray(stage_from_cv_camera, dtype=np.float64) @ cv_from_volo_camera
+
+
+def _rotation_to_ptr(R: np.ndarray) -> tuple[float, float, float]:
+    """Stage camera rotation → values consumed by Three.js Euler YXZ.
+
+    ``gridScene.CameraFrustum`` constructs ``Euler(tilt, pan, roll, 'YXZ')``.
+    Return that UI ordering so a solved matrix round-trips through the existing
+    project camera schema without changing the rendered orientation.
+    """
+    m11, m13 = float(R[0, 0]), float(R[0, 2])
+    m21, m22, m23 = float(R[1, 0]), float(R[1, 1]), float(R[1, 2])
+    m31, m33 = float(R[2, 0]), float(R[2, 2])
+    tilt = float(np.arcsin(-np.clip(m23, -1.0, 1.0)))
+    if abs(m23) < 0.9999999:
+        pan = float(np.arctan2(m13, m33))
+        roll = float(np.arctan2(m21, m22))
+    else:
+        pan = float(np.arctan2(-m31, m11))
+        roll = 0.0
+    return (
+        float(np.degrees(pan)),
+        float(np.degrees(tilt)),
+        float(np.degrees(roll)),
+    )

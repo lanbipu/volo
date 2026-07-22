@@ -29,7 +29,7 @@ from vpcal.cli._common import (
     run_operation,
     run_streaming_operation,
 )
-from vpcal.core.errors import PreconditionError
+from vpcal.core.errors import ArgumentError, PreconditionError
 
 _BACKEND_CHOICES = ["uvc", "ndi", "decklink", "synthetic"]
 
@@ -640,8 +640,14 @@ def stills(ctx, backend, device, width, height, fps, transfer_function, preview_
 
 
 @capture.command(name="session")
-@click.option("--screen", "screen_path", required=True, type=click.Path(exists=True),
-              help="Screen definition (JSON/OBJ) — coverage denominator + quick-run input.")
+@click.option("--screen", "screen_path", required=False, type=click.Path(exists=True),
+              help="Legacy single screen definition.")
+@click.option(
+    "--screen-target", "screen_targets", multiple=True,
+    type=(click.Path(exists=True), click.IntRange(0, 15), click.IntRange(min=0)),
+    metavar="PATH SCREEN_ID CAB_COL_OFFSET",
+    help="Repeatable Stage target; assignment must match pattern generation.",
+)
 @click.option("--out", "out_dir", required=True, type=click.Path(),
               help="Session output directory (created if missing).")
 @_backend_options
@@ -678,7 +684,7 @@ def stills(ctx, backend, device, width, height, fps, transfer_function, preview_
               help="Read JSON control commands from stdin (stop/finish/pattern_ready).")
 @common_options
 @click.pass_context
-def session(ctx, screen_path, out_dir, backend, device, width, height, fps,
+def session(ctx, screen_path, screen_targets, out_dir, backend, device, width, height, fps,
             transfer_function, preview_port, track_protocol, track_port, track_host, track_camera_id,
             poses_target, inverted, lens_path, settle_ms, settle_speed, settle_ang_speed, move_speed,
             burst_frames, timestamp_tolerance_s, graycode_sync, control_stdin,
@@ -699,11 +705,35 @@ def session(ctx, screen_path, out_dir, backend, device, width, height, fps,
 
     def body(emitter: StreamEmitter) -> OperationOutput:
         from vpcal.core.capture_backend import CaptureConfig, open_backend
-        from vpcal.core.capture_session import CaptureSessionRunner, SessionCaptureConfig
+        from vpcal.core.capture_session import (
+            CaptureScreenTarget,
+            CaptureSessionRunner,
+            SessionCaptureConfig,
+        )
+
+        if bool(screen_path) == bool(screen_targets):
+            raise ArgumentError(
+                "exactly one of --screen or one-or-more --screen-target options is required"
+            )
+
+        targets = tuple(
+            CaptureScreenTarget(
+                path=Path(path), screen_id=screen_id, cab_col_offset=offset,
+                id=Path(path).stem.removesuffix(".screen"),
+            )
+            for path, screen_id, offset in screen_targets
+        )
 
         if flags.get("dry_run"):
             return OperationOutput(
-                data={"dry_run_plan": {"screen": screen_path, "out": out_dir,
+                data={"dry_run_plan": {
+                    "screen": screen_path,
+                    "screens": [
+                        {"path": str(t.path), "screen_id": t.screen_id,
+                         "cab_col_offset": t.cab_col_offset}
+                        for t in targets
+                    ],
+                    "out": out_dir,
                                        "backend": backend, "poses": poses_target,
                                        "track": f"{track_protocol}:{track_port}"}},
                 text="Dry run OK.")
@@ -719,7 +749,10 @@ def session(ctx, screen_path, out_dir, backend, device, width, height, fps,
                                     transfer_function=transfer_function)
         sink, server = _make_preview(preview_port, emitter)
         cfg = SessionCaptureConfig(
-            out_dir=Path(out_dir), screen_path=Path(screen_path), backend=backend_cfg,
+            out_dir=Path(out_dir),
+            screen_path=Path(screen_path) if screen_path else None,
+            screen_targets=targets,
+            backend=backend_cfg,
             track_protocol=track_protocol, track_port=track_port, track_host=track_host,
             track_camera_id=track_camera_id if track_protocol == "freed" else None,
             poses_target=poses_target, settle_speed_mm_s=settle_speed,

@@ -16,6 +16,7 @@ import cv2
 import numpy as np
 import pytest
 
+from vpcal.cli.tracker_free import _rotation_to_ptr, _volo_camera_rotation
 from vpcal.models.screen import PlaneSection, ScreenDefinition
 
 SRC = str(Path(__file__).resolve().parents[2] / "src")
@@ -129,6 +130,83 @@ class TestLensCalCLI:
         envelope = json.loads(r.stdout)
         assert envelope["status"] == "error"
         assert envelope["operation_id"] == "tracker_free.lens_cal"
+
+
+# ── one-shot Stage pose ──────────────────────────────────────────────
+
+
+class TestPoseCLI:
+
+    def _fixture(self, tmp_path):
+        screen = _write_screen(_screen(), tmp_path / "screen.json")
+        image = tmp_path / "capture.png"
+        cv2.imwrite(str(image), np.zeros((1080, 1920), np.uint8))
+        return screen, image
+
+    def test_dry_run_accepts_capture_domain_pixel_intrinsics(self, tmp_path):
+        screen, image = self._fixture(tmp_path)
+
+        result = _run_ok(
+            "--output", "json",
+            "tracker-free", "pose",
+            "--image", str(image),
+            "--screen-target", str(screen), "0", "0",
+            "--fx", "1500", "--fy", "1500",
+            "--cx", "970", "--cy", "535",
+            "--dry-run",
+        )
+
+        intrinsics = result["data"]["dry_run_plan"]["intrinsics"]
+        assert intrinsics == {
+            "fx": 1500.0, "fy": 1500.0,
+            "cx": 970.0, "cy": 535.0,
+            "image_size": [1920, 1080],
+        }
+
+    def test_rejects_capture_and_active_sensor_aspect_mismatch(self, tmp_path):
+        screen, image = self._fixture(tmp_path)
+
+        result = _run(
+            "--output", "json",
+            "tracker-free", "pose",
+            "--image", str(image),
+            "--screen-target", str(screen), "0", "0",
+            "--focal-mm", "50",
+            "--sensor-width-mm", "36", "--sensor-height-mm", "24",
+            "--dry-run",
+        )
+
+        assert result.returncode != 0
+        envelope = json.loads(result.stdout)
+        assert "capture aspect ratio does not match" in envelope["error"]["message"]
+
+    def test_physical_intrinsics_apply_principal_point_offsets(self, tmp_path):
+        screen, image = self._fixture(tmp_path)
+
+        result = _run_ok(
+            "--output", "json",
+            "tracker-free", "pose",
+            "--image", str(image),
+            "--screen-target", str(screen), "0", "0",
+            "--focal-mm", "50",
+            "--sensor-width-mm", "36", "--sensor-height-mm", "20.25",
+            "--principal-x-mm", "0.3", "--principal-y-mm", "-0.2",
+            "--dry-run",
+        )
+
+        intrinsics = result["data"]["dry_run_plan"]["intrinsics"]
+        assert intrinsics["fx"] == pytest.approx(2666.6666667)
+        assert intrinsics["fy"] == pytest.approx(2666.6666667)
+        assert intrinsics["cx"] == pytest.approx(976.0)
+        assert intrinsics["cy"] == pytest.approx(529.3333333)
+
+    def test_opencv_basis_converts_to_zero_volo_ptr(self):
+        stage_from_cv = np.diag([1.0, -1.0, -1.0])
+
+        stage_from_volo = _volo_camera_rotation(stage_from_cv)
+
+        np.testing.assert_allclose(stage_from_volo, np.eye(3), atol=1e-12)
+        np.testing.assert_allclose(_rotation_to_ptr(stage_from_volo), (0, 0, 0), atol=1e-12)
 
 
 # ── spatial ──────────────────────────────────────────────────────────

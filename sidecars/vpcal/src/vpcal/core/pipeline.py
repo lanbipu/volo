@@ -700,6 +700,7 @@ def run_quick(
     # surveyed marker map (AR path, coordinates already the RH stage frame).
     # ``world_map`` values are internal-RH in both cases.
     screen = None
+    screen_targets = []
     marker_map = None
     if session.marker_map is not None:
         from vpcal.core.marker_map import physical_world_map
@@ -709,14 +710,14 @@ def run_quick(
         world_map = physical_world_map(marker_map)
         truth_name = marker_map.name or marker_map.frame_name
     else:
-        screen = load_screen(_resolve(session_dir, session.screen.path))
-        world_map = {
-            mid: _M_UE @ w
-            for mid, w in marker_world_map(
-                screen, markers_per_cabinet=screen.markers_per_cabinet
-            ).items()
-        }
-        truth_name = screen.name
+        from vpcal.core.session_targets import combined_world_map, load_screen_targets
+
+        screen_targets = load_screen_targets(session, session_dir)
+        world_map, _marker_ids_by_target = combined_world_map(
+            screen_targets, transform=lambda point: _M_UE @ point
+        )
+        screen = screen_targets[0].screen
+        truth_name = " + ".join(target.label for target in screen_targets)
     intr = CameraIntrinsics.from_lens(session.lens)
     frames = load_tracking(_resolve(session_dir, session.tracking.path))
     poses = to_internal_poses(frames, session.tracking.coordinate_system, session.tracking.custom_transform)
@@ -854,7 +855,11 @@ def run_quick(
         }
     else:
         reproj["validation"] = "none"
-    coverage = coverage_report(train_obs, eff_intr, screen, tracker_internal, marker_map=marker_map)
+    coverage = coverage_report(
+        train_obs, eff_intr, screen, tracker_internal,
+        marker_map=marker_map,
+        screens=screen_targets if session.screens is not None else None,
+    )
 
     # ── AR-path QA: ground plane + world-alignment uncertainty (Phase B) ──
     ground_plane = None

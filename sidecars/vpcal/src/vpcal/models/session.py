@@ -45,11 +45,20 @@ class TrackingConfig(BaseModel):
 
 
 class ScreenConfig(BaseModel):
-    """Path to the screen definition (JSON or OBJ)."""
+    """One LED calibration target in a shared Stage coordinate frame.
+
+    ``screen_id`` and ``cab_col_offset`` are part of the VP-QSP marker identity
+    contract.  They must match pattern generation; keeping them in the session
+    prevents a non-primary screen from being detected and then silently
+    discarded by a world map built with the legacy zero defaults.
+    """
 
     model_config = ConfigDict(populate_by_name=True)
 
     path: str
+    id: Optional[str] = None
+    screen_id: int = Field(default=0, ge=0, le=15)
+    cab_col_offset: int = Field(default=0, ge=0)
 
 
 class MarkerMapConfig(BaseModel):
@@ -247,8 +256,9 @@ class SessionConfig(BaseModel):
     images: ImagesConfig
     tracking: TrackingConfig
     screen: Optional[ScreenConfig] = None
-    """LED screen definition (marker 3D truth for the VP-QSP path).  Exactly
-    one of ``screen`` / ``marker_map`` must be given."""
+    """Legacy single LED target.  New captures write ``screens`` instead."""
+    screens: Optional[list[ScreenConfig]] = Field(default=None, min_length=1)
+    """One or more LED targets whose definitions share the Stage frame."""
     marker_map: Optional[MarkerMapConfig] = None
     """Surveyed marker map (marker 3D truth for the AR path)."""
     lens: LensProfile
@@ -263,9 +273,21 @@ class SessionConfig(BaseModel):
 
     @model_validator(mode="after")
     def _screen_xor_marker_map(self) -> "SessionConfig":
-        if (self.screen is None) == (self.marker_map is None):
+        led_sources = int(self.screen is not None) + int(self.screens is not None)
+        if led_sources + int(self.marker_map is not None) != 1:
             raise ValueError(
-                "exactly one of 'screen' (LED path) or 'marker_map' (AR path) "
-                "must be configured"
+                "exactly one of 'screen' (legacy LED), 'screens' (multi-screen "
+                "LED), or 'marker_map' (AR path) must be configured"
             )
+        if self.screens is not None:
+            keys = [(target.screen_id, target.cab_col_offset) for target in self.screens]
+            if len(keys) != len(set(keys)):
+                raise ValueError("screens contains duplicate screen_id/cab_col_offset assignments")
         return self
+
+    @property
+    def screen_targets(self) -> list[ScreenConfig]:
+        """Normalized LED targets while preserving legacy session support."""
+        if self.screens is not None:
+            return list(self.screens)
+        return [self.screen] if self.screen is not None else []

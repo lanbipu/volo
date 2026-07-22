@@ -13,6 +13,7 @@ import pytest
 
 from vpcal.core.pipeline import run_quick
 from vpcal.core.simulator import default_lens, simulate_dataset
+from vpcal.io.screen_io import save_screen
 from vpcal.models.screen import ArcSection, PlaneSection, ScreenDefinition
 from vpcal.models.session import SessionConfig
 
@@ -137,3 +138,38 @@ def test_stage_validate_only(tmp_path):
     result = run_quick(session, tmp_path, tmp_path / "output", raw_session=raw, stage="validate", prefer_cpp=False)
     assert result["stage"] == "validate"
     assert (tmp_path / "output" / "qa" / "validation.json").exists()
+
+
+def test_multiscreen_solve_allows_second_screen_to_be_absent_from_every_frame(tmp_path):
+    """Selected targets define the solve universe, not a per-frame visibility gate."""
+    screen_a = _plane_screen()
+    simulate_dataset(
+        screen_a, tmp_path, num_poses=8, noise_px=0.0,
+        lens=default_lens(1920, 1080), seed=7, render_images=False,
+    )
+    screen_b = ScreenDefinition(
+        name="off_camera", unit="mm", cabinet_size=(500, 500),
+        led_pixel_pitch_mm=2.8, markers_per_cabinet=4,
+        sections=[PlaneSection(
+            name="b", width_mm=1200, height_mm=900, origin=[5000, 0, 0]
+        )],
+    )
+    save_screen(screen_b, tmp_path / "screen_b.json")
+    raw = json.loads((tmp_path / "session.json").read_text())
+    legacy = raw.pop("screen")
+    raw["screens"] = [
+        {"id": "A", "path": legacy["path"], "screen_id": 0, "cab_col_offset": 0},
+        {"id": "B", "path": "screen_b.json", "screen_id": 1, "cab_col_offset": 16},
+    ]
+    (tmp_path / "session.json").write_text(json.dumps(raw))
+    session = SessionConfig.model_validate(raw)
+
+    result = run_quick(
+        session, tmp_path, tmp_path / "output", raw_session=raw, prefer_cpp=False
+    )
+
+    assert result["result"]["quality"]["reprojection_rms_px"] < 0.01
+    coverage = result["qa"]["coverage"]["screen_coverage"]
+    per_screen = {entry["id"]: entry for entry in coverage["per_screen"]}
+    assert per_screen["A"]["observed_markers"] > 0
+    assert per_screen["B"]["observed_markers"] == 0

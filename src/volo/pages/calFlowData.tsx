@@ -182,6 +182,7 @@
   const camListeners = new Set();
   const defaultCamUi = () => ({
     id: 'cam-01', name: 'Camera 1', mode: 'fixed', protocol: null, cameraId: null, solved: false,
+    lensConfirmed: false,
     pos: { x: { v: 0, src: 'manual' }, y: { v: 1500, src: 'manual' }, z: { v: 3200, src: 'manual' } },
     rot: { pan: { v: 0, src: 'manual' }, tilt: { v: 0, src: 'manual' }, roll: { v: 0, src: 'manual' } },
     lens: {
@@ -212,6 +213,7 @@
       protocol: tracked ? c.tracking.protocol : null,
       cameraId: tracked && c.tracking.camera_id != null ? c.tracking.camera_id : null,
       solved: !!sp,
+      lensConfirmed: L.sensor_w_mm != null && L.sensor_h_mm != null && L.focal_mm != null,
       pos: { x: { v: t[0], src }, y: { v: t[1], src }, z: { v: t[2], src } },
       rot: { pan: { v: e[0], src }, tilt: { v: e[1], src }, roll: { v: e[2], src } },
       lens: {
@@ -317,6 +319,22 @@
         });
       });
       camStore.patch({ cameras: cams, dirty: true });
+      camStore.scheduleSave();
+    },
+    setLensValue: (id, key, value) => {
+      if (!Number.isFinite(value)) return;
+      const cameras = camSnap.cameras.map((camera) => {
+        if (camera.id !== id) return camera;
+        const lens = Object.assign({}, camera.lens);
+        if (key === 'sensorW') lens.sensorW = { v: value, src: 'manual' };
+        else if (key === 'sensorH') lens.sensorH = { v: value, src: 'manual' };
+        else if (key === 'focal') lens.focal = { v: value, src: 'manual' };
+        else if (key === 'k3') lens.fovK3 = { v: value, src: 'manual' };
+        else if (key === 'ppx') lens.ppx = { v: value, src: 'manual' };
+        else if (key === 'ppy') lens.ppy = { v: value, src: 'manual' };
+        return Object.assign({}, camera, { lens, lensConfirmed: true });
+      });
+      camStore.patch({ cameras, dirty: true });
       camStore.scheduleSave();
     },
     setSolvePose: (id, t_mm, euler_deg, lensPatch) => {

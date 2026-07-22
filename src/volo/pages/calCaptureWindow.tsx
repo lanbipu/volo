@@ -365,7 +365,7 @@ import { lensWorkspacePaths } from "../api/lensWorkspace";
       setPhase('capturing');
       s.pushLog({ lv: 'info', cat: 'capture', msg: '开始实时采集 · 配置 <b>' + profile.name + '</b> · 目标 ' + target + ' 姿位' });
       session.start({
-        screenPath, outDir, backend: profile.videoBackend, device: profile.device,
+        screenTargets: ag.targets, screenPath, outDir, backend: profile.videoBackend, device: profile.device,
         trackProtocol: profile.trackProtocol, trackPort: Number(profile.trackPort), trackHost: profile.trackHost || '0.0.0.0',
         trackCameraId: profile.trackCameraId, poses: Number(params.poses), inverted: !!params.inverted,
         graycodeSync: !!params.inverted && !!params.graycodeSync, lensPath: isLens ? (params.lensPath || '') : '',

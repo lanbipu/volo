@@ -143,6 +143,20 @@ pub struct StageScreenLayer {
     pub screen_id: String,
     pub x: u32,
     pub y: u32,
+    /// Optional explicit calibration image. Legacy callers omit this and keep
+    /// using `<project>/patterns/<screen_id>/full_screen.png`.
+    #[serde(default)]
+    pub image_path: Option<PathBuf>,
+}
+
+fn stage_layer_image_path(stage: &StageShowLayout, layer: &StageScreenLayer) -> PathBuf {
+    layer.image_path.clone().unwrap_or_else(|| {
+        stage
+            .project_path
+            .join("patterns")
+            .join(&layer.screen_id)
+            .join("full_screen.png")
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -614,11 +628,7 @@ pub async fn output_show(
                         .iter()
                         .map(|layer| output::StageLayer {
                             screen_id: layer.screen_id.clone(),
-                            image_path: stage
-                                .project_path
-                                .join("patterns")
-                                .join(&layer.screen_id)
-                                .join("full_screen.png"),
+                            image_path: stage_layer_image_path(stage, layer),
                             origin_px: [layer.x, layer.y],
                         })
                         .collect::<Vec<_>>();
@@ -952,6 +962,35 @@ mod tests {
         assert_eq!(
             paths.editor_for("LanNode"),
             r"C:\fallback\UnrealEditor.exe"
+        );
+    }
+
+    #[test]
+    fn stage_layer_prefers_explicit_calibration_image_and_preserves_legacy_default() {
+        let stage = StageShowLayout {
+            project_path: PathBuf::from("C:/project"),
+            screens: vec![],
+        };
+        let explicit = StageScreenLayer {
+            screen_id: "B".into(),
+            x: 100,
+            y: 0,
+            image_path: Some(PathBuf::from("C:/project/vpcal/patterns/B/inverted.png")),
+        };
+        assert_eq!(
+            stage_layer_image_path(&stage, &explicit),
+            explicit.image_path.unwrap()
+        );
+
+        let legacy = StageScreenLayer {
+            screen_id: "A".into(),
+            x: 0,
+            y: 0,
+            image_path: None,
+        };
+        assert_eq!(
+            stage_layer_image_path(&stage, &legacy),
+            PathBuf::from("C:/project/patterns/A/full_screen.png"),
         );
     }
 }

@@ -61,7 +61,14 @@ interface CoverageSummary {
 /* ---------------- capture session data layer (reusable by the real panel) ---------------- */
 
 export interface CaptureSessionOptions {
-  screenPath: string;
+  /** Legacy single-target path; product UI uses screenTargets. */
+  screenPath?: string;
+  screenTargets?: Array<{
+    id: string;
+    screenJson: string;
+    code: number;
+    offset: number;
+  }>;
   outDir: string;
   backend: string;
   device: string;
@@ -84,7 +91,6 @@ export interface CaptureSessionOptions {
 export function buildSessionArgs(o: CaptureSessionOptions): string[] {
   const args = [
     "capture", "session",
-    "--screen", o.screenPath,
     "--out", o.outDir,
     "--backend", o.backend,
     "--device", o.device,
@@ -97,6 +103,16 @@ export function buildSessionArgs(o: CaptureSessionOptions): string[] {
     "--preview-port", "0",
     "--output", "ndjson",
   ];
+  if (o.screenTargets?.length) {
+    for (const target of o.screenTargets) {
+      args.push(
+        "--screen-target", target.screenJson,
+        String(target.code), String(target.offset),
+      );
+    }
+  } else if (o.screenPath) {
+    args.push("--screen", o.screenPath);
+  }
   if (o.width) args.push("--width", String(o.width));
   if (o.height) args.push("--height", String(o.height));
   if (o.fps) args.push("--fps", String(o.fps));
@@ -236,7 +252,7 @@ export function DevCapture(): React.ReactElement {
         <div style={{ ...box, flex: "1 1 460px" }}>
           <div style={h2}>① 采集会话</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <Field name="screen.json" value={opts.screenPath} onChange={(v) => set({ screenPath: v })} width={320} />
+            <Field name="screen.json" value={opts.screenPath || ""} onChange={(v) => set({ screenPath: v })} width={320} />
             <Field name="输出目录" value={opts.outDir} onChange={(v) => set({ outDir: v })} width={320} />
             <Field name="lens.json（可选）" value={opts.lensPath} onChange={(v) => set({ lensPath: v })} width={320} />
             <Field name="backend (uvc|ndi|decklink|synthetic)" value={opts.backend} onChange={(v) => set({ backend: v })} width={230} />
@@ -256,7 +272,7 @@ export function DevCapture(): React.ReactElement {
             </label>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button style={{ ...btn, background: "#2f5c34" }} disabled={running || !opts.screenPath || !opts.outDir}
+            <button style={{ ...btn, background: "#2f5c34" }} disabled={running || (!opts.screenPath && !opts.screenTargets?.length) || !opts.outDir}
               onClick={() => void session.start(opts)}>▶ 开始采集</button>
             <button style={btn} disabled={!running} onClick={() => void session.sendCmd({ cmd: "finish" })}>完成并组装</button>
             <button style={btn} disabled={!running} onClick={() => void session.sendCmd({ cmd: "skip_pose" })}>跳过当前 pose</button>

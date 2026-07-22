@@ -138,16 +138,10 @@ def overlay_session(
         world_map = physical_world_map(marker_map)
     else:
         from vpcal.core.pipeline import _M_UE
-        from vpcal.core.screen_geometry import marker_world_map
-        from vpcal.io.screen_io import load_screen
+        from vpcal.core.session_targets import combined_world_map, load_screen_targets
 
-        screen = load_screen(_resolve(session_dir, session.screen.path))
-        world_map = {
-            mid: _M_UE @ w
-            for mid, w in marker_world_map(
-                screen, markers_per_cabinet=screen.markers_per_cabinet
-            ).items()
-        }
+        targets = load_screen_targets(session, session_dir)
+        world_map, _ = combined_world_map(targets, transform=lambda point: _M_UE @ point)
 
     from vpcal.core.validator import list_images
 

@@ -1615,7 +1615,7 @@ export interface DeployRequest extends RuntimeRequest {
 
 export interface StageShowLayout {
   project_path: string;
-  screens: Array<{ screen_id: string; x: number; y: number }>;
+  screens: Array<{ screen_id: string; x: number; y: number; image_path?: string | null }>;
 }
 
 export interface ShowRequest extends RuntimeRequest {

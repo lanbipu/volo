@@ -20,13 +20,29 @@ export interface LensSessionSummary {
   output_dir: string | null;
   /** fixed_run.json 损坏等：仍列出目录，供 UI 标错而非静默消失 */
   error?: string | null;
+  camera_id?: string | null;
+  lens_json?: string | null;
+  intrinsics?: FixedPixelIntrinsics | null;
+  intrinsics_error?: string | null;
+  targets?: Array<{
+    id?: string;
+    screenJson?: string;
+    path?: string;
+    code?: number;
+    screen_id?: number;
+    offset?: number;
+    cab_col_offset?: number;
+  }> | null;
 }
 export const listLensSessions = (sessionsRoot: string) =>
   call<LensSessionSummary[]>("list_lens_sessions", { sessionsRoot });
 
-/** Persist fixed-pose stills metadata (`fixed_run.json`) next to captures/normal/. */
-export const writeFixedRunMeta = (sessionDir: string, meta: Record<string, unknown>) =>
-  call<void>("write_fixed_run_meta", { sessionDir, meta });
+/** Persist fixed-pose metadata and optionally snapshot an external lens file into the run. */
+export const writeFixedRunMeta = (
+  sessionDir: string,
+  meta: Record<string, unknown>,
+  lensSourcePath?: string | null,
+) => call<void>("write_fixed_run_meta", { sessionDir, meta, lensSourcePath: lensSourcePath ?? null });
 
 // ✅ wired: calArVerify.tsx「验证叠加」标注帧查看器 → readImageAsDataUrl(path)
 export const readImageAsDataUrl = (path: string) =>
@@ -130,6 +146,95 @@ export interface TrackerFreeVerifyResult {
   markers_b: number;
   camera_from_a?: TrackerFreeVerifyPose;
   camera_from_b?: TrackerFreeVerifyPose;
+}
+
+export interface TrackerFreeStagePoseResult {
+  image: string;
+  camera_from_stage: TrackerFreeVerifyPose & {
+    ptr_deg: { pan: number; tilt: number; roll: number };
+    matrix_4x4: number[][];
+  };
+  rms_reprojection_px: number;
+  num_markers: number;
+  num_inliers: number;
+  markers_by_screen: Record<string, number>;
+  visible_screens: string[];
+  selected_screens: string[];
+  partial_visibility_allowed: boolean;
+}
+
+export interface FixedPixelIntrinsics {
+  fx: number;
+  fy: number;
+  cx: number;
+  cy: number;
+  dist_coeffs: number[];
+  image_size: [number, number];
+  source?: string;
+  physical_snapshot?: Record<string, number | null>;
+}
+
+/** One fixed-frame Stage pose. Any subset of selected screen targets may be visible. */
+export async function trackerFreeStagePose(opts: {
+  imagePath: string;
+  targets: Array<{ screenJson: string; code: number; offset: number }>;
+  intrinsics?: FixedPixelIntrinsics | null;
+  focalMm?: number;
+  sensorWidthMm?: number;
+  sensorHeightMm?: number;
+  principalXmm?: number | null;
+  principalYmm?: number | null;
+  k1?: number | null;
+  k2?: number | null;
+  k3?: number | null;
+  lensPath?: string | null;
+  outPath?: string | null;
+}): Promise<TrackerFreeStagePoseResult> {
+  if (!opts.targets.length) throw new Error("tracker-free pose requires at least one screen target");
+  const args = ["tracker-free", "pose", "--image", opts.imagePath];
+  for (const target of opts.targets) {
+    args.push(
+      "--screen-target", target.screenJson,
+      String(target.code), String(target.offset),
+    );
+  }
+  if (opts.lensPath && opts.intrinsics) {
+    throw new Error("tracker-free pose accepts one intrinsics source per run");
+  }
+  if (opts.lensPath) {
+    args.push("--lens", opts.lensPath);
+  } else if (opts.intrinsics) {
+    const intr = opts.intrinsics;
+    args.push(
+      "--fx", String(intr.fx), "--fy", String(intr.fy),
+      "--cx", String(intr.cx), "--cy", String(intr.cy),
+      "--k1", String(intr.dist_coeffs[0] ?? 0),
+      "--k2", String(intr.dist_coeffs[1] ?? 0),
+      "--k3", String(intr.dist_coeffs[4] ?? 0),
+    );
+  } else {
+    if (!opts.focalMm || !opts.sensorWidthMm || !opts.sensorHeightMm) {
+      throw new Error("tracker-free pose requires capture-time pixel intrinsics or a lens snapshot");
+    }
+    args.push(
+      "--focal-mm", String(opts.focalMm),
+      "--sensor-width-mm", String(opts.sensorWidthMm),
+      "--sensor-height-mm", String(opts.sensorHeightMm),
+      "--principal-x-mm", String(opts.principalXmm ?? 0),
+      "--principal-y-mm", String(opts.principalYmm ?? 0),
+      "--k1", String(opts.k1 ?? 0),
+      "--k2", String(opts.k2 ?? 0),
+      "--k3", String(opts.k3 ?? 0),
+    );
+  }
+  if (opts.outPath) args.push("--out", opts.outPath);
+  args.push("--output", "json");
+  const out = await spawnSidecar("vpcal", args);
+  const env = parseEnvelope(out);
+  if (env.status && env.status !== "ok") {
+    throw new Error((env.error && env.error.message) || `tracker-free pose failed (exit ${out.exit_code})`);
+  }
+  return env.data as TrackerFreeStagePoseResult;
 }
 
 /** `vpcal tracker-free verify` — 单屏时可把 screenA/B 指同一 screen.json。 */

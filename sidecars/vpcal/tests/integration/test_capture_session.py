@@ -345,3 +345,29 @@ def test_cli_non_inverted_session_needs_no_pattern_channel(tmp_path):
     lines = [json.loads(ln) for ln in result.output.splitlines() if ln.strip()]
     assert not any(line.get("type") == "request_pattern" for line in lines)
     assert lines[-1]["type"] == "result"
+
+
+def test_cli_session_accepts_repeatable_assigned_screen_targets(tmp_path):
+    from click.testing import CliRunner
+
+    from vpcal.cli.main import cli
+
+    first = tmp_path / "A.screen.json"
+    second = tmp_path / "B.screen.json"
+    save_screen(_screen(), first)
+    save_screen(_screen(), second)
+    result = CliRunner().invoke(cli, [
+        "capture", "session",
+        "--screen-target", str(first), "0", "0",
+        "--screen-target", str(second), "1", "16",
+        "--out", str(tmp_path / "session"),
+        "--backend", "synthetic",
+        "--dry-run", "--output", "json",
+    ])
+    assert result.exit_code == 0, result.output
+    lines = [json.loads(line) for line in result.output.splitlines() if line.strip()]
+    envelope = next(line for line in lines if line.get("type") == "result")
+    screens = envelope["data"]["dry_run_plan"]["screens"]
+    assert [(item["screen_id"], item["cab_col_offset"]) for item in screens] == [
+        (0, 0), (1, 16),
+    ]

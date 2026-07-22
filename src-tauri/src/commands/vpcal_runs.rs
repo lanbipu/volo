@@ -18,6 +18,7 @@ use mesh_app::lens_workspace::{
 use mesh_app::projects::load_project_yaml_from_path;
 use serde::Serialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use volo_shared::error::{VoloError, VoloResult};
 
 #[derive(Debug, Clone, Serialize)]
@@ -114,8 +115,8 @@ pub struct LensSessionSummary {
     pub session_json_path: String,
     /// `"tracked"` (`session.json`) or `"fixed"` (`fixed_run.json` / stills).
     pub mode: String,
-    /// True when `session.json` carries an inline `lens` profile, or when a
-    /// fixed run already has `lens.json` from tracker-free lens-cal.
+    /// True when the run carries capture-time intrinsics suitable for solve,
+    /// or already has a fixed Stage pose artifact.
     pub lens_ready: bool,
     /// Captured pose/frame count — tracked: `tracking/poses.jsonl` lines;
     /// fixed: `captures/normal/*.png` count (or `fixed_run.json` frames).
@@ -128,6 +129,18 @@ pub struct LensSessionSummary {
     /// Non-fatal scan issue (e.g. corrupt `fixed_run.json`); entry is still listed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Capture-time multi-screen target contract (paths + VP-QSP assignments).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub targets: Option<Value>,
+    /// Camera/run ownership and immutable fixed-run intrinsics snapshot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub camera_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lens_json: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intrinsics: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intrinsics_error: Option<String>,
 }
 
 fn count_normal_pngs(session_dir: &Path) -> Option<u64> {
@@ -186,6 +199,11 @@ fn summarize_session(session_json: &Path) -> Option<LensSessionSummary> {
             None
         },
         error: None,
+        targets: v.get("screens").cloned(),
+        camera_id: None,
+        lens_json: None,
+        intrinsics: None,
+        intrinsics_error: None,
     })
 }
 
@@ -250,11 +268,36 @@ fn summarize_fixed_run(dir: &Path) -> Option<LensSessionSummary> {
             },
         )
     };
-    let lens_ready = dir.join("lens.json").is_file()
+    let lens_json = meta_value
+        .as_ref()
+        .and_then(|v| v.get("lens_json"))
+        .and_then(Value::as_str)
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            let path = dir.join("lens.json");
+            path.is_file().then(|| path.to_string_lossy().into_owned())
+        });
+    let intrinsics = meta_value.as_ref().and_then(|v| v.get("intrinsics")).cloned();
+    let lens_ready = lens_json.is_some()
+        || intrinsics.is_some()
+        || dir.join("stage_pose.json").is_file()
         || meta_value
             .as_ref()
-            .and_then(|v| v.get("lens_json").and_then(Value::as_str).map(|s| !s.is_empty()))
-            .unwrap_or(false);
+            .and_then(|v| v.get("stage_pose_json"))
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.is_empty());
+    let targets = meta_value.as_ref().and_then(|v| v.get("targets")).cloned();
+    let camera_id = meta_value
+        .as_ref()
+        .and_then(|v| v.get("camera_id"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let intrinsics_error = meta_value
+        .as_ref()
+        .and_then(|v| v.get("intrinsics_error"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
     Some(LensSessionSummary {
         id,
         session_dir: dir.to_string_lossy().into_owned(),
@@ -265,6 +308,11 @@ fn summarize_fixed_run(dir: &Path) -> Option<LensSessionSummary> {
         modified_at,
         output_dir: Some(dir.to_string_lossy().into_owned()),
         error: meta_error,
+        targets,
+        camera_id,
+        lens_json,
+        intrinsics,
+        intrinsics_error,
     })
 }
 
@@ -453,9 +501,15 @@ pub fn read_lens_qa_report(run_dir: String) -> VoloResult<Value> {
 }
 
 /// Persist fixed-pose stills run metadata (`fixed_run.json`) next to
-/// `captures/normal/`. Thin transport for the lens-calibration flow.
+/// `captures/normal/`. Existing fields are preserved so solve-time updates do
+/// not discard capture-time targets/intrinsics. When supplied, the external
+/// lens profile is copied into the run as immutable `lens.json`.
 #[tauri::command]
-pub fn write_fixed_run_meta(session_dir: String, meta: Value) -> VoloResult<()> {
+pub fn write_fixed_run_meta(
+    session_dir: String,
+    meta: Value,
+    lens_source_path: Option<String>,
+) -> VoloResult<()> {
     let dir = Path::new(&session_dir);
     if !dir.is_dir() {
         fs::create_dir_all(dir).map_err(|e| {
@@ -463,7 +517,56 @@ pub fn write_fixed_run_meta(session_dir: String, meta: Value) -> VoloResult<()> 
         })?;
     }
     let path = dir.join("fixed_run.json");
-    let bytes = serde_json::to_vec_pretty(&meta)
+    let mut merged = if path.is_file() {
+        fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default()
+    } else {
+        serde_json::Map::new()
+    };
+    let incoming = meta.as_object().ok_or_else(|| {
+        VoloError::InvalidInput("fixed_run meta must be a JSON object".into())
+    })?;
+    for (key, value) in incoming {
+        merged.insert(key.clone(), value.clone());
+    }
+
+    if let Some(source) = lens_source_path.filter(|value| !value.trim().is_empty()) {
+        const MAX_LENS_BYTES: u64 = 4 * 1024 * 1024;
+        let source = Path::new(&source).canonicalize().map_err(|e| {
+            VoloError::Io(format!("failed to resolve lens profile {source}: {e}"))
+        })?;
+        let metadata = fs::metadata(&source)?;
+        if !metadata.is_file() || metadata.len() > MAX_LENS_BYTES {
+            return Err(VoloError::InvalidInput(format!(
+                "lens profile must be a regular JSON file no larger than {MAX_LENS_BYTES} bytes"
+            )));
+        }
+        let lens_bytes = fs::read(&source)?;
+        let lens_value: Value = serde_json::from_slice(&lens_bytes)
+            .map_err(|e| VoloError::InvalidInput(format!("invalid lens profile JSON: {e}")))?;
+        if !lens_value.is_object() {
+            return Err(VoloError::InvalidInput(
+                "lens profile JSON must contain an object".into(),
+            ));
+        }
+        let snapshot = dir.join("lens.json");
+        fs::write(&snapshot, &lens_bytes).map_err(|e| {
+            VoloError::Io(format!("failed to snapshot {}: {e}", snapshot.display()))
+        })?;
+        merged.insert(
+            "lens_json".into(),
+            Value::String(snapshot.to_string_lossy().into_owned()),
+        );
+        merged.insert(
+            "lens_sha256".into(),
+            Value::String(format!("{:x}", Sha256::digest(&lens_bytes))),
+        );
+    }
+
+    let bytes = serde_json::to_vec_pretty(&Value::Object(merged))
         .map_err(|e| VoloError::InvalidInput(format!("invalid fixed_run meta: {e}")))?;
     fs::write(&path, bytes)
         .map_err(|e| VoloError::Io(format!("failed to write {}: {e}", path.display())))?;
@@ -596,6 +699,56 @@ mod qa_report_tests {
         .unwrap();
         let value = read_lens_qa_report(run.path().display().to_string()).unwrap();
         assert_eq!(value["global_rms_px"], 0.5);
+    }
+
+    #[test]
+    fn fixed_run_preserves_capture_snapshot_across_solve_updates() {
+        let run = tempdir().unwrap();
+        let source = tempdir().unwrap();
+        let source_lens = source.path().join("profile.json");
+        fs::write(
+            &source_lens,
+            br#"{"fx":1200,"fy":1200,"cx":960,"cy":540,"image_size":[1920,1080]}"#,
+        )
+        .unwrap();
+
+        write_fixed_run_meta(
+            run.path().display().to_string(),
+            serde_json::json!({
+                "mode": "fixed",
+                "camera_id": "cam-a",
+                "targets": [{"id": "screen-a", "screenJson": "/stage/a.screen.json"}],
+                "intrinsics": {
+                    "fx": 1200.0, "fy": 1200.0, "cx": 960.0, "cy": 540.0,
+                    "image_size": [1920, 1080]
+                }
+            }),
+            Some(source_lens.display().to_string()),
+        )
+        .unwrap();
+        write_fixed_run_meta(
+            run.path().display().to_string(),
+            serde_json::json!({
+                "stage_pose_json": run.path().join("stage_pose.json").display().to_string()
+            }),
+            None,
+        )
+        .unwrap();
+
+        let meta: Value = serde_json::from_slice(
+            &fs::read(run.path().join("fixed_run.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(meta["camera_id"], "cam-a");
+        assert_eq!(meta["targets"][0]["id"], "screen-a");
+        assert_eq!(meta["intrinsics"]["image_size"], serde_json::json!([1920, 1080]));
+        assert!(run.path().join("lens.json").is_file());
+        assert_eq!(meta["lens_sha256"].as_str().unwrap().len(), 64);
+
+        let summary = summarize_fixed_run(run.path()).unwrap();
+        assert_eq!(summary.camera_id.as_deref(), Some("cam-a"));
+        assert_eq!(summary.lens_json.as_deref(), meta["lens_json"].as_str());
+        assert!(summary.intrinsics.is_some());
     }
 
     #[cfg(unix)]

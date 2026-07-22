@@ -67,14 +67,23 @@ class SessionState(str, enum.Enum):
     DONE = "done"
 
 
+@dataclasses.dataclass(frozen=True)
+class CaptureScreenTarget:
+    path: Path
+    screen_id: int = 0
+    cab_col_offset: int = 0
+    id: str | None = None
+
+
 @dataclasses.dataclass
 class SessionCaptureConfig:
     """All state-machine knobs (plan risk #5: defaults are provisional until
     bench-tested; every threshold is configurable)."""
 
     out_dir: Path
-    screen_path: Path
+    screen_path: Path | None
     backend: CaptureConfig
+    screen_targets: tuple[CaptureScreenTarget, ...] = ()
     track_protocol: str = "freed"
     track_port: int = 6301
     track_host: str = "0.0.0.0"
@@ -122,9 +131,34 @@ class CaptureSessionRunner:
         self._poses: list[_PoseRecord] = []
         self._all_detections: list = []
         self._seen_marker_ids: set = set()
-        self._screen = load_screen(config.screen_path)
-        self._total_markers = len(enumerate_markers(
-            self._screen, markers_per_cabinet=self._screen.markers_per_cabinet))
+        configured_targets = list(config.screen_targets)
+        if not configured_targets:
+            if config.screen_path is None:
+                raise PreconditionError("capture session requires at least one screen target")
+            configured_targets = [CaptureScreenTarget(path=config.screen_path)]
+        self._targets = []
+        self._known_marker_ids: set = set()
+        self._marker_ids_by_target: dict[str, set] = {}
+        for index, target in enumerate(configured_targets):
+            screen = load_screen(target.path)
+            label = target.id or screen.name or f"screen-{index + 1}"
+            markers = enumerate_markers(
+                screen,
+                markers_per_cabinet=screen.markers_per_cabinet,
+                screen_id=target.screen_id,
+                cab_col_offset=target.cab_col_offset,
+            )
+            ids = {marker.marker_id for marker in markers}
+            collisions = ids.intersection(self._known_marker_ids)
+            if collisions:
+                raise PreconditionError(
+                    "multi-screen marker identity collision; assignments must be unique",
+                    details={"target": label, "marker_id": str(next(iter(collisions)))},
+                )
+            self._known_marker_ids.update(ids)
+            self._marker_ids_by_target[label] = ids
+            self._targets.append((target, screen, label))
+        self._total_markers = len(self._known_marker_ids)
         self._frame_size: tuple[int, int] | None = None  # (w, h)
         self._state = SessionState.WAIT_TRACKING
         self._timings: dict[str, Any] = {"poses": []}
@@ -434,9 +468,10 @@ class CaptureSessionRunner:
         if avg_i is not None:
             det_i = avg_i if avg_i.dtype == np.uint8 else (avg_i >> 8).astype(np.uint8)
         detections = detect_markers(det_n, frame_id=index, inverted=det_i)
-        self._poses.append(_PoseRecord(index, tracked, len(detections), detections))
-        self._all_detections.extend(detections)
-        for d in detections:
+        matched = [d for d in detections if d.marker_id in self._known_marker_ids]
+        self._poses.append(_PoseRecord(index, tracked, len(matched), matched))
+        self._all_detections.extend(matched)
+        for d in matched:
             self._seen_marker_ids.add(d.marker_id)
         with (cfg.out_dir / "tracking" / "poses.jsonl").open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(tracked.model_dump(mode="json"), ensure_ascii=False) + "\n")
@@ -445,10 +480,14 @@ class CaptureSessionRunner:
 
         self.emit("detect_feedback", {
             "pose_index": index,
-            "marker_hits": len(detections),
-            "differenced": bool(detections) and all(d.differenced for d in detections),
-            "mean_confidence": round(float(np.mean([d.confidence for d in detections])), 3)
-            if detections else 0.0,
+            "marker_hits": len(matched),
+            "visible_screens": [
+                label for label, ids in self._marker_ids_by_target.items()
+                if any(d.marker_id in ids for d in matched)
+            ],
+            "differenced": bool(matched) and all(d.differenced for d in matched),
+            "mean_confidence": round(float(np.mean([d.confidence for d in matched])), 3)
+            if matched else 0.0,
         })
         self.emit("coverage_update", self._coverage_summary())
         self._timings["poses"].append({
@@ -557,6 +596,17 @@ class CaptureSessionRunner:
             "screen_markers_seen": len(self._seen_marker_ids),
             "screen_markers_total": self._total_markers,
             "screen_coverage_pct": round(len(self._seen_marker_ids) / max(self._total_markers, 1), 3),
+            "screens": [
+                {
+                    "id": label,
+                    "markers_seen": len(ids.intersection(self._seen_marker_ids)),
+                    "markers_total": len(ids),
+                    "coverage_pct": round(
+                        len(ids.intersection(self._seen_marker_ids)) / max(len(ids), 1), 3
+                    ),
+                }
+                for label, ids in self._marker_ids_by_target.items()
+            ],
             "pose_spatial_spread_mm": round(spread, 1),
             "angular_spread_deg": round(angular_spread, 2),
             "rotation_axis_spread": round(angular_spread, 2),
@@ -576,8 +626,19 @@ class CaptureSessionRunner:
                          "coordinate_system": COORDINATE_SYSTEM[self.cfg.track_protocol],
                          "frame_matching": "frame_id",
                          "timestamp_tolerance_s": self.cfg.timestamp_tolerance_s},
-            "screen": {"path": str(self.cfg.screen_path)},
         }
+        if self.cfg.screen_targets:
+            session["screens"] = [
+                {
+                    "path": str(target.path),
+                    "id": target.id or label,
+                    "screen_id": target.screen_id,
+                    "cab_col_offset": target.cab_col_offset,
+                }
+                for target, _screen, label in self._targets
+            ]
+        else:
+            session["screen"] = {"path": str(self.cfg.screen_path)}
         lens_ready = self.cfg.lens_path is not None
         if self.cfg.lens_path is not None:
             session["lens"] = json.loads(Path(self.cfg.lens_path).read_text(encoding="utf-8"))
@@ -660,5 +721,5 @@ def finalize_partial_session(session_dir: str | Path) -> dict[str, Any]:
             "partial_metadata": partial_meta}
 
 
-__all__ = ["SessionState", "SessionCaptureConfig", "CaptureSessionRunner",
+__all__ = ["SessionState", "CaptureScreenTarget", "SessionCaptureConfig", "CaptureSessionRunner",
            "finalize_partial_session"]

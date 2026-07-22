@@ -23,6 +23,7 @@ from vpcal.core.tracker_free import (
     ExportedScreen,
     LensCalResult,
     ScreenPose,
+    StagePoseTarget,
     SpatialResult,
     _average_transforms,
     _build_world_map,
@@ -31,6 +32,7 @@ from vpcal.core.tracker_free import (
     export_obj,
     lens_calibrate,
     spatial_solve,
+    solve_stage_pose,
     verify_pose,
 )
 from vpcal.models.screen import PlaneSection, ScreenDefinition
@@ -356,6 +358,51 @@ class TestLensCalibrate:
         with patch("vpcal.core.tracker_free.detect_markers", return_value=[]):
             with pytest.raises(ValueError, match="Need >= 3 images"):
                 lens_calibrate(tmp_path, screen)
+
+
+class TestStagePose:
+
+    def test_one_visible_screen_satisfies_multi_screen_selection(self, tmp_path):
+        screen_a = _screen(width=2000, height=1500, cab_size=500, mpc=4)
+        screen_b = ScreenDefinition(
+            name="B", unit="mm", cabinet_size=[500, 500],
+            led_pixel_pitch_mm=2.8, markers_per_cabinet=4,
+            sections=[PlaneSection(
+                name="wall", width_mm=2000, height_mm=1500,
+                origin=[2500, 0, 0],
+            )],
+        )
+        target_a = StagePoseTarget(screen_a, screen_id=0, cab_col_offset=0, label="A")
+        target_b = StagePoseTarget(screen_b, screen_id=1, cab_col_offset=16, label="B")
+        world_b = _build_world_map(screen_b, cab_col_offset=16, screen_id=1)
+        K = _ideal_camera_matrix()
+        R = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]])
+        t = np.array([-3000.0, 500.0, 5000.0])
+
+        @dataclass
+        class FakeDet:
+            marker_id: MarkerId
+            pixel_u: float
+            pixel_v: float
+
+        detections = []
+        for marker_id, point in world_b.items():
+            point_cam = R @ point + t
+            pixel = K @ point_cam
+            pixel = pixel[:2] / pixel[2]
+            if 0 <= pixel[0] < IMG_W and 0 <= pixel[1] < IMG_H:
+                detections.append(FakeDet(marker_id, float(pixel[0]), float(pixel[1])))
+        assert len(detections) >= 4
+        image_path = tmp_path / "fixed.png"
+        cv2.imwrite(str(image_path), np.zeros((IMG_H, IMG_W, 3), np.uint8))
+
+        with patch("vpcal.core.tracker_free.detect_markers", return_value=detections):
+            result = solve_stage_pose(image_path, [target_a, target_b], _lens_result())
+
+        assert result.markers_by_target["A"] == 0
+        assert result.markers_by_target["B"] == len(detections)
+        assert result.num_inliers >= 4
+        assert result.rms_reprojection_px < 1.0e-4
 
 
 # ── spatial_solve (mock detection) ───────────────────────────────────
