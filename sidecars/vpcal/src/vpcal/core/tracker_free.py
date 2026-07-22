@@ -119,11 +119,92 @@ class StagePoseResult:
     independent_rms_by_target: dict[str, float]
     screen_to_screen_consistency: dict
     rejected_observations: dict[str, int]
+    preflight: dict
 
 
 STAGE_POSE_MAX_RMS_PX = 2.0
 STAGE_POSE_RANSAC_REPROJECTION_PX = 4.0
-STAGE_POSE_MIN_MARKERS_PER_TARGET = 4
+STAGE_POSE_MIN_MARKERS_PER_TARGET = 12
+STAGE_POSE_MIN_INLIERS_PER_TARGET = 8
+STAGE_POSE_MAX_HOMOGRAPHY_RMS_PX = 1.0
+STAGE_POSE_MAX_JOINT_PROJECTIVE_RMS_PX = 2.0
+MASTER_LENS_MIN_USABLE_IMAGES = 8
+
+
+def _marker_grid_xy(detection, multi_marker: bool) -> list[float]:
+    from vpcal.core.screen_geometry import _SUB_QUADRANTS
+
+    marker = detection.marker_id
+    if multi_marker:
+        ou, ov = _SUB_QUADRANTS[min(marker.local_id, 3)]
+    else:
+        ou, ov = 0.5, 0.5
+    return [float(marker.cab_col) + ou, float(marker.cab_row) + ov]
+
+
+def _homography_rms(
+    detections: list, image_points: NDArray[np.float64], *, multi_marker: bool
+) -> tuple[float, int]:
+    grid = np.asarray([_marker_grid_xy(d, multi_marker) for d in detections], dtype=np.float64)
+    H, mask = cv2.findHomography(grid, image_points, cv2.RANSAC, 2.0)
+    if H is None or mask is None:
+        return float("inf"), 0
+    projected = cv2.perspectiveTransform(grid.reshape(-1, 1, 2), H).reshape(-1, 2)
+    keep = mask.reshape(-1).astype(bool)
+    if not np.any(keep):
+        return float("inf"), 0
+    residual = projected[keep] - image_points[keep]
+    return float(np.sqrt(np.mean(np.sum(residual * residual, axis=1)))), int(keep.sum())
+
+
+def _normalise_points_2d(points: NDArray[np.float64]) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    mean = points.mean(axis=0)
+    distance = float(np.mean(np.linalg.norm(points - mean, axis=1)))
+    scale = np.sqrt(2.0) / max(distance, 1.0e-12)
+    T = np.array([[scale, 0.0, -scale * mean[0]], [0.0, scale, -scale * mean[1]], [0.0, 0.0, 1.0]])
+    homogeneous = np.column_stack([points, np.ones(len(points))])
+    return (T @ homogeneous.T).T, T
+
+
+def _normalise_points_3d(points: NDArray[np.float64]) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    mean = points.mean(axis=0)
+    distance = float(np.mean(np.linalg.norm(points - mean, axis=1)))
+    scale = np.sqrt(3.0) / max(distance, 1.0e-12)
+    T = np.eye(4)
+    T[:3, :3] *= scale
+    T[:3, 3] = -scale * mean
+    homogeneous = np.column_stack([points, np.ones(len(points))])
+    return (T @ homogeneous.T).T, T
+
+
+def _joint_projective_rms(
+    object_points: NDArray[np.float64], image_points: NDArray[np.float64]
+) -> tuple[float, float, float]:
+    """Fit an unrestricted camera matrix; isolates geometry from PnP/K errors."""
+    Xn, T3 = _normalise_points_3d(object_points)
+    xn_h, T2 = _normalise_points_2d(image_points)
+    xn = xn_h[:, :2] / xn_h[:, 2, None]
+    rows: list[NDArray[np.float64]] = []
+    for X, (u, v) in zip(Xn, xn):
+        rows.append(np.r_[np.zeros(4), -X, v * X])
+        rows.append(np.r_[X, np.zeros(4), -u * X])
+    _u, singular, vt = np.linalg.svd(np.asarray(rows), full_matrices=False)
+    if len(singular) < 12 or singular[-2] <= 0:
+        return float("inf"), float("inf"), float("inf")
+    Pn = vt[-1].reshape(3, 4)
+    P = np.linalg.inv(T2) @ Pn @ T3
+    Xh = np.column_stack([object_points, np.ones(len(object_points))])
+    projected_h = (P @ Xh.T).T
+    valid = np.abs(projected_h[:, 2]) > 1.0e-12
+    if not np.all(valid):
+        return float("inf"), float("inf"), float("inf")
+    projected = projected_h[:, :2] / projected_h[:, 2, None]
+    errors = np.linalg.norm(projected - image_points, axis=1)
+    return (
+        float(np.sqrt(np.mean(errors * errors))),
+        float(np.median(errors)),
+        float(np.percentile(errors, 95)),
+    )
 
 
 def _average_transforms(
@@ -232,14 +313,14 @@ def _build_world_map(
 def _detect_images(
     images_dir: Path,
     extensions: tuple[str, ...] = (".jpg", ".jpeg", ".png", ".tif", ".tiff"),
-) -> list[tuple[str, NDArray[np.uint8]]]:
+) -> list[tuple[str, NDArray]]:
     paths = sorted(
         p for p in images_dir.iterdir()
         if p.suffix.lower() in extensions and not p.name.startswith(".")
     )
     results = []
     for p in paths:
-        img = cv2.imread(str(p))
+        img = cv2.imread(str(p), cv2.IMREAD_UNCHANGED)
         if img is not None:
             results.append((p.name, img))
     return results
@@ -280,6 +361,7 @@ def lens_calibrate(
     *,
     cab_col_offset: int = 0,
     screen_id: int = 0,
+    min_usable_images: int = MASTER_LENS_MIN_USABLE_IMAGES,
 ) -> LensCalResult:
     """Calibrate camera intrinsics from multiple images of one screen's pattern."""
     world_map = _build_world_map(screen, cab_col_offset, screen_id)
@@ -302,9 +384,10 @@ def lens_calibrate(
             all_obj.append(obj_planar.reshape(-1, 1, 3).astype(np.float32))
             all_img.append(img_pts.reshape(-1, 1, 2).astype(np.float32))
 
-    if len(all_obj) < 3:
+    if len(all_obj) < min_usable_images:
         raise ValueError(
-            f"Need >= 3 images with >= 6 detected markers; got {len(all_obj)} usable images"
+            f"Need >= {min_usable_images} images with >= 6 detected markers; "
+            f"got {len(all_obj)} usable images"
         )
 
     # Fix k3=0 by default to prevent overfitting on small datasets.
@@ -518,7 +601,7 @@ def verify_pose(
     ], dtype=np.float64)
     dist = np.array(lens.dist_coeffs, dtype=np.float64)
 
-    img = cv2.imread(str(image_path))
+    img = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
     if img is None:
         raise ValueError(f"Cannot read image: {image_path}")
 
@@ -573,7 +656,7 @@ def solve_stage_pose(
         world.update(current)
         ids_by_target[target.label] = set(current)
 
-    image = cv2.imread(str(image_path))
+    image = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
     if image is None:
         raise ValueError(f"Cannot read image: {image_path}")
     detections = detect_markers(image)
@@ -581,22 +664,26 @@ def solve_stage_pose(
         1 for detection in detections
         if detection.marker_id in world and float(getattr(detection, "confidence", 1.0)) < 1.0
     )
-    saturated = sum(
+    brightness_warnings = sum(
         1 for detection in detections
         if detection.marker_id in world and bool(getattr(detection, "saturated", False))
+    )
+    localization_rejected = sum(
+        1 for detection in detections
+        if detection.marker_id in world and bool(getattr(detection, "localization_rejected", False))
     )
     matched = [
         detection for detection in detections
         if detection.marker_id in world
         and float(getattr(detection, "confidence", 1.0)) >= 1.0
-        and not bool(getattr(detection, "saturated", False))
+        and not bool(getattr(detection, "localization_rejected", False))
     ]
     obj_pts = np.asarray([world[d.marker_id] for d in matched], dtype=np.float64)
     img_pts = np.asarray([[d.pixel_u, d.pixel_v] for d in matched], dtype=np.float64)
     if len(obj_pts) < 4:
         raise ValueError(
             f"Need >= 4 trustworthy matched markers; got {len(obj_pts)} "
-            f"({low_confidence} low-confidence, {saturated} saturated rejected)"
+            f"({low_confidence} low-confidence, {localization_rejected} localization rejected)"
         )
 
     markers_by_target = {
@@ -609,10 +696,17 @@ def solve_stage_pose(
     }
     if incomplete_targets:
         detail = ", ".join(f"{label}={count}" for label, count in incomplete_targets.items())
-        raise ValueError(
+        from vpcal.core.errors import LocalizationQualityFailed
+        raise LocalizationQualityFailed(
             "Stage pose requires >= "
             f"{STAGE_POSE_MIN_MARKERS_PER_TARGET} trustworthy markers on every selected screen; "
-            f"insufficient: {detail}"
+            f"insufficient: {detail}",
+            details={
+                "markers_by_screen": markers_by_target,
+                "low_confidence": low_confidence,
+                "localization_rejected": localization_rejected,
+                "brightness_warnings": brightness_warnings,
+            },
         )
 
     camera_matrix = np.array([
@@ -621,6 +715,63 @@ def solve_stage_pose(
         [0, 0, 1],
     ], dtype=np.float64)
     dist = np.asarray(lens.dist_coeffs, dtype=np.float64)
+
+    undistorted = cv2.undistortPoints(
+        img_pts.reshape(-1, 1, 2), camera_matrix, dist, P=camera_matrix
+    ).reshape(-1, 2)
+    homography_by_target: dict[str, dict] = {}
+    target_by_label = {target.label: target for target in targets}
+    for label, ids in ids_by_target.items():
+        indices = [i for i, detection in enumerate(matched) if detection.marker_id in ids]
+        target_detections = [matched[i] for i in indices]
+        h_rms, h_inliers = _homography_rms(
+            target_detections,
+            undistorted[indices],
+            multi_marker=target_by_label[label].screen.markers_per_cabinet > 1,
+        )
+        homography_by_target[label] = {
+            "rms_px": h_rms,
+            "inliers": h_inliers,
+            "decoded": sum(1 for d in detections if d.marker_id in ids),
+            "trustworthy": len(indices),
+            "brightness_warnings": sum(
+                1 for d in detections if d.marker_id in ids and bool(getattr(d, "saturated", False))
+            ),
+            "localization_rejected": sum(
+                1 for d in detections if d.marker_id in ids
+                and bool(getattr(d, "localization_rejected", False))
+            ),
+        }
+    bad_homographies = {
+        label: metrics for label, metrics in homography_by_target.items()
+        if metrics["rms_px"] >= STAGE_POSE_MAX_HOMOGRAPHY_RMS_PX
+    }
+    if bad_homographies:
+        from vpcal.core.errors import LocalizationQualityFailed
+        raise LocalizationQualityFailed(
+            "Per-screen marker localization failed homography validation",
+            details={"homography_by_screen": homography_by_target},
+        )
+
+    joint_projective = None
+    if len(targets) > 1:
+        joint_rms, joint_median, joint_p95 = _joint_projective_rms(obj_pts, undistorted)
+        joint_projective = {
+            "rms_px": joint_rms,
+            "median_px": joint_median,
+            "p95_px": joint_p95,
+        }
+        if joint_rms >= STAGE_POSE_MAX_JOINT_PROJECTIVE_RMS_PX:
+            from vpcal.core.errors import ScreenGeometryInconsistent
+            raise ScreenGeometryInconsistent(
+                "Selected screens are individually detected but their Stage geometry "
+                "cannot be explained by one camera",
+                details={
+                    "homography_by_screen": homography_by_target,
+                    "joint_projective": joint_projective,
+                    "limit_px": STAGE_POSE_MAX_JOINT_PROJECTIVE_RMS_PX,
+                },
+            )
 
     ok, rvec, tvec, inliers = cv2.solvePnPRansac(
         obj_pts.astype(np.float64),
@@ -660,10 +811,10 @@ def solve_stage_pose(
             if detection.marker_id in ids and index in inlier_set
         ]
         inliers_by_target[label] = len(target_indices)
-        if len(target_indices) < STAGE_POSE_MIN_MARKERS_PER_TARGET:
+        if len(target_indices) < STAGE_POSE_MIN_INLIERS_PER_TARGET:
             raise ValueError(
                 f"Stage pose RANSAC retained only {len(target_indices)} inliers for "
-                f"screen '{label}' (need >= {STAGE_POSE_MIN_MARKERS_PER_TARGET})"
+                f"screen '{label}' (need >= {STAGE_POSE_MIN_INLIERS_PER_TARGET})"
             )
         target_residual = residual[target_indices]
         rms_by_target[label] = float(
@@ -716,10 +867,21 @@ def solve_stage_pose(
             for label, value in sorted(independent_rms_by_target.items())
         )
         reason = "screen geometry inconsistency" if individual_good and len(targets) > 1 else "reprojection gate failed"
-        raise ValueError(
+        message = (
             f"Stage pose {reason}: combined={rms:.3f}px, per-screen [{per_screen}], "
             f"independent [{independent_text}], limit={STAGE_POSE_MAX_RMS_PX:.3f}px"
         )
+        if reason == "screen geometry inconsistency":
+            from vpcal.core.errors import ScreenGeometryInconsistent
+            raise ScreenGeometryInconsistent(
+                message,
+                details={
+                    "combined_rms_px": rms,
+                    "rms_by_screen": rms_by_target,
+                    "independent_rms_by_screen": independent_rms_by_target,
+                },
+            )
+        raise ValueError(message)
 
     return StagePoseResult(
         camera_from_stage=ScreenPose(rvec=rvec, tvec=tvec),
@@ -737,7 +899,13 @@ def solve_stage_pose(
         },
         rejected_observations={
             "low_confidence": low_confidence,
-            "saturated": saturated,
+            "brightness_warning": brightness_warnings,
+            "localization_rejected": localization_rejected,
+        },
+        preflight={
+            "homography_by_screen": homography_by_target,
+            "joint_projective": joint_projective,
+            "passed": True,
         },
     )
 

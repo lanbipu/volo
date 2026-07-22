@@ -121,6 +121,8 @@ pub struct LensSessionSummary {
     /// True when a fixed Stage pose artifact exists (`stage_pose.json` or
     /// `fixed_run.json` meta `stage_pose` / `stage_pose_json`).
     pub stage_pose_ready: bool,
+    /// `missing`, `invalid`, or `formal`; legacy/unqualified artifacts are invalid.
+    pub stage_pose_status: String,
     /// Solved Stage pose payload (RMS / inliers / camera_from_stage, …) when
     /// available — from `stage_pose.json` or embedded meta `stage_pose`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -169,6 +171,39 @@ fn count_normal_pngs(session_dir: &Path) -> Option<u64> {
     Some(n)
 }
 
+fn qualified_master_lens(path: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(path) else { return false };
+    let Ok(lens) = serde_json::from_str::<Value>(&text) else { return false };
+    let image_size_ok = lens
+        .get("image_size")
+        .and_then(Value::as_array)
+        .is_some_and(|v| v.len() >= 2 && v[0].as_u64().unwrap_or(0) > 0 && v[1].as_u64().unwrap_or(0) > 0);
+    lens.get("is_master").and_then(Value::as_bool) == Some(true)
+        && lens.get("session_coupled").and_then(Value::as_bool) != Some(true)
+        && matches!(
+            lens.get("calibration_kind").and_then(Value::as_str),
+            Some("multi_view_intrinsics" | "offline_chart")
+        )
+        && lens.get("num_images").and_then(Value::as_u64).unwrap_or(0) >= 8
+        && lens.get("num_points").and_then(Value::as_u64).unwrap_or(0) >= 60
+        && lens.get("rms").and_then(Value::as_f64).is_some_and(|v| v.is_finite() && v < 2.0)
+        && image_size_ok
+}
+
+fn formal_stage_pose(value: &Value) -> bool {
+    let image_size_ok = value
+        .get("image_size")
+        .and_then(Value::as_array)
+        .is_some_and(|v| v.len() >= 2 && v[0].as_u64().unwrap_or(0) > 0 && v[1].as_u64().unwrap_or(0) > 0);
+    value.get("schema_version").and_then(Value::as_str) == Some("volo_stage_pose.v2")
+        && value.get("formal").and_then(Value::as_bool) == Some(true)
+        && value.pointer("/qualification/passed").and_then(Value::as_bool) == Some(true)
+        && value.pointer("/qualification/master_lens").and_then(Value::as_bool) == Some(true)
+        && value.pointer("/preflight/passed").and_then(Value::as_bool) == Some(true)
+        && value.get("rms_reprojection_px").and_then(Value::as_f64).is_some_and(|v| v.is_finite() && v < 2.0)
+        && image_size_ok
+}
+
 fn file_mtime_rfc3339(path: &Path) -> Option<String> {
     fs::metadata(path)
         .ok()
@@ -199,6 +234,7 @@ fn summarize_session(session_json: &Path) -> Option<LensSessionSummary> {
         mode: "tracked".into(),
         lens_ready,
         stage_pose_ready: false,
+        stage_pose_status: "missing".into(),
         stage_pose: None,
         poses_captured,
         modified_at: file_mtime_rfc3339(session_json),
@@ -289,7 +325,10 @@ fn summarize_fixed_run(dir: &Path) -> Option<LensSessionSummary> {
         });
     let intrinsics = meta_value.as_ref().and_then(|v| v.get("intrinsics")).cloned();
     /* Capture-time intrinsics / lens only — Stage pose is tracked separately. */
-    let lens_ready = lens_json.is_some() || intrinsics.is_some();
+    let lens_ready = lens_json
+        .as_deref()
+        .map(Path::new)
+        .is_some_and(qualified_master_lens);
     let stage_pose_path = meta_value
         .as_ref()
         .and_then(|v| v.get("stage_pose_json"))
@@ -312,13 +351,14 @@ fn summarize_fixed_run(dir: &Path) -> Option<LensSessionSummary> {
                 .filter(|v| v.is_object())
                 .cloned()
         });
-    let stage_pose_ready = stage_pose.is_some()
-        || stage_pose_path.is_some()
-        || meta_value
-            .as_ref()
-            .and_then(|v| v.get("stage_pose_json"))
-            .and_then(Value::as_str)
-            .is_some_and(|s| !s.is_empty());
+    let stage_pose_ready = stage_pose.as_ref().is_some_and(formal_stage_pose);
+    let stage_pose_status = if stage_pose_ready {
+        "formal"
+    } else if stage_pose.is_some() || stage_pose_path.is_some() {
+        "invalid"
+    } else {
+        "missing"
+    };
     let targets = meta_value.as_ref().and_then(|v| v.get("targets")).cloned();
     let camera_id = meta_value
         .as_ref()
@@ -337,6 +377,7 @@ fn summarize_fixed_run(dir: &Path) -> Option<LensSessionSummary> {
         mode: "fixed".into(),
         lens_ready,
         stage_pose_ready,
+        stage_pose_status: stage_pose_status.into(),
         stage_pose,
         poses_captured: frames,
         modified_at,
@@ -789,7 +830,7 @@ mod qa_report_tests {
         let source_lens = source.path().join("profile.json");
         fs::write(
             &source_lens,
-            br#"{"fx":1200,"fy":1200,"cx":960,"cy":540,"image_size":[1920,1080]}"#,
+            br#"{"fx":1200,"fy":1200,"cx":960,"cy":540,"dist_coeffs":[0,0,0,0,0],"image_size":[1920,1080],"rms":0.4,"num_images":8,"num_points":120,"calibration_kind":"multi_view_intrinsics","is_master":true,"session_coupled":false}"#,
         )
         .unwrap();
 
@@ -831,8 +872,9 @@ mod qa_report_tests {
         assert_eq!(summary.lens_json.as_deref(), meta["lens_json"].as_str());
         assert!(summary.intrinsics.is_some());
         assert!(summary.lens_ready);
-        /* stage_pose_json path recorded but file not written yet → ready by path only. */
-        assert!(summary.stage_pose_ready);
+        /* A recorded path is not a solved artifact. */
+        assert!(!summary.stage_pose_ready);
+        assert_eq!(summary.stage_pose_status, "missing");
         assert!(summary.stage_pose.is_none());
 
         fs::write(
@@ -840,8 +882,18 @@ mod qa_report_tests {
             br#"{"rms_reprojection_px":0.42,"num_inliers":8,"num_markers":10}"#,
         )
         .unwrap();
+        let legacy = summarize_fixed_run(run.path()).unwrap();
+        assert!(!legacy.stage_pose_ready);
+        assert_eq!(legacy.stage_pose_status, "invalid");
+
+        fs::write(
+            run.path().join("stage_pose.json"),
+            br#"{"schema_version":"volo_stage_pose.v2","formal":true,"image_size":[1920,1080],"rms_reprojection_px":0.42,"num_inliers":16,"num_markers":24,"preflight":{"passed":true},"qualification":{"passed":true,"master_lens":true,"fail_closed":true}}"#,
+        )
+        .unwrap();
         let solved = summarize_fixed_run(run.path()).unwrap();
         assert!(solved.stage_pose_ready);
+        assert_eq!(solved.stage_pose_status, "formal");
         assert_eq!(solved.stage_pose.as_ref().unwrap()["rms_reprojection_px"], 0.42);
     }
 

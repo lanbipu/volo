@@ -80,6 +80,24 @@ class PreconditionError(VpcalError):
     code = "PRECONDITION_FAILED"
 
 
+class ScreenGeometryInconsistent(PreconditionError):
+    """Individually valid screens cannot share one projective camera."""
+
+    code = "SCREEN_GEOMETRY_INCONSISTENT"
+
+
+class MasterLensRequired(PreconditionError):
+    """A formal fixed-camera solve was requested without a qualified lens."""
+
+    code = "MASTER_LENS_REQUIRED"
+
+
+class LocalizationQualityFailed(PreconditionError):
+    """Too few markers have a trustworthy central-locator position."""
+
+    code = "LOCALIZATION_QUALITY_FAILED"
+
+
 class SolverTimeoutError(VpcalError):
     """Solver exceeded its configured time budget (exit 7)."""
 
@@ -105,6 +123,9 @@ __all__ = [
     "ConfigError",
     "ResourceNotFoundError",
     "PreconditionError",
+    "ScreenGeometryInconsistent",
+    "MasterLensRequired",
+    "LocalizationQualityFailed",
     "SolverTimeoutError",
     "PartialFailure",
 ]

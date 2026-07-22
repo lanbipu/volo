@@ -17,6 +17,8 @@ export interface LensSessionSummary {
   lens_ready: boolean;
   /** 固定机位 Stage pose 已落盘（stage_pose.json 或 meta） */
   stage_pose_ready: boolean;
+  /** `missing`, `invalid`, or `formal`; only formal may feed AR/export. */
+  stage_pose_status: string;
   /** 求解结果（RMS / inliers / camera_from_stage …）；未求解为 null */
   stage_pose?: TrackerFreeStagePoseResult | Record<string, unknown> | null;
   /** 从 tracking/poses.jsonl 或 captures/normal 统计；无法读取时为 null */
@@ -108,6 +110,19 @@ function parseEnvelope(out: SidecarOutput): { status?: string; data?: any; error
   }
 }
 
+export interface VpcalSidecarError extends Error {
+  code?: string;
+  details?: Record<string, unknown>;
+}
+
+function envelopeError(env: { error?: any }, fallback: string): VpcalSidecarError {
+  const payload = env.error || {};
+  return Object.assign(new Error(payload.message || fallback), {
+    code: typeof payload.code === "string" ? payload.code : undefined,
+    details: payload.details && typeof payload.details === "object" ? payload.details : undefined,
+  });
+}
+
 export interface TrackerFreeLensCalResult {
   fx: number; fy: number; cx: number; cy: number;
   dist_coeffs: number[];
@@ -140,7 +155,7 @@ export async function trackerFreeLensInfo(lensPath: string): Promise<TrackerFree
   ]);
   const env = parseEnvelope(out);
   if (env.status && env.status !== "ok") {
-    throw new Error((env.error && env.error.message) || `tracker-free lens-info failed (exit ${out.exit_code})`);
+    throw envelopeError(env, `tracker-free lens-info failed (exit ${out.exit_code})`);
   }
   return env.data as TrackerFreeLensInfo;
 }
@@ -165,7 +180,7 @@ export async function trackerFreeLensCal(opts: {
   const out = await spawnSidecar("vpcal", args);
   const env = parseEnvelope(out);
   if (env.status && env.status !== "ok") {
-    throw new Error((env.error && env.error.message) || `tracker-free lens-cal failed (exit ${out.exit_code})`);
+    throw envelopeError(env, `tracker-free lens-cal failed (exit ${out.exit_code})`);
   }
   return Object.assign({}, env.data || {}, { lens_json: opts.outLensJson });
 }
@@ -185,6 +200,9 @@ export interface TrackerFreeVerifyResult {
 }
 
 export interface TrackerFreeStagePoseResult {
+  schema_version: "volo_stage_pose.v2" | string;
+  solve_kind: "fixed_extrinsics_only" | string;
+  formal: boolean;
   image: string;
   image_size: [number, number];
   camera_from_stage: TrackerFreeVerifyPose & {
@@ -203,7 +221,28 @@ export interface TrackerFreeStagePoseResult {
     max_camera_translation_delta_mm: number;
     max_camera_rotation_delta_deg: number;
   };
-  rejected_observations: { low_confidence: number; saturated: number };
+  rejected_observations: {
+    low_confidence: number;
+    brightness_warning: number;
+    localization_rejected: number;
+  };
+  preflight: {
+    passed: boolean;
+    homography_by_screen: Record<string, {
+      decoded: number;
+      trustworthy: number;
+      brightness_warnings: number;
+      localization_rejected: number;
+      rms_px: number;
+      inliers: number;
+    }>;
+    joint_projective: null | { rms_px: number; median_px: number; p95_px: number };
+  };
+  qualification: {
+    passed: boolean;
+    master_lens: boolean;
+    fail_closed: boolean;
+  };
   visible_screens: string[];
   selected_screens: string[];
   partial_visibility_allowed: boolean;
@@ -226,7 +265,7 @@ function forSidecarFsPath(path: string): string {
   return String(path || "").replace(/^\\\\\?\\/, "");
 }
 
-/** One fixed-frame Stage pose. Any subset of selected screen targets may be visible. */
+/** One formal fixed-frame extrinsics solve. Every selected target must be visible. */
 export async function trackerFreeStagePose(opts: {
   imagePath: string;
   targets: Array<{ screenJson: string; code: number; offset: number }>;
@@ -241,6 +280,8 @@ export async function trackerFreeStagePose(opts: {
   k3?: number | null;
   lensPath?: string | null;
   outPath?: string | null;
+  /** Explicit pixel/physical intrinsics are diagnostics only and never formal output. */
+  debugUnqualified?: boolean;
 }): Promise<TrackerFreeStagePoseResult> {
   if (!opts.targets.length) throw new Error("tracker-free pose requires at least one screen target");
   const args = ["tracker-free", "pose", "--image", forSidecarFsPath(opts.imagePath)];
@@ -279,12 +320,13 @@ export async function trackerFreeStagePose(opts: {
       "--k3", String(opts.k3 ?? 0),
     );
   }
+  if (opts.debugUnqualified) args.push("--debug-unqualified");
   if (opts.outPath) args.push("--out", forSidecarFsPath(opts.outPath));
   args.push("--output", "json");
   const out = await spawnSidecar("vpcal", args);
   const env = parseEnvelope(out);
   if (env.status && env.status !== "ok") {
-    throw new Error((env.error && env.error.message) || `tracker-free pose failed (exit ${out.exit_code})`);
+    throw envelopeError(env, `tracker-free pose failed (exit ${out.exit_code})`);
   }
   return env.data as TrackerFreeStagePoseResult;
 }
@@ -333,6 +375,8 @@ export async function trackerFreeGrid(opts: {
       "--k1", String(intr.dist_coeffs[0] ?? 0),
       "--k2", String(intr.dist_coeffs[1] ?? 0),
       "--k3", String(intr.dist_coeffs[4] ?? 0),
+      "--image-width", String(intr.image_size[0]),
+      "--image-height", String(intr.image_size[1]),
     );
   } else {
     throw new Error("tracker-free grid requires --lens or capture-time pixel intrinsics");
@@ -342,7 +386,7 @@ export async function trackerFreeGrid(opts: {
   const out = await spawnSidecar("vpcal", args);
   const env = parseEnvelope(out);
   if (env.status && env.status !== "ok") {
-    throw new Error((env.error && env.error.message) || `tracker-free grid failed (exit ${out.exit_code})`);
+    throw envelopeError(env, `tracker-free grid failed (exit ${out.exit_code})`);
   }
   return env.data as TrackerFreeGridResult;
 }

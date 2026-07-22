@@ -98,7 +98,13 @@ class Detection:
     pixel_v: float
     confidence: float = 1.0
     differenced: bool = False
+    # Compatibility name: this is a brightness/clipping *warning*, not a
+    # trustworthy localization rejection.  VP-QSP intentionally contains
+    # white cells, so an absolute high-pixel fraction cannot prove clipping.
     saturated: bool = False
+    localization_quality: float = 1.0
+    localization_rejected: bool = False
+    localization_reasons: tuple[str, ...] = ()
 
 
 @dataclass

@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 from vpcal.core.observations import MarkerId
+from vpcal.core.errors import LocalizationQualityFailed, ScreenGeometryInconsistent
 from vpcal.core.screen_geometry import enumerate_markers
 from vpcal.core.transforms import matrix_to_quat, quat_to_matrix
 from vpcal.core.tracker_free import (
@@ -356,13 +357,13 @@ class TestLensCalibrate:
         for i in range(5):
             cv2.imwrite(str(tmp_path / f"img_{i}.png"), np.zeros((IMG_H, IMG_W), np.uint8))
         with patch("vpcal.core.tracker_free.detect_markers", return_value=[]):
-            with pytest.raises(ValueError, match="Need >= 3 images"):
+            with pytest.raises(ValueError, match="Need >= 8 images"):
                 lens_calibrate(tmp_path, screen)
 
 
 class TestStagePose:
 
-    def test_one_visible_screen_satisfies_multi_screen_selection(self, tmp_path):
+    def test_partial_visibility_fails_closed(self, tmp_path):
         screen_a = _screen(width=2000, height=1500, cab_size=500, mpc=4)
         screen_b = ScreenDefinition(
             name="B", unit="mm", cabinet_size=[500, 500],
@@ -397,12 +398,79 @@ class TestStagePose:
         cv2.imwrite(str(image_path), np.zeros((IMG_H, IMG_W, 3), np.uint8))
 
         with patch("vpcal.core.tracker_free.detect_markers", return_value=detections):
-            result = solve_stage_pose(image_path, [target_a, target_b], _lens_result())
+            with pytest.raises(LocalizationQualityFailed) as exc:
+                solve_stage_pose(image_path, [target_a, target_b], _lens_result())
 
-        assert result.markers_by_target["A"] == 0
-        assert result.markers_by_target["B"] == len(detections)
-        assert result.num_inliers >= 4
+        assert exc.value.code == "LOCALIZATION_QUALITY_FAILED"
+        assert exc.value.details["markers_by_screen"]["A"] == 0
+
+    @staticmethod
+    def _two_screen_fixture(inconsistent: bool = False):
+        screen_a = ScreenDefinition(
+            name="A", unit="mm", cabinet_size=[500, 500], led_pixel_pitch_mm=2.8,
+            markers_per_cabinet=4,
+            sections=[PlaneSection(name="wall", width_mm=2000, height_mm=1500,
+                                   origin=[-1100, 0, 0])],
+        )
+        angle = np.deg2rad(22.0) / 2.0
+        screen_b = ScreenDefinition(
+            name="B", unit="mm", cabinet_size=[500, 500], led_pixel_pitch_mm=2.8,
+            markers_per_cabinet=4,
+            sections=[PlaneSection(name="wall", width_mm=2000, height_mm=1500,
+                                   origin=[1100, 450, 0],
+                                   rotation=[float(np.cos(angle)), 0.0, 0.0, float(np.sin(angle))])],
+        )
+        targets = [
+            StagePoseTarget(screen_a, screen_id=0, cab_col_offset=0, label="A"),
+            StagePoseTarget(screen_b, screen_id=1, cab_col_offset=16, label="B"),
+        ]
+        K = _ideal_camera_matrix()
+        R = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]])
+        t_a = np.array([0.0, 750.0, 5000.0])
+        t_b = t_a + (np.array([350.0, -220.0, 0.0]) if inconsistent else 0.0)
+
+        @dataclass
+        class FakeDet:
+            marker_id: MarkerId
+            pixel_u: float
+            pixel_v: float
+            confidence: float = 1.0
+            saturated: bool = False
+            localization_rejected: bool = False
+
+        detections = []
+        for target, t in zip(targets, [t_a, t_b]):
+            for marker_id, point in _build_world_map(
+                target.screen, cab_col_offset=target.cab_col_offset, screen_id=target.screen_id,
+            ).items():
+                point_cam = R @ point + t
+                pixel = K @ point_cam
+                pixel = pixel[:2] / pixel[2]
+                if 0 <= pixel[0] < IMG_W and 0 <= pixel[1] < IMG_H:
+                    detections.append(FakeDet(marker_id, float(pixel[0]), float(pixel[1])))
+        return targets, detections
+
+    def test_correct_two_plane_geometry_passes_joint_preflight(self, tmp_path):
+        targets, detections = self._two_screen_fixture()
+        assert all(sum(d.marker_id.screen_id == i for d in detections) >= 12 for i in (0, 1))
+        image_path = tmp_path / "fixed.png"
+        cv2.imwrite(str(image_path), np.zeros((IMG_H, IMG_W, 3), np.uint8))
+        with patch("vpcal.core.tracker_free.detect_markers", return_value=detections):
+            result = solve_stage_pose(image_path, targets, _lens_result())
+        assert result.preflight["passed"] is True
+        assert result.preflight["joint_projective"]["rms_px"] < 1.0e-4
         assert result.rms_reprojection_px < 1.0e-4
+
+    def test_independent_homographies_good_joint_geometry_bad(self, tmp_path):
+        targets, detections = self._two_screen_fixture(inconsistent=True)
+        image_path = tmp_path / "fixed.png"
+        cv2.imwrite(str(image_path), np.zeros((IMG_H, IMG_W, 3), np.uint8))
+        with patch("vpcal.core.tracker_free.detect_markers", return_value=detections):
+            with pytest.raises(ScreenGeometryInconsistent) as exc:
+                solve_stage_pose(image_path, targets, _lens_result())
+        assert exc.value.code == "SCREEN_GEOMETRY_INCONSISTENT"
+        assert all(v["rms_px"] < 1.0 for v in exc.value.details["homography_by_screen"].values())
+        assert exc.value.details["joint_projective"]["rms_px"] >= 2.0
 
 
 # ── spatial_solve (mock detection) ───────────────────────────────────

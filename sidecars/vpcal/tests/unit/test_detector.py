@@ -10,7 +10,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from vpcal.core.detector import detect_markers
+from vpcal.core.detector import _localization_quality, detect_markers
 from vpcal.core.observations import MarkerId
 from vpcal.core.pattern import build_marker_template, encode_marker, splat_gaussian_dot
 
@@ -78,3 +78,27 @@ def test_normal_inverted_differencing():
     inverted = np.full((440, 440), 30, np.uint8)
     dets = detect_markers(normal, inverted=inverted)
     assert any(d.marker_id == m for d in dets)
+
+
+def test_intentional_white_code_blocks_are_warning_not_rejection():
+    scene = np.zeros((400, 400), np.uint16)
+    m = MarkerId(0, 12, 5, 1)
+    corners = np.array([[150, 150], [250, 150], [250, 250], [150, 250]], np.float64)
+    rendered = np.zeros_like(scene, dtype=np.uint8)
+    _place_marker(rendered, encode_marker(m), corners)
+    scene[:] = rendered.astype(np.uint16) * 257
+    det = next(d for d in detect_markers(scene) if d.marker_id == m)
+    assert det.saturated is True  # brightness warning remains observable
+    assert det.localization_rejected is False
+    assert det.localization_quality > 0.5
+
+
+def test_locator_plateau_and_displacement_are_rejected():
+    gray = np.zeros((120, 120), np.uint8)
+    gray[25:95, 25:95] = 255
+    corners = np.array([[10, 10], [110, 10], [110, 110], [10, 110]], np.float64)
+    quality, rejected, reasons = _localization_quality(gray, corners, (85.0, 60.0))
+    assert rejected is True
+    assert quality < 0.5
+    assert "locator_flat_topped" in reasons
+    assert "locator_centroid_unstable" in reasons

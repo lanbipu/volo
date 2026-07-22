@@ -167,6 +167,64 @@ def _subpixel_center(
     return cx, cy
 
 
+def _localization_quality(
+    gray: NDArray[np.float32], corners: NDArray[np.float64], center: tuple[float, float]
+) -> tuple[float, bool, tuple[str, ...]]:
+    """Score the central locator, independent of intentionally-white code cells.
+
+    The old ``roi >= 250`` rule measured the marker's white border/data cells,
+    not whether the Gaussian locator could be positioned.  Formal rejection is
+    now based only on the small central locator window used by the centroid.
+    """
+    geometric = _diagonal_intersection(corners)
+    side = np.mean([
+        np.linalg.norm(corners[i] - corners[(i + 1) % 4]) for i in range(4)
+    ])
+    cell = max(1.0, side * (1.0 - 2.0 * _MARGIN_FRAC) / GRID)
+    radius = max(3, int(round(cell)))
+    cx, cy = center
+    x0, x1 = max(0, int(round(cx)) - radius), min(gray.shape[1], int(round(cx)) + radius + 1)
+    y0, y1 = max(0, int(round(cy)) - radius), min(gray.shape[0], int(round(cy)) + radius + 1)
+    win = gray[y0:y1, x0:x1].astype(np.float64)
+    if win.size == 0:
+        return 0.0, True, ("locator_window_empty",)
+    background = float(np.median(win))
+    peak = float(win.max())
+    contrast = peak - background
+    plateau_margin = max(1.0, 0.02 * max(contrast, 1.0))
+    plateau_fraction = float(np.mean(win >= peak - plateau_margin))
+    displacement_cells = float(np.linalg.norm(np.asarray(center) - geometric) / cell)
+    reasons: list[str] = []
+    if contrast < 8.0:
+        reasons.append("locator_low_contrast")
+    if plateau_fraction > 0.65:
+        reasons.append("locator_flat_topped")
+    if displacement_cells > 0.45:
+        reasons.append("locator_centroid_unstable")
+    contrast_score = float(np.clip((contrast - 8.0) / 32.0, 0.0, 1.0))
+    plateau_score = float(np.clip(1.0 - plateau_fraction / 0.65, 0.0, 1.0))
+    displacement_score = float(np.clip(1.0 - displacement_cells / 0.45, 0.0, 1.0))
+    quality = min(contrast_score, plateau_score, displacement_score)
+    return quality, bool(reasons), tuple(reasons)
+
+
+def _normalise_detector_gray(image: NDArray) -> NDArray[np.uint8]:
+    """Preserve native input until a deliberate, non-wrapping 8-bit conversion."""
+    gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    if gray.dtype == np.uint8:
+        return gray
+    if np.issubdtype(gray.dtype, np.integer):
+        maximum = float(np.iinfo(gray.dtype).max)
+        return np.clip(np.rint(gray.astype(np.float64) * (255.0 / maximum)), 0, 255).astype(np.uint8)
+    finite = gray[np.isfinite(gray)]
+    if finite.size == 0:
+        return np.zeros(gray.shape, dtype=np.uint8)
+    lo, hi = float(finite.min()), float(finite.max())
+    if hi <= lo:
+        return np.zeros(gray.shape, dtype=np.uint8)
+    return np.clip(np.rint((gray - lo) * (255.0 / (hi - lo))), 0, 255).astype(np.uint8)
+
+
 def _grid_coords(dets: list[Detection]) -> NDArray[np.float64]:
     """Continuous grid position per detection, including the sub-quadrant offset.
 
@@ -221,16 +279,17 @@ def _topology_filter(dets: list[Detection], cfg: DetectorConfig) -> list[Detecti
         conf = d.confidence if residual <= cfg.topology_max_residual_px else d.confidence * 0.5
         out.append(Detection(
             d.frame_id, d.marker_id, d.pixel_u, d.pixel_v,
-            conf, d.differenced, d.saturated,
+            conf, d.differenced, d.saturated, d.localization_quality,
+            d.localization_rejected, d.localization_reasons,
         ))
     return out
 
 
 def detect_markers(
-    image: NDArray[np.uint8],
+    image: NDArray,
     *,
     frame_id: int = 0,
-    inverted: NDArray[np.uint8] | None = None,
+    inverted: NDArray | None = None,
     config: DetectorConfig | None = None,
 ) -> list[Detection]:
     """Detect and decode VP-QSP markers in one image.
@@ -240,11 +299,10 @@ def detect_markers(
     successfully decoded, CRC-valid marker.
     """
     cfg = config or DetectorConfig()
-    gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    gray = gray.astype(np.uint8)
+    gray = _normalise_detector_gray(image)
     differenced = inverted is not None
     if differenced:
-        inv = inverted if inverted.ndim == 2 else cv2.cvtColor(inverted, cv2.COLOR_BGR2GRAY)
+        inv = _normalise_detector_gray(inverted)
         signed = gray.astype(np.int16) - inv.astype(np.int16)
         # Segmentation only needs the positive half; decode + centroid use the
         # full signed image so ambient gradients cancel (A2.2).
@@ -298,11 +356,17 @@ def _detect_pass(
         if marker is None:
             continue
         u, v = _subpixel_center(sample_src, corners)
+        localization_quality, localization_rejected, localization_reasons = (
+            _localization_quality(sample_src, corners, (u, v))
+        )
         x0, y0 = np.floor(corners.min(axis=0)).astype(int)
         x1, y1 = np.ceil(corners.max(axis=0)).astype(int)
         x0, y0 = max(x0, 0), max(y0, 0)
         x1, y1 = min(x1, sample_src.shape[1] - 1), min(y1, sample_src.shape[0] - 1)
         roi = sample_src[y0:y1 + 1, x0:x1 + 1]
-        saturated = bool(roi.size and np.mean(roi >= 250) > 0.01)
-        dets.append(Detection(frame_id, marker, u, v, 1.0, differenced, saturated))
+        brightness_warning = bool(roi.size and np.mean(roi >= 250) > 0.01)
+        dets.append(Detection(
+            frame_id, marker, u, v, 1.0, differenced, brightness_warning,
+            localization_quality, localization_rejected, localization_reasons,
+        ))
     return dets

@@ -164,6 +164,8 @@ class ScreenDefinition(BaseModel):
     processor: Optional[ProcessorCanvas] = None
     """Optional LED-processor canvas mapping (C0); ``None`` ⇒ assume a direct 1:1
     physical canvas (the Phase-1 assumption)."""
+    geometry_provenance: Optional[dict] = None
+    """Formal fixed-pose geometry qualification emitted by Volo screen export."""
 
     def section_by_name(self, name: str) -> WallSection | None:
         for s in self.sections:

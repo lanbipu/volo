@@ -199,12 +199,16 @@ def lens_info(ctx, lens_path, **flags) -> None:
 @click.option("--k1", type=float, default=0.0, show_default=True)
 @click.option("--k2", type=float, default=0.0, show_default=True)
 @click.option("--k3", type=float, default=0.0, show_default=True)
+@click.option(
+    "--debug-unqualified", is_flag=True,
+    help="Allow explicit/manual intrinsics for a non-formal diagnostic solve.",
+)
 @click.option("--out", "out_path", type=click.Path(), default=None, help="Optional pose result JSON.")
 @common_options
 @click.pass_context
 def pose(ctx, image, screen_targets, lens_path, fx, fy, cx, cy, focal_mm,
          sensor_width_mm, sensor_height_mm, principal_x_mm, principal_y_mm,
-         k1, k2, k3, out_path, **flags) -> None:
+         k1, k2, k3, debug_unqualified, out_path, **flags) -> None:
     """One-shot camera-to-Stage pose from any visible selected screen."""
 
     def body() -> OperationOutput:
@@ -247,12 +251,20 @@ def pose(ctx, image, screen_targets, lens_path, fx, fy, cx, cy, focal_mm,
             raw_lens = json.loads(Path(lens_path).read_text(encoding="utf-8"))
             qualification_reasons = _lens_qualification_reasons(raw_lens)
             if qualification_reasons:
-                raise click.UsageError(
+                from vpcal.core.errors import MasterLensRequired
+                raise MasterLensRequired(
                     "fixed formal solve requires a qualified master lens: "
-                    + "; ".join(qualification_reasons)
+                    + "; ".join(qualification_reasons),
+                    details={"reasons": qualification_reasons},
                 )
             lens = _load_lens(lens_path)
         elif has_any_pixel:
+            if not debug_unqualified:
+                from vpcal.core.errors import MasterLensRequired
+                raise MasterLensRequired(
+                    "fixed formal solve requires --lens <qualified master>; "
+                    "explicit pixel intrinsics are debug-only"
+                )
             if not has_all_pixel:
                 raise click.UsageError("--fx, --fy, --cx and --cy must be provided together")
             lens = LensCalResult(
@@ -262,6 +274,12 @@ def pose(ctx, image, screen_targets, lens_path, fx, fy, cx, cy, focal_mm,
                 image_size=(width, height),
             )
         else:
+            if not debug_unqualified:
+                from vpcal.core.errors import MasterLensRequired
+                raise MasterLensRequired(
+                    "fixed formal solve requires --lens <qualified master>; "
+                    "physical/default intrinsics are debug-only"
+                )
             if not focal_mm or not sensor_width_mm or not sensor_height_mm:
                 raise click.UsageError(
                     "--focal-mm, --sensor-width-mm and --sensor-height-mm are required "
@@ -287,6 +305,24 @@ def pose(ctx, image, screen_targets, lens_path, fx, fy, cx, cy, focal_mm,
                 f"lens image_size {lens_size[0]}x{lens_size[1]} does not match "
                 f"capture {width}x{height}"
             )
+
+        if not debug_unqualified:
+            invalid_geometry = {
+                target.label: (
+                    target.screen.geometry_provenance.get("reasons", ["geometry provenance missing"])
+                    if target.screen.geometry_provenance
+                    else ["geometry provenance missing"]
+                )
+                for target in loaded
+                if not target.screen.geometry_provenance
+                or target.screen.geometry_provenance.get("formal_eligible") is not True
+            }
+            if invalid_geometry:
+                from vpcal.core.errors import ScreenGeometryInconsistent
+                raise ScreenGeometryInconsistent(
+                    "fixed formal solve requires anchored, withheld-validated screen geometry",
+                    details={"screens": invalid_geometry},
+                )
 
         if flags.get("dry_run"):
             return OperationOutput(
@@ -323,6 +359,9 @@ def pose(ctx, image, screen_targets, lens_path, fx, fy, cx, cy, focal_mm,
         camera_matrix[:3, :3] = camera_rotation
         camera_matrix[:3, 3] = camera_position
         out = {
+            "schema_version": "volo_stage_pose.v2",
+            "solve_kind": "fixed_extrinsics_only",
+            "formal": not debug_unqualified,
             "image": image,
             "image_size": [width, height],
             "camera_from_stage": {
@@ -340,6 +379,12 @@ def pose(ctx, image, screen_targets, lens_path, fx, fy, cx, cy, focal_mm,
             "independent_rms_by_screen": result.independent_rms_by_target,
             "screen_to_screen_consistency": result.screen_to_screen_consistency,
             "rejected_observations": result.rejected_observations,
+            "preflight": result.preflight,
+            "qualification": {
+                "passed": not debug_unqualified,
+                "master_lens": bool(lens_path),
+                "fail_closed": True,
+            },
             "visible_screens": [
                 label for label, count in result.markers_by_target.items() if count > 0
             ],
@@ -462,11 +507,13 @@ def spatial(ctx, images, screen_a, screen_b, lens_path, offset_a, offset_b, scre
 @click.option("--k1", type=float, default=0.0, show_default=True)
 @click.option("--k2", type=float, default=0.0, show_default=True)
 @click.option("--k3", type=float, default=0.0, show_default=True)
+@click.option("--image-width", type=click.IntRange(min=1), default=None)
+@click.option("--image-height", type=click.IntRange(min=1), default=None)
 @click.option("--no-markers", is_flag=True, help="Omit cabinet-corner / cell marker points.")
 @common_options
 @click.pass_context
 def grid(ctx, screen_targets, pose_path, lens_path, fx, fy, cx, cy, k1, k2, k3,
-         no_markers, **flags) -> None:
+         image_width, image_height, no_markers, **flags) -> None:
     """Project cabinet-grid wireframes through a solved Stage pose (normalised 2D)."""
 
     def body() -> OperationOutput:
@@ -488,7 +535,9 @@ def grid(ctx, screen_targets, pose_path, lens_path, fx, fy, cx, cy, k1, k2, k3,
         else:
             if not has_all_pixel:
                 raise click.UsageError("--fx, --fy, --cx and --cy must be provided together")
-            image_size = pose.get("image_size")
+            if (image_width is None) != (image_height is None):
+                raise click.UsageError("--image-width and --image-height must be provided together")
+            image_size = [image_width, image_height] if image_width is not None else pose.get("image_size")
             if not (
                 isinstance(image_size, list)
                 and len(image_size) >= 2
@@ -500,6 +549,16 @@ def grid(ctx, screen_targets, pose_path, lens_path, fx, fy, cx, cy, k1, k2, k3,
                     "principal point cannot be used to infer frame dimensions"
                 )
             width, height = int(image_size[0]), int(image_size[1])
+            pose_image_size = pose.get("image_size")
+            if (
+                image_width is not None
+                and isinstance(pose_image_size, list)
+                and len(pose_image_size) >= 2
+                and [width, height] != [int(pose_image_size[0]), int(pose_image_size[1])]
+            ):
+                raise click.UsageError(
+                    "explicit image dimensions do not match stage_pose.json image_size"
+                )
             lens = LensCalResult(
                 fx=float(fx), fy=float(fy), cx=float(cx), cy=float(cy),
                 dist_coeffs=[k1, k2, 0.0, 0.0, k3],

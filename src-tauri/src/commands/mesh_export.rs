@@ -35,6 +35,20 @@ struct VpcalScreenDefinition {
     led_pixel_pitch_mm: f64,
     markers_per_cabinet: u8,
     sections: Vec<VpcalSection>,
+    geometry_provenance: VpcalGeometryProvenance,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct VpcalGeometryProvenance {
+    source: &'static str,
+    solve_ref: Option<String>,
+    solve_ref_sha256: Option<String>,
+    visual_solve_digest: Option<String>,
+    intrinsics_source: Option<String>,
+    warning_codes: Vec<String>,
+    withheld_validation_passed: bool,
+    formal_eligible: bool,
+    reasons: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -193,6 +207,85 @@ fn rebuilt_export_placement(
         transforms.as_ref().map(|(value, _)| value),
     );
     Ok(Some((placement, transforms.map(|(_, digest)| digest))))
+}
+
+fn export_geometry_provenance(
+    project_path: &Path,
+    project: &ProjectConfig,
+    screen_id: &str,
+    solve_ref_sha256: Option<String>,
+) -> VpcalGeometryProvenance {
+    let solve_ref = mesh_app::placement::alignment_for_screen(project, screen_id)
+        .and_then(|group| group.solve_ref.as_deref())
+        .map(|raw| {
+            let path = PathBuf::from(raw);
+            if path.is_absolute() { path } else { project_path.join(path) }
+        });
+    let mut digest_path: Option<PathBuf> = None;
+    let mut digest_value: Option<serde_json::Value> = None;
+    if let Some(ref_path) = solve_ref.as_ref() {
+        let visual_dir = project_path.join("measurements").join("visual_solves");
+        if let Ok(entries) = std::fs::read_dir(visual_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|v| v.to_str()) != Some("json") { continue; }
+                let Ok(bytes) = std::fs::read(&path) else { continue };
+                let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else { continue };
+                let Some(recorded) = value.get("screen_transforms_path").and_then(serde_json::Value::as_str) else { continue };
+                let candidate = PathBuf::from(recorded);
+                let candidate = if candidate.is_absolute() { candidate } else { project_path.join(candidate) };
+                let candidate_cmp = candidate.canonicalize().unwrap_or(candidate);
+                let ref_cmp = ref_path.canonicalize().unwrap_or_else(|_| ref_path.clone());
+                if candidate_cmp == ref_cmp {
+                    let newer = digest_value.as_ref().map_or(true, |current| {
+                        value.get("finished_at").and_then(serde_json::Value::as_str)
+                            > current.get("finished_at").and_then(serde_json::Value::as_str)
+                    });
+                    if newer { digest_path = Some(path); digest_value = Some(value); }
+                }
+            }
+        }
+    }
+    let intrinsics_source = digest_value.as_ref()
+        .and_then(|value| value.get("intrinsics_source"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let warning_codes: Vec<String> = digest_value.as_ref()
+        .and_then(|value| value.get("warnings"))
+        .and_then(serde_json::Value::as_array)
+        .into_iter().flatten()
+        .filter_map(|warning| warning.get("code").and_then(serde_json::Value::as_str).map(str::to_string))
+        .collect();
+    let validation_path = solve_ref.as_ref().map(|path| PathBuf::from(format!("{}.validation.json", path.display())));
+    let withheld_validation_passed = validation_path.as_ref()
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|value| value.pointer("/withheld_validation/passed").and_then(serde_json::Value::as_bool))
+        == Some(true);
+    let mut reasons = Vec::new();
+    if solve_ref.is_none() { reasons.push("missing_solve_ref".into()); }
+    if digest_value.is_none() { reasons.push("missing_visual_solve_digest".into()); }
+    if intrinsics_source.as_deref() == Some("auto_self_calibrated") {
+        reasons.push("auto_self_calibrated".into());
+    }
+    for blocked in ["no_intrinsics_anchor", "ba_budget_exhausted"] {
+        if warning_codes.iter().any(|code| code == blocked) { reasons.push(blocked.into()); }
+    }
+    if !withheld_validation_passed { reasons.push("missing_withheld_validation".into()); }
+    if digest_value.as_ref().and_then(|v| v.get("status")).and_then(serde_json::Value::as_str) != Some("success") {
+        reasons.push("visual_solve_not_success".into());
+    }
+    VpcalGeometryProvenance {
+        source: if solve_ref.is_some() { "rebuilt_alignment_solve_ref" } else { "nominal" },
+        solve_ref: solve_ref.as_ref().map(|path| path.display().to_string()),
+        solve_ref_sha256,
+        visual_solve_digest: digest_path.map(|path| path.display().to_string()),
+        intrinsics_source,
+        warning_codes,
+        withheld_validation_passed,
+        formal_eligible: reasons.is_empty(),
+        reasons,
+    }
 }
 
 fn pixel_pitch(screen: &ScreenConfig) -> VoloResult<f64> {
@@ -425,6 +518,10 @@ pub fn export_vpcal_screen(
     }))?;
     let fingerprint = format!("{:x}", Sha256::digest(&source));
     let grid = mesh_app::lens_workspace::pattern_grid_for_screen(screen);
+    let geometry_provenance = export_geometry_provenance(
+        &project_path, &project, &screen_id,
+        rebuilt.as_ref().and_then(|(_, digest)| digest.clone()),
+    );
     let sections = if let Some((placement, _)) = rebuilt.as_ref() {
         let mut local_screen = screen.clone();
         local_screen.position_m = [0.0, 0.0, 0.0];
@@ -444,6 +541,7 @@ pub fn export_vpcal_screen(
         led_pixel_pitch_mm: pixel_pitch(screen)?,
         markers_per_cabinet: grid.markers_per_cell,
         sections,
+        geometry_provenance,
     };
     let bytes = serde_json::to_vec_pretty(&definition)?;
     let path = out_path
@@ -498,10 +596,16 @@ output: { target: neutral, obj_filename: "{screen_id}.obj", weld_vertices_tolera
         let json: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&result.path).unwrap()).unwrap();
         assert_eq!(json["unit"], "mm");
-        assert_eq!(json["cabinet_size"], serde_json::json!([500.0, 500.0]));
+        let grid = json["cabinet_size"].as_array().unwrap();
+        assert!((grid[0].as_f64().unwrap() - 500.0 / 3.0).abs() < 1.0e-9);
+        assert!((grid[1].as_f64().unwrap() - 500.0 / 3.0).abs() < 1.0e-9);
+        assert_eq!(json["markers_per_cabinet"], 1);
         assert_eq!(json["led_pixel_pitch_mm"], 2.0);
         assert_eq!(json["sections"][0]["type"], "plane");
         assert_eq!(json["sections"][0]["width_mm"], 2000.0);
+        assert_eq!(json["geometry_provenance"]["formal_eligible"], false);
+        assert!(json["geometry_provenance"]["reasons"]
+            .as_array().unwrap().iter().any(|value| value == "missing_solve_ref"));
         assert_eq!(result.fingerprint.len(), 64);
 
         // Local acceptance gate: when the repo's vpcal venv is present, use

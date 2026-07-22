@@ -50,7 +50,9 @@ def _write_screen(screen: ScreenDefinition, path: Path) -> Path:
 def _write_lens(path: Path) -> Path:
     lens = {"fx": 1200, "fy": 1200, "cx": 960, "cy": 540,
             "dist_coeffs": [0, 0, 0, 0, 0], "rms": 0.1,
-            "num_images": 10, "num_points": 200, "image_size": [1920, 1080]}
+            "num_images": 10, "num_points": 200, "image_size": [1920, 1080],
+            "calibration_kind": "multi_view_intrinsics", "is_master": True,
+            "session_coupled": False}
     path.write_text(json.dumps(lens))
     return path
 
@@ -155,6 +157,7 @@ class TestPoseCLI:
             "--screen-target", str(screen), "0", "0",
             "--fx", "1500", "--fy", "1500",
             "--cx", "970", "--cy", "535",
+            "--debug-unqualified",
             "--dry-run",
         )
 
@@ -177,6 +180,7 @@ class TestPoseCLI:
             "--screen-target", str(screen), "0", "0",
             "--focal-mm", "50",
             "--sensor-width-mm", "36", "--sensor-height-mm", "24",
+            "--debug-unqualified",
             "--dry-run",
         )
 
@@ -199,6 +203,7 @@ class TestPoseCLI:
             "--focal-mm", "50",
             "--sensor-width-mm", "36", "--sensor-height-mm", "20.25",
             "--principal-x-mm", "0.3", "--principal-y-mm", "-0.2",
+            "--debug-unqualified",
             "--dry-run",
         )
 
@@ -209,6 +214,33 @@ class TestPoseCLI:
         assert intrinsics["cy"] == pytest.approx(529.3333333)
         assert intrinsics["active_sensor_mm"] == pytest.approx([36.0, 20.25])
         assert intrinsics["crop_mode"] == "none"
+
+    def test_default_intrinsics_are_rejected_for_formal_solve(self, tmp_path):
+        screen, image = self._fixture(tmp_path)
+        result = _run(
+            "--output", "json", "tracker-free", "pose",
+            "--image", str(image),
+            "--screen-target", str(screen), "0", "0",
+            "--focal-mm", "50", "--sensor-width-mm", "36", "--sensor-height-mm", "24",
+            "--dry-run",
+        )
+        assert result.returncode != 0
+        envelope = json.loads(result.stdout)
+        assert envelope["error"]["code"] == "MASTER_LENS_REQUIRED"
+
+    def test_unanchored_screen_geometry_is_rejected_for_formal_solve(self, tmp_path):
+        screen, image = self._fixture(tmp_path)
+        lens = _write_lens(tmp_path / "master-lens.json")
+        result = _run(
+            "--output", "json", "tracker-free", "pose",
+            "--image", str(image),
+            "--screen-target", str(screen), "0", "0",
+            "--lens", str(lens), "--dry-run",
+        )
+        assert result.returncode != 0
+        envelope = json.loads(result.stdout)
+        assert envelope["error"]["code"] == "SCREEN_GEOMETRY_INCONSISTENT"
+        assert "geometry provenance missing" in envelope["error"]["details"]["screens"]["screen"]
 
     def test_opencv_basis_converts_to_zero_volo_ptr(self):
         stage_from_cv = np.diag([1.0, -1.0, -1.0])
@@ -446,3 +478,14 @@ class TestGridCLI:
         assert data["image_size"] == [1920, 1080]
         assert len(data["screens"]) == 1
         assert len(data["screens"][0]["segments"]) >= 4
+
+    def test_explicit_intrinsics_require_real_image_size(self, tmp_path):
+        screen = _write_screen(_screen(), tmp_path / "screen.json")
+        pose = _write_stage_pose(tmp_path / "stage_pose.json")
+        result = _run_ok(
+            "--output", "json", "tracker-free", "grid",
+            "--screen-target", str(screen), "0", "0", "--pose", str(pose),
+            "--fx", "1200", "--fy", "1200", "--cx", "970", "--cy", "535",
+            "--image-width", "1920", "--image-height", "1080",
+        )
+        assert result["data"]["image_size"] == [1920, 1080]

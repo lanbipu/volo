@@ -9,9 +9,10 @@ import { lensWorkspacePaths } from "../api/lensWorkspace";
 import {
   listLensSessions, deleteLensSession, readLensQaReport, readImageAsDataUrl,
   startCaptureStills, stillsFinish,
-  trackerFreeStagePose, trackerFreeGrid,
+  trackerFreeLensCal, trackerFreeLensInfo, trackerFreeStagePose, trackerFreeGrid,
   qualityFromRms, qualityFromLabel, writeFixedRunMeta,
 } from "../api/lensCommands";
+import { pickDirectory, pickFile } from "../api/commands";
 import { probeTrackingSource } from "../api/captureProfiles";
 import {
   spawnSidecarStreaming, cancelSidecarTask, cancelSidecarTaskAwaitExit, useSidecarStream, listenSidecarStream,
@@ -54,6 +55,19 @@ import {
   const finite = (value, fallback = 0) => {
     const n = Number(value);
     return Number.isFinite(n) ? n : fallback;
+  };
+  const fixedSolveFailure = (error) => {
+    const code = error && error.code;
+    const details = error && error.details || {};
+    if (code === 'MASTER_LENS_REQUIRED') return 'Lens invalid · ' + error.message;
+    if (code === 'LOCALIZATION_QUALITY_FAILED') return 'Detection failed · ' + error.message;
+    if (code === 'SCREEN_GEOMETRY_INCONSISTENT') {
+      const joint = Number(details.joint_projective && details.joint_projective.rms_px);
+      return 'Detection OK · Geometry invalid · '
+        + (Number.isFinite(joint) ? ('joint RMS ' + joint.toFixed(3) + ' px · ') : '')
+        + error.message;
+    }
+    return 'Pose failed · ' + (error && error.message ? error.message : String(error));
   };
   function capturePixelIntrinsics(lens, source) {
     const width = finite(source && source.width);
@@ -429,6 +443,7 @@ import {
     /* 重入护栏：ref 挡同帧重入（state 更新是异步的），state 驱动按钮禁用/文案 */
     const startingRef = useRef(false);
     const [starting, setStarting] = useState(false);
+    const [masterLensBusy, setMasterLensBusy] = useState(false);
     const [stillsSnapN, setStillsSnapN] = useState(0);
     const stillsStream = useSidecarStream(stillsTaskId);
     const cam = (camSnap.cameras || []).find((c) => c.id === camId) || camSnap.cameras[0] || CAL_CAMERAS[0];
@@ -478,10 +493,44 @@ import {
     const deployStoreSnap = window.deployStore && window.deployStore.get();
     const deployChannel = (deployStoreSnap && deployStoreSnap.channel)
       || (s.calOutTarget === 'cluster' ? 'ndisplay' : 'monitor');
-    const fixedLensReady = !!(cam && cam.lens && cam.lensConfirmed
-      && Number(cam.lens.focal && cam.lens.focal.v) > 0
-      && Number(cam.lens.sensorW && cam.lens.sensorW.v) > 0
-      && Number(cam.lens.sensorH && cam.lens.sensorH.v) > 0);
+    const fixedLensReady = !!(cam && cam.lensIsMaster && cam.masterLensPath
+      && cam.masterLensInfo && cam.masterLensInfo.qualified_master);
+    const installMasterLens = async (path) => {
+      const info = await trackerFreeLensInfo(path);
+      if (!info.qualified_master) {
+        throw new Error('Master lens qualification failed: ' + (info.reasons || []).join('; '));
+      }
+      if (!window.camStore) throw new Error('camera store unavailable');
+      window.camStore.setMasterLens(camId, path, info);
+      s.pushLog({ lv: 'ok', cat: 'lens', msg: 'Master lens 已绑定 · RMS <b>'
+        + Number(info.rms).toFixed(3) + '</b> px · <b>' + info.num_images + '</b> poses' });
+    };
+    const importMasterLens = async () => {
+      setMasterLensBusy(true);
+      try {
+        const path = await pickFile('Qualified master lens', ['json']);
+        if (path) await installMasterLens(path);
+      } catch (e) {
+        s.pushLog({ lv: 'err', cat: 'lens', msg: 'Lens invalid · ' + (e && e.message ? e.message : e) });
+      } finally { setMasterLensBusy(false); }
+    };
+    const createMasterLens = async () => {
+      setMasterLensBusy(true);
+      try {
+        if (!projectPath || !ag.targets.length) throw new Error('需要项目路径和至少一个已导出的 screen target');
+        const imagesDir = await pickDirectory();
+        if (!imagesDir) return;
+        const target = ag.targets[0];
+        const outLens = joinPath(lensWorkspacePaths(projectPath).vpcalDir, 'lenses/' + camId + '.master-lens.json');
+        await trackerFreeLensCal({
+          imagesDir, screenPath: target.screenJson, outLensJson: outLens,
+          cabColOffset: target.offset, screenId: target.code,
+        });
+        await installMasterLens(outLens);
+      } catch (e) {
+        s.pushLog({ lv: 'err', cat: 'lens', msg: 'Master lens 生成失败 · ' + (e && e.message ? e.message : e) });
+      } finally { setMasterLensBusy(false); }
+    };
     /* §3.5 qsp：部署 + profile + 屏幕定义已同步 + 单 section + 图案未失败（生成中 / 需重生成仍可点，
        beginCapture 会先补生成）。screenFile 由 ag 系统写入 s.capScreenFile。
        SL×nDisplay：不依赖校正图案 auto-gen，走序列播放通道。 */
@@ -490,7 +539,7 @@ import {
       && ag.screenDef === 'synced' && !ag.multiSection && ag.pattern !== 'genFail'
       && ag.targets.length === ag.selectedIds.length
       && (ag.selectedIds.length <= 1 || deployChannel === 'ndisplay')
-      && (tracked || fixedLensReady || !!params.lensPath);
+      && (tracked || fixedLensReady);
     const readySl = method === 'sl'
       && deployChannel === 'ndisplay'
       && (backend === 'synthetic' || signalReady)
@@ -577,6 +626,7 @@ import {
             outputDir: qaDir,
             modeFixed: isFixed,
             stagePose,
+            artifactStatus: sess.stage_pose_status || 'missing',
             error: sess.error || sess.intrinsics_error || null,
             cameraId: sess.camera_id || null,
             lensJson: sess.lens_json || null,
@@ -664,15 +714,14 @@ import {
           if (!fixedSolvedRun.targets || !fixedSolvedRun.targets.length) {
             throw new Error('该 run 缺少 screen target，无法投影柜格');
           }
-          if (!fixedSolvedRun.lensJson && !fixedSolvedRun.intrinsics) {
-            throw new Error(fixedSolvedRun.intrinsicsError || '该 run 缺少 intrinsics，无法投影柜格');
+          if (!fixedSolvedRun.lensJson) {
+            throw new Error('该 formal run 缺少 qualified master lens，禁止作为 AR source');
           }
           const posePath = joinPath(fixedSolvedRun.sessionDir, 'stage_pose.json');
           const grid = await trackerFreeGrid({
             targets: fixedSolvedRun.targets,
             posePath,
-            intrinsics: fixedSolvedRun.lensJson ? null : fixedSolvedRun.intrinsics,
-            lensPath: fixedSolvedRun.lensJson || null,
+            lensPath: fixedSolvedRun.lensJson,
           });
           if (alive) setArGrid(grid);
         } catch (e) {
@@ -1081,8 +1130,7 @@ import {
         fixedInputRef.current = {
           cameraId: camId,
           screenFile,
-          lens: JSON.parse(JSON.stringify((cam && cam.lens) || {})),
-          lensPath: params.lensPath || null,
+          lensPath: cam.masterLensPath || null,
           targets: ag.targets.map((target) => ({
             id: target.id, screenJson: target.screenJson,
             code: target.code, offset: target.offset,
@@ -1199,15 +1247,16 @@ import {
         const images = joinPath(run.sessionDir, 'captures/normal');
         const firstPng = joinPath(images, '000000.png');
         const poseJson = joinPath(run.sessionDir, 'stage_pose.json');
-        if (!run.lensJson && !run.intrinsics) {
-          throw new Error(run.intrinsicsError || '该固定机位 run 缺少采集时 intrinsics snapshot，不能使用当前摄影机参数代替');
+        if (!run.lensJson) {
+          const error = new Error('该 run 缺少采集时 qualified master lens snapshot');
+          error.code = 'MASTER_LENS_REQUIRED';
+          throw error;
         }
         s.pushLog({ lv: 'info', cat: 'lens', msg: '固定机位单帧求解 · <b>tracker-free pose</b>…' });
         const solved = await trackerFreeStagePose({
           imagePath: firstPng,
           targets: solveTargets,
-          intrinsics: run.lensJson ? null : run.intrinsics,
-          lensPath: run.lensJson || null,
+          lensPath: run.lensJson,
           outPath: poseJson,
         });
         const pose = solved.camera_from_stage;
@@ -1240,19 +1289,27 @@ import {
           msg: '固定机位单帧求解完成 · RMS <b>' + solvedRms.toFixed(3)
             + '</b> px · 可见屏幕 <b>' + solved.visible_screens.join('、') + '</b>',
         });
+        const detectionText = Object.entries((solved.preflight && solved.preflight.homography_by_screen) || {})
+          .map(([label, metrics]) => label + ' decoded/trustworthy '
+            + metrics.decoded + '/' + metrics.trustworthy
+            + ' · H RMS ' + Number(metrics.rms_px).toFixed(3) + ' px'
+            + (metrics.brightness_warnings ? ' · brightness warning ' + metrics.brightness_warnings : ''))
+          .join(' | ');
+        if (detectionText) s.pushLog({ lv: 'ok', cat: 'lens', msg: 'Detection OK · ' + detectionText });
         setLiveRuns((prev) => (prev || []).map((r) => (
           r.id === run.id
             ? Object.assign({}, r, {
                 solveState: solvedState,
                 rms: solvedRms,
                 stagePose: solved,
+                artifactStatus: 'formal',
                 solveError: null,
               })
             : r
         )));
         void refreshSessions();
       } catch (e) {
-        const msg = e && e.message ? e.message : String(e);
+        const msg = fixedSolveFailure(e);
         s.pushLog({ lv: 'err', cat: 'lens', msg: '固定机位求解失败 · ' + msg });
         setLiveRuns((prev) => (prev || []).map((r) => (
           r.id === run.id ? Object.assign({}, r, { solveError: msg }) : r
@@ -1423,6 +1480,19 @@ import {
         h('div', { className: 'lc-field' }, h('span', { className: 'k' }, '选择追踪信号'),
           h(window.Selector, { kpre: '', value: trackSignal, options: TRACK_SIGNALS, onChange: onTrackChange, width: 214, variant: 'obj', align: 'left' })),
         h(CameraParams, { cam, tracked, camId, editable: !tracked })),
+        !tracked ? h('div', { style: { marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--chrome-line)' } },
+          h('div', { className: 'lc-cam-sub', style: { marginTop: 0 } }, 'Fixed-camera · extrinsics-only'),
+          fixedLensReady
+            ? h('div', { className: 'lc-reason ok' }, h(Icon, { name: 'check', size: 12 }),
+                'Master lens · ' + Number(cam.masterLensInfo.rms).toFixed(3) + ' px · '
+                + cam.masterLensInfo.num_images + ' poses')
+            : h('div', { className: 'lc-reason' }, h(Icon, { name: 'info', size: 12 }),
+                'Lens invalid · 需独立 multi-view（≥8 poses）master lens'),
+          h('div', { style: { display: 'flex', gap: 8, marginTop: 8 } },
+            h(Button, { variant: 'secondary', size: 'S', isDisabled: masterLensBusy,
+              onPress: () => void importMasterLens() }, '导入 Master Lens'),
+            h(Button, { variant: 'secondary', size: 'S', isDisabled: masterLensBusy,
+              onPress: () => void createMasterLens() }, '从 Multi-view 生成'))) : null,
       /* d 追踪状态条 */
       h('div', { className: 'lc-grp' }, h('div', { className: 'lc-grp-b', style: { paddingTop: 14 } },
         h('div', { className: 'lc-cam-sub', style: { marginTop: 0 } }, '追踪状态'),
@@ -1453,6 +1523,18 @@ import {
                 run.error ? h('div', { style: { padding: '8px 11px', fontSize: 11.5, color: 'var(--notice-visual)', borderBottom: '1px solid var(--chrome-line)' } }, run.error) : null,
                 !run.error && run.solveError
                   ? h('div', { style: { padding: '8px 11px', fontSize: 11.5, color: 'var(--notice-visual)', borderBottom: '1px solid var(--chrome-line)' } }, '求解失败 · ' + run.solveError)
+                  : null,
+                run.artifactStatus === 'invalid' && !run.solveError
+                  ? h('div', { style: { padding: '8px 11px', fontSize: 11.5, color: 'var(--notice-visual)', borderBottom: '1px solid var(--chrome-line)' } },
+                      'Legacy/unqualified stage_pose 已标记 invalid，不会进入 AR / export')
+                  : null,
+                solved && run.stagePose && run.stagePose.preflight
+                  ? h('div', { style: { padding: '7px 11px', fontSize: 11, borderBottom: '1px solid var(--chrome-line)' } },
+                      Object.entries(run.stagePose.preflight.homography_by_screen || {}).map(([label, metrics]) =>
+                        h('div', { key: label }, label + ' · decoded ' + metrics.decoded
+                          + ' · trustworthy ' + metrics.trustworthy
+                          + ' · H RMS ' + Number(metrics.rms_px).toFixed(3) + ' px'
+                          + (metrics.brightness_warnings ? ' · brightness warning ' + metrics.brightness_warnings : ''))))
                   : null,
                 st === 'none'
                   ? h('div', { className: 'lc-run-solvebar' },
@@ -1491,7 +1573,7 @@ import {
     if (ag.screenDef === 'exportFail') reasons.push('屏幕定义导出失败');
     if (ag.multiSection) reasons.push('折面屏（多 section）图案上屏暂不支持');
     if (ag.pattern === 'genFail') reasons.push('校正图案生成失败');
-    if (!tracked && !fixedLensReady && !params.lensPath) reasons.push('固定机位单帧求解需要已知镜头参数');
+    if (!tracked && !fixedLensReady) reasons.push('Lens invalid · 固定机位正式求解需要 qualified master lens（multi-view ≥8 poses）');
     if (!isSl && ag.selectedIds.length > 1 && deployChannel !== 'ndisplay') reasons.push('多屏同步上屏需要 nDisplay 通道');
     if (isSl && deployChannel !== 'ndisplay') reasons.push('结构光目前仅支持 nDisplay 通道');
     if (isSl && !screenFile) reasons.push('未选屏幕文件');
