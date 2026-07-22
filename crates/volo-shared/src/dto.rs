@@ -100,6 +100,17 @@ pub struct ProjectCameraTracking {
 pub struct ProjectCameraPose {
     pub t_mm: [f64; 3],
     pub euler_deg: [f64; 3],
+    /// Legacy poses omit this and are never eligible for formal AR/export.
+    #[serde(default)]
+    pub formal: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_artifact: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rms_reprojection_px: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_size: Option<[u32; 2]>,
+    #[serde(default)]
+    pub preflight_passed: bool,
 }
 
 /// Per-project rebuilt-mesh alignment groups (`A` in `P_s = A ∘ B_s`).

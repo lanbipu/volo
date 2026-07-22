@@ -1492,6 +1492,11 @@ export interface ProjectCameraTracking {
 export interface ProjectCameraPose {
   t_mm: [number, number, number];
   euler_deg: [number, number, number];
+  formal?: boolean;
+  source_artifact?: string | null;
+  rms_reprojection_px?: number | null;
+  image_size?: [number, number] | null;
+  preflight_passed?: boolean;
 }
 
 /** Per-project rebuilt-mesh alignment (`P_s = A ∘ B_s`). */

@@ -203,13 +203,22 @@
 
   const yamlToUi = (c) => {
     const mp = c.manual_pose || { t_mm: [0, 1500, 3200], euler_deg: [0, 0, 0] };
-    const sp = c.solve_pose || null;
+    const rawSolve = c.solve_pose || null;
     const tracked = !!(c.tracking && c.tracking.protocol);
-    const useSolve = !!sp;
+    const L = c.lens || {};
+    const masterImageSize = Array.isArray(L.image_size) && L.image_size.length >= 2
+      && Number(L.image_size[0]) > 0 && Number(L.image_size[1]) > 0;
+    const qualifiedMaster = !!(L.is_master && L.profile_path
+      && ['multi_view_intrinsics', 'offline_chart'].includes(L.calibration_kind)
+      && Number(L.calibration_poses) >= 8
+      && Number(L.calibration_rms_px) < 2
+      && masterImageSize);
+    const useSolve = !!(rawSolve && rawSolve.formal === true
+      && rawSolve.preflight_passed === true && qualifiedMaster);
+    const sp = useSolve ? rawSolve : null;
     const t = useSolve ? sp.t_mm : mp.t_mm;
     const e = useSolve ? sp.euler_deg : mp.euler_deg;
     const src = useSolve ? 'solve' : (tracked ? 'tracking' : 'manual');
-    const L = c.lens || {};
     return {
       id: c.id, name: c.name || c.id,
       mode: tracked ? 'tracked' : 'fixed',
@@ -217,10 +226,10 @@
       cameraId: tracked && c.tracking.camera_id != null ? c.tracking.camera_id : null,
       solved: !!sp,
       lensConfirmed: L.sensor_w_mm != null && L.sensor_h_mm != null && L.focal_mm != null,
-      lensIsMaster: !!L.is_master && !!L.profile_path,
+      lensIsMaster: qualifiedMaster,
       masterLensPath: L.profile_path || null,
       masterLensInfo: L.profile_path ? {
-        qualified_master: !!L.is_master,
+        qualified_master: qualifiedMaster,
         calibration_kind: L.calibration_kind || null,
         image_size: L.image_size || null,
         rms: L.calibration_rms_px != null ? L.calibration_rms_px : null,
@@ -370,10 +379,13 @@
       camStore.patch({ cameras, dirty: true });
       camStore.scheduleSave();
     },
-    setSolvePose: (id, t_mm, euler_deg, lensPatch) => {
+    setSolvePose: (id, t_mm, euler_deg, lensPatch, poseMeta) => {
       const cams = camSnap.cameras.map((c) => {
         if (c.id !== id) return c;
-        const sp = { t_mm: t_mm.slice(), euler_deg: euler_deg.slice() };
+        const sp = Object.assign({
+          t_mm: t_mm.slice(), euler_deg: euler_deg.slice(),
+          formal: false, preflight_passed: false,
+        }, poseMeta || {});
         const lens = lensPatch
           ? Object.assign({}, c.lens, {
               focal: { v: lensPatch.focal_mm != null ? lensPatch.focal_mm : c.lens.focal.v, src: 'solve' },

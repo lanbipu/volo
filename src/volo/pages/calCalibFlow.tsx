@@ -1278,6 +1278,13 @@ import {
             [t[0], t[1], t[2]],
             [ptr.pan, ptr.tilt, ptr.roll],
             null,
+            {
+              formal: solved.formal === true && solved.qualification && solved.qualification.passed === true,
+              source_artifact: poseJson,
+              rms_reprojection_px: solved.rms_reprojection_px,
+              image_size: solved.image_size,
+              preflight_passed: !!(solved.preflight && solved.preflight.passed),
+            },
           );
         }
         s.setCalLensState('done');
