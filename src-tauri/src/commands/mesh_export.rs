@@ -3,6 +3,7 @@
 pub use mesh_app::export::{build_cabinet_array, run_export};
 
 use crate::commands::mesh::MeshDb;
+use mesh_core::rigid::RigidTransform;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -78,6 +79,120 @@ fn placed_origin(screen: &ScreenConfig, nominal_mm: [f64; 3]) -> [f64; 3] {
 fn z_quaternion(degrees: f64) -> [f64; 4] {
     let half = degrees.to_radians() / 2.0;
     [half.cos(), 0.0, 0.0, half.sin()]
+}
+
+fn quaternion_matrix([w, x, y, z]: [f64; 4]) -> [[f64; 3]; 3] {
+    [
+        [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+        [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+        [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+    ]
+}
+
+fn matrix_mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let mut out = [[0.0; 3]; 3];
+    for row in 0..3 {
+        for col in 0..3 {
+            out[row][col] = (0..3).map(|k| a[row][k] * b[k][col]).sum();
+        }
+    }
+    out
+}
+
+fn matrix_quaternion(m: &[[f64; 3]; 3]) -> [f64; 4] {
+    let trace = m[0][0] + m[1][1] + m[2][2];
+    let (w, x, y, z) = if trace > 0.0 {
+        let s = (trace + 1.0).sqrt() * 2.0;
+        (0.25 * s, (m[2][1] - m[1][2]) / s, (m[0][2] - m[2][0]) / s, (m[1][0] - m[0][1]) / s)
+    } else if m[0][0] > m[1][1] && m[0][0] > m[2][2] {
+        let s = (1.0 + m[0][0] - m[1][1] - m[2][2]).sqrt() * 2.0;
+        ((m[2][1] - m[1][2]) / s, 0.25 * s, (m[0][1] + m[1][0]) / s, (m[0][2] + m[2][0]) / s)
+    } else if m[1][1] > m[2][2] {
+        let s = (1.0 + m[1][1] - m[0][0] - m[2][2]).sqrt() * 2.0;
+        ((m[0][2] - m[2][0]) / s, (m[0][1] + m[1][0]) / s, 0.25 * s, (m[1][2] + m[2][1]) / s)
+    } else {
+        let s = (1.0 + m[2][2] - m[0][0] - m[1][1]).sqrt() * 2.0;
+        ((m[1][0] - m[0][1]) / s, (m[0][2] + m[2][0]) / s, (m[1][2] + m[2][1]) / s, 0.25 * s)
+    };
+    let norm = (w * w + x * x + y * y + z * z).sqrt();
+    [w / norm, x / norm, y / norm, z / norm]
+}
+
+fn transform_point_mm(xf: &RigidTransform, point_mm: [f64; 3]) -> [f64; 3] {
+    let p_m = [point_mm[0] / 1000.0, point_mm[1] / 1000.0, point_mm[2] / 1000.0];
+    let mut out = [0.0; 3];
+    for (row, value) in out.iter_mut().enumerate() {
+        *value = ((0..3).map(|k| xf.rotation[row][k] * p_m[k]).sum::<f64>() + xf.t_m[row]) * 1000.0;
+    }
+    out
+}
+
+fn transform_section(section: VpcalSection, xf: &RigidTransform) -> VpcalSection {
+    let transform_rotation = |rotation: [f64; 4]| {
+        matrix_quaternion(&matrix_mul(&xf.rotation, &quaternion_matrix(rotation)))
+    };
+    match section {
+        VpcalSection::Plane { name, origin, rotation, width_mm, height_mm } => VpcalSection::Plane {
+            name,
+            origin: transform_point_mm(xf, origin),
+            rotation: transform_rotation(rotation),
+            width_mm,
+            height_mm,
+        },
+        VpcalSection::Arc {
+            name, origin, rotation, arc_radius_mm, arc_angle_deg, arc_center_angle_deg, height_mm,
+        } => VpcalSection::Arc {
+            name,
+            origin: transform_point_mm(xf, origin),
+            rotation: transform_rotation(rotation),
+            arc_radius_mm,
+            arc_angle_deg,
+            arc_center_angle_deg,
+            height_mm,
+        },
+    }
+}
+
+fn rebuilt_export_placement(
+    project_path: &Path,
+    project: &ProjectConfig,
+    screen_id: &str,
+) -> VoloResult<Option<(RigidTransform, Option<String>)>> {
+    let Some(group) = mesh_app::placement::alignment_for_screen(project, screen_id) else {
+        return Ok(None);
+    };
+    let transforms = if let Some(solve_ref) = group.solve_ref.as_deref() {
+        let path = PathBuf::from(solve_ref);
+        let path = if path.is_absolute() { path } else { project_path.join(path) };
+        let bytes = std::fs::read(&path).map_err(|error| {
+            VoloError::Io(format!(
+                "rebuilt_alignment solve_ref is required for vpcal export but cannot be read ({}): {error}",
+                path.display()
+            ))
+        })?;
+        let parsed = mesh_app::visual::load_screen_transforms(&path)?;
+        if !parsed.transforms.iter().any(|entry| entry.screen_id == screen_id) {
+            return Err(VoloError::InvalidInput(format!(
+                "rebuilt_alignment solve_ref {} has no transform for screen {screen_id}",
+                path.display()
+            )));
+        }
+        let digest = format!("{:x}", Sha256::digest(&bytes));
+        Some((parsed, digest))
+    } else {
+        if group.screens.len() > 1 {
+            return Err(VoloError::InvalidInput(format!(
+                "multi-screen rebuilt_alignment for {screen_id} has no solve_ref; refusing nominal vpcal export"
+            )));
+        }
+        None
+    };
+    let placement = mesh_app::placement::resolve_rebuilt_placement(
+        project,
+        screen_id,
+        transforms.as_ref().map(|(value, _)| value),
+    );
+    Ok(Some((placement, transforms.map(|(_, digest)| digest))))
 }
 
 fn pixel_pitch(screen: &ScreenConfig) -> VoloResult<f64> {
@@ -281,9 +396,9 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> VoloResult<()> {
     Ok(())
 }
 
-/// Export project.yaml's nominal screen geometry to vpcal ScreenDefinition v1.
-/// Reconstructed-vertex fitting is intentionally not claimed here; the source
-/// fingerprint lets the UI identify a stale nominal export.
+/// Export the active Stage geometry to vpcal ScreenDefinition v1.  Screens in
+/// a rebuilt-alignment group use `A ∘ B_s` (`solve_ref` SE(3) for joint
+/// screens); only screens without measured alignment use nominal placement.
 #[tauri::command]
 pub fn export_vpcal_screen(
     project_path: String,
@@ -300,19 +415,35 @@ pub fn export_vpcal_screen(
         .screens
         .get(&screen_id)
         .ok_or_else(|| VoloError::NotFound(format!("screen {screen_id} in project.yaml")))?;
+    let rebuilt = rebuilt_export_placement(&project_path, &project, &screen_id)?;
     let source = serde_json::to_vec(&serde_json::json!({
         "screen_id": screen_id,
         "screen": screen,
         "project_unit": project.project.unit,
+        "rebuilt_alignment": mesh_app::placement::alignment_for_screen(&project, &screen_id),
+        "solve_ref_digest": rebuilt.as_ref().and_then(|(_, digest)| digest.as_ref()),
     }))?;
     let fingerprint = format!("{:x}", Sha256::digest(&source));
+    let grid = mesh_app::lens_workspace::pattern_grid_for_screen(screen);
+    let sections = if let Some((placement, _)) = rebuilt.as_ref() {
+        let mut local_screen = screen.clone();
+        local_screen.position_m = [0.0, 0.0, 0.0];
+        local_screen.yaw_deg = 0.0;
+        local_screen.height_offset_mm = 0.0;
+        vpcal_sections(&screen_id, &local_screen, &project)?
+            .into_iter()
+            .map(|section| transform_section(section, placement))
+            .collect()
+    } else {
+        vpcal_sections(&screen_id, screen, &project)?
+    };
     let definition = VpcalScreenDefinition {
         name: format!("{} / {}", project.project.name, screen_id),
         unit: "mm",
-        cabinet_size: screen.cabinet_size_mm,
+        cabinet_size: grid.cell_size_mm,
         led_pixel_pitch_mm: pixel_pitch(screen)?,
-        markers_per_cabinet: 4,
-        sections: vpcal_sections(&screen_id, screen, &project)?,
+        markers_per_cabinet: grid.markers_per_cell,
+        sections,
     };
     let bytes = serde_json::to_vec_pretty(&definition)?;
     let path = out_path

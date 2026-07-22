@@ -97,7 +97,9 @@ def test_project_frontal_camera_keeps_segments_in_frame():
     assert out["image_size"] == [1920, 1080]
     assert len(out["screens"]) == 1
     segs = out["screens"][0]["segments"]
+    perimeter = out["screens"][0]["perimeter"]
     assert len(segs) >= 8  # outer frame + seams
+    assert len(perimeter) == 4
     for x1, y1, x2, y2 in segs:
         for v in (x1, y1, x2, y2):
             assert -0.05 <= v <= 1.05

@@ -69,6 +69,20 @@ pub struct ProjectCameraLens {
     pub cx: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cy: Option<f64>,
+    /// Independently calibrated pixel-domain profile used by formal fixed-pose
+    /// solves. Numeric/manual fields above are display/edit values only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_path: Option<String>,
+    #[serde(default)]
+    pub is_master: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calibration_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_size: Option<[u32; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calibration_rms_px: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calibration_poses: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

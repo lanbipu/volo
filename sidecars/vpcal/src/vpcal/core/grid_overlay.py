@@ -83,6 +83,21 @@ def cabinet_grid_polylines(
     return polylines, markers
 
 
+def screen_perimeter_polylines(screen: ScreenDefinition) -> list[Array]:
+    """Return each section's true perspective perimeter as one closed polyline."""
+    out: list[Array] = []
+    for section in screen.sections:
+        samples = _ARC_U_SAMPLES if isinstance(section, ArcSection) else 2
+        top_u = np.linspace(0.0, 1.0, samples)
+        bottom_u = np.linspace(1.0, 0.0, samples)
+        points = [section.uv_to_world(0.0, 0.0), section.uv_to_world(0.0, 1.0)]
+        points.extend(section.uv_to_world(float(u), 1.0) for u in top_u[1:])
+        points.append(section.uv_to_world(1.0, 0.0))
+        points.extend(section.uv_to_world(float(u), 0.0) for u in bottom_u[1:])
+        out.append(np.asarray(points, dtype=np.float64))
+    return out
+
+
 def opencv_T_from_stage_pose(pose: dict[str, Any]) -> Array:
     """Convert tracker-free ``stage_pose.json`` Volo matrix → OpenCV ``T_C_from_S``.
 
@@ -208,9 +223,11 @@ def project_screen_grid(
 ) -> dict[str, Any]:
     """Project one screen's cabinet grid to normalised 2D segments/markers."""
     polylines, markers = cabinet_grid_polylines(screen, include_markers=include_markers)
+    perimeter_polylines = screen_perimeter_polylines(screen)
     if world_transform is not None:
         R = world_transform[:3, :3] if world_transform.shape == (4, 4) else world_transform
         polylines = [p @ R.T for p in polylines]
+        perimeter_polylines = [p @ R.T for p in perimeter_polylines]
         markers = [R @ m for m in markers]
     width, height = intr.image_size
     if width <= 0 or height <= 0:
@@ -218,10 +235,14 @@ def project_screen_grid(
     segments: list[list[float]] = []
     for pl in polylines:
         segments.extend(_project_polyline_norm(pl, T_C_from_S, intr, width, height))
+    perimeter: list[list[float]] = []
+    for polyline in perimeter_polylines:
+        perimeter.extend(_project_polyline_norm(polyline, T_C_from_S, intr, width, height))
     marker_pts = _project_markers_norm(markers, T_C_from_S, intr, width, height)
     return {
         "label": label or screen.name,
         "segments": segments,
+        "perimeter": perimeter,
         "markers": marker_pts,
     }
 
@@ -258,4 +279,5 @@ __all__ = [
     "opencv_T_from_stage_pose",
     "project_grid_overlay",
     "project_screen_grid",
+    "screen_perimeter_polylines",
 ]

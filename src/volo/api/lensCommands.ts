@@ -118,6 +118,33 @@ export interface TrackerFreeLensCalResult {
   lens_json: string;
 }
 
+export interface TrackerFreeLensInfo {
+  path: string;
+  qualified_master: boolean;
+  reasons: string[];
+  calibration_kind: string | null;
+  is_master: boolean;
+  session_coupled: boolean;
+  num_images: number;
+  num_points: number;
+  rms: number;
+  image_size: [number, number];
+  fx: number; fy: number; cx: number; cy: number;
+  dist_coeffs: number[];
+}
+
+/** Validate provenance/coverage before a lens may unlock formal fixed-pose solve. */
+export async function trackerFreeLensInfo(lensPath: string): Promise<TrackerFreeLensInfo> {
+  const out = await spawnSidecar("vpcal", [
+    "tracker-free", "lens-info", "--lens", forSidecarFsPath(lensPath), "--output", "json",
+  ]);
+  const env = parseEnvelope(out);
+  if (env.status && env.status !== "ok") {
+    throw new Error((env.error && env.error.message) || `tracker-free lens-info failed (exit ${out.exit_code})`);
+  }
+  return env.data as TrackerFreeLensInfo;
+}
+
 /** `vpcal tracker-free lens-cal` → 写 lens.json，返回内参 + RMS。 */
 export async function trackerFreeLensCal(opts: {
   imagesDir: string;
@@ -159,6 +186,7 @@ export interface TrackerFreeVerifyResult {
 
 export interface TrackerFreeStagePoseResult {
   image: string;
+  image_size: [number, number];
   camera_from_stage: TrackerFreeVerifyPose & {
     ptr_deg: { pan: number; tilt: number; roll: number };
     matrix_4x4: number[][];
@@ -167,6 +195,15 @@ export interface TrackerFreeStagePoseResult {
   num_markers: number;
   num_inliers: number;
   markers_by_screen: Record<string, number>;
+  inliers_by_screen: Record<string, number>;
+  rms_by_screen: Record<string, number>;
+  independent_rms_by_screen: Record<string, number>;
+  screen_to_screen_consistency: {
+    consistent: boolean;
+    max_camera_translation_delta_mm: number;
+    max_camera_rotation_delta_deg: number;
+  };
+  rejected_observations: { low_confidence: number; saturated: number };
   visible_screens: string[];
   selected_screens: string[];
   partial_visibility_allowed: boolean;
@@ -256,6 +293,8 @@ export interface GridOverlayScreen {
   label: string;
   /** Normalised segments `[x1,y1,x2,y2]` in 0–1 image space. */
   segments: Array<[number, number, number, number] | number[]>;
+  /** True projected screen perimeter; never an axis-aligned image-space box. */
+  perimeter: Array<[number, number, number, number] | number[]>;
   /** Normalised marker points `[x,y]`. */
   markers: Array<[number, number] | number[]>;
 }

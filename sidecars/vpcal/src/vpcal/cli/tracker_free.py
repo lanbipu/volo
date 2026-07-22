@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Gap between the last cabinet column of Screen A and the first of Screen B
@@ -63,7 +64,17 @@ def lens_cal(ctx, images, screen_path, cab_col_offset, screen_id, out_path, **fl
             "num_images": result.num_images,
             "num_points": result.num_points,
             "image_size": list(result.image_size),
+            "calibration_kind": "multi_view_intrinsics",
+            "is_master": True,
+            "session_coupled": False,
+            "calibrated_at": datetime.now(timezone.utc).isoformat(),
         }
+        reasons = _lens_qualification_reasons(out)
+        if reasons:
+            raise ValueError(
+                "Lens calibration did not qualify as a master lens: " + "; ".join(reasons)
+            )
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         Path(out_path).write_text(json.dumps(out, indent=2))
 
         text = (
@@ -100,6 +111,68 @@ def _load_lens(path: str):
         num_images=d.get("num_images", 0), num_points=d.get("num_points", 0),
         image_size=tuple(d.get("image_size", [0, 0])),
     )
+
+
+def _lens_qualification_reasons(data: dict) -> list[str]:
+    reasons: list[str] = []
+    if data.get("is_master") is not True:
+        reasons.append("is_master is not true")
+    if data.get("session_coupled") is True:
+        reasons.append("session-coupled lens estimates are not reusable master lenses")
+    if data.get("calibration_kind") not in {"multi_view_intrinsics", "offline_chart"}:
+        reasons.append("calibration_kind must be multi_view_intrinsics or offline_chart")
+    if int(data.get("num_images", 0) or 0) < 8:
+        reasons.append("num_images must be >= 8")
+    if int(data.get("num_points", 0) or 0) < 60:
+        reasons.append("num_points must be >= 60")
+    image_size = data.get("image_size")
+    if not (
+        isinstance(image_size, (list, tuple))
+        and len(image_size) >= 2
+        and int(image_size[0]) > 0
+        and int(image_size[1]) > 0
+    ):
+        reasons.append("image_size must be present and positive")
+    rms = float(data.get("rms", float("inf")))
+    if not np.isfinite(rms) or rms >= 2.0:
+        reasons.append("lens calibration RMS must be < 2.0 px")
+    return reasons
+
+
+@tracker_free.command(name="lens-info")
+@click.option("--lens", "lens_path", required=True, type=click.Path(exists=True))
+@common_options
+@click.pass_context
+def lens_info(ctx, lens_path, **flags) -> None:
+    """Inspect master-lens provenance and formal fixed-pose eligibility."""
+
+    def body() -> OperationOutput:
+        raw = json.loads(Path(lens_path).read_text(encoding="utf-8"))
+        lens = _load_lens(lens_path)
+        reasons = _lens_qualification_reasons(raw)
+        data = {
+            "path": str(Path(lens_path)),
+            "qualified_master": not reasons,
+            "reasons": reasons,
+            "calibration_kind": raw.get("calibration_kind"),
+            "is_master": raw.get("is_master") is True,
+            "session_coupled": raw.get("session_coupled") is True,
+            "num_images": int(raw.get("num_images", lens.num_images) or 0),
+            "num_points": int(raw.get("num_points", lens.num_points) or 0),
+            "rms": float(raw.get("rms", lens.rms)),
+            "image_size": list(lens.image_size),
+            "fx": lens.fx,
+            "fy": lens.fy,
+            "cx": lens.cx,
+            "cy": lens.cy,
+            "dist_coeffs": list(lens.dist_coeffs),
+        }
+        return OperationOutput(
+            data=data,
+            text=("Master lens qualified" if not reasons else "Master lens rejected: " + "; ".join(reasons)),
+        )
+
+    run_operation("tracker_free.lens_info", body, **flags)
 
 
 @tracker_free.command(name="pose")
@@ -171,6 +244,13 @@ def pose(ctx, image, screen_targets, lens_path, fx, fy, cx, cy, focal_mm,
             )
 
         if lens_path:
+            raw_lens = json.loads(Path(lens_path).read_text(encoding="utf-8"))
+            qualification_reasons = _lens_qualification_reasons(raw_lens)
+            if qualification_reasons:
+                raise click.UsageError(
+                    "fixed formal solve requires a qualified master lens: "
+                    + "; ".join(qualification_reasons)
+                )
             lens = _load_lens(lens_path)
         elif has_any_pixel:
             if not has_all_pixel:
@@ -213,7 +293,7 @@ def pose(ctx, image, screen_targets, lens_path, fx, fy, cx, cy, focal_mm,
                 data={"dry_run_plan": {
                     "image": image,
                     "targets": [target.label for target in loaded],
-                    "partial_visibility_allowed": True,
+                    "partial_visibility_allowed": False,
                     "intrinsics": {
                         "fx": lens.fx, "fy": lens.fy,
                         "cx": lens.cx, "cy": lens.cy,
@@ -244,6 +324,7 @@ def pose(ctx, image, screen_targets, lens_path, fx, fy, cx, cy, focal_mm,
         camera_matrix[:3, 3] = camera_position
         out = {
             "image": image,
+            "image_size": [width, height],
             "camera_from_stage": {
                 "position_mm": camera_position.tolist(),
                 "euler_deg": {"rx": euler[0], "ry": euler[1], "rz": euler[2]},
@@ -254,11 +335,16 @@ def pose(ctx, image, screen_targets, lens_path, fx, fy, cx, cy, focal_mm,
             "num_markers": result.num_markers,
             "num_inliers": result.num_inliers,
             "markers_by_screen": result.markers_by_target,
+            "inliers_by_screen": result.inliers_by_target,
+            "rms_by_screen": result.rms_by_target,
+            "independent_rms_by_screen": result.independent_rms_by_target,
+            "screen_to_screen_consistency": result.screen_to_screen_consistency,
+            "rejected_observations": result.rejected_observations,
             "visible_screens": [
                 label for label, count in result.markers_by_target.items() if count > 0
             ],
             "selected_screens": [target.label for target in loaded],
-            "partial_visibility_allowed": True,
+            "partial_visibility_allowed": False,
         }
         if out_path:
             Path(out_path).write_text(json.dumps(out, indent=2), encoding="utf-8")
@@ -402,11 +488,18 @@ def grid(ctx, screen_targets, pose_path, lens_path, fx, fy, cx, cy, k1, k2, k3,
         else:
             if not has_all_pixel:
                 raise click.UsageError("--fx, --fy, --cx and --cy must be provided together")
-            image_size = pose.get("image_size") or [int(2 * cx), int(2 * cy)]
-            if isinstance(image_size, list) and len(image_size) >= 2:
-                width, height = int(image_size[0]), int(image_size[1])
-            else:
-                width, height = int(round(2 * float(cx))), int(round(2 * float(cy)))
+            image_size = pose.get("image_size")
+            if not (
+                isinstance(image_size, list)
+                and len(image_size) >= 2
+                and int(image_size[0]) > 0
+                and int(image_size[1]) > 0
+            ):
+                raise click.UsageError(
+                    "stage_pose.json must persist a positive image_size; "
+                    "principal point cannot be used to infer frame dimensions"
+                )
+            width, height = int(image_size[0]), int(image_size[1])
             lens = LensCalResult(
                 fx=float(fx), fy=float(fy), cx=float(cx), cy=float(cy),
                 dist_coeffs=[k1, k2, 0.0, 0.0, k3],
@@ -414,10 +507,11 @@ def grid(ctx, screen_targets, pose_path, lens_path, fx, fy, cx, cy, k1, k2, k3,
                 image_size=(width, height),
             )
 
-        # Recover image size from lens; if unknown, derive from principal point.
+        # The calibrated image domain is part of the lens contract.  Principal
+        # point is not an image-size proxy when it has an optical offset.
         lw, lh = (int(lens.image_size[0]), int(lens.image_size[1]))
         if lw <= 0 or lh <= 0:
-            lw, lh = int(round(2 * lens.cx)), int(round(2 * lens.cy))
+            raise click.UsageError("lens profile must contain a positive image_size")
         dist = list(lens.dist_coeffs) + [0.0] * 5
         intr = CameraIntrinsics(
             fx=lens.fx, fy=lens.fy, cx=lens.cx, cy=lens.cy,

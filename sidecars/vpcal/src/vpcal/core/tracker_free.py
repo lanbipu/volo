@@ -114,6 +114,16 @@ class StagePoseResult:
     num_markers: int
     num_inliers: int
     markers_by_target: dict[str, int]
+    inliers_by_target: dict[str, int]
+    rms_by_target: dict[str, float]
+    independent_rms_by_target: dict[str, float]
+    screen_to_screen_consistency: dict
+    rejected_observations: dict[str, int]
+
+
+STAGE_POSE_MAX_RMS_PX = 2.0
+STAGE_POSE_RANSAC_REPROJECTION_PX = 4.0
+STAGE_POSE_MIN_MARKERS_PER_TARGET = 4
 
 
 def _average_transforms(
@@ -536,12 +546,12 @@ def solve_stage_pose(
     targets: list[StagePoseTarget],
     lens: LensCalResult,
 ) -> StagePoseResult:
-    """Solve a fixed camera from one image and any visible selected screen.
+    """Solve one fixed-camera Stage pose from independently calibrated intrinsics.
 
-    Screen definitions are already exported in the common Volo Stage frame.
-    A frame is therefore valid when it contains at least four matched markers
-    from *any subset* of the selected targets.  Targets outside the camera view
-    contribute zero observations and do not fail the solve.
+    Every selected target participates in the formal solution.  A target with
+    fewer than four trustworthy correspondences cannot validate the selected
+    screens' relative Stage geometry, so the solve fails closed rather than
+    silently degrading to a one-screen pose.
     """
     if not targets:
         raise ValueError("At least one Stage screen target is required")
@@ -567,10 +577,42 @@ def solve_stage_pose(
     if image is None:
         raise ValueError(f"Cannot read image: {image_path}")
     detections = detect_markers(image)
-    obj_pts, img_pts = _match_detections(detections, world)
+    low_confidence = sum(
+        1 for detection in detections
+        if detection.marker_id in world and float(getattr(detection, "confidence", 1.0)) < 1.0
+    )
+    saturated = sum(
+        1 for detection in detections
+        if detection.marker_id in world and bool(getattr(detection, "saturated", False))
+    )
+    matched = [
+        detection for detection in detections
+        if detection.marker_id in world
+        and float(getattr(detection, "confidence", 1.0)) >= 1.0
+        and not bool(getattr(detection, "saturated", False))
+    ]
+    obj_pts = np.asarray([world[d.marker_id] for d in matched], dtype=np.float64)
+    img_pts = np.asarray([[d.pixel_u, d.pixel_v] for d in matched], dtype=np.float64)
     if len(obj_pts) < 4:
         raise ValueError(
-            f"Need >= 4 matched markers from any selected screen; got {len(obj_pts)}"
+            f"Need >= 4 trustworthy matched markers; got {len(obj_pts)} "
+            f"({low_confidence} low-confidence, {saturated} saturated rejected)"
+        )
+
+    markers_by_target = {
+        label: sum(1 for detection in matched if detection.marker_id in ids)
+        for label, ids in ids_by_target.items()
+    }
+    incomplete_targets = {
+        label: count for label, count in markers_by_target.items()
+        if count < STAGE_POSE_MIN_MARKERS_PER_TARGET
+    }
+    if incomplete_targets:
+        detail = ", ".join(f"{label}={count}" for label, count in incomplete_targets.items())
+        raise ValueError(
+            "Stage pose requires >= "
+            f"{STAGE_POSE_MIN_MARKERS_PER_TARGET} trustworthy markers on every selected screen; "
+            f"insufficient: {detail}"
         )
 
     camera_matrix = np.array([
@@ -586,36 +628,116 @@ def solve_stage_pose(
         camera_matrix,
         dist,
         iterationsCount=200,
-        reprojectionError=4.0,
+        reprojectionError=STAGE_POSE_RANSAC_REPROJECTION_PX,
         confidence=0.999,
         flags=cv2.SOLVEPNP_ITERATIVE,
     )
-    if not ok:
-        ok, rvec, tvec = cv2.solvePnP(
-            obj_pts.astype(np.float64), img_pts.astype(np.float64),
-            camera_matrix, dist, flags=cv2.SOLVEPNP_ITERATIVE,
+    if not ok or inliers is None or len(inliers) < 4:
+        raise ValueError(
+            "Stage pose RANSAC failed closed; no fallback pose was persisted "
+            f"({len(obj_pts)} trustworthy markers, threshold "
+            f"{STAGE_POSE_RANSAC_REPROJECTION_PX:.1f}px)"
         )
-        inliers = np.arange(len(obj_pts), dtype=np.int32).reshape(-1, 1) if ok else None
-    if not ok:
-        raise ValueError("Stage pose solvePnP failed")
 
     if inliers is not None and len(inliers) >= 4:
         keep = inliers.reshape(-1)
         rvec, tvec = cv2.solvePnPRefineLM(
             obj_pts[keep], img_pts[keep], camera_matrix, dist, rvec, tvec
         )
+    keep = inliers.reshape(-1)
     projected, _ = cv2.projectPoints(obj_pts, rvec, tvec, camera_matrix, dist)
     residual = projected.reshape(-1, 2) - img_pts
-    rms = float(np.sqrt(np.mean(np.sum(residual * residual, axis=1))))
+    rms = float(np.sqrt(np.mean(np.sum(residual[keep] * residual[keep], axis=1))))
 
-    detected_ids = {d.marker_id for d in detections if d.marker_id in world}
+    inlier_set = set(int(index) for index in keep)
+    inliers_by_target: dict[str, int] = {}
+    rms_by_target: dict[str, float] = {}
+    independent_rms_by_target: dict[str, float] = {}
+    independent_poses: dict[str, ScreenPose] = {}
+    for label, ids in ids_by_target.items():
+        target_indices = [
+            index for index, detection in enumerate(matched)
+            if detection.marker_id in ids and index in inlier_set
+        ]
+        inliers_by_target[label] = len(target_indices)
+        if len(target_indices) < STAGE_POSE_MIN_MARKERS_PER_TARGET:
+            raise ValueError(
+                f"Stage pose RANSAC retained only {len(target_indices)} inliers for "
+                f"screen '{label}' (need >= {STAGE_POSE_MIN_MARKERS_PER_TARGET})"
+            )
+        target_residual = residual[target_indices]
+        rms_by_target[label] = float(
+            np.sqrt(np.mean(np.sum(target_residual * target_residual, axis=1)))
+        )
+
+        target_obj = obj_pts[target_indices]
+        target_img = img_pts[target_indices]
+        independent = _solve_pnp(target_obj, target_img, camera_matrix, dist)
+        if independent is not None and not independent.ambiguous:
+            target_projected, _ = cv2.projectPoints(
+                target_obj, independent.rvec, independent.tvec, camera_matrix, dist
+            )
+            target_error = target_projected.reshape(-1, 2) - target_img
+            independent_rms_by_target[label] = float(
+                np.sqrt(np.mean(np.sum(target_error * target_error, axis=1)))
+            )
+            independent_poses[label] = independent
+
+    max_translation_mm = 0.0
+    max_rotation_deg = 0.0
+    labels = list(independent_poses)
+    for i, label_a in enumerate(labels):
+        pose_a = independent_poses[label_a]
+        for label_b in labels[i + 1:]:
+            pose_b = independent_poses[label_b]
+            translation = float(np.linalg.norm(
+                pose_a.camera_position_in_screen - pose_b.camera_position_in_screen
+            ))
+            relative = pose_a.rotation_matrix @ pose_b.rotation_matrix.T
+            cosine = float(np.clip((np.trace(relative) - 1.0) / 2.0, -1.0, 1.0))
+            rotation_deg = float(np.degrees(np.arccos(cosine)))
+            max_translation_mm = max(max_translation_mm, translation)
+            max_rotation_deg = max(max_rotation_deg, rotation_deg)
+
+    failed_rms = {
+        label: value for label, value in rms_by_target.items()
+        if value >= STAGE_POSE_MAX_RMS_PX
+    }
+    if rms >= STAGE_POSE_MAX_RMS_PX or failed_rms:
+        individual_good = (
+            len(independent_rms_by_target) == len(targets)
+            and all(value < STAGE_POSE_MAX_RMS_PX for value in independent_rms_by_target.values())
+        )
+        per_screen = ", ".join(
+            f"{label}={value:.3f}px" for label, value in sorted(rms_by_target.items())
+        )
+        independent_text = ", ".join(
+            f"{label}={value:.3f}px"
+            for label, value in sorted(independent_rms_by_target.items())
+        )
+        reason = "screen geometry inconsistency" if individual_good and len(targets) > 1 else "reprojection gate failed"
+        raise ValueError(
+            f"Stage pose {reason}: combined={rms:.3f}px, per-screen [{per_screen}], "
+            f"independent [{independent_text}], limit={STAGE_POSE_MAX_RMS_PX:.3f}px"
+        )
+
     return StagePoseResult(
         camera_from_stage=ScreenPose(rvec=rvec, tvec=tvec),
         rms_reprojection_px=rms,
         num_markers=len(obj_pts),
-        num_inliers=len(inliers) if inliers is not None else len(obj_pts),
-        markers_by_target={
-            label: len(ids.intersection(detected_ids)) for label, ids in ids_by_target.items()
+        num_inliers=len(keep),
+        markers_by_target=markers_by_target,
+        inliers_by_target=inliers_by_target,
+        rms_by_target=rms_by_target,
+        independent_rms_by_target=independent_rms_by_target,
+        screen_to_screen_consistency={
+            "consistent": True,
+            "max_camera_translation_delta_mm": max_translation_mm,
+            "max_camera_rotation_delta_deg": max_rotation_deg,
+        },
+        rejected_observations={
+            "low_confidence": low_confidence,
+            "saturated": saturated,
         },
     )
 

@@ -1474,6 +1474,12 @@ export interface ProjectCameraLens {
   k3?: number | null;
   cx?: number | null;
   cy?: number | null;
+  profile_path?: string | null;
+  is_master?: boolean;
+  calibration_kind?: string | null;
+  image_size?: [number, number] | null;
+  calibration_rms_px?: number | null;
+  calibration_poses?: number | null;
 }
 
 export interface ProjectCameraTracking {

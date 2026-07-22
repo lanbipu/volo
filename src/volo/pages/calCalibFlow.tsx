@@ -260,13 +260,11 @@ import {
       const iw = Number(isize[0]) || 1920, ih = Number(isize[1]) || 1080;
       const line = lost ? 'rgba(170,178,190,.92)' : '#3fe4e6';
       const cross = lost ? 'rgba(205,211,219,.95)' : '#8ff8f4';
-      const fill = lost ? 'rgba(165,173,185,.05)' : 'rgba(63,228,230,.06)';
       ctx.save();
       if (lost) ctx.globalAlpha = 0.6;
       grid.screens.forEach((screen) => {
         const segs = screen.segments || [];
-        /* 粗外框：取各屏线段的 AABB 四边（后端外框也在 segments 中，统一细线 + 首段略粗不可靠；
-           全部细线后对边界再描一层粗 stroke） */
+        /* 内部柜格细线。 */
         ctx.strokeStyle = line;
         ctx.lineWidth = 1;
         ctx.globalAlpha = lost ? 0.7 : 0.7;
@@ -276,27 +274,17 @@ import {
           const b = coverMap(seg[2], seg[3], iw, ih, cw, ch);
           ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
         });
-        /* 外框：用 markers AABB 或 segments 极值画粗框 */
-        let minX = 1, minY = 1, maxX = 0, maxY = 0, any = false;
-        segs.forEach((seg) => {
+        /* 外框必须使用后端投影的 perspective perimeter；AABB 会把倾斜屏
+           错画成正矩形，不能作为几何验收依据。 */
+        ctx.strokeStyle = line;
+        ctx.lineWidth = 3;
+        ctx.globalAlpha = 1;
+        (screen.perimeter || []).forEach((seg) => {
           if (!seg || seg.length < 4) return;
-          any = true;
-          minX = Math.min(minX, seg[0], seg[2]); maxX = Math.max(maxX, seg[0], seg[2]);
-          minY = Math.min(minY, seg[1], seg[3]); maxY = Math.max(maxY, seg[1], seg[3]);
+          const a = coverMap(seg[0], seg[1], iw, ih, cw, ch);
+          const b = coverMap(seg[2], seg[3], iw, ih, cw, ch);
+          ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
         });
-        if (any) {
-          const tl = coverMap(minX, minY, iw, ih, cw, ch);
-          const tr = coverMap(maxX, minY, iw, ih, cw, ch);
-          const br = coverMap(maxX, maxY, iw, ih, cw, ch);
-          const bl = coverMap(minX, maxY, iw, ih, cw, ch);
-          ctx.globalAlpha = 1;
-          ctx.fillStyle = fill;
-          ctx.beginPath();
-          ctx.moveTo(tl[0], tl[1]); ctx.lineTo(tr[0], tr[1]); ctx.lineTo(br[0], br[1]); ctx.lineTo(bl[0], bl[1]);
-          ctx.closePath(); ctx.fill();
-          ctx.strokeStyle = line; ctx.lineWidth = 3;
-          ctx.stroke();
-        }
         ctx.strokeStyle = cross; ctx.lineWidth = 1.6; ctx.globalAlpha = 1;
         (screen.markers || []).forEach((m) => {
           if (!m || m.length < 2) return;

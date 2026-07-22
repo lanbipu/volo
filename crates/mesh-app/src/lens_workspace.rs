@@ -8,11 +8,14 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use volo_shared::dto::ScreenConfig;
+use volo_shared::dto::{ScreenConfig, ShapePriorConfig};
 use volo_shared::error::{VoloError, VoloResult};
 
 pub const ASSIGNMENT_SCHEMA: &str = "volo_vpqsp_assignment.v1";
 pub const PATTERNS_META_SCHEMA: &str = "volo_lens_patterns.v1";
+
+const TARGET_MARKERS_SHORT_SIDE: u32 = 6;
+const MIN_MARKER_CELL_PX: f64 = 80.0;
 
 /// Cabinet-column gap between adjacent screens' marker id ranges. Mirrors
 /// `_COL_OFFSET_GAP` in `sidecars/vpcal/.../cli/tracker_free.py` so spatial's
@@ -52,12 +55,73 @@ pub struct LensPatternsMeta {
     pub files: Vec<String>,
 }
 
+/// VP-QSP uses a virtual marker grid rather than the physical cabinet count.
+/// This keeps a one-cabinet monitor/TV dense enough for a conditioned PnP
+/// solve while preserving the physical section size.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LensPatternGrid {
+    pub columns: u32,
+    pub rows: u32,
+    pub cell_size_mm: [f64; 2],
+    pub markers_per_cell: u8,
+}
+
+pub fn pattern_grid_for_screen(screen: &ScreenConfig) -> LensPatternGrid {
+    let physical_width_mm = screen.cabinet_count[0] as f64 * screen.cabinet_size_mm[0];
+    let physical_height_mm = screen.cabinet_count[1] as f64 * screen.cabinet_size_mm[1];
+    let supports_virtual_grid = matches!(
+        screen.shape_prior,
+        ShapePriorConfig::Flat | ShapePriorConfig::Folded { .. }
+    );
+    if supports_virtual_grid {
+        if let Some(pixels_per_cabinet) = screen.pixels_per_cabinet {
+            let width_px = screen.cabinet_count[0] as f64 * pixels_per_cabinet[0] as f64;
+            let height_px = screen.cabinet_count[1] as f64 * pixels_per_cabinet[1] as f64;
+            if width_px > 0.0 && height_px > 0.0 {
+                let landscape = width_px >= height_px;
+                let short_px = width_px.min(height_px);
+                let long_px = width_px.max(height_px);
+                for short_count in (2..=TARGET_MARKERS_SHORT_SIDE).rev() {
+                    let cell_px = short_px / short_count as f64;
+                    if cell_px < MIN_MARKER_CELL_PX {
+                        continue;
+                    }
+                    let long_count = (long_px / cell_px).round().max(2.0) as u32;
+                    if long_px / long_count as f64 < MIN_MARKER_CELL_PX {
+                        continue;
+                    }
+                    let (columns, rows) = if landscape {
+                        (long_count, short_count)
+                    } else {
+                        (short_count, long_count)
+                    };
+                    return LensPatternGrid {
+                        columns,
+                        rows,
+                        cell_size_mm: [
+                            physical_width_mm / columns as f64,
+                            physical_height_mm / rows as f64,
+                        ],
+                        markers_per_cell: 1,
+                    };
+                }
+            }
+        }
+    }
+    LensPatternGrid {
+        columns: screen.cabinet_count[0],
+        rows: screen.cabinet_count[1],
+        cell_size_mm: screen.cabinet_size_mm,
+        markers_per_cell: 4,
+    }
+}
+
 /// Deterministic screen-id / cab-col-offset assignment (§3.3).
 ///
 /// - Screens are sorted by id (lexicographic — `BTreeMap` iterates in key order).
 /// - `code[i]` = sorted index (matches `vpqspScreenIdCode` in the frontend).
 /// - `offset[0] = 0`; `offset[i] = offset[i-1] + columns[i-1] + COL_OFFSET_GAP`
-///   where `columns = cabinet_count[0]`.
+///   where `columns` is the exported VP-QSP virtual marker-grid width.
 ///
 /// Errors when there are more than 16 screens (4-bit code exhausted).
 pub fn assignment_from_screens(
@@ -76,7 +140,7 @@ pub fn assignment_from_screens(
         if let Some(pc) = prev_columns {
             offset = offset + pc + COL_OFFSET_GAP;
         }
-        let columns = sc.cabinet_count[0];
+        let columns = pattern_grid_for_screen(sc).columns;
         out.insert(
             id.clone(),
             LensScreenAssign {
@@ -168,5 +232,18 @@ mod tests {
             pairs.iter().map(|(id, c)| (id.clone(), screen(*c, 2))).collect();
         let err = assignment_from_screens(&m).unwrap_err();
         assert!(matches!(err, VoloError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn one_cabinet_uhd_display_gets_dense_virtual_grid() {
+        let mut sc = screen(1, 1);
+        sc.cabinet_size_mm = [1209.0, 678.0];
+        sc.pixels_per_cabinet = Some([3840, 2160]);
+        let grid = pattern_grid_for_screen(&sc);
+        assert_eq!((grid.columns, grid.rows), (11, 6));
+        assert_eq!(grid.markers_per_cell, 1);
+        assert_eq!(grid.columns * grid.rows, 66);
+        assert!((grid.cell_size_mm[0] * 11.0 - 1209.0).abs() < 1.0e-9);
+        assert!((grid.cell_size_mm[1] * 6.0 - 678.0).abs() < 1.0e-9);
     }
 }

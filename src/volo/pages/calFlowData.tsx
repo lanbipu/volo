@@ -183,6 +183,9 @@
   const defaultCamUi = () => ({
     id: 'cam-01', name: 'Camera 1', mode: 'fixed', protocol: null, cameraId: null, solved: false,
     lensConfirmed: false,
+    lensIsMaster: false,
+    masterLensPath: null,
+    masterLensInfo: null,
     pos: { x: { v: 0, src: 'manual' }, y: { v: 1500, src: 'manual' }, z: { v: 3200, src: 'manual' } },
     rot: { pan: { v: 0, src: 'manual' }, tilt: { v: 0, src: 'manual' }, roll: { v: 0, src: 'manual' } },
     lens: {
@@ -214,6 +217,15 @@
       cameraId: tracked && c.tracking.camera_id != null ? c.tracking.camera_id : null,
       solved: !!sp,
       lensConfirmed: L.sensor_w_mm != null && L.sensor_h_mm != null && L.focal_mm != null,
+      lensIsMaster: !!L.is_master && !!L.profile_path,
+      masterLensPath: L.profile_path || null,
+      masterLensInfo: L.profile_path ? {
+        qualified_master: !!L.is_master,
+        calibration_kind: L.calibration_kind || null,
+        image_size: L.image_size || null,
+        rms: L.calibration_rms_px != null ? L.calibration_rms_px : null,
+        num_images: L.calibration_poses != null ? L.calibration_poses : null,
+      } : null,
       pos: { x: { v: t[0], src }, y: { v: t[1], src }, z: { v: t[2], src } },
       rot: { pan: { v: e[0], src }, tilt: { v: e[1], src }, roll: { v: e[2], src } },
       lens: {
@@ -241,6 +253,12 @@
       focal_mm: u.lens.focal.v, k1: u.lens.k1 != null ? u.lens.k1 : null,
       k2: u.lens.k2 != null ? u.lens.k2 : null, k3: u.lens.fovK3.v,
       cx: u.lens.ppx.v, cy: u.lens.ppy.v,
+      profile_path: u.masterLensPath || null,
+      is_master: !!u.lensIsMaster,
+      calibration_kind: u.masterLensInfo && u.masterLensInfo.calibration_kind || null,
+      image_size: u.masterLensInfo && u.masterLensInfo.image_size || null,
+      calibration_rms_px: u.masterLensInfo && u.masterLensInfo.rms != null ? u.masterLensInfo.rms : null,
+      calibration_poses: u.masterLensInfo && u.masterLensInfo.num_images != null ? u.masterLensInfo.num_images : null,
     },
     tracking: u.tracking || (u.protocol ? { protocol: u.protocol, host: '0.0.0.0', port: 6301, camera_id: u.cameraId } : null),
     video_profile_id: u.videoProfileId || null,
@@ -332,7 +350,22 @@
         else if (key === 'k3') lens.fovK3 = { v: value, src: 'manual' };
         else if (key === 'ppx') lens.ppx = { v: value, src: 'manual' };
         else if (key === 'ppy') lens.ppy = { v: value, src: 'manual' };
-        return Object.assign({}, camera, { lens, lensConfirmed: true });
+        return Object.assign({}, camera, {
+          lens, lensConfirmed: true,
+          lensIsMaster: false, masterLensPath: null, masterLensInfo: null,
+        });
+      });
+      camStore.patch({ cameras, dirty: true });
+      camStore.scheduleSave();
+    },
+    setMasterLens: (id, path, info) => {
+      const cameras = camSnap.cameras.map((camera) => {
+        if (camera.id !== id) return camera;
+        return Object.assign({}, camera, {
+          lensIsMaster: !!(path && info && info.qualified_master),
+          masterLensPath: path || null,
+          masterLensInfo: info || null,
+        });
       });
       camStore.patch({ cameras, dirty: true });
       camStore.scheduleSave();
