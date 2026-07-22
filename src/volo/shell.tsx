@@ -668,7 +668,9 @@ function App() {
   const [lensCalMethod, setLensCalMethod] = useState('qsp'); /* qsp | charuco | sl */
   const [capState, setCapState] = useState('idle'); /* idle | capturing */
   const [capDetail, setCapDetail] = useState(null); /* null | { runId, poseId } */
-  const [capCam, setCapCam] = useState('cam1');
+  /* 勿默认演示机位 id（旧 CAL_CAMERAS 的 cam1）；否则采集窗会盖住项目 cam-01，
+     把孤儿 camera_id 写进 fixed_run，求解时无法写回 Stage pose。 */
+  const [capCam, setCapCam] = useState(null);
   const [capTrack, setCapTrack] = useState('fixed'); /* connected | fixed | lost — 默认无追踪=固定机位 */
   const [capArReq, setCapArReq] = useState(null); /* null | { cam } — 求解报告→回大窗打开 AR 叠加 */
   const [capSignalReady, setCapSignalReady] = useState(false); /* 由采集窗监看流 / Profile 驱动 */

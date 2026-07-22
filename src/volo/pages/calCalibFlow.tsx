@@ -380,13 +380,27 @@ import {
     { id: 'freed', label: 'FreeD · UDP 6301' },
     { id: 'opentrackio', label: 'OpenTrackIO · UDP 6301' },
   ];
+  function pickExistingCamId(preferred, snap) {
+    const cams = (snap && snap.cameras) || [];
+    if (preferred && cams.some((c) => c.id === preferred)) return preferred;
+    if (snap && snap.selectedId && cams.some((c) => c.id === snap.selectedId)) return snap.selectedId;
+    return (cams[0] && cams[0].id) || null;
+  }
   function CaptureWindow({ s, close }) {
     const method = s.lensCalMethod || 'qsp';
     const isSl = method === 'sl';
     const capturing = s.capState === 'capturing';
     const [open, setOpen] = useState({ mopt: true, general: true, method: true, camera: true, records: true });
     const camSnap = useCamStore();
-    const [camId, setCamId] = useState(s.capCam || camSnap.selectedId || (camSnap.cameras[0] && camSnap.cameras[0].id));
+    /* capCam 可能残留演示 id（cam1）；必须落在 camStore 真实机位上。 */
+    const [camId, setCamId] = useState(() => pickExistingCamId(s.capCam, camSnap));
+    useEffect(() => {
+      const next = pickExistingCamId(camId, camSnap);
+      if (next && next !== camId) {
+        setCamId(next);
+        if (s.setCapCam) s.setCapCam(next);
+      }
+    }, [camSnap.cameras, camSnap.selectedId]);
     const [trackSignal, setTrackSignal] = useState(s.capTrack === 'fixed' ? 'none' : (s.capTrack === 'connected' ? 'freed' : 'none'));
     const tracked = trackSignal !== 'none';
     const [banner, setBanner] = useState(0);
@@ -1174,11 +1188,25 @@ import {
         if (!solveTargets.length) {
           throw new Error('该固定机位 run 缺少采集时 screen target snapshot，不能使用当前屏幕选择代替');
         }
-        if (!run.cameraId) {
+        let writeCameraId = run.cameraId;
+        if (!writeCameraId) {
           throw new Error('该固定机位 run 缺少采集时 camera ownership，不能写回当前摄影机');
         }
-        if (!(camSnap.cameras || []).some((camera) => camera.id === run.cameraId)) {
-          throw new Error('采集该 run 的摄影机已不存在，无法安全写回 Stage pose');
+        if (!(camSnap.cameras || []).some((camera) => camera.id === writeCameraId)) {
+          /* 常见于 shell 曾默认 capCam=cam1（演示 id）写进 fixed_run，而项目机位是 cam-01。
+             求解仍可用采集时 intrinsics；位姿写回到当前存在的机位并订正 meta。 */
+          const fallback = (camSnap.cameras || []).find((c) => c.id === camId)
+            || (camSnap.cameras || []).find((c) => c.id === camSnap.selectedId)
+            || (camSnap.cameras || [])[0];
+          if (!fallback) {
+            throw new Error('采集该 run 的摄影机已不存在，无法安全写回 Stage pose');
+          }
+          s.pushLog({
+            lv: 'warn', cat: 'lens',
+            msg: 'run 绑定摄影机 <b>' + writeCameraId + '</b> 已不存在 · 改写到 <b>'
+              + (fallback.name || fallback.id) + '</b>',
+          });
+          writeCameraId = fallback.id;
         }
         const images = joinPath(run.sessionDir, 'captures/normal');
         const firstPng = joinPath(images, '000000.png');
@@ -1197,7 +1225,7 @@ import {
         const pose = solved.camera_from_stage;
         const writeError = await writeFixedRunMetaSafe(run.sessionDir, {
           mode: 'fixed', frames_captured: run.poseCount,
-          camera_id: run.cameraId, method: 'qsp',
+          camera_id: writeCameraId, method: 'qsp',
           targets: solveTargets.map((target) => ({
             id: target.id, screenJson: target.screenJson,
             code: target.code, offset: target.offset,
@@ -1209,7 +1237,7 @@ import {
           const t = pose.position_mm || [0, 0, 0];
           const ptr = pose.ptr_deg || { pan: 0, tilt: 0, roll: 0 };
           window.camStore.setSolvePose(
-            run.cameraId,
+            writeCameraId,
             [t[0], t[1], t[2]],
             [ptr.pan, ptr.tilt, ptr.roll],
             null,
