@@ -1,0 +1,260 @@
+/* Volo — 固定机位 · 单次校正（VP-QSP）采集窗新增 UX
+   1:1 移植自 Claude Design handoff `cal_qsp.css`（演示态 .qsp-demo 已按 handoff 要求删除）。
+   复用镜头采集窗骨架（drawer--lcwin / lc-body / lc-signal / lc-side / lc-actionbar）与既有
+   cap-* / spill / lc-* token。本文件只承载本次迭代新增件：
+     采集目的（Fixed-camera）· 结果五分区 report · AR 静帧门控 · attest 条 · fail-closed 指引 · 状态横幅。
+   暗 / 亮双主题自适应，全部走 var(--chrome-*) / var(--volo-*) / *-visual。 */
+
+/* ============================================================
+   2.1 采集目的（摄影机设置内 · 追踪 None 时显示）
+   ============================================================ */
+.qsp-purpose { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--chrome-line); }
+.qsp-purpose-h { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 800; color: var(--chrome-text); margin-bottom: 3px; }
+.qsp-purpose-h .code { margin-left: auto; font-size: 10px; font-weight: 500; color: var(--chrome-faint); font-family: var(--font-code); }
+.qsp-purpose-sub { font-size: 11px; color: var(--chrome-faint); line-height: 1.5; margin-bottom: 10px; }
+
+.qsp-modes { display: flex; flex-direction: column; gap: 7px; }
+.qsp-mode { all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: flex-start; gap: 10px; padding: 9px 11px; border-radius: 10px;
+  border: 1.5px solid var(--chrome-line-2); background: var(--wash); transition: border-color .13s, background .13s; }
+.qsp-mode:hover { border-color: color-mix(in srgb, var(--volo-600) 40%, var(--chrome-line-2)); }
+.qsp-mode.on { border-color: var(--volo-600); background: var(--highlight-selected); }
+.qsp-mode.is-disabled { cursor: not-allowed; opacity: .62; }
+.qsp-mode.is-disabled:hover { border-color: var(--chrome-line-2); background: var(--wash); }
+.qsp-mode-rad { flex: 0 0 auto; width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--chrome-line-2); margin-top: 1px; display: grid; place-items: center; transition: border-color .13s; }
+.qsp-mode.on .qsp-mode-rad { border-color: var(--volo-600); }
+.qsp-mode.on .qsp-mode-rad::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--volo-600); }
+.qsp-mode-m { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.qsp-mode-nrow { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.qsp-mode-name { font-size: 12.5px; font-weight: 700; color: var(--chrome-text); }
+.qsp-mode-tag { font-size: 9px; font-weight: 800; letter-spacing: .03em; color: var(--volo-500); background: color-mix(in srgb, var(--volo-500) 15%, transparent); padding: 1px 6px; border-radius: 5px; }
+.qsp-mode-tag.alt { color: var(--chrome-faint); background: var(--wash-2); }
+.qsp-mode-qty { font-size: 10.5px; color: var(--chrome-faint); font-family: var(--font-code); }
+
+/* 情境说明一行（随选项变） */
+.qsp-ctx { display: flex; align-items: flex-start; gap: 7px; margin-top: 10px; padding: 8px 10px; border-radius: 8px; font-size: 11px; line-height: 1.5; text-wrap: pretty;
+  color: var(--chrome-dim); background: var(--wash-3); border: 1px solid var(--chrome-line); }
+.qsp-ctx svg { flex: 0 0 auto; margin-top: 1px; color: var(--informative-visual); }
+.qsp-ctx b { color: var(--chrome-text); font-weight: 700; }
+
+/* 次级动作 + Master Lens 摘要 */
+.qsp-sec-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.qsp-secbtn { all: unset; box-sizing: border-box; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px; border-radius: 999px;
+  border: 1.5px solid var(--chrome-line-2); font-size: 11.5px; font-weight: 600; color: var(--chrome-dim); }
+.qsp-secbtn:hover { border-color: color-mix(in srgb, var(--volo-600) 40%, var(--chrome-line-2)); color: var(--chrome-text); }
+.qsp-secbtn svg { color: var(--volo-500); }
+.qsp-secbtn[disabled] { cursor: default; opacity: .5; }
+.qsp-master-sum { display: flex; align-items: center; gap: 9px; margin-top: 10px; padding: 9px 11px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--positive-visual) 30%, var(--chrome-line)); background: color-mix(in srgb, var(--positive-visual) 8%, transparent); }
+.qsp-master-sum .ic { width: 24px; height: 24px; border-radius: 7px; flex: 0 0 auto; display: grid; place-items: center; background: color-mix(in srgb, var(--positive-visual) 18%, transparent); color: var(--positive-visual); }
+.qsp-master-sum .m { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.qsp-master-sum .m b { font-size: 12px; font-weight: 700; color: var(--chrome-text); }
+.qsp-master-sum .m span { font-size: 10.5px; color: var(--chrome-faint); font-family: var(--font-code); }
+
+/* 追踪机位：折叠一行说明 */
+.qsp-collapsed { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--chrome-line); font-size: 11.5px; color: var(--chrome-faint); line-height: 1.5; }
+.qsp-collapsed svg { flex: 0 0 auto; color: var(--chrome-faint); }
+
+/* ============================================================
+   3. 结果五分区 report（右栏 · 物理分隔卡片，禁止并成一张大表）
+   ============================================================ */
+.qsp-report { display: flex; flex-direction: column; gap: 10px; }
+.qsp-report-concl { display: flex; align-items: center; gap: 11px; padding: 12px 13px; border-radius: 11px; border: 1px solid var(--chrome-line-2); }
+.qsp-report-concl .ic { width: 34px; height: 34px; border-radius: 9px; flex: 0 0 auto; display: grid; place-items: center; }
+.qsp-report-concl .m { flex: 1; min-width: 0; }
+.qsp-report-concl .t { font-size: 14px; font-weight: 800; color: var(--chrome-text); }
+.qsp-report-concl .d { font-size: 11px; color: var(--chrome-dim); line-height: 1.45; margin-top: 2px; text-wrap: pretty; }
+.qsp-report-concl.ok { background: color-mix(in srgb, var(--positive-visual) 8%, transparent); border-color: color-mix(in srgb, var(--positive-visual) 28%, var(--chrome-line-2)); }
+.qsp-report-concl.ok .ic { background: color-mix(in srgb, var(--positive-visual) 16%, transparent); color: var(--positive-visual); }
+.qsp-report-concl.warn { background: color-mix(in srgb, var(--notice-visual) 9%, transparent); border-color: color-mix(in srgb, var(--notice-visual) 30%, var(--chrome-line-2)); }
+.qsp-report-concl.warn .ic { background: color-mix(in srgb, var(--notice-visual) 16%, transparent); color: var(--notice-visual); }
+
+/* 分区卡 */
+.qsp-rsec { border: 1px solid var(--chrome-line); border-radius: 11px; background: var(--chrome-card); overflow: hidden; }
+.qsp-rsec-h { display: flex; align-items: center; gap: 9px; padding: 10px 12px; background: var(--wash-3); border-bottom: 1px solid var(--chrome-line); }
+.qsp-rsec-idx { width: 20px; height: 20px; border-radius: 6px; flex: 0 0 auto; display: grid; place-items: center; font-size: 11px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--chrome-dim); background: var(--wash-2); }
+.qsp-rsec-t { font-size: 12.5px; font-weight: 800; color: var(--chrome-text); }
+.qsp-rsec-en { font-size: 10px; color: var(--chrome-faint); font-family: var(--font-code); }
+.qsp-rsec-tag { margin-left: auto; }
+.qsp-rsec-b { padding: 11px 12px; display: flex; flex-direction: column; gap: 9px; }
+
+/* 分区内：指标格 */
+.qsp-metrics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.qsp-metrics.c3 { grid-template-columns: repeat(3, 1fr); }
+.qsp-metric { background: var(--wash-3); border: 1px solid var(--chrome-line); border-radius: 8px; padding: 8px 9px; }
+.qsp-metric .k { font-size: 10px; color: var(--chrome-faint); margin-bottom: 3px; line-height: 1.3; }
+.qsp-metric .v { font-size: 17px; font-weight: 800; line-height: 1; color: var(--chrome-text); font-variant-numeric: tabular-nums; }
+.qsp-metric .v .u { font-size: 10px; font-weight: 600; color: var(--chrome-faint); margin-left: 2px; }
+.qsp-metric.pos .v { color: var(--positive-visual); }
+.qsp-metric.notice .v { color: var(--notice-visual); }
+.qsp-metric.neg .v { color: var(--negative-visual); }
+
+/* 键值行 */
+.qsp-kv { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 11.5px; padding: 5px 0; border-top: 1px solid var(--chrome-line); }
+.qsp-kv:first-of-type { border-top: 0; }
+.qsp-kv .k { color: var(--chrome-dim); }
+.qsp-kv .v { color: var(--chrome-text); font-weight: 600; text-align: right; }
+.qsp-kv .v.mono { font-family: var(--font-code); font-weight: 500; }
+.qsp-kv .v.pos { color: var(--positive-visual); }
+.qsp-kv .v.notice { color: var(--notice-visual); }
+.qsp-kv .v.neg { color: var(--negative-visual); }
+
+/* per-screen 摘要条 */
+.qsp-screens { display: flex; flex-direction: column; gap: 8px; }
+.qsp-screen-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 11px; margin-bottom: 4px; }
+.qsp-screen-n { color: var(--chrome-text); font-weight: 600; }
+.qsp-screen-v { color: var(--chrome-faint); font-family: var(--font-code); font-size: 10.5px; }
+.qsp-screen-bar { height: 6px; border-radius: 999px; background: var(--wash-2); overflow: hidden; }
+.qsp-screen-bar i { display: block; height: 100%; border-radius: 999px; background: var(--positive-visual); }
+.qsp-screen-bar.notice i { background: var(--notice-visual); }
+
+/* 小标题 */
+.qsp-sublbl { font-size: 10px; letter-spacing: .04em; text-transform: uppercase; color: var(--chrome-faint); font-weight: 700; }
+
+/* observability 模型阶梯 M1/M2/M3 */
+.qsp-ladder { display: flex; flex-direction: column; gap: 6px; }
+.qsp-lstep { display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--chrome-line); background: var(--wash-3); }
+.qsp-lstep-id { font-size: 10.5px; font-weight: 800; font-family: var(--font-code); color: var(--chrome-dim); width: 24px; flex: 0 0 auto; }
+.qsp-lstep-lb { flex: 1; min-width: 0; font-size: 11.5px; color: var(--chrome-text); }
+.qsp-lstep-st { flex: 0 0 auto; }
+.qsp-lstep.st-ok { border-color: color-mix(in srgb, var(--positive-visual) 26%, var(--chrome-line)); }
+.qsp-lstep.st-coupled { border-color: color-mix(in srgb, var(--notice-visual) 30%, var(--chrome-line)); }
+.qsp-lstep.st-failed { border-color: color-mix(in srgb, var(--negative-visual) 32%, var(--chrome-line)); }
+
+/* session_coupled 提示（永远带「非 Master Lens」） */
+.qsp-coupled { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-radius: 8px; font-size: 11px; line-height: 1.5; text-wrap: pretty;
+  color: var(--notice-visual); background: color-mix(in srgb, var(--notice-visual) 10%, transparent); border: 1px solid color-mix(in srgb, var(--notice-visual) 26%, transparent); }
+.qsp-coupled svg { flex: 0 0 auto; margin-top: 1px; }
+.qsp-coupled b { font-weight: 800; }
+.qsp-known-note { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-radius: 8px; font-size: 11px; line-height: 1.5;
+  color: var(--positive-visual); background: color-mix(in srgb, var(--positive-visual) 9%, transparent); border: 1px solid color-mix(in srgb, var(--positive-visual) 24%, transparent); }
+.qsp-known-note svg { flex: 0 0 auto; margin-top: 1px; }
+
+/* failed gate 行 */
+.qsp-failed-line { font-size: 11px; color: var(--chrome-dim); font-family: var(--font-code); }
+.qsp-failed-line b { color: var(--chrome-text); font-weight: 700; font-family: var(--font-base); }
+.qsp-failed-line .ok { color: var(--positive-visual); }
+.qsp-failed-line .bad { color: var(--negative-visual); }
+
+/* Pose · mode_resolved */
+.qsp-mode-resolved { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.qsp-mrpill { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; font-family: var(--font-code);
+  color: var(--chrome-text); background: var(--wash-2); border: 1px solid var(--chrome-line-2); }
+.qsp-mrpill.primary { color: var(--informative-visual); background: color-mix(in srgb, var(--informative-visual) 12%, transparent); border-color: color-mix(in srgb, var(--informative-visual) 30%, transparent); }
+.qsp-mrreq { font-size: 10px; color: var(--chrome-faint); font-family: var(--font-code); }
+.qsp-pose-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
+.qsp-pose-cell { background: var(--wash-3); border: 1px solid var(--chrome-line); border-radius: 8px; padding: 7px 8px; text-align: center; }
+.qsp-pose-cell .pk { font-size: 10px; color: var(--chrome-faint); display: block; margin-bottom: 3px; }
+.qsp-pose-cell .pv { font-size: 13px; font-weight: 700; color: var(--chrome-text); font-variant-numeric: tabular-nums; }
+
+/* ⑤ Static validation：Framing 单独子行（与 Geometry RMS 分属不同区） */
+.qsp-framing { display: flex; align-items: center; gap: 10px; margin-top: 3px; padding: 9px 11px; border-radius: 9px; border: 1px dashed var(--chrome-line-2); background: var(--wash); }
+.qsp-framing .fk { font-size: 11px; color: var(--chrome-dim); flex: 1; min-width: 0; }
+.qsp-framing .fk b { color: var(--chrome-text); font-weight: 700; }
+.qsp-framing .fk .note { display: block; font-size: 10px; color: var(--chrome-faint); margin-top: 2px; }
+.qsp-framing .fv { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--chrome-text); }
+.qsp-framing.notice .fv { color: var(--notice-visual); }
+.qsp-static-cta { display: flex; flex-direction: column; gap: 6px; margin-top: 3px; }
+.qsp-static-cta .live-note { font-size: 10.5px; color: var(--chrome-faint); line-height: 1.45; text-wrap: pretty; }
+.qsp-static-cta .live-note b { color: var(--chrome-dim); font-weight: 700; }
+
+/* ============================================================
+   fail-closed / unobservable 指引条（禁止默认内参绕过）
+   ============================================================ */
+.qsp-fail { border: 1px solid color-mix(in srgb, var(--negative-visual) 32%, var(--chrome-line)); border-radius: 12px; overflow: hidden; }
+.qsp-fail-h { display: flex; align-items: center; gap: 11px; padding: 12px 13px; background: color-mix(in srgb, var(--negative-visual) 9%, transparent); }
+.qsp-fail-h .ic { width: 34px; height: 34px; border-radius: 9px; flex: 0 0 auto; display: grid; place-items: center; background: color-mix(in srgb, var(--negative-visual) 16%, transparent); color: var(--negative-visual); }
+.qsp-fail-h .m { flex: 1; min-width: 0; }
+.qsp-fail-h .t { font-size: 14px; font-weight: 800; color: var(--chrome-text); }
+.qsp-fail-h .code { font-size: 10.5px; color: var(--negative-visual); font-family: var(--font-code); margin-top: 2px; }
+.qsp-fail-b { padding: 12px 13px; display: flex; flex-direction: column; gap: 11px; }
+.qsp-fail-d { font-size: 12px; color: var(--chrome-dim); line-height: 1.55; text-wrap: pretty; }
+.qsp-fail-d b { color: var(--chrome-text); font-weight: 700; }
+.qsp-noheader { font-size: 10px; letter-spacing: .04em; text-transform: uppercase; color: var(--chrome-faint); font-weight: 700; }
+.qsp-steps { display: flex; flex-direction: column; gap: 8px; counter-reset: qspstep; }
+.qsp-step { display: flex; align-items: flex-start; gap: 10px; padding: 10px 11px; border-radius: 9px; border: 1px solid var(--chrome-line); background: var(--wash-3); }
+.qsp-step-n { flex: 0 0 auto; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 800; font-variant-numeric: tabular-nums;
+  color: #fff; background: var(--volo-600, var(--accent-900)); }
+.qsp-step-m { flex: 1; min-width: 0; }
+.qsp-step-t { font-size: 12px; font-weight: 700; color: var(--chrome-text); }
+.qsp-step-d { font-size: 10.5px; color: var(--chrome-faint); line-height: 1.45; margin-top: 2px; text-wrap: pretty; }
+.qsp-step .btn-inline { margin-top: 7px; }
+.qsp-fail-guard { display: flex; align-items: center; gap: 7px; font-size: 10.5px; color: var(--chrome-faint); padding: 7px 10px; border-radius: 8px; background: var(--wash-2); }
+.qsp-fail-guard svg { flex: 0 0 auto; color: var(--chrome-faint); }
+
+/* stale / attest 提示卡 */
+.qsp-stale { border: 1px solid color-mix(in srgb, var(--notice-visual) 32%, var(--chrome-line)); border-radius: 12px; overflow: hidden; }
+.qsp-stale-h { display: flex; align-items: center; gap: 11px; padding: 12px 13px; background: color-mix(in srgb, var(--notice-visual) 10%, transparent); }
+.qsp-stale-h .ic { width: 34px; height: 34px; border-radius: 9px; flex: 0 0 auto; display: grid; place-items: center; background: color-mix(in srgb, var(--notice-visual) 16%, transparent); color: var(--notice-visual); }
+.qsp-stale-h .t { font-size: 14px; font-weight: 800; color: var(--chrome-text); }
+.qsp-stale-h .d { font-size: 10.5px; color: var(--chrome-dim); margin-top: 2px; }
+.qsp-stale-b { padding: 12px 13px; font-size: 12px; color: var(--chrome-dim); line-height: 1.55; text-wrap: pretty; }
+.qsp-stale-b .mono { font-family: var(--font-code); font-size: 11px; color: var(--chrome-text); }
+
+/* ============================================================
+   attest 条（复用 session lens 前 · 确认对焦/变焦未变）
+   ============================================================ */
+.qsp-attest { border: 1px solid color-mix(in srgb, var(--informative-visual) 34%, var(--chrome-line)); border-radius: 12px; background: color-mix(in srgb, var(--informative-visual) 7%, transparent); padding: 13px; }
+.qsp-attest-h { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.qsp-attest-h .ic { width: 30px; height: 30px; border-radius: 8px; flex: 0 0 auto; display: grid; place-items: center; background: color-mix(in srgb, var(--informative-visual) 16%, transparent); color: var(--informative-visual); }
+.qsp-attest-h .t { font-size: 13px; font-weight: 800; color: var(--chrome-text); }
+.qsp-attest-d { font-size: 11.5px; color: var(--chrome-dim); line-height: 1.55; text-wrap: pretty; margin-bottom: 11px; }
+.qsp-attest-d b { color: var(--chrome-text); font-weight: 700; }
+.qsp-attest-acts { display: flex; gap: 8px; }
+.qsp-attest-acts > * { flex: 1; }
+
+/* ============================================================
+   左侧现场画面：状态横幅 / 求解中 / 静帧 AR 门控
+   ============================================================ */
+.qsp-statebanner { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); z-index: 6; display: inline-flex; align-items: center; gap: 8px;
+  font-size: 12px; font-weight: 700; color: #fff; padding: 6px 14px; border-radius: 999px; backdrop-filter: blur(6px); box-shadow: 0 1px 12px rgba(0,0,0,.4); border: 1px solid rgba(255,255,255,.18); }
+.qsp-statebanner .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.qsp-statebanner.notice { background: color-mix(in srgb, var(--notice-visual) 84%, #0a0d12); color: #14110a; }
+.qsp-statebanner.neg { background: color-mix(in srgb, var(--negative-visual) 86%, #0a0d12); }
+.qsp-statebanner.pos { background: color-mix(in srgb, var(--positive-visual) 82%, #0a0d12); }
+.qsp-statebanner.info { background: color-mix(in srgb, var(--informative-visual) 84%, #0a0d12); }
+.qsp-statebanner .pulse { animation: qspPulse 1.1s ease infinite; }
+@keyframes qspPulse { 0%,100% { opacity: .4; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .qsp-statebanner .pulse { animation: none; } }
+
+/* 求解中遮罩 */
+.qsp-solving { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: rgba(4,6,11,.58); backdrop-filter: blur(2px); }
+.qsp-solving-spin { width: 38px; height: 38px; border-radius: 50%; border: 3px solid rgba(255,255,255,.18); border-top-color: var(--volo-500, #fff); animation: capwSpin 1s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .qsp-solving-spin { animation: none; } }
+.qsp-solving-t { font-size: 13px; font-weight: 700; color: #fff; }
+.qsp-solving-d { font-size: 11px; color: rgba(255,255,255,.6); }
+
+/* 静帧 AR 门控浮条（左下） */
+.qsp-argate { position: absolute; left: 12px; right: 12px; bottom: 12px; z-index: 6; display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border-radius: 10px; background: rgba(0,0,0,.62); border: 1px solid rgba(255,255,255,.14); backdrop-filter: blur(6px); }
+.qsp-argate .ic { flex: 0 0 auto; width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; }
+.qsp-argate .m { flex: 1; min-width: 0; }
+.qsp-argate .t { font-size: 11.5px; font-weight: 700; color: #fff; }
+.qsp-argate .d { font-size: 10px; color: rgba(255,255,255,.6); margin-top: 1px; }
+.qsp-argate.verifying .ic { background: color-mix(in srgb, var(--notice-visual) 30%, transparent); color: color-mix(in srgb, var(--notice-visual) 88%, #fff); }
+.qsp-argate.passed .ic { background: color-mix(in srgb, var(--positive-visual) 26%, transparent); color: color-mix(in srgb, var(--positive-visual) 90%, #fff); }
+.qsp-argate .livechip { flex: 0 0 auto; font-size: 9.5px; font-weight: 800; letter-spacing: .05em; padding: 3px 8px; border-radius: 6px; font-family: var(--font-code);
+  color: rgba(255,255,255,.66); background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.14); }
+
+/* 静帧验收进度点 */
+.qsp-verify-dots { display: inline-flex; gap: 3px; margin-left: 2px; }
+.qsp-verify-dots i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; opacity: .35; animation: qspVdot 1.2s ease infinite; }
+.qsp-verify-dots i:nth-child(2) { animation-delay: .18s; }
+.qsp-verify-dots i:nth-child(3) { animation-delay: .36s; }
+@keyframes qspVdot { 0%,100% { opacity: .35; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .qsp-verify-dots i { animation: none; } }
+
+/* 底栏：AR 入口（与主动作同条，不抢主动作） */
+.qsp-arbtn { all: unset; box-sizing: border-box; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; padding: 8px 13px; border-radius: 999px;
+  border: 1.5px solid var(--chrome-line-2); font-size: 12px; font-weight: 600; color: var(--chrome-dim); }
+.qsp-arbtn:hover { border-color: color-mix(in srgb, var(--volo-600) 40%, var(--chrome-line-2)); color: var(--chrome-text); }
+.qsp-arbtn.on { border-color: var(--volo-600); color: var(--volo-500); background: var(--highlight-selected); }
+.qsp-arbtn[disabled] { cursor: default; opacity: .5; }
+.qsp-arbtn svg { color: currentColor; }
+
+/* 底栏就绪 / 待补提示（随 lensPhase 变） */
+.qsp-ready { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--positive-visual); font-weight: 600; }
+.qsp-ready svg { flex: 0 0 auto; }
+.qsp-ready .phase { color: var(--chrome-faint); font-weight: 500; }
+
+/* 采集态：单帧提示 */
+.qsp-capnote { font-size: 11px; color: var(--chrome-faint); line-height: 1.5; text-wrap: pretty; }
+.qsp-capnote b { color: var(--chrome-text); font-weight: 700; }

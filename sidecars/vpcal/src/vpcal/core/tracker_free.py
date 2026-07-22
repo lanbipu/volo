@@ -18,7 +18,11 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from vpcal.core.detector import detect_markers, DetectorConfig
+from vpcal.core.detector import (
+    common_markers_per_cabinet,
+    detect_markers,
+    detector_config_for_mpc,
+)
 from vpcal.core.observations import MarkerId
 from vpcal.core.screen_geometry import enumerate_markers, ScreenMarker
 from vpcal.core.transforms import matrix_to_quat, quat_to_matrix
@@ -131,21 +135,25 @@ STAGE_POSE_MAX_JOINT_PROJECTIVE_RMS_PX = 2.0
 MASTER_LENS_MIN_USABLE_IMAGES = 8
 
 
-def _marker_grid_xy(detection, multi_marker: bool) -> list[float]:
-    from vpcal.core.screen_geometry import _SUB_QUADRANTS
+def _marker_grid_xy(detection, markers_per_cabinet: int = 1) -> list[float]:
+    from vpcal.core.screen_geometry import sub_offset_for_local_id
 
     marker = detection.marker_id
-    if multi_marker:
-        ou, ov = _SUB_QUADRANTS[min(marker.local_id, 3)]
-    else:
-        ou, ov = 0.5, 0.5
+    mpc = max(int(markers_per_cabinet), 1)
+    ou, ov = sub_offset_for_local_id(marker.local_id, mpc)
     return [float(marker.cab_col) + ou, float(marker.cab_row) + ov]
 
 
 def _homography_rms(
-    detections: list, image_points: NDArray[np.float64], *, multi_marker: bool
+    detections: list,
+    image_points: NDArray[np.float64],
+    *,
+    markers_per_cabinet: int = 1,
 ) -> tuple[float, int]:
-    grid = np.asarray([_marker_grid_xy(d, multi_marker) for d in detections], dtype=np.float64)
+    grid = np.asarray(
+        [_marker_grid_xy(d, markers_per_cabinet) for d in detections],
+        dtype=np.float64,
+    )
     H, mask = cv2.findHomography(grid, image_points, cv2.RANSAC, 2.0)
     if H is None or mask is None:
         return float("inf"), 0
@@ -377,7 +385,9 @@ def lens_calibrate(
     for name, img in images:
         if image_size is None:
             image_size = (img.shape[1], img.shape[0])
-        dets = detect_markers(img)
+        dets = detect_markers(
+            img, config=detector_config_for_mpc(screen.markers_per_cabinet)
+        )
         obj_pts, img_pts = _match_detections(dets, world_map)
         if len(obj_pts) >= 6:
             obj_planar = _to_planar(obj_pts)
@@ -483,7 +493,14 @@ def spatial_solve(
     covis: list[dict] = []
 
     for name, img in images:
-        dets = detect_markers(img)
+        dets = detect_markers(
+            img,
+            config=detector_config_for_mpc(
+                common_markers_per_cabinet(
+                    [screen_a.markers_per_cabinet, screen_b.markers_per_cabinet]
+                )
+            ),
+        )
         obj_a, img_a = _match_detections(dets, world_a)
         obj_b, img_b = _match_detections(dets, world_b)
 
@@ -605,7 +622,14 @@ def verify_pose(
     if img is None:
         raise ValueError(f"Cannot read image: {image_path}")
 
-    dets = detect_markers(img)
+    dets = detect_markers(
+        img,
+        config=detector_config_for_mpc(
+            common_markers_per_cabinet(
+                [screen_a.markers_per_cabinet, screen_b.markers_per_cabinet]
+            )
+        ),
+    )
     obj_a, img_a = _match_detections(dets, world_a)
     obj_b, img_b = _match_detections(dets, world_b)
 
@@ -659,7 +683,14 @@ def solve_stage_pose(
     image = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
     if image is None:
         raise ValueError(f"Cannot read image: {image_path}")
-    detections = detect_markers(image)
+    detections = detect_markers(
+        image,
+        config=detector_config_for_mpc(
+            common_markers_per_cabinet(
+                target.screen.markers_per_cabinet for target in targets
+            )
+        ),
+    )
     low_confidence = sum(
         1 for detection in detections
         if detection.marker_id in world and float(getattr(detection, "confidence", 1.0)) < 1.0
@@ -727,7 +758,7 @@ def solve_stage_pose(
         h_rms, h_inliers = _homography_rms(
             target_detections,
             undistorted[indices],
-            multi_marker=target_by_label[label].screen.markers_per_cabinet > 1,
+            markers_per_cabinet=target_by_label[label].screen.markers_per_cabinet,
         )
         homography_by_target[label] = {
             "rms_px": h_rms,

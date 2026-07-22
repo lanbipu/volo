@@ -9,7 +9,7 @@ import { lensWorkspacePaths } from "../api/lensWorkspace";
 import {
   listLensSessions, deleteLensSession, readLensQaReport, readImageAsDataUrl,
   startCaptureStills, stillsFinish,
-  trackerFreeLensCal, trackerFreeLensInfo, trackerFreeStagePose, trackerFreeGrid,
+  trackerFreeLensCal, trackerFreeLensInfo, trackerFreeStagePose, trackerFreeFixedObservation, trackerFreeGrid,
   qualityFromRms, qualityFromLabel, writeFixedRunMeta,
 } from "../api/lensCommands";
 import { pickDirectory, pickFile } from "../api/commands";
@@ -31,6 +31,7 @@ import {
   meshVisualGenerateStructuredLight,
   meshVisualDecodeStructuredLight,
 } from "../api/meshVisualCommands";
+import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
 
 (function () {
   const { Button, Switch } = window.Spectrum2DesignSystem_b6d1b3;
@@ -432,8 +433,21 @@ import {
     const tracked = trackSignal !== 'none';
     /* Fixed-camera purpose: do NOT auto-hijack into master-lens (≥8) when lens
        is missing — that forced every「固定机位」start to demand 8 poses.
-       Modes are explicit: fixed_extrinsics (1 pose) vs master_lens (≥8). */
-    const [lensPhase, setLensPhase] = useState('fixed'); /* 'fixed' | 'master_lens' */
+       Modes are explicit（= Design `observation.purpose`）:
+         fixed            — 固定机位 · 单次校正（auto → known-lens or joint）
+         known_lens       — 使用 Master Lens · 只求外参
+         joint_session    — 自动估计当前镜头（session-coupled）
+         master_lens      — 建立 Master Lens · 多姿态 ≥8 */
+    const [purpose, setPurpose] = useState('fixed'); /* 'fixed' | 'known_lens' | 'joint_session' | 'master_lens' */
+    /* 固定机位 · VP-QSP 单次校正 —— 8 状态机的瞬态部分 + AR 静帧门控 */
+    const [qspFail, setQspFail] = useState(null); /* {code, message} — 最近一次 fail-closed 求解 */
+    const [qspRunId, setQspRunId] = useState(null); /* 本窗口内最近一次成功求解的 run */
+    const [qspDismissed, setQspDismissed] = useState(false); /* 「重新采集」后回 idle */
+    const [, setAttestTick] = useState(0); /* attest ref 更新后触发重渲染 */
+    const attestedRunsRef = useRef(new Set()); /* 本窗口内已 attest 的 run id */
+    const sessionSolvedRef = useRef(new Set()); /* 本窗口内新求解的 run id（无需 attest） */
+    const [arStage, setArStage] = useState('idle'); /* idle|verifying|passed|failed（静帧门控） */
+    const lastDetectRef = useRef(null); /* stills detect_state 最新非 stale 帧（framing 用） */
     const [patternMons, setPatternMons] = useState([]);
     const [patternMonBusy, setPatternMonBusy] = useState(false);
     const [banner, setBanner] = useState(0);
@@ -455,6 +469,7 @@ import {
     const [arErr, setArErr] = useState(null);
     const arBtnRef = useRef(null);
     const arLiveTaskRef = useRef(null);
+    const qspCtxRef = useRef(null); /* 供 QspOverlays 在渲染期取 qctx（函数体尾部装配） */
     const rootRef = useRef(null);
     const [leftPct, setLeftPct] = useState(68);
     const timer = useRef(null);
@@ -511,6 +526,42 @@ import {
     const proj = CX().useProj ? CX().useProj() : {};
     const projectPath = proj && proj.path ? proj.path : null;
 
+    /* Framing score（取景构图评分）：采集时最后一帧 detect_state 的 cabinets 命中率
+       × bbox 占比 —— 与网格快拍窗同一套 framingMatch 算法（≠ Geometry RMS）。 */
+    const computeQspFraming = (targets) => {
+      const det = lastDetectRef.current;
+      const cfgScreens = proj && proj.config && proj.config.screens ? proj.config.screens : null;
+      if (!det || !det.cabinets || !det.cabinets.length || !cfgScreens) return null;
+      const perScreen = {};
+      const scores = [];
+      for (const target of (targets || [])) {
+        const cfg = cfgScreens[target.id];
+        const count = cfg && cfg.cabinet_count;
+        if (!count || !count[0] || !count[1]) continue;
+        const cols = count[0], rows = count[1];
+        const expected = [];
+        for (let c = 0; c < cols; c++) for (let r = 0; r < rows; r++) expected.push([c, r]);
+        const observed = det.cabinets
+          .filter((cab) => cab[0] === target.code)
+          .map((cab) => [cab[1], cab[2]]);
+        const score = computeFramingScore(
+          expected, observed,
+          cabinetsNormBBox(expected, cols, rows),
+          det.bbox || cabinetsNormBBox(observed, cols, rows),
+        );
+        perScreen[target.id] = score;
+        scores.push(score);
+      }
+      if (!scores.length) return null;
+      return {
+        score: Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 100) / 100,
+        per_screen: perScreen,
+        observed_markers: det.markers,
+        bbox_frac: det.bbox,
+        source: 'capture_detect_state',
+      };
+    };
+
     const screenFile = typeof s.capScreenFile === 'string' ? s.capScreenFile : null;
     /* 输出目录固定 = <project>/vpcal/captures/（§3.4；不再用 profile.outputRoot / 手选） */
     const outDir = projectPath ? lensWorkspacePaths(projectPath).capturesDir : '';
@@ -558,7 +609,7 @@ import {
     const fixedLensReady = !!(cam && cam.lensIsMaster && cam.masterLensPath
       && cam.masterLensInfo && cam.masterLensInfo.qualified_master);
     /* Explicit mode only — never infer master-lens capture from missing lens. */
-    const collectingMasterLens = method === 'qsp' && !tracked && lensPhase === 'master_lens';
+    const collectingMasterLens = method === 'qsp' && !tracked && purpose === 'master_lens';
     const targetM = tracked
       ? (Number(params.poses) || 8)
       : (collectingMasterLens ? Math.max(8, Number(params.poses) || 8) : 1);
@@ -569,7 +620,7 @@ import {
       }
       if (!window.camStore) throw new Error('camera store unavailable');
       window.camStore.setMasterLens(camId, path, info);
-      setLensPhase('fixed');
+      setPurpose('fixed');
       s.pushLog({ lv: 'ok', cat: 'lens', msg: 'Master lens 已绑定 · RMS <b>'
         + Number(info.rms).toFixed(3) + '</b> px · <b>' + info.num_images + '</b> poses' });
     };
@@ -599,15 +650,21 @@ import {
         s.pushLog({ lv: 'err', cat: 'lens', msg: 'Master lens 生成失败 · ' + (e && e.message ? e.message : e) });
       } finally { setMasterLensBusy(false); }
     };
+    /* 固定机位 · VP-QSP 派生态：追踪 None + 密集编码点 → 走新版单次校正 UX */
+    const isQspFixed = method === 'qsp' && !tracked;
+    const hasMaster = fixedLensReady;
+    const qspLensPhase = window.VOLO_QSP ? window.VOLO_QSP.lensPhaseOf(purpose, hasMaster) : 'joint';
     /* §3.5 qsp：部署 + profile + 屏幕定义已同步 + 单 section + 图案未失败（生成中 / 需重生成仍可点，
        beginCapture 会先补生成）。screenFile 由 ag 系统写入 s.capScreenFile。
+       固定机位不再强制 Master Lens：fixed / joint_session 无档案时走 joint session lens（fail-closed 由求解端把关）；
+       仅 known_lens 显式模式缺档案时禁用主按钮。
        SL×nDisplay：不依赖校正图案 auto-gen，走序列播放通道。 */
     const readyQsp = method === 'qsp'
       && (backend === 'synthetic' || signalReady)
       && ag.screenDef === 'synced' && !ag.multiSection && ag.pattern !== 'genFail'
       && ag.targets.length === ag.selectedIds.length
       && (ag.selectedIds.length <= 1 || deployChannel === 'ndisplay')
-      && (tracked || collectingMasterLens || fixedLensReady);
+      && (tracked || purpose !== 'known_lens' || fixedLensReady);
     const readySl = method === 'sl'
       && deployChannel === 'ndisplay'
       && (backend === 'synthetic' || signalReady)
@@ -683,6 +740,11 @@ import {
             } else {
               solveState = 'ok';
             }
+          } else if (isFixed && sess.stage_pose && sess.stage_pose.stale === true) {
+            /* stale artifact 不算 formal（不进 AR/export），但要进 QSP 状态机
+               → 右栏 stale 指引卡「请重新采集」。 */
+            stagePose = sess.stage_pose;
+            solveState = 'none';
           }
           return {
             id: sess.id, label: sess.id,
@@ -694,6 +756,9 @@ import {
             outputDir: qaDir,
             modeFixed: isFixed,
             stagePose,
+            /* fixed_observation_result.v1 全量（五分区 report 数据源）+ 采集时 framing */
+            fixedObservation: sess.fixed_observation || null,
+            framing: sess.framing || null,
             artifactStatus: sess.stage_pose_status || 'missing',
             error: sess.error || sess.intrinsics_error || null,
             cameraId: sess.camera_id || null,
@@ -740,10 +805,13 @@ import {
     }, [arPanelOpen]);
 
     /* 当前机位 AR 可用性：固定=本机位 stage_pose；追踪=result.json + session */
-    const fixedSolvedRun = (liveRuns || []).find((r) => (
+    const fixedRunsForCam = (liveRuns || []).filter((r) => (
       (r.modeFixed || r.mode === 'fixed') && r.stagePose
       && r.cameraId === camId
     ));
+    /* QSP 报告选中的 run：本窗口最近求解的优先，否则该机位最新已求解 run */
+    const qspRun = (qspRunId && fixedRunsForCam.find((r) => r.id === qspRunId)) || fixedRunsForCam[0] || null;
+    const fixedSolvedRun = qspRun;
     const lensLiveSnap = CX().lensStore ? CX().lensStore.get() : null;
     const trackedSolve = lensLiveSnap && lensLiveSnap.solveResult ? lensLiveSnap.solveResult : null;
     const trackedSolvedRun = (liveRuns || []).find((r) => (
@@ -769,32 +837,82 @@ import {
           : null))
       : (fixedSolvedRun ? null : '当前机位尚未求解 · 请先完成求解');
 
-    /* 固定机位：一次性 tracker-free grid */
+    /* 固定机位：静帧 perimeter/grid 自动验收通过后才进入 AR overlay */
+    const [arStaticOk, setArStaticOk] = useState(false);
     useEffect(() => {
       if (!arOn || tracked || !fixedSolvedRun) {
-        if (!tracked) setArGrid(null);
+        if (!tracked) {
+          setArGrid(null);
+          setArStaticOk(false);
+        }
         return undefined;
       }
       let alive = true;
       setArErr(null);
+      setArStaticOk(false);
       (async () => {
         try {
           if (!fixedSolvedRun.targets || !fixedSolvedRun.targets.length) {
             throw new Error('该 run 缺少 screen target，无法投影柜格');
           }
-          if (!fixedSolvedRun.lensJson) {
-            throw new Error('该 formal run 缺少 qualified master lens，禁止作为 AR source');
-          }
           const posePath = joinPath(fixedSolvedRun.sessionDir, 'stage_pose.json');
+          const sl = (fixedSolvedRun.stagePose && fixedSolvedRun.stagePose.session_lens)
+            || (fixedSolvedRun.fixedObservation && fixedSolvedRun.fixedObservation.session_lens)
+            || null;
+          const solveKind = (fixedSolvedRun.fixedObservation && fixedSolvedRun.fixedObservation.solve_kind)
+            || (fixedSolvedRun.stagePose && fixedSolvedRun.stagePose.solve_kind)
+            || null;
+          /* Joint AR must use session_lens intrinsics — never prefer Master lensJson. */
+          const isJoint = solveKind === 'joint_single_observation'
+            || !!(sl && sl.session_coupled);
+          const sessionIntrinsics = (sl && sl.K && sl.K.length >= 2)
+            ? {
+                fx: Number(sl.K[0][0]),
+                fy: Number(sl.K[1][1]),
+                cx: Number(sl.K[0][2]),
+                cy: Number(sl.K[1][2]),
+                dist_coeffs: sl.dist_coeffs || [0, 0, 0, 0, 0],
+                image_size: sl.image_size,
+              }
+            : null;
+          let lensPath = null;
+          let intrinsics = null;
+          if (fixedSolvedRun.stagePose && fixedSolvedRun.stagePose.stale === true) {
+            throw new Error('Stage pose fingerprint stale · 请重新采集（对焦/变焦需用户确认未变）');
+          }
+          if (isJoint) {
+            if (!sessionIntrinsics) {
+              throw new Error('joint formal run 缺少 session lens，禁止作为 AR source');
+            }
+            intrinsics = sessionIntrinsics;
+          } else {
+            /* known-lens / fixed_extrinsics_only: Master lensJson is the source of truth. */
+            lensPath = fixedSolvedRun.lensJson || null;
+            if (!lensPath) {
+              if (!sessionIntrinsics) {
+                throw new Error('该 formal run 缺少 Master Lens 或 session lens，禁止作为 AR source');
+              }
+              intrinsics = sessionIntrinsics;
+            }
+          }
           const grid = await trackerFreeGrid({
             targets: fixedSolvedRun.targets,
             posePath,
-            lensPath: fixedSolvedRun.lensJson,
+            lensPath,
+            intrinsics,
           });
-          if (alive) setArGrid(grid);
+          if (alive) {
+            setArGrid(grid);
+            setArStaticOk(true);
+            s.pushLog({
+              lv: 'ok', cat: 'lens',
+              msg: 'Static validation · perimeter/grid 投影通过 · 可查看静帧 AR（live preview 需另行开启）',
+            });
+          }
         } catch (e) {
           if (alive) {
             setArGrid(null);
+            setArStaticOk(false);
             setArErr(e && e.message ? e.message : String(e));
             s.pushLog({ lv: 'err', cat: 'lens', msg: 'AR 网格加载失败 · ' + (e && e.message ? e.message : e) });
           }
@@ -802,6 +920,67 @@ import {
       })();
       return () => { alive = false; };
     }, [arOn, tracked, fixedSolvedRun && fixedSolvedRun.id, fixedSolvedRun && fixedSolvedRun.sessionDir]);
+
+    /* ---------- 固定机位 · VP-QSP 8 状态机（真实信号推导，无演示态） ----------
+       idle → capturing → solving → formal_ok / warn / fail_closed / unobservable
+       + stale（artifact 标记 fingerprint 失效）+ attest（复用历史 joint 结果前需人工确认 focus/zoom） */
+    const qspState = (() => {
+      if (!isQspFixed) return 'idle';
+      if (capturing) return 'capturing';
+      if (solvingId) return 'solving';
+      if (qspFail) return qspFail.code === 'SINGLE_VIEW_UNOBSERVABLE' ? 'unobservable' : 'fail_closed';
+      if (qspDismissed) return 'idle';
+      if (qspRun && qspRun.stagePose) {
+        if (qspRun.stagePose.stale === true) return 'stale';
+        const sl = qspRun.stagePose.session_lens;
+        const coupled = !!(sl && sl.session_coupled);
+        /* 历史 joint 结果（非本窗口求解）：复用 session lens 前必须 attest（Spec §6.2） */
+        if (coupled && !sessionSolvedRef.current.has(qspRun.id) && !attestedRunsRef.current.has(qspRun.id)) return 'attest';
+        const runRms = Number(qspRun.stagePose.rms_reprojection_px);
+        return Number.isFinite(runRms) && runRms >= 2 ? 'warn' : 'formal_ok';
+      }
+      return 'idle';
+    })();
+    const qspSolved = qspState === 'formal_ok' || qspState === 'warn';
+    /* 静帧 AR 门控：verifying（trackerFreeGrid 进行中）→ passed / failed（真实投影结果） */
+    const startArVerify = () => {
+      if (!qspSolved) return;
+      setArPanelOpen(false);
+      setArStage(arStaticOk && arOn ? 'passed' : 'verifying');
+      if (!arOn) setArOn(true);
+    };
+    useEffect(() => {
+      if (!isQspFixed || arStage !== 'verifying') return;
+      if (arErr) setArStage('failed');
+      else if (arStaticOk) setArStage('passed');
+    }, [isQspFixed, arStage, arStaticOk, arErr]);
+    /* run 变化 / 关叠加：门控回 idle */
+    useEffect(() => { setArStage('idle'); }, [qspRun && qspRun.id]);
+    useEffect(() => { if (!arOn && arStage !== 'idle') setArStage('idle'); }, [arOn]);
+    /* 换机位：QSP 瞬态全部复位（报告选中 / 驳回 / 失败态） */
+    useEffect(() => {
+      setQspRunId(null);
+      setQspDismissed(false);
+      setQspFail(null);
+      setArStage('idle');
+    }, [camId]);
+    const confirmAttest = () => {
+      if (!qspRun) return;
+      attestedRunsRef.current.add(qspRun.id);
+      setAttestTick((t) => t + 1);
+      s.pushLog({ lv: 'ok', cat: 'lens', msg: 'attest · 对焦/变焦未变 → 复用 session lens（' + qspRun.label + '）' });
+    };
+    const qspRecapture = () => {
+      setQspFail(null);
+      setQspDismissed(true);
+      setArStage('idle');
+      setArOn(false);
+    };
+    const qspOpenLivePreview = () => {
+      /* 固定机位：位姿静态，静帧通过后 AR 叠加直接保持在实时监看画面上 */
+      if (!arOn) setArOn(true);
+      s.pushLog({ lv: 'info', cat: 'lens', msg: '开启 live preview 叠加（静帧 perimeter/grid 已过 · 固定机位位姿静态）' });
+    };
 
     /* 追踪机位：verify live --grid，订阅 overlay_grid + tracking 状态 */
     const wantArLive = arOn && tracked && !capturing && arAvail && !!arTrackedPaths;
@@ -921,6 +1100,14 @@ import {
         const p = line.parsed;
         if (!p) continue;
         if (p.type === 'snap_saved') snaps = Math.max(snaps, (p.index != null ? p.index + 1 : snaps + 1));
+        /* Framing 数据源：最新非 stale 检测帧（cabinets 三元组 + 画面 bbox） */
+        if (p.type === 'detect_state' && !p.stale && Array.isArray(p.cabinets)) {
+          lastDetectRef.current = {
+            markers: typeof p.markers === 'number' ? p.markers : null,
+            cabinets: p.cabinets.map((c) => [c[0] | 0, c[1] | 0, c[2] | 0]),
+            bbox: Array.isArray(p.bbox_frac) && p.bbox_frac.length >= 4 ? p.bbox_frac : null,
+          };
+        }
         if (p.type === 'result' && p.data) {
           const key = stillsTaskId + ':result:' + i;
           if (stillsResultHandledRef.current.has(key)) continue;
@@ -985,15 +1172,29 @@ import {
             try {
               meta.intrinsics = capturePixelIntrinsics(fixedInput.lens || {}, p.data.source || {});
             } catch (e) {
+              /* joint session lens 求解不依赖 capture-time intrinsics（fixed-observation
+                 自估焦距/畸变）——记录但不阻断。 */
               meta.intrinsics_error = e && e.message ? e.message : String(e);
             }
           }
+          /* Framing score（取景构图评分 · 独立于 Geometry RMS）——来自采集时最后一帧
+             真实 detect_state；无检测数据则不写（UI 显示 —，不造值）。 */
+          const framing = computeQspFraming(meta.targets);
+          if (framing) meta.framing = framing;
           fixedInputRef.current = null;
           const lensSource = fixedInput.lensSnapshotted ? null : (fixedInput.lensPath || null);
+          const autoRunId = String(dir).split(/[\\/]+/).filter(Boolean).pop() || 'fixed';
+          const autoRun = {
+            id: autoRunId, label: autoRunId, sessionDir: dir,
+            poseCount: meta.frames_captured, cameraId: meta.camera_id,
+            lensJson: fixedInput.lensPath ? joinPath(dir, 'lens.json') : null,
+            targets: meta.targets, modeFixed: true, mode: 'fixed',
+            framing: framing || null,
+          };
           void writeFixedRunMetaSafe(dir, meta, lensSource).then((writeError) => {
             if (writeError) {
               s.pushLog({ lv: 'err', cat: 'lens', msg: '固定机位采集已保存，但 intrinsics snapshot 失败 · ' + writeError });
-            } else if (meta.intrinsics_error) {
+            } else if (meta.intrinsics_error && !isQspFixed) {
               s.pushLog({ lv: 'err', cat: 'lens', msg: '固定机位采集已保存，但无法求解 · ' + meta.intrinsics_error });
             } else if (meta.intrinsics && meta.intrinsics.physical_snapshot
               && meta.intrinsics.physical_snapshot.crop_mode !== 'none') {
@@ -1005,7 +1206,10 @@ import {
                   + Number(snap.active_sensor_height_mm).toFixed(3) + ' mm</b>',
               });
             }
-            return refreshSessions();
+            return refreshSessions().then(() => {
+              /* QSP 固定机位：capturing → solving 自动衔接（单次采集动作即得可用 Stage pose） */
+              if (isQspFixed && !writeError) void solveFixedRun(autoRun);
+            });
           });
           s.setCapState('idle');
           setStillsTask(null);
@@ -1127,6 +1331,12 @@ import {
       setBanner(0);
       setStillsSnapN(0);
       stillsFinishingRef.current = false;
+      /* QSP：新采集开始 → 清失败态 / 报告驳回态 / 静帧门控 / framing 数据源 */
+      lastDetectRef.current = null;
+      setQspFail(null);
+      setQspDismissed(false);
+      setArStage('idle');
+      setArOn(false);
 
       /* —— 结构光 × nDisplay：生成 → 起录像 → play-sequence → 停录像 → 解码 —— */
       if (isSl) {
@@ -1351,6 +1561,8 @@ import {
       const solveTargets = (run && run.targets) || [];
       if (!run || !run.sessionDir) return;
       setSolvingId(run.id);
+      setQspFail(null);
+      setQspDismissed(false);
       try {
         if (!solveTargets.length) {
           throw new Error('该固定机位 run 缺少采集时 screen target snapshot，不能使用当前屏幕选择代替');
@@ -1378,18 +1590,45 @@ import {
         const images = joinPath(run.sessionDir, 'captures/normal');
         const firstPng = joinPath(images, '000000.png');
         const poseJson = joinPath(run.sessionDir, 'stage_pose.json');
-        if (!run.lensJson) {
-          const error = new Error('该 run 缺少采集时 qualified master lens snapshot');
+        const fixedObsJson = joinPath(run.sessionDir, 'fixed_observation_result.json');
+        const mode = purpose === 'known_lens'
+          ? 'known-lens'
+          : (purpose === 'joint_session' ? 'joint-session-lens' : 'auto');
+        if (mode === 'known-lens' && !run.lensJson) {
+          const error = new Error('使用 Master Lens 模式需要 qualified master lens snapshot');
           error.code = 'MASTER_LENS_REQUIRED';
           throw error;
         }
-        s.pushLog({ lv: 'info', cat: 'lens', msg: '固定机位单帧求解 · <b>tracker-free pose</b>…' });
-        const solved = await trackerFreeStagePose({
+        s.pushLog({
+          lv: 'info', cat: 'lens',
+          msg: '固定机位 · 单次校正 · <b>fixed-observation</b> · mode=' + mode + '…',
+        });
+        const solvedObs = await trackerFreeFixedObservation({
           imagePath: firstPng,
           targets: solveTargets,
-          lensPath: run.lensJson,
-          outPath: poseJson,
+          mode,
+          lensPath: run.lensJson || null,
+          outPath: fixedObsJson,
+          stagePoseOut: poseJson,
+          cameraId: writeCameraId,
+          transferPath: 'volo-stills',
+          attestFocusZoom: true,
         });
+        const solved = {
+          ...solvedObs,
+          camera_from_stage: solvedObs.camera_from_stage,
+          rms_reprojection_px: solvedObs.rms_reprojection_px,
+          formal: solvedObs.formal,
+          solve_kind: solvedObs.solve_kind === 'joint_single_observation'
+            ? 'joint_single_observation'
+            : 'fixed_extrinsics_only',
+          schema_version: 'volo_stage_pose.v2',
+          qualification: {
+            ...(solvedObs.qualification || {}),
+            master_lens: !!(solvedObs.session_lens && solvedObs.session_lens.is_master),
+            passed: !!(solvedObs.qualification && solvedObs.qualification.passed),
+          },
+        };
         const pose = solved.camera_from_stage;
         const writeError = await writeFixedRunMetaSafe(run.sessionDir, {
           mode: 'fixed', frames_captured: run.poseCount,
@@ -1427,33 +1666,66 @@ import {
         if (CX().lensStore) CX().lensStore.patch({ phase: 'solved' });
         const solvedRms = Number(solved.rms_reprojection_px);
         const solvedState = solvedRms < 2 ? 'ok' : 'warn';
+        const screensLabel = (solvedObs.detection && solvedObs.detection.per_screen)
+          ? Object.keys(solvedObs.detection.per_screen).join('、')
+          : (solveTargets.map((t) => t.id || t.screenJson).join('、') || '—');
+        const sessionNote = solvedObs.session_lens && solvedObs.session_lens.session_coupled
+          ? ' · 当前焦距/对焦/分辨率有效 · 非 Master Lens'
+          : '';
         s.pushLog({
           lv: solvedState, cat: 'lens',
-          msg: '固定机位单帧求解完成 · RMS <b>' + solvedRms.toFixed(3)
-            + '</b> px · 可见屏幕 <b>' + solved.visible_screens.join('、') + '</b>',
+          msg: '固定机位单次校正完成 · mode=<b>' + (solvedObs.mode_resolved || mode)
+            + '</b> · RMS <b>' + solvedRms.toFixed(3)
+            + '</b> px · 屏幕 <b>' + screensLabel + '</b>' + sessionNote,
         });
-        const detectionText = Object.entries((solved.preflight && solved.preflight.homography_by_screen) || {})
-          .map(([label, metrics]) => label + ' decoded/trustworthy '
-            + metrics.decoded + '/' + metrics.trustworthy
-            + ' · H RMS ' + Number(metrics.rms_px).toFixed(3) + ' px'
-            + (metrics.brightness_warnings ? ' · brightness warning ' + metrics.brightness_warnings : ''))
+        if (solvedObs.observability) {
+          const failed = solvedObs.observability.failed || [];
+          s.pushLog({
+            lv: failed.length ? 'warn' : 'ok', cat: 'lens',
+            msg: 'Lens observability · '
+              + (failed.length ? ('failed: ' + failed.join(', ')) : 'gates passed')
+              + (solvedObs.model_level ? (' · model ' + solvedObs.model_level) : ''),
+          });
+        }
+        const detectionText = Object.entries((solvedObs.detection && solvedObs.detection.per_screen) || {})
+          .map(([label, count]) => label + ' trustworthy ' + count)
           .join(' | ');
-        if (detectionText) s.pushLog({ lv: 'ok', cat: 'lens', msg: 'Detection OK · ' + detectionText });
-        setLiveRuns((prev) => (prev || []).map((r) => (
-          r.id === run.id
-            ? Object.assign({}, r, {
-                solveState: solvedState,
-                rms: solvedRms,
-                stagePose: solved,
-                artifactStatus: 'formal',
-                solveError: null,
-              })
-            : r
-        )));
+        if (detectionText) s.pushLog({ lv: 'ok', cat: 'lens', msg: 'Detection · ' + detectionText });
+        /* QSP 状态机：本窗口新求解的 run 无需 attest；报告选中该 run */
+        sessionSolvedRef.current.add(run.id);
+        setQspRunId(run.id);
+        setQspDismissed(false);
+        setArStage('idle');
+        setLiveRuns((prev) => {
+          const list = prev || [];
+          const patch = {
+            solveState: solvedState,
+            rms: solvedRms,
+            stagePose: solved,
+            artifactStatus: 'formal',
+            solveError: null,
+            fixedObservation: solvedObs,
+          };
+          if (!list.some((r) => r.id === run.id)) {
+            /* 采集→自动求解可能先于 refreshSessions 回来：先插入占位 run，随后被磁盘扫描覆盖 */
+            return [Object.assign({}, run, patch), ...list];
+          }
+          return list.map((r) => (r.id === run.id ? Object.assign({}, r, patch) : r));
+        });
         void refreshSessions();
       } catch (e) {
         const msg = fixedSolveFailure(e);
         s.pushLog({ lv: 'err', cat: 'lens', msg: '固定机位求解失败 · ' + msg });
+        const code = (e && e.code)
+          || (String(msg).includes('SINGLE_VIEW_UNOBSERVABLE') ? 'SINGLE_VIEW_UNOBSERVABLE' : null);
+        if (code === 'SINGLE_VIEW_UNOBSERVABLE') {
+          s.pushLog({
+            lv: 'info', cat: 'lens',
+            msg: '建议：①增加非共面 screen coverage → ②改用 Structured Light → ③导入/建立 Master Lens',
+          });
+        }
+        /* QSP fail-closed / unobservable 指引条（右栏结果区） */
+        setQspFail({ code, message: e && e.message ? e.message : String(e) });
         setLiveRuns((prev) => (prev || []).map((r) => (
           r.id === run.id ? Object.assign({}, r, { solveError: msg }) : r
         )));
@@ -1526,7 +1798,12 @@ import {
                   trackLostUi
                     ? h('span', { className: 'cap-pill cap-pill--negative' }, h(Icon, { name: 'x', size: 12 }), '追踪丢失')
                     : h('span', { className: 'cap-pill cap-pill--positive' }, h(Icon, { name: 'pulse', size: 12 }), '追踪正常'))
-              : null));
+              : arOn
+                ? h('div', { className: 'lc-arhud-track' },
+                    arStaticOk
+                      ? h('span', { className: 'cap-pill cap-pill--positive' }, h(Icon, { name: 'check', size: 12 }), '静帧 perimeter 通过')
+                      : h('span', { className: 'cap-pill cap-pill--notice' }, h(Icon, { name: 'target', size: 12 }), '静帧验收中…'))
+                : null));
     const arButton = (signalReady && !isSl) ? h('div', { className: 'lc-arwrap', ref: arBtnRef },
       h('button', { className: 'lc-arbtn' + (arOn && arAvail ? ' on' : '') + (arPanelOpen ? ' open' : ''), onClick: () => setArPanelOpen((v) => !v) },
         h(Icon, { name: 'layers', size: 15 }), 'AR 叠加验证',
@@ -1546,12 +1823,14 @@ import {
                 capturing ? 'REC · MJPEG' : 'LIVE · MJPEG'),
               h('span', { className: 'lc-sigchip' }, h('span', { className: 'mono' },
                 (BACKEND_LABEL[backend] || backend || '—') + ' · ' + hudFmt))),
-            capturing && !isSl ? h(React.Fragment, null,
+            capturing && !isSl && !isQspFixed ? h(React.Fragment, null,
               h('div', { className: 'lc-banner lc-banner--' + CAP_BANNERS[banner].tone },
                 h(Icon, { name: CAP_BANNERS[banner].icon, size: 18 }),
                 h('div', { className: 'lc-banner-tx' }, h('b', null, CAP_BANNERS[banner].label), h('span', null, CAP_BANNERS[banner].sub))),
               h('div', { className: 'lc-hud lc-hud--tr' },
                 h('span', { className: 'lc-sigchip' }, '已采 ', h('b', { style: { color: '#fff', margin: '0 2px' } }, capN), ' / 目标 ' + targetM))) : null,
+            capturing && isQspFixed && collectingMasterLens ? h('div', { className: 'lc-hud lc-hud--tr' },
+              h('span', { className: 'lc-sigchip' }, '已采 ', h('b', { style: { color: '#fff', margin: '0 2px' } }, capN), ' / 目标 ' + targetM)) : null,
             capturing && isSl ? h(SlPlaybackBar, { slFrame }) : null)
         : h('div', { className: 'lc-nosig' },
             h('div', { className: 'lc-nosig-ic' }, h(Icon, { name: 'camera', size: 30, stroke: 1.3 })),
@@ -1559,49 +1838,77 @@ import {
             h('div', { className: 'lc-nosig-d' }, profile
               ? '等待首帧或检查设备占用。可在右侧「常规设置」切换采集配置 Profile。'
               : '请先选择采集配置 Profile（信号源）。')),
-      s.capDetail ? h(PoseDetail, { s, runs, onSolve: solveRun }) : null);
+      s.capDetail ? h(PoseDetail, { s, runs, onSolve: solveRun }) : null,
+      /* 固定机位 · VP-QSP：状态横幅 / 求解遮罩 / 静帧 AR 门控浮条（qctx 在本函数尾部装配） */
+      isQspFixed && (hasFeed || signalReady) ? h(QspOverlays, { ctxRef: qspCtxRef }) : null);
 
-    /* --------- 右：设置列 --------- */
+    /* --------- 右：设置列（真实控件节点抽出，QSP 固定机位与追踪路径共用） --------- */
+    const profileField = h('div', { className: 'lc-field' }, h('span', { className: 'k' }, '采集配置 Profile'),
+      profiles.length
+        ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+            h(window.Selector, {
+              kpre: '', value: pid || '',
+              options: profiles.map((p) => ({ id: p.id, label: p.name + ' · ' + (BACKEND_LABEL[p.videoBackend] || p.videoBackend) })),
+              onChange: (v) => setPid(v), width: 214, variant: 'obj', align: 'left',
+            }),
+            h('button', { className: 'lc-selbtn', onClick: () => CX().openCaptureModal && CX().openCaptureModal(s) },
+              h(Icon, { name: 'sliders', size: 14 }), h('span', { className: 'v' }, '管理采集配置…')))
+        : h('button', { className: 'lc-selbtn', onClick: () => CX().openCaptureModal && CX().openCaptureModal(s) },
+            h(Icon, { name: 'camera', size: 14 }), h('span', { className: 'v', style: { color: 'var(--notice-visual)' } }, '尚未创建 · 去新建'), h(Icon, { name: 'chevd', size: 13 })));
+    /* 标定屏幕单选 + 三个自动状态行（screen.json / 图案 / 输出位置 由系统自动推导生成） */
+    const screenChipsBlock = h('div', { className: 'ag-block' },
+      h('span', { className: 'ag-sublbl' }, '标定屏幕'),
+      h(window.VoloAutoGen.ScreenChips, { ag }));
+    const autoRows = h(window.VoloAutoGen.AutoStatusRows, { ag });
+    /* 本机 HDMI：允许在采集窗内重选测试图目标屏（ASUS vs LG G3 等） */
+    const monitorPicker = deployChannel === 'monitor' && deployed && patternMons.length
+      ? h('div', { className: 'ag-block', style: { marginTop: 10 } },
+          h('span', { className: 'ag-sublbl' }, '测试图输出显示器'),
+          h('div', { className: 'lc-camchips' }, patternMons.map((m) => h('button', {
+            key: m.index,
+            className: 'lc-camchip' + (m.index === activeMonitorIndex ? ' on' : ''),
+            disabled: patternMonBusy || capturing,
+            onClick: () => void retargetPatternMonitor(m),
+            title: (m.name || ('显示器 ' + m.index)) + ' · ' + m.width + '×' + m.height,
+          },
+            (m.name || ('#' + m.index)),
+            m.is_primary ? ' · 主屏' : '',
+          ))),
+          h('div', { className: 'lc-reason', style: { marginTop: 6 } },
+            h(Icon, { name: 'info', size: 12 }),
+            '需 Windows「扩展这些显示器」；复制模式下副屏无法单独投图'))
+      : null;
+    const generalBody = [profileField, screenChipsBlock, autoRows, monitorPicker];
+    const camChips = h('div', { className: 'lc-camchips' }, (camSnap.cameras || []).map((c) => h('button', { key: c.id, className: 'lc-camchip' + (c.id === camId ? ' on' : ''), onClick: () => {
+        setCamId(c.id); s.setCapCam(c.id);
+        if (window.camStore) window.camStore.select(c.id);
+      } },
+      h('span', { className: 'dot', style: { background: c.mode === 'tracked' ? 'var(--volo-500)' : c.solved ? 'var(--positive-visual)' : 'var(--chrome-faint)' } }), c.name)),
+      h('button', { className: 'lc-camchip-add', title: '新建相机', onClick: () => {
+        if (!window.camStore) return;
+        const c = window.camStore.add();
+        setCamId(c.id); s.setCapCam(c.id);
+      } }, h(Icon, { name: 'plus', size: 14 })));
+    const camBar = h('div', { className: 'lc-cam-bar' },
+      h('span', { className: 'sp' }),
+      h('button', { className: 'lc-cam-iconbtn', title: '重命名', onClick: () => {
+        const name = window.prompt('相机名称', cam.name);
+        if (name && window.camStore) window.camStore.rename(camId, name);
+      } }, h(Icon, { name: 'sliders', size: 14 })),
+      h('button', { className: 'lc-cam-iconbtn', title: '删除', onClick: () => {
+        if (window.camStore) window.camStore.remove(camId);
+        const next = window.camStore && window.camStore.get().selectedId;
+        if (next) { setCamId(next); s.setCapCam(next); }
+      } }, h(Icon, { name: 'trash', size: 14 })));
+    const trackField = h('div', { className: 'lc-field' }, h('span', { className: 'k' }, '选择追踪信号'),
+      h(window.Selector, { kpre: '', value: trackSignal, options: TRACK_SIGNALS, onChange: onTrackChange, width: 214, variant: 'obj', align: 'left' }));
+    const cameraParamsNode = h(CameraParams, { cam, tracked, camId, editable: !tracked });
+
     const side = h('div', { className: 'lc-side' },
       /* 校正方式（三个紧凑选项） */
       grp('mopt', CAL_METHOD_BADGES[method].icon, '校正方式', open.mopt, () => tgl('mopt'), h(MethodOptions, { s })),
       /* a 常规设置 */
-      grp('general', 'sliders', '常规设置', open.general, () => tgl('general'),
-        h('div', { className: 'lc-field' }, h('span', { className: 'k' }, '采集配置 Profile'),
-          profiles.length
-            ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-                h(window.Selector, {
-                  kpre: '', value: pid || '',
-                  options: profiles.map((p) => ({ id: p.id, label: p.name + ' · ' + (BACKEND_LABEL[p.videoBackend] || p.videoBackend) })),
-                  onChange: (v) => setPid(v), width: 214, variant: 'obj', align: 'left',
-                }),
-                h('button', { className: 'lc-selbtn', onClick: () => CX().openCaptureModal && CX().openCaptureModal(s) },
-                  h(Icon, { name: 'sliders', size: 14 }), h('span', { className: 'v' }, '管理采集配置…')))
-            : h('button', { className: 'lc-selbtn', onClick: () => CX().openCaptureModal && CX().openCaptureModal(s) },
-                h(Icon, { name: 'camera', size: 14 }), h('span', { className: 'v', style: { color: 'var(--notice-visual)' } }, '尚未创建 · 去新建'), h(Icon, { name: 'chevd', size: 13 }))),
-        /* 标定屏幕单选 + 三个自动状态行（screen.json / 图案 / 输出位置 由系统自动推导生成） */
-        h('div', { className: 'ag-block' },
-          h('span', { className: 'ag-sublbl' }, '标定屏幕'),
-          h(window.VoloAutoGen.ScreenChips, { ag })),
-        h(window.VoloAutoGen.AutoStatusRows, { ag }),
-        /* 本机 HDMI：允许在采集窗内重选测试图目标屏（ASUS vs LG G3 等） */
-        deployChannel === 'monitor' && deployed && patternMons.length
-          ? h('div', { className: 'ag-block', style: { marginTop: 10 } },
-              h('span', { className: 'ag-sublbl' }, '测试图输出显示器'),
-              h('div', { className: 'lc-camchips' }, patternMons.map((m) => h('button', {
-                key: m.index,
-                className: 'lc-camchip' + (m.index === activeMonitorIndex ? ' on' : ''),
-                disabled: patternMonBusy || capturing,
-                onClick: () => void retargetPatternMonitor(m),
-                title: (m.name || ('显示器 ' + m.index)) + ' · ' + m.width + '×' + m.height,
-              },
-                (m.name || ('#' + m.index)),
-                m.is_primary ? ' · 主屏' : '',
-              ))),
-              h('div', { className: 'lc-reason', style: { marginTop: 6 } },
-                h(Icon, { name: 'info', size: 12 }),
-                '需 Windows「扩展这些显示器」；复制模式下副屏无法单独投图'))
-          : null),
+      grp('general', 'sliders', '常规设置', open.general, () => tgl('general'), ...generalBody),
       /* b 方式参数 */
       grp('method', CAL_METHOD_BADGES[method].icon, '方式参数', open.method, () => tgl('method'),
         h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 } }, methodBadge(method)),
@@ -1617,56 +1924,7 @@ import {
                 h(Switch, { isSelected: inverted, onChange: setInverted })))),
       /* c 摄影机设置（重点） */
       grp('camera', 'camera', '摄影机设置', open.camera, () => tgl('camera'),
-        h('div', { className: 'lc-camchips' }, (camSnap.cameras || []).map((c) => h('button', { key: c.id, className: 'lc-camchip' + (c.id === camId ? ' on' : ''), onClick: () => {
-            setCamId(c.id); s.setCapCam(c.id);
-            if (window.camStore) window.camStore.select(c.id);
-          } },
-          h('span', { className: 'dot', style: { background: c.mode === 'tracked' ? 'var(--volo-500)' : c.solved ? 'var(--positive-visual)' : 'var(--chrome-faint)' } }), c.name)),
-          h('button', { className: 'lc-camchip-add', title: '新建相机', onClick: () => {
-            if (!window.camStore) return;
-            const c = window.camStore.add();
-            setCamId(c.id); s.setCapCam(c.id);
-          } }, h(Icon, { name: 'plus', size: 14 }))),
-        h('div', { className: 'lc-cam-bar' },
-          h('span', { className: 'sp' }),
-          h('button', { className: 'lc-cam-iconbtn', title: '重命名', onClick: () => {
-            const name = window.prompt('相机名称', cam.name);
-            if (name && window.camStore) window.camStore.rename(camId, name);
-          } }, h(Icon, { name: 'sliders', size: 14 })),
-          h('button', { className: 'lc-cam-iconbtn', title: '删除', onClick: () => {
-            if (window.camStore) window.camStore.remove(camId);
-            const next = window.camStore && window.camStore.get().selectedId;
-            if (next) { setCamId(next); s.setCapCam(next); }
-          } }, h(Icon, { name: 'trash', size: 14 }))),
-        h('div', { className: 'lc-field' }, h('span', { className: 'k' }, '选择追踪信号'),
-          h(window.Selector, { kpre: '', value: trackSignal, options: TRACK_SIGNALS, onChange: onTrackChange, width: 214, variant: 'obj', align: 'left' })),
-        h(CameraParams, { cam, tracked, camId, editable: !tracked })),
-        !tracked ? h('div', { style: { marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--chrome-line)' } },
-          h('div', { className: 'lc-cam-sub', style: { marginTop: 0 } }, 'Fixed-camera · 采集目的'),
-          h('div', { className: 'lc-camchips', style: { marginBottom: 10 } },
-            h('button', {
-              className: 'lc-camchip' + (lensPhase === 'fixed' ? ' on' : ''),
-              onClick: () => setLensPhase('fixed'),
-              title: '固定机位外参：单帧采集后反算 Stage pose（需 qualified master lens）',
-            }, '固定外参 · 1 Pose'),
-            h('button', {
-              className: 'lc-camchip' + (lensPhase === 'master_lens' ? ' on' : ''),
-              onClick: () => setLensPhase('master_lens'),
-              title: '独立 multi-view 内参标定：需 ≥8 个不同角度（算法下限 MASTER_LENS_MIN_USABLE_IMAGES）',
-            }, 'Master Lens · ≥8')),
-          fixedLensReady
-            ? h('div', { className: 'lc-reason ok' }, h(Icon, { name: 'check', size: 12 }),
-                'Master lens · ' + Number(cam.masterLensInfo.rms).toFixed(3) + ' px · '
-                + cam.masterLensInfo.num_images + ' poses')
-            : h('div', { className: 'lc-reason' }, h(Icon, { name: 'info', size: 12 }),
-                lensPhase === 'master_lens'
-                  ? 'Master Lens Capture · 保持 focus/zoom，移动相机覆盖 ≥8 角度与画面边缘'
-                  : '固定外参需求 qualified master lens（≥8 multi-view）；可导入或切换到 Master Lens 采集'),
-          h('div', { style: { display: 'flex', gap: 8, marginTop: 8 } },
-            h(Button, { variant: 'secondary', size: 'S', isDisabled: masterLensBusy,
-              onPress: () => void importMasterLens() }, '导入 Master Lens'),
-            h(Button, { variant: 'secondary', size: 'S', isDisabled: masterLensBusy,
-              onPress: () => void createMasterLens() }, '从 Multi-view 生成'))) : null,
+        camChips, camBar, trackField, cameraParamsNode),
       /* d 追踪状态条 */
       h('div', { className: 'lc-grp' }, h('div', { className: 'lc-grp-b', style: { paddingTop: 14 } },
         h('div', { className: 'lc-cam-sub', style: { marginTop: 0 } }, '追踪状态'),
@@ -1748,8 +2006,8 @@ import {
     if (ag.multiSection) reasons.push('折面屏（多 section）图案上屏暂不支持');
     if (ag.pattern === 'genFail') reasons.push('校正图案生成失败');
     if (collectingMasterLens) reasons.push('当前为 Master Lens Capture · 采集 ≥8 个不同角度并覆盖画面边缘；此阶段不求 Stage 位姿');
-    if (!tracked && !collectingMasterLens && !fixedLensReady && method === 'qsp') {
-      reasons.push('固定外参（1 pose）需要 qualified master lens — 请导入，或切换到「Master Lens · ≥8」先采内参');
+    if (!tracked && !collectingMasterLens && !fixedLensReady && method === 'qsp' && purpose === 'known_lens') {
+      reasons.push('「使用 Master Lens · 只求外参」需要 qualified master lens — 请导入，或改用「固定机位 · 单次校正 / 自动估计当前镜头」');
     }
     if (!isSl && ag.selectedIds.length > 1 && deployChannel !== 'ndisplay') reasons.push('多屏同步上屏需要 nDisplay 通道');
     if (isSl && deployChannel !== 'ndisplay') reasons.push('结构光目前仅支持 nDisplay 通道');
@@ -1785,6 +2043,43 @@ import {
             h('span', { className: 'sp' }),
             arButton));
 
+    /* ---------- 固定机位 · VP-QSP：右栏 / 底栏 / 左覆盖委托给 VOLO_QSP ----------
+       仅 method==='qsp' && 追踪 None 时生效；追踪机位 / 结构光 / ChArUco 保持现有窗口一字不改。 */
+    const qspModeRequested = purpose === 'known_lens' ? 'known-lens'
+      : purpose === 'joint_session' ? 'joint-session-lens'
+        : purpose === 'master_lens' ? 'master-lens-capture' : 'auto';
+    const qspReasons = [];
+    if (!deployed) qspReasons.push({ t: '未部署上屏', jump: 'deploy' });
+    if (!profile) qspReasons.push({ t: '未选采集配置' });
+    if (!signalReady && backend !== 'synthetic') qspReasons.push({ t: '信号源未就绪' });
+    if (ag.screenDef === 'exportFail') qspReasons.push({ t: '屏幕定义导出失败' });
+    if (ag.multiSection) qspReasons.push({ t: '折面屏（多 section）图案上屏暂不支持' });
+    if (ag.pattern === 'genFail') qspReasons.push({ t: '校正图案生成失败' });
+    if (ag.selectedIds.length > 1 && deployChannel !== 'ndisplay') qspReasons.push({ t: '多屏同步上屏需要 nDisplay 通道' });
+    if (purpose === 'known_lens' && !hasMaster) {
+      qspReasons.push({ t: 'known-lens 缺合格 Master Lens · 可改用「固定机位 · 单次校正 / 自动估计当前镜头」' });
+    }
+    const qctx = {
+      s, close,
+      qspState, lensPhase: qspLensPhase, modeRequested: qspModeRequested,
+      purpose, setPurpose,
+      hasMaster, masterInfo: cam && cam.masterLensInfo, masterBusy: masterLensBusy,
+      importMaster: () => void importMasterLens(),
+      createMaster: () => void createMasterLens(),
+      run: qspRun, failInfo: qspFail,
+      arStage, arError: arErr,
+      startArVerify, confirmAttest, recapture: qspRecapture, openLivePreview: qspOpenLivePreview,
+      tracked, open, tgl,
+      generalBody, camChips, trackField, cameraParams: cameraParamsNode,
+      reasons: qspReasons, ready, preparing: ag.preparing, starting,
+      start: () => ag.beginCapture(start), stop: () => void stop(),
+      targetM, capN,
+      deployJump: () => { close(); s.setCalSection('deploy'); },
+    };
+    qspCtxRef.current = qctx;
+    const sideNode = (isQspFixed && window.VOLO_QSP) ? window.VOLO_QSP.side(qctx) : side;
+    const actionbarNode = (isQspFixed && window.VOLO_QSP) ? window.VOLO_QSP.actionbar(qctx) : actionbar;
+
     const rzDirs = [['n', 0, -1], ['s', 0, 1], ['e', 1, 0], ['w', -1, 0], ['ne', 1, -1], ['nw', -1, -1], ['se', 1, 1], ['sw', -1, 1]];
     return h('div', { className: 'drawer drawer--lcwin', ref: rootRef },
       h('div', { className: 'drawer-h' },
@@ -1793,10 +2088,16 @@ import {
           h('div', { className: 'sub' }, methodBadge(method))),
         h('button', { className: 'iconbtn x', onClick: () => { if (capturing) stop(); close(); } }, h(Icon, { name: 'x', size: 16 }))),
       h('div', { className: 'lc-body', style: { gridTemplateColumns: leftPct + '% ' + (100 - leftPct) + '%' } },
-        signal, side,
+        signal, sideNode,
         h('div', { className: 'capw-split', style: { left: leftPct + '%' }, onPointerDown: onSplit }, h('span', { className: 'capw-split-grip' }))),
-      actionbar,
+      actionbarNode,
       rzDirs.map(([n, dx, dy]) => h('div', { key: n, className: 'capw-rz capw-rz--' + n, onPointerDown: onResize(dx, dy) })));
+  }
+  /* QSP 左覆盖层：渲染期从 ref 取 qctx（qctx 在 CaptureWindow 函数体尾部装配）。 */
+  function QspOverlays({ ctxRef }) {
+    const ctx = ctxRef.current;
+    if (!ctx || !window.VOLO_QSP) return null;
+    return window.VOLO_QSP.leftOverlays(ctx);
   }
   function openLensWindow(s) {
     s.setModal({ xwide: true, render: ({ s: st, close }) => h(CaptureWindow, { s: st, close }) });
@@ -2188,7 +2489,7 @@ import {
         pill),
       h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '镜头校正'),
         h('div', { style: { display: 'grid', gap: 8 } },
-          h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'camera', size: 15 }), onPress: () => { openLensWindow(s); s.pushLog({ lv: 'info', cat: 'lens', msg: '打开镜头校正采集窗口' }); } }, '镜头校正')),
+          h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'camera', size: 15 }), onPress: () => { if (s.setCapTrack) s.setCapTrack('fixed'); openLensWindow(s); s.pushLog({ lv: 'info', cat: 'lens', msg: '打开镜头校正采集窗口 · 固定机位（VP-QSP 单次校正）' }); } }, '镜头校正')),
         h('div', { style: { fontSize: 11.5, color: 'var(--chrome-faint)', marginTop: 9, lineHeight: 1.5 } }, '打开镜头校正采集窗口：左侧实时画面，右侧选择方式、设置参数并开始采集。')),
       h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '功能入口'),
         h('div', { className: 'lens-entry-list' },
@@ -2201,5 +2502,7 @@ import {
   window.VOLO_CALFLOW = {
     openLensWindow, CaptureWindow, lensInspector, openSolveReport, SolveReport,
     sourceTag, modeBadge, methodBadge, qualityLight, solveBadge, rmsSolveBadge,
+    /* 供 VOLO_QSP（固定机位单次校正 UX）复用的渲染原子 */
+    grp, MethodOptions, CameraParams, AROverlay,
   };
 })();

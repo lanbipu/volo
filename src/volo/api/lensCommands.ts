@@ -40,6 +40,17 @@ export interface LensSessionSummary {
     offset?: number;
     cab_col_offset?: number;
   }> | null;
+  /** 完整 fixed_observation_result.v1（detection / observability / preflight / validation …）
+   *  —— QSP 结果五分区 report 的数据源；未求解 / 旧 run 为空 */
+  fixed_observation?: FixedObservationResult | null;
+  /** 采集时 framing 评分（fixed_run.json meta `framing`）；与 Geometry RMS 物理分隔 */
+  framing?: {
+    score: number;
+    per_screen?: Record<string, number>;
+    observed_markers?: number | null;
+    bbox_frac?: number[] | null;
+    source?: string;
+  } | null;
 }
 export const listLensSessions = (sessionsRoot: string) =>
   call<LensSessionSummary[]>("list_lens_sessions", { sessionsRoot });
@@ -329,6 +340,94 @@ export async function trackerFreeStagePose(opts: {
     throw envelopeError(env, `tracker-free pose failed (exit ${out.exit_code})`);
   }
   return env.data as TrackerFreeStagePoseResult;
+}
+
+/** `fixed_observation_result.v1` — joint or known-lens fixed single observation. */
+export interface FixedObservationResult {
+  schema_version: string;
+  solve_kind: "joint_single_observation" | "fixed_extrinsics_only" | string;
+  mode_requested: "auto" | "known-lens" | "joint-session-lens" | string;
+  mode_resolved: "known-lens" | "joint-session-lens" | string;
+  formal: boolean;
+  model_level?: string | null;
+  camera_from_stage?: Record<string, unknown> | null;
+  session_lens?: {
+    is_master: boolean;
+    session_coupled: boolean;
+    K: number[][];
+    dist_coeffs: number[];
+    image_size: number[];
+    model: string;
+  } | null;
+  camera_state_fingerprint?: {
+    machine_readable_hash: string;
+    components: Record<string, unknown>;
+    focus_zoom_attested: boolean;
+    attest_timestamp?: string | null;
+  } | null;
+  stage_geometry_fingerprint?: string;
+  detection?: Record<string, unknown>;
+  observability?: Record<string, unknown>;
+  preflight?: Record<string, unknown>;
+  validation?: Record<string, unknown>;
+  qualification?: {
+    passed: boolean;
+    fail_closed: boolean;
+    scope?: string;
+    formal?: boolean;
+  };
+  rms_reprojection_px?: number;
+  num_correspondences?: number;
+  num_inliers?: number;
+}
+
+/** `vpcal tracker-free fixed-observation` — joint session lens or known-lens extrinsics. */
+export async function trackerFreeFixedObservation(opts: {
+  imagePath: string;
+  targets: Array<{ screenJson: string; code: number; offset: number }>;
+  mode?: "auto" | "known-lens" | "joint-session-lens";
+  lensPath?: string | null;
+  outPath: string;
+  stagePoseOut?: string | null;
+  cameraId?: string;
+  transferPath?: string;
+  attestFocusZoom?: boolean;
+  stageGeometryFingerprint?: string;
+  weakFocalPx?: number | null;
+}): Promise<FixedObservationResult> {
+  if (!opts.targets.length) {
+    throw new Error("tracker-free fixed-observation requires at least one screen target");
+  }
+  const args = [
+    "tracker-free", "fixed-observation",
+    "--image", forSidecarFsPath(opts.imagePath),
+    "--mode", opts.mode ?? "auto",
+    "--out", forSidecarFsPath(opts.outPath),
+  ];
+  for (const target of opts.targets) {
+    args.push(
+      "--screen-target", forSidecarFsPath(target.screenJson),
+      String(target.code), String(target.offset),
+    );
+  }
+  if (opts.lensPath) args.push("--lens", forSidecarFsPath(opts.lensPath));
+  if (opts.stagePoseOut) args.push("--stage-pose-out", forSidecarFsPath(opts.stagePoseOut));
+  if (opts.cameraId) args.push("--camera-id", opts.cameraId);
+  if (opts.transferPath) args.push("--transfer-path", opts.transferPath);
+  if (opts.attestFocusZoom) args.push("--attest-focus-zoom");
+  if (opts.stageGeometryFingerprint) {
+    args.push("--stage-geometry-fingerprint", opts.stageGeometryFingerprint);
+  }
+  if (opts.weakFocalPx != null && Number.isFinite(opts.weakFocalPx)) {
+    args.push("--weak-focal-px", String(opts.weakFocalPx));
+  }
+  args.push("--output", "json");
+  const out = await spawnSidecar("vpcal", args);
+  const env = parseEnvelope(out);
+  if (env.status && env.status !== "ok") {
+    throw envelopeError(env, `tracker-free fixed-observation failed (exit ${out.exit_code})`);
+  }
+  return env.data as FixedObservationResult;
 }
 
 export interface GridOverlayScreen {

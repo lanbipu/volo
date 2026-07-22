@@ -150,6 +150,14 @@ pub struct LensSessionSummary {
     pub intrinsics: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intrinsics_error: Option<String>,
+    /// Full `fixed_observation_result.v1` payload (detection / observability /
+    /// preflight / validation …) — data source for the five-section QSP report.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fixed_observation: Option<Value>,
+    /// Capture-time framing score (`fixed_run.json` meta `framing`); UI-owned
+    /// composition metric, deliberately separate from geometry RMS.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub framing: Option<Value>,
 }
 
 fn count_normal_pngs(session_dir: &Path) -> Option<u64> {
@@ -194,16 +202,76 @@ fn formal_stage_pose(value: &Value) -> bool {
     let image_size_ok = value
         .get("image_size")
         .and_then(Value::as_array)
-        .is_some_and(|v| v.len() >= 2 && v[0].as_u64().unwrap_or(0) > 0 && v[1].as_u64().unwrap_or(0) > 0);
-    value.get("schema_version").and_then(Value::as_str) == Some("volo_stage_pose.v2")
-        && value.get("solve_kind").and_then(Value::as_str) == Some("fixed_extrinsics_only")
-        && value.get("formal").and_then(Value::as_bool) == Some(true)
-        && value.pointer("/qualification/passed").and_then(Value::as_bool) == Some(true)
+        .is_some_and(|v| v.len() >= 2 && v[0].as_u64().unwrap_or(0) > 0 && v[1].as_u64().unwrap_or(0) > 0)
+        || value
+            .pointer("/session_lens/image_size")
+            .and_then(Value::as_array)
+            .is_some_and(|v| v.len() >= 2 && v[0].as_u64().unwrap_or(0) > 0 && v[1].as_u64().unwrap_or(0) > 0);
+
+    let schema = value.get("schema_version").and_then(Value::as_str);
+    let solve_kind = value.get("solve_kind").and_then(Value::as_str);
+    let formal = value.get("formal").and_then(Value::as_bool) == Some(true);
+    let qual_passed = value.pointer("/qualification/passed").and_then(Value::as_bool) == Some(true);
+    let fail_closed = value.pointer("/qualification/fail_closed").and_then(Value::as_bool) == Some(true);
+    let rms_ok = value
+        .get("rms_reprojection_px")
+        .and_then(Value::as_f64)
+        .is_some_and(|v| v.is_finite() && v < 2.0);
+
+    // Legacy known-lens extrinsics-only path.
+    let known_lens_ok = schema == Some("volo_stage_pose.v2")
+        && solve_kind == Some("fixed_extrinsics_only")
+        && formal
+        && qual_passed
         && value.pointer("/qualification/master_lens").and_then(Value::as_bool) == Some(true)
-        && value.pointer("/qualification/fail_closed").and_then(Value::as_bool) == Some(true)
+        && fail_closed
         && value.pointer("/preflight/passed").and_then(Value::as_bool) == Some(true)
-        && value.get("rms_reprojection_px").and_then(Value::as_f64).is_some_and(|v| v.is_finite() && v < 2.0)
+        && rms_ok
+        && image_size_ok;
+
+    // Joint single-observation path (session-coupled lens; never a Master Lens).
+    let session_lens = value.get("session_lens");
+    let session_coupled_ok = session_lens
+        .and_then(|l| l.get("session_coupled"))
+        .and_then(Value::as_bool)
+        == Some(true)
+        && session_lens
+            .and_then(|l| l.get("is_master"))
+            .and_then(Value::as_bool)
+            != Some(true);
+    let joint_ok = (schema == Some("volo_stage_pose.v2")
+        || schema == Some("fixed_observation_result.v1"))
+        && solve_kind == Some("joint_single_observation")
+        && formal
+        && qual_passed
+        && fail_closed
+        && rms_ok
         && image_size_ok
+        && session_coupled_ok
+        // Joint mirror may omit preflight.passed when written as stage_pose.v2;
+        // accept qualification.scope == current_camera_state_only instead.
+        && (value.pointer("/preflight/passed").and_then(Value::as_bool) == Some(true)
+            || value.pointer("/qualification/scope").and_then(Value::as_str)
+                == Some("current_camera_state_only"));
+
+    // Stale when machine-readable camera fingerprint is explicitly marked.
+    let not_stale = value.get("stale").and_then(Value::as_bool) != Some(true);
+
+    not_stale && (known_lens_ok || joint_ok)
+}
+
+/// Compare stored machine-readable fingerprint hash to a current camera state.
+/// focus/zoom attest is intentionally ignored (cannot be auto-detected).
+#[allow(dead_code)]
+fn camera_fingerprint_stale(stored: &Value, current_hash: &str) -> bool {
+    match stored
+        .pointer("/camera_state_fingerprint/machine_readable_hash")
+        .and_then(Value::as_str)
+        .or_else(|| stored.get("machine_readable_hash").and_then(Value::as_str))
+    {
+        Some(hash) => hash != current_hash,
+        None => true,
+    }
 }
 
 fn file_mtime_rfc3339(path: &Path) -> Option<String> {
@@ -251,6 +319,8 @@ fn summarize_session(session_json: &Path) -> Option<LensSessionSummary> {
         lens_json: None,
         intrinsics: None,
         intrinsics_error: None,
+        fixed_observation: None,
+        framing: None,
     })
 }
 
@@ -342,10 +412,26 @@ fn summarize_fixed_run(dir: &Path) -> Option<LensSessionSummary> {
             let path = dir.join("stage_pose.json");
             path.is_file().then_some(path)
         });
+    let fixed_obs_path = {
+        let path = dir.join("fixed_observation_result.json");
+        path.is_file().then_some(path)
+    };
+    /* Full fixed-observation payload feeds the five-section QSP report
+       (detection / geometry preflight / observability ladder / validation). */
+    let fixed_observation = fixed_obs_path
+        .as_ref()
+        .and_then(|p| fs::read_to_string(p).ok())
+        .and_then(|txt| serde_json::from_str::<Value>(&txt).ok());
     let stage_pose = stage_pose_path
         .as_ref()
         .and_then(|p| fs::read_to_string(p).ok())
         .and_then(|txt| serde_json::from_str::<Value>(&txt).ok())
+        .or_else(|| {
+            fixed_obs_path
+                .as_ref()
+                .and_then(|p| fs::read_to_string(p).ok())
+                .and_then(|txt| serde_json::from_str::<Value>(&txt).ok())
+        })
         .or_else(|| {
             meta_value
                 .as_ref()
@@ -390,6 +476,8 @@ fn summarize_fixed_run(dir: &Path) -> Option<LensSessionSummary> {
         lens_json,
         intrinsics,
         intrinsics_error,
+        fixed_observation,
+        framing: meta_value.as_ref().and_then(|v| v.get("framing")).cloned(),
     })
 }
 
@@ -897,6 +985,19 @@ mod qa_report_tests {
         assert!(solved.stage_pose_ready);
         assert_eq!(solved.stage_pose_status, "formal");
         assert_eq!(solved.stage_pose.as_ref().unwrap()["rms_reprojection_px"], 0.42);
+
+        fs::write(
+            run.path().join("stage_pose.json"),
+            br#"{"schema_version":"volo_stage_pose.v2","solve_kind":"joint_single_observation","formal":true,"image_size":[1920,1080],"rms_reprojection_px":0.55,"num_inliers":80,"num_markers":100,"preflight":{"passed":true},"session_lens":{"is_master":false,"session_coupled":true,"K":[[1400,0,960],[0,1400,540],[0,0,1]],"dist_coeffs":[0,0,0,0,0],"image_size":[1920,1080],"model":"brown_conrady_radial2"},"qualification":{"passed":true,"fail_closed":true,"scope":"current_camera_state_only"},"stale":false}"#,
+        )
+        .unwrap();
+        let joint = summarize_fixed_run(run.path()).unwrap();
+        assert!(joint.stage_pose_ready);
+        assert_eq!(joint.stage_pose_status, "formal");
+        assert_eq!(
+            joint.stage_pose.as_ref().unwrap()["solve_kind"],
+            "joint_single_observation"
+        );
     }
 
     #[cfg(unix)]
