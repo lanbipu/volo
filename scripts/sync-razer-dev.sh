@@ -92,7 +92,7 @@ scp_razer "$BUNDLE_LOCAL" "${RAZER_USER}@${RAZER_HOST}:${BUNDLE_REMOTE}"
 # 完整 history bundle 里包含 refs/heads/<name>；用 git fetch 后 reset 到 FETCH_HEAD 更稳
 section "远端 git fetch + reset --hard"
 # Windows OpenSSH 默认 cmd：不能用 /dev/null；FETCH_HEAD 兼容 bundle 里非 main 的 ref
-FETCH_LOG="$(ssh_razer "cd ${REMOTE_REPO} && git fetch origin && git reset --hard FETCH_HEAD" 2>&1)" \
+FETCH_LOG="$(ssh_razer "cd ${REMOTE_REPO} && git fetch origin HEAD && git reset --hard FETCH_HEAD" 2>&1)" \
   || die "远端 git fetch/reset 失败"
 printf '%s\n' "${FETCH_LOG}" | grep -v 'WARNING\|vulnerable\|upgraded\|pq.html' || true
 REMOTE_SHORT="$(ssh_razer "cd ${REMOTE_REPO} && git rev-parse --short HEAD" 2>/dev/null | tr -d '\r' | tail -1)"
