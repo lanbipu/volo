@@ -40,7 +40,7 @@ import numpy as np
 
 from vpcal.core.capture import COORDINATE_SYSTEM
 from vpcal.core.capture_backend import CaptureBackend, CaptureConfig
-from vpcal.core.detector import detect_markers
+from vpcal.core.detector import detector_config_for_mpc, detect_markers, common_markers_per_cabinet
 from vpcal.core.errors import PreconditionError
 from vpcal.core.graycode import decode_tag
 from vpcal.core.screen_geometry import enumerate_markers
@@ -467,7 +467,14 @@ class CaptureSessionRunner:
         det_i = None
         if avg_i is not None:
             det_i = avg_i if avg_i.dtype == np.uint8 else (avg_i >> 8).astype(np.uint8)
-        detections = detect_markers(det_n, frame_id=index, inverted=det_i)
+        det_cfg = detector_config_for_mpc(
+            common_markers_per_cabinet(
+                screen.markers_per_cabinet for _target, screen, _label in self._targets
+            )
+        )
+        detections = detect_markers(
+            det_n, frame_id=index, inverted=det_i, config=det_cfg
+        )
         matched = [d for d in detections if d.marker_id in self._known_marker_ids]
         self._poses.append(_PoseRecord(index, tracked, len(matched), matched))
         self._all_detections.extend(matched)

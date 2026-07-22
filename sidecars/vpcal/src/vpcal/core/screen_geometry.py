@@ -28,7 +28,41 @@ from vpcal.core.observations import MarkerId
 from vpcal.models.screen import ScreenDefinition
 
 # Sub-marker offsets within a cabinet cell, in cell-fraction coordinates.
+# Legacy 2×2 quadrants kept as the first four entries for local_id 0..3.
 _SUB_QUADRANTS = [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)]
+
+
+def sub_offsets_for_count(markers_per_cabinet: int) -> list[tuple[float, float]]:
+    """Return cell-fraction (ou, ov) offsets for ``markers_per_cabinet`` markers.
+
+    ``1`` → single centre. ``2..4`` → legacy quadrants (stable with existing
+    patterns). ``5..64`` → row-major N×N grid where ``N = ceil(sqrt(n))``,
+    clipped to the first ``n`` cells so ``local_id`` stays within 6 bits.
+    """
+    n = int(markers_per_cabinet)
+    if n <= 1:
+        return [(0.5, 0.5)]
+    if n <= 4:
+        return list(_SUB_QUADRANTS[:n])
+    from vpcal.core.pattern import MAX_LOCAL
+
+    n = min(n, MAX_LOCAL + 1)
+    side = int(np.ceil(np.sqrt(n)))
+    offsets: list[tuple[float, float]] = []
+    for r in range(side):
+        for c in range(side):
+            offsets.append(((c + 0.5) / side, (r + 0.5) / side))
+            if len(offsets) >= n:
+                return offsets
+    return offsets
+
+
+def sub_offset_for_local_id(local_id: int, markers_per_cabinet: int) -> tuple[float, float]:
+    offs = sub_offsets_for_count(markers_per_cabinet)
+    if not offs:
+        return 0.5, 0.5
+    return offs[min(max(int(local_id), 0), len(offs) - 1)]
+
 
 from vpcal.core.pattern import MAX_COL, MAX_ROW, MAX_LOCAL, MAX_SCREEN
 
@@ -132,12 +166,6 @@ class ScreenMarker:
     world: tuple[float, float, float]  # UE/Stage frame, mm
 
 
-def _sub_offsets(markers_per_cabinet: int) -> list[tuple[float, float]]:
-    if markers_per_cabinet <= 1:
-        return [(0.5, 0.5)]
-    return _SUB_QUADRANTS[: min(markers_per_cabinet, 4)]
-
-
 def section_grid(screen: ScreenDefinition, section) -> tuple[int, int]:  # type: ignore[no-untyped-def]
     """Return ``(n_rows, n_cols)`` cabinet tiling for a section."""
     cw, ch = screen.cabinet_size
@@ -163,7 +191,7 @@ def enumerate_markers(
     Raises :class:`PreconditionError` if the grid exceeds the VP-QSP encoding
     capacity.
     """
-    subs = _sub_offsets(markers_per_cabinet)
+    subs = sub_offsets_for_count(markers_per_cabinet)
     markers: list[ScreenMarker] = []
     col_offset = cab_col_offset
     for section in screen.sections:

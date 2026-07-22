@@ -18,6 +18,7 @@ with a block-wise adaptive threshold (remediation A2.4).
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 import cv2
@@ -45,6 +46,23 @@ class DetectorConfig:
     topology_max_residual_px: float = 8.0
     enable_topology: bool = True
     detect_fallback_min: int = 4
+    # When set, topology uses the real cabinet sub-grid. When unset, treat each
+    # marker as cabinet-centred — do not infer mpc from sparse local_ids.
+    markers_per_cabinet: int | None = None
+
+
+def common_markers_per_cabinet(values: Iterable[int]) -> int | None:
+    """Return the shared mpc when all values agree; otherwise ``None``."""
+    uniq = {int(v) for v in values}
+    if len(uniq) == 1:
+        return next(iter(uniq))
+    return None
+
+
+def detector_config_for_mpc(markers_per_cabinet: int | None) -> DetectorConfig:
+    if markers_per_cabinet is None:
+        return DetectorConfig()
+    return DetectorConfig(markers_per_cabinet=int(markers_per_cabinet))
 
 
 def _order_corners(pts: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -126,17 +144,19 @@ def _diagonal_intersection(corners: NDArray[np.float64]) -> NDArray[np.float64]:
 
 
 def _subpixel_center(
-    gray: NDArray[np.float32], corners: NDArray[np.float64]
+    gray: NDArray[np.float32], corners: NDArray[np.float64], *, radius_scale: float = 1.0
 ) -> tuple[float, float]:
     """Intensity-weighted centroid of the central locator dot.
 
     ``gray`` is the signed difference image when differencing is active —
     ambient gradients cancel there, keeping the centroid unbiased (A2.2).
+    ``radius_scale`` multiplies the default locator window (used for
+    multi-scale centroid stability checks).
     """
     center = _diagonal_intersection(corners)
     side = np.mean([np.linalg.norm(corners[i] - corners[(i + 1) % 4]) for i in range(4)])
     cell = side * (1.0 - 2.0 * _MARGIN_FRAC) / GRID
-    radius = max(3, int(round(cell)))
+    radius = max(3, int(round(cell * radius_scale)))
     cx, cy = float(center[0]), float(center[1])
     for _ in range(3):
         cx0, cy0 = int(round(cx)), int(round(cy))
@@ -165,6 +185,51 @@ def _subpixel_center(
         cx = float((xs * weights).sum() / total)
         cy = float((ys * weights).sum() / total)
     return cx, cy
+
+
+def multi_scale_centroid_stable(
+    gray: NDArray[np.float32],
+    corners: NDArray[np.float64],
+    *,
+    scales: tuple[float, float] = (0.85, 1.25),
+    max_delta_cells: float = 0.15,
+) -> tuple[bool, float, tuple[float, float]]:
+    """Require two window scales to agree within ``max_delta_cells`` locator cells."""
+    side = np.mean([np.linalg.norm(corners[i] - corners[(i + 1) % 4]) for i in range(4)])
+    cell = side * (1.0 - 2.0 * _MARGIN_FRAC) / GRID
+    c0 = _subpixel_center(gray, corners, radius_scale=scales[0])
+    c1 = _subpixel_center(gray, corners, radius_scale=scales[1])
+    delta = float(np.hypot(c0[0] - c1[0], c0[1] - c1[1]))
+    delta_cells = delta / max(cell, 1.0e-6)
+    mid = (0.5 * (c0[0] + c1[0]), 0.5 * (c0[1] + c1[1]))
+    return delta_cells < max_delta_cells, delta_cells, mid
+
+
+def burst_median_centroids(
+    frames_centers: list[dict[str, tuple[float, float]]],
+) -> tuple[dict[str, tuple[float, float]], dict[str, float]]:
+    """Median-combine per-marker centroids across a same-pose burst.
+
+    ``frames_centers`` is a list of ``{point_id: (u,v)}`` dicts. Returns
+    (median_centers, temporal_jitter_px). Burst frames are NOT multi-pose evidence.
+    """
+    ids = set()
+    for frame in frames_centers:
+        ids.update(frame)
+    medians: dict[str, tuple[float, float]] = {}
+    jitter: dict[str, float] = {}
+    for pid in ids:
+        pts = [frame[pid] for frame in frames_centers if pid in frame]
+        if not pts:
+            continue
+        arr = np.asarray(pts, dtype=np.float64)
+        med = (float(np.median(arr[:, 0])), float(np.median(arr[:, 1])))
+        medians[pid] = med
+        if len(arr) >= 2:
+            jitter[pid] = float(np.mean(np.linalg.norm(arr - med, axis=1)))
+        else:
+            jitter[pid] = 0.0
+    return medians, jitter
 
 
 def _localization_quality(
@@ -201,10 +266,14 @@ def _localization_quality(
         reasons.append("locator_flat_topped")
     if displacement_cells > 0.45:
         reasons.append("locator_centroid_unstable")
+    stable, delta_cells, _mid = multi_scale_centroid_stable(gray, corners)
+    if not stable:
+        reasons.append("locator_multiscale_unstable")
     contrast_score = float(np.clip((contrast - 8.0) / 32.0, 0.0, 1.0))
     plateau_score = float(np.clip(1.0 - plateau_fraction / 0.65, 0.0, 1.0))
     displacement_score = float(np.clip(1.0 - displacement_cells / 0.45, 0.0, 1.0))
-    quality = min(contrast_score, plateau_score, displacement_score)
+    multiscale_score = float(np.clip(1.0 - delta_cells / 0.15, 0.0, 1.0))
+    quality = min(contrast_score, plateau_score, displacement_score, multiscale_score)
     return quality, bool(reasons), tuple(reasons)
 
 
@@ -225,19 +294,25 @@ def _normalise_detector_gray(image: NDArray) -> NDArray[np.uint8]:
     return np.clip(np.rint((gray - lo) * (255.0 / (hi - lo))), 0, 255).astype(np.uint8)
 
 
-def _grid_coords(dets: list[Detection]) -> NDArray[np.float64]:
-    """Continuous grid position per detection, including the sub-quadrant offset.
+def _grid_coords(
+    dets: list[Detection], *, markers_per_cabinet: int | None = None
+) -> NDArray[np.float64]:
+    """Continuous grid position per detection, including the sub-marker offset.
 
-    With multiple markers per cabinet, ``local_id`` indexes the sub-quadrant
-    (same table as ``screen_geometry._SUB_QUADRANTS``); ignoring it would put
+    With multiple markers per cabinet, ``local_id`` indexes the sub-grid
+    (see ``screen_geometry.sub_offsets_for_count``); ignoring it would put
     all of a cabinet's markers at one grid point and break the local affine fit.
-    """
-    from vpcal.core.screen_geometry import _SUB_QUADRANTS
 
-    multi = any(d.marker_id.local_id > 0 for d in dets)
+    ``markers_per_cabinet`` must come from the configured screen layout. Inferring
+    it from observed ``local_id`` values is unsafe under sparse detections.
+    When unset, every marker is treated as cabinet-centred (mpc=1).
+    """
+    from vpcal.core.screen_geometry import sub_offset_for_local_id
+
+    mpc = 1 if markers_per_cabinet is None else max(int(markers_per_cabinet), 1)
     coords = []
     for d in dets:
-        ou, ov = _SUB_QUADRANTS[min(d.marker_id.local_id, 3)] if multi else (0.5, 0.5)
+        ou, ov = sub_offset_for_local_id(d.marker_id.local_id, mpc)
         coords.append([d.marker_id.cab_col + ou, d.marker_id.cab_row + ov])
     return np.array(coords, dtype=np.float64)
 
@@ -247,7 +322,7 @@ def _topology_filter(dets: list[Detection], cfg: DetectorConfig) -> list[Detecti
     if not cfg.enable_topology or len(dets) < cfg.topology_neighbors + 1:
         return dets
     pix = np.array([[d.pixel_u, d.pixel_v] for d in dets])
-    grid = _grid_coords(dets)
+    grid = _grid_coords(dets, markers_per_cabinet=cfg.markers_per_cabinet)
     out: list[Detection] = []
     for i, d in enumerate(dets):
         dist = np.linalg.norm(pix - pix[i], axis=1)

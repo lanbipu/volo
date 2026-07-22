@@ -104,6 +104,24 @@ class LocalizationQualityFailed(PreconditionError):
     code = "LOCALIZATION_QUALITY_FAILED"
 
 
+class DetectionQualityFailed(PreconditionError):
+    """Fixed-observation detection / correspondence quality failed closed."""
+
+    code = "DETECTION_QUALITY_FAILED"
+
+
+class SingleViewUnobservable(PreconditionError):
+    """Single fixed observation cannot identify the requested lens model."""
+
+    code = "SINGLE_VIEW_UNOBSERVABLE"
+
+
+class ImageDomainMismatch(PreconditionError):
+    """Capture image domain / camera state does not match expected fingerprint."""
+
+    code = "IMAGE_DOMAIN_MISMATCH"
+
+
 class SolverTimeoutError(VpcalError):
     """Solver exceeded its configured time budget (exit 7)."""
 
@@ -133,6 +151,9 @@ __all__ = [
     "MasterLensRequired",
     "FormalStagePoseRequired",
     "LocalizationQualityFailed",
+    "DetectionQualityFailed",
+    "SingleViewUnobservable",
+    "ImageDomainMismatch",
     "SolverTimeoutError",
     "PartialFailure",
 ]

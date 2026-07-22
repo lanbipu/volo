@@ -153,13 +153,14 @@ class ScreenDefinition(BaseModel):
     cabinet_size: tuple[float, float]
     """(width, height) of a single LED cabinet in ``unit``."""
     led_pixel_pitch_mm: float = Field(gt=0)
-    markers_per_cabinet: int = Field(default=4, ge=1, le=4)
+    markers_per_cabinet: int = Field(default=4, ge=1, le=64)
     """Markers laid out per cabinet.  Legacy default is 4 (sub-quadrant
     layout) for backward compatibility with existing screen JSON files.
-    New screens created via ``screen create`` use 1 (cell-centred layout)
-    when auto cabinet sizing is active.  Stored on the screen (the shared
-    artifact) so pattern generation, simulation and the solve-stage 3D
-    lookup cannot drift out of sync."""
+    Values up to 64 use the full 6-bit VP-QSP ``local_id`` range as an N×N
+    sub-grid inside each cabinet.  New screens created via ``screen create``
+    use 1 (cell-centred layout) when auto cabinet sizing is active.  Stored
+    on the screen (the shared artifact) so pattern generation, simulation
+    and the solve-stage 3D lookup cannot drift out of sync."""
     sections: list[WallSection]
     processor: Optional[ProcessorCanvas] = None
     """Optional LED-processor canvas mapping (C0); ``None`` ⇒ assume a direct 1:1
