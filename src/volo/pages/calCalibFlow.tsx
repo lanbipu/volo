@@ -43,9 +43,12 @@ import {
     catch (e) { return { poses: 8, settleMs: 300, burst: 5, inverted: true, graycodeSync: true, lensPath: '' }; }
   };
   const saveCapParams = (p) => { try { localStorage.setItem(LS_CAP_PARAMS, JSON.stringify(p)); } catch (e) {} };
+  /* Windows verbatim 路径（\\?\C:\...）+ 混用 `/` 会被 click.Path(exists=True) 判为不存在
+     （「立即求解」曾因此静默失败）。name 内分隔符一律归一到 dir 的风格。 */
   const joinPath = (dir, name) => {
-    const sep = dir.indexOf('\\') >= 0 ? '\\' : '/';
-    return dir.replace(/[\\/]+$/, '') + sep + name;
+    const sep = String(dir).indexOf('\\') >= 0 ? '\\' : '/';
+    const parts = String(name).split(/[\\/]+/).filter(Boolean);
+    return [String(dir).replace(/[\\/]+$/, ''), ...parts].join(sep);
   };
   const pad6 = (n) => String(n).padStart(6, '0');
   const finite = (value, fallback = 0) => {
@@ -1227,12 +1230,17 @@ import {
                 solveState: solvedState,
                 rms: solvedRms,
                 stagePose: solved,
+                solveError: null,
               })
             : r
         )));
         void refreshSessions();
       } catch (e) {
-        s.pushLog({ lv: 'err', cat: 'lens', msg: '固定机位求解失败 · ' + (e && e.message ? e.message : e) });
+        const msg = e && e.message ? e.message : String(e);
+        s.pushLog({ lv: 'err', cat: 'lens', msg: '固定机位求解失败 · ' + msg });
+        setLiveRuns((prev) => (prev || []).map((r) => (
+          r.id === run.id ? Object.assign({}, r, { solveError: msg }) : r
+        )));
       } finally {
         setSolvingId(null);
       }
@@ -1427,12 +1435,15 @@ import {
                       : solved && run.rms != null ? rmsSolveBadge(run.rms) : solveBadge(st === 'none' ? 'none' : st),
                     h('button', { className: 'lc-run-x', title: '删除该记录', onClick: (e) => { e.stopPropagation(); void removeRun(run.id); } }, h(Icon, { name: 'x', size: 12 })))),
                 run.error ? h('div', { style: { padding: '8px 11px', fontSize: 11.5, color: 'var(--notice-visual)', borderBottom: '1px solid var(--chrome-line)' } }, run.error) : null,
+                !run.error && run.solveError
+                  ? h('div', { style: { padding: '8px 11px', fontSize: 11.5, color: 'var(--notice-visual)', borderBottom: '1px solid var(--chrome-line)' } }, '求解失败 · ' + run.solveError)
+                  : null,
                 st === 'none'
                   ? h('div', { className: 'lc-run-solvebar' },
                       h('span', { className: 'lc-run-solvebar-t' }, run.poseCount + ' 点位 · 未求解'),
                       h('span', { style: { flex: 1 } }),
                       h(Button, { variant: 'accent', size: 'S', icon: h(Icon, { name: 'target', size: 13 }),
-                        isDisabled: !!run.error, onPress: () => solveRun(run) }, '立即求解'))
+                        isDisabled: !!run.error, onPress: () => solveRun(run) }, run.solveError ? '重新求解' : '立即求解'))
                   : st === 'solving'
                     ? h('div', { className: 'lc-run-solvebar is-solving' },
                         h('span', { className: 'lc-run-solvebar-t' }, '正在求解外参与重投影…'),

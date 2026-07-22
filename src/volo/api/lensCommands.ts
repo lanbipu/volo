@@ -183,6 +183,12 @@ export interface FixedPixelIntrinsics {
   physical_snapshot?: Record<string, number | string | null>;
 }
 
+/** Strip Windows `\\?\` verbatim prefix — click.Path(exists=True) rejects mixed
+ *  separators under that prefix (e.g. `\\?\C:\...\captures/normal\000000.png`). */
+function forSidecarFsPath(path: string): string {
+  return String(path || "").replace(/^\\\\\?\\/, "");
+}
+
 /** One fixed-frame Stage pose. Any subset of selected screen targets may be visible. */
 export async function trackerFreeStagePose(opts: {
   imagePath: string;
@@ -200,10 +206,10 @@ export async function trackerFreeStagePose(opts: {
   outPath?: string | null;
 }): Promise<TrackerFreeStagePoseResult> {
   if (!opts.targets.length) throw new Error("tracker-free pose requires at least one screen target");
-  const args = ["tracker-free", "pose", "--image", opts.imagePath];
+  const args = ["tracker-free", "pose", "--image", forSidecarFsPath(opts.imagePath)];
   for (const target of opts.targets) {
     args.push(
-      "--screen-target", target.screenJson,
+      "--screen-target", forSidecarFsPath(target.screenJson),
       String(target.code), String(target.offset),
     );
   }
@@ -211,7 +217,7 @@ export async function trackerFreeStagePose(opts: {
     throw new Error("tracker-free pose accepts one intrinsics source per run");
   }
   if (opts.lensPath) {
-    args.push("--lens", opts.lensPath);
+    args.push("--lens", forSidecarFsPath(opts.lensPath));
   } else if (opts.intrinsics) {
     const intr = opts.intrinsics;
     args.push(
@@ -236,7 +242,7 @@ export async function trackerFreeStagePose(opts: {
       "--k3", String(opts.k3 ?? 0),
     );
   }
-  if (opts.outPath) args.push("--out", opts.outPath);
+  if (opts.outPath) args.push("--out", forSidecarFsPath(opts.outPath));
   args.push("--output", "json");
   const out = await spawnSidecar("vpcal", args);
   const env = parseEnvelope(out);
@@ -268,10 +274,10 @@ export async function trackerFreeGrid(opts: {
   includeMarkers?: boolean;
 }): Promise<TrackerFreeGridResult> {
   if (!opts.targets.length) throw new Error("tracker-free grid requires at least one screen target");
-  const args = ["tracker-free", "grid", "--pose", opts.posePath];
+  const args = ["tracker-free", "grid", "--pose", forSidecarFsPath(opts.posePath)];
   for (const target of opts.targets) {
     args.push(
-      "--screen-target", target.screenJson,
+      "--screen-target", forSidecarFsPath(target.screenJson),
       String(target.code), String(target.offset),
     );
   }
@@ -279,7 +285,7 @@ export async function trackerFreeGrid(opts: {
     throw new Error("tracker-free grid accepts one intrinsics source per run");
   }
   if (opts.lensPath) {
-    args.push("--lens", opts.lensPath);
+    args.push("--lens", forSidecarFsPath(opts.lensPath));
   } else if (opts.intrinsics) {
     const intr = opts.intrinsics;
     args.push(
