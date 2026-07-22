@@ -447,8 +447,6 @@ import {
     const [stillsSnapN, setStillsSnapN] = useState(0);
     const stillsStream = useSidecarStream(stillsTaskId);
     const cam = (camSnap.cameras || []).find((c) => c.id === camId) || camSnap.cameras[0] || CAL_CAMERAS[0];
-    const targetM = tracked ? (Number(params.poses) || 8) : 1;
-
     const profiles = (CX().loadProfiles && CX().loadProfiles()) || [];
     const [pid, setPid] = useState(s.capProfileId || (profiles[0] && profiles[0].id) || null);
     const profile = profiles.find((p) => p.id === pid) || null;
@@ -495,6 +493,10 @@ import {
       || (s.calOutTarget === 'cluster' ? 'ndisplay' : 'monitor');
     const fixedLensReady = !!(cam && cam.lensIsMaster && cam.masterLensPath
       && cam.masterLensInfo && cam.masterLensInfo.qualified_master);
+    const collectingMasterLens = method === 'qsp' && !tracked && !fixedLensReady;
+    const targetM = tracked
+      ? (Number(params.poses) || 8)
+      : (collectingMasterLens ? Math.max(8, Number(params.poses) || 8) : 1);
     const installMasterLens = async (path) => {
       const info = await trackerFreeLensInfo(path);
       if (!info.qualified_master) {
@@ -539,7 +541,7 @@ import {
       && ag.screenDef === 'synced' && !ag.multiSection && ag.pattern !== 'genFail'
       && ag.targets.length === ag.selectedIds.length
       && (ag.selectedIds.length <= 1 || deployChannel === 'ndisplay')
-      && (tracked || fixedLensReady);
+      && (tracked || collectingMasterLens || fixedLensReady);
     const readySl = method === 'sl'
       && deployChannel === 'ndisplay'
       && (backend === 'synthetic' || signalReady)
@@ -859,6 +861,51 @@ import {
           stillsResultHandledRef.current.add(key);
           const dir = stillsOutRef.current || (p.data.session_dir);
           const fixedInput = fixedInputRef.current || {};
+          if (fixedInput.purpose === 'master_lens') {
+            fixedInputRef.current = null;
+            s.setCapState('idle');
+            setStillsTask(null);
+            void playerClear().catch(() => {});
+            if (s.setDeployState && s.deployState !== 'idle') s.setDeployState('standby');
+            const imagesDir = joinPath(dir, 'captures/normal');
+            const target = fixedInput.targets && fixedInput.targets[0];
+            s.pushLog({
+              lv: 'info', cat: 'lens',
+              msg: 'Master lens multi-view 采集完成 · <b>' + (p.data.frames_captured || snaps)
+                + '</b> poses · 正在求解镜头…',
+            });
+            setMasterLensBusy(true);
+            void (async () => {
+              try {
+                if (!target || !fixedInput.masterLensOut) {
+                  throw new Error('master lens capture 缺少 screen target 或输出路径');
+                }
+                await trackerFreeLensCal({
+                  imagesDir,
+                  screenPath: target.screenJson,
+                  outLensJson: fixedInput.masterLensOut,
+                  cabColOffset: target.offset,
+                  screenId: target.code,
+                });
+                await installMasterLens(fixedInput.masterLensOut);
+                s.pushLog({
+                  lv: 'ok', cat: 'lens',
+                  msg: 'Master lens 已生成 · 请锁定 focus/zoom/resolution/crop，'
+                    + '把相机放回最终固定机位后重新进行单帧采集',
+                });
+              } catch (e) {
+                s.pushLog({
+                  lv: 'err', cat: 'lens',
+                  msg: 'Master lens qualification failed · ' + (e && e.message ? e.message : e)
+                    + ' · 原始 multi-view images 已保留，可补采后从文件夹重新生成',
+                });
+              } finally {
+                setMasterLensBusy(false);
+                void refreshSessions();
+              }
+            })();
+            continue;
+          }
           const meta = {
             mode: 'fixed', frames_captured: p.data.frames_captured || snaps,
             camera_id: fixedInput.cameraId || camId,
@@ -1109,10 +1156,11 @@ import {
         return;
       }
 
+      const captureTargets = collectingMasterLens ? ag.targets.slice(0, 1) : ag.targets;
       try {
         /* 图案由系统自动生成到 ag.patternsDir（含 normal.png）；开始前先推 normal.png 上屏 */
-        if (ag.targets.length) {
-          await showViaDeploy(s, ag.targets, 'normal');
+        if (captureTargets.length) {
+          await showViaDeploy(s, captureTargets, 'normal');
           if (s.setDeployState) s.setDeployState('showing');
         }
       } catch (e) {
@@ -1125,19 +1173,32 @@ import {
 
       /* —— 固定机位：capture stills（无追踪）—— */
       if (trackSignal === 'none') {
-        const sessionOut = joinPath(outDir, 'fixed_' + new Date().toISOString().replace(/[:.]/g, '-'));
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const sessionOut = collectingMasterLens
+          ? joinPath(lensWorkspacePaths(projectPath).vpcalDir, 'lens-captures/lens_' + stamp)
+          : joinPath(outDir, 'fixed_' + stamp);
         stillsOutRef.current = sessionOut;
         fixedInputRef.current = {
           cameraId: camId,
           screenFile,
           lensPath: cam.masterLensPath || null,
-          targets: ag.targets.map((target) => ({
+          purpose: collectingMasterLens ? 'master_lens' : 'fixed_extrinsics',
+          masterLensOut: collectingMasterLens
+            ? joinPath(lensWorkspacePaths(projectPath).vpcalDir, 'lenses/' + camId + '.master-lens.json')
+            : null,
+          targets: captureTargets.map((target) => ({
             id: target.id, screenJson: target.screenJson,
             code: target.code, offset: target.offset,
           })),
         };
         s.setCapTrack('fixed');
-        s.pushLog({ lv: 'info', cat: 'lens', msg: '开始固定机位采集 · <b>capture stills</b> · ' + (profile.name || 'Profile') });
+        s.pushLog({
+          lv: 'info', cat: 'lens',
+          msg: collectingMasterLens
+            ? ('开始 Master Lens multi-view 采集 · 目标 <b>' + targetM
+              + '</b> poses · 保持 focus/zoom 不变并移动相机覆盖角度与画面边缘')
+            : ('开始固定机位单帧采集 · <b>capture stills</b> · ' + (profile.name || 'Profile')),
+        });
         let spawnedId = null;
         try {
           /* 换任务前先等旧任务真正退出（独占设备），护栏兜不住的残留也在这兜 */
@@ -1145,7 +1206,7 @@ import {
           if (prev) { try { await cancelSidecarTaskAwaitExit(prev); } catch (e) { /* ignore */ } }
           const resp = await startCaptureStills({
             backend: profile.videoBackend, device: String(profile.device),
-            outDir: sessionOut, auto: true, minMarkers: 4,
+            outDir: sessionOut, auto: true, minMarkers: collectingMasterLens ? 6 : 4,
             width: profile.fmtMode === 'manual' ? profile.width : null,
             height: profile.fmtMode === 'manual' ? profile.height : null,
             fps: profile.fmtMode === 'manual' ? profile.fps : null,
@@ -1169,7 +1230,11 @@ import {
           if (stillsTaskRef.current === spawnedId) setStillsTask(null);
           fixedInputRef.current = null;
           s.setCapState('idle');
-          s.pushLog({ lv: 'err', cat: 'lens', msg: '固定机位启动失败 · ' + (e && e.message ? e.message : e) });
+          s.pushLog({
+            lv: 'err', cat: 'lens',
+            msg: (collectingMasterLens ? 'Master lens 采集启动失败 · ' : '固定机位启动失败 · ')
+              + (e && e.message ? e.message : e),
+          });
         }
         return;
       }
@@ -1585,7 +1650,7 @@ import {
     if (ag.screenDef === 'exportFail') reasons.push('屏幕定义导出失败');
     if (ag.multiSection) reasons.push('折面屏（多 section）图案上屏暂不支持');
     if (ag.pattern === 'genFail') reasons.push('校正图案生成失败');
-    if (!tracked && !fixedLensReady) reasons.push('Lens invalid · 固定机位正式求解需要 qualified master lens（multi-view ≥8 poses）');
+    if (collectingMasterLens) reasons.push('当前为 Master Lens Capture · 采集 ≥8 个不同角度并覆盖画面边缘；此阶段不求 Stage 位姿');
     if (!isSl && ag.selectedIds.length > 1 && deployChannel !== 'ndisplay') reasons.push('多屏同步上屏需要 nDisplay 通道');
     if (isSl && deployChannel !== 'ndisplay') reasons.push('结构光目前仅支持 nDisplay 通道');
     if (isSl && !screenFile) reasons.push('未选屏幕文件');
@@ -1604,7 +1669,9 @@ import {
               h(Button, { variant: 'accent', size: 'L',
                 icon: ag.preparing ? h('span', { className: 'ag-spin' }, h(Icon, { name: 'sync', size: 16 })) : h(Icon, { name: isSl ? 'play' : 'camera', size: 16 }),
                 isDisabled: !ready || ag.preparing || starting || capturing, onPress: () => ag.beginCapture(start) },
-                ag.preparing ? '生成图案中…' : starting ? '正在启动…' : (isSl ? '开始采集 · 播放序列' : '开始采集'))),
+                ag.preparing ? '生成图案中…' : starting ? '正在启动…' : (isSl
+                  ? '开始采集 · 播放序列'
+                  : collectingMasterLens ? ('开始镜头采集 · ' + targetM + ' Poses') : '开始采集'))),
             reasons.length
               ? h('div', { className: 'lc-reasons' },
                   reasons.map((r, i) => h('span', { key: i, className: 'lc-reason' }, h(Icon, { name: 'info', size: 12 }), r)),
@@ -1612,7 +1679,9 @@ import {
                   ag.multiSection ? h('div', { className: 'lc-cli-note' }, h(Icon, { name: 'info', size: 13 }),
                     h('span', null, '折面屏（多 section）需通过 CLI 手动生成 / 上屏：', h('code', null, 'vpcal pattern generate --screen <screen.json> --output-dir <dir>'), '，暂无 UI 操作入口。')) : null)
               : h('div', { className: 'lc-reasons' }, h('span', { className: 'lc-reason ok' }, h(Icon, { name: 'check', size: 12 }),
-                  tracked ? '前置就绪 · 追踪机位' : '前置就绪 · 固定机位（单次采集 · 使用已知镜头参数求 Stage 位姿）')),
+                  tracked ? '前置就绪 · 追踪机位' : collectingMasterLens
+                    ? '前置就绪 · Master Lens multi-view capture'
+                    : '前置就绪 · 固定机位（单次采集 · 使用已知镜头参数求 Stage 位姿）')),
             h('span', { className: 'sp' }),
             arButton));
 
