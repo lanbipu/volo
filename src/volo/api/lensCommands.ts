@@ -171,7 +171,7 @@ export interface FixedPixelIntrinsics {
   dist_coeffs: number[];
   image_size: [number, number];
   source?: string;
-  physical_snapshot?: Record<string, number | null>;
+  physical_snapshot?: Record<string, number | string | null>;
 }
 
 /** One fixed-frame Stage pose. Any subset of selected screen targets may be visible. */

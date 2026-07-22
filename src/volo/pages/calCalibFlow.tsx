@@ -61,21 +61,23 @@ import {
     if (sensorWidth <= 0 || sensorHeight <= 0 || focal <= 0) {
       throw new Error('摄影机缺少有效 focal length / active sensor，无法冻结 pixel intrinsics');
     }
-    const scaleX = width / sensorWidth;
-    const scaleY = height / sensorHeight;
-    const scaleDelta = Math.abs(scaleX - scaleY) / Math.max(scaleX, scaleY);
-    if (scaleDelta > 0.01) {
-      throw new Error(
-        '采集画幅与 active sensor aspect ratio 不一致；请填写实际 active sensor 尺寸，或选择与采集分辨率匹配的 pixel-domain LensProfile',
-      );
-    }
+    const captureAspect = width / height;
+    const sensorAspect = sensorWidth / sensorHeight;
+    const cropHeight = captureAspect > sensorAspect;
+    const activeSensorWidth = cropHeight ? sensorWidth : sensorHeight * captureAspect;
+    const activeSensorHeight = cropHeight ? sensorWidth / captureAspect : sensorHeight;
+    const pixelScale = width / activeSensorWidth;
+    const cropXmm = (sensorWidth - activeSensorWidth) / 2;
+    const cropYmm = (sensorHeight - activeSensorHeight) / 2;
+    const cropMode = Math.max(cropXmm, cropYmm) < 1e-6
+      ? 'none' : (cropHeight ? 'center_crop_height' : 'center_crop_width');
     const principalXmm = finite(lens && lens.ppx && lens.ppx.v);
     const principalYmm = finite(lens && lens.ppy && lens.ppy.v);
-    const focalPx = focal * (scaleX + scaleY) / 2;
+    const focalPx = focal * pixelScale;
     return {
       fx: focalPx, fy: focalPx,
-      cx: width / 2 + principalXmm * scaleX,
-      cy: height / 2 + principalYmm * scaleY,
+      cx: width / 2 + principalXmm * pixelScale,
+      cy: height / 2 + principalYmm * pixelScale,
       dist_coeffs: [finite(lens && lens.k1), finite(lens && lens.k2), 0, 0,
         finite(lens && lens.fovK3 && lens.fovK3.v)],
       image_size: [Math.round(width), Math.round(height)],
@@ -84,6 +86,11 @@ import {
         focal_mm: focal,
         sensor_width_mm: sensorWidth,
         sensor_height_mm: sensorHeight,
+        active_sensor_width_mm: activeSensorWidth,
+        active_sensor_height_mm: activeSensorHeight,
+        crop_x_mm: cropXmm,
+        crop_y_mm: cropYmm,
+        crop_mode: cropMode,
         principal_x_mm: principalXmm,
         principal_y_mm: principalYmm,
         k1: finite(lens && lens.k1),
@@ -465,6 +472,15 @@ import {
               s.pushLog({ lv: 'err', cat: 'lens', msg: '固定机位采集已保存，但 intrinsics snapshot 失败 · ' + writeError });
             } else if (meta.intrinsics_error) {
               s.pushLog({ lv: 'err', cat: 'lens', msg: '固定机位采集已保存，但无法求解 · ' + meta.intrinsics_error });
+            } else if (meta.intrinsics && meta.intrinsics.physical_snapshot
+              && meta.intrinsics.physical_snapshot.crop_mode !== 'none') {
+              const snap = meta.intrinsics.physical_snapshot;
+              s.pushLog({
+                lv: 'warn', cat: 'lens',
+                msg: '采集画幅与完整 sensor 比例不同 · 已按 centered crop 推导 active sensor <b>'
+                  + Number(snap.active_sensor_width_mm).toFixed(3) + ' × '
+                  + Number(snap.active_sensor_height_mm).toFixed(3) + ' mm</b>',
+              });
             }
             return refreshSessions();
           });

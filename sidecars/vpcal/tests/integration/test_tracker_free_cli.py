@@ -161,12 +161,14 @@ class TestPoseCLI:
             "fx": 1500.0, "fy": 1500.0,
             "cx": 970.0, "cy": 535.0,
             "image_size": [1920, 1080],
+            "active_sensor_mm": None,
+            "crop_mode": None,
         }
 
-    def test_rejects_capture_and_active_sensor_aspect_mismatch(self, tmp_path):
+    def test_infers_center_crop_for_sensor_aspect_mismatch(self, tmp_path):
         screen, image = self._fixture(tmp_path)
 
-        result = _run(
+        result = _run_ok(
             "--output", "json",
             "tracker-free", "pose",
             "--image", str(image),
@@ -176,9 +178,13 @@ class TestPoseCLI:
             "--dry-run",
         )
 
-        assert result.returncode != 0
-        envelope = json.loads(result.stdout)
-        assert "capture aspect ratio does not match" in envelope["error"]["message"]
+        intrinsics = result["data"]["dry_run_plan"]["intrinsics"]
+        assert intrinsics["fx"] == pytest.approx(2666.6666667)
+        assert intrinsics["fy"] == pytest.approx(2666.6666667)
+        assert intrinsics["cx"] == pytest.approx(960.0)
+        assert intrinsics["cy"] == pytest.approx(540.0)
+        assert intrinsics["active_sensor_mm"] == pytest.approx([36.0, 20.25])
+        assert intrinsics["crop_mode"] == "center_crop_height"
 
     def test_physical_intrinsics_apply_principal_point_offsets(self, tmp_path):
         screen, image = self._fixture(tmp_path)
@@ -199,6 +205,8 @@ class TestPoseCLI:
         assert intrinsics["fy"] == pytest.approx(2666.6666667)
         assert intrinsics["cx"] == pytest.approx(976.0)
         assert intrinsics["cy"] == pytest.approx(529.3333333)
+        assert intrinsics["active_sensor_mm"] == pytest.approx([36.0, 20.25])
+        assert intrinsics["crop_mode"] == "none"
 
     def test_opencv_basis_converts_to_zero_volo_ptr(self):
         stage_from_cv = np.diag([1.0, -1.0, -1.0])

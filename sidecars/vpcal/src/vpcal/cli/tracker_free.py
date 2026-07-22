@@ -187,20 +187,15 @@ def pose(ctx, image, screen_targets, lens_path, fx, fy, cx, cy, focal_mm,
                     "--focal-mm, --sensor-width-mm and --sensor-height-mm are required "
                     "when --lens is omitted"
                 )
-            scale_x = width / float(sensor_width_mm)
-            scale_y = height / float(sensor_height_mm)
-            scale_delta = abs(scale_x - scale_y) / max(scale_x, scale_y)
-            if scale_delta > 0.01:
-                raise click.UsageError(
-                    "capture aspect ratio does not match the declared active sensor; "
-                    "use a capture-domain --lens profile or provide active sensor dimensions"
-                )
-            focal_px = float(focal_mm) * (scale_x + scale_y) / 2.0
+            active_width, active_height, pixel_scale, crop_mode = _center_crop_sensor(
+                float(sensor_width_mm), float(sensor_height_mm), width, height,
+            )
+            focal_px = float(focal_mm) * pixel_scale
             lens = LensCalResult(
                 fx=focal_px,
                 fy=focal_px,
-                cx=width / 2.0 + float(principal_x_mm) * scale_x,
-                cy=height / 2.0 + float(principal_y_mm) * scale_y,
+                cx=width / 2.0 + float(principal_x_mm) * pixel_scale,
+                cy=height / 2.0 + float(principal_y_mm) * pixel_scale,
                 dist_coeffs=[k1, k2, 0.0, 0.0, k3],
                 rms=0.0, num_images=0, num_points=0,
                 image_size=(width, height),
@@ -223,6 +218,13 @@ def pose(ctx, image, screen_targets, lens_path, fx, fy, cx, cy, focal_mm,
                         "fx": lens.fx, "fy": lens.fy,
                         "cx": lens.cx, "cy": lens.cy,
                         "image_size": list(lens.image_size),
+                        "active_sensor_mm": (
+                            [active_width, active_height]
+                            if not lens_path and not has_any_pixel else None
+                        ),
+                        "crop_mode": (
+                            crop_mode if not lens_path and not has_any_pixel else None
+                        ),
                     },
                 }},
                 text="Dry run OK.",
@@ -479,6 +481,36 @@ def _rotation_to_euler(R: np.ndarray) -> tuple[float, float, float]:
         ry = np.arctan2(-R[2, 0], sy)
         rz = 0.0
     return (float(np.degrees(rx)), float(np.degrees(ry)), float(np.degrees(rz)))
+
+
+def _center_crop_sensor(
+    sensor_width_mm: float,
+    sensor_height_mm: float,
+    image_width_px: int,
+    image_height_px: int,
+) -> tuple[float, float, float, str]:
+    """Infer a centered active-sensor crop for the capture aspect ratio.
+
+    Camera video modes commonly crop a 3:2 or 4:3 physical sensor to 16:9.
+    Preserve square pixels by fitting the capture inside the declared sensor
+    and cropping the excess physical dimension symmetrically.
+    """
+    capture_aspect = image_width_px / image_height_px
+    sensor_aspect = sensor_width_mm / sensor_height_mm
+    if capture_aspect > sensor_aspect:
+        active_width = sensor_width_mm
+        active_height = sensor_width_mm / capture_aspect
+        crop_mode = "center_crop_height"
+    else:
+        active_width = sensor_height_mm * capture_aspect
+        active_height = sensor_height_mm
+        crop_mode = "center_crop_width"
+    crop_x = (sensor_width_mm - active_width) / 2.0
+    crop_y = (sensor_height_mm - active_height) / 2.0
+    if max(crop_x, crop_y) < 1e-9:
+        crop_mode = "none"
+    pixel_scale = image_width_px / active_width
+    return active_width, active_height, pixel_scale, crop_mode
 
 
 def _volo_camera_rotation(stage_from_cv_camera: np.ndarray) -> np.ndarray:
