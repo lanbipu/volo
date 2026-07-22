@@ -261,6 +261,120 @@ def _obs_residual_norms(K, result, observations, root_idx):
     return np.sqrt((r * r).sum(axis=1))
 
 
+WITHHELD_RMS_MAX_PX = 2.0  # withheld-view reprojection gate (matches BA_RMS_FATAL_PX)
+
+
+def _emit_withheld_validation(
+    *,
+    K: np.ndarray,
+    result: "BAResult",
+    observations: list[Observation],
+    per_view_cab_corners: dict[tuple[int, int], list[tuple[np.ndarray, np.ndarray]]],
+    n_cabinets: int,
+    root_idx: int,
+    cab_idx_to_screen: dict[int, int],
+    screen_ids: list[str],
+    screen_transforms_path: str,
+) -> None:
+    """Camera-view holdout validation for the joint reconstruction (spec Stage B).
+
+    Hold out >=20% of cameras — including >=1 bridge (multi-screen) view so the
+    split can actually test the *cross-screen* geometry — re-solve the cabinet
+    geometry on the TRAIN cameras only, PnP each withheld camera against that
+    train geometry, and reproject the withheld observations. If the train-solved
+    cross-screen geometry does not generalize, the withheld bridge views blow up.
+
+    Writes ``{screen_transforms_path}.validation.json`` carrying
+    ``withheld_validation.passed`` — the formal export gate reads that pointer
+    (src-tauri/src/commands/mesh_export.rs). Fail-closed: too few views,
+    non-convergence, or any error yields ``passed: false`` with a reason and
+    never blocks the already-emitted solve.
+    """
+    out_path = f"{screen_transforms_path}.validation.json"
+
+    def _write(wv: dict) -> None:
+        _atomic_write_json(out_path, json.dumps(
+            {"schema_version": "withheld_validation.v1", "withheld_validation": wv},
+            indent=2))
+
+    try:
+        cam_screens: dict[int, set[int]] = {}
+        for o in observations:
+            cam_screens.setdefault(o.camera_idx, set()).add(cab_idx_to_screen[o.cabinet_idx])
+        cams = sorted(cam_screens)
+        bridges = [c for c in cams if len(cam_screens[c]) >= 2]
+        singles = [c for c in cams if len(cam_screens[c]) < 2]
+        # Need >=3 bridge views to hold out >=1 while keeping >=2 in train.
+        if len(bridges) < 3:
+            _write({"passed": False, "reason": "insufficient_bridge_views_for_holdout",
+                    "bridge_views": len(bridges)})
+            return
+        n_hold_bridge = min(max(1, len(bridges) // 5), len(bridges) - 2)
+        withheld = set(bridges[-n_hold_bridge:])
+        n_hold_single = len(singles) // 5
+        if n_hold_single:
+            withheld |= set(singles[-n_hold_single:])
+        train = [c for c in cams if c not in withheld]
+        # Every screen must keep >=2 covering train views.
+        train_cover: dict[int, int] = {}
+        for c in train:
+            for s in cam_screens[c]:
+                train_cover[s] = train_cover.get(s, 0) + 1
+        if any(train_cover.get(s, 0) < 2 for s in range(len(screen_ids))):
+            _write({"passed": False, "reason": "insufficient_train_coverage_after_holdout"})
+            return
+
+        # Re-solve cabinet geometry on TRAIN cameras only (reindexed, warm-started).
+        remap = {c: i for i, c in enumerate(train)}
+        train_obs = [Observation(camera_idx=remap[o.camera_idx], cabinet_idx=o.cabinet_idx,
+                                 p_local=o.p_local, pixel=o.pixel, sigma_px=o.sigma_px)
+                     for o in observations if o.camera_idx in remap]
+        train_res = model_constrained_ba(
+            K=K, observations=train_obs, n_cameras=len(train), n_cabinets=n_cabinets,
+            root_cabinet_idx=root_idx,
+            init_cameras=[result.camera_poses[c] for c in train],
+            init_cabinets=dict(result.cabinet_poses), compute_covariance=False)
+        train_cabinets = train_res.cabinet_poses
+
+        # PnP each withheld camera against the train geometry; reproject its obs.
+        obs_by_cam: dict[int, list[Observation]] = {}
+        for o in observations:
+            if o.camera_idx in withheld:
+                obs_by_cam.setdefault(o.camera_idx, []).append(o)
+        norms: list[float] = []
+        per_screen_sq: dict[int, list[float]] = {}
+        for c in sorted(withheld):
+            Rc, tc = _pnp_camera(c, root_idx, train_cabinets, per_view_cab_corners, K)
+            for o in obs_by_cam.get(c, []):
+                Rb, tb = train_cabinets[o.cabinet_idx]
+                p = K @ (Rc @ (Rb @ o.p_local + tb) + tc)
+                d = float(np.linalg.norm(p[:2] / p[2] - o.pixel))
+                norms.append(d)
+                per_screen_sq.setdefault(cab_idx_to_screen[o.cabinet_idx], []).append(d * d)
+        if not norms:
+            _write({"passed": False, "reason": "no_withheld_observations"})
+            return
+        arr = np.asarray(norms)
+        combined = float(np.sqrt(np.mean(arr * arr)))
+        per_screen = {screen_ids[s]: float(np.sqrt(np.mean(v))) for s, v in per_screen_sq.items()}
+        passed = combined < WITHHELD_RMS_MAX_PX and all(
+            v < WITHHELD_RMS_MAX_PX for v in per_screen.values())
+        _write({
+            "passed": bool(passed),
+            "limit_px": WITHHELD_RMS_MAX_PX,
+            "combined_rms_px": combined,
+            "per_screen_rms_px": per_screen,
+            "p50_px": float(np.percentile(arr, 50)),
+            "p95_px": float(np.percentile(arr, 95)),
+            "max_px": float(arr.max()),
+            "train_views": train,
+            "withheld_views": sorted(withheld),
+            "withheld_bridge_views": sorted(set(bridges) & withheld),
+        })
+    except Exception as exc:  # noqa: BLE001 — fail-closed, never block the solve
+        _write({"passed": False, "reason": f"validation_error: {type(exc).__name__}: {exc}"})
+
+
 def stage_b_robust_solve(*, K, observations, n_cameras, n_cabinets,
                          root_cabinet_idx, init_cameras, init_cabinets,
                          per_cabinet_min_points, max_nfev=200):
@@ -1773,6 +1887,12 @@ def joint_solve_and_emit(
         transforms=transform_entries,
     )
     _atomic_write_json(screen_transforms_path, transforms_report.model_dump_json(indent=2))
+    _emit_withheld_validation(
+        K=K, result=result, observations=surviving_observations,
+        per_view_cab_corners=per_view_cab_corners, n_cabinets=n_cabinets,
+        root_idx=root_idx, cab_idx_to_screen=cab_idx_to_screen,
+        screen_ids=[sp.screen_id for sp in screen_projects],
+        screen_transforms_path=screen_transforms_path)
 
     write_event(ResultEvent(
         event="result",
