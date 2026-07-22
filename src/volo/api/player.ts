@@ -51,3 +51,30 @@ export const playerShowPattern = (
   });
 
 export const playerClear = () => call<void>("player_clear");
+
+/**
+ * Pick the monitor that should host the LED/TV pattern player.
+ *
+ * Preference (VP bench assumption — Windows "Extend these displays"):
+ * 1. Explicit deploy selection (caller passes through)
+ * 2. Single non-primary monitor (operator primary is usually the ASUS desk panel;
+ *    the LG/TV wall feed is extended as secondary)
+ * 3. Largest-area non-primary when several exist
+ * 4. Last enumerated monitor as last resort
+ *
+ * Limitation: if Windows is set to Duplicate, `available_monitors` collapses to
+ * one entry and the TV cannot be targeted separately.
+ */
+export function preferPatternMonitor(
+  monitors: MonitorInfo[],
+): MonitorInfo | null {
+  if (!monitors.length) return null;
+  const secondary = monitors.filter((m) => !m.is_primary);
+  if (secondary.length === 1) return secondary[0];
+  if (secondary.length > 1) {
+    return secondary.reduce((a, b) =>
+      a.width * a.height >= b.width * b.height ? a : b,
+    );
+  }
+  return monitors[monitors.length - 1] ?? monitors[0] ?? null;
+}

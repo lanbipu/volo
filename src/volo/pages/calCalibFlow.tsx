@@ -18,7 +18,9 @@ import {
   spawnSidecarStreaming, cancelSidecarTask, cancelSidecarTaskAwaitExit, useSidecarStream, listenSidecarStream,
 } from "../api/sidecarStream";
 import { useCaptureSession } from "./devCapture";
-import { playerShowPattern, playerClear } from "../api/player";
+import {
+  listMonitors, openPatternPlayer, playerShowPattern, playerClear, preferPatternMonitor,
+} from "../api/player";
 import {
   DEFAULT_NDISPLAY_OUTPUT_PATHS,
   outputShow,
@@ -133,6 +135,24 @@ import {
       return e && e.message ? e.message : String(e);
     }
   }
+  /** Resolve which OS monitor should host the pattern player (HDMI / TV path). */
+  async function resolvePatternMonitorIndex(s) {
+    const store = window.deployStore && window.deployStore.get();
+    /* shell state is updated immediately by the in-window monitor switch, while
+       deployStore mirrors it on the next React effect. Prefer the shell value so
+       an LG selection cannot be overwritten by one stale ASUS store snapshot. */
+    if (s.deployMeta && typeof s.deployMeta.monitorIndex === 'number') {
+      return s.deployMeta.monitorIndex;
+    }
+    if (store && store.detail && typeof store.detail.monitorIndex === 'number') {
+      return store.detail.monitorIndex;
+    }
+    const monitors = await listMonitors();
+    const pick = preferPatternMonitor(monitors);
+    if (!pick) throw new Error('未发现可用于图案播放器的显示器');
+    return pick.index;
+  }
+
   async function showViaDeploy(s, targets, pattern) {
     if (!targets || !targets.length) throw new Error('没有可用的标定屏幕图案');
     const imagePath = joinPath(targets[0].patternsDir, pattern + '.png');
@@ -171,6 +191,11 @@ import {
     if (targets.length > 1) {
       throw new Error('多屏同步上屏需要选择 nDisplay 输出通道');
     }
+    /* Always (re)place the player on the deployed / preferred monitor before
+       show — deployMeta.monitorIndex was previously ignored, so a window that
+       landed on the ASUS primary stayed there when capture pushed the chart. */
+    const monitorIndex = await resolvePatternMonitorIndex(s);
+    await openPatternPlayer(monitorIndex);
     await playerShowPattern(imagePath, pattern || 'full_screen');
   }
 
@@ -405,6 +430,12 @@ import {
     }, [camSnap.cameras, camSnap.selectedId]);
     const [trackSignal, setTrackSignal] = useState(s.capTrack === 'fixed' ? 'none' : (s.capTrack === 'connected' ? 'freed' : 'none'));
     const tracked = trackSignal !== 'none';
+    /* Fixed-camera purpose: do NOT auto-hijack into master-lens (≥8) when lens
+       is missing — that forced every「固定机位」start to demand 8 poses.
+       Modes are explicit: fixed_extrinsics (1 pose) vs master_lens (≥8). */
+    const [lensPhase, setLensPhase] = useState('fixed'); /* 'fixed' | 'master_lens' */
+    const [patternMons, setPatternMons] = useState([]);
+    const [patternMonBusy, setPatternMonBusy] = useState(false);
     const [banner, setBanner] = useState(0);
     const [slFrame, setSlFrame] = useState(0);
     const [params, setParams] = useState(loadCapParams);
@@ -491,9 +522,43 @@ import {
     const deployStoreSnap = window.deployStore && window.deployStore.get();
     const deployChannel = (deployStoreSnap && deployStoreSnap.channel)
       || (s.calOutTarget === 'cluster' ? 'ndisplay' : 'monitor');
+    const activeMonitorIndex = (s.deployMeta && typeof s.deployMeta.monitorIndex === 'number')
+      ? s.deployMeta.monitorIndex
+      : (deployStoreSnap && deployStoreSnap.detail && typeof deployStoreSnap.detail.monitorIndex === 'number'
+        ? deployStoreSnap.detail.monitorIndex : null);
+    useEffect(() => {
+      if (deployChannel !== 'monitor' || !deployed) return undefined;
+      let alive = true;
+      listMonitors().then((list) => { if (alive && Array.isArray(list)) setPatternMons(list); }).catch(() => {});
+      return () => { alive = false; };
+    }, [deployChannel, deployed]);
+    const retargetPatternMonitor = async (mon) => {
+      if (!mon || patternMonBusy) return;
+      setPatternMonBusy(true);
+      try {
+        await openPatternPlayer(mon.index);
+        await playerClear();
+        if (s.setDeployMeta) {
+          s.setDeployMeta({
+            channel: 'HDMI · 本机',
+            target: mon.name || ('显示器 ' + mon.index),
+            monitorIndex: mon.index,
+          });
+        }
+        if (s.setDeployState && s.deployState === 'idle') s.setDeployState('standby');
+        s.pushLog({
+          lv: 'ok', cat: 'deploy',
+          msg: '图案输出已切到 <b>' + (mon.name || ('#' + mon.index)) + '</b>'
+            + (mon.is_primary ? '（主屏）' : ''),
+        });
+      } catch (e) {
+        s.pushLog({ lv: 'err', cat: 'deploy', msg: '切换图案显示器失败 · ' + (e && e.message ? e.message : e) });
+      } finally { setPatternMonBusy(false); }
+    };
     const fixedLensReady = !!(cam && cam.lensIsMaster && cam.masterLensPath
       && cam.masterLensInfo && cam.masterLensInfo.qualified_master);
-    const collectingMasterLens = method === 'qsp' && !tracked && !fixedLensReady;
+    /* Explicit mode only — never infer master-lens capture from missing lens. */
+    const collectingMasterLens = method === 'qsp' && !tracked && lensPhase === 'master_lens';
     const targetM = tracked
       ? (Number(params.poses) || 8)
       : (collectingMasterLens ? Math.max(8, Number(params.poses) || 8) : 1);
@@ -504,6 +569,7 @@ import {
       }
       if (!window.camStore) throw new Error('camera store unavailable');
       window.camStore.setMasterLens(camId, path, info);
+      setLensPhase('fixed');
       s.pushLog({ lv: 'ok', cat: 'lens', msg: 'Master lens 已绑定 · RMS <b>'
         + Number(info.rms).toFixed(3) + '</b> px · <b>' + info.num_images + '</b> poses' });
     };
@@ -1517,7 +1583,25 @@ import {
         h('div', { className: 'ag-block' },
           h('span', { className: 'ag-sublbl' }, '标定屏幕'),
           h(window.VoloAutoGen.ScreenChips, { ag })),
-        h(window.VoloAutoGen.AutoStatusRows, { ag })),
+        h(window.VoloAutoGen.AutoStatusRows, { ag }),
+        /* 本机 HDMI：允许在采集窗内重选测试图目标屏（ASUS vs LG G3 等） */
+        deployChannel === 'monitor' && deployed && patternMons.length
+          ? h('div', { className: 'ag-block', style: { marginTop: 10 } },
+              h('span', { className: 'ag-sublbl' }, '测试图输出显示器'),
+              h('div', { className: 'lc-camchips' }, patternMons.map((m) => h('button', {
+                key: m.index,
+                className: 'lc-camchip' + (m.index === activeMonitorIndex ? ' on' : ''),
+                disabled: patternMonBusy || capturing,
+                onClick: () => void retargetPatternMonitor(m),
+                title: (m.name || ('显示器 ' + m.index)) + ' · ' + m.width + '×' + m.height,
+              },
+                (m.name || ('#' + m.index)),
+                m.is_primary ? ' · 主屏' : '',
+              ))),
+              h('div', { className: 'lc-reason', style: { marginTop: 6 } },
+                h(Icon, { name: 'info', size: 12 }),
+                '需 Windows「扩展这些显示器」；复制模式下副屏无法单独投图'))
+          : null),
       /* b 方式参数 */
       grp('method', CAL_METHOD_BADGES[method].icon, '方式参数', open.method, () => tgl('method'),
         h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 } }, methodBadge(method)),
@@ -1558,13 +1642,26 @@ import {
           h(window.Selector, { kpre: '', value: trackSignal, options: TRACK_SIGNALS, onChange: onTrackChange, width: 214, variant: 'obj', align: 'left' })),
         h(CameraParams, { cam, tracked, camId, editable: !tracked })),
         !tracked ? h('div', { style: { marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--chrome-line)' } },
-          h('div', { className: 'lc-cam-sub', style: { marginTop: 0 } }, 'Fixed-camera · extrinsics-only'),
+          h('div', { className: 'lc-cam-sub', style: { marginTop: 0 } }, 'Fixed-camera · 采集目的'),
+          h('div', { className: 'lc-camchips', style: { marginBottom: 10 } },
+            h('button', {
+              className: 'lc-camchip' + (lensPhase === 'fixed' ? ' on' : ''),
+              onClick: () => setLensPhase('fixed'),
+              title: '固定机位外参：单帧采集后反算 Stage pose（需 qualified master lens）',
+            }, '固定外参 · 1 Pose'),
+            h('button', {
+              className: 'lc-camchip' + (lensPhase === 'master_lens' ? ' on' : ''),
+              onClick: () => setLensPhase('master_lens'),
+              title: '独立 multi-view 内参标定：需 ≥8 个不同角度（算法下限 MASTER_LENS_MIN_USABLE_IMAGES）',
+            }, 'Master Lens · ≥8')),
           fixedLensReady
             ? h('div', { className: 'lc-reason ok' }, h(Icon, { name: 'check', size: 12 }),
                 'Master lens · ' + Number(cam.masterLensInfo.rms).toFixed(3) + ' px · '
                 + cam.masterLensInfo.num_images + ' poses')
             : h('div', { className: 'lc-reason' }, h(Icon, { name: 'info', size: 12 }),
-                'Lens invalid · 需独立 multi-view（≥8 poses）master lens'),
+                lensPhase === 'master_lens'
+                  ? 'Master Lens Capture · 保持 focus/zoom，移动相机覆盖 ≥8 角度与画面边缘'
+                  : '固定外参需求 qualified master lens（≥8 multi-view）；可导入或切换到 Master Lens 采集'),
           h('div', { style: { display: 'flex', gap: 8, marginTop: 8 } },
             h(Button, { variant: 'secondary', size: 'S', isDisabled: masterLensBusy,
               onPress: () => void importMasterLens() }, '导入 Master Lens'),
@@ -1651,6 +1748,9 @@ import {
     if (ag.multiSection) reasons.push('折面屏（多 section）图案上屏暂不支持');
     if (ag.pattern === 'genFail') reasons.push('校正图案生成失败');
     if (collectingMasterLens) reasons.push('当前为 Master Lens Capture · 采集 ≥8 个不同角度并覆盖画面边缘；此阶段不求 Stage 位姿');
+    if (!tracked && !collectingMasterLens && !fixedLensReady && method === 'qsp') {
+      reasons.push('固定外参（1 pose）需要 qualified master lens — 请导入，或切换到「Master Lens · ≥8」先采内参');
+    }
     if (!isSl && ag.selectedIds.length > 1 && deployChannel !== 'ndisplay') reasons.push('多屏同步上屏需要 nDisplay 通道');
     if (isSl && deployChannel !== 'ndisplay') reasons.push('结构光目前仅支持 nDisplay 通道');
     if (isSl && !screenFile) reasons.push('未选屏幕文件');

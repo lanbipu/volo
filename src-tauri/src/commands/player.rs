@@ -16,13 +16,27 @@
 //! Borderless-at-monitor-bounds is used instead of OS fullscreen: macOS
 //! fullscreen spawns a separate Space with animations, which is exactly what
 //! an LED output feed must not do.
+//!
+//! Multi-monitor / Windows assumptions
+//! -----------------------------------
+//! - Placement uses **physical** pixels (`PhysicalPosition` / `PhysicalSize`)
+//!   so mixed-DPI desks (ASUS primary + LG G3 TV secondary) land on the
+//!   intended output. Logical-coordinate builder APIs are avoided for the move.
+//! - The player is created **hidden**, positioned, then shown — creating a
+//!   visible window on the primary and then moving it is unreliable on
+//!   Windows WebView2 (often sticks on the operator primary / ASUS).
+//! - Windows: a short re-assert after first paint covers the HWND-init race
+//!   where the first `SetWindowPos` is ignored.
+//! - Requires Windows display mode **Extend** (not Duplicate). Duplicate
+//!   collapses `available_monitors()` to one entry, so the TV cannot be
+//!   targeted separately.
 
 use std::io::Read;
 use std::path::Path;
 
 use base64::Engine as _;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use volo_shared::error::{VoloError, VoloResult};
 
 pub const PLAYER_LABEL: &str = "pattern-player";
@@ -77,6 +91,17 @@ pub struct PlayerWindowInfo {
     pub scale_factor: f64,
 }
 
+fn place_player_on_monitor(
+    window: &WebviewWindow,
+    pos: tauri::PhysicalPosition<i32>,
+    size: tauri::PhysicalSize<u32>,
+) -> VoloResult<()> {
+    window
+        .set_position(pos)
+        .and_then(|_| window.set_size(size))
+        .map_err(|e| VoloError::Io(format!("place player window: {e}")))
+}
+
 /// Open (or move) the borderless player window on the given monitor.
 #[tauri::command]
 pub async fn open_pattern_player(app: AppHandle, monitor_index: usize) -> VoloResult<PlayerWindowInfo> {
@@ -95,23 +120,50 @@ pub async fn open_pattern_player(app: AppHandle, monitor_index: usize) -> VoloRe
 
     let window = match app.get_webview_window(PLAYER_LABEL) {
         Some(w) => w,
-        None => WebviewWindowBuilder::new(
-            &app,
-            PLAYER_LABEL,
-            WebviewUrl::App("index.html#/pattern-player".into()),
-        )
-        .title("Volo Pattern Player")
-        .decorations(false)
-        .resizable(false)
-        .visible(true)
-        .build()
-        .map_err(|e| VoloError::Io(format!("create player window: {e}")))?,
+        None => {
+            // Create hidden on purpose: a visible-first create lands on the
+            // primary monitor; moving afterwards is flaky on Windows WebView2.
+            WebviewWindowBuilder::new(
+                &app,
+                PLAYER_LABEL,
+                WebviewUrl::App("index.html#/pattern-player".into()),
+            )
+            .title("Volo Pattern Player")
+            .decorations(false)
+            .resizable(false)
+            .visible(false)
+            .build()
+            .map_err(|e| VoloError::Io(format!("create player window: {e}")))?
+        }
     };
+
+    // Hide existing windows too. Retargeting a visible WebView2 window can leave
+    // it stuck on the old monitor even when SetWindowPos reports success.
     window
-        .set_position(tauri::PhysicalPosition::new(pos.x, pos.y))
-        .and_then(|_| window.set_size(tauri::PhysicalSize::new(size.width, size.height)))
-        .map_err(|e| VoloError::Io(format!("place player window: {e}")))?;
+        .hide()
+        .map_err(|e| VoloError::Io(format!("hide player window before placement: {e}")))?;
+    place_player_on_monitor(&window, pos, size)?;
+
+    // Windows WebView2: first SetWindowPos can be ignored while the HWND is
+    // still initializing; re-assert after a short yield, then show.
+    #[cfg(target_os = "windows")]
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        place_player_on_monitor(&window, pos, size)?;
+    }
+
+    window
+        .show()
+        .map_err(|e| VoloError::Io(format!("show player window: {e}")))?;
     let _ = window.set_focus();
+
+    #[cfg(target_os = "windows")]
+    {
+        // Second re-assert after show — covers DPI/per-monitor awareness races
+        // when the TV (e.g. LG G3) is a large secondary at non-zero origin.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        place_player_on_monitor(&window, pos, size)?;
+    }
 
     Ok(PlayerWindowInfo {
         label: PLAYER_LABEL.into(),

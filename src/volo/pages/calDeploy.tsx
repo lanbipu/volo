@@ -3,7 +3,7 @@
    1:1 移植自 Claude Design handoff `cal2_deploy.jsx`。
    部署方式二选：显示器直连 / nDisplay。复用拓扑对话框；本机走 player API，集群走 output_*。 */
 import * as React from "react";
-import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern, playerClear } from "../api/player";
+import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern, playerClear, preferPatternMonitor } from "../api/player";
 import { listMachines, getMachineDetail } from "../api/commands";
 import {
   DEFAULT_NDISPLAY_OUTPUT_PATHS,
@@ -60,7 +60,10 @@ import { generatedPatternImagePath } from "../api/meshVisualCommands";
     useEffect(() => {
       if (!mons.length) return;
       if (sel == null) {
-        const prefer = mons.length > 1 ? mons[mons.length - 1] : mons[0];
+        /* Prefer non-primary (TV/LED wall) over "last in enumeration" — on
+           Razer dual-head the ASUS desk panel is often last/primary while the
+           LG G3 is the extended output we actually need for the chart. */
+        const prefer = preferPatternMonitor(mons) || mons[0];
         setSel(prefer.index);
       }
     }, [mons, sel]);

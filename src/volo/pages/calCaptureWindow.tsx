@@ -11,7 +11,7 @@ import * as React from "react";
 import { pickFile } from "../api/commands";
 import { spawnSidecarStreaming, cancelSidecarTask, cancelSidecarTaskAwaitExit, useSidecarStream } from "../api/sidecarStream";
 import { useCaptureSession } from "./devCapture";
-import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern } from "../api/player";
+import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern, preferPatternMonitor } from "../api/player";
 import { lensWorkspacePaths } from "../api/lensWorkspace";
 
 (function () {
@@ -348,9 +348,20 @@ import { lensWorkspacePaths } from "../api/lensWorkspace";
       const outDir = joinPath(capturesRoot, 'session_' + new Date().toISOString().replace(/[:.]/g, '-'));
       if (params.inverted) {
         try {
-          const monitors = await listMonitors();
-          if (!monitors.length) throw new Error('未发现可用于图案播放器的显示器');
-          await openPatternPlayer(monitors[monitors.length - 1].index);
+          const store = window.deployStore && window.deployStore.get();
+          /* deployMeta is the immediate selection; deployStore is an effect-driven
+             mirror and may still contain the previous monitor for one render. */
+          let monitorIndex = s.deployMeta && typeof s.deployMeta.monitorIndex === 'number'
+            ? s.deployMeta.monitorIndex
+            : (store && store.detail && typeof store.detail.monitorIndex === 'number'
+              ? store.detail.monitorIndex : null);
+          if (monitorIndex == null) {
+            const monitors = await listMonitors();
+            if (!monitors.length) throw new Error('未发现可用于图案播放器的显示器');
+            const pick = preferPatternMonitor(monitors);
+            monitorIndex = pick ? pick.index : monitors[monitors.length - 1].index;
+          }
+          await openPatternPlayer(monitorIndex);
           capturePlayerOpen.current = true;
         } catch (e) {
           s.pushLog({ lv: 'err', cat: 'capture', msg: '打开图案播放器失败 · ' + (e && e.message ? e.message : e) });

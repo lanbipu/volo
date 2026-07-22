@@ -19,7 +19,7 @@ import {
   loadSolveDigestCached, relRowsFromTransforms, runMethodLabel, runStatus,
 } from "../api/visualSolveUi";
 import { pickDirectory, pickFile, revealPath } from "../api/commands";
-import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern, playerClear } from "../api/player";
+import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern, playerClear, preferPatternMonitor } from "../api/player";
 import { DEFAULT_NDISPLAY_OUTPUT_PATHS, outputShow } from "../api/ndisplayOutput";
 import { listen } from "@tauri-apps/api/event";
 
@@ -760,7 +760,12 @@ import { listen } from "@tauri-apps/api/event";
       if (!res || typeof res !== 'object' || !res.output_dir) return;
       try {
         const mons = await listMonitors();
-        const mon = mons.length > 1 ? mons[mons.length - 1] : mons[0];
+        const store = window.deployStore && window.deployStore.get();
+        const detail = store && store.detail;
+        const mon = (detail && typeof detail.monitorIndex === 'number'
+          ? mons.find((m) => m.index === detail.monitorIndex) : null)
+          || preferPatternMonitor(mons)
+          || (mons.length > 1 ? mons[mons.length - 1] : mons[0]);
         await openPatternPlayer(mon ? mon.index : 0);
         await playerShowPattern(generatedPatternImagePath(res.output_dir), 'full_screen');
         setPlaying(true); s.setCalReceipt({ tone: 'ok', text: '已发送到播放器' });
