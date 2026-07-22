@@ -13,7 +13,12 @@ export interface LensSessionSummary {
   session_json_path: string;
   /** "tracked" | "fixed" */
   mode: string;
+  /** 具备求解条件（有 capture-time lens/intrinsics），不等于已求解 */
   lens_ready: boolean;
+  /** 固定机位 Stage pose 已落盘（stage_pose.json 或 meta） */
+  stage_pose_ready: boolean;
+  /** 求解结果（RMS / inliers / camera_from_stage …）；未求解为 null */
+  stage_pose?: TrackerFreeStagePoseResult | Record<string, unknown> | null;
   /** 从 tracking/poses.jsonl 或 captures/normal 统计；无法读取时为 null */
   poses_captured: number | null;
   modified_at: string | null;
@@ -36,6 +41,10 @@ export interface LensSessionSummary {
 }
 export const listLensSessions = (sessionsRoot: string) =>
   call<LensSessionSummary[]>("list_lens_sessions", { sessionsRoot });
+
+/** Delete one session directory that lives under `sessionsRoot` (path-validated in Rust). */
+export const deleteLensSession = (sessionsRoot: string, sessionDir: string) =>
+  call<void>("delete_lens_session", { sessionsRoot, sessionDir });
 
 /** Persist fixed-pose metadata and optionally snapshot an external lens file into the run. */
 export const writeFixedRunMeta = (
@@ -235,6 +244,62 @@ export async function trackerFreeStagePose(opts: {
     throw new Error((env.error && env.error.message) || `tracker-free pose failed (exit ${out.exit_code})`);
   }
   return env.data as TrackerFreeStagePoseResult;
+}
+
+export interface GridOverlayScreen {
+  label: string;
+  /** Normalised segments `[x1,y1,x2,y2]` in 0–1 image space. */
+  segments: Array<[number, number, number, number] | number[]>;
+  /** Normalised marker points `[x,y]`. */
+  markers: Array<[number, number] | number[]>;
+}
+
+export interface TrackerFreeGridResult {
+  screens: GridOverlayScreen[];
+  image_size: [number, number] | number[];
+}
+
+/** `vpcal tracker-free grid` — project cabinet wireframes through a Stage pose. */
+export async function trackerFreeGrid(opts: {
+  targets: Array<{ screenJson: string; code: number; offset: number }>;
+  posePath: string;
+  intrinsics?: FixedPixelIntrinsics | null;
+  lensPath?: string | null;
+  includeMarkers?: boolean;
+}): Promise<TrackerFreeGridResult> {
+  if (!opts.targets.length) throw new Error("tracker-free grid requires at least one screen target");
+  const args = ["tracker-free", "grid", "--pose", opts.posePath];
+  for (const target of opts.targets) {
+    args.push(
+      "--screen-target", target.screenJson,
+      String(target.code), String(target.offset),
+    );
+  }
+  if (opts.lensPath && opts.intrinsics) {
+    throw new Error("tracker-free grid accepts one intrinsics source per run");
+  }
+  if (opts.lensPath) {
+    args.push("--lens", opts.lensPath);
+  } else if (opts.intrinsics) {
+    const intr = opts.intrinsics;
+    args.push(
+      "--fx", String(intr.fx), "--fy", String(intr.fy),
+      "--cx", String(intr.cx), "--cy", String(intr.cy),
+      "--k1", String(intr.dist_coeffs[0] ?? 0),
+      "--k2", String(intr.dist_coeffs[1] ?? 0),
+      "--k3", String(intr.dist_coeffs[4] ?? 0),
+    );
+  } else {
+    throw new Error("tracker-free grid requires --lens or capture-time pixel intrinsics");
+  }
+  if (opts.includeMarkers === false) args.push("--no-markers");
+  args.push("--output", "json");
+  const out = await spawnSidecar("vpcal", args);
+  const env = parseEnvelope(out);
+  if (env.status && env.status !== "ok") {
+    throw new Error((env.error && env.error.message) || `tracker-free grid failed (exit ${out.exit_code})`);
+  }
+  return env.data as TrackerFreeGridResult;
 }
 
 /** `vpcal tracker-free verify` — 单屏时可把 screenA/B 指同一 screen.json。 */

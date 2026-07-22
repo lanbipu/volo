@@ -115,9 +115,16 @@ pub struct LensSessionSummary {
     pub session_json_path: String,
     /// `"tracked"` (`session.json`) or `"fixed"` (`fixed_run.json` / stills).
     pub mode: String,
-    /// True when the run carries capture-time intrinsics suitable for solve,
-    /// or already has a fixed Stage pose artifact.
+    /// True when the run carries capture-time intrinsics / lens suitable for
+    /// solve (does **not** mean a Stage pose has already been solved).
     pub lens_ready: bool,
+    /// True when a fixed Stage pose artifact exists (`stage_pose.json` or
+    /// `fixed_run.json` meta `stage_pose` / `stage_pose_json`).
+    pub stage_pose_ready: bool,
+    /// Solved Stage pose payload (RMS / inliers / camera_from_stage, …) when
+    /// available — from `stage_pose.json` or embedded meta `stage_pose`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage_pose: Option<Value>,
     /// Captured pose/frame count — tracked: `tracking/poses.jsonl` lines;
     /// fixed: `captures/normal/*.png` count (or `fixed_run.json` frames).
     pub poses_captured: Option<u64>,
@@ -191,6 +198,8 @@ fn summarize_session(session_json: &Path) -> Option<LensSessionSummary> {
         session_json_path: session_json.to_string_lossy().into_owned(),
         mode: "tracked".into(),
         lens_ready,
+        stage_pose_ready: false,
+        stage_pose: None,
         poses_captured,
         modified_at: file_mtime_rfc3339(session_json),
         output_dir: if output.is_dir() {
@@ -279,9 +288,32 @@ fn summarize_fixed_run(dir: &Path) -> Option<LensSessionSummary> {
             path.is_file().then(|| path.to_string_lossy().into_owned())
         });
     let intrinsics = meta_value.as_ref().and_then(|v| v.get("intrinsics")).cloned();
-    let lens_ready = lens_json.is_some()
-        || intrinsics.is_some()
-        || dir.join("stage_pose.json").is_file()
+    /* Capture-time intrinsics / lens only — Stage pose is tracked separately. */
+    let lens_ready = lens_json.is_some() || intrinsics.is_some();
+    let stage_pose_path = meta_value
+        .as_ref()
+        .and_then(|v| v.get("stage_pose_json"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+        .or_else(|| {
+            let path = dir.join("stage_pose.json");
+            path.is_file().then_some(path)
+        });
+    let stage_pose = stage_pose_path
+        .as_ref()
+        .and_then(|p| fs::read_to_string(p).ok())
+        .and_then(|txt| serde_json::from_str::<Value>(&txt).ok())
+        .or_else(|| {
+            meta_value
+                .as_ref()
+                .and_then(|v| v.get("stage_pose"))
+                .filter(|v| v.is_object())
+                .cloned()
+        });
+    let stage_pose_ready = stage_pose.is_some()
+        || stage_pose_path.is_some()
         || meta_value
             .as_ref()
             .and_then(|v| v.get("stage_pose_json"))
@@ -304,6 +336,8 @@ fn summarize_fixed_run(dir: &Path) -> Option<LensSessionSummary> {
         session_json_path: meta_path,
         mode: "fixed".into(),
         lens_ready,
+        stage_pose_ready,
+        stage_pose,
         poses_captured: frames,
         modified_at,
         output_dir: Some(dir.to_string_lossy().into_owned()),
@@ -573,6 +607,53 @@ pub fn write_fixed_run_meta(
     Ok(())
 }
 
+/// Delete one lens capture session directory under `sessions_root`.
+/// Path must canonicalize to a real subdirectory of the sessions root (not the
+/// root itself) so the renderer cannot escape into arbitrary filesystem trees.
+#[tauri::command]
+pub fn delete_lens_session(sessions_root: String, session_dir: String) -> VoloResult<()> {
+    let root = Path::new(&sessions_root).canonicalize().map_err(|e| {
+        VoloError::Io(format!(
+            "failed to resolve sessions_root {sessions_root}: {e}"
+        ))
+    })?;
+    if !root.is_dir() {
+        return Err(VoloError::InvalidInput(format!(
+            "sessions_root is not a directory: {sessions_root}"
+        )));
+    }
+    let dir = Path::new(&session_dir).canonicalize().map_err(|e| {
+        VoloError::Io(format!("failed to resolve session_dir {session_dir}: {e}"))
+    })?;
+    if !dir.is_dir() {
+        return Err(VoloError::InvalidInput(format!(
+            "session_dir is not a directory: {session_dir}"
+        )));
+    }
+    if dir == root {
+        return Err(VoloError::InvalidInput(
+            "refusing to delete the sessions root itself".into(),
+        ));
+    }
+    if !dir.starts_with(&root) {
+        return Err(VoloError::InvalidInput(format!(
+            "session_dir escapes sessions_root: {session_dir}"
+        )));
+    }
+    let looks_like_session = dir.join("session.json").is_file()
+        || dir.join("fixed_run.json").is_file()
+        || dir.join("captures").join("normal").is_dir();
+    if !looks_like_session {
+        return Err(VoloError::InvalidInput(format!(
+            "refusing to delete non-session directory: {session_dir}"
+        )));
+    }
+    fs::remove_dir_all(&dir).map_err(|e| {
+        VoloError::Io(format!("failed to delete {}: {e}", dir.display()))
+    })?;
+    Ok(())
+}
+
 /* ============================================================================
    Lens capture auto-path workspace (B1–B3)
    ————————————————————————————————————————————————————————————————————————————
@@ -749,6 +830,19 @@ mod qa_report_tests {
         assert_eq!(summary.camera_id.as_deref(), Some("cam-a"));
         assert_eq!(summary.lens_json.as_deref(), meta["lens_json"].as_str());
         assert!(summary.intrinsics.is_some());
+        assert!(summary.lens_ready);
+        /* stage_pose_json path recorded but file not written yet → ready by path only. */
+        assert!(summary.stage_pose_ready);
+        assert!(summary.stage_pose.is_none());
+
+        fs::write(
+            run.path().join("stage_pose.json"),
+            br#"{"rms_reprojection_px":0.42,"num_inliers":8,"num_markers":10}"#,
+        )
+        .unwrap();
+        let solved = summarize_fixed_run(run.path()).unwrap();
+        assert!(solved.stage_pose_ready);
+        assert_eq!(solved.stage_pose.as_ref().unwrap()["rms_reprojection_px"], 0.42);
     }
 
     #[cfg(unix)]

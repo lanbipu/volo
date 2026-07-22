@@ -81,6 +81,8 @@ class LiveOverlay:
 
             self._marker_map = load_marker_map(_resolve(session_dir, session.marker_map.path))
             self._world_map = physical_world_map(self._marker_map)
+            self._grid_screens: list[tuple[str, object]] = []
+            self._grid_world_transform = None
         else:
             from vpcal.core.session_targets import combined_world_map, load_screen_targets
 
@@ -90,17 +92,37 @@ class LiveOverlay:
             self._world_map, _ = combined_world_map(
                 targets, transform=lambda point: m_ue @ point
             )
+            self._grid_screens = [(t.label, t.screen) for t in targets]
+            self._grid_world_transform = m_ue
 
-    def annotate(self, captured: CapturedFrame, tracking: TrackingFrame) -> LiveFrameResult:
-        """Detect and reproject markers into a preview-safe 8-bit BGR image."""
-        gray = _preview_plane(captured.gray)
+    def stage_to_camera(self, tracking: TrackingFrame) -> NDArray[np.float64]:
+        """OpenCV ``T_C_from_S`` for one tracking sample."""
         q, t = to_internal_pose(
             tracking,
             self.session.tracking.coordinate_system,
             self.session.tracking.custom_transform,
         )
         T_sdk = make_transform(q, t)
-        T_C_from_S = stage_to_camera_transform(self._T_S, T_sdk, self._T_C)
+        return stage_to_camera_transform(self._T_S, T_sdk, self._T_C)
+
+    def overlay_grid_payload(self, tracking: TrackingFrame) -> dict | None:
+        """Normalised cabinet-grid segments for the frontend canvas (no MJPEG burn-in)."""
+        if not self._grid_screens:
+            return None
+        from vpcal.core.grid_overlay import project_grid_overlay
+
+        T_C_from_S = self.stage_to_camera(tracking)
+        return project_grid_overlay(
+            self._grid_screens,
+            T_C_from_S,
+            self._intr,
+            world_transform=self._grid_world_transform,
+        )
+
+    def annotate(self, captured: CapturedFrame, tracking: TrackingFrame) -> LiveFrameResult:
+        """Detect and reproject markers into a preview-safe 8-bit BGR image."""
+        gray = _preview_plane(captured.gray)
+        T_C_from_S = self.stage_to_camera(tracking)
 
         if captured.bgr is not None:
             canvas = _preview_plane(captured.bgr).copy()
@@ -157,6 +179,8 @@ def run_live_verify(
     preview_port: int = 0,
     duration_s: float = 0.0,
     max_frames: int | None = None,
+    emit_grid: bool = False,
+    grid_hz: float = 15.0,
     event_callback: EventCallback | None = None,
     backend: CaptureBackend | None = None,
     listener: TrackingListener | None = None,
@@ -187,6 +211,8 @@ def run_live_verify(
     all_errors: list[float] = []
     started = time.monotonic()
     last_report = started
+    last_grid = 0.0
+    grid_interval = (1.0 / grid_hz) if emit_grid and grid_hz > 0 else None
     tracking_started = False
     server_started = False
     try:
@@ -217,6 +243,13 @@ def run_live_verify(
                     frames_annotated += 1
                     observations += annotated.num_observations
                     all_errors.extend(annotated.errors_px)
+                if grid_interval is not None:
+                    now_grid = time.monotonic()
+                    if now_grid - last_grid >= grid_interval:
+                        grid_payload = overlay.overlay_grid_payload(tracking_frame)
+                        if grid_payload is not None:
+                            emit("overlay_grid", grid_payload)
+                        last_grid = now_grid
 
             now = time.monotonic()
             if now - last_report >= 0.5:

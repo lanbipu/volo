@@ -314,11 +314,17 @@
 
 /* 采集记录 */
 .lc-runs { display: flex; flex-direction: column; gap: 10px; }
+.lc-runs-clear { all: unset; box-sizing: border-box; cursor: pointer; align-self: flex-end; display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700;
+  color: var(--chrome-dim); padding: 4px 9px; border-radius: 7px; border: 1px solid var(--chrome-line-2); margin-bottom: 2px; }
+.lc-runs-clear:hover { color: var(--negative-visual); border-color: color-mix(in srgb, var(--negative-visual) 40%, transparent); background: color-mix(in srgb, var(--negative-visual) 8%, transparent); }
+.lc-runs-empty { padding: 20px 12px; text-align: center; font-size: 12px; color: var(--chrome-faint); border: 1px dashed var(--chrome-line-2); border-radius: 10px; }
 .lc-run { border: 1px solid var(--chrome-line); border-radius: 10px; overflow: hidden; }
 .lc-run-h { display: flex; align-items: center; gap: 8px; padding: 9px 11px; background: var(--wash-3); border-bottom: 1px solid var(--chrome-line); }
 .lc-run-n { font-size: 12px; font-weight: 800; color: var(--chrome-text); }
 .lc-run-time { font-size: 10.5px; color: var(--chrome-faint); }
 .lc-run-badges { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.lc-run-x { all: unset; box-sizing: border-box; cursor: pointer; display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 6px; color: var(--chrome-faint); flex: 0 0 auto; }
+.lc-run-x:hover { background: color-mix(in srgb, var(--negative-visual) 14%, transparent); color: var(--negative-visual); }
 .lc-pose { all: unset; box-sizing: border-box; cursor: pointer; display: grid; grid-template-columns: 26px 1fr auto auto; gap: 9px; align-items: center; padding: 8px 11px; border-top: 1px solid var(--chrome-line); }
 .lc-pose:first-child { border-top: none; }
 .lc-pose:hover { background: var(--chrome-card-hover); }
@@ -363,12 +369,12 @@
 .lc-setup-foot > button { width: 100%; }
 
 /* 镜头校正窗口（二级弹窗 · 左画面 + 右设置） */
-.modal-host.xwide:has(.drawer--lcwin) { width: min(1180px, 96vw); max-width: none; height: min(730px, 92vh); max-height: none; }
+.modal-host.xwide:has(.drawer--lcwin) { width: min(1180px, 96vw); max-width: none; height: min(730px, 92vh); max-height: none; position: relative; }
 .modal-host > .drawer.drawer--lcwin { max-height: none; height: auto; flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
 .drawer--lcwin .drawer-h { flex: 0 0 auto; }
 .drawer--lcwin .drawer-h .di.info { background: color-mix(in srgb, var(--informative-visual) 16%, transparent); color: var(--informative-visual); }
 .drawer--lcwin .drawer-h .sub { display: flex; align-items: center; gap: 6px; }
-.drawer--lcwin .lc-body { flex: 1 1 auto; min-height: 0; }
+.drawer--lcwin .lc-body { flex: 1 1 auto; min-height: 0; position: relative; }
 .drawer--lcwin .lc-actionbar { flex: 0 0 auto; border-radius: 0 0 16px 16px; }
 .drawer--lcwin .lc-signal { border-radius: 0 0 0 16px; }
 
@@ -467,3 +473,82 @@
 .lc-cli-note { display: flex; align-items: flex-start; gap: 7px; font-size: 11px; color: var(--chrome-faint); line-height: 1.5; width: 100%; margin-top: 2px; }
 .lc-cli-note svg { flex: 0 0 auto; margin-top: 1px; color: var(--chrome-dim); }
 .lc-cli-note code { font-family: var(--font-code); font-size: 10.5px; background: var(--wash-2); border-radius: 4px; padding: 1px 5px; color: var(--chrome-dim); }
+
+/* ============================================================
+   AR 网格叠加验证（信号区叠加层 + 悬浮 HUD 控件组）
+   1:1 移植自 Claude Design handoff `cal_flow.css`
+   ============================================================ */
+.lc-ar-svg { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 3; pointer-events: none; }
+.lc-ar-g * { vector-effect: non-scaling-stroke; }
+.lc-ar-g.lost { opacity: .6; }
+
+.lc-arwrap { position: relative; flex: 0 0 auto; }
+.lc-arbtn { all: unset; box-sizing: border-box; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 9999px;
+  border: 1px solid var(--chrome-line-2); background: var(--wash); color: var(--chrome-dim); font-size: 12.5px; font-weight: 700; }
+.lc-arbtn:hover { background: var(--wash-2); color: var(--chrome-text); }
+.lc-arbtn.on { color: var(--volo-400); border-color: color-mix(in srgb, var(--volo-700) 40%, transparent); background: var(--highlight-selected); }
+.lc-arbtn.open { background: var(--wash-2); color: var(--chrome-text); }
+.lc-arbtn svg:first-child { flex: 0 0 auto; color: #4fe6e2; }
+.lc-arbtn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--positive-visual); flex: 0 0 auto; }
+.lc-arbtn > svg:last-child { flex: 0 0 auto; color: var(--chrome-faint); transition: transform .14s; }
+.lc-arbtn.open > svg:last-child { transform: rotate(180deg); }
+.lc-arpanel { position: absolute; bottom: calc(100% + 10px); right: 0; z-index: 20; width: 266px; display: flex; flex-direction: column; gap: 11px;
+  background: var(--chrome-panel-2); border: 1px solid var(--chrome-line-2); border-radius: 12px; padding: 13px 14px; box-shadow: var(--shadow-dragged); }
+.lc-arpanel-row { display: flex; align-items: center; gap: 10px; }
+.lc-arpanel-lb { font-size: 12.5px; font-weight: 700; color: var(--chrome-text); flex: 1; }
+.lc-arhud-locked { display: flex; align-items: flex-start; gap: 6px; font-size: 11px; line-height: 1.5; color: var(--notice-visual); }
+.lc-arhud-locked svg { flex: 0 0 auto; margin-top: 1px; }
+.lc-arhud-op { display: flex; align-items: center; gap: 9px; }
+.lc-arhud-op.is-off { opacity: .5; }
+.lc-arhud-op-k { font-size: 11px; font-weight: 700; color: var(--chrome-dim); flex: 0 0 auto; }
+.lc-arhud-op-v { font-size: 11px; font-weight: 800; color: var(--chrome-text); width: 36px; text-align: right; flex: 0 0 auto; }
+.lc-ar-range { -webkit-appearance: none; appearance: none; flex: 1; height: 5px; border-radius: 3px; cursor: pointer;
+  background: linear-gradient(to right, #2bc9c5 var(--pct, 60%), var(--track) var(--pct, 60%)); }
+.lc-ar-range:disabled { cursor: default; opacity: .6; }
+.lc-ar-range::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 15px; height: 15px; border-radius: 50%; background: #fff;
+  border: 2px solid #2bc9c5; box-shadow: 0 1px 4px rgba(0,0,0,.35); cursor: pointer; }
+.lc-ar-range::-moz-range-thumb { width: 15px; height: 15px; border-radius: 50%; background: #fff; border: 2px solid #2bc9c5; box-shadow: 0 1px 4px rgba(0,0,0,.35); cursor: pointer; }
+.lc-ar-range:focus-visible { outline: 2px solid #2bc9c5; outline-offset: 3px; }
+.lc-arhud-track { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* 采集记录 · 固定机位求解态条（未求解 / 求解中 / 已求解） */
+.lc-run-solvebar { display: flex; align-items: center; gap: 8px; padding: 9px 11px; border-bottom: 1px solid var(--chrome-line); }
+.lc-run-solvebar-t { font-size: 11.5px; color: var(--chrome-dim); }
+.lc-run-solvebar.is-solving .lc-run-solvebar-t { color: var(--informative-visual); font-weight: 600; }
+.lc-run-solvebar-m { font-size: 11.5px; color: var(--chrome-text); font-weight: 700; }
+.lc-run-solvebar-m b { font-family: var(--font-code); font-variant-numeric: tabular-nums; }
+.lc-run-report { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 700; color: var(--volo-400);
+  padding: 4px 10px; border-radius: 7px; border: 1px solid color-mix(in srgb, var(--volo-700) 32%, transparent); }
+.lc-run-report:hover { background: var(--highlight-selected); }
+.cap-pill--informative .ag-spin { display: inline-flex; }
+
+/* ============================================================
+   求解结果报告抽屉（固定机位版式）
+   ============================================================ */
+.drawer--solverep { width: 544px; }
+.sr-concl { display: flex; align-items: center; gap: 12px; padding: 13px 14px; border-radius: 12px; margin-top: 10px; }
+.sr-concl--ok { background: color-mix(in srgb, var(--positive-visual) 9%, transparent); border: 1px solid color-mix(in srgb, var(--positive-visual) 30%, transparent); }
+.sr-concl--warn { background: color-mix(in srgb, var(--notice-visual) 11%, transparent); border: 1px solid color-mix(in srgb, var(--notice-visual) 34%, transparent); }
+.sr-concl-ic { width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center; flex: 0 0 auto; }
+.sr-concl--ok .sr-concl-ic { background: color-mix(in srgb, var(--positive-visual) 18%, transparent); color: var(--positive-visual); }
+.sr-concl--warn .sr-concl-ic { background: color-mix(in srgb, var(--notice-visual) 20%, transparent); color: var(--notice-visual); }
+.sr-concl-m { flex: 1; min-width: 0; }
+.sr-concl-t { font-size: 15px; font-weight: 800; color: var(--chrome-text); }
+.sr-concl-d { font-size: 11.5px; color: var(--chrome-dim); margin-top: 3px; line-height: 1.5; text-wrap: pretty; }
+.sr-concl .cap-pill { flex: 0 0 auto; align-self: flex-start; }
+.sr-sec-h { display: flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--chrome-faint); margin: 18px 0 9px; }
+.sr-sec-tag { margin-left: auto; text-transform: none; letter-spacing: 0; }
+.sr-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.sr-metric { background: var(--wash-3); border: 1px solid var(--chrome-line); border-radius: 10px; padding: 10px 11px; }
+.sr-metric .k { font-size: 10px; color: var(--chrome-faint); }
+.sr-metric .v { font-size: 18px; font-weight: 800; color: var(--chrome-text); font-variant-numeric: tabular-nums; font-family: var(--font-code); margin-top: 4px; }
+.sr-metric .v .u { font-size: 10px; font-weight: 600; color: var(--chrome-faint); margin-left: 3px; }
+.sr-metric--positive .v { color: var(--positive-visual); }
+.sr-metric--notice .v { color: var(--notice-visual); }
+.sr-screens { display: flex; flex-direction: column; gap: 10px; }
+.sr-screen-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 5px; }
+.sr-screen-n { font-size: 12px; font-weight: 700; color: var(--chrome-text); }
+.sr-screen-v { font-size: 11px; color: var(--chrome-dim); }
+.sr-screen-bar { height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; }
+.sr-screen-bar i { display: block; height: 100%; border-radius: 3px; background: var(--positive-visual); }
+.sr-foot-meta { font-size: 11px; color: var(--chrome-faint); }

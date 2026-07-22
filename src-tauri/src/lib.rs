@@ -345,6 +345,7 @@ pub fn run() {
             commands::mesh_reconstruct::set_run_current,
             commands::vpcal_runs::list_ar_runs,
             commands::vpcal_runs::list_lens_sessions,
+            commands::vpcal_runs::delete_lens_session,
             commands::vpcal_runs::read_image_as_data_url,
             commands::vpcal_runs::read_lens_qa_report,
             commands::vpcal_runs::write_fixed_run_meta,

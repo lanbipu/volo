@@ -670,6 +670,7 @@ function App() {
   const [capDetail, setCapDetail] = useState(null); /* null | { runId, poseId } */
   const [capCam, setCapCam] = useState('cam1');
   const [capTrack, setCapTrack] = useState('fixed'); /* connected | fixed | lost — 默认无追踪=固定机位 */
+  const [capArReq, setCapArReq] = useState(null); /* null | { cam } — 求解报告→回大窗打开 AR 叠加 */
   const [capSignalReady, setCapSignalReady] = useState(false); /* 由采集窗监看流 / Profile 驱动 */
   const [capScreenFile, setCapScreenFile] = useState(null); /* null | string path */
   const [capProfileId, setCapProfileId] = useState(null);
@@ -1049,7 +1050,8 @@ function App() {
     calOutTarget, setCalOutTarget, deployState, setDeployState, deployMeta, setDeployMeta,
     lensFlow, setLensFlow, lensCalMethod, setLensCalMethod,
     capState, setCapState, capDetail, setCapDetail, capCam, setCapCam,
-    capTrack, setCapTrack, capSignalReady, setCapSignalReady, capScreenFile, setCapScreenFile,
+    capTrack, setCapTrack, capArReq, setCapArReq,
+    capSignalReady, setCapSignalReady, capScreenFile, setCapScreenFile,
     capProfileId, setCapProfileId, capProfileLabel, setCapProfileLabel,
     capOutDir, setCapOutDir, calSlUnlock, setCalSlUnlock,
     leftCollapsed, setLeftCollapsed, rightCollapsed, setRightCollapsed, maximized,

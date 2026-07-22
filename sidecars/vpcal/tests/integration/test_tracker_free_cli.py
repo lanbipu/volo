@@ -20,6 +20,8 @@ from vpcal.cli.tracker_free import _rotation_to_ptr, _volo_camera_rotation
 from vpcal.models.screen import PlaneSection, ScreenDefinition
 
 SRC = str(Path(__file__).resolve().parents[2] / "src")
+# sitecustomize strips skbuild editable redirects so worktree PYTHONPATH wins.
+_BOOTSTRAP = str(Path(__file__).resolve().parents[1] / "_bootstrap")
 
 
 def _screen(name="Wall_A", width=3000, height=2000, cab_size=1000) -> ScreenDefinition:
@@ -76,7 +78,7 @@ def _write_spatial(path: Path, translation=None) -> Path:
 
 
 def _run(*args):
-    env = dict(os.environ, PYTHONPATH=SRC)
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([_BOOTSTRAP, SRC]))
     return subprocess.run(
         [sys.executable, "-m", "vpcal.cli.main", *args],
         capture_output=True, text=True, env=env,
@@ -374,3 +376,73 @@ class TestExportCLI:
 
         assert result["status"] == "ok"
         assert "dry_run_plan" in result["data"]
+
+
+# ── cabinet grid overlay ─────────────────────────────────────────────
+
+
+def _write_stage_pose(path: Path) -> Path:
+    """Minimal Volo Stage←camera matrix looking at origin from −Y."""
+    R_cv = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 1.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    t_cv = -R_cv @ np.array([0.0, -3000.0, 1000.0])
+    cam_pos = -R_cv.T @ t_cv
+    cv_from_volo = np.diag([1.0, -1.0, -1.0])
+    R_volo = R_cv.T @ cv_from_volo
+    M = np.eye(4)
+    M[:3, :3] = R_volo
+    M[:3, 3] = cam_pos
+    path.write_text(json.dumps({
+        "camera_from_stage": {
+            "position_mm": cam_pos.tolist(),
+            "matrix_4x4": M.tolist(),
+        },
+        "rms_reprojection_px": 0.5,
+        "num_markers": 8,
+        "num_inliers": 8,
+    }))
+    return path
+
+
+class TestGridCLI:
+
+    def test_dry_run(self, tmp_path):
+        screen = _write_screen(_screen(), tmp_path / "screen.json")
+        pose = _write_stage_pose(tmp_path / "stage_pose.json")
+        lens = _write_lens(tmp_path / "lens.json")
+
+        result = _run_ok(
+            "--output", "json",
+            "tracker-free", "grid",
+            "--screen-target", str(screen), "0", "0",
+            "--pose", str(pose),
+            "--lens", str(lens),
+            "--dry-run",
+        )
+        assert result["status"] == "ok"
+        assert result["operation_id"] == "tracker_free.grid"
+        assert "dry_run_plan" in result["data"]
+
+    def test_smoke_projects_segments(self, tmp_path):
+        screen = _write_screen(_screen(), tmp_path / "screen.json")
+        pose = _write_stage_pose(tmp_path / "stage_pose.json")
+        lens = _write_lens(tmp_path / "lens.json")
+
+        result = _run_ok(
+            "--output", "json",
+            "tracker-free", "grid",
+            "--screen-target", str(screen), "0", "0",
+            "--pose", str(pose),
+            "--lens", str(lens),
+        )
+        assert result["status"] == "ok"
+        data = result["data"]
+        assert data["image_size"] == [1920, 1080]
+        assert len(data["screens"]) == 1
+        assert len(data["screens"][0]["segments"]) >= 4

@@ -7,9 +7,9 @@
 import * as React from "react";
 import { lensWorkspacePaths } from "../api/lensWorkspace";
 import {
-  listLensSessions, readLensQaReport, readImageAsDataUrl,
+  listLensSessions, deleteLensSession, readLensQaReport, readImageAsDataUrl,
   startCaptureStills, stillsFinish,
-  trackerFreeStagePose,
+  trackerFreeStagePose, trackerFreeGrid,
   qualityFromRms, qualityFromLabel, writeFixedRunMeta,
 } from "../api/lensCommands";
 import { probeTrackingSource } from "../api/captureProfiles";
@@ -33,6 +33,7 @@ import {
   const { Button, Switch } = window.Spectrum2DesignSystem_b6d1b3;
   const { useState, useRef, useEffect } = React;
   const h = React.createElement;
+  const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
   const CX = () => window.VOLO_CAL2 || {};
   const BACKEND_LABEL = { uvc: 'UVC', ndi: 'NDI', decklink: 'DeckLink', synthetic: '合成' };
   const LS_CAP_PARAMS = 'volo-capw-params';
@@ -181,9 +182,139 @@ import {
     return h('span', { className: 'spill spill--' + m.tone },
       m.icon === 'minus' ? h('span', { style: { fontWeight: 800 } }, '—') : h(Icon, { name: m.icon, size: 12 }), m.label);
   }
+  /* RMS 三通道徽标（色 + 图标 + 文字）· < 2px 好 / ≥ 2px 警告 */
+  function rmsSolveBadge(rms) {
+    const n = Number(rms);
+    if (!Number.isFinite(n)) return solveBadge('none');
+    const warn = n >= 2;
+    return h('span', { className: 'spill spill--' + (warn ? 'notice' : 'positive') },
+      h(Icon, { name: warn ? 'alert' : 'check', size: 12 }), 'RMS ' + n.toFixed(2) + ' px');
+  }
   const rmsTone = (rms) => rms == null ? 'neutral' : rms < 1 ? 'positive' : rms < 2 ? 'notice' : 'negative';
 
+  /** Build SolveReport payload from a fixed-run `stagePose` DTO. */
+  function buildSolveFromRun(run) {
+    const sp = run && run.stagePose;
+    if (!sp) return null;
+    const rms = Number(sp.rms_reprojection_px);
+    const markers = Number(sp.num_markers) || 0;
+    const inliers = Number(sp.num_inliers) || 0;
+    const byScreen = sp.markers_by_screen || {};
+    const cam = sp.camera_from_stage || {};
+    const pos = cam.position_mm || [0, 0, 0];
+    const ptr = cam.ptr_deg || { pan: 0, tilt: 0, roll: 0 };
+    const camName = (window.camStore && window.camStore.get().cameras.find((c) => c.id === run.cameraId))
+      ? window.camStore.get().cameras.find((c) => c.id === run.cameraId).name
+      : (run.cameraId || '—');
+    return {
+      conclusion: Number.isFinite(rms) && rms >= 2 ? 'warn' : 'ok',
+      camId: run.cameraId || null,
+      cam: camName,
+      rms: Number.isFinite(rms) ? rms : 0,
+      inliers, markers_total: markers || inliers,
+      solved_at: run.time || '—',
+      warn_reason: Number.isFinite(rms) && rms >= 2
+        ? '重投影 RMS 偏高（≥ 2px）· 建议补采正面机位、改善对焦或复核 marker 真值'
+        : null,
+      screens: Object.keys(byScreen).map((name) => ({ name, hits: Number(byScreen[name]) || 0 })),
+      pose: {
+        x: Number(pos[0]) || 0, y: Number(pos[1]) || 0, z: Number(pos[2]) || 0,
+        pan: Number(ptr.pan) || 0, tilt: Number(ptr.tilt) || 0, roll: Number(ptr.roll) || 0,
+      },
+    };
+  }
+
   /* MethodViz / MethodSelect / LensSetup 已删：方式选择在大窗 MethodOptions 紧凑组。 */
+
+  /* ============================================================
+     AR 网格叠加（canvas · 归一化线段 × object-fit:cover 映射）
+     ============================================================ */
+  function coverMap(nx, ny, iw, ih, cw, ch) {
+    const scale = Math.max(cw / Math.max(iw, 1), ch / Math.max(ih, 1));
+    const dw = iw * scale, dh = ih * scale;
+    return [nx * dw + (cw - dw) / 2, ny * dh + (ch - dh) / 2];
+  }
+  function AROverlay({ grid, lost, opacity }) {
+    const canvasRef = useRef(null);
+    const wrapRef = useRef(null);
+    const draw = () => {
+      const canvas = canvasRef.current, wrap = wrapRef.current;
+      if (!canvas || !wrap) return;
+      const cw = wrap.clientWidth || 1, ch = wrap.clientHeight || 1;
+      const dpr = window.devicePixelRatio || 1;
+      if (canvas.width !== Math.round(cw * dpr) || canvas.height !== Math.round(ch * dpr)) {
+        canvas.width = Math.round(cw * dpr);
+        canvas.height = Math.round(ch * dpr);
+        canvas.style.width = cw + 'px';
+        canvas.style.height = ch + 'px';
+      }
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, cw, ch);
+      if (!grid || !grid.screens || !grid.screens.length) return;
+      const isize = grid.image_size || [1920, 1080];
+      const iw = Number(isize[0]) || 1920, ih = Number(isize[1]) || 1080;
+      const line = lost ? 'rgba(170,178,190,.92)' : '#3fe4e6';
+      const cross = lost ? 'rgba(205,211,219,.95)' : '#8ff8f4';
+      const fill = lost ? 'rgba(165,173,185,.05)' : 'rgba(63,228,230,.06)';
+      ctx.save();
+      if (lost) ctx.globalAlpha = 0.6;
+      grid.screens.forEach((screen) => {
+        const segs = screen.segments || [];
+        /* 粗外框：取各屏线段的 AABB 四边（后端外框也在 segments 中，统一细线 + 首段略粗不可靠；
+           全部细线后对边界再描一层粗 stroke） */
+        ctx.strokeStyle = line;
+        ctx.lineWidth = 1;
+        ctx.globalAlpha = lost ? 0.7 : 0.7;
+        segs.forEach((seg) => {
+          if (!seg || seg.length < 4) return;
+          const a = coverMap(seg[0], seg[1], iw, ih, cw, ch);
+          const b = coverMap(seg[2], seg[3], iw, ih, cw, ch);
+          ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+        });
+        /* 外框：用 markers AABB 或 segments 极值画粗框 */
+        let minX = 1, minY = 1, maxX = 0, maxY = 0, any = false;
+        segs.forEach((seg) => {
+          if (!seg || seg.length < 4) return;
+          any = true;
+          minX = Math.min(minX, seg[0], seg[2]); maxX = Math.max(maxX, seg[0], seg[2]);
+          minY = Math.min(minY, seg[1], seg[3]); maxY = Math.max(maxY, seg[1], seg[3]);
+        });
+        if (any) {
+          const tl = coverMap(minX, minY, iw, ih, cw, ch);
+          const tr = coverMap(maxX, minY, iw, ih, cw, ch);
+          const br = coverMap(maxX, maxY, iw, ih, cw, ch);
+          const bl = coverMap(minX, maxY, iw, ih, cw, ch);
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = fill;
+          ctx.beginPath();
+          ctx.moveTo(tl[0], tl[1]); ctx.lineTo(tr[0], tr[1]); ctx.lineTo(br[0], br[1]); ctx.lineTo(bl[0], bl[1]);
+          ctx.closePath(); ctx.fill();
+          ctx.strokeStyle = line; ctx.lineWidth = 3;
+          ctx.stroke();
+        }
+        ctx.strokeStyle = cross; ctx.lineWidth = 1.6; ctx.globalAlpha = 1;
+        (screen.markers || []).forEach((m) => {
+          if (!m || m.length < 2) return;
+          const p = coverMap(m[0], m[1], iw, ih, cw, ch);
+          ctx.beginPath(); ctx.moveTo(p[0] - 6, p[1]); ctx.lineTo(p[0] + 6, p[1]); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(p[0], p[1] - 6); ctx.lineTo(p[0], p[1] + 6); ctx.stroke();
+        });
+      });
+      ctx.restore();
+    };
+    useEffect(() => {
+      draw();
+      const wrap = wrapRef.current;
+      if (!wrap || typeof ResizeObserver === 'undefined') return undefined;
+      const ro = new ResizeObserver(() => draw());
+      ro.observe(wrap);
+      return () => ro.disconnect();
+    });
+    return h('div', { ref: wrapRef, className: 'lc-ar-svg', style: { opacity: opacity == null ? 1 : opacity } },
+      h('canvas', { ref: canvasRef, className: 'lc-ar-g' + (lost ? ' lost' : ''), style: { width: '100%', height: '100%', display: 'block' } }));
+  }
 
   /* ============================================================
      摄影机实时信号（LED 墙 + 检测叠加）· 复用镜头页几何思路
@@ -263,6 +394,19 @@ import {
     const inverted = !!params.inverted;
     const setGsync = (v) => setP('graycodeSync', v);
     const setInverted = (v) => setP('inverted', v);
+    /* AR 网格叠加验证 */
+    const [arOn, setArOn] = useState(false);
+    const [arOpacity, setArOpacity] = useState(60);
+    const [arPanelOpen, setArPanelOpen] = useState(false);
+    const [arGrid, setArGrid] = useState(null);
+    const [arLost, setArLost] = useState(false);
+    const [arLiveTaskId, setArLiveTaskId] = useState(null);
+    const [arLiveUrl, setArLiveUrl] = useState(null);
+    const [arErr, setArErr] = useState(null);
+    const arBtnRef = useRef(null);
+    const arLiveTaskRef = useRef(null);
+    const rootRef = useRef(null);
+    const [leftPct, setLeftPct] = useState(68);
     const timer = useRef(null);
     const patternAckSeq = useRef(new Set());
     const stillsOutRef = useRef(null);
@@ -301,8 +445,13 @@ import {
         });
       }
     };
-    /* index 保证 calCaptureWindow 先于本文件加载，useMonitor 始终可用 */
-    const monitor = window.VOLO_CAPTURE.useMonitor(profile, !capturing && !!profile && backend !== 'synthetic');
+    /* index 保证 calCaptureWindow 先于本文件加载，useMonitor 始终可用。
+       追踪机位 AR 占用 verify live 时暂停监看流（设备独占）。 */
+    const monitor = window.VOLO_CAPTURE.useMonitor(
+      profile,
+      !capturing && !!profile && backend !== 'synthetic' && !arLiveTaskId,
+    );
+    const arLiveStream = useSidecarStream(arLiveTaskId);
     const session = useCaptureSession();
     const [liveRuns, setLiveRuns] = useState([]);
     const [sessionsErr, setSessionsErr] = useState(null);
@@ -317,7 +466,10 @@ import {
     /* 输出目录固定 = <project>/vpcal/captures/（§3.4；不再用 profile.outputRoot / 手选） */
     const outDir = projectPath ? lensWorkspacePaths(projectPath).capturesDir : '';
     const deployed = s.deployState !== 'idle';
-    const signalReady = backend === 'synthetic' || monitor.sig === 'ok' || (!!monitor.url && monitor.sig !== 'lost');
+    const signalReady = backend === 'synthetic'
+      || monitor.sig === 'ok'
+      || (!!monitor.url && monitor.sig !== 'lost')
+      || !!arLiveUrl;
     const deployStoreSnap = window.deployStore && window.deployStore.get();
     const deployChannel = (deployStoreSnap && deployStoreSnap.channel)
       || (s.calOutTarget === 'cluster' ? 'ndisplay' : 'monitor');
@@ -365,7 +517,7 @@ import {
             rms: null, obs: null, outliers: 0, missing: [],
             framePath: isFixed ? joinPath(sess.session_dir, 'captures/normal/' + pad6(j) + '.png') : null,
           }));
-          let rms = null, conf = null, solveState = sess.lens_ready ? 'ok' : 'none';
+          let rms = null, conf = null, solveState = 'none';
           let outliersAll = [];
           const qaDir = sess.output_dir || (isFixed ? null : joinPath(sess.session_dir, 'output'));
           if (qaDir && !isFixed) {
@@ -398,9 +550,17 @@ import {
               if (rms != null) solveState = rms < 2 ? 'ok' : 'warn';
             } catch (e) { /* 未求解或无 qa */ }
           }
-          if (isFixed && sess.lens_ready) {
-            /* lens.json RMS 不在 list 里；求解后前端 patch liveRuns */
-            solveState = 'ok';
+          let stagePose = null;
+          if (isFixed && sess.stage_pose_ready) {
+            stagePose = sess.stage_pose || null;
+            const poseRms = stagePose && stagePose.rms_reprojection_px != null
+              ? Number(stagePose.rms_reprojection_px) : null;
+            if (poseRms != null && !Number.isNaN(poseRms)) {
+              rms = poseRms;
+              solveState = poseRms < 2 ? 'ok' : 'warn';
+            } else {
+              solveState = 'ok';
+            }
           }
           return {
             id: sess.id, label: sess.id,
@@ -411,6 +571,7 @@ import {
             sessionJson: sess.session_json_path,
             outputDir: qaDir,
             modeFixed: isFixed,
+            stagePose,
             error: sess.error || sess.intrinsics_error || null,
             cameraId: sess.camera_id || null,
             lensJson: sess.lens_json || null,
@@ -433,6 +594,201 @@ import {
       }
     };
     useEffect(() => { void refreshSessions(); }, [outDir]);
+
+    /* 从「求解结果报告」回大窗：自动选中机位并打开 AR 叠加 */
+    useEffect(() => {
+      if (s.capArReq) {
+        if (s.capArReq.cam) {
+          setCamId(s.capArReq.cam);
+          s.setCapCam(s.capArReq.cam);
+          if (window.camStore) window.camStore.select(s.capArReq.cam);
+        }
+        setArOn(true);
+        setArPanelOpen(true);
+        if (s.setCapArReq) s.setCapArReq(null);
+      }
+    }, [s.capArReq]);
+
+    useEffect(() => {
+      if (!arPanelOpen) return undefined;
+      const d = (e) => { if (arBtnRef.current && !arBtnRef.current.contains(e.target)) setArPanelOpen(false); };
+      document.addEventListener('mousedown', d);
+      return () => document.removeEventListener('mousedown', d);
+    }, [arPanelOpen]);
+
+    /* 当前机位 AR 可用性：固定=本机位 stage_pose；追踪=result.json + session */
+    const fixedSolvedRun = (liveRuns || []).find((r) => (
+      (r.modeFixed || r.mode === 'fixed') && r.stagePose
+      && (!r.cameraId || r.cameraId === camId)
+    )) || (liveRuns || []).find((r) => (r.modeFixed || r.mode === 'fixed') && r.stagePose);
+    const lensLiveSnap = CX().lensStore ? CX().lensStore.get() : null;
+    const trackedSolve = lensLiveSnap && lensLiveSnap.solveResult ? lensLiveSnap.solveResult : null;
+    const trackedSolvedRun = (liveRuns || []).find((r) => (
+      !r.modeFixed && r.mode !== 'fixed' && r.sessionJson
+      && (r.solveState === 'ok' || r.solveState === 'warn')
+    ));
+    const arTrackedPaths = trackedSolve && trackedSolve.session_path && trackedSolve.result_path
+      ? { session: trackedSolve.session_path, result: trackedSolve.result_path }
+      : (trackedSolvedRun
+        ? {
+            session: trackedSolvedRun.sessionJson,
+            result: joinPath(trackedSolvedRun.outputDir || joinPath(trackedSolvedRun.sessionDir, 'output'), 'result.json'),
+          }
+        : null);
+    const arAvail = tracked
+      ? (!!arTrackedPaths && !capturing)
+      : !!fixedSolvedRun;
+    const arLockHint = tracked
+      ? (capturing
+        ? '采集中无法同时启动 AR 验证流（设备独占）'
+        : (!arTrackedPaths
+          ? '追踪机位需已有 result.json（先完成求解）；当前无可用路径'
+          : null))
+      : (fixedSolvedRun ? null : '当前机位尚未求解 · 请先完成求解');
+
+    /* 固定机位：一次性 tracker-free grid */
+    useEffect(() => {
+      if (!arOn || tracked || !fixedSolvedRun) {
+        if (!tracked) setArGrid(null);
+        return undefined;
+      }
+      let alive = true;
+      setArErr(null);
+      (async () => {
+        try {
+          if (!fixedSolvedRun.targets || !fixedSolvedRun.targets.length) {
+            throw new Error('该 run 缺少 screen target，无法投影柜格');
+          }
+          if (!fixedSolvedRun.lensJson && !fixedSolvedRun.intrinsics) {
+            throw new Error(fixedSolvedRun.intrinsicsError || '该 run 缺少 intrinsics，无法投影柜格');
+          }
+          const posePath = joinPath(fixedSolvedRun.sessionDir, 'stage_pose.json');
+          const grid = await trackerFreeGrid({
+            targets: fixedSolvedRun.targets,
+            posePath,
+            intrinsics: fixedSolvedRun.lensJson ? null : fixedSolvedRun.intrinsics,
+            lensPath: fixedSolvedRun.lensJson || null,
+          });
+          if (alive) setArGrid(grid);
+        } catch (e) {
+          if (alive) {
+            setArGrid(null);
+            setArErr(e && e.message ? e.message : String(e));
+            s.pushLog({ lv: 'err', cat: 'lens', msg: 'AR 网格加载失败 · ' + (e && e.message ? e.message : e) });
+          }
+        }
+      })();
+      return () => { alive = false; };
+    }, [arOn, tracked, fixedSolvedRun && fixedSolvedRun.id, fixedSolvedRun && fixedSolvedRun.sessionDir]);
+
+    /* 追踪机位：verify live --grid，订阅 overlay_grid + tracking 状态 */
+    const wantArLive = arOn && tracked && !capturing && arAvail && !!arTrackedPaths;
+    useEffect(() => {
+      if (!wantArLive || !arTrackedPaths || !profile) {
+        if (arLiveTaskRef.current) {
+          void cancelSidecarTask(arLiveTaskRef.current);
+          arLiveTaskRef.current = null;
+          setArLiveTaskId(null);
+        }
+        setArLiveUrl(null);
+        setArLost(false);
+        if (tracked) setArGrid(null);
+        return undefined;
+      }
+      let cancelled = false;
+      setArErr(null);
+      (async () => {
+        try {
+          const args = [
+            'verify', 'live',
+            '--config', arTrackedPaths.session,
+            '--result', arTrackedPaths.result,
+            '--backend', profile.videoBackend || 'uvc',
+            '--device', String(profile.device || '0'),
+            '--track-protocol', profile.trackProtocol || trackSignal || 'freed',
+            '--track-host', (profile.trackHost || '0.0.0.0'),
+            '--track-port', String(profile.trackPort || 6301),
+            '--tolerance', '0.05', '--preview-port', '0', '--duration', '0',
+            '--grid', '--output', 'ndjson',
+          ];
+          if ((profile.trackProtocol || trackSignal) === 'freed' && profile.trackCameraId != null) {
+            args.push('--track-camera-id', String(profile.trackCameraId));
+          }
+          if (profile.fmtMode === 'manual' && profile.width) args.push('--width', String(profile.width));
+          if (profile.fmtMode === 'manual' && profile.height) args.push('--height', String(profile.height));
+          if (profile.fmtMode === 'manual' && profile.fps) args.push('--fps', String(profile.fps));
+          args.push('--transfer-function', profile.transferFunction || 'sdr');
+          const r = await spawnSidecarStreaming('vpcal', args);
+          if (cancelled) { void cancelSidecarTask(r.task_id); return; }
+          arLiveTaskRef.current = r.task_id;
+          setArLiveTaskId(r.task_id);
+          s.pushLog({ lv: 'info', cat: 'lens', msg: 'AR 叠加 · 启动 <b>vpcal verify live --grid</b>' });
+        } catch (e) {
+          if (!cancelled) {
+            setArErr(e && e.message ? e.message : String(e));
+            setArOn(false);
+            s.pushLog({ lv: 'err', cat: 'lens', msg: 'AR 实时叠加启动失败 · ' + (e && e.message ? e.message : e) });
+          }
+        }
+      })();
+      return () => {
+        cancelled = true;
+        if (arLiveTaskRef.current) {
+          void cancelSidecarTask(arLiveTaskRef.current);
+          arLiveTaskRef.current = null;
+        }
+        setArLiveTaskId(null);
+        setArLiveUrl(null);
+      };
+    }, [wantArLive, arAvail, arTrackedPaths && arTrackedPaths.result, arTrackedPaths && arTrackedPaths.session, profile && profile.id, capturing]);
+
+    useEffect(() => {
+      if (!arLiveTaskId) return;
+      const parsed = arLiveStream.state.lines.map((l) => l.parsed).filter((p) => p && typeof p.type === 'string');
+      const preview = [...parsed].reverse().find((p) => p.type === 'preview_ready');
+      if (preview && preview.mjpeg_url) setArLiveUrl(preview.mjpeg_url);
+      const gridEv = [...parsed].reverse().find((p) => p.type === 'overlay_grid');
+      if (gridEv && (gridEv.screens || (gridEv.data && gridEv.data.screens))) {
+        setArGrid({
+          screens: gridEv.screens || gridEv.data.screens,
+          image_size: gridEv.image_size || (gridEv.data && gridEv.data.image_size) || [1920, 1080],
+        });
+      }
+      const stats = [...parsed].reverse().find((p) => p.type === 'live_stats');
+      if (stats && typeof stats.tracking_connected === 'boolean') {
+        setArLost(!stats.tracking_connected);
+      }
+      const warn = [...parsed].reverse().find((p) => p.type === 'warning'
+        && p.message && String(p.message).toLowerCase().indexOf('track') >= 0);
+      if (warn) setArLost(true);
+    }, [arLiveStream.state.lines, arLiveTaskId]);
+
+    useEffect(() => () => {
+      if (arLiveTaskRef.current) void cancelSidecarTask(arLiveTaskRef.current);
+    }, []);
+
+    /* 整窗缩放（边缘 / 角落手柄，作用于 .modal-host） */
+    const onResize = (dx, dy) => (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const host = rootRef.current && rootRef.current.parentElement; if (!host) return;
+      const r = host.getBoundingClientRect(); const sw = r.width, sh = r.height, sx = e.clientX, sy = e.clientY;
+      const move = (ev) => {
+        host.style.width = clamp(sw + dx * 2 * (ev.clientX - sx), 860, window.innerWidth - 24) + 'px';
+        host.style.height = clamp(sh + dy * 2 * (ev.clientY - sy), 480, window.innerHeight - 24) + 'px';
+      };
+      const up = () => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); document.body.style.cursor = ''; };
+      document.body.style.cursor = getComputedStyle(e.currentTarget).cursor;
+      document.addEventListener('pointermove', move); document.addEventListener('pointerup', up);
+    };
+    const onSplit = (e) => {
+      e.preventDefault();
+      const body = rootRef.current && rootRef.current.querySelector('.lc-body'); if (!body) return;
+      const rect = body.getBoundingClientRect(); const sx = e.clientX, sp = leftPct;
+      const move = (ev) => setLeftPct(clamp(sp + ((ev.clientX - sx) / rect.width) * 100, 38, 78));
+      const up = () => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); document.body.style.cursor = ''; };
+      document.body.style.cursor = 'col-resize';
+      document.addEventListener('pointermove', move); document.addEventListener('pointerup', up);
+    };
 
     /* stills NDJSON：snap 计数 + 达目标自动 finish + 完成（result 只处理一次） */
     useEffect(() => {
@@ -858,11 +1214,22 @@ import {
         }
         s.setCalLensState('done');
         if (CX().lensStore) CX().lensStore.patch({ phase: 'solved' });
+        const solvedRms = Number(solved.rms_reprojection_px);
+        const solvedState = solvedRms < 2 ? 'ok' : 'warn';
         s.pushLog({
-          lv: solved.rms_reprojection_px < 2 ? 'ok' : 'warn', cat: 'lens',
-          msg: '固定机位单帧求解完成 · RMS <b>' + Number(solved.rms_reprojection_px).toFixed(3)
+          lv: solvedState, cat: 'lens',
+          msg: '固定机位单帧求解完成 · RMS <b>' + solvedRms.toFixed(3)
             + '</b> px · 可见屏幕 <b>' + solved.visible_screens.join('、') + '</b>',
         });
+        setLiveRuns((prev) => (prev || []).map((r) => (
+          r.id === run.id
+            ? Object.assign({}, r, {
+                solveState: solvedState,
+                rms: solvedRms,
+                stagePose: solved,
+              })
+            : r
+        )));
         void refreshSessions();
       } catch (e) {
         s.pushLog({ lv: 'err', cat: 'lens', msg: '固定机位求解失败 · ' + (e && e.message ? e.message : e) });
@@ -879,6 +1246,31 @@ import {
       if (CX().openSolveFromSession) CX().openSolveFromSession(s);
       else { s.setCalLensState('done'); s.pushLog({ lv: 'ok', cat: 'lens', msg: '开始求解 · ' + run.label }); }
     };
+    const removeRun = async (id) => {
+      const r = (liveRuns || []).find((x) => x.id === id);
+      if (!r || !r.sessionDir || !outDir) return;
+      try {
+        await deleteLensSession(outDir, r.sessionDir);
+        setLiveRuns((rs) => (rs || []).filter((x) => x.id !== id));
+        s.pushLog({ lv: 'warn', cat: 'lens', msg: '已删除采集记录 · ' + r.label });
+      } catch (e) {
+        s.pushLog({ lv: 'err', cat: 'lens', msg: '删除失败 · ' + (e && e.message ? e.message : e) });
+      }
+    };
+    const clearAllRuns = async () => {
+      if (!(liveRuns || []).length || !outDir) return;
+      const n = liveRuns.length;
+      try {
+        for (const r of liveRuns) {
+          if (r.sessionDir) await deleteLensSession(outDir, r.sessionDir);
+        }
+        setLiveRuns([]);
+        s.pushLog({ lv: 'warn', cat: 'lens', msg: '已一键清空采集记录 · 共 ' + n + ' 个 run' });
+      } catch (e) {
+        s.pushLog({ lv: 'err', cat: 'lens', msg: '清空失败 · ' + (e && e.message ? e.message : e) });
+        void refreshSessions();
+      }
+    };
     const openDetail = (runId, poseId) => s.setCapDetail({ runId, poseId });
     const runs = liveRuns;
     const tgl = (k) => setOpen((o) => Object.assign({}, o, { [k]: !o[k] }));
@@ -887,13 +1279,43 @@ import {
     const trackPort = Number((trackCfg && trackCfg.port) || (profile && profile.trackPort) || 6301);
 
     /* --------- 左：实时信号 --------- */
-    const hasFeed = !!previewUrl || backend === 'synthetic';
+    const displayUrl = (wantArLive && arLiveUrl) ? arLiveUrl : previewUrl;
+    const hasFeed = !!displayUrl || backend === 'synthetic';
+    const arActive = signalReady && arOn && arAvail && !isSl && !!arGrid;
+    const trackLostUi = tracked && (arLost || s.capTrack === 'lost');
+    const arPanel = h('div', { className: 'lc-arpanel' },
+      h('div', { className: 'lc-arpanel-row' },
+        h('span', { className: 'lc-arpanel-lb' }, '启用叠加'),
+        h(Switch, { isSelected: arOn && arAvail, isDisabled: !arAvail, onChange: (v) => { setArOn(!!v); if (!v) { setArGrid(null); setArLost(false); } } })),
+      !arAvail
+        ? h('div', { className: 'lc-arhud-locked' }, h(Icon, { name: 'info', size: 12 }),
+            h('span', null, arLockHint || '当前机位尚未求解 · 请先完成求解'))
+        : h(React.Fragment, null,
+            arErr ? h('div', { className: 'lc-arhud-locked' }, h(Icon, { name: 'alert', size: 12 }), h('span', null, arErr)) : null,
+            h('div', { className: 'lc-arhud-op' + (arOn ? '' : ' is-off') },
+              h('span', { className: 'lc-arhud-op-k' }, '透明度'),
+              h('input', { className: 'lc-ar-range', type: 'range', min: 0, max: 100, value: arOpacity, disabled: !arOn,
+                style: { '--pct': arOpacity + '%' }, onChange: (e) => setArOpacity(+e.target.value) }),
+              h('span', { className: 'lc-arhud-op-v mono' }, arOpacity + '%')),
+            tracked
+              ? h('div', { className: 'lc-arhud-track' },
+                  trackLostUi
+                    ? h('span', { className: 'cap-pill cap-pill--negative' }, h(Icon, { name: 'x', size: 12 }), '追踪丢失')
+                    : h('span', { className: 'cap-pill cap-pill--positive' }, h(Icon, { name: 'pulse', size: 12 }), '追踪正常'))
+              : null));
+    const arButton = (signalReady && !isSl) ? h('div', { className: 'lc-arwrap', ref: arBtnRef },
+      h('button', { className: 'lc-arbtn' + (arOn && arAvail ? ' on' : '') + (arPanelOpen ? ' open' : ''), onClick: () => setArPanelOpen((v) => !v) },
+        h(Icon, { name: 'layers', size: 15 }), 'AR 叠加验证',
+        arOn && arAvail ? h('span', { className: 'lc-arbtn-dot' }) : null,
+        h(Icon, { name: 'chevu', size: 12 })),
+      arPanelOpen ? arPanel : null) : null;
     const signal = h('div', { className: 'lc-signal' },
       hasFeed || signalReady
         ? h(React.Fragment, null,
-            previewUrl
-              ? h('img', { className: 'lc-feed', src: previewUrl, alt: '现场画面', style: { width: '100%', height: '100%', objectFit: 'cover', display: 'block' } })
+            displayUrl
+              ? h('img', { className: 'lc-feed', src: displayUrl, alt: '现场画面', style: { width: '100%', height: '100%', objectFit: 'cover', display: 'block' } })
               : h(CameraSignal, { method, capturing, detect: !isSl && capturing, sl: isSl, slFrame }),
+            arActive ? h(AROverlay, { grid: arGrid, lost: trackLostUi, opacity: arOpacity / 100 }) : null,
             h('div', { className: 'lc-vig' }),
             h('div', { className: 'lc-hud lc-hud--tl' },
               h('span', { className: 'lc-sigchip' }, capturing ? h('span', { className: 'lc-rec' }) : null,
@@ -989,25 +1411,49 @@ import {
       /* e 采集记录（仅真实 list_lens_sessions；无 session 显示空态） */
       grp('records', 'list', '采集记录', open.records, () => tgl('records'),
         sessionsErr ? h('div', { style: { fontSize: 11.5, color: 'var(--notice-visual)', padding: '4px 0 8px' } }, '会话列表：' + sessionsErr) : null,
-        !liveRuns.length ? h('div', { style: { fontSize: 11.5, color: 'var(--chrome-faint)', padding: '4px 0 8px', lineHeight: 1.5 } },
-          outDir ? '输出目录暂无采集会话。完成一次采集后将出现在此。' : '选择输出目录后扫描会话。') : null,
-        liveRuns.length ? h('div', { className: 'lc-runs' }, runs.map((run) => h('div', { key: run.id, className: 'lc-run' },
-          h('div', { className: 'lc-run-h' },
-            h('span', { className: 'lc-run-n' }, run.label),
-            h('span', { className: 'lc-run-time' }, run.time),
-            h('div', { className: 'lc-run-badges' }, methodBadge(run.method), modeBadge(run.mode), solveBadge(run.solveState))),
-          run.error ? h('div', { style: { padding: '8px 11px', fontSize: 11.5, color: 'var(--notice-visual)', borderBottom: '1px solid var(--chrome-line)' } }, run.error) : null,
-          run.solveState === 'none' ? h('div', { style: { padding: '9px 11px', borderBottom: '1px solid var(--chrome-line)', display: 'flex', alignItems: 'center', gap: 10 } },
-            h('span', { style: { fontSize: 11.5, color: 'var(--chrome-dim)' } }, run.poseCount + ' 点位 · 未求解'),
-            h('span', { style: { flex: 1 } }),
-            h(Button, { variant: 'accent', size: 'S', icon: h(Icon, { name: 'target', size: 13 }),
-              isDisabled: solvingId === run.id || !!run.error,
-              onPress: () => solveRun(run) }, solvingId === run.id ? '求解中…' : '立即求解')) : null,
-          (run.poses || []).map((p) => h('button', { key: p.id, className: 'lc-pose' + (p.diff === 'fail' ? ' bad' : ''), onClick: () => openDetail(run.id, p.id) },
-            h('span', { className: 'lc-pose-idx' }, '#' + p.idx),
-            h('div', { className: 'lc-pose-m' }, h('div', { className: 'lc-pose-pose' }, p.pose), h('div', { className: 'lc-pose-sub' }, p.time + ' · ' + (p.tracked ? 'tracked' : 'fixed'))),
-            h('div', { className: 'lc-pose-lights' }, qualityLight(p.detect), qualityLight(p.reproj), qualityLight(p.diff)),
-            h('span', { className: 'lc-pose-rms', style: p.rms == null ? { color: 'var(--chrome-faint)' } : null }, p.rms == null ? '—' : Number(p.rms).toFixed(2))))))) : null));
+        liveRuns.length ? h('button', { className: 'lc-runs-clear', onClick: () => void clearAllRuns() }, h(Icon, { name: 'trash', size: 12 }), '一键清空') : null,
+        h('div', { className: 'lc-runs' }, liveRuns.length
+          ? runs.map((run) => {
+              const solving = solvingId === run.id;
+              const st = solving ? 'solving' : run.solveState;
+              const solved = st === 'ok' || st === 'warn';
+              const solve = buildSolveFromRun(run);
+              return h('div', { key: run.id, className: 'lc-run' },
+                h('div', { className: 'lc-run-h' },
+                  h('span', { className: 'lc-run-n' }, run.label),
+                  h('span', { className: 'lc-run-time' }, run.time),
+                  h('div', { className: 'lc-run-badges' }, methodBadge(run.method), modeBadge(run.mode),
+                    solving ? h('span', { className: 'cap-pill cap-pill--informative' }, h('span', { className: 'ag-spin' }, h(Icon, { name: 'sync', size: 12 })), '求解中…')
+                      : solved && run.rms != null ? rmsSolveBadge(run.rms) : solveBadge(st === 'none' ? 'none' : st),
+                    h('button', { className: 'lc-run-x', title: '删除该记录', onClick: (e) => { e.stopPropagation(); void removeRun(run.id); } }, h(Icon, { name: 'x', size: 12 })))),
+                run.error ? h('div', { style: { padding: '8px 11px', fontSize: 11.5, color: 'var(--notice-visual)', borderBottom: '1px solid var(--chrome-line)' } }, run.error) : null,
+                st === 'none'
+                  ? h('div', { className: 'lc-run-solvebar' },
+                      h('span', { className: 'lc-run-solvebar-t' }, run.poseCount + ' 点位 · 未求解'),
+                      h('span', { style: { flex: 1 } }),
+                      h(Button, { variant: 'accent', size: 'S', icon: h(Icon, { name: 'target', size: 13 }),
+                        isDisabled: !!run.error, onPress: () => solveRun(run) }, '立即求解'))
+                  : st === 'solving'
+                    ? h('div', { className: 'lc-run-solvebar is-solving' },
+                        h('span', { className: 'lc-run-solvebar-t' }, '正在求解外参与重投影…'),
+                        h('div', { className: 'ag-indet', style: { flex: 1, maxWidth: 130 } }, h('div', { className: 'ag-indet-bar' })))
+                    : h('div', { className: 'lc-run-solvebar' },
+                        h('span', { className: 'lc-run-solvebar-m' }, '内点 ',
+                          h('b', null, solve ? solve.inliers : '—'),
+                          solve ? ' / ' + solve.markers_total : ''),
+                        h('span', { style: { flex: 1 } }),
+                        solve
+                          ? h('button', { className: 'lc-run-report', onClick: () => openSolveReport(s, { run }) }, h(Icon, { name: 'doc', size: 13 }), '查看报告')
+                          : (run.mode !== 'fixed' && !run.modeFixed && CX().openReport
+                            ? h('button', { className: 'lc-run-report', onClick: () => CX().openReport(s) }, h(Icon, { name: 'doc', size: 13 }), '查看报告')
+                            : null)),
+                (run.poses || []).map((p) => h('button', { key: p.id, className: 'lc-pose' + (p.diff === 'fail' ? ' bad' : ''), onClick: () => openDetail(run.id, p.id) },
+                  h('span', { className: 'lc-pose-idx' }, '#' + p.idx),
+                  h('div', { className: 'lc-pose-m' }, h('div', { className: 'lc-pose-pose' }, p.pose), h('div', { className: 'lc-pose-sub' }, p.time + ' · ' + (p.tracked ? 'tracked' : 'fixed'))),
+                  h('div', { className: 'lc-pose-lights' }, qualityLight(p.detect), qualityLight(p.reproj), qualityLight(p.diff)),
+                  h('span', { className: 'lc-pose-rms', style: p.rms == null ? { color: 'var(--chrome-faint)' } : null }, p.rms == null ? '—' : Number(p.rms).toFixed(2)))));
+            })
+          : h('div', { className: 'lc-runs-empty' }, outDir ? '暂无采集记录' : '选择输出目录后扫描会话。'))));
 
     /* --------- 底部主动作条 --------- */
     /* §3.5：路径已自动化，禁用原因仅保留系统级阻断（原 screen.json / 输出目录 / 图案目录条目删除） */
@@ -1030,7 +1476,8 @@ import {
             h(Button, { variant: 'negative', size: 'M', icon: h(Icon, { name: 'x', size: 15 }), onPress: stop }, '停止采集'),
             h('div', { className: 'lc-prog' },
               isSl ? h('span', { className: 'lc-prog-n' }, '帧 ', slFrame + 1, h('span', { className: 'm' }, ' / ' + CAL_SL_SEQ.frames))
-                   : h('span', { className: 'lc-prog-n' }, '已采点位 ', capN, h('span', { className: 'm' }, ' / ' + targetM))))
+                   : h('span', { className: 'lc-prog-n' }, '已采点位 ', capN, h('span', { className: 'm' }, ' / ' + targetM))),
+            arButton)
         : h(React.Fragment, null,
             h('div', { className: 'lc-start' },
               h(Button, { variant: 'accent', size: 'L',
@@ -1045,16 +1492,21 @@ import {
                     h('span', null, '折面屏（多 section）需通过 CLI 手动生成 / 上屏：', h('code', null, 'vpcal pattern generate --screen <screen.json> --output-dir <dir>'), '，暂无 UI 操作入口。')) : null)
               : h('div', { className: 'lc-reasons' }, h('span', { className: 'lc-reason ok' }, h(Icon, { name: 'check', size: 12 }),
                   tracked ? '前置就绪 · 追踪机位' : '前置就绪 · 固定机位（单次采集 · 使用已知镜头参数求 Stage 位姿）')),
-            h('span', { className: 'sp' })));
+            h('span', { className: 'sp' }),
+            arButton));
 
-    return h('div', { className: 'drawer drawer--lcwin' },
+    const rzDirs = [['n', 0, -1], ['s', 0, 1], ['e', 1, 0], ['w', -1, 0], ['ne', 1, -1], ['nw', -1, -1], ['se', 1, 1], ['sw', -1, 1]];
+    return h('div', { className: 'drawer drawer--lcwin', ref: rootRef },
       h('div', { className: 'drawer-h' },
         h('span', { className: 'di info' }, h(Icon, { name: 'camera', size: 17 })),
         h('div', { style: { minWidth: 0, flex: 1 } }, h('h2', null, '镜头校正 · 实时采集'),
           h('div', { className: 'sub' }, methodBadge(method))),
         h('button', { className: 'iconbtn x', onClick: () => { if (capturing) stop(); close(); } }, h(Icon, { name: 'x', size: 16 }))),
-      h('div', { className: 'lc-body' }, signal, side),
-      actionbar);
+      h('div', { className: 'lc-body', style: { gridTemplateColumns: leftPct + '% ' + (100 - leftPct) + '%' } },
+        signal, side,
+        h('div', { className: 'capw-split', style: { left: leftPct + '%' }, onPointerDown: onSplit }, h('span', { className: 'capw-split-grip' }))),
+      actionbar,
+      rzDirs.map(([n, dx, dy]) => h('div', { key: n, className: 'capw-rz capw-rz--' + n, onPointerDown: onResize(dx, dy) })));
   }
   function openLensWindow(s) {
     s.setModal({ xwide: true, render: ({ s: st, close }) => h(CaptureWindow, { s: st, close }) });
@@ -1330,6 +1782,87 @@ import {
   }
 
   /* ============================================================
+     固定机位 · 求解结果报告（抽屉）
+     ============================================================ */
+  function srMetric(k, v, u, tone) {
+    return h('div', { className: 'sr-metric' + (tone ? ' sr-metric--' + tone : ''), key: k },
+      h('div', { className: 'k' }, k),
+      h('div', { className: 'v' }, v, u ? h('span', { className: 'u' }, u) : null));
+  }
+  function srPose(k, v, d) {
+    return h('div', { className: 'lc-pcell', key: k }, h('span', { className: 'pk' }, k), h('span', { className: 'pv' }, Number(v).toFixed(d)));
+  }
+  function SolveReport({ s, run, close }) {
+    const R = run.solve || buildSolveFromRun(run);
+    if (!R) {
+      return h('div', { className: 'drawer drawer--solverep' },
+        h('div', { className: 'drawer-h' },
+          h('span', { className: 'di info' }, h(Icon, { name: 'target', size: 17 })),
+          h('div', { style: { minWidth: 0, flex: 1 } }, h('h2', null, '求解结果报告'),
+            h('div', { className: 'sub' }, '无可用的 stage_pose 数据')),
+          h('button', { className: 'iconbtn x', onClick: close }, h(Icon, { name: 'x', size: 16 }))),
+        h('div', { className: 'drawer-b' }, h('div', { style: { padding: 16, color: 'var(--chrome-faint)' } }, '该记录尚未写出 Stage 位姿。')));
+    }
+    const warn = R.conclusion === 'warn' || R.rms >= 2;
+    const total = Math.max(1, R.markers_total || R.inliers || 1);
+    const inlierPct = Math.round(R.inliers / total * 100);
+    const goVerify = () => {
+      if (s.setCapArReq) s.setCapArReq({ cam: R.camId || run.cameraId || null });
+      close();
+      openLensWindow(s);
+      s.pushLog({ lv: 'info', cat: 'lens', msg: '在实时画面中叠加验证 · ' + run.label + '（' + (R.cam || '') + '）' });
+    };
+    return h('div', { className: 'drawer drawer--solverep' },
+      h('div', { className: 'drawer-h' },
+        h('span', { className: 'di ' + (warn ? 'info' : 'ok') }, h(Icon, { name: 'target', size: 17 })),
+        h('div', { style: { minWidth: 0, flex: 1 } },
+          h('h2', null, '求解结果报告'),
+          h('div', { className: 'sub', style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+            h('span', { className: 'cli-pill' }, run.label), modeBadge('fixed'), h('span', null, R.cam))),
+        h('button', { className: 'iconbtn x', onClick: close }, h(Icon, { name: 'x', size: 16 }))),
+      h('div', { className: 'drawer-b' },
+        h('div', { className: 'sr-concl sr-concl--' + (warn ? 'warn' : 'ok') },
+          h('span', { className: 'sr-concl-ic' }, h(Icon, { name: warn ? 'alert' : 'check', size: 20 })),
+          h('div', { className: 'sr-concl-m' },
+            h('div', { className: 'sr-concl-t' }, warn ? '质量警告' : '求解成功'),
+            h('div', { className: 'sr-concl-d' }, warn ? (R.warn_reason || '重投影误差偏高') : '重投影误差在阈值内，可用于实时叠加验证')),
+          h('span', { className: 'cap-pill cap-pill--' + (warn ? 'notice' : 'positive') + ' is-lg' }, h(Icon, { name: warn ? 'alert' : 'check', size: 13 }), 'RMS ' + Number(R.rms).toFixed(2) + ' px')),
+        h('div', { className: 'sr-sec-h' }, '核心指标'),
+        h('div', { className: 'sr-metrics' },
+          srMetric('重投影 RMS', Number(R.rms).toFixed(2), 'px', warn ? 'notice' : 'positive'),
+          srMetric('内点 / 总 marker', R.inliers + ' / ' + R.markers_total),
+          srMetric('内点率', inlierPct, '%')),
+        h('div', { className: 'sr-sec-h' }, '各屏幕命中 marker'),
+        h('div', { className: 'sr-screens' }, (R.screens && R.screens.length)
+          ? R.screens.map((sc) => {
+              const pct = Math.round((sc.hits || 0) / total * 100);
+              return h('div', { key: sc.name, className: 'sr-screen' },
+                h('div', { className: 'sr-screen-top' }, h('span', { className: 'sr-screen-n' }, sc.name), h('span', { className: 'sr-screen-v mono' }, sc.hits + ' marker · ' + pct + '%')),
+                h('div', { className: 'sr-screen-bar' }, h('i', { style: { width: pct + '%' } })));
+            })
+          : h('div', { style: { fontSize: 12, color: 'var(--chrome-faint)' } }, '无分屏命中数据')),
+        h('div', { className: 'sr-sec-h' }, '相机 Stage 位姿', h('span', { className: 'sr-sec-tag' }, sourceTag('solve'))),
+        h('div', { className: 'lc-cam-sub', style: { marginTop: 0 } }, '位置 (mm)'),
+        h('div', { className: 'lc-param-grid3' }, srPose('X', R.pose.x, 1), srPose('Y', R.pose.y, 1), srPose('Z', R.pose.z, 1)),
+        h('div', { className: 'lc-cam-sub' }, '旋转 (°) · Pan / Tilt / Roll'),
+        h('div', { className: 'lc-param-grid3' }, srPose('Pan', R.pose.pan, 2), srPose('Tilt', R.pose.tilt, 2), srPose('Roll', R.pose.roll, 2))),
+      h('div', { className: 'drawer-f between' },
+        h('span', { className: 'sr-foot-meta' }, '求解于 ' + (R.solved_at || '—')),
+        h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'layers', size: 15 }), onPress: goVerify }, '在实时画面中叠加验证')));
+  }
+  function openSolveReport(s, opts) {
+    opts = opts || {};
+    const run = opts.run;
+    if (!run) return;
+    const solve = run.solve || buildSolveFromRun(run);
+    if (!solve) {
+      if (CX().openReport) CX().openReport(s);
+      return;
+    }
+    s.setModal({ render: ({ s: st, close }) => h(SolveReport, { s: st, run: Object.assign({}, run, { solve }), close }) });
+  }
+
+  /* ============================================================
      校正页检查器（基座）· 「镜头校正」入口 → 进入二级流程
      ============================================================ */
   const lensEntry = (icon, label, onClick, disabled) => h('button', { className: 'lens-entry' + (disabled ? ' is-disabled' : ''), onClick: disabled ? undefined : onClick, disabled },
@@ -1376,7 +1909,7 @@ import {
   }
 
   window.VOLO_CALFLOW = {
-    openLensWindow, CaptureWindow, lensInspector,
-    sourceTag, modeBadge, methodBadge, qualityLight, solveBadge,
+    openLensWindow, CaptureWindow, lensInspector, openSolveReport, SolveReport,
+    sourceTag, modeBadge, methodBadge, qualityLight, solveBadge, rmsSolveBadge,
   };
 })();

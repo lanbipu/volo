@@ -183,12 +183,14 @@ def overlay(ctx, config_path, result_path, out_dir, limit, **flags) -> None:
               show_default=True, help="Run duration in seconds; 0 runs until stopped/source end.")
 @click.option("--max-frames", type=click.IntRange(min=1), default=None,
               help="Stop after N camera frames.")
+@click.option("--grid", "emit_grid", is_flag=True,
+              help="Emit throttled overlay_grid NDJSON events (~15 Hz) for AR canvas; MJPEG stays clean.")
 @common_options
 @click.pass_context
 def live(ctx, config_path, result_path, backend, device, width, height, fps,
          transfer_function, allow_hx, track_protocol, track_port, track_host,
          track_camera_id, timestamp_tolerance_s, preview_port, duration_s, max_frames,
-         **flags) -> None:
+         emit_grid, **flags) -> None:
     """Stream detected vs calibrated marker reprojections over a live camera feed."""
 
     def body(emitter: StreamEmitter) -> OperationOutput:
@@ -243,6 +245,7 @@ def live(ctx, config_path, result_path, backend, device, width, height, fps,
             preview_port=preview_port,
             duration_s=duration_s,
             max_frames=max_frames,
+            emit_grid=emit_grid,
             event_callback=lambda kind, payload: emitter.emit(kind, payload),
         )
         return OperationOutput(

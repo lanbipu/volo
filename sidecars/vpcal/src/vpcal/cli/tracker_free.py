@@ -358,6 +358,100 @@ def spatial(ctx, images, screen_a, screen_b, lens_path, offset_a, offset_b, scre
     run_operation("tracker_free.spatial", body, **flags)
 
 
+@tracker_free.command(name="grid")
+@click.option(
+    "--screen-target", "screen_targets", multiple=True, required=True,
+    type=(click.Path(exists=True), click.IntRange(0, 15), click.IntRange(min=0)),
+    metavar="PATH SCREEN_ID CAB_COL_OFFSET",
+    help="Repeatable Stage screen target (screen_id/offset unused for geometry; kept for pose CLI parity).",
+)
+@click.option("--pose", "pose_path", required=True, type=click.Path(exists=True),
+              help="stage_pose.json from tracker-free pose.")
+@click.option("--lens", "lens_path", type=click.Path(exists=True), default=None,
+              help="Pixel-domain LensProfile or tracker-free lens JSON.")
+@click.option("--fx", type=click.FloatRange(min=0.0, min_open=True), default=None)
+@click.option("--fy", type=click.FloatRange(min=0.0, min_open=True), default=None)
+@click.option("--cx", type=float, default=None)
+@click.option("--cy", type=float, default=None)
+@click.option("--k1", type=float, default=0.0, show_default=True)
+@click.option("--k2", type=float, default=0.0, show_default=True)
+@click.option("--k3", type=float, default=0.0, show_default=True)
+@click.option("--no-markers", is_flag=True, help="Omit cabinet-corner / cell marker points.")
+@common_options
+@click.pass_context
+def grid(ctx, screen_targets, pose_path, lens_path, fx, fy, cx, cy, k1, k2, k3,
+         no_markers, **flags) -> None:
+    """Project cabinet-grid wireframes through a solved Stage pose (normalised 2D)."""
+
+    def body() -> OperationOutput:
+        from vpcal.core.grid_overlay import opencv_T_from_stage_pose, project_grid_overlay
+        from vpcal.core.projection import CameraIntrinsics
+        from vpcal.core.tracker_free import LensCalResult
+        from vpcal.io.screen_io import load_screen
+
+        pose = json.loads(Path(pose_path).read_text(encoding="utf-8"))
+        pixel_values = (fx, fy, cx, cy)
+        has_any_pixel = any(value is not None for value in pixel_values)
+        has_all_pixel = all(value is not None for value in pixel_values)
+        if int(bool(lens_path)) + int(has_any_pixel) != 1:
+            raise click.UsageError(
+                "provide exactly one intrinsics source: --lens or --fx/--fy/--cx/--cy"
+            )
+        if lens_path:
+            lens = _load_lens(lens_path)
+        else:
+            if not has_all_pixel:
+                raise click.UsageError("--fx, --fy, --cx and --cy must be provided together")
+            image_size = pose.get("image_size") or [int(2 * cx), int(2 * cy)]
+            if isinstance(image_size, list) and len(image_size) >= 2:
+                width, height = int(image_size[0]), int(image_size[1])
+            else:
+                width, height = int(round(2 * float(cx))), int(round(2 * float(cy)))
+            lens = LensCalResult(
+                fx=float(fx), fy=float(fy), cx=float(cx), cy=float(cy),
+                dist_coeffs=[k1, k2, 0.0, 0.0, k3],
+                rms=0.0, num_images=0, num_points=0,
+                image_size=(width, height),
+            )
+
+        # Recover image size from lens; if unknown, derive from principal point.
+        lw, lh = (int(lens.image_size[0]), int(lens.image_size[1]))
+        if lw <= 0 or lh <= 0:
+            lw, lh = int(round(2 * lens.cx)), int(round(2 * lens.cy))
+        dist = list(lens.dist_coeffs) + [0.0] * 5
+        intr = CameraIntrinsics(
+            fx=lens.fx, fy=lens.fy, cx=lens.cx, cy=lens.cy,
+            k1=dist[0], k2=dist[1], p1=dist[2], p2=dist[3], k3=dist[4],
+            width=float(lw), height=float(lh),
+        )
+        loaded = [
+            (Path(path).stem.removesuffix(".screen"), load_screen(path))
+            for path, _screen_id, _offset in screen_targets
+        ]
+        if flags.get("dry_run"):
+            return OperationOutput(
+                data={"dry_run_plan": {
+                    "pose": pose_path,
+                    "targets": [label for label, _ in loaded],
+                    "image_size": [lw, lh],
+                }},
+                text="Dry run OK.",
+            )
+        T_C_from_S = opencv_T_from_stage_pose(pose)
+        out = project_grid_overlay(
+            loaded, T_C_from_S, intr, include_markers=not no_markers,
+        )
+        n_seg = sum(len(s["segments"]) for s in out["screens"])
+        n_mk = sum(len(s["markers"]) for s in out["screens"])
+        return OperationOutput(
+            data=out,
+            text=(f"Grid overlay: {len(out['screens'])} screen(s), "
+                  f"{n_seg} segment(s), {n_mk} marker(s)"),
+        )
+
+    run_operation("tracker_free.grid", body, **flags)
+
+
 @tracker_free.command(name="verify")
 @click.option("--image", required=True, type=click.Path(exists=True), help="Verification image.")
 @click.option("--screen-a", required=True, type=click.Path(exists=True), help="Screen A definition JSON.")

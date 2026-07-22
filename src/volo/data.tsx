@@ -26,6 +26,7 @@ const ICON_PATHS = {
   sync:     '<path d="M15.5 6.5A6.5 6.5 0 0 0 4.2 8M4 4v3.5h3.5M4.5 13.5A6.5 6.5 0 0 0 15.8 12M16 16v-3.5h-3.5"/>',
   more:     '<circle cx="5" cy="10" r="1.4" fill="currentColor" stroke="none"/><circle cx="10" cy="10" r="1.4" fill="currentColor" stroke="none"/><circle cx="15" cy="10" r="1.4" fill="currentColor" stroke="none"/>',
   chevd:    '<path d="M5.5 8 10 12.5 14.5 8"/>',
+  chevu:    '<path d="M5.5 12 10 7.5 14.5 12"/>',
   chevr:    '<path d="M8 5.5 12.5 10 8 14.5"/>',
   search:   '<circle cx="9" cy="9" r="5.2"/><path d="m13 13 4 4"/>',
   settings: '<circle cx="10" cy="10" r="2.6"/><path d="M10 2.5v2.2M10 15.3v2.2M3.4 6.2l1.9 1.1M14.7 12.7l1.9 1.1M16.6 6.2l-1.9 1.1M5.3 12.7l-1.9 1.1"/>',
