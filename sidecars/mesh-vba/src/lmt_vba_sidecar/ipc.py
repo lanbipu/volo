@@ -414,6 +414,20 @@ class ScreenResultSummary(BaseModel):
     bridge_views: int = Field(default=0, ge=0)
 
 
+class WithheldSummary(BaseModel):
+    """Compact digest of the joint withheld-view validation for the result event
+    (the full breakdown lives in `{screen_transforms_path}.validation.json`). All
+    fields optional so single-screen / SL paths and older sidecars stay compatible."""
+
+    passed: bool = False
+    reason: str | None = None
+    combined_rms_px: float | None = None
+    limit_px: float | None = None
+    screen_consistency_passed: bool | None = None
+    max_delta_t_mm: float | None = None
+    max_delta_rot_deg: float | None = None
+
+
 class ResultData(BaseModel):
     measured_points: list[MeasuredPoint]
     ba_stats: BaStats
@@ -432,6 +446,9 @@ class ResultData(BaseModel):
     # Capture photo counts (used = total − ignored). Older sidecars omit → 0.
     photos_used: int = Field(default=0, ge=0)
     photos_total: int = Field(default=0, ge=0)
+    # Joint multi-screen: withheld-view + screen-consistency validation digest
+    # (None for single-screen / SL paths and older sidecars).
+    withheld: WithheldSummary | None = None
 
 
 class ScreenTransformEntry(BaseModel):

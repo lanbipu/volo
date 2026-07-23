@@ -621,6 +621,26 @@ pub struct ScreenTransformEntry {
 /// `measurements/measured.yaml`（旧行为会覆盖 M1 全站仪数据，且写出的点名
 /// 与 core 重建器永不兼容）。持久化产物只有 `pose_report_path`，逐箱体
 /// 协方差在 pose report 的 `covariance_mm2` 字段。
+/// Joint withheld-view + screen-to-screen consistency validation digest. Optional
+/// throughout (single-screen / SL paths and older sidecars omit it).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WithheldSummaryDto {
+    #[serde(default)]
+    pub passed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub combined_rms_px: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_px: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_consistency_passed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_delta_t_mm: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_delta_rot_deg: Option<f64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct VisualReconstructResult {
     pub screen_id: String,
@@ -657,6 +677,9 @@ pub struct VisualReconstructResult {
     pub photos_used: u32,
     #[serde(default)]
     pub photos_total: u32,
+    /// Joint withheld-view + screen-consistency validation digest (None for single-screen).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub withheld: Option<WithheldSummaryDto>,
 }
 
 /// Durable visual-BA solve digest for the「重建记录」UI (timestamped, not overwritten).
@@ -683,6 +706,8 @@ pub struct VisualSolveDigest {
     pub warnings: Vec<WarningDto>,
     #[serde(default = "default_intrinsics_source")]
     pub intrinsics_source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub withheld: Option<WithheldSummaryDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1030,6 +1055,7 @@ shape_mode: rectangle
             ignored_photos: vec!["DSC04412.ARW".into()],
             photos_used: 42,
             photos_total: 45,
+            withheld: None,
         };
         let json = serde_json::to_string(&vr).unwrap();
         assert!(json.contains("\"screen_id\":\"MAIN\""));

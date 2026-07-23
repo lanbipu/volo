@@ -1180,6 +1180,16 @@ export interface ScreenTransformsFile {
   transforms: ScreenTransformEntry[];
 }
 
+export interface WithheldSummaryDto {
+  passed: boolean;
+  reason?: string | null;
+  combined_rms_px?: number | null;
+  limit_px?: number | null;
+  screen_consistency_passed?: boolean | null;
+  max_delta_t_mm?: number | null;
+  max_delta_rot_deg?: number | null;
+}
+
 export interface VisualReconstructResult {
   screen_id: string;
   pose_report_path: string;
@@ -1198,6 +1208,7 @@ export interface VisualReconstructResult {
   ignored_photos?: string[];
   photos_used?: number;
   photos_total?: number;
+  withheld?: WithheldSummaryDto | null;
 }
 
 export interface VisualSolveCabinetDigest {
@@ -1235,6 +1246,7 @@ export interface VisualSolveDigest {
   screens: VisualSolveScreenDigest[];
   warnings?: WarningDto[];
   intrinsics_source?: string;
+  withheld?: WithheldSummaryDto | null;
 }
 
 export interface CalibrateResult {

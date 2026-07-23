@@ -43,10 +43,14 @@ import numpy as np
 from lmt_vba_sidecar.capture_manifest import load_capture_manifest
 from lmt_vba_sidecar.detect import detect_charuco_corners
 from lmt_vba_sidecar.eval_runner import reconstruct_cabinet_geometry
+from lmt_vba_sidecar.intrinsics_io import load_intrinsics_file
 from lmt_vba_sidecar.intrinsics_solve import (
+    POSE_ROT_DIVERSITY_STRICT_DEG,
+    STANDOFF_RATIO_MIN,
     IntrinsicsRefused,
+    _grouped_standoff_ratio,
+    _grouped_view_axis_deg,
     crosscheck_intrinsics,
-    intrinsics_K_problem,
     solve_sl_intrinsics,
 )
 from lmt_vba_sidecar.io_utils import write_event
@@ -71,6 +75,7 @@ from lmt_vba_sidecar.ipc import (
     Uncertainty,
     VpqspPatternMeta,
     WarningEvent,
+    WithheldSummary,
 )
 from lmt_vba_sidecar.model_constrained_ba import (
     BAResult,
@@ -263,8 +268,64 @@ def _obs_residual_norms(K, result, observations, root_idx):
 
 WITHHELD_RMS_MAX_PX = 2.0  # withheld-view reprojection gate (matches BA_RMS_FATAL_PX)
 
+# Screen-to-screen relative-pose consistency (D3): the full-solve vs TRAIN-solve
+# relative transform between each screen and the frame screen must agree. This
+# surfaces the focal↔depth-coupling systematic (a good BA RMS can still hide a
+# mm-level inter-screen error). Marker-only (user decision 1): never fatal.
+SCREEN_CONSISTENCY_MAX_MM = 1.0
+SCREEN_CONSISTENCY_MAX_DEG = 0.15  # ~1mm at a 600mm lever + 50% margin vs TRAIN jitter
 
-def _emit_withheld_validation(
+
+def _rel_screen_transform(poses, ref_root, screen_root):
+    """Relative pose of one screen's root cabinet expressed in the frame screen's
+    root frame: (R_rel, t_rel) with X_ref = R_rel · X_screen + t_rel."""
+    R0, t0 = poses[ref_root]
+    Rs, ts = poses[screen_root]
+    R0 = np.asarray(R0, float)
+    t0 = np.asarray(t0, float).ravel()
+    Rs = np.asarray(Rs, float)
+    ts = np.asarray(ts, float).ravel()
+    return R0.T @ Rs, R0.T @ (ts - t0)
+
+
+def _screen_to_screen_consistency(full_poses, train_poses, screen_root_indices, screen_ids):
+    """Compare each screen's relative pose (vs frame screen 0) between the full
+    solve and the TRAIN re-solve. Returns a dict for the validation product; single
+    screen -> passed with reason 'single_screen'."""
+    ref = 0
+    base = {"limit_mm": SCREEN_CONSISTENCY_MAX_MM, "limit_deg": SCREEN_CONSISTENCY_MAX_DEG}
+    if ref not in screen_root_indices:
+        return {**base, "passed": True, "reason": "single_screen", "pairs": []}
+    ref_root = screen_root_indices[ref]
+    pairs = []
+    all_ok = True
+    for si in sorted(screen_root_indices):
+        if si == ref:
+            continue
+        sroot = screen_root_indices[si]
+        Rf, tf = _rel_screen_transform(full_poses, ref_root, sroot)
+        Rt, tt = _rel_screen_transform(train_poses, ref_root, sroot)
+        d_t = Rf.T @ (tt - tf)                     # dT = Tf^-1 ∘ Tt translation
+        d_R = Rf.T @ Rt
+        dt_norm = float(np.linalg.norm(d_t))
+        cos = (float(np.trace(d_R)) - 1.0) / 2.0
+        drot = float(np.degrees(np.arccos(np.clip(cos, -1.0, 1.0))))
+        ok = dt_norm <= SCREEN_CONSISTENCY_MAX_MM and drot <= SCREEN_CONSISTENCY_MAX_DEG
+        all_ok = all_ok and ok
+        pairs.append({
+            "screen_id": screen_ids[si],
+            "ref_screen_id": screen_ids[ref],
+            "delta_t_mm": d_t.tolist(),
+            "delta_t_norm_mm": dt_norm,
+            "delta_rot_deg": drot,
+            "passed": bool(ok),
+        })
+    if not pairs:
+        return {**base, "passed": True, "reason": "single_screen", "pairs": []}
+    return {**base, "passed": bool(all_ok), "pairs": pairs}
+
+
+def _run_withheld_validation(
     *,
     K: np.ndarray,
     result: "BAResult",
@@ -273,8 +334,9 @@ def _emit_withheld_validation(
     root_idx: int,
     cab_idx_to_screen: dict[int, int],
     screen_ids: list[str],
+    screen_root_indices: dict[int, int],
     screen_transforms_path: str,
-) -> None:
+) -> dict:
     """Camera-view holdout validation for the joint reconstruction (spec Stage B).
 
     Hold out >=20% of cameras — including >=1 bridge (multi-screen) view so the
@@ -283,21 +345,27 @@ def _emit_withheld_validation(
     train geometry, and reproject the withheld observations. If the train-solved
     cross-screen geometry does not generalize, the withheld bridge views blow up.
 
+    Also compares each screen's relative pose (vs the frame screen) between the
+    full solve and the TRAIN re-solve (`screen_to_screen_consistency`); the
+    top-level ``passed`` ANDs the withheld-RMS gate with that consistency check.
+
     Writes ``{screen_transforms_path}.validation.json`` carrying
     ``withheld_validation.passed`` — the formal export gate reads that pointer
-    (src-tauri/src/commands/mesh_export.rs). Fail-closed: too few views,
-    non-convergence, or any error yields ``passed: false`` with a reason and
-    never blocks the already-emitted solve.
+    (src-tauri/src/commands/mesh_export.rs). Returns the ``withheld_validation``
+    dict for the ResultData summary. Fail-closed: too few views, non-convergence,
+    or any error yields ``passed: false`` with a reason and never blocks the
+    already-emitted solve.
     """
     out_path = f"{screen_transforms_path}.validation.json"
 
-    def _write(wv: dict) -> None:
+    def _write(wv: dict) -> dict:
         try:
             _atomic_write_json(out_path, json.dumps(
-                {"schema_version": "withheld_validation.v1", "withheld_validation": wv},
+                {"schema_version": "withheld_validation.v2", "withheld_validation": wv},
                 indent=2, allow_nan=False))
         except Exception:  # a validation-write failure must never block the solve
             pass
+        return wv
 
     try:
         # Derive screen coverage, the per-(camera,cabinet) corner map, and the
@@ -317,9 +385,8 @@ def _emit_withheld_validation(
         singles = [c for c in cams if len(cam_screens[c]) < 2]
         # Need >=3 bridge views to hold out >=1 while keeping >=2 in train.
         if len(bridges) < 3:
-            _write({"passed": False, "reason": "insufficient_bridge_views_for_holdout",
-                    "bridge_views": len(bridges)})
-            return
+            return _write({"passed": False, "reason": "insufficient_bridge_views_for_holdout",
+                           "bridge_views": len(bridges)})
         n_hold_bridge = min(max(1, len(bridges) // 5), len(bridges) - 2)
         withheld = set(bridges[-n_hold_bridge:])
         n_hold_single = len(singles) // 5
@@ -332,8 +399,7 @@ def _emit_withheld_validation(
         # leaves it at its full-solve pose, so its withheld reprojection is
         # trivially ~0 and would spuriously pass. (Per-cabinet, not per-screen.)
         if any(len(cab_cam[cab] & train_set) < 2 for cab in cab_cam):
-            _write({"passed": False, "reason": "insufficient_train_coverage_after_holdout"})
-            return
+            return _write({"passed": False, "reason": "insufficient_train_coverage_after_holdout"})
 
         # Re-solve cabinet geometry on TRAIN cameras only (reindexed, warm-started).
         remap = {c: i for i, c in enumerate(train)}
@@ -358,11 +424,14 @@ def _emit_withheld_validation(
             and train_max_nfev >= BA_NFEV_MIN_FOR_BUDGET_ACCEPT
             and train_res.rms_reprojection_px <= BA_RMS_BUDGET_ACCEPT_PX)
         if not train_accepted:
-            _write({"passed": False, "reason": "train_resolve_did_not_converge",
-                    "train_rms_px": train_res.rms_reprojection_px,
-                    "train_iterations": train_res.iterations})
-            return
+            return _write({"passed": False, "reason": "train_resolve_did_not_converge",
+                           "train_rms_px": train_res.rms_reprojection_px,
+                           "train_iterations": train_res.iterations})
         train_cabinets = train_res.cabinet_poses
+
+        # Screen-to-screen relative-pose consistency: full solve vs TRAIN re-solve.
+        s2s = _screen_to_screen_consistency(
+            result.cabinet_poses, train_cabinets, screen_root_indices, screen_ids)
 
         # PnP each withheld camera against the train geometry; reproject its obs.
         obs_by_cam: dict[int, list[Observation]] = {}
@@ -380,18 +449,18 @@ def _emit_withheld_validation(
                 norms.append(d)
                 per_screen_sq.setdefault(cab_idx_to_screen[o.cabinet_idx], []).append(d * d)
         if not norms:
-            _write({"passed": False, "reason": "no_withheld_observations"})
-            return
+            return _write({"passed": False, "reason": "no_withheld_observations",
+                           "screen_to_screen_consistency": s2s})
         arr = np.asarray(norms)
         if not np.all(np.isfinite(arr)):
-            _write({"passed": False, "reason": "non_finite_reprojection"})
-            return
+            return _write({"passed": False, "reason": "non_finite_reprojection",
+                           "screen_to_screen_consistency": s2s})
         combined = float(np.sqrt(np.mean(arr * arr)))
         per_screen = {screen_ids[s]: float(np.sqrt(np.mean(v))) for s, v in per_screen_sq.items()}
-        passed = combined < WITHHELD_RMS_MAX_PX and all(
+        withheld_rms_ok = combined < WITHHELD_RMS_MAX_PX and all(
             v < WITHHELD_RMS_MAX_PX for v in per_screen.values())
-        _write({
-            "passed": bool(passed),
+        return _write({
+            "passed": bool(withheld_rms_ok and s2s["passed"]),
             "limit_px": WITHHELD_RMS_MAX_PX,
             "combined_rms_px": combined,
             "per_screen_rms_px": per_screen,
@@ -401,9 +470,26 @@ def _emit_withheld_validation(
             "train_views": train,
             "withheld_views": sorted(withheld),
             "withheld_bridge_views": sorted(set(bridges) & withheld),
+            "screen_to_screen_consistency": s2s,
         })
     except Exception as exc:  # noqa: BLE001 — fail-closed, never block the solve
-        _write({"passed": False, "reason": f"validation_error: {type(exc).__name__}: {exc}"})
+        return _write({"passed": False, "reason": f"validation_error: {type(exc).__name__}: {exc}"})
+
+
+def _withheld_summary_from_wv(wv: dict) -> WithheldSummary:
+    """Distill the withheld_validation dict into the compact ResultData summary
+    (the durable digest / provenance surface). All fields optional."""
+    s2s = wv.get("screen_to_screen_consistency") or {}
+    pairs = s2s.get("pairs") or []
+    return WithheldSummary(
+        passed=bool(wv.get("passed", False)),
+        reason=wv.get("reason"),
+        combined_rms_px=wv.get("combined_rms_px"),
+        limit_px=wv.get("limit_px"),
+        screen_consistency_passed=(s2s.get("passed") if s2s else None),
+        max_delta_t_mm=(max(p["delta_t_norm_mm"] for p in pairs) if pairs else None),
+        max_delta_rot_deg=(max(p["delta_rot_deg"] for p in pairs) if pairs else None),
+    )
 
 
 def stage_b_robust_solve(*, K, observations, n_cameras, n_cabinets,
@@ -751,10 +837,12 @@ def run_reconstruct(cmd: ReconstructInput) -> int:
         pattern_meta = PatternMeta.model_validate(
             json.loads(pathlib.Path(manifest.pattern_meta).read_text(encoding="utf-8"))
         )
-        intr = json.loads(pathlib.Path(intrinsics_spec).read_text(encoding="utf-8"))
-        K = np.array(intr["K"], dtype=float)
-        dist = np.array(intr["dist_coeffs"], dtype=float)
-        image_size = tuple(int(v) for v in intr["image_size"])
+        loaded = load_intrinsics_file(intrinsics_spec)
+        K = loaded.K
+        dist = loaded.dist
+        if loaded.image_size is None:
+            raise ValueError("intrinsics file missing required image_size")
+        image_size = loaded.image_size
     except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
         write_event(ErrorEvent(event="error", code="invalid_input", message=f"failed to load manifest references: {e}", fatal=True))
         return 1
@@ -927,8 +1015,57 @@ def _board_homography_inliers(objp: list, imgp: list, thresh_px: float = 3.0):
             [i for i, k in zip(imgp, keep) if k])
 
 
+def _emit_intrinsics_observability_warning(res, groups):
+    """Warn (never refuse) when a self-cal solve is weakly observable PER BOARD:
+    too little same-board view-axis tilt (focal/depth coupling) or too small a
+    same-board standoff spread. Grouping by board isolates the fixed inter-screen
+    fold, which reads as huge global diversity but adds no per-board tilt."""
+    if not groups or len(res.rvecs) != len(groups):
+        return  # no grouping supplied, or poses/groups fell out of sync -> skip
+    view_axis = _grouped_view_axis_deg(res.rvecs, groups)
+    standoff = _grouped_standoff_ratio(res.tvecs, groups)
+    weak = []
+    if view_axis < POSE_ROT_DIVERSITY_STRICT_DEG:
+        weak.append(f"same-board view-axis span {view_axis:.1f}° < {POSE_ROT_DIVERSITY_STRICT_DEG:.0f}°")
+    if standoff is not None and standoff < STANDOFF_RATIO_MIN:
+        weak.append(f"same-board standoff ratio {standoff:.2f} < {STANDOFF_RATIO_MIN:.2f}")
+    if weak:
+        write_event(WarningEvent(
+            event="warning", code="intrinsics_weak_observability",
+            message=(
+                "self-cal intrinsics are weakly observable (" + "; ".join(weak) + "). "
+                "Focal length and standoff/depth are coupled under this capture, so a "
+                "sub-percent focal error can fold into mm-level geometry. Remediation: "
+                "shoot each screen from >=1.5× distance spread, add >=15° same-board "
+                "pitch/yaw tilt, fill a single screen up close, or pass a master lens "
+                "via --intrinsics-crosscheck to anchor the focal length.")))
+
+
+def _load_crosscheck_anchor(path, image_size):
+    """Load the --intrinsics-crosscheck anchor (mesh `K` or vpcal-flat fx/fy/cx/cy)
+    or None when no path is given. A MALFORMED anchor -> IntrinsicsRefused(invalid_input)
+    (unchanged semantics). An anchor whose image_size disagrees with the capture
+    frame is IGNORED with a warning (a pixel-domain focal/distortion crosscheck is
+    not comparable across resolutions) and None is returned, so the caller falls
+    back to the no-anchor path — reconstruction is never blocked on this."""
+    if not path:
+        return None
+    try:
+        anchor = load_intrinsics_file(path)
+    except (OSError, json.JSONDecodeError, ValueError) as e:
+        raise IntrinsicsRefused("invalid_input", f"crosscheck intrinsics load failed: {e}")
+    if anchor.image_size is not None and tuple(anchor.image_size) != tuple(image_size):
+        write_event(WarningEvent(
+            event="warning", code="intrinsics_anchor_size_mismatch",
+            message=(f"crosscheck anchor image_size {tuple(anchor.image_size)} != capture frame "
+                     f"{tuple(image_size)}; ignoring the anchor (a pixel-domain focal/distortion "
+                     f"crosscheck is not comparable across resolutions)")))
+        return None
+    return anchor
+
+
 def _solve_intrinsics_robust(object_points, image_points, image_size, *,
-                             has_anchor: bool, pp_gate: float):
+                             has_anchor: bool, pp_gate: float, pose_group_ids=None):
     """solve_sl_intrinsics + one robust board-trim pass.
 
     A motion-distorted (rolling-shutter-sheared) frame passes the per-board
@@ -937,6 +1074,10 @@ def _solve_intrinsics_robust(object_points, image_points, image_size, *,
     rms stays under the 1.5px gate. Score each board by solvePnP reprojection
     under the solved K; boards > max(3×median, 1.0px) are re-solved away (kept
     only if the retry does not worsen rms or trip a gate).
+
+    ``pose_group_ids`` (parallel to object_points; group = board/cabinet) drives
+    the per-board weak-observability WARNING (never a refusal) on the returned
+    solve — filtered to the surviving poses when boards are trimmed.
     """
     def _solve(objs, imgs):
         return solve_sl_intrinsics(objs, imgs, image_size,
@@ -957,12 +1098,17 @@ def _solve_intrinsics_robust(object_points, image_points, image_size, *,
     thr = max(3.0 * med, 1.0)
     bad = [i for i, e in enumerate(errs) if e > thr]
     if not bad or len(object_points) - len(bad) < 3:
+        _emit_intrinsics_observability_warning(res, pose_group_ids)
         return res
-    objs2 = [o for i, o in enumerate(object_points) if i not in set(bad)]
-    imgs2 = [m for i, m in enumerate(image_points) if i not in set(bad)]
+    badset = set(bad)
+    objs2 = [o for i, o in enumerate(object_points) if i not in badset]
+    imgs2 = [m for i, m in enumerate(image_points) if i not in badset]
+    groups2 = (None if pose_group_ids is None
+               else [g for i, g in enumerate(pose_group_ids) if i not in badset])
     try:
         res2 = _solve(objs2, imgs2)
     except IntrinsicsRefused:
+        _emit_intrinsics_observability_warning(res, pose_group_ids)
         return res
     if res2.rms <= res.rms:
         write_event(WarningEvent(
@@ -970,7 +1116,9 @@ def _solve_intrinsics_robust(object_points, image_points, image_size, *,
             message=(f"self-cal dropped {len(bad)} inconsistent board(s) "
                      f"(> {thr:.2f}px under shared K); rms "
                      f"{res.rms:.2f}px → {res2.rms:.2f}px")))
+        _emit_intrinsics_observability_warning(res2, groups2)
         return res2
+    _emit_intrinsics_observability_warning(res, pose_group_ids)
     return res
 
 
@@ -1008,7 +1156,7 @@ def _self_calibrate_vpqsp(meta, detections, view_images, image_size, cmd):
     # aren't for a desktop dual-monitor test setup, and may tilt on curved walls).
     # Use LOCAL mm coords (z=0, center-origin) — world coords would bake in the
     # flat-wall layout assumption, which is irrelevant for intrinsics.
-    object_points, image_points = [], []
+    object_points, image_points, pose_groups = [], [], []
     for imgs in view_images:
         per_cab: dict[tuple[int, int], tuple[list, list]] = {}
         for path in imgs:
@@ -1023,13 +1171,14 @@ def _self_calibrate_vpqsp(meta, detections, view_images, image_size, cmd):
                 per_cab.setdefault(cab_cr, ([], []))
                 per_cab[cab_cr][0].append(p_local)
                 per_cab[cab_cr][1].append([det["corner_px"][0], det["corner_px"][1]])
-        for objp, imgp in per_cab.values():
+        for cab_key, (objp, imgp) in per_cab.items():
             objp, imgp = _board_homography_inliers(objp, imgp)
             # FIX-21: require ≥8 points per pose (4 is barely determined for
             # a planar target's 6 DOF — 8 gives 16 constraints, much stabler).
             if len(objp) >= 8:
                 object_points.append(np.asarray(objp, dtype=np.float32))
                 image_points.append(np.asarray(imgp, dtype=np.float32))
+                pose_groups.append(cab_key)
 
     # FIX-21: cap pose count to avoid minute-level calibrateCamera on large walls.
     MAX_CAL_POSES = 200
@@ -1039,21 +1188,20 @@ def _self_calibrate_vpqsp(meta, detections, view_images, image_size, cmd):
         idx.sort()
         object_points = [object_points[i] for i in idx]
         image_points = [image_points[i] for i in idx]
+        pose_groups = [pose_groups[i] for i in idx]
 
-    has_anchor = bool(cmd.crosscheck_intrinsics_path)
+    # Load + validate the master-lens anchor BEFORE solving: has_anchor gates
+    # allow_full_distortion, so a broken/mismatched anchor must be resolved first.
+    anchor = _load_crosscheck_anchor(cmd.crosscheck_intrinsics_path, image_size)
+    has_anchor = anchor is not None
     # Per-cabinet poses have fewer points than full-view poses, so pp uncertainty
     # is slightly higher. Scale the pp gate by image size (default 3px @ 4000px).
     pp_gate = max(5.0, 3.0 * max(image_size) / 4000)
     res = _solve_intrinsics_robust(object_points, image_points, image_size,
-                                   has_anchor=has_anchor, pp_gate=pp_gate)
+                                   has_anchor=has_anchor, pp_gate=pp_gate,
+                                   pose_group_ids=pose_groups)
     if has_anchor:
-        try:
-            anchor = json.loads(pathlib.Path(cmd.crosscheck_intrinsics_path).read_text())
-            anchor_K = np.array(anchor["K"], float)
-            anchor_dist = np.array(anchor.get("dist_coeffs", [0, 0, 0, 0, 0]), float)
-        except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
-            raise IntrinsicsRefused("invalid_input", f"crosscheck intrinsics load failed: {e}")
-        refusal = crosscheck_intrinsics(res, anchor_K=anchor_K, anchor_dist=anchor_dist)
+        refusal = crosscheck_intrinsics(res, anchor_K=anchor.K, anchor_dist=anchor.dist)
         if refusal is not None:
             raise refusal
     else:
@@ -1166,12 +1314,9 @@ def run_reconstruct_vpqsp(cmd: ReconstructInput, manifest) -> int:
             return 1
     else:
         try:
-            intr = json.loads(pathlib.Path(intrinsics_spec).read_text(encoding="utf-8"))
-            K = np.array(intr["K"], dtype=float)
-            prob = intrinsics_K_problem(K)
-            if prob is not None:
-                raise ValueError(prob)
-            dist = np.array(intr["dist_coeffs"], dtype=float)
+            loaded = load_intrinsics_file(intrinsics_spec)
+            K = loaded.K
+            dist = loaded.dist
             intrinsics_source = "file"
         except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
             write_event(ErrorEvent(event="error", code="intrinsics_invalid",
@@ -1513,12 +1658,9 @@ def run_reconstruct_vpqsp_joint(cmd: ReconstructInput, manifest) -> int:
                 return 1
         else:
             try:
-                intr = json.loads(pathlib.Path(intrinsics_spec).read_text(encoding="utf-8"))
-                K = np.array(intr["K"], dtype=float)
-                prob = intrinsics_K_problem(K)
-                if prob is not None:
-                    raise ValueError(prob)
-                dist = np.array(intr["dist_coeffs"], dtype=float)
+                loaded = load_intrinsics_file(intrinsics_spec)
+                K = loaded.K
+                dist = loaded.dist
                 intrinsics_source = "file"
             except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
                 write_event(ErrorEvent(event="error", code="intrinsics_invalid",
@@ -1629,7 +1771,7 @@ def _self_calibrate_vpqsp_joint(
     """Self-cal for joint VP-QSP: route each detection to its screen's grid."""
     from lmt_vba_sidecar.vpqsp_layout import marker_local_mm
 
-    object_points, image_points = [], []
+    object_points, image_points, pose_groups = [], [], []
     for imgs in view_images:
         per_cab: dict[tuple[int, int, int], tuple[list, list]] = {}
         for path in imgs:
@@ -1649,11 +1791,12 @@ def _self_calibrate_vpqsp_joint(
                 per_cab.setdefault(key, ([], []))
                 per_cab[key][0].append(p_local)
                 per_cab[key][1].append([det["corner_px"][0], det["corner_px"][1]])
-        for objp, imgp in per_cab.values():
+        for cab_key, (objp, imgp) in per_cab.items():
             objp, imgp = _board_homography_inliers(objp, imgp)
             if len(objp) >= 8:
                 object_points.append(np.asarray(objp, dtype=np.float32))
                 image_points.append(np.asarray(imgp, dtype=np.float32))
+                pose_groups.append(cab_key)
 
     MAX_CAL_POSES = 200
     if len(object_points) > MAX_CAL_POSES:
@@ -1662,19 +1805,16 @@ def _self_calibrate_vpqsp_joint(
         idx.sort()
         object_points = [object_points[i] for i in idx]
         image_points = [image_points[i] for i in idx]
+        pose_groups = [pose_groups[i] for i in idx]
 
-    has_anchor = bool(cmd.crosscheck_intrinsics_path)
+    anchor = _load_crosscheck_anchor(cmd.crosscheck_intrinsics_path, image_size)
+    has_anchor = anchor is not None
     pp_gate = max(5.0, 3.0 * max(image_size) / 4000)
     res = _solve_intrinsics_robust(object_points, image_points, image_size,
-                                   has_anchor=has_anchor, pp_gate=pp_gate)
+                                   has_anchor=has_anchor, pp_gate=pp_gate,
+                                   pose_group_ids=pose_groups)
     if has_anchor:
-        try:
-            anchor = json.loads(pathlib.Path(cmd.crosscheck_intrinsics_path).read_text())
-            anchor_K = np.array(anchor["K"], float)
-            anchor_dist = np.array(anchor.get("dist_coeffs", [0, 0, 0, 0, 0]), float)
-        except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
-            raise IntrinsicsRefused("invalid_input", f"crosscheck intrinsics load failed: {e}")
-        refusal = crosscheck_intrinsics(res, anchor_K=anchor_K, anchor_dist=anchor_dist)
+        refusal = crosscheck_intrinsics(res, anchor_K=anchor.K, anchor_dist=anchor.dist)
         if refusal is not None:
             raise refusal
     else:
@@ -1918,10 +2058,11 @@ def joint_solve_and_emit(
         transforms=transform_entries,
     )
     _atomic_write_json(screen_transforms_path, transforms_report.model_dump_json(indent=2))
-    _emit_withheld_validation(
+    wv = _run_withheld_validation(
         K=K, result=result, observations=surviving_observations,
         n_cabinets=n_cabinets, root_idx=root_idx, cab_idx_to_screen=cab_idx_to_screen,
         screen_ids=[sp.screen_id for sp in screen_projects],
+        screen_root_indices=screen_root_indices,
         screen_transforms_path=screen_transforms_path)
 
     write_event(ResultEvent(
@@ -1944,6 +2085,7 @@ def joint_solve_and_emit(
             ignored_photos=list(ignored_photos or []),
             photos_used=photos_used,
             photos_total=photos_total,
+            withheld=_withheld_summary_from_wv(wv),
         ),
     ))
     return 0

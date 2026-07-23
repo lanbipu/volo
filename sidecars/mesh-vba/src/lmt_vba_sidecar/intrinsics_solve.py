@@ -18,6 +18,13 @@ PP_STDDEV_MAX_PX = 3.0
 FOCAL_STDDEV_MAX_FRAC = 0.005
 MIN_DOTS_PER_POSE = 4
 
+# Reconstruction self-cal observability TARGETS (warning-only, per-board). Unlike
+# the fail-closed gates above, missing these emits a `intrinsics_weak_observability`
+# warning and continues — the joint dual-screen fold (~74°) masquerades as global
+# view diversity, so these must be measured PER BOARD (cabinet), not globally.
+POSE_ROT_DIVERSITY_STRICT_DEG = 15.0  # same-board view-axis span target (pitch/yaw)
+STANDOFF_RATIO_MIN = 1.30             # same-board standoff max/min target (distance spread)
+
 # Anti-absorption cross-check tolerances (spec A.1.3 / P6). Compare auto-K to an
 # independent anchor on THREE axes so each screen pitch/1:1 error class is caught:
 FOCAL_CROSSCHECK_MAX_FRAC = 0.02      # |fx - anchor_fx| / anchor_fx  (class a: isotropic scale)
@@ -44,6 +51,7 @@ class IntrinsicsResult:
     distortion_model: str          # "radial2" | "full"
     coplanar_ratio: float
     rvecs: list
+    tvecs: list
 
 
 def _coplanarity_ratio(pts: np.ndarray) -> float:
@@ -70,6 +78,38 @@ def _max_pairwise_view_axis_deg(rvecs) -> float:
         for b in range(a + 1, len(Rs)):
             cos = float((Rs[a].T @ Rs[b])[2, 2])
             best = max(best, float(np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))))
+    return best
+
+
+def _grouped_view_axis_deg(rvecs, groups) -> float:
+    """Max WITHIN-GROUP pairwise view-axis angle (deg). Grouping by board (cabinet)
+    isolates the fixed inter-screen fold — which reads as huge global diversity but
+    contributes NO per-board pitch/yaw — so only genuine same-board tilt counts.
+    Returns 0.0 when no group has >=2 poses."""
+    Rs = [cv2.Rodrigues(np.asarray(r))[0] for r in rvecs]
+    best = 0.0
+    for g in set(groups):
+        idx = [i for i, gi in enumerate(groups) if gi == g]
+        for a in range(len(idx)):
+            for b in range(a + 1, len(idx)):
+                cos = float((Rs[idx[a]].T @ Rs[idx[b]])[2, 2])
+                best = max(best, float(np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))))
+    return best
+
+
+def _grouped_standoff_ratio(tvecs, groups) -> float | None:
+    """Max over boards of (max||t|| / min||t||) within the board's poses — the
+    depth spread that separates focal length from standoff. Groups with <2 poses
+    are skipped; None when NO group has >=2 poses (small sample, don't judge weak)."""
+    best = None
+    for g in set(groups):
+        norms = [float(np.linalg.norm(np.asarray(t).ravel()))
+                 for t, gi in zip(tvecs, groups) if gi == g]
+        norms = [n for n in norms if n > 0]
+        if len(norms) < 2:
+            continue
+        ratio = max(norms) / min(norms)
+        best = ratio if best is None else max(best, ratio)
     return best
 
 
@@ -135,16 +175,16 @@ def solve_sl_intrinsics(object_points, image_points, image_size, *, max_rms_px: 
         if try_zero_distortion:
             zf = (cv2.CALIB_USE_INTRINSIC_GUESS | cv2.CALIB_FIX_K1 | cv2.CALIB_FIX_K2 |
                   cv2.CALIB_ZERO_TANGENT_DIST | cv2.CALIB_FIX_K3)
-            r0, K0z, d0, rv0, _t0, si0, _se0, _pv0 = cv2.calibrateCameraExtended(
+            r0, K0z, d0, rv0, t0z, si0, _se0, _pv0 = cv2.calibrateCameraExtended(
                 object_points, image_points, image_size, K0.copy(), np.zeros(5), flags=zf)
             r_free, *_ = _solve(full=False)
             if r0 <= r_free * 1.10:
-                rms, K, dist, rvecs, std_int, model = r0, K0z, d0, rv0, si0, "zero_dist"
+                rms, K, dist, rvecs, tvecs, std_int, model = r0, K0z, d0, rv0, t0z, si0, "zero_dist"
 
         if model != "zero_dist":
-            rms, K, dist, rvecs, _tvecs, std_int, _std_ext, _pv = _solve(full=False)
+            rms, K, dist, rvecs, tvecs, std_int, _std_ext, _pv = _solve(full=False)
         if allow_full_distortion:
-            r2, K2, d2, rv2, _t2, si2, _se2, _pv2 = _solve(full=True)
+            r2, K2, d2, rv2, t2, si2, _se2, _pv2 = _solve(full=True)
             s2 = np.asarray(si2).flatten()
             # Accept full if it did not worsen RMS and AT LEAST ONE extra coeff is
             # observable (stddev < |coeff|). k3 and the tangential pair are independent
@@ -155,7 +195,7 @@ def solve_sl_intrinsics(object_points, image_points, image_size, *, max_rms_px: 
             tan_ok = (abs(d2.flatten()[2]) > s2[6] and abs(d2.flatten()[3]) > s2[7]
                       if len(s2) > 7 else False)
             if r2 <= rms * 1.05 and (k3_ok or tan_ok):
-                rms, K, dist, rvecs, std_int, model = r2, K2, d2, rv2, si2, "full"
+                rms, K, dist, rvecs, tvecs, std_int, model = r2, K2, d2, rv2, t2, si2, "full"
     except cv2.error as e:
         raise IntrinsicsRefused("intrinsics_invalid", f"calibrateCamera failed: {e}")
 
@@ -186,7 +226,7 @@ def solve_sl_intrinsics(object_points, image_points, image_size, *, max_rms_px: 
 
     return IntrinsicsResult(K=K, dist=dist, rms=float(rms), focal_stddev_px=foc_std,
                             pp_stddev_px=pp_std, distortion_model=model,
-                            coplanar_ratio=ratio, rvecs=list(rvecs))
+                            coplanar_ratio=ratio, rvecs=list(rvecs), tvecs=list(tvecs))
 
 
 def _radial_disp_px(dist, fx) -> float:

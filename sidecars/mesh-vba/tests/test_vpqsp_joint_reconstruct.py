@@ -233,6 +233,15 @@ def test_joint_two_screen_recovers_relative_pose(tmp_path, capsys, monkeypatch):
     assert len(data["screens"]) == 2
     assert data["ba_stats"]["rms_reprojection_px"] < 1.5
 
+    # Withheld-validation summary rides the result event and mirrors the on-disk
+    # validation.json (the durable pointer the formal export gate reads).
+    validation = json.loads(open(paths["transforms"] + ".validation.json").read())["withheld_validation"]
+    assert data["withheld"] is not None
+    assert data["withheld"]["passed"] == validation["passed"]
+    s2s = validation.get("screen_to_screen_consistency")
+    if s2s is not None:
+        assert data["withheld"]["screen_consistency_passed"] == s2s["passed"]
+
     transforms = json.loads(open(paths["transforms"]).read())
     assert transforms["schema_version"] == "visual_screen_transforms.v1"
     assert transforms["frame_screen_id"] == "screen_a"

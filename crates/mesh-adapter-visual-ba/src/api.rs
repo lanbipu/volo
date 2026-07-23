@@ -87,6 +87,9 @@ pub struct ReconstructOut {
     pub ignored_photos: Vec<String>,
     pub photos_used: u32,
     pub photos_total: u32,
+    /// Joint withheld-view + screen-consistency validation digest (None for
+    /// single-screen / SL paths and older sidecars).
+    pub withheld: Option<crate::ipc::WithheldSummary>,
 }
 
 fn ipc_to_ir_coord(c: &IpcCoordinateFrame) -> VbaResult<mesh_core::coordinate::CoordinateFrame> {
@@ -314,6 +317,7 @@ pub async fn reconstruct(args: ReconstructArgs) -> VbaResult<ReconstructOut> {
         ignored_photos: result.ignored_photos,
         photos_used: result.photos_used,
         photos_total: result.photos_total,
+        withheld: result.withheld,
     })
 }
 
@@ -407,6 +411,7 @@ pub async fn reconstruct_structured_light(
         ignored_photos: result.ignored_photos,
         photos_used: result.photos_used,
         photos_total: result.photos_total,
+        withheld: None,
     })
 }
 

@@ -1,4 +1,4 @@
-"""Camera-view holdout validation producer (`_emit_withheld_validation`).
+"""Camera-view holdout validation producer (`_run_withheld_validation`).
 
 Validates the mechanism both ways on synthetic two-screen scenes: consistent
 geometry passes, inconsistent observations fail, and too few bridge views fails
@@ -12,7 +12,7 @@ import numpy as np
 
 import lmt_vba_sidecar.reconstruct as reconstruct
 from lmt_vba_sidecar.model_constrained_ba import Observation, model_constrained_ba
-from lmt_vba_sidecar.reconstruct import _emit_withheld_validation
+from lmt_vba_sidecar.reconstruct import _run_withheld_validation
 
 K = np.array([[2000.0, 0, 960], [0, 2000, 540], [0, 0, 1]])
 
@@ -67,16 +67,22 @@ def _two_screen_scene(*, n_bridge=5, n_single0=2, n_single1=2, noise=0.0, noisy_
     return obs, pvcc, {0: 0, 1: 1}, result
 
 
-def _run(tmp_path, obs, _pvcc, cab_idx_to_screen, result):
+def _run(tmp_path, obs, _pvcc, cab_idx_to_screen, result, screen_root_indices=None):
     # pvcc is now derived internally from the (reindexed, pruned) observations, so
     # the harness no longer supplies it — the third arg is kept for call-site parity.
+    # Two flat screens, one cabinet each, so each screen's root cabinet == its index.
+    if screen_root_indices is None:
+        screen_root_indices = {0: 0, 1: 1}
     st = str(tmp_path / "st.json")
-    _emit_withheld_validation(
+    wv = _run_withheld_validation(
         K=K, result=result, observations=obs,
         n_cabinets=2, root_idx=0, cab_idx_to_screen=cab_idx_to_screen,
-        screen_ids=["S0", "S1"], screen_transforms_path=st)
+        screen_ids=["S0", "S1"], screen_root_indices=screen_root_indices,
+        screen_transforms_path=st)
     with open(st + ".validation.json") as fh:
-        return json.load(fh)["withheld_validation"]
+        on_disk = json.load(fh)["withheld_validation"]
+    assert on_disk == wv  # the returned dict IS the persisted product
+    return wv
 
 
 def test_clean_two_screen_geometry_passes(tmp_path):
@@ -109,7 +115,7 @@ def _patch_train_ba(monkeypatch, *, converged, rms=None):
     """Wrap reconstruct.model_constrained_ba: call the real solver, then force the
     returned BAResult to the budget-exhausted shape (converged flag, iterations
     pinned to the passed max_nfev, optional rms override). Patched AFTER the scene
-    is built, so only the _emit_withheld_validation train re-solve is affected."""
+    is built, so only the _run_withheld_validation train re-solve is affected."""
     real = reconstruct.model_constrained_ba
 
     def wrapper(*args, **kwargs):
@@ -139,3 +145,58 @@ def test_budget_exhausted_bad_rms_still_fails(tmp_path, monkeypatch):
     assert wv["passed"] is False, wv
     assert wv["reason"] == "train_resolve_did_not_converge"
     assert "train_rms_px" in wv
+
+
+# --- D3: screen-to-screen relative-pose consistency ---------------------------
+
+def _patch_train_shift(monkeypatch, shift_mm):
+    """Wrap model_constrained_ba so the TRAIN re-solve returns cabinet 1 (screen 1)
+    shifted by +shift_mm in x. Patched AFTER the full solve, so only the train
+    geometry moves relative to the full solve -> a detectable inter-screen drift."""
+    real = reconstruct.model_constrained_ba
+
+    def wrapper(*args, **kwargs):
+        res = real(*args, **kwargs)
+        cp = dict(res.cabinet_poses)
+        if 1 in cp:
+            R, t = cp[1]
+            cp[1] = (R, np.asarray(t, float) + np.array([shift_mm, 0.0, 0.0]))
+        return dataclasses.replace(res, cabinet_poses=cp)
+
+    monkeypatch.setattr(reconstruct, "model_constrained_ba", wrapper)
+
+
+def test_clean_scene_screen_consistency_near_zero(tmp_path):
+    # Noise floor: on a clean two-screen scene the full vs TRAIN relative pose must
+    # agree to well under the mm/deg limits (this is the sensitivity baseline).
+    obs, pvcc, m, result = _two_screen_scene(noise=0.0)
+    wv = _run(tmp_path, obs, pvcc, m, result)
+    s2s = wv["screen_to_screen_consistency"]
+    assert s2s["passed"] is True, s2s
+    assert len(s2s["pairs"]) == 1
+    pair = s2s["pairs"][0]
+    assert pair["screen_id"] == "S1" and pair["ref_screen_id"] == "S0"
+    assert pair["delta_t_norm_mm"] < 0.5, pair
+    assert pair["delta_rot_deg"] < 0.1, pair
+
+
+def test_screen_consistency_detects_inter_screen_shift(tmp_path, monkeypatch):
+    # A +3mm TRAIN-vs-full drift of screen 1 must be flagged (pair fail -> top fail).
+    obs, pvcc, m, result = _two_screen_scene(noise=0.0)
+    _patch_train_shift(monkeypatch, shift_mm=3.0)
+    wv = _run(tmp_path, obs, pvcc, m, result)
+    s2s = wv["screen_to_screen_consistency"]
+    assert s2s["passed"] is False, s2s
+    assert s2s["pairs"][0]["passed"] is False
+    assert s2s["pairs"][0]["delta_t_norm_mm"] > 1.0
+    assert wv["passed"] is False
+
+
+def test_consistency_gate_anded_with_withheld(tmp_path, monkeypatch):
+    # AND semantics: a small (1.5mm) inter-screen drift trips consistency while the
+    # withheld reprojection RMS itself may still pass — top-level passed must be False.
+    obs, pvcc, m, result = _two_screen_scene(noise=0.0)
+    _patch_train_shift(monkeypatch, shift_mm=1.5)
+    wv = _run(tmp_path, obs, pvcc, m, result)
+    assert wv["screen_to_screen_consistency"]["passed"] is False
+    assert wv["passed"] is False

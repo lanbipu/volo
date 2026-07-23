@@ -311,10 +311,19 @@ fn export_geometry_provenance(
     let mut reasons = Vec::new();
     if solve_ref.is_none() { reasons.push("missing_solve_ref".into()); }
     if digest_value.is_none() { reasons.push("missing_visual_solve_digest".into()); }
-    if intrinsics_source.as_deref() == Some("auto_self_calibrated") {
+    // An auto self-cal is only a formal-eligibility blocker when it ran WITHOUT an
+    // anchor (no_intrinsics_anchor emitted). An anchored auto-cal that passed the
+    // crosscheck no longer emits that warning, so it is not flagged here.
+    if intrinsics_source.as_deref() == Some("auto_self_calibrated")
+        && warning_codes.iter().any(|code| code == "no_intrinsics_anchor")
+    {
         reasons.push("auto_self_calibrated".into());
     }
-    for blocked in ["no_intrinsics_anchor", "ba_budget_exhausted"] {
+    for blocked in [
+        "no_intrinsics_anchor",
+        "ba_budget_exhausted",
+        "intrinsics_weak_observability",
+    ] {
         if warning_codes.iter().any(|code| code == blocked) { reasons.push(blocked.into()); }
     }
     if !withheld_validation_passed { reasons.push("missing_withheld_validation".into()); }

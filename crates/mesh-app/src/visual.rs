@@ -510,6 +510,52 @@ pub fn normalize_reconstruct_intrinsics(
 /// Build the adapter args shared by [`run_reconstruct`] and
 /// [`run_reconstruct_streaming`] (progress_tx/cancel default to `None`; the
 /// streaming variant overrides them after the fact).
+/// Auto-discover the project's single qualified vpcal master lens to anchor the
+/// `--intrinsics auto` crosscheck ("无感"锚定). Scans `<project>/vpcal/lenses/
+/// *.master-lens.json`, requiring `is_master == true` and finite-positive
+/// fx/fy/cx/cy. Returns the path ONLY when exactly one qualifies; 0 or >=2 hits →
+/// None (a warn on the >=2 case), leaving self-cal anchorless.
+fn default_master_lens_anchor(project_path: &Path) -> Option<PathBuf> {
+    let dir = project_path.join("vpcal").join("lenses");
+    let entries = std::fs::read_dir(&dir).ok()?;
+    let mut hits: Vec<PathBuf> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_master_lens = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(".master-lens.json"));
+        if !is_master_lens {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else { continue };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else { continue };
+        if value.get("is_master").and_then(serde_json::Value::as_bool) != Some(true) {
+            continue;
+        }
+        let finite_pos = |key: &str| {
+            value
+                .get(key)
+                .and_then(serde_json::Value::as_f64)
+                .is_some_and(|v| v.is_finite() && v > 0.0)
+        };
+        if finite_pos("fx") && finite_pos("fy") && finite_pos("cx") && finite_pos("cy") {
+            hits.push(path);
+        }
+    }
+    match hits.len() {
+        1 => hits.pop(),
+        0 => None,
+        n => {
+            tracing::warn!(
+                "found {n} qualified master lenses in {}; skipping auto crosscheck anchor (need exactly one)",
+                dir.display()
+            );
+            None
+        }
+    }
+}
+
 fn build_reconstruct_args(
     project_path: &Path,
     screen_ids: &[String],
@@ -522,6 +568,16 @@ fn build_reconstruct_args(
             "screen_ids must be non-empty".into(),
         ));
     }
+
+    // 无感锚定: for `--intrinsics auto` with no explicit crosscheck, anchor the
+    // self-cal to the project's single master lens when one qualifies. An explicit
+    // crosscheck always wins.
+    let crosscheck_owned: Option<String> = match (intrinsics, intrinsics_crosscheck) {
+        (Some("auto"), None) => {
+            default_master_lens_anchor(project_path).map(|p| p.display().to_string())
+        }
+        _ => intrinsics_crosscheck.map(str::to_string),
+    };
 
     let cfg = load_project_yaml_from_path(project_path)?;
     let all_ids = sorted_project_screen_ids(&cfg);
@@ -540,7 +596,7 @@ fn build_reconstruct_args(
             capture_manifest_path: capture_manifest.display().to_string(),
             screen_mapping_path: None,
             intrinsics_path: intrinsics.map(str::to_string),
-            crosscheck_intrinsics_path: intrinsics_crosscheck.map(str::to_string),
+            crosscheck_intrinsics_path: crosscheck_owned,
             pose_report_path: pose_report_path.display().to_string(),
             screen_transforms_path: None,
             progress_tx: None,
@@ -612,7 +668,7 @@ fn build_reconstruct_args(
         capture_manifest_path: capture_manifest.display().to_string(),
         screen_mapping_path: None,
         intrinsics_path: intrinsics.map(str::to_string),
-        crosscheck_intrinsics_path: intrinsics_crosscheck.map(str::to_string),
+        crosscheck_intrinsics_path: crosscheck_owned,
         pose_report_path: pose_report_path.display().to_string(),
         screen_transforms_path: Some(screen_transforms_path.display().to_string()),
         progress_tx: None,
@@ -693,6 +749,18 @@ fn map_cabinet_ui_quality(q: &str) -> &'static str {
     }
 }
 
+fn map_withheld(w: ipc::WithheldSummary) -> volo_shared::dto::WithheldSummaryDto {
+    volo_shared::dto::WithheldSummaryDto {
+        passed: w.passed,
+        reason: w.reason,
+        combined_rms_px: w.combined_rms_px,
+        limit_px: w.limit_px,
+        screen_consistency_passed: w.screen_consistency_passed,
+        max_delta_t_mm: w.max_delta_t_mm,
+        max_delta_rot_deg: w.max_delta_rot_deg,
+    }
+}
+
 fn build_reconstruct_result(
     screen_ids: &[String],
     out: ReconstructOut,
@@ -738,6 +806,7 @@ fn build_reconstruct_result(
         ignored_photos: out.ignored_photos,
         photos_used: out.photos_used,
         photos_total: out.photos_total,
+        withheld: out.withheld.map(map_withheld),
     }
 }
 
@@ -813,6 +882,7 @@ pub fn persist_visual_solve_digest(
         screens: digest_screens,
         warnings: result.warnings.clone(),
         intrinsics_source: result.intrinsics_source.clone(),
+        withheld: result.withheld.clone(),
     };
 
     std::fs::write(&path, serde_json::to_vec_pretty(&digest)?)?;
@@ -1837,6 +1907,49 @@ pub fn run_capture_card(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    fn write_lens(dir: &Path, name: &str, is_master: bool, fx: f64) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join(name),
+            serde_json::json!({
+                "fx": fx, "fy": fx, "cx": 2000.0, "cy": 1500.0,
+                "dist_coeffs": [0.0, 0.0, 0.0, 0.0, 0.0],
+                "image_size": [4000, 3000], "is_master": is_master,
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn default_master_lens_anchor_requires_exactly_one() {
+        let tmp = tempdir().unwrap();
+        let lenses = tmp.path().join("vpcal").join("lenses");
+        // 0 qualified -> None.
+        assert!(default_master_lens_anchor(tmp.path()).is_none());
+
+        // A non-master file is ignored.
+        write_lens(&lenses, "b.master-lens.json", false, 3000.0);
+        assert!(default_master_lens_anchor(tmp.path()).is_none());
+
+        // Exactly one qualified -> that path.
+        write_lens(&lenses, "a.master-lens.json", true, 3000.0);
+        let hit = default_master_lens_anchor(tmp.path()).expect("one qualified master lens");
+        assert!(hit.ends_with("a.master-lens.json"));
+
+        // Two qualified -> ambiguous -> None.
+        write_lens(&lenses, "c.master-lens.json", true, 3100.0);
+        assert!(default_master_lens_anchor(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn default_master_lens_anchor_rejects_nonpositive_focal() {
+        let tmp = tempdir().unwrap();
+        let lenses = tmp.path().join("vpcal").join("lenses");
+        write_lens(&lenses, "bad.master-lens.json", true, -3000.0);
+        assert!(default_master_lens_anchor(tmp.path()).is_none());
+    }
 
     #[test]
     fn render_capture_card_contains_3d_interactive_html() {

@@ -230,6 +230,66 @@ def test_selfcal_frontal_only_is_refused():
     assert ei.value.code == "observability_failed"
 
 
+def _multi_standoff_poses(center_m):
+    """Two standoff shells (1.5m + 2.6m) with strong tilt: per-board standoff ratio
+    ~1.7 (>= 1.30) AND view-axis span >> 15° -> observability is NOT weak."""
+    return (_poses(center_m, standoff=1.5) + _poses(center_m, standoff=2.6))
+
+
+def test_selfcal_single_standoff_flags_weak_observability(capsys):
+    # The default capture orbits at ONE standoff -> the per-board standoff spread is
+    # ~1.0 (< 1.30), so focal/depth are coupled -> intrinsics_weak_observability warns
+    # (never refuses; K is still returned).
+    cmd = _cmd(2, 1)
+    meta = _meta(2, 1)
+    world = nominal_marker_positions_world(meta, cmd.project.cabinet_array, cmd.project.shape_prior)
+    K, _ = _self_calibrate_vpqsp(meta, *_detections(world, _poses(_center(world))), _IMG, cmd)
+    assert abs(K[0, 0] - 2400.0) / 2400.0 < 0.01   # still solves accurately
+    assert "intrinsics_weak_observability" in _warnings(capsys.readouterr().out)
+
+
+def test_selfcal_multi_standoff_not_weak(capsys):
+    # Two distinct standoffs + strong tilt -> the weak-observability warning is absent.
+    cmd = _cmd(2, 1)
+    meta = _meta(2, 1)
+    world = nominal_marker_positions_world(meta, cmd.project.cabinet_array, cmd.project.shape_prior)
+    K, _ = _self_calibrate_vpqsp(meta, *_detections(world, _multi_standoff_poses(_center(world))), _IMG, cmd)
+    assert abs(K[0, 0] - 2400.0) / 2400.0 < 0.01
+    assert "intrinsics_weak_observability" not in _warnings(capsys.readouterr().out)
+
+
+def test_selfcal_anchor_size_mismatch_ignored_with_warning(tmp_path, capsys):
+    # An anchor whose image_size disagrees with the capture frame is IGNORED (pixel-domain
+    # crosscheck is not comparable across resolutions): solve succeeds, and BOTH the
+    # size-mismatch warning and the fallback no_intrinsics_anchor warning are emitted.
+    anchor = tmp_path / "anchor.json"
+    anchor.write_text(json.dumps({"K": _K.tolist(), "dist_coeffs": [0, 0, 0, 0, 0],
+                                  "image_size": [1280, 720]}))  # != _IMG (1920×1080)
+    cmd = _cmd(2, 1, crosscheck=str(anchor))
+    meta = _meta(2, 1)
+    world = nominal_marker_positions_world(meta, cmd.project.cabinet_array, cmd.project.shape_prior)
+    K, _ = _self_calibrate_vpqsp(meta, *_detections(world, _multi_standoff_poses(_center(world))), _IMG, cmd)
+    assert abs(K[0, 0] - 2400.0) / 2400.0 < 0.01
+    codes = _warnings(capsys.readouterr().out)
+    assert "intrinsics_anchor_size_mismatch" in codes
+    assert "no_intrinsics_anchor" in codes  # anchor ignored -> anchorless path taken
+
+
+def test_selfcal_board_trim_keeps_groups_aligned(capsys):
+    # One corrupt view forces the board-trim path; the parallel pose_groups list must be
+    # filtered in lockstep (no IndexError) and K must still solve.
+    cmd = _cmd(2, 1)
+    meta = _meta(2, 1)
+    world = nominal_marker_positions_world(meta, cmd.project.cabinet_array, cmd.project.shape_prior)
+    dets, view_images = _detections(world, _multi_standoff_poses(_center(world)), noise=0.15, seed=3)
+    # Shear one view's detections hard so its board(s) are trimmed as rigidly inconsistent.
+    bad = view_images[0][0]
+    for o in dets[bad]:
+        o["corner_px"][0] += 0.02 * o["corner_px"][1]
+    K, _ = _self_calibrate_vpqsp(meta, dets, view_images, _IMG, cmd)
+    assert abs(K[0, 0] - 2400.0) / 2400.0 < 0.03  # solves despite the trimmed view
+
+
 # --------------------------------------------------------------------------- #
 # run_reconstruct integration (--intrinsics auto end-to-end)
 # --------------------------------------------------------------------------- #

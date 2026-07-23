@@ -197,6 +197,26 @@ pub struct ScreenResultSummary {
     pub bridge_views: usize,
 }
 
+/// Compact joint withheld-view + screen-consistency validation digest (mirrors the
+/// sidecar `WithheldSummary`). All fields optional for forward/backward compat.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WithheldSummary {
+    #[serde(default)]
+    pub passed: bool,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub combined_rms_px: Option<f64>,
+    #[serde(default)]
+    pub limit_px: Option<f64>,
+    #[serde(default)]
+    pub screen_consistency_passed: Option<bool>,
+    #[serde(default)]
+    pub max_delta_t_mm: Option<f64>,
+    #[serde(default)]
+    pub max_delta_rot_deg: Option<f64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResultData {
     pub measured_points: Vec<MeasuredPointDto>,
@@ -221,6 +241,8 @@ pub struct ResultData {
     pub photos_used: u32,
     #[serde(default)]
     pub photos_total: u32,
+    #[serde(default)]
+    pub withheld: Option<WithheldSummary>,
 }
 
 fn default_intrinsics_source() -> String {

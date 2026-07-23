@@ -51,10 +51,10 @@ import pathlib
 import numpy as np
 
 from lmt_vba_sidecar.io_utils import write_event
+from lmt_vba_sidecar.intrinsics_io import load_intrinsics_file
 from lmt_vba_sidecar.intrinsics_solve import (
     IntrinsicsRefused,
     crosscheck_intrinsics,
-    intrinsics_K_problem,
     solve_sl_intrinsics,
 )
 from lmt_vba_sidecar.ipc import (
@@ -97,18 +97,26 @@ def _self_calibrate_inline(meta, corr_files, cmd):
         if len(objp) >= 4:
             object_points.append(np.asarray(objp, dtype=np.float32))
             image_points.append(np.asarray(imgp, dtype=np.float32))
-    res = solve_sl_intrinsics(object_points, image_points, image_size, max_rms_px=1.5,
-                              allow_full_distortion=bool(cmd.crosscheck_intrinsics_path))
-    anchor_K = anchor_dist = None
+    # Load + validate the anchor BEFORE solving: it gates allow_full_distortion, so a
+    # broken/mismatched anchor must be resolved first (matching the vpqsp self-cal path).
+    anchor = None
     if cmd.crosscheck_intrinsics_path:
         try:
-            anchor = json.loads(pathlib.Path(cmd.crosscheck_intrinsics_path).read_text())
-            anchor_K = np.array(anchor["K"], float)
-            anchor_dist = np.array(anchor.get("dist_coeffs", [0, 0, 0, 0, 0]), float)
-        except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
+            anchor = load_intrinsics_file(cmd.crosscheck_intrinsics_path)
+        except (OSError, json.JSONDecodeError, ValueError) as e:
             # User-supplied anchor problems map to invalid_input, not an internal_error
             # traceback (the outer caller only catches IntrinsicsRefused).
             raise IntrinsicsRefused("invalid_input", f"crosscheck intrinsics load failed: {e}")
+        if anchor.image_size is not None and tuple(anchor.image_size) != tuple(image_size):
+            write_event(WarningEvent(event="warning", code="intrinsics_anchor_size_mismatch",
+                message=(f"crosscheck anchor image_size {tuple(anchor.image_size)} != capture frame "
+                         f"{tuple(image_size)}; ignoring the anchor (a pixel-domain crosscheck is "
+                         f"not comparable across resolutions)")))
+            anchor = None
+    res = solve_sl_intrinsics(object_points, image_points, image_size, max_rms_px=1.5,
+                              allow_full_distortion=anchor is not None)
+    anchor_K = anchor.K if anchor is not None else None
+    anchor_dist = anchor.dist if anchor is not None else None
     refusal = crosscheck_intrinsics(res, anchor_K=anchor_K, anchor_dist=anchor_dist)
     if refusal is not None:
         raise refusal
@@ -173,17 +181,16 @@ def run_reconstruct_structured_light(cmd: ReconstructStructuredLightInput) -> in
             return 1
     else:
         try:
-            intr = json.loads(pathlib.Path(cmd.intrinsics_path).read_text())
-            K = np.array(intr["K"], dtype=float)
-            # Validate the trusted-file K by the SAME rule the cross-check applies to the
-            # anchor: a non-3x3 or negative-focal file K (hand-edited / sign-flipped export)
-            # would otherwise feed straight into BA and silently produce a mirror-image or
-            # divergent result instead of a clean error.
-            prob = intrinsics_K_problem(K)
-            if prob is not None:
-                raise ValueError(prob)
-            dist = np.array(intr["dist_coeffs"], dtype=float)
-            image_size = tuple(int(v) for v in intr["image_size"])
+            # The shared loader validates K by the SAME rule the cross-check applies to
+            # the anchor: a non-3x3 or negative-focal file K (hand-edited / sign-flipped
+            # export) would otherwise feed straight into BA and silently produce a
+            # mirror-image or divergent result instead of a clean error.
+            loaded = load_intrinsics_file(cmd.intrinsics_path)
+            K = loaded.K
+            dist = loaded.dist
+            if loaded.image_size is None:
+                raise ValueError("intrinsics file missing required image_size")
+            image_size = loaded.image_size
             intrinsics_source = "file"
         except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
             write_event(ErrorEvent(event="error", code="intrinsics_invalid", message=f"intrinsics load failed: {e}", fatal=True))

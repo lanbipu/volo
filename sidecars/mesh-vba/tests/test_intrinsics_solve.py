@@ -118,7 +118,7 @@ def _res(K, dist=None, coplanar=0.3):
     return IntrinsicsResult(K=np.asarray(K, float),
                             dist=np.zeros(5) if dist is None else np.asarray(dist, float),
                             rms=0.2, focal_stddev_px=(1.0, 1.0), pp_stddev_px=(0.5, 0.5),
-                            distortion_model="radial2", coplanar_ratio=coplanar, rvecs=[])
+                            distortion_model="radial2", coplanar_ratio=coplanar, rvecs=[], tvecs=[])
 
 
 ANCHOR_K = np.array([[3000.0, 0, 2000.0], [0, 3000.0, 1500.0], [0, 0, 1.0]])
@@ -315,3 +315,47 @@ def test_single_pose_shallow_relief_refused():
     img = cv2.projectPoints(obj.reshape(-1, 1, 3), rvec, tvec, K, None)[0].reshape(-1, 2).astype(np.float32)
     with pytest.raises(IntrinsicsRefused, match="single pose.*near-planar"):
         solve_sl_intrinsics([obj], [img], (1920, 1080), max_rms_px=2.0)
+
+
+# ---------- D1: per-board observability metrics (warning inputs) ----------
+from lmt_vba_sidecar.intrinsics_solve import (  # noqa: E402
+    _grouped_standoff_ratio,
+    _grouped_view_axis_deg,
+)
+
+
+def _rv(deg_y):
+    # A rotation VECTOR (Rodrigues form) about +y — the shape solve_sl_intrinsics stores.
+    return np.array([0.0, np.deg2rad(deg_y), 0.0])
+
+
+def test_grouped_view_axis_isolates_inter_board_fold():
+    # Two boards folded 15° apart, one pose each. Treated as ONE group the fold reads
+    # as 15° of "diversity"; grouped by board (the fold is fixed) it reads ~0 — proving
+    # the metric isolates the dual-screen fold and measures only same-board tilt.
+    rvecs = [_rv(0.0), _rv(15.0)]
+    assert abs(_grouped_view_axis_deg(rvecs, ["X", "X"]) - 15.0) < 1e-6
+    assert _grouped_view_axis_deg(rvecs, ["A", "B"]) < 1e-6
+    # Genuine same-board tilt IS counted within the group.
+    assert abs(_grouped_view_axis_deg([_rv(0.0), _rv(20.0)], ["A", "A"]) - 20.0) < 1e-6
+
+
+def _t(depth):
+    return np.array([10.0, -5.0, depth], float)
+
+
+def test_grouped_standoff_ratio_flags_single_distance_orbit():
+    # Single-distance orbit (constant standoff) -> ratio ~1.0 (weak, focal/depth coupled).
+    assert _grouped_standoff_ratio([_t(900.0), _t(900.0)], ["A", "A"]) == pytest.approx(1.0, abs=1e-6)
+    # Near+far two-distance archery (900/1500mm) -> ratio ~1.67 (>= 1.30 target, strong).
+    assert _grouped_standoff_ratio([_t(900.0), _t(1500.0)], ["A", "A"]) > 1.30
+    # A group with < 2 poses is skipped; all-singleton -> None (small sample, no judgement).
+    assert _grouped_standoff_ratio([_t(900.0), _t(1500.0)], ["A", "B"]) is None
+
+
+def test_solver_exposes_tvecs_per_pose():
+    # tvecs must be populated (one per pose) so the standoff metric has data.
+    obj, img = _well_object_image_points(noise=0.0)
+    res = solve_sl_intrinsics(obj, img, IMG, max_rms_px=1.5)
+    assert len(res.tvecs) == len(obj)
+    assert all(np.asarray(t).size == 3 for t in res.tvecs)
