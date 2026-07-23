@@ -44,6 +44,14 @@ pub struct NodeResult {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NodeStatus {
+    pub node_id: String,
+    pub host: String,
+    pub running: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PublishResult {
     pub revision: u64,
     pub remote_image_path: Option<String>,
@@ -74,6 +82,12 @@ pub trait OutputTransport: Sync {
         timeout_secs: u64,
     ) -> Result<String, String>;
     fn stop(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<String, String>;
+    /// Query whether a matching UE process is still running on the node.
+    /// Returns `(running, message)`; transports that can't probe return Err.
+    fn status(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<(bool, String), String> {
+        let _ = (node, paths);
+        Err("status not supported by this transport".into())
+    }
     fn prepare_deploy(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<String, String>;
     fn push_file(&self, node: &OutputNode, local: &Path, remote: &str) -> Result<(), String>;
     fn publish_text(
@@ -325,6 +339,29 @@ pub fn stop<T: OutputTransport>(
 ) -> VoloResult<Vec<NodeResult>> {
     let nodes = ordered_nodes(screen)?;
     map_nodes_parallel(&nodes, |node| map_node(node, transport.stop(node, paths)))
+}
+
+/// Probe every node for a residual UE process. A single unreachable node is
+/// folded into `running: false` (not a hard error) so app restart recovery
+/// never fails on one flaky host.
+pub fn status<T: OutputTransport>(
+    transport: &T,
+    screen: &ScreenConfig,
+    paths: &RuntimePaths,
+) -> VoloResult<Vec<NodeStatus>> {
+    let nodes = ordered_nodes(screen)?;
+    map_nodes_parallel(&nodes, |node| {
+        let (running, message) = match transport.status(node, paths) {
+            Ok(value) => value,
+            Err(error) => (false, format!("unreachable: {error}")),
+        };
+        Ok(NodeStatus {
+            node_id: node.node_id.clone(),
+            host: node_host(node),
+            running,
+            message,
+        })
+    })
 }
 
 /// Publishes a never-reused PNG name to every node before atomically replacing
@@ -1188,5 +1225,69 @@ mod tests {
             // per node: Binaries/Win64/.keep + ndisplay config
             4
         );
+    }
+
+    /// Only overrides `status`: the default trait impls are irrelevant here and
+    /// `status()` never touches them. "secondary" simulates an unreachable node.
+    struct StatusFake;
+    impl OutputTransport for StatusFake {
+        fn preflight(&self, _: &OutputNode, _: &RuntimePaths) -> Result<String, String> {
+            unreachable!()
+        }
+        fn launch(
+            &self,
+            _: &OutputNode,
+            _: &RuntimePaths,
+            _: Option<&str>,
+        ) -> Result<String, String> {
+            unreachable!()
+        }
+        fn wait_evidence(&self, _: &OutputNode, _: &RuntimePaths) -> Result<(bool, String), String> {
+            unreachable!()
+        }
+        fn wait_log_pattern(
+            &self,
+            _: &OutputNode,
+            _: &RuntimePaths,
+            _: &str,
+            _: u64,
+        ) -> Result<String, String> {
+            unreachable!()
+        }
+        fn stop(&self, _: &OutputNode, _: &RuntimePaths) -> Result<String, String> {
+            unreachable!()
+        }
+        fn prepare_deploy(&self, _: &OutputNode, _: &RuntimePaths) -> Result<String, String> {
+            unreachable!()
+        }
+        fn push_file(&self, _: &OutputNode, _: &Path, _: &str) -> Result<(), String> {
+            unreachable!()
+        }
+        fn publish_text(&self, _: &OutputNode, _: &str, _: &str) -> Result<String, String> {
+            unreachable!()
+        }
+        fn publish_manifest(&self, _: &OutputNode, _: &str, _: &str) -> Result<String, String> {
+            unreachable!()
+        }
+        fn status(&self, n: &OutputNode, _: &RuntimePaths) -> Result<(bool, String), String> {
+            if n.node_id == "secondary" {
+                Err("ssh timeout".into())
+            } else {
+                Ok((true, "running PID=1".into()))
+            }
+        }
+    }
+
+    #[test]
+    fn status_folds_unreachable_node_into_running_false_without_failing() {
+        let statuses = status(&StatusFake, &screen(), &paths()).unwrap();
+        assert_eq!(statuses.len(), 2);
+        let by_id: BTreeMap<_, _> = statuses
+            .iter()
+            .map(|s| (s.node_id.as_str(), s))
+            .collect();
+        assert!(by_id["primary"].running);
+        assert!(!by_id["secondary"].running);
+        assert!(by_id["secondary"].message.starts_with("unreachable:"));
     }
 }

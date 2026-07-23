@@ -8,6 +8,7 @@ import type {
   NDisplayOutputEvent,
   NDisplayOutputRunnerEvent,
   OutputCommandResult,
+  OutputStatusResult,
   PlaySequenceRequest,
   RuntimePaths,
   RuntimeRequest,
@@ -39,6 +40,10 @@ export const outputShow = (request: ShowRequest) =>
 
 export const outputStop = (request: RuntimeRequest) =>
   call<OutputCommandResult>("output_stop", { request });
+
+/** Silently probe nodes for a residual UE process (app-restart recovery). */
+export const outputStatus = (request: RuntimeRequest) =>
+  call<OutputStatusResult>("output_status", { request });
 
 /** Push + play a PNG sequence (v2 manifest). Not routed through output_show. */
 export const outputPlaySequence = (request: PlaySequenceRequest) =>

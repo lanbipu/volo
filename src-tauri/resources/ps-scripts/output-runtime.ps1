@@ -894,6 +894,24 @@ Remove-Item -LiteralPath $MarkerPath -Force -ErrorAction SilentlyContinue
         exit 0
     }
 
+    if ($action -eq "status") {
+        $project = [string]$request.project_path
+        $nodeId = [string]$request.node_id
+        $processes = @(Get-CimInstance Win32_Process -Filter "Name='UnrealEditor.exe'" |
+            Where-Object {
+                $_.CommandLine -and
+                $_.CommandLine.IndexOf($project, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+                $_.CommandLine.IndexOf("-dc_node=$nodeId", [StringComparison]::OrdinalIgnoreCase) -ge 0
+            })
+        if ($processes.Count -gt 0) {
+            $pids = ($processes | ForEach-Object { $_.ProcessId }) -join ', '
+            Reply $true "running PID=$pids" $true
+        } else {
+            Reply $true "not running" $false
+        }
+        exit 0
+    }
+
     if ($action -eq "stop") {
         $project = [string]$request.project_path
         $nodeId = [string]$request.node_id

@@ -727,10 +727,10 @@ function App() {
   useEffect(() => {
     clearTimeout(persistTimer.current);
     persistTimer.current = setTimeout(() => {
-      try { localStorage.setItem('volo2', JSON.stringify({ page, selNode, cacheNav, ddcOpen, calSection, calActiveScreen, calPresets, calActivePreset, calStageType, calMode, calMeshVersion, calView, calArNav, calArToolsOpen, calLensState, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed })); } catch (e) {}
+      try { localStorage.setItem('volo2', JSON.stringify({ page, selNode, cacheNav, ddcOpen, calSection, calActiveScreen, calPresets, calActivePreset, calStageType, calMode, calMeshVersion, calView, calArNav, calArToolsOpen, calLensState, calOutTarget, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed })); } catch (e) {}
     }, 150);
     return () => clearTimeout(persistTimer.current);
-  }, [page, selNode, cacheNav, ddcOpen, calSection, calActiveScreen, calPresets, calActivePreset, calStageType, calMode, calMeshVersion, calView, calArNav, calArToolsOpen, calLensState, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed]);
+  }, [page, selNode, cacheNav, ddcOpen, calSection, calActiveScreen, calPresets, calActivePreset, calStageType, calMode, calMeshVersion, calView, calArNav, calArToolsOpen, calLensState, calOutTarget, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed]);
 
   /* 禁掉桌面 WebView 的右键菜单（reload / 检查）；calibrate 画布另有本地 preventDefault */
   useEffect(() => {

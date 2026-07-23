@@ -169,6 +169,12 @@ pub struct OutputCommandResult {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct OutputStatusResult {
+    pub session_id: String,
+    pub nodes: Vec<output::NodeStatus>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct NodeEventPayload {
     session_id: String,
     operation: String,
@@ -293,6 +299,10 @@ impl OutputTransport for SshOutputTransport {
             }),
         )
         .map(|x| x.message)
+    }
+    fn status(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<(bool, String), String> {
+        self.run(node, "status", paths, serde_json::json!({}))
+            .map(|x| (x.cluster_connected, x.message))
     }
     fn stop(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<String, String> {
         self.run(node, "stop", paths, serde_json::json!({}))
@@ -721,6 +731,19 @@ pub async fn output_stop(
     .await
     .map_err(|error| VoloError::Other(format!("output stop task failed: {error}")))?;
     finish_operation(&app, session_id, "stop", None, None, total, result)
+}
+
+/// Silently probe every node for a residual UE process (app-restart recovery).
+/// No runner/node events are emitted; the caller reconciles UI state.
+#[tauri::command]
+pub async fn output_status(request: RuntimeRequest) -> VoloResult<OutputStatusResult> {
+    let session_id = request.session_id.clone();
+    let nodes = tokio::task::spawn_blocking(move || {
+        output::status(&transport(request.ssh_user)?, &request.screen, &request.paths)
+    })
+    .await
+    .map_err(|error| VoloError::Other(format!("output status task failed: {error}")))??;
+    Ok(OutputStatusResult { session_id, nodes })
 }
 
 #[derive(Debug, Clone, Deserialize)]

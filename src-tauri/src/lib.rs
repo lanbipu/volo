@@ -406,6 +406,7 @@ pub fn run() {
             commands::output::output_deploy,
             commands::output::output_start,
             commands::output::output_stop,
+            commands::output::output_status,
             commands::output::output_show,
             commands::output::output_play_sequence,
             commands::output::output_sequence_abort,

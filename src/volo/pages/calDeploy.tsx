@@ -7,7 +7,7 @@ import { listMonitors, openPatternPlayer, closePatternPlayer, playerShowPattern,
 import { listMachines, getMachineDetail } from "../api/commands";
 import {
   DEFAULT_NDISPLAY_OUTPUT_PATHS,
-  outputPreflight, outputDeploy, outputStart, outputShow, outputStop,
+  outputPreflight, outputDeploy, outputStart, outputShow, outputStop, outputStatus,
   listenNDisplayOutputEvent,
 } from "../api/ndisplayOutput";
 import { generatedPatternImagePath } from "../api/meshVisualCommands";
@@ -210,6 +210,34 @@ import { generatedPatternImagePath } from "../api/meshVisualCommands";
       }).then((fn) => alive ? cleanups.push(fn) : fn()).catch(() => {});
       return () => { alive = false; cleanups.forEach((fn) => fn()); };
     }, [sessionId]);
+
+    /* App 重启后 deployState 不落盘：mount 时探测远端是否有本会话遗留的
+       nDisplay 进程存活，有则自动恢复「黑场待机」状态（不向墙面发指令）。
+       权威始终是进程探测，不持久化 deployState。 */
+    const probedRef = useRef(false);
+    useEffect(() => {
+      if (!topo || probedRef.current) return;
+      probedRef.current = true;
+      if (s.deployState !== 'idle') return;   // 本会话已有权威状态
+      let alive = true;
+      const req = { session_id: sessionId, screen: window.stageScreenForOutput(proj.config, topology), paths: OUTPUT_PATHS, ssh_user: null };
+      outputStatus(req)
+        .then((res) => {
+          if (!alive) return;
+          const running = res.nodes.filter((n) => n.running);
+          if (!running.length) return;
+          setPhase('deployed');
+          s.setDeployState('standby');
+          s.setDeployMeta && s.setDeployMeta({ channel: 'WinRM', target: 'nDisplay 集群', nodeCount: topo.nodes.length });
+          const partial = running.length < topo.nodes.length;
+          s.pushLog({ lv: partial ? 'warn' : 'ok', cat: 'deploy',
+            msg: '检测到上次会话的 nDisplay 部署仍在运行 · ' + running.length + '/' + topo.nodes.length +
+                 ' 节点 · 已恢复待机状态' + (partial ? ' · 部分节点未运行，建议停止后重新部署' : '') });
+        })
+        .catch((e) => s.pushLog({ lv: 'info', cat: 'deploy',
+          msg: '检测远端部署状态失败（按未部署处理） · ' + (e && e.message || e) }));
+      return () => { alive = false; };
+    }, [topo]);
 
     const openTopo = () => s.setModal({ xwide: true, render: ({ close }) => window.VOLO_GRID_MODALS.topology(s, close) });
 

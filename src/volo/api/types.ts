@@ -1667,6 +1667,18 @@ export interface OutputCommandResult {
   nodes: OutputNodeResult[];
 }
 
+export interface OutputNodeStatus {
+  node_id: string;
+  host: string;
+  running: boolean;
+  message: string;
+}
+
+export interface OutputStatusResult {
+  session_id: string;
+  nodes: OutputNodeStatus[];
+}
+
 export interface NDisplayOutputEvent {
   session_id: string;
   operation: OutputOperation;
