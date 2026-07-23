@@ -340,13 +340,27 @@ def _emit_withheld_validation(
         train_obs = [Observation(camera_idx=remap[o.camera_idx], cabinet_idx=o.cabinet_idx,
                                  p_local=o.p_local, pixel=o.pixel, sigma_px=o.sigma_px)
                      for o in observations if o.camera_idx in train_set]
+        # Match the primary solve's iteration budget and budget-accept semantics:
+        # the default max_nfev=200 is 1/10th of the scale-based budget and joint
+        # captures stall (rms≈0.18px) without triggering xtol/ftol, so scipy
+        # success stays False -> a good re-solve was misjudged as non-convergent.
+        # Inline the acceptance check (do NOT reuse _ba_acceptance_failed: it emits
+        # fatal ba_diverged events; validation must never block or emit events).
+        train_max_nfev = _ba_max_nfev(n_cabinets, len(train))
         train_res = model_constrained_ba(
             K=K, observations=train_obs, n_cameras=len(train), n_cabinets=n_cabinets,
             root_cabinet_idx=root_idx,
             init_cameras=[result.camera_poses[c] for c in train],
-            init_cabinets=dict(result.cabinet_poses), compute_covariance=False)
-        if not train_res.converged:
-            _write({"passed": False, "reason": "train_resolve_did_not_converge"})
+            init_cabinets=dict(result.cabinet_poses), compute_covariance=False,
+            max_nfev=train_max_nfev)
+        train_accepted = train_res.converged or (
+            train_res.iterations >= train_max_nfev
+            and train_max_nfev >= BA_NFEV_MIN_FOR_BUDGET_ACCEPT
+            and train_res.rms_reprojection_px <= BA_RMS_BUDGET_ACCEPT_PX)
+        if not train_accepted:
+            _write({"passed": False, "reason": "train_resolve_did_not_converge",
+                    "train_rms_px": train_res.rms_reprojection_px,
+                    "train_iterations": train_res.iterations})
             return
         train_cabinets = train_res.cabinet_poses
 

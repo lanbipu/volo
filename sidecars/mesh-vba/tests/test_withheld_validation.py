@@ -4,11 +4,13 @@ Validates the mechanism both ways on synthetic two-screen scenes: consistent
 geometry passes, inconsistent observations fail, and too few bridge views fails
 closed. The formal export gate reads the emitted `.validation.json` pointer
 `/withheld_validation/passed` (src-tauri/src/commands/mesh_export.rs)."""
+import dataclasses
 import json
 
 import cv2
 import numpy as np
 
+import lmt_vba_sidecar.reconstruct as reconstruct
 from lmt_vba_sidecar.model_constrained_ba import Observation, model_constrained_ba
 from lmt_vba_sidecar.reconstruct import _emit_withheld_validation
 
@@ -101,3 +103,39 @@ def test_too_few_bridges_fails_closed(tmp_path):
     wv = _run(tmp_path, obs, pvcc, m, result)
     assert wv["passed"] is False
     assert wv["reason"] == "insufficient_bridge_views_for_holdout"
+
+
+def _patch_train_ba(monkeypatch, *, converged, rms=None):
+    """Wrap reconstruct.model_constrained_ba: call the real solver, then force the
+    returned BAResult to the budget-exhausted shape (converged flag, iterations
+    pinned to the passed max_nfev, optional rms override). Patched AFTER the scene
+    is built, so only the _emit_withheld_validation train re-solve is affected."""
+    real = reconstruct.model_constrained_ba
+
+    def wrapper(*args, **kwargs):
+        res = real(*args, **kwargs)
+        max_nfev = kwargs["max_nfev"]
+        return dataclasses.replace(
+            res, converged=converged, iterations=max_nfev,
+            rms_reprojection_px=(res.rms_reprojection_px if rms is None else rms))
+
+    monkeypatch.setattr(reconstruct, "model_constrained_ba", wrapper)
+
+
+def test_budget_exhausted_good_rms_accepted(tmp_path, monkeypatch):
+    # Clean scene -> real train re-solve rms ~0px; force scipy success=False with
+    # iterations at the budget. The budget-accept path must still pass it.
+    obs, pvcc, m, result = _two_screen_scene(noise=0.0)
+    _patch_train_ba(monkeypatch, converged=False)
+    wv = _run(tmp_path, obs, pvcc, m, result)
+    assert wv["passed"] is True, wv
+
+
+def test_budget_exhausted_bad_rms_still_fails(tmp_path, monkeypatch):
+    # Budget exhausted AND rms above the accept threshold -> not a no-op放行.
+    obs, pvcc, m, result = _two_screen_scene(noise=0.0)
+    _patch_train_ba(monkeypatch, converged=False, rms=1.5)
+    wv = _run(tmp_path, obs, pvcc, m, result)
+    assert wv["passed"] is False, wv
+    assert wv["reason"] == "train_resolve_did_not_converge"
+    assert "train_rms_px" in wv
