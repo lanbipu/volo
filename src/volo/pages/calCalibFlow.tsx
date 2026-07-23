@@ -910,6 +910,15 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
             lensPath,
             intrinsics,
           });
+          /* fail-closed：投影可能 status:ok 却几何全空（位姿约定不一致 / 全部落在画面外），
+             这会让静帧 AR 假绿。至少一屏有 perimeter 或 segments 才算通过。 */
+          const hasGeometry = !!(grid && Array.isArray(grid.screens) && grid.screens.some((sc) => (
+            (Array.isArray(sc.perimeter) && sc.perimeter.length > 0)
+            || (Array.isArray(sc.segments) && sc.segments.length > 0)
+          )));
+          if (!hasGeometry) {
+            throw new Error('AR 投影为空 · 位姿与屏幕几何不一致或全部落在画面外');
+          }
           if (alive) {
             setArGrid(grid);
             setArStaticOk(true);

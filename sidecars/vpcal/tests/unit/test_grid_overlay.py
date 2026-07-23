@@ -119,3 +119,32 @@ def test_opencv_T_from_stage_pose_roundtrip():
     T = opencv_T_from_stage_pose(pose)
     assert np.allclose(T[:3, :3], R_cv, atol=1e-9)
     assert np.allclose(T[:3, 3], t_cv, atol=1e-9)
+
+
+def test_opencv_T_from_stage_pose_legacy_cv_convention_passthrough():
+    # Legacy fixed-observation artifacts stored matrix_4x4 as the raw OpenCV
+    # camera←Stage [R|t] (translation == tvec). With position_mm + tvec present,
+    # opencv_T_from_stage_pose must detect that and return the matrix unchanged.
+    R_cv = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 1.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    t_cv = np.array([100.0, 200.0, 3000.0])
+    cam_pos = -R_cv.T @ t_cv
+    M = np.eye(4)
+    M[:3, :3] = R_cv
+    M[:3, 3] = t_cv
+    pose = {
+        "camera_from_stage": {
+            "matrix_4x4": M.tolist(),
+            "position_mm": cam_pos.tolist(),
+            "tvec": t_cv.tolist(),
+        }
+    }
+    T = opencv_T_from_stage_pose(pose)
+    assert np.allclose(T[:3, :3], R_cv, atol=1e-9)
+    assert np.allclose(T[:3, 3], t_cv, atol=1e-9)

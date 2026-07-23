@@ -104,11 +104,29 @@ def opencv_T_from_stage_pose(pose: dict[str, Any]) -> Array:
     The pose CLI stores ``camera_from_stage.matrix_4x4`` as Stage←VoloCamera
     (Three.js Y-up / −Z forward).  Projection uses OpenCV camera (+Y down, +Z
     forward), so undo the Volo basis flip before inverting to camera←Stage.
+
+    Legacy compatibility: fixed-observation artifacts written before the
+    producer归一 stored ``matrix_4x4`` as the raw OpenCV camera←Stage ``[R|t]``
+    (translation == ``tvec``, not the camera's Stage position). Detect that
+    convention (translation matches ``tvec`` but not ``position_mm``) and pass
+    the matrix through unchanged so already-solved runs render AR without
+    re-solving.
     """
     cam = pose.get("camera_from_stage") or {}
     M = np.asarray(cam["matrix_4x4"], dtype=np.float64)
     if M.shape != (4, 4):
         raise ValueError(f"camera_from_stage.matrix_4x4 must be 4x4, got {M.shape}")
+    pos = cam.get("position_mm")
+    tvec = cam.get("tvec")
+    if pos is not None and tvec is not None:
+        t = M[:3, 3]
+        pos_arr = np.asarray(pos, dtype=np.float64)
+        tvec_arr = np.asarray(tvec, dtype=np.float64)
+        if not np.allclose(t, pos_arr, atol=1e-3) and np.allclose(t, tvec_arr, atol=1e-3):
+            T = np.eye(4, dtype=np.float64)
+            T[:3, :3] = M[:3, :3]
+            T[:3, 3] = M[:3, 3]
+            return T
     cv_from_volo = np.diag([1.0, -1.0, -1.0])
     R_stage_from_cv = M[:3, :3] @ cv_from_volo
     t_cam_in_stage = M[:3, 3]

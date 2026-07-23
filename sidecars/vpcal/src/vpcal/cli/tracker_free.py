@@ -493,6 +493,19 @@ def _finalize_fixed_observation_result(
     ptr = _rotation_to_ptr(camera_rotation)
     result.camera_from_stage["euler_deg"] = {"rx": euler[0], "ry": euler[1], "rz": euler[2]}
     result.camera_from_stage["ptr_deg"] = {"pan": ptr[0], "tilt": ptr[1], "roll": ptr[2]}
+    # Normalise matrix_4x4 to the same Stage←VoloCamera convention as
+    # `tracker-free pose` (rotation in Volo/Three.js basis, translation =
+    # camera position in Stage). The solver's raw _pose_dict stores the OpenCV
+    # camera←Stage [R|t] here, which the sole consumer (opencv_T_from_stage_pose)
+    # would misread as Volo, projecting every grid point behind the camera. rvec/
+    # tvec stay untouched (OpenCV semantics).
+    camera_position = np.asarray(
+        result.camera_from_stage["position_mm"], dtype=np.float64
+    )
+    stage_from_camera = np.eye(4, dtype=np.float64)
+    stage_from_camera[:3, :3] = camera_rotation
+    stage_from_camera[:3, 3] = camera_position
+    result.camera_from_stage["matrix_4x4"] = stage_from_camera.tolist()
     write_fixed_observation_result(result, out_path)
     if stage_pose_out:
         sl = None if result.session_lens is None else result.session_lens.to_dict()
