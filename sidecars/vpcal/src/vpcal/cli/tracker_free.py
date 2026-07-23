@@ -431,6 +431,111 @@ def pose(ctx, image, screen_targets, lens_path, fx, fy, cx, cy, focal_mm,
     run_operation("tracker_free.pose", body, **flags)
 
 
+def _resolve_known_lens_and_mode(lens_path, mode: str, image_size: tuple[int, int]):
+    """Shared lens-qualification + auto-mode-resolution for the VP-QSP and
+    structured-light fixed-observation commands — they only differ in how
+    correspondences are built, not in how a --lens/--mode is interpreted."""
+    from vpcal.core.errors import MasterLensRequired
+    from vpcal.core.fixed_observation import KnownLens, resolve_mode
+
+    width, height = image_size
+    known = None
+    if lens_path:
+        raw_lens = json.loads(Path(lens_path).read_text(encoding="utf-8"))
+        reasons = _lens_qualification_reasons(raw_lens)
+        is_master = not reasons
+        if mode.lower() == "known-lens" and reasons:
+            raise MasterLensRequired(
+                "known-lens mode requires a qualified master lens: " + "; ".join(reasons),
+                details={"reasons": reasons},
+            )
+        if is_master or mode.lower() != "joint-session-lens":
+            known = KnownLens(
+                fx=float(raw_lens["fx"]),
+                fy=float(raw_lens.get("fy", raw_lens["fx"])),
+                cx=float(raw_lens["cx"]),
+                cy=float(raw_lens["cy"]),
+                dist_coeffs=[float(x) for x in raw_lens.get("dist_coeffs", [0, 0, 0, 0, 0])],
+                image_size=tuple(raw_lens.get("image_size", [width, height])),
+                is_master=is_master,
+                session_coupled=bool(raw_lens.get("session_coupled", False)),
+            )
+
+    mode_req = mode.lower()
+    mode_resolved = resolve_mode(
+        mode_req,  # type: ignore[arg-type]
+        has_qualified_master_lens=known is not None and known.is_master,
+    )
+    if mode_resolved == "known-lens" and (known is None or not known.is_master):
+        raise MasterLensRequired(
+            "resolved mode known-lens but no qualified master lens was provided"
+        )
+    return known, mode_req, mode_resolved
+
+
+def _finalize_fixed_observation_result(
+    result, *, command_label: str, out_path: str, stage_pose_out, fallback_image_size,
+) -> OperationOutput:
+    """Shared camera_from_stage enrichment + artifact persistence for the
+    VP-QSP and structured-light fixed-observation commands."""
+    import cv2
+    import numpy as np
+
+    from vpcal.core.fixed_observation import write_fixed_observation_result
+
+    # Same Volo/Three.js-basis Euler + Pan/Tilt/Roll enrichment as `tracker-free
+    # pose`, so UI consumers (project camera schema / QSP Pose report) never
+    # re-derive rotations.
+    rvec = np.asarray(result.camera_from_stage["rvec"], dtype=np.float64)
+    cv_camera_from_stage_R, _ = cv2.Rodrigues(rvec)  # stage → CV camera
+    camera_rotation = _volo_camera_rotation(cv_camera_from_stage_R.T)
+    euler = _rotation_to_euler(camera_rotation)
+    ptr = _rotation_to_ptr(camera_rotation)
+    result.camera_from_stage["euler_deg"] = {"rx": euler[0], "ry": euler[1], "rz": euler[2]}
+    result.camera_from_stage["ptr_deg"] = {"pan": ptr[0], "tilt": ptr[1], "roll": ptr[2]}
+    write_fixed_observation_result(result, out_path)
+    if stage_pose_out:
+        sl = None if result.session_lens is None else result.session_lens.to_dict()
+        image_size = (
+            list(result.session_lens.image_size)
+            if result.session_lens is not None
+            else list(fallback_image_size)
+        )
+        mirror = {
+            "schema_version": "volo_stage_pose.v2",
+            "solve_kind": (
+                "joint_single_observation"
+                if result.solve_kind == "joint_single_observation"
+                else "fixed_extrinsics_only"
+            ),
+            "formal": result.formal,
+            "image_size": image_size,
+            "camera_from_stage": result.camera_from_stage,
+            "rms_reprojection_px": result.rms_reprojection_px,
+            "num_markers": result.num_correspondences,
+            "num_inliers": result.num_inliers,
+            "session_lens": sl,
+            "camera_state_fingerprint": result.camera_state_fingerprint,
+            "stage_geometry_fingerprint": result.stage_geometry_fingerprint,
+            "qualification": result.qualification,
+            "preflight": result.preflight if result.preflight else {"passed": True},
+            "fixed_observation_path": out_path,
+            "mode_requested": result.mode_requested,
+            "mode_resolved": result.mode_resolved,
+            "model_level": result.model_level,
+            "stale": False,
+        }
+        Path(stage_pose_out).parent.mkdir(parents=True, exist_ok=True)
+        Path(stage_pose_out).write_text(json.dumps(mirror, indent=2), encoding="utf-8")
+    data = result.to_dict()
+    text = (
+        f"{command_label} {result.mode_resolved} "
+        f"rms={result.rms_reprojection_px:.3f}px "
+        f"model={result.model_level} → {out_path}"
+    )
+    return OperationOutput(data=data, text=text)
+
+
 @tracker_free.command(name="fixed-observation")
 @click.option("--image", required=True, type=click.Path(exists=True), help="Single fixed-camera observation image.")
 @click.option(
@@ -487,16 +592,12 @@ def fixed_observation_cmd(
             detect_markers,
             detector_config_for_mpc,
         )
-        from vpcal.core.errors import MasterLensRequired
         from vpcal.core.fixed_observation import (
             CameraStateFingerprint,
             Correspondence,
             FixedObservationInput,
-            KnownLens,
             make_attest_timestamp,
-            resolve_mode,
             solve_fixed_observation,
-            write_fixed_observation_result,
         )
         from vpcal.core.screen_geometry import enumerate_markers
         from vpcal.core.tracker_free import StagePoseTarget
@@ -516,37 +617,7 @@ def fixed_observation_cmd(
             raise click.UsageError(f"cannot read image: {image}")
         height, width = frame.shape[:2]
 
-        known: KnownLens | None = None
-        if lens_path:
-            raw_lens = json.loads(Path(lens_path).read_text(encoding="utf-8"))
-            reasons = _lens_qualification_reasons(raw_lens)
-            is_master = not reasons
-            if mode.lower() == "known-lens" and reasons:
-                raise MasterLensRequired(
-                    "known-lens mode requires a qualified master lens: " + "; ".join(reasons),
-                    details={"reasons": reasons},
-                )
-            if is_master or mode.lower() != "joint-session-lens":
-                known = KnownLens(
-                    fx=float(raw_lens["fx"]),
-                    fy=float(raw_lens.get("fy", raw_lens["fx"])),
-                    cx=float(raw_lens["cx"]),
-                    cy=float(raw_lens["cy"]),
-                    dist_coeffs=[float(x) for x in raw_lens.get("dist_coeffs", [0, 0, 0, 0, 0])],
-                    image_size=tuple(raw_lens.get("image_size", [width, height])),
-                    is_master=is_master,
-                    session_coupled=bool(raw_lens.get("session_coupled", False)),
-                )
-
-        mode_req = mode.lower()
-        mode_resolved = resolve_mode(
-            mode_req,  # type: ignore[arg-type]
-            has_qualified_master_lens=known is not None and known.is_master,
-        )
-        if mode_resolved == "known-lens" and (known is None or not known.is_master):
-            raise MasterLensRequired(
-                "resolved mode known-lens but no qualified master lens was provided"
-            )
+        known, mode_req, mode_resolved = _resolve_known_lens_and_mode(lens_path, mode, (width, height))
 
         world = {}
         normals: dict[str, tuple[float, float, float]] = {}
@@ -648,63 +719,215 @@ def fixed_observation_cmd(
             if float(getattr(d, "confidence", 1.0)) < 1.0
             and not bool(getattr(d, "localization_rejected", False))
         )
-        # Enrich camera_from_stage with the Volo/Three.js-basis Euler + Pan/Tilt/Roll
-        # decomposition (same convention as `tracker-free pose`) so UI consumers
-        # (project camera schema / QSP Pose report) never re-derive rotations.
-        rvec = np.asarray(result.camera_from_stage["rvec"], dtype=np.float64)
-        cv_camera_from_stage_R, _ = cv2.Rodrigues(rvec)  # stage → CV camera
-        camera_rotation = _volo_camera_rotation(cv_camera_from_stage_R.T)
-        euler = _rotation_to_euler(camera_rotation)
-        ptr = _rotation_to_ptr(camera_rotation)
-        result.camera_from_stage["euler_deg"] = {
-            "rx": euler[0], "ry": euler[1], "rz": euler[2],
-        }
-        result.camera_from_stage["ptr_deg"] = {
-            "pan": ptr[0], "tilt": ptr[1], "roll": ptr[2],
-        }
-        write_fixed_observation_result(result, out_path)
-        if stage_pose_out:
-            sl = None if result.session_lens is None else result.session_lens.to_dict()
-            image_size = (
-                list(result.session_lens.image_size)
-                if result.session_lens is not None
-                else list(inp.image_size)
-            )
-            mirror = {
-                "schema_version": "volo_stage_pose.v2",
-                "solve_kind": (
-                    "joint_single_observation"
-                    if result.solve_kind == "joint_single_observation"
-                    else "fixed_extrinsics_only"
-                ),
-                "formal": result.formal,
-                "image_size": image_size,
-                "camera_from_stage": result.camera_from_stage,
-                "rms_reprojection_px": result.rms_reprojection_px,
-                "num_markers": result.num_correspondences,
-                "num_inliers": result.num_inliers,
-                "session_lens": sl,
-                "camera_state_fingerprint": result.camera_state_fingerprint,
-                "stage_geometry_fingerprint": result.stage_geometry_fingerprint,
-                "qualification": result.qualification,
-                "preflight": result.preflight if result.preflight else {"passed": True},
-                "fixed_observation_path": out_path,
-                "mode_requested": result.mode_requested,
-                "mode_resolved": result.mode_resolved,
-                "model_level": result.model_level,
-                "stale": False,
-            }
-            Path(stage_pose_out).parent.mkdir(parents=True, exist_ok=True)
-            Path(stage_pose_out).write_text(json.dumps(mirror, indent=2), encoding="utf-8")
-        data = result.to_dict()
-        text = (
-            f"fixed-observation {result.mode_resolved} "
-            f"rms={result.rms_reprojection_px:.3f}px "
-            f"model={result.model_level} → {out_path}"
+        return _finalize_fixed_observation_result(
+            result, command_label="fixed-observation", out_path=out_path,
+            stage_pose_out=stage_pose_out, fallback_image_size=inp.image_size,
         )
-        return OperationOutput(data=data, text=text)
 
     run_operation("tracker_free.fixed_observation", body, **flags)
+
+
+@tracker_free.command(name="fixed-observation-sl")
+@click.option(
+    "--screen-target", "screen_targets", multiple=True, required=True,
+    type=(click.Path(exists=True), click.Path(exists=True), click.Path(exists=True)),
+    metavar="SCREEN_JSON SL_META_JSON CORR_JSON",
+    help="Repeatable per-screen bundle: vpcal ScreenDefinition + mesh-vba sl_meta.json "
+         "+ decoded corr.json. One entry per screen played/decoded in this fixed-camera "
+         "observation (camera does not move between screens).",
+)
+@click.option(
+    "--mode",
+    type=click.Choice(["auto", "known-lens", "joint-session-lens"], case_sensitive=False),
+    default="auto",
+    show_default=True,
+    help="auto: known-lens if --lens is a qualified master, else joint-session-lens.",
+)
+@click.option("--lens", "lens_path", type=click.Path(exists=True), default=None,
+              help="Optional Qualified Master Lens JSON (required for known-lens).")
+@click.option("--camera-id", default="unknown", show_default=True)
+@click.option("--transfer-path", default="", show_default=True)
+@click.option("--attest-focus-zoom", is_flag=True, default=False,
+              help="User attests focus/zoom unchanged (stored in fingerprint).")
+@click.option("--stage-geometry-fingerprint", default="", show_default=True)
+@click.option("--weak-focal-px", type=float, default=None,
+              help="Optional weak focal initial guess (px); not a qualification anchor.")
+@click.option("--out", "out_path", required=True, type=click.Path(),
+              help="Output fixed_observation_result.v1 JSON.")
+@click.option("--stage-pose-out", "stage_pose_out", type=click.Path(), default=None,
+              help="Optional volo_stage_pose.v2-compatible mirror for AR/export consumers.")
+@common_options
+@click.pass_context
+def fixed_observation_sl_cmd(
+    ctx,
+    screen_targets,
+    mode,
+    lens_path,
+    camera_id,
+    transfer_path,
+    attest_focus_zoom,
+    stage_geometry_fingerprint,
+    weak_focal_px,
+    out_path,
+    stage_pose_out,
+    **flags,
+) -> None:
+    """Structured-light fixed single-observation solve: known-lens extrinsics or
+    joint session lens, built from mesh-vba decoded dot correspondences.
+
+    Sequential per-screen capture: the camera does not move between screens, but
+    each screen is played and decoded independently (--screen-target repeated once
+    per screen). World points are computed via the SAME vpcal ScreenDefinition
+    uv_to_world() path VP-QSP uses (screen_geometry.uv_to_pattern_pixel(), inverted)
+    — mesh-vba's own nominal reconstruction frame (sl_reconstruct.py) is NOT reused
+    here, because it is a different, un-placed coordinate system.
+    """
+
+    def body() -> OperationOutput:
+        import hashlib
+
+        import numpy as np
+
+        from vpcal.core.errors import ArgumentError
+        from vpcal.core.fixed_observation import (
+            CameraStateFingerprint,
+            Correspondence,
+            FixedObservationInput,
+            make_attest_timestamp,
+            solve_fixed_observation,
+        )
+        from vpcal.io.screen_io import load_screen
+
+        correspondences: list[Correspondence] = []
+        screen_normals: dict[str, tuple[float, float, float]] = {}
+        image_sizes: set[tuple[int, int]] = set()
+        decoded_total = 0
+
+        for screen_path, sl_meta_path, corr_path in screen_targets:
+            screen = load_screen(screen_path)
+            sl_meta_bytes = Path(sl_meta_path).read_bytes()
+            sl_meta = json.loads(sl_meta_bytes)
+            corr = json.loads(Path(corr_path).read_text())
+
+            # Provenance gate (mirrors sl_reconstruct.validate_sl_provenance, scoped
+            # to one screen: this corr must have been decoded against exactly this
+            # sl_meta, not a stale/edited/wrong-screen one).
+            expected_sha = hashlib.sha256(sl_meta_bytes).hexdigest()
+            if corr.get("sl_meta_sha256") != expected_sha:
+                raise ArgumentError(
+                    f"corr '{corr_path}' was decoded against a different sl_meta "
+                    f"(sha256 mismatch) than '{sl_meta_path}'",
+                    details={"corr": corr_path, "sl_meta": sl_meta_path},
+                )
+            if corr.get("screen_id") != sl_meta.get("screen_id"):
+                raise ArgumentError(
+                    f"corr '{corr_path}' screen_id '{corr.get('screen_id')}' != "
+                    f"sl_meta '{sl_meta_path}' screen_id '{sl_meta.get('screen_id')}'",
+                    details={"corr": corr_path, "sl_meta": sl_meta_path},
+                )
+            label = str(sl_meta["screen_id"])
+            width_px, height_px = (int(v) for v in sl_meta["screen_resolution"])
+            dot_px = {int(d["id"]): (float(d["u"]), float(d["v"])) for d in sl_meta["dots"]}
+
+            # Same section[0]-only simplification as the VP-QSP path above (§ tracker_free.py
+            # fixed_observation_cmd): export_vpcal_screen only ever emits one Plane section
+            # per screen for reconstructed (non-nominal) geometry, so this is not a shortcut.
+            section = screen.sections[0]
+            try:
+                p00 = np.asarray(section.uv_to_world(0.0, 0.0), dtype=np.float64)
+                p10 = np.asarray(section.uv_to_world(1.0, 0.0), dtype=np.float64)
+                p01 = np.asarray(section.uv_to_world(0.0, 1.0), dtype=np.float64)
+                n = np.cross(p10 - p00, p01 - p00)
+                n = n / max(np.linalg.norm(n), 1.0e-12)
+                screen_normals[label] = (float(n[0]), float(n[1]), float(n[2]))
+            except Exception:  # noqa: BLE001
+                screen_normals[label] = (0.0, 0.0, 1.0)
+
+            image_sizes.add(tuple(int(v) for v in corr["camera_image_size"]))
+            decoded_total += len(corr["points"])
+            for pt in corr["points"]:
+                dot_id = int(pt["id"])
+                px = dot_px.get(dot_id)
+                if px is None:
+                    continue  # decoded id not in this sl_meta (defensive, mirrors sl_reconstruct)
+                u_px, v_px = px
+                # Exact inverse of screen_geometry.uv_to_pattern_pixel: that function maps
+                # section-UV -> rendered pixel as (u*w-0.5, (1-v)*h-0.5); this is its inverse,
+                # so a structured-light dot lands on the SAME uv_to_world() world point a
+                # VP-QSP marker at the same screen pixel would.
+                u_frac = (u_px + 0.5) / width_px
+                v_frac = 1.0 - (v_px + 0.5) / height_px
+                world = section.uv_to_world(u_frac, v_frac)
+                correspondences.append(
+                    Correspondence(
+                        world_mm=(float(world[0]), float(world[1]), float(world[2])),
+                        pixel_uv=(float(pt["x"]), float(pt["y"])),
+                        screen_label=label,
+                        quality=1.0,
+                        point_id=f"{label}:{dot_id}",
+                    )
+                )
+
+        if not correspondences:
+            raise ArgumentError("no usable structured-light correspondences across any screen target")
+        if len(image_sizes) != 1:
+            raise ArgumentError(
+                f"correspondence files disagree on camera_image_size: {sorted(image_sizes)}"
+            )
+        width, height = next(iter(image_sizes))
+
+        known, mode_req, mode_resolved = _resolve_known_lens_and_mode(lens_path, mode, (width, height))
+
+        use_known = mode_resolved == "known-lens"
+        inp = FixedObservationInput(
+            correspondences=correspondences,
+            image_size=(width, height),
+            screen_normals=screen_normals,
+            stage_geometry_fingerprint=stage_geometry_fingerprint,
+            camera_state=CameraStateFingerprint(
+                camera_id=camera_id,
+                resolution=(width, height),
+                transfer_path=transfer_path,
+                focus_zoom_attested=bool(attest_focus_zoom),
+                attest_timestamp=make_attest_timestamp() if attest_focus_zoom else None,
+            ),
+            mode_requested=mode_req,  # type: ignore[arg-type]
+            known_lens=known if use_known else None,
+            weak_focal_guess_px=weak_focal_px,
+            formal=True,
+        )
+        if flags.get("dry_run"):
+            per_screen = {
+                label: sum(1 for c in correspondences if c.screen_label == label)
+                for label in screen_normals
+            }
+            return OperationOutput(
+                data={
+                    "exit_code": 0,
+                    "dry_run_plan": {
+                        "screens": [str(t[0]) for t in screen_targets],
+                        "mode_requested": mode_req,
+                        "mode_resolved": mode_resolved,
+                        "correspondences": len(correspondences),
+                        "correspondences_per_screen": per_screen,
+                        "output": out_path,
+                    },
+                },
+                text="Dry run OK.",
+            )
+
+        result = solve_fixed_observation(inp)
+        # No per-point confidence/localization-reject signal exists in the current
+        # corr.json schema (sl_decode.py already only emits successfully decoded dots),
+        # unlike VP-QSP's detection funnel. Report what is actually known.
+        result.detection["decoded"] = decoded_total
+        result.detection["matched"] = len(correspondences)
+        return _finalize_fixed_observation_result(
+            result, command_label="fixed-observation-sl", out_path=out_path,
+            stage_pose_out=stage_pose_out, fallback_image_size=inp.image_size,
+        )
+
+    run_operation("tracker_free.fixed_observation_sl", body, **flags)
 
 
 @tracker_free.command(name="spatial")

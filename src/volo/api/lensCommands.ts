@@ -430,6 +430,57 @@ export async function trackerFreeFixedObservation(opts: {
   return env.data as FixedObservationResult;
 }
 
+/** `vpcal tracker-free fixed-observation-sl` — same solver as `fixed-observation`,
+ *  fed by mesh-vba structured-light dot correspondences instead of VP-QSP marker
+ *  detection. One entry per screen played/decoded (camera fixed throughout). */
+export async function trackerFreeFixedObservationSl(opts: {
+  screenTargets: Array<{ screenJson: string; slMeta: string; corr: string }>;
+  mode?: "auto" | "known-lens" | "joint-session-lens";
+  lensPath?: string | null;
+  outPath: string;
+  stagePoseOut?: string | null;
+  cameraId?: string;
+  transferPath?: string;
+  attestFocusZoom?: boolean;
+  stageGeometryFingerprint?: string;
+  weakFocalPx?: number | null;
+}): Promise<FixedObservationResult> {
+  if (!opts.screenTargets.length) {
+    throw new Error("tracker-free fixed-observation-sl requires at least one screen target");
+  }
+  const args = [
+    "tracker-free", "fixed-observation-sl",
+    "--mode", opts.mode ?? "auto",
+    "--out", forSidecarFsPath(opts.outPath),
+  ];
+  for (const target of opts.screenTargets) {
+    args.push(
+      "--screen-target",
+      forSidecarFsPath(target.screenJson),
+      forSidecarFsPath(target.slMeta),
+      forSidecarFsPath(target.corr),
+    );
+  }
+  if (opts.lensPath) args.push("--lens", forSidecarFsPath(opts.lensPath));
+  if (opts.stagePoseOut) args.push("--stage-pose-out", forSidecarFsPath(opts.stagePoseOut));
+  if (opts.cameraId) args.push("--camera-id", opts.cameraId);
+  if (opts.transferPath) args.push("--transfer-path", opts.transferPath);
+  if (opts.attestFocusZoom) args.push("--attest-focus-zoom");
+  if (opts.stageGeometryFingerprint) {
+    args.push("--stage-geometry-fingerprint", opts.stageGeometryFingerprint);
+  }
+  if (opts.weakFocalPx != null && Number.isFinite(opts.weakFocalPx)) {
+    args.push("--weak-focal-px", String(opts.weakFocalPx));
+  }
+  args.push("--output", "json");
+  const out = await spawnSidecar("vpcal", args);
+  const env = parseEnvelope(out);
+  if (env.status && env.status !== "ok") {
+    throw envelopeError(env, `tracker-free fixed-observation-sl failed (exit ${out.exit_code})`);
+  }
+  return env.data as FixedObservationResult;
+}
+
 export interface GridOverlayScreen {
   label: string;
   /** Normalised segments `[x1,y1,x2,y2]` in 0–1 image space. */

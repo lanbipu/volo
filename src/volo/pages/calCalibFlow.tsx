@@ -9,13 +9,15 @@ import { lensWorkspacePaths } from "../api/lensWorkspace";
 import {
   listLensSessions, deleteLensSession, readLensQaReport, readImageAsDataUrl,
   startCaptureStills, stillsFinish,
-  trackerFreeLensCal, trackerFreeLensInfo, trackerFreeStagePose, trackerFreeFixedObservation, trackerFreeGrid,
+  trackerFreeLensCal, trackerFreeLensInfo, trackerFreeStagePose, trackerFreeFixedObservation,
+  trackerFreeFixedObservationSl, trackerFreeGrid,
   qualityFromRms, qualityFromLabel, writeFixedRunMeta,
 } from "../api/lensCommands";
 import { pickDirectory, pickFile } from "../api/commands";
 import { probeTrackingSource } from "../api/captureProfiles";
 import {
-  spawnSidecarStreaming, cancelSidecarTask, cancelSidecarTaskAwaitExit, useSidecarStream, listenSidecarStream,
+  spawnSidecarStreaming, cancelSidecarTask, cancelSidecarTaskAwaitExit, finishSidecarTaskAwaitExit,
+  useSidecarStream, listenSidecarStream,
 } from "../api/sidecarStream";
 import { useCaptureSession } from "./devCapture";
 import {
@@ -1338,23 +1340,24 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
       setArStage('idle');
       setArOn(false);
 
-      /* —— 结构光 × nDisplay：生成 → 起录像 → play-sequence → 停录像 → 解码 —— */
+      /* —— 结构光 × nDisplay：逐屏顺序 生成→录像→播放→解码（相机不动），
+         合并全部屏幕对应关系后一次 fixed-observation-sl 求解 —— */
       if (isSl) {
         const proj = CX().projStore ? CX().projStore.get() : null;
         if (!proj || !proj.path) {
           s.pushLog({ lv: 'err', cat: 'lens', msg: '无打开项目，无法生成结构光序列' });
           return;
         }
-        const screenId = s.calActiveScreen;
-        if (!screenId) {
-          s.pushLog({ lv: 'err', cat: 'lens', msg: '未选活动屏幕' });
+        const slTargets = ag.targets;
+        if (!slTargets.length) {
+          s.pushLog({ lv: 'err', cat: 'lens', msg: '未选标定屏幕' });
           return;
         }
         const topology = window.resolveProjectTopology && window.resolveProjectTopology(proj.config);
-        const screen = topology
+        const outputScreen = topology
           ? window.stageScreenForOutput(proj.config, topology)
-          : (proj.config && proj.config.screens[screenId]);
-        if (!screen) {
+          : (proj.config && proj.config.screens[slTargets[0].id]);
+        if (!outputScreen) {
           s.pushLog({ lv: 'err', cat: 'lens', msg: '无可用输出屏幕' });
           return;
         }
@@ -1365,59 +1368,136 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
         const sessionOut = joinPath(outDir, 'sl_' + new Date().toISOString().replace(/[:.]/g, '-'));
         let videoTaskId = null;
         try {
-          s.pushLog({ lv: 'info', cat: 'lens', msg: '结构光 · 生成序列…' });
-          const gen = await meshVisualGenerateStructuredLight(
-            proj.path, screenId, null, 6, null, false, null);
-          const framesDir = joinPath(gen.output_dir, 'frames');
-          const slMeta = joinPath(gen.output_dir, 'sl_meta.json');
-          /* sidecar 默认 hold_ms=500 → 播放 fps=2（与 sl_meta.sequence.hold_ms 一致） */
-          const fps = 2.0;
-          const durationS = Math.max(12, (Number(gen.n_frames) || 12) / fps + 8);
-          const videoOut = joinPath(sessionOut, 'video');
-          s.pushLog({ lv: 'info', cat: 'lens', msg: '结构光 · 开始录像 · <b>' + (profile.name || 'Profile') + '</b>' });
-          const vArgs = ['capture', 'video',
-            '--backend', profile.videoBackend, '--device', String(profile.device),
-            '--duration', String(durationS), '--out', videoOut, '--output', 'json'];
-          if (profile.fmtMode === 'manual') {
-            if (profile.width) vArgs.push('--width', String(profile.width));
-            if (profile.height) vArgs.push('--height', String(profile.height));
-            if (profile.fps) vArgs.push('--fps', String(profile.fps));
+          const solveTargets = [];
+          for (let i = 0; i < slTargets.length; i++) {
+            const target = slTargets[i];
+            const screenId = target.id;
+            const tag = '[' + (i + 1) + '/' + slTargets.length + '] ' + screenId;
+            s.pushLog({ lv: 'info', cat: 'lens', msg: '结构光 · 生成序列 · ' + tag + '…' });
+            const gen = await meshVisualGenerateStructuredLight(
+              proj.path, screenId, null, 6, null, false, null);
+            const framesDir = joinPath(gen.output_dir, 'frames');
+            const slMeta = joinPath(gen.output_dir, 'sl_meta.json');
+            /* sidecar 默认 hold_ms=500 → 播放 fps=2（与 sl_meta.sequence.hold_ms 一致） */
+            const fps = 2.0;
+            const durationS = Math.max(12, (Number(gen.n_frames) || 12) / fps + 8);
+            const videoOut = joinPath(sessionOut, 'video_' + screenId);
+            s.pushLog({ lv: 'info', cat: 'lens', msg: '结构光 · 开始录像 · ' + tag + ' · <b>' + (profile.name || 'Profile') + '</b>' });
+            const vArgs = ['capture', 'video',
+              '--backend', profile.videoBackend, '--device', String(profile.device),
+              '--duration', String(durationS), '--out', videoOut, '--output', 'json'];
+            if (profile.fmtMode === 'manual') {
+              if (profile.width) vArgs.push('--width', String(profile.width));
+              if (profile.height) vArgs.push('--height', String(profile.height));
+              if (profile.fps) vArgs.push('--fps', String(profile.fps));
+            }
+            if (profile.transferFunction) vArgs.push('--transfer-function', profile.transferFunction);
+            const vResp = await spawnSidecarStreaming('vpcal', vArgs);
+            videoTaskId = vResp.task_id;
+            setStillsTask(vResp.task_id);
+            /* 略等录像落盘，再起播（哨兵软同步，起点偏差无影响） */
+            await new Promise((r) => setTimeout(r, 800));
+            s.pushLog({ lv: 'info', cat: 'lens', msg: '结构光 · nDisplay 播放序列 · ' + tag + ' · ' + gen.n_frames + ' 帧 @ ' + fps + ' fps' });
+            const screenOrigin = window.stageScreenOriginPx
+              ? window.stageScreenOriginPx(proj.config.screens, screenId)
+              : [0, 0];
+            const playReq = {
+              session_id: proj.path + '::stage',
+              screen: outputScreen,
+              paths: Object.assign({}, DEFAULT_NDISPLAY_OUTPUT_PATHS),
+              ssh_user: null,
+              sequence_dir: framesDir,
+              fps,
+              screen_origin_px: screenOrigin,
+            };
+            slPlayReqRef.current = playReq;
+            await outputPlaySequence(playReq);
+            slPlayReqRef.current = null;
+            if (s.setDeployState) s.setDeployState('showing');
+            /* finish（非 cancel）：等录像进程优雅落盘 frames.jsonl + 最后一帧再退出，
+               避免 cancel 的「关 stdin 无效 → 3s grace → SIGKILL」在写入中途打断，
+               decode 读到不完整帧集合却不报错静默产出错误结果。 */
+            try { await finishSidecarTaskAwaitExit(videoTaskId); } catch (e) { /* ignore */ }
+            videoTaskId = null;
+            setStillsTask(null);
+            const corrOut = joinPath(sessionOut, 'corr_' + screenId + '.json');
+            s.pushLog({ lv: 'info', cat: 'lens', msg: '结构光 · 解码 · ' + tag + '…' });
+            const dec = await meshVisualDecodeStructuredLight(
+              videoOut, slMeta, corrOut, null, null, true);
+            s.pushLog({
+              lv: 'ok', cat: 'lens',
+              msg: '结构光解码完成 · ' + tag + ' · <b>' + dec.n_dots_decoded + '</b> 点',
+            });
+            solveTargets.push({ screenJson: target.screenJson, slMeta, corr: corrOut });
           }
-          if (profile.transferFunction) vArgs.push('--transfer-function', profile.transferFunction);
-          const vResp = await spawnSidecarStreaming('vpcal', vArgs);
-          videoTaskId = vResp.task_id;
-          setStillsTask(vResp.task_id);
-          /* 略等录像落盘，再起播（哨兵软同步，起点偏差无影响） */
-          await new Promise((r) => setTimeout(r, 800));
-          s.pushLog({ lv: 'info', cat: 'lens', msg: '结构光 · nDisplay 播放序列 · ' + gen.n_frames + ' 帧 @ ' + fps + ' fps' });
-          const screenOrigin = window.stageScreenOriginPx
-            ? window.stageScreenOriginPx(proj.config.screens, screenId)
-            : [0, 0];
-          const playReq = {
-            session_id: proj.path + '::stage',
-            screen,
-            paths: Object.assign({}, DEFAULT_NDISPLAY_OUTPUT_PATHS),
-            ssh_user: null,
-            sequence_dir: framesDir,
-            fps,
-            screen_origin_px: screenOrigin,
+
+          s.pushLog({ lv: 'info', cat: 'lens', msg: '结构光 · fixed-observation-sl 求解 Stage pose…' });
+          const fixedObsJson = joinPath(sessionOut, 'fixed_observation_result.json');
+          const poseJson = joinPath(sessionOut, 'stage_pose.json');
+          const mode = purpose === 'known_lens'
+            ? 'known-lens'
+            : (purpose === 'joint_session' ? 'joint-session-lens' : 'auto');
+          const solvedObs = await trackerFreeFixedObservationSl({
+            screenTargets: solveTargets,
+            mode,
+            lensPath: cam.masterLensPath || null,
+            outPath: fixedObsJson,
+            stagePoseOut: poseJson,
+            cameraId: camId,
+            transferPath: 'volo-stills',
+            attestFocusZoom: true,
+          });
+          const solved = {
+            ...solvedObs,
+            schema_version: 'volo_stage_pose.v2',
+            solve_kind: solvedObs.solve_kind === 'joint_single_observation'
+              ? 'joint_single_observation'
+              : 'fixed_extrinsics_only',
+            qualification: {
+              ...(solvedObs.qualification || {}),
+              master_lens: !!(solvedObs.session_lens && solvedObs.session_lens.is_master),
+              passed: !!(solvedObs.qualification && solvedObs.qualification.passed),
+            },
           };
-          slPlayReqRef.current = playReq;
-          await outputPlaySequence(playReq);
-          slPlayReqRef.current = null;
-          if (s.setDeployState) s.setDeployState('showing');
-          try { await cancelSidecarTask(videoTaskId); } catch (e) { /* ignore */ }
-          videoTaskId = null;
-          setStillsTask(null);
-          const corrOut = joinPath(sessionOut, 'corr.json');
-          s.pushLog({ lv: 'info', cat: 'lens', msg: '结构光 · 解码…' });
-          const dec = await meshVisualDecodeStructuredLight(
-            videoOut, slMeta, corrOut, null, null, true);
+          const writeError = await writeFixedRunMetaSafe(sessionOut, {
+            mode: 'fixed', frames_captured: solveTargets.length,
+            camera_id: camId, method: 'sl',
+            targets: slTargets.map((target) => ({ id: target.id, screenJson: target.screenJson })),
+            stage_pose_json: poseJson, stage_pose: solved,
+          }, null);
+          if (writeError) throw new Error('无法保存结构光求解结果: ' + writeError);
+          const pose = solved.camera_from_stage;
+          if (pose && window.camStore) {
+            const t = pose.position_mm || [0, 0, 0];
+            const ptr = pose.ptr_deg || { pan: 0, tilt: 0, roll: 0 };
+            window.camStore.setSolvePose(
+              camId,
+              [t[0], t[1], t[2]],
+              [ptr.pan, ptr.tilt, ptr.roll],
+              null,
+              {
+                formal: solved.formal === true && solved.qualification && solved.qualification.passed === true,
+                source_artifact: poseJson,
+                rms_reprojection_px: solved.rms_reprojection_px,
+                image_size: solved.image_size,
+                preflight_passed: !!(solved.preflight && solved.preflight.passed),
+                schema_version: solved.schema_version,
+                qualification_passed: !!(solved.qualification && solved.qualification.passed),
+                master_lens: !!(solved.qualification && solved.qualification.master_lens),
+                solve_kind: solved.solve_kind,
+                fail_closed: !!(solved.qualification && solved.qualification.fail_closed),
+              },
+            );
+          }
           s.setCapState('idle');
-          if (CX().lensStore) CX().lensStore.patch({ phase: 'captured' });
+          if (CX().lensStore) CX().lensStore.patch({ phase: 'solved' });
+          const solvedRms = Number(solved.rms_reprojection_px);
+          const solvedState = solvedRms < 2 ? 'ok' : 'warn';
           s.pushLog({
-            lv: 'ok', cat: 'lens',
-            msg: '结构光完成 · 解码 <b>' + dec.n_dots_decoded + '</b> 点 · ' + dec.output_path,
+            lv: solvedState, cat: 'lens',
+            msg: '结构光固定机位求解完成 · mode=<b>' + (solvedObs.mode_resolved || mode)
+              + '</b> · RMS <b>' + solvedRms.toFixed(3) + '</b> px · 屏幕 <b>'
+              + slTargets.map((t) => t.id).join('、') + '</b>',
           });
           void refreshSessions();
         } catch (e) {

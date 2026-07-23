@@ -258,7 +258,15 @@ def enumerate_video_sources(ctx, backend, timeout_s, **flags) -> None:
 @click.pass_context
 def video(ctx, backend, device, width, height, fps, transfer_function, preview_port,
           allow_hx, duration_s, max_frames, out_dir, **flags) -> None:
-    """[C1.2] Capture a video stream (synthetic / uvc / ndi / decklink)."""
+    """[C1.2] Capture a video stream (synthetic / uvc / ndi / decklink).
+
+    Accepts one JSON control line on stdin: ``{"cmd": "finish"}`` — closes the
+    device, flushes ``frames.jsonl``, and returns the normal ``result`` event
+    (exit 0) instead of relying on the bridge's cancel-then-kill fallback
+    (``sidecar_stream.rs`` DEFAULT_CANCEL_GRACE), which cannot guarantee the
+    last frame/manifest write landed before the process is killed. stdin EOF
+    is equivalent to finish (same convention as ``capture stills``).
+    """
 
     def body(emitter: StreamEmitter) -> OperationOutput:
         import cv2
@@ -278,20 +286,41 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
                                    # survive signal drops instead of exiting.
                                    "keep_alive": duration_s == 0 and preview_port is not None})
         src = open_backend(cfg)
-        # Monitor mode (duration 0 + preview) is Volo-driven: the bridge closes
-        # our stdin on cancel, but a hard kill only lands after a 3 s grace —
-        # far too long for an exclusive device (DeckLink/UVC) the real capture
-        # session is waiting to reopen. Watch stdin for EOF and exit promptly.
-        stdin_closed = threading.Event()
-        if duration_s == 0 and preview_port is not None:
-            def _watch_stdin() -> None:
-                try:
-                    while sys.stdin.buffer.read(4096):
-                        pass
-                except Exception:
-                    pass
-                stdin_closed.set()
-            threading.Thread(target=_watch_stdin, daemon=True).start()
+        # `finish` is set by an explicit {"cmd":"finish"} control line (the Volo
+        # bridge's finishSidecarTaskAwaitExit) regardless of --duration, so the
+        # frame loop below breaks and falls through to the SAME graceful
+        # `finally` cleanup a natural --duration timeout takes. Bare stdin EOF
+        # with no explicit finish line is ONLY treated as finish in monitor mode
+        # (duration=0 + preview) — same scope as the old dedicated watcher: a
+        # --duration-bounded run invoked without a live control pipe (a plain
+        # shell/CI/subprocess call that doesn't hold stdin open) must still run
+        # its requested duration/frame count, not exit after the first EOF.
+        finish = threading.Event()
+        implicit_finish_on_eof = duration_s == 0 and preview_port is not None
+
+        def _stdin_pump() -> None:
+            try:
+                for line in sys.stdin:
+                    if finish.is_set():
+                        return
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        msg = json.loads(line)
+                    except json.JSONDecodeError:
+                        emitter.emit("warning", {"message": f"bad control line: {line[:120]}"})
+                        continue
+                    if isinstance(msg, dict) and msg.get("cmd") == "finish":
+                        finish.set()
+                        return
+                    emitter.emit("warning", {"message": f"unknown control cmd: {msg}"})
+            except Exception:
+                pass
+            if implicit_finish_on_eof:
+                finish.set()  # stdin closed/errored without an explicit finish line
+
+        threading.Thread(target=_stdin_pump, name="vpcal-video-control", daemon=True).start()
         sink, server = _make_preview(preview_port, emitter)
         out = Path(out_dir) if out_dir else None
         manifest_fh = None
@@ -332,13 +361,14 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
                         "timecode": frame.timecode,
                     }, text=f"{n} frames ({n / (now - t0):.1f} fps)")
                     last_report = now
-                if stdin_closed.is_set():
+                if finish.is_set():
                     break
                 if duration_s > 0 and now - t0 >= duration_s:
                     break
                 if max_frames is not None and n >= max_frames:
                     break
         finally:
+            finish.set()
             src.close()
             if manifest_fh is not None:
                 manifest_fh.close()

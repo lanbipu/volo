@@ -118,6 +118,58 @@ export async function cancelSidecarTaskAwaitExit(
   });
 }
 
+/** Send `{"cmd":"finish"}` then wait for the real exit event — the graceful
+ *  counterpart of `cancelSidecarTaskAwaitExit`, for sidecars with a finish
+ *  stdin control protocol (`capture video` / `capture stills`). Unlike a bare
+ *  cancel (close stdin -> ~3s grace -> SIGKILL, which can land mid-write),
+ *  finish lets the child flush its manifest/output and exit 0 on its own.
+ *  Falls back to `cancelSidecarTaskAwaitExit` if the process hasn't exited
+ *  within `timeoutMs` (defense in depth against a hung/unresponsive child) —
+ *  the returned promise does not resolve until the process is CONFIRMED gone
+ *  either way, so callers never read output files mid-write/mid-kill. */
+export async function finishSidecarTaskAwaitExit(
+  taskId: string,
+  timeoutMs = 5000,
+): Promise<void> {
+  await new Promise<void>((resolve) => {
+    let un: UnlistenFn | null = null;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (un) un();
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      if (un) un();
+      // finish didn't land in time — fall back to cancel+await-exit so we
+      // still don't resolve until the process is actually confirmed gone.
+      void cancelSidecarTaskAwaitExit(taskId).finally(resolve);
+    }, timeoutMs);
+    void (async () => {
+      try {
+        const fn = await listenSidecarStream(taskId, (ev) => {
+          if (ev.kind === "exit") finish();
+        });
+        if (done) fn();
+        else un = fn;
+      } catch {
+        finish();
+        return;
+      }
+      try {
+        const alive = await sidecarStdinWrite(taskId, JSON.stringify({ cmd: "finish" }));
+        if (!alive) finish();
+      } catch {
+        finish();
+      }
+    })();
+  });
+}
+
 /* -------------------------------- hook -------------------------------- */
 
 export interface UseSidecarStreamState {

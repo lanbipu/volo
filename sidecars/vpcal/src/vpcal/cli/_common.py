@@ -201,21 +201,26 @@ class StreamEmitter:
         self._lock = threading.Lock()
 
     def emit(self, event_type: str, payload: dict[str, Any] | None = None, *, text: str | None = None) -> None:
+        # Hold the lock across the write itself, not just the sequence bump:
+        # capture.py's stdin control-line threads (video/stills/session) call
+        # emit() concurrently with the main capture loop, and NDJSON is
+        # line-based — an interleaved write from two threads corrupts a line
+        # the Rust bridge's per-line parser cannot recover from.
         with self._lock:
             self._sequence += 1
             seq = self._sequence
-        if self.fmt == "ndjson":
-            line = {
-                "type": event_type,
-                "sequence": seq,
-                "timestamp": _utc_now_iso(),
-                "request_id": self.request_id,
-                **(payload or {}),
-            }
-            sys.stdout.write(json.dumps(line, ensure_ascii=False) + "\n")
-        else:
-            sys.stdout.write((text or f"[{event_type}] {json.dumps(payload or {}, ensure_ascii=False)}") + "\n")
-        sys.stdout.flush()
+            if self.fmt == "ndjson":
+                line = {
+                    "type": event_type,
+                    "sequence": seq,
+                    "timestamp": _utc_now_iso(),
+                    "request_id": self.request_id,
+                    **(payload or {}),
+                }
+                sys.stdout.write(json.dumps(line, ensure_ascii=False) + "\n")
+            else:
+                sys.stdout.write((text or f"[{event_type}] {json.dumps(payload or {}, ensure_ascii=False)}") + "\n")
+            sys.stdout.flush()
 
     @property
     def next_sequence(self) -> int:
