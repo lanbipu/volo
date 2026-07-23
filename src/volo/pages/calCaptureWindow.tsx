@@ -55,6 +55,9 @@ import { lensWorkspacePaths } from "../api/lensWorkspace";
     const device = profile && profile.device;
     const activeRef = useRef(active);
     activeRef.current = active;
+    /* spawn reject 时无限失联的补偿：有限次（5）×3s 重试；成功即清零。 */
+    const retryRef = useRef(0);
+    const retryTimerRef = useRef(null);
 
     const start = async () => {
       if (taskRef.current) void cancelSidecarTask(taskRef.current);
@@ -71,15 +74,28 @@ import { lensWorkspacePaths } from "../api/lensWorkspace";
       try {
         const resp = await spawnSidecarStreaming('vpcal', args);
         setTask(resp.task_id);
+        retryRef.current = 0;
       } catch (e) {
         setSig('lost'); setUrl(null);
+        if (activeRef.current && retryRef.current < 5) {
+          retryRef.current += 1;
+          if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+          retryTimerRef.current = setTimeout(() => { if (activeRef.current) void start(); }, 3000);
+        }
       }
     };
 
     useEffect(() => {
-      if (!active) { if (taskRef.current) void cancelSidecarTask(taskRef.current); setTask(null); setUrl(null); setSig('waiting'); return undefined; }
+      if (!active) {
+        if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
+        if (taskRef.current) void cancelSidecarTask(taskRef.current); setTask(null); setUrl(null); setSig('waiting'); return undefined;
+      }
+      retryRef.current = 0;
       void start();
-      return () => { if (taskRef.current) void cancelSidecarTask(taskRef.current); };
+      return () => {
+        if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
+        if (taskRef.current) void cancelSidecarTask(taskRef.current);
+      };
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [active, backend, device]);
 

@@ -32,7 +32,7 @@ import * as React from "react";
   const COPY = {
     measureBound: '1 observation ≠ 1 marker ≠ 8 lens poses',
     sessionLens: '当前焦距/对焦/分辨率有效 · 非 Master Lens',
-    staticPass: 'Static validation · perimeter/grid 投影通过 · 可查看静帧 AR（live preview 需另行开启）',
+    staticPass: 'Static validation · perimeter/grid 投影通过 · 可查看静帧 AR',
     unobsOrder: ['增加非共面 screen coverage', '改用 Structured Light', '导入 / 建立 Master Lens'],
   };
 
@@ -276,7 +276,7 @@ import * as React from "react";
                 h(Button, { variant: 'accent', size: 'M', isDisabled: arStage === 'verifying',
                   icon: h(Icon, { name: 'layers', size: 15 }), onPress: () => q.startArVerify() },
                   arStage === 'verifying' ? '静帧验收中…' : arStage === 'passed' ? '重新查看静帧 AR' : '查看静帧 AR'),
-                h('div', { className: 'live-note' }, COPY.staticPass, ' —— ', h('b', null, 'live preview 需另行开启'))))));
+                h('div', { className: 'live-note' }, COPY.staticPass)))));
 
     return h('div', { className: 'qsp-report' },
       h('div', { className: 'qsp-report-concl ' + (warn ? 'warn' : 'ok') },
@@ -309,33 +309,108 @@ import * as React from "react";
   /* ============================================================
      fail-closed / unobservable / stale 指引（禁止默认内参绕过）
      ============================================================ */
+  /* 检测 / 定位类共用的补采建议（画面越大、对焦越准、反光越少，可信点越多） */
+  const FAIL_STEPS_DETECT = [
+    { t: '靠近或正对可信点不足的屏', d: '让该屏在画面里占更大区域，提升可信检测点数量。' },
+    { t: '检查对焦 / 亮度 / 对比度', d: '确保 marker 清晰、曝光正常，避免定位被丢弃。' },
+    { t: '避免强反光后重采', d: '消除屏幕反光 / 眩光，再重新采集并求解。' },
+  ];
+  const FAIL_STEPS_GEOM = [
+    { t: '确认各屏上屏部署与屏幕定义一致', d: '排查屏幕错位 / 换屏，保证几何与定义匹配。' },
+    { t: '补正面机位或改善对焦', d: '降低联合投影 RMS，让各屏几何一致。' },
+    { t: '检查屏幕布局是否变动后重采', d: '布局变化会使联合投影不一致，需重新采集求解。' },
+  ];
+  const FAIL_COPY = {
+    DETECTION_QUALITY_FAILED: { t: '检测质量不足', steps: FAIL_STEPS_DETECT },
+    LOCALIZATION_QUALITY_FAILED: { t: '定位质量不足', steps: FAIL_STEPS_DETECT },
+    SCREEN_GEOMETRY_INCONSISTENT: { t: '几何不一致', steps: FAIL_STEPS_GEOM },
+    MASTER_LENS_REQUIRED: { t: 'Master Lens 缺失 / 不合格', steps: 'master' },
+  };
+  /* per-screen 条形（分母 = 门限；hits<need 标 notice 并注明「差 N」） */
+  function failScreenRow(label, hits, need) {
+    const short = hits < need;
+    const p = need > 0 ? Math.min(100, Math.round(hits / need * 100)) : 0;
+    return h('div', { key: label },
+      h('div', { className: 'qsp-screen-top' }, h('span', { className: 'qsp-screen-n' }, label),
+        h('span', { className: 'qsp-screen-v' }, hits + ' / ' + need + ' trustworthy' + (short ? '（差 ' + (need - hits) + '）' : ''))),
+      h('div', { className: 'qsp-screen-bar' + (short ? ' notice' : '') }, h('i', { style: { width: p + '%' } })));
+  }
   function FailPanel(q) {
     if (q.qspState === 'stale') return StalePanel(q);
     const fail = q.failInfo || {};
     const unobs = q.qspState === 'unobservable';
+    const code = fail.code || null;
+    const copy = (!unobs && code) ? FAIL_COPY[code] : null;
+    const details = (fail.details && typeof fail.details === 'object') ? fail.details : {};
+
+    /* 结构化细节（仅当 details 有对应字段；不硬造后端没说的数） */
+    let structured = null;
+    if (!unobs && code === 'DETECTION_QUALITY_FAILED' && details.per_screen && typeof details.per_screen === 'object') {
+      const perScreen = details.per_screen;
+      const m = />=\s*(\d+)/.exec(String(fail.message || ''));
+      const need = num(details.min_per_screen) != null ? num(details.min_per_screen) : (m ? Number(m[1]) : 12);
+      const labels = Object.keys(perScreen);
+      let totalHits = 0;
+      const rows = labels.map((label) => { const hits = Number(perScreen[label]) || 0; totalHits += hits; return failScreenRow(label, hits, need); });
+      const totalNeed = num(details.min_total) != null ? num(details.min_total) : 60;
+      structured = h(React.Fragment, null,
+        h('div', { className: 'qsp-sublbl' }, 'per-screen 可信检测点 / 门限'),
+        h('div', { className: 'qsp-screens' }, rows,
+          labels.length ? failScreenRow('合计', totalHits, totalNeed) : null));
+    } else if (!unobs && code === 'SCREEN_GEOMETRY_INCONSISTENT'
+        && details.joint_projective && num(details.joint_projective.rms_px) != null) {
+      structured = h('div', null, kv('joint projective RMS', num(details.joint_projective.rms_px).toFixed(2) + ' px', 'neg'));
+    }
+
+    /* 建议列表（unobs / 检测·定位 / 几何 → 步骤；Master Lens → 内联导入按钮；未知 code → 无） */
+    let stepsNode = null;
+    if (unobs) {
+      stepsNode = h('div', null,
+        h('div', { className: 'qsp-noheader', style: { marginBottom: 8 } }, '推荐动作顺序（可执行）'),
+        h('div', { className: 'qsp-steps' }, COPY.unobsOrder.map((t, i) => h('div', { key: i, className: 'qsp-step' },
+          h('span', { className: 'qsp-step-n' }, i + 1),
+          h('div', { className: 'qsp-step-m' },
+            h('div', { className: 'qsp-step-t' }, t),
+            i === 0 ? h('div', { className: 'qsp-step-d' }, '把额外屏幕纳入取景，制造非共面 Stage geometry —— 最直接的解法。')
+              : i === 1 ? h('div', { className: 'qsp-step-d' }, '改用 Structured Light 提供更强的逐点约束。')
+                : h('div', { className: 'qsp-step-d' }, '导入或先建立 Master Lens，固定内参后本次只求外参。',
+                    h('div', { className: 'btn-inline' }, h(Button, { variant: 'secondary', size: 'S', isDisabled: q.masterBusy,
+                      icon: h(Icon, { name: 'download', size: 13 }),
+                      onPress: () => { q.setPurpose('known_lens'); q.importMaster(); q.recapture(); } }, '导入 Master Lens'))))))));
+    } else if (copy && copy.steps === 'master') {
+      stepsNode = h('div', null,
+        h('div', { className: 'qsp-noheader', style: { marginBottom: 8 } }, '推荐动作'),
+        h('div', { className: 'qsp-steps' }, h('div', { className: 'qsp-step' },
+          h('span', { className: 'qsp-step-n' }, 1),
+          h('div', { className: 'qsp-step-m' },
+            h('div', { className: 'qsp-step-t' }, '导入或先建立 Master Lens'),
+            h('div', { className: 'qsp-step-d' }, '固定内参后本次只求外参。',
+              h('div', { className: 'btn-inline' }, h(Button, { variant: 'secondary', size: 'S', isDisabled: q.masterBusy,
+                icon: h(Icon, { name: 'download', size: 13 }),
+                onPress: () => { q.setPurpose('known_lens'); q.importMaster(); q.recapture(); } }, '导入 Master Lens')))))));
+    } else if (copy && Array.isArray(copy.steps)) {
+      stepsNode = h('div', null,
+        h('div', { className: 'qsp-noheader', style: { marginBottom: 8 } }, '推荐动作顺序（可执行）'),
+        h('div', { className: 'qsp-steps' }, copy.steps.map((st, i) => h('div', { key: i, className: 'qsp-step' },
+          h('span', { className: 'qsp-step-n' }, i + 1),
+          h('div', { className: 'qsp-step-m' },
+            h('div', { className: 'qsp-step-t' }, st.t),
+            h('div', { className: 'qsp-step-d' }, st.d))))));
+    }
+
     return h('div', { className: 'qsp-fail' },
       h('div', { className: 'qsp-fail-h' },
         h('span', { className: 'ic' }, h(Icon, { name: 'x', size: 18 })),
         h('div', { className: 'm' },
-          h('div', { className: 't' }, unobs ? '单视图不可观测' : '固定机位求解失败'),
+          h('div', { className: 't' }, unobs ? '单视图不可观测' : (copy ? copy.t : '固定机位求解失败')),
           h('div', { className: 'code' }, unobs ? 'SINGLE_VIEW_UNOBSERVABLE' : (fail.code || 'SOLVE_FAILED')))),
       h('div', { className: 'qsp-fail-b' },
         h('div', { className: 'qsp-fail-d' }, unobs
           ? h(React.Fragment, null, '单个观测无法同时约束 ', h('b', null, '外参 + 镜头'), ' —— 当前 Stage geometry 近共面，焦距与深度不可分。禁止默认内参绕过，请按下列顺序处理：')
-          : h(React.Fragment, null, h('b', null, fail.code === 'SCREEN_GEOMETRY_INCONSISTENT' ? '几何不一致' : '求解失败'),
+          : h(React.Fragment, null, h('b', null, copy ? copy.t : '求解失败'),
               '：', fail.message || '本次单视图无法唯一求解位姿。', ' 已 ', h('b', null, 'fail-closed'), '，未写入任何默认焦距 / 畸变。')),
-        unobs ? h('div', null,
-          h('div', { className: 'qsp-noheader', style: { marginBottom: 8 } }, '推荐动作顺序（可执行）'),
-          h('div', { className: 'qsp-steps' }, COPY.unobsOrder.map((t, i) => h('div', { key: i, className: 'qsp-step' },
-            h('span', { className: 'qsp-step-n' }, i + 1),
-            h('div', { className: 'qsp-step-m' },
-              h('div', { className: 'qsp-step-t' }, t),
-              i === 0 ? h('div', { className: 'qsp-step-d' }, '把额外屏幕纳入取景，制造非共面 Stage geometry —— 最直接的解法。')
-                : i === 1 ? h('div', { className: 'qsp-step-d' }, '改用 Structured Light 提供更强的逐点约束。')
-                  : h('div', { className: 'qsp-step-d' }, '导入或先建立 Master Lens，固定内参后本次只求外参。',
-                      h('div', { className: 'btn-inline' }, h(Button, { variant: 'secondary', size: 'S', isDisabled: q.masterBusy,
-                        icon: h(Icon, { name: 'download', size: 13 }),
-                        onPress: () => { q.setPurpose('known_lens'); q.importMaster(); q.recapture(); } }, '导入 Master Lens')))))))) : null,
+        structured,
+        stepsNode,
         fail.message && unobs ? h('div', { className: 'qsp-capnote' }, fail.message) : null,
         h('div', { className: 'qsp-fail-guard' }, h(Icon, { name: 'info', size: 12 }),
           h('span', null, '已 fail-closed：不提供「忽略并继续 / 默认 50mm」等绕过项。'))));
@@ -500,13 +575,10 @@ import * as React from "react";
       /* 静帧 AR 门控浮条 */
       solved && q.arStage === 'verifying' ? h('div', { className: 'qsp-argate verifying' },
         h('span', { className: 'ic' }, h(Icon, { name: 'sync', size: 14 })),
-        h('div', { className: 'm' }, h('div', { className: 't' }, '静帧验收中…', h('span', { className: 'qsp-verify-dots' }, h('i'), h('i'), h('i'))), h('div', { className: 'd' }, '在同一静帧验收 perimeter / grid 投影')),
-        h('span', { className: 'livechip' }, 'LIVE 未开')) : null,
+        h('div', { className: 'm' }, h('div', { className: 't' }, '静帧验收中…', h('span', { className: 'qsp-verify-dots' }, h('i'), h('i'), h('i'))), h('div', { className: 'd' }, '在同一静帧验收 perimeter / grid 投影'))) : null,
       solved && q.arStage === 'passed' ? h('div', { className: 'qsp-argate passed' },
         h('span', { className: 'ic' }, h(Icon, { name: 'check', size: 14 })),
-        h('div', { className: 'm' }, h('div', { className: 't' }, '静帧 perimeter 通过'), h('div', { className: 'd' }, 'perimeter / grid 投影通过 · 可开启 live preview')),
-        h('button', { className: 'qsp-arbtn on', style: { padding: '6px 11px', fontSize: 11 }, onClick: () => q.openLivePreview() },
-          h(Icon, { name: 'play', size: 13 }), '开启 live preview')) : null);
+        h('div', { className: 'm' }, h('div', { className: 't' }, '静帧 perimeter 通过'), h('div', { className: 'd' }, 'perimeter / grid 投影通过 · AR 叠加已呈现在实时画面'))) : null);
   }
 
   window.VOLO_QSP = { CapturePurpose, FiveReport, FailPanel, AttestBar, side, actionbar, leftOverlays, lensPhaseOf, PURPOSES, COPY };

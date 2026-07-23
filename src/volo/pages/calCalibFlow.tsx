@@ -64,8 +64,15 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
   const fixedSolveFailure = (error) => {
     const code = error && error.code;
     const details = error && error.details || {};
-    if (code === 'MASTER_LENS_REQUIRED') return 'Lens invalid · ' + error.message;
-    if (code === 'LOCALIZATION_QUALITY_FAILED') return 'Detection failed · ' + error.message;
+    if (code === 'MASTER_LENS_REQUIRED') return 'Master Lens 缺失/不合格 · ' + error.message;
+    if (code === 'DETECTION_QUALITY_FAILED') {
+      const perScreen = details.per_screen && typeof details.per_screen === 'object' ? details.per_screen : null;
+      const join = perScreen
+        ? Object.keys(perScreen).map((k) => k + ' ' + perScreen[k]).join(' / ')
+        : '';
+      return '检测质量不足 · ' + (join ? join + ' · ' : '') + error.message;
+    }
+    if (code === 'LOCALIZATION_QUALITY_FAILED') return '定位质量不足 · ' + error.message;
     if (code === 'SCREEN_GEOMETRY_INCONSISTENT') {
       const joint = Number(details.joint_projective && details.joint_projective.rms_px);
       return 'Detection OK · Geometry invalid · '
@@ -515,7 +522,7 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
        追踪机位 AR 占用 verify live 时暂停监看流（设备独占）。 */
     const monitor = window.VOLO_CAPTURE.useMonitor(
       profile,
-      !capturing && !!profile && backend !== 'synthetic' && !arLiveTaskId,
+      !capturing && !!profile && backend !== 'synthetic' && !arLiveTaskId && !stillsTaskId,
     );
     const arLiveStream = useSidecarStream(arLiveTaskId);
     const session = useCaptureSession();
@@ -908,7 +915,7 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
             setArStaticOk(true);
             s.pushLog({
               lv: 'ok', cat: 'lens',
-              msg: 'Static validation · perimeter/grid 投影通过 · 可查看静帧 AR（live preview 需另行开启）',
+              msg: 'Static validation · perimeter/grid 投影通过 · AR 叠加已呈现在实时画面',
             });
           }
         } catch (e) {
@@ -978,12 +985,6 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
       setArStage('idle');
       setArOn(false);
     };
-    const qspOpenLivePreview = () => {
-      /* 固定机位：位姿静态，静帧通过后 AR 叠加直接保持在实时监看画面上 */
-      if (!arOn) setArOn(true);
-      s.pushLog({ lv: 'info', cat: 'lens', msg: '开启 live preview 叠加（静帧 perimeter/grid 已过 · 固定机位位姿静态）' });
-    };
-
     /* 追踪机位：verify live --grid，订阅 overlay_grid + tracking 状态 */
     const wantArLive = arOn && tracked && !capturing && arAvail && !!arTrackedPaths;
     useEffect(() => {
@@ -1119,7 +1120,13 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
           if (fixedInput.purpose === 'master_lens') {
             fixedInputRef.current = null;
             s.setCapState('idle');
-            setStillsTask(null);
+            {
+              const doneTask = stillsTaskId;
+              void (async () => {
+                await finishSidecarTaskAwaitExit(doneTask);
+                if (stillsTaskRef.current === doneTask) setStillsTask(null);
+              })();
+            }
             void playerClear().catch(() => {});
             if (s.setDeployState && s.deployState !== 'idle') s.setDeployState('standby');
             const imagesDir = joinPath(dir, 'captures/normal');
@@ -1214,7 +1221,13 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
             });
           });
           s.setCapState('idle');
-          setStillsTask(null);
+          {
+            const doneTask = stillsTaskId;
+            void (async () => {
+              await finishSidecarTaskAwaitExit(doneTask);
+              if (stillsTaskRef.current === doneTask) setStillsTask(null);
+            })();
+          }
           void playerClear().catch(() => {});
           if (s.setDeployState && s.deployState !== 'idle') s.setDeployState('standby');
           s.pushLog({ lv: 'ok', cat: 'lens', msg: '固定机位采集完成 · ' + (p.data.frames_captured || snaps) + ' 帧 · <b>' + dir + '</b>' });
@@ -1624,7 +1637,7 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
       await abortSlPlayback();
       if (!tracked && stillsTaskId) {
         try { await stillsFinish(stillsTaskId); } catch (e) { /* ignore */ }
-        try { await cancelSidecarTask(stillsTaskId); } catch (e) { /* ignore */ }
+        try { await cancelSidecarTaskAwaitExit(stillsTaskId); } catch (e) { /* ignore */ }
         setStillsTask(null);
       } else {
         session.cancel();
@@ -1805,7 +1818,7 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
           });
         }
         /* QSP fail-closed / unobservable 指引条（右栏结果区） */
-        setQspFail({ code, message: e && e.message ? e.message : String(e) });
+        setQspFail({ code, message: e && e.message ? e.message : String(e), details: (e && e.details) || null });
         setLiveRuns((prev) => (prev || []).map((r) => (
           r.id === run.id ? Object.assign({}, r, { solveError: msg }) : r
         )));
@@ -1895,7 +1908,12 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
         ? h(React.Fragment, null,
             displayUrl
               ? h('img', { className: 'lc-feed', src: displayUrl, alt: '现场画面', style: { width: '100%', height: '100%', objectFit: 'contain', display: 'block' } })
-              : h(CameraSignal, { method, capturing, detect: !isSl && capturing, sl: isSl, slFrame }),
+              : backend === 'synthetic'
+                ? h(CameraSignal, { method, capturing, detect: !isSl && capturing, sl: isSl, slFrame })
+                : h('div', { className: 'lc-nosig' },
+                    h('div', { className: 'lc-nosig-ic' }, h(Icon, { name: 'camera', size: 30, stroke: 1.3 })),
+                    h('div', { className: 'lc-nosig-t' }, '监看重连中…'),
+                    h('div', { className: 'lc-nosig-d' }, '设备释放后自动恢复实时监看')),
             arActive ? h(AROverlay, { grid: arGrid, lost: trackLostUi, opacity: arOpacity / 100 }) : null,
             h('div', { className: 'lc-vig' }),
             h('div', { className: 'lc-hud lc-hud--tl' },
@@ -2148,7 +2166,7 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
       createMaster: () => void createMasterLens(),
       run: qspRun, failInfo: qspFail,
       arStage, arError: arErr,
-      startArVerify, confirmAttest, recapture: qspRecapture, openLivePreview: qspOpenLivePreview,
+      startArVerify, confirmAttest, recapture: qspRecapture,
       tracked, open, tgl,
       generalBody, camChips, trackField, cameraParams: cameraParamsNode,
       reasons: qspReasons, ready, preparing: ag.preparing, starting,
