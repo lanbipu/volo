@@ -95,24 +95,6 @@ fn z_quaternion(degrees: f64) -> [f64; 4] {
     [half.cos(), 0.0, 0.0, half.sin()]
 }
 
-fn quaternion_matrix([w, x, y, z]: [f64; 4]) -> [[f64; 3]; 3] {
-    [
-        [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
-        [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
-        [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
-    ]
-}
-
-fn matrix_mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
-    let mut out = [[0.0; 3]; 3];
-    for row in 0..3 {
-        for col in 0..3 {
-            out[row][col] = (0..3).map(|k| a[row][k] * b[k][col]).sum();
-        }
-    }
-    out
-}
-
 fn matrix_quaternion(m: &[[f64; 3]; 3]) -> [f64; 4] {
     let trace = m[0][0] + m[1][1] + m[2][2];
     let (w, x, y, z) = if trace > 0.0 {
@@ -132,38 +114,102 @@ fn matrix_quaternion(m: &[[f64; 3]; 3]) -> [f64; 4] {
     [w / norm, x / norm, y / norm, z / norm]
 }
 
-fn transform_point_mm(xf: &RigidTransform, point_mm: [f64; 3]) -> [f64; 3] {
-    let p_m = [point_mm[0] / 1000.0, point_mm[1] / 1000.0, point_mm[2] / 1000.0];
-    let mut out = [0.0; 3];
-    for (row, value) in out.iter_mut().enumerate() {
-        *value = ((0..3).map(|k| xf.rotation[row][k] * p_m[k]).sum::<f64>() + xf.t_m[row]) * 1000.0;
+/// Screen features that no vpcal ScreenDefinition v1 export path can represent
+/// (shared by the reconstructed-placement and nominal `vpcal_sections` paths so
+/// the two never drift).
+fn reject_unsupported_vpcal_screen(screen: &ScreenConfig) -> VoloResult<()> {
+    if screen.normal_flip {
+        return Err(VoloError::InvalidInput(
+            "normal_flip cannot be represented without reflecting vpcal marker coordinates; export a reconstructed OBJ when that path is available".into(),
+        ));
     }
-    out
+    if !screen.irregular_mask.is_empty() {
+        return Err(VoloError::InvalidInput(
+            "irregular_mask cannot be represented by vpcal ScreenDefinition v1".into(),
+        ));
+    }
+    Ok(())
 }
 
-fn transform_section(section: VpcalSection, xf: &RigidTransform) -> VpcalSection {
-    let transform_rotation = |rotation: [f64; 4]| {
-        matrix_quaternion(&matrix_mul(&xf.rotation, &quaternion_matrix(rotation)))
+/// Build a vpcal `PlaneSection` for a flat reconstructed screen from its *placed*
+/// surface, so the vpcal export reproduces the reconstructed geometry exactly.
+///
+/// The reconstructed flat surface is the screen rectangle in the reconstruction
+/// convention (local X–Y plane, centred at origin, normal +Z) — the same geometry
+/// `run_export` places for the OBJ/viewport path. We push the corners through the
+/// rebuilt placement `A ∘ B_s` and fit the `PlaneSection` to the resulting world
+/// rectangle. This replaces the previous approach of applying the placement to a
+/// *nominal* vpcal section authored in vpcal's own (local X–Z plane, normal +Y)
+/// convention: that mismatch tilted every exported screen 90° about its own X axis
+/// (collapsing e.g. a real 69.6° two-screen fold to 10.3°), because `A ∘ B_s` is
+/// defined for the reconstruction convention, not vpcal's.
+fn placed_plane_section(
+    name: String,
+    placement: &RigidTransform,
+    cabinet_count: [u32; 2],
+    cabinet_size_mm: [f64; 2],
+) -> VpcalSection {
+    let cols = cabinet_count[0] as f64;
+    let rows = cabinet_count[1] as f64;
+    let width_mm = cols * cabinet_size_mm[0];
+    let height_mm = rows * cabinet_size_mm[1];
+    // Apply the rebuilt placement `A ∘ B_s` (`R·p + t`, metres) to a local point.
+    let place = |p: [f64; 3]| -> [f64; 3] {
+        let r = &placement.rotation;
+        [
+            r[0][0] * p[0] + r[0][1] * p[1] + r[0][2] * p[2] + placement.t_m[0],
+            r[1][0] * p[0] + r[1][1] * p[1] + r[1][2] * p[2] + placement.t_m[1],
+            r[2][0] * p[0] + r[2][1] * p[1] + r[2][2] * p[2] + placement.t_m[2],
+        ]
     };
-    match section {
-        VpcalSection::Plane { name, origin, rotation, width_mm, height_mm } => VpcalSection::Plane {
-            name,
-            origin: transform_point_mm(xf, origin),
-            rotation: transform_rotation(rotation),
-            width_mm,
-            height_mm,
-        },
-        VpcalSection::Arc {
-            name, origin, rotation, arc_radius_mm, arc_angle_deg, arc_center_angle_deg, height_mm,
-        } => VpcalSection::Arc {
-            name,
-            origin: transform_point_mm(xf, origin),
-            rotation: transform_rotation(rotation),
-            arc_radius_mm,
-            arc_angle_deg,
-            arc_center_angle_deg,
-            height_mm,
-        },
+    let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let unit = |v: [f64; 3]| {
+        let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        [v[0] / n, v[1] / n, v[2] / n]
+    };
+    let cross = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    // Reconstruction-convention local corners (metres), X–Y plane. The joint
+    // solve gauges the ROOT cabinet (col 0, row 0 = top-left) at the origin, so
+    // the screen centre sits +x/2 right and -y/2 down from it — see
+    // nominal.py::_cabinet_center_model_m (x=(col+0.5)·cw, y=(rows-row-0.5)·ch).
+    // Build the rectangle about that centre, else multi-cabinet screens shift by
+    // ((cols-1)·cw/2, (rows-1)·ch/2).
+    let ox = (cols - 1.0) * cabinet_size_mm[0] / 2000.0;
+    let oy = -(rows - 1.0) * cabinet_size_mm[1] / 2000.0;
+    let hw = width_mm / 2000.0;
+    let hh = height_mm / 2000.0;
+    let bl = place([ox - hw, oy - hh, 0.0]);
+    let br = place([ox + hw, oy - hh, 0.0]);
+    let tl = place([ox - hw, oy + hh, 0.0]);
+    // vpcal PlaneSection.uv_to_world: local = [(u-0.5)·w, 0, v·h].
+    //   col 0 = increasing-u (width) direction
+    //   col 2 = increasing-v (height) direction
+    //   col 1 = section normal = col2 × col0
+    //   origin = uv_to_world(0.5, 0) = bottom-centre = (bl + br) / 2
+    let width_axis = unit(sub(br, bl));
+    let height_axis = unit(sub(tl, bl));
+    let normal = cross(height_axis, width_axis);
+    let rotation = [
+        [width_axis[0], normal[0], height_axis[0]],
+        [width_axis[1], normal[1], height_axis[1]],
+        [width_axis[2], normal[2], height_axis[2]],
+    ];
+    VpcalSection::Plane {
+        name,
+        origin: [
+            (bl[0] + br[0]) * 0.5 * 1000.0,
+            (bl[1] + br[1]) * 0.5 * 1000.0,
+            (bl[2] + br[2]) * 0.5 * 1000.0,
+        ],
+        rotation: matrix_quaternion(&rotation),
+        width_mm,
+        height_mm,
     }
 }
 
@@ -332,17 +378,7 @@ fn vpcal_sections(
     screen: &ScreenConfig,
     project: &ProjectConfig,
 ) -> VoloResult<Vec<VpcalSection>> {
-    if screen.normal_flip {
-        return Err(VoloError::InvalidInput(
-            "normal_flip cannot be represented without reflecting vpcal marker coordinates; export a reconstructed OBJ when that path is available".into(),
-        ));
-    }
-    if !screen.irregular_mask.is_empty() {
-        return Err(VoloError::InvalidInput(
-            "irregular_mask cannot be represented by vpcal ScreenDefinition v1 nominal sections"
-                .into(),
-        ));
-    }
+    reject_unsupported_vpcal_screen(screen)?;
 
     let width = screen.cabinet_count[0] as f64 * screen.cabinet_size_mm[0];
     let height = screen.cabinet_count[1] as f64 * screen.cabinet_size_mm[1];
@@ -523,14 +559,27 @@ pub fn export_vpcal_screen(
         rebuilt.as_ref().and_then(|(_, digest)| digest.clone()),
     );
     let sections = if let Some((placement, _)) = rebuilt.as_ref() {
-        let mut local_screen = screen.clone();
-        local_screen.position_m = [0.0, 0.0, 0.0];
-        local_screen.yaw_deg = 0.0;
-        local_screen.height_offset_mm = 0.0;
-        vpcal_sections(&screen_id, &local_screen, &project)?
-            .into_iter()
-            .map(|section| transform_section(section, placement))
-            .collect()
+        // Reconstructed screens: fit each vpcal section to the *placed* reconstructed
+        // surface (`A ∘ B_s`), matching the OBJ/viewport path. Only flat screens can
+        // be represented exactly today; curved/folded/segmented reconstructed surfaces
+        // fail closed rather than emit a nominal shape with wrong geometry.
+        reject_unsupported_vpcal_screen(screen)?;
+        match &screen.shape_prior {
+            ShapePriorConfig::Flat => {
+                vec![placed_plane_section(
+                    screen_id.clone(),
+                    placement,
+                    screen.cabinet_count,
+                    screen.cabinet_size_mm,
+                )]
+            }
+            _ => {
+                return Err(VoloError::InvalidInput(format!(
+                    "vpcal export from reconstructed geometry currently supports only flat screens; \
+                     screen '{screen_id}' has a non-flat shape_prior — export a reconstructed OBJ for curved/folded/segmented screens"
+                )));
+            }
+        }
     } else {
         vpcal_sections(&screen_id, screen, &project)?
     };
@@ -638,5 +687,277 @@ output: { target: neutral, obj_filename: "{screen_id}.obj", weld_vertices_tolera
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
         assert!(!dir.path().join("screen.json.bak").exists());
         assert!(!dir.path().join("screen.json.tmp").exists());
+    }
+
+    #[test]
+    fn rebuilt_export_reproduces_reconstructed_geometry_not_nominal() {
+        // Regression for the vpcal-export geometry bug: export_vpcal_screen must
+        // reproduce `A∘B_s∘(reconstruction surface)`, NOT apply the placement to a
+        // nominal vpcal section (which tilted each screen 90° about its own X axis
+        // and collapsed the real ASUS+LG fold from 69.6° to 10.3°). Values are the
+        // field lg-asus case (physical crosscheck: 782 mm / 69.6°).
+        use std::f64::consts::PI;
+        let dir = tempdir().unwrap();
+
+        // A = rebuilt_alignment anchor (row-major), metres.
+        let a_r = [
+            [0.3580778121215323, -0.15955779772465156, 0.91995738469318],
+            [0.9335059557735136, 0.08083428860555278, -0.3493314304797289],
+            [-0.01862554701575028, 0.9838735320003754, 0.1778931196743446],
+        ];
+        let a_t_m = [-0.12124723787803034, -0.29652372128699445, 0.3294210194793368];
+        // B_s(LG) row-major + t (mm). B_s(ASUS) = identity (frame screen).
+        let lg_r = [
+            [0.35807781212153245, -0.018625547015750227, -0.9335059557735134],
+            [-0.15955779772465156, 0.9838735320003752, -0.08083428860555271],
+            [0.91995738469318, 0.17789311967434462, 0.34933143047972887],
+        ];
+        let lg_t_mm = [536.5022291900945, -82.40484151783414, 565.7755099063344];
+
+        std::fs::create_dir_all(dir.path().join("measurements")).unwrap();
+        let st = serde_json::json!({
+            "schema_version": "visual_screen_transforms.v1",
+            "frame_screen_id": "ASUS",
+            "transforms": [
+                {"screen_id":"ASUS","R":[[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]],"t_mm":[0.0,0.0,0.0],"rms_px":0.31,"bridge_views":7},
+                {"screen_id":"LG","R":lg_r,"t_mm":lg_t_mm,"rms_px":0.25,"bridge_views":7}
+            ]
+        });
+        std::fs::write(
+            dir.path().join("measurements/st.json"),
+            serde_json::to_vec(&st).unwrap(),
+        )
+        .unwrap();
+
+        let project = format!(
+            r#"
+project: {{ name: lg-asus, unit: mm }}
+screens:
+  ASUS:
+    cabinet_count: [1, 1]
+    cabinet_size_mm: [596, 335]
+    pixels_per_cabinet: [2560, 1440]
+    shape_prior: {{ type: flat }}
+    shape_mode: rectangle
+  LG:
+    cabinet_count: [1, 1]
+    cabinet_size_mm: [1209, 678]
+    pixels_per_cabinet: [3840, 2160]
+    shape_prior: {{ type: flat }}
+    shape_mode: rectangle
+coordinate_system:
+  origin_point: LG_V001_R001
+  x_axis_point: LG_V002_R001
+  xy_plane_point: LG_V001_R002
+output: {{ target: neutral, obj_filename: "{{screen_id}}.obj", weld_vertices_tolerance_mm: 1, triangulate: true }}
+rebuilt_alignment:
+  groups:
+  - screens: [ASUS, LG]
+    rotation:
+    - [{}, {}, {}]
+    - [{}, {}, {}]
+    - [{}, {}, {}]
+    t_m: [{}, {}, {}]
+    ref_points: {{ origin: LG_V001_R001, x_axis: LG_V002_R001, xy_plane: LG_V001_R002 }}
+    solve_ref: measurements/st.json
+    applied_at: 2026-07-22T00:00:00Z
+"#,
+            a_r[0][0], a_r[0][1], a_r[0][2], a_r[1][0], a_r[1][1], a_r[1][2], a_r[2][0], a_r[2][1],
+            a_r[2][2], a_t_m[0], a_t_m[1], a_t_m[2]
+        );
+        std::fs::write(dir.path().join("project.yaml"), project).unwrap();
+
+        // quaternion (w,x,y,z) → row-major R
+        let quat_to_r = |q: [f64; 4]| {
+            let [w, x, y, z] = q;
+            [
+                [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - w * z), 2.0 * (x * z + w * y)],
+                [2.0 * (x * y + w * z), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - w * x)],
+                [2.0 * (x * z - w * y), 2.0 * (y * z + w * x), 1.0 - 2.0 * (x * x + y * y)],
+            ]
+        };
+        let matvec = |m: &[[f64; 3]; 3], v: [f64; 3]| {
+            [
+                m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+                m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+                m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+            ]
+        };
+
+        let corners = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]; // (u,v)
+        let screens: [(&str, [f64; 2], [[f64; 3]; 3], [f64; 3]); 2] = [
+            ("ASUS", [596.0, 335.0], [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], [0.0, 0.0, 0.0]),
+            ("LG", [1209.0, 678.0], lg_r, lg_t_mm),
+        ];
+        let mut normals = Vec::new();
+        for (sid, dims, bs_r, bs_t) in screens {
+            let out =
+                export_vpcal_screen(dir.path().display().to_string(), sid.into(), None).unwrap();
+            let json: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&out.path).unwrap()).unwrap();
+            let sec = &json["sections"][0];
+            assert_eq!(sec["type"], "plane");
+            let (w, h) = (dims[0], dims[1]);
+            let o = [
+                sec["origin"][0].as_f64().unwrap(),
+                sec["origin"][1].as_f64().unwrap(),
+                sec["origin"][2].as_f64().unwrap(),
+            ];
+            let q = [
+                sec["rotation"][0].as_f64().unwrap(),
+                sec["rotation"][1].as_f64().unwrap(),
+                sec["rotation"][2].as_f64().unwrap(),
+                sec["rotation"][3].as_f64().unwrap(),
+            ];
+            let r = quat_to_r(q);
+            for (u, v) in corners {
+                // exported world (mm) via vpcal PlaneSection.uv_to_world
+                let local = [(u - 0.5) * w, 0.0, v * h];
+                let m = matvec(&r, local);
+                let got = [m[0] + o[0], m[1] + o[1], m[2] + o[2]];
+                // expected: A∘B_s∘recon (recon local X–Y centred, mm)
+                let recon = [(u - 0.5) * w, (v - 0.5) * h, 0.0];
+                let j = matvec(&bs_r, recon);
+                let joint = [j[0] + bs_t[0], j[1] + bs_t[1], j[2] + bs_t[2]];
+                let a = matvec(&a_r, [joint[0] / 1000.0, joint[1] / 1000.0, joint[2] / 1000.0]);
+                let exp = [
+                    (a[0] + a_t_m[0]) * 1000.0,
+                    (a[1] + a_t_m[1]) * 1000.0,
+                    (a[2] + a_t_m[2]) * 1000.0,
+                ];
+                let d = ((got[0] - exp[0]).powi(2)
+                    + (got[1] - exp[1]).powi(2)
+                    + (got[2] - exp[2]).powi(2))
+                .sqrt();
+                assert!(
+                    d < 0.01,
+                    "{sid} corner ({u},{v}): exported {got:?} != A∘B_s∘recon {exp:?} (|d|={d:.4}mm)"
+                );
+            }
+            normals.push(matvec(&r, [0.0, 1.0, 0.0])); // plane normal = R·[0,1,0]
+        }
+        // Physical crosscheck: the two screens fold at ~69.6° (bug produced 10.3°).
+        let (n0, n1) = (normals[0], normals[1]);
+        let dot = (n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2]).abs().min(1.0);
+        let fold_deg = dot.acos() * 180.0 / PI;
+        assert!(
+            (fold_deg - 69.6).abs() < 1.0,
+            "ASUS+LG fold should be ~69.6° (physical), got {fold_deg:.2}° — nominal-section export bug regressed"
+        );
+    }
+
+    #[test]
+    fn rebuilt_export_multi_cabinet_screen_places_about_screen_center() {
+        // Regression: a multi-cabinet flat screen's exported plane must sit about
+        // the SCREEN center, not the root cabinet (col0,row0) center that A∘B_s is
+        // anchored at. The pre-fix centered rectangle shipped it shifted by
+        // ((cols-1)·cw/2, (rows-1)·ch/2). Two-screen group so solve_ref is written;
+        // A = identity, so placement(M) = B_s(M).
+        let dir = tempdir().unwrap();
+        let m_r = [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]]; // 90° about X
+        let m_t = [1000.0, 200.0, 300.0];
+        std::fs::create_dir_all(dir.path().join("measurements")).unwrap();
+        let st = serde_json::json!({
+            "schema_version": "visual_screen_transforms.v1",
+            "frame_screen_id": "F",
+            "transforms": [
+                {"screen_id":"F","R":[[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]],"t_mm":[0.0,0.0,0.0],"rms_px":0.3,"bridge_views":5},
+                {"screen_id":"M","R":m_r,"t_mm":m_t,"rms_px":0.3,"bridge_views":5}
+            ]
+        });
+        std::fs::write(
+            dir.path().join("measurements/st.json"),
+            serde_json::to_vec(&st).unwrap(),
+        )
+        .unwrap();
+        let project = r#"
+project: { name: t, unit: mm }
+screens:
+  F:
+    cabinet_count: [1, 1]
+    cabinet_size_mm: [500, 300]
+    pixels_per_cabinet: [500, 300]
+    shape_prior: { type: flat }
+    shape_mode: rectangle
+  M:
+    cabinet_count: [2, 1]
+    cabinet_size_mm: [500, 300]
+    pixels_per_cabinet: [500, 300]
+    shape_prior: { type: flat }
+    shape_mode: rectangle
+coordinate_system:
+  origin_point: F_V001_R001
+  x_axis_point: F_V002_R001
+  xy_plane_point: F_V001_R002
+output: { target: neutral, obj_filename: "{screen_id}.obj", weld_vertices_tolerance_mm: 1, triangulate: true }
+rebuilt_alignment:
+  groups:
+  - screens: [F, M]
+    rotation:
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]
+    t_m: [0.0, 0.0, 0.0]
+    ref_points: { origin: F_V001_R001, x_axis: F_V002_R001, xy_plane: F_V001_R002 }
+    solve_ref: measurements/st.json
+    applied_at: 2026-07-22T00:00:00Z
+"#;
+        std::fs::write(dir.path().join("project.yaml"), project).unwrap();
+
+        let quat_to_r = |q: [f64; 4]| {
+            let [w, x, y, z] = q;
+            [
+                [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - w * z), 2.0 * (x * z + w * y)],
+                [2.0 * (x * y + w * z), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - w * x)],
+                [2.0 * (x * z - w * y), 2.0 * (y * z + w * x), 1.0 - 2.0 * (x * x + y * y)],
+            ]
+        };
+        let matvec = |m: &[[f64; 3]; 3], v: [f64; 3]| {
+            [
+                m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+                m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+                m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+            ]
+        };
+
+        let out =
+            export_vpcal_screen(dir.path().display().to_string(), "M".into(), None).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&out.path).unwrap()).unwrap();
+        let sec = &json["sections"][0];
+        let (cw, ch, cols, rows) = (500.0_f64, 300.0_f64, 2.0_f64, 1.0_f64);
+        let (w, h) = (cols * cw, rows * ch);
+        assert_eq!(sec["width_mm"].as_f64().unwrap(), w);
+        let o = [
+            sec["origin"][0].as_f64().unwrap(),
+            sec["origin"][1].as_f64().unwrap(),
+            sec["origin"][2].as_f64().unwrap(),
+        ];
+        let q = [
+            sec["rotation"][0].as_f64().unwrap(),
+            sec["rotation"][1].as_f64().unwrap(),
+            sec["rotation"][2].as_f64().unwrap(),
+            sec["rotation"][3].as_f64().unwrap(),
+        ];
+        let r = quat_to_r(q);
+        for (u, v) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
+            let local = [(u - 0.5) * w, 0.0, v * h];
+            let m = matvec(&r, local);
+            let got = [m[0] + o[0], m[1] + o[1], m[2] + o[2]];
+            // Reconstruction convention (nominal.py::_cabinet_center_model_m): root
+            // cabinet (0,0) at origin, screen spans x∈[-cw/2, cols·cw-cw/2],
+            // y∈[-(rows-0.5)·ch, ch/2]. A = identity, so expected = B_s(M)∘recon.
+            let recon = [-cw / 2.0 + u * w, -(rows - 0.5) * ch + v * h, 0.0];
+            let j = matvec(&m_r, recon);
+            let exp = [j[0] + m_t[0], j[1] + m_t[1], j[2] + m_t[2]];
+            let d = ((got[0] - exp[0]).powi(2)
+                + (got[1] - exp[1]).powi(2)
+                + (got[2] - exp[2]).powi(2))
+            .sqrt();
+            assert!(
+                d < 0.01,
+                "M corner ({u},{v}): exported {got:?} != B_s∘recon {exp:?} (|d|={d:.4}mm)"
+            );
+        }
     }
 }
