@@ -272,10 +272,10 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
   /* MethodViz / MethodSelect / LensSetup 已删：方式选择在大窗 MethodOptions 紧凑组。 */
 
   /* ============================================================
-     AR 网格叠加（canvas · 归一化线段 × object-fit:cover 映射）
+     AR 网格叠加（canvas · 归一化线段 × object-fit:contain 映射）
      ============================================================ */
-  function coverMap(nx, ny, iw, ih, cw, ch) {
-    const scale = Math.max(cw / Math.max(iw, 1), ch / Math.max(ih, 1));
+  function containMap(nx, ny, iw, ih, cw, ch) {
+    const scale = Math.min(cw / Math.max(iw, 1), ch / Math.max(ih, 1));
     const dw = iw * scale, dh = ih * scale;
     return [nx * dw + (cw - dw) / 2, ny * dh + (ch - dh) / 2];
   }
@@ -312,8 +312,8 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
         ctx.globalAlpha = lost ? 0.7 : 0.7;
         segs.forEach((seg) => {
           if (!seg || seg.length < 4) return;
-          const a = coverMap(seg[0], seg[1], iw, ih, cw, ch);
-          const b = coverMap(seg[2], seg[3], iw, ih, cw, ch);
+          const a = containMap(seg[0], seg[1], iw, ih, cw, ch);
+          const b = containMap(seg[2], seg[3], iw, ih, cw, ch);
           ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
         });
         /* 外框必须使用后端投影的 perspective perimeter；AABB 会把倾斜屏
@@ -323,14 +323,14 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
         ctx.globalAlpha = 1;
         (screen.perimeter || []).forEach((seg) => {
           if (!seg || seg.length < 4) return;
-          const a = coverMap(seg[0], seg[1], iw, ih, cw, ch);
-          const b = coverMap(seg[2], seg[3], iw, ih, cw, ch);
+          const a = containMap(seg[0], seg[1], iw, ih, cw, ch);
+          const b = containMap(seg[2], seg[3], iw, ih, cw, ch);
           ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
         });
         ctx.strokeStyle = cross; ctx.lineWidth = 1.6; ctx.globalAlpha = 1;
         (screen.markers || []).forEach((m) => {
           if (!m || m.length < 2) return;
-          const p = coverMap(m[0], m[1], iw, ih, cw, ch);
+          const p = containMap(m[0], m[1], iw, ih, cw, ch);
           ctx.beginPath(); ctx.moveTo(p[0] - 6, p[1]); ctx.lineTo(p[0] + 6, p[1]); ctx.stroke();
           ctx.beginPath(); ctx.moveTo(p[0], p[1] - 6); ctx.lineTo(p[0], p[1] + 6); ctx.stroke();
         });
@@ -1894,7 +1894,7 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
       hasFeed || signalReady
         ? h(React.Fragment, null,
             displayUrl
-              ? h('img', { className: 'lc-feed', src: displayUrl, alt: '现场画面', style: { width: '100%', height: '100%', objectFit: 'cover', display: 'block' } })
+              ? h('img', { className: 'lc-feed', src: displayUrl, alt: '现场画面', style: { width: '100%', height: '100%', objectFit: 'contain', display: 'block' } })
               : h(CameraSignal, { method, capturing, detect: !isSl && capturing, sl: isSl, slFrame }),
             arActive ? h(AROverlay, { grid: arGrid, lost: trackLostUi, opacity: arOpacity / 100 }) : null,
             h('div', { className: 'lc-vig' }),
