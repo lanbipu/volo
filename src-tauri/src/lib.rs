@@ -350,6 +350,7 @@ pub fn run() {
             commands::vpcal_runs::read_lens_qa_report,
             commands::vpcal_runs::write_fixed_run_meta,
             commands::vpcal_runs::lens_workspace_ensure,
+            commands::vpcal_runs::lens_scan_master_lenses,
             commands::vpcal_runs::lens_assignment_sync,
             commands::vpcal_runs::lens_patterns_meta_read,
             commands::vpcal_runs::lens_patterns_meta_write,

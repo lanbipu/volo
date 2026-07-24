@@ -51,8 +51,10 @@ from lmt_vba_sidecar.intrinsics_solve import (
     _grouped_standoff_ratio,
     _grouped_view_axis_deg,
     crosscheck_intrinsics,
+    grouped_diversity_strict_ok,
     solve_sl_intrinsics,
 )
+from lmt_vba_sidecar.lens_archive import SelfCalInfo, archive_master_lens
 from lmt_vba_sidecar.io_utils import write_event
 from lmt_vba_sidecar.ipc import (
     BaStats,
@@ -60,6 +62,7 @@ from lmt_vba_sidecar.ipc import (
     CabinetPoseReport,
     ErrorEvent,
     FrameSpec,
+    MasterLensSummary,
     MeasuredPoint,
     PatternMeta,
     PointSource,
@@ -1079,12 +1082,15 @@ def _solve_intrinsics_robust(object_points, image_points, image_size, *,
     the per-board weak-observability WARNING (never a refusal) on the returned
     solve — filtered to the surviving poses when boards are trimmed.
     """
-    def _solve(objs, imgs):
+    def _solve(objs, imgs, groups):
+        # No anchor => gate the full-distortion probe on strict per-board
+        # diversity (decision A); anchored path probes unconditionally (None).
         return solve_sl_intrinsics(objs, imgs, image_size,
-                                   max_rms_px=1.5, allow_full_distortion=has_anchor,
+                                   max_rms_px=1.5, allow_full_distortion=True,
+                                   full_probe_groups=None if has_anchor else groups,
                                    max_pp_std_px=pp_gate, try_zero_distortion=True)
 
-    res = _solve(object_points, image_points)
+    res = _solve(object_points, image_points, pose_group_ids)
     errs = []
     for obj, img in zip(object_points, image_points):
         ok, rvec, tvec = cv2.solvePnP(obj, img, res.K, res.dist)
@@ -1099,17 +1105,17 @@ def _solve_intrinsics_robust(object_points, image_points, image_size, *,
     bad = [i for i, e in enumerate(errs) if e > thr]
     if not bad or len(object_points) - len(bad) < 3:
         _emit_intrinsics_observability_warning(res, pose_group_ids)
-        return res
+        return res, list(range(len(object_points)))
     badset = set(bad)
     objs2 = [o for i, o in enumerate(object_points) if i not in badset]
     imgs2 = [m for i, m in enumerate(image_points) if i not in badset]
     groups2 = (None if pose_group_ids is None
                else [g for i, g in enumerate(pose_group_ids) if i not in badset])
     try:
-        res2 = _solve(objs2, imgs2)
+        res2 = _solve(objs2, imgs2, groups2)
     except IntrinsicsRefused:
         _emit_intrinsics_observability_warning(res, pose_group_ids)
-        return res
+        return res, list(range(len(object_points)))
     if res2.rms <= res.rms:
         write_event(WarningEvent(
             event="warning", code="intrinsics_board_rejected",
@@ -1117,9 +1123,33 @@ def _solve_intrinsics_robust(object_points, image_points, image_size, *,
                      f"(> {thr:.2f}px under shared K); rms "
                      f"{res.rms:.2f}px → {res2.rms:.2f}px")))
         _emit_intrinsics_observability_warning(res2, groups2)
-        return res2
+        return res2, [i for i in range(len(object_points)) if i not in badset]
     _emit_intrinsics_observability_warning(res, pose_group_ids)
-    return res
+    return res, list(range(len(object_points)))
+
+
+def _selfcal_info(res, kept, pose_groups, pose_view_ids, image_points,
+                  image_size, has_anchor) -> SelfCalInfo:
+    """Assemble the SelfCalInfo archival descriptor from a self-cal solve.
+
+    ``kept`` indexes the surviving poses (post board-trim) into the pre-solve
+    pose lists. num_images counts DISTINCT views the surviving poses cover (not
+    view×cabinet poses); num_points sums the surviving poses' correspondences.
+    Per-board strict diversity (decision A gate口径) is recomputed on the
+    surviving poses' solved rvecs/tvecs."""
+    groups_kept = [pose_groups[i] for i in kept]
+    div_ok, view_axis, standoff = grouped_diversity_strict_ok(
+        res.rvecs, res.tvecs, groups_kept)
+    return SelfCalInfo(
+        res=res,
+        num_images=len({pose_view_ids[i] for i in kept}),
+        num_points=sum(len(image_points[i]) for i in kept),
+        image_size=(int(image_size[0]), int(image_size[1])),
+        view_axis_deg=view_axis,
+        standoff_ratio=standoff,
+        diversity_ok=div_ok,
+        has_anchor=has_anchor,
+    )
 
 
 def _self_calibrate_vpqsp(meta, detections, view_images, image_size, cmd):
@@ -1156,8 +1186,8 @@ def _self_calibrate_vpqsp(meta, detections, view_images, image_size, cmd):
     # aren't for a desktop dual-monitor test setup, and may tilt on curved walls).
     # Use LOCAL mm coords (z=0, center-origin) — world coords would bake in the
     # flat-wall layout assumption, which is irrelevant for intrinsics.
-    object_points, image_points, pose_groups = [], [], []
-    for imgs in view_images:
+    object_points, image_points, pose_groups, pose_view_ids = [], [], [], []
+    for view_idx, imgs in enumerate(view_images):
         per_cab: dict[tuple[int, int], tuple[list, list]] = {}
         for path in imgs:
             for det in detections.get(path, []):
@@ -1179,6 +1209,7 @@ def _self_calibrate_vpqsp(meta, detections, view_images, image_size, cmd):
                 object_points.append(np.asarray(objp, dtype=np.float32))
                 image_points.append(np.asarray(imgp, dtype=np.float32))
                 pose_groups.append(cab_key)
+                pose_view_ids.append(view_idx)
 
     # FIX-21: cap pose count to avoid minute-level calibrateCamera on large walls.
     MAX_CAL_POSES = 200
@@ -1189,6 +1220,7 @@ def _self_calibrate_vpqsp(meta, detections, view_images, image_size, cmd):
         object_points = [object_points[i] for i in idx]
         image_points = [image_points[i] for i in idx]
         pose_groups = [pose_groups[i] for i in idx]
+        pose_view_ids = [pose_view_ids[i] for i in idx]
 
     # Load + validate the master-lens anchor BEFORE solving: has_anchor gates
     # allow_full_distortion, so a broken/mismatched anchor must be resolved first.
@@ -1197,9 +1229,11 @@ def _self_calibrate_vpqsp(meta, detections, view_images, image_size, cmd):
     # Per-cabinet poses have fewer points than full-view poses, so pp uncertainty
     # is slightly higher. Scale the pp gate by image size (default 3px @ 4000px).
     pp_gate = max(5.0, 3.0 * max(image_size) / 4000)
-    res = _solve_intrinsics_robust(object_points, image_points, image_size,
-                                   has_anchor=has_anchor, pp_gate=pp_gate,
-                                   pose_group_ids=pose_groups)
+    res, kept = _solve_intrinsics_robust(object_points, image_points, image_size,
+                                         has_anchor=has_anchor, pp_gate=pp_gate,
+                                         pose_group_ids=pose_groups)
+    info = _selfcal_info(res, kept, pose_groups, pose_view_ids, image_points,
+                         image_size, has_anchor)
     if has_anchor:
         refusal = crosscheck_intrinsics(res, anchor_K=anchor.K, anchor_dist=anchor.dist)
         if refusal is not None:
@@ -1213,7 +1247,7 @@ def _self_calibrate_vpqsp(meta, detections, view_images, image_size, cmd):
                     "independent anchor; assumes the screen is driven pixel-exact (1:1). "
                     "Anisotropic pitch / non-1:1 scaling is unguarded — pass "
                     "--intrinsics-crosscheck <anchor.json> to validate."))
-    return res.K, res.dist
+    return res.K, res.dist, info
 
 
 def run_reconstruct_vpqsp(cmd: ReconstructInput, manifest) -> int:
@@ -1307,7 +1341,7 @@ def run_reconstruct_vpqsp(cmd: ReconstructInput, manifest) -> int:
                 fatal=True))
             return 1
         try:
-            K, dist = _self_calibrate_vpqsp(meta, detections, view_images, image_size, cmd)
+            K, dist, selfcal = _self_calibrate_vpqsp(meta, detections, view_images, image_size, cmd)
             intrinsics_source = "auto_self_calibrated"
         except IntrinsicsRefused as e:
             write_event(ErrorEvent(event="error", code=e.code, message=e.message, fatal=True))
@@ -1318,6 +1352,7 @@ def run_reconstruct_vpqsp(cmd: ReconstructInput, manifest) -> int:
             K = loaded.K
             dist = loaded.dist
             intrinsics_source = "file"
+            selfcal = None
         except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
             write_event(ErrorEvent(event="error", code="intrinsics_invalid",
                 message=f"intrinsics load failed: {e}", fatal=True))
@@ -1378,6 +1413,13 @@ def run_reconstruct_vpqsp(cmd: ReconstructInput, manifest) -> int:
         write_event(ErrorEvent(event="error", code="invalid_input", message=str(e), fatal=True))
         return 1
 
+    # Archive the self-cal lens as a vpcal master lens when Rust supplied an
+    # out path (single-camera auto-loop). provider is called at the ResultEvent
+    # construction point ⇒ any pre-result gate return never writes a lens.
+    master_lens_provider = None
+    if selfcal is not None and cmd.master_lens_out_path:
+        master_lens_provider = lambda: archive_master_lens(selfcal, cmd.master_lens_out_path)
+
     return solve_and_emit(
         K=K, observations=observations, per_view_cab_corners=per_view_cab_corners,
         n_cameras=len(view_images), cab_to_idx=cab_to_idx, root_idx=root_idx,
@@ -1389,6 +1431,7 @@ def run_reconstruct_vpqsp(cmd: ReconstructInput, manifest) -> int:
         gauge_strategy="fix_root_cabinet",  # fast-mode marker, same gauge as charuco
         intrinsics_source=intrinsics_source,
         ignored_photos=ignored_photos, photos_used=photos_used, photos_total=photos_total,
+        master_lens_provider=master_lens_provider,
     )
 
 
@@ -1649,7 +1692,7 @@ def run_reconstruct_vpqsp_joint(cmd: ReconstructInput, manifest) -> int:
                 return 1
             try:
                 # Use first screen meta for self-cal grid lookup; detections carry screen_id.
-                K, dist = _self_calibrate_vpqsp_joint(
+                K, dist, selfcal = _self_calibrate_vpqsp_joint(
                     screen_metas, grid_by_screen, code_to_screen, detections,
                     round_view_images, image_size, cmd)
                 intrinsics_source = "auto_self_calibrated"
@@ -1662,6 +1705,7 @@ def run_reconstruct_vpqsp_joint(cmd: ReconstructInput, manifest) -> int:
                 K = loaded.K
                 dist = loaded.dist
                 intrinsics_source = "file"
+                selfcal = None
             except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
                 write_event(ErrorEvent(event="error", code="intrinsics_invalid",
                     message=f"intrinsics load failed: {e}", fatal=True))
@@ -1730,6 +1774,14 @@ def run_reconstruct_vpqsp_joint(cmd: ReconstructInput, manifest) -> int:
             for si in range(n_screens)
         }
 
+        # Archive within the round so the provider captures THIS round's selfcal
+        # (round 2 self-cal re-solves K without the rejected views).
+        master_lens_provider = None
+        if selfcal is not None and cmd.master_lens_out_path:
+            _round_selfcal = selfcal
+            master_lens_provider = (
+                lambda sc=_round_selfcal: archive_master_lens(sc, cmd.master_lens_out_path))
+
         code = joint_solve_and_emit(
             K=K,
             observations=observations,
@@ -1753,6 +1805,7 @@ def run_reconstruct_vpqsp_joint(cmd: ReconstructInput, manifest) -> int:
             photos_used=photos_used,
             photos_total=photos_total,
             gate_retry_out=gate_retry,
+            master_lens_provider=master_lens_provider,
         )
 
         if code == 0 or gate_retry is None or not gate_retry.get("bad_views"):
@@ -1771,8 +1824,8 @@ def _self_calibrate_vpqsp_joint(
     """Self-cal for joint VP-QSP: route each detection to its screen's grid."""
     from lmt_vba_sidecar.vpqsp_layout import marker_local_mm
 
-    object_points, image_points, pose_groups = [], [], []
-    for imgs in view_images:
+    object_points, image_points, pose_groups, pose_view_ids = [], [], [], []
+    for view_idx, imgs in enumerate(view_images):
         per_cab: dict[tuple[int, int, int], tuple[list, list]] = {}
         for path in imgs:
             for det in detections.get(path, []):
@@ -1797,6 +1850,7 @@ def _self_calibrate_vpqsp_joint(
                 object_points.append(np.asarray(objp, dtype=np.float32))
                 image_points.append(np.asarray(imgp, dtype=np.float32))
                 pose_groups.append(cab_key)
+                pose_view_ids.append(view_idx)
 
     MAX_CAL_POSES = 200
     if len(object_points) > MAX_CAL_POSES:
@@ -1806,13 +1860,16 @@ def _self_calibrate_vpqsp_joint(
         object_points = [object_points[i] for i in idx]
         image_points = [image_points[i] for i in idx]
         pose_groups = [pose_groups[i] for i in idx]
+        pose_view_ids = [pose_view_ids[i] for i in idx]
 
     anchor = _load_crosscheck_anchor(cmd.crosscheck_intrinsics_path, image_size)
     has_anchor = anchor is not None
     pp_gate = max(5.0, 3.0 * max(image_size) / 4000)
-    res = _solve_intrinsics_robust(object_points, image_points, image_size,
-                                   has_anchor=has_anchor, pp_gate=pp_gate,
-                                   pose_group_ids=pose_groups)
+    res, kept = _solve_intrinsics_robust(object_points, image_points, image_size,
+                                         has_anchor=has_anchor, pp_gate=pp_gate,
+                                         pose_group_ids=pose_groups)
+    info = _selfcal_info(res, kept, pose_groups, pose_view_ids, image_points,
+                         image_size, has_anchor)
     if has_anchor:
         refusal = crosscheck_intrinsics(res, anchor_K=anchor.K, anchor_dist=anchor.dist)
         if refusal is not None:
@@ -1823,7 +1880,7 @@ def _self_calibrate_vpqsp_joint(
                     "independent anchor; assumes the screen is driven pixel-exact (1:1). "
                     "Anisotropic pitch / non-1:1 scaling is unguarded — pass "
                     "--intrinsics-crosscheck <anchor.json> to validate."))
-    return res.K, res.dist
+    return res.K, res.dist, info
 
 
 def joint_solve_and_emit(
@@ -1850,6 +1907,7 @@ def joint_solve_and_emit(
     photos_used: int = 0,
     photos_total: int = 0,
     gate_retry_out: dict | None = None,
+    master_lens_provider: "Callable[[], MasterLensSummary | None] | None" = None,
 ) -> int:
     """Joint multi-screen BA + per-screen pose reports + screen transforms.
 
@@ -2086,6 +2144,7 @@ def joint_solve_and_emit(
             photos_used=photos_used,
             photos_total=photos_total,
             withheld=_withheld_summary_from_wv(wv),
+            master_lens=master_lens_provider() if master_lens_provider else None,
         ),
     ))
     return 0
@@ -2155,6 +2214,7 @@ def solve_and_emit(
     ignored_photos: list[str] | None = None,
     photos_used: int = 0,
     photos_total: int = 0,
+    master_lens_provider: "Callable[[], MasterLensSummary | None] | None" = None,
 ) -> int:
     """Shared init -> model_constrained_ba -> per-cabinet geometry -> report ->
     ResultEvent. Used by both run_reconstruct (charuco) and
@@ -2436,6 +2496,7 @@ def solve_and_emit(
             ignored_photos=list(ignored_photos or []),
             photos_used=int(photos_used),
             photos_total=int(photos_total),
+            master_lens=master_lens_provider() if master_lens_provider else None,
         ),
     ))
     return 0

@@ -264,6 +264,41 @@ def test_joint_two_screen_recovers_relative_pose(tmp_path, capsys, monkeypatch):
     assert np.linalg.norm(np.array(root_b["position_mm"])) < 1.0
 
 
+def test_joint_auto_master_lens_summary_transmitted(tmp_path, capsys, monkeypatch):
+    # `--intrinsics auto` + master_lens_out_path on the joint path threads the
+    # MasterLensSummary through to ResultData.master_lens and archives the lens
+    # (the two-screen orbit is strict-diverse per board).
+    import os
+    paths, dets = _build_joint_capture(tmp_path, bridge_views=True)
+    # auto self-cal reads the real frame size off disk (detection stays mocked).
+    blank = np.zeros((_IMG[1], _IMG[0]), dtype=np.uint8)
+    for p in dets:
+        cv2.imwrite(p, blank)
+    _patch_detector(monkeypatch, dets)
+    out_lens = str(tmp_path / "lenses" / "recon-auto.master-lens.json")
+    inp = _joint_input(paths).model_copy(update={
+        "intrinsics_path": "auto", "master_lens_out_path": out_lens})
+    assert run_reconstruct(inp) == 0
+    data = _result(capsys.readouterr().out)["data"]
+    assert data["intrinsics_source"] == "auto_self_calibrated"
+    ml = data["master_lens"]
+    assert ml is not None and ml["archived"] is True
+    assert ml["path"] == out_lens
+    assert os.path.exists(out_lens)
+    lens = json.loads(open(out_lens).read())
+    assert lens["source"] == "reconstruction_self_calibration"
+    assert lens["is_master"] is True
+
+
+def test_joint_file_intrinsics_no_master_lens(tmp_path, capsys, monkeypatch):
+    # File intrinsics (non-auto) never archives: master_lens stays None.
+    paths, dets = _build_joint_capture(tmp_path, bridge_views=True)
+    _patch_detector(monkeypatch, dets)
+    assert run_reconstruct(_joint_input(paths)) == 0
+    data = _result(capsys.readouterr().out)["data"]
+    assert data.get("master_lens") is None
+
+
 def test_joint_no_bridge_views_is_screens_disconnected(tmp_path, capsys, monkeypatch):
     paths, dets = _build_joint_capture(tmp_path, bridge_views=False)
     # Partition views: first half sees only screen A, second half only screen B.

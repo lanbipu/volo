@@ -72,6 +72,19 @@ export interface LensPatternsMetaStatus {
 export const lensWorkspaceEnsure = (projectPath: string) =>
   call<void>("lens_workspace_ensure", { projectPath });
 
+/** `<project>/vpcal/lenses/*.master-lens.json` 一条扫描项（含严门 qualified 与透传 source）。 */
+export interface MasterLensScanEntry {
+  path: string;
+  /** 通过权威 master-lens 资格门。 */
+  qualified: boolean;
+  /** 文件的 source 字段（不参与 qualified）；自产档案为 "reconstruction_self_calibration"。 */
+  source?: string | null;
+}
+
+/** 扫描项目内 master lens（按文件名排序；目录缺失返回空）。固定机位单项目自动发现用。 */
+export const scanMasterLenses = (projectPath: string) =>
+  call<MasterLensScanEntry[]>("lens_scan_master_lenses", { projectPath });
+
 /** B3 — 从 project.yaml 重算并写 assignment.json，返回全表。 */
 export const lensAssignmentSync = (projectPath: string) =>
   call<LensAssignment>("lens_assignment_sync", { projectPath });

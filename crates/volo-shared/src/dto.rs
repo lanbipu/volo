@@ -641,6 +641,27 @@ pub struct WithheldSummaryDto {
     pub max_delta_rot_deg: Option<f64>,
 }
 
+/// `--intrinsics auto` master-lens archival outcome (mirrors the sidecar
+/// `MasterLensSummary`). Optional throughout (None for file intrinsics / SL /
+/// charuco / older sidecars).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MasterLensSummaryDto {
+    #[serde(default)]
+    pub archived: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distortion_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_images: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_points: Option<u32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct VisualReconstructResult {
     pub screen_id: String,
@@ -680,6 +701,9 @@ pub struct VisualReconstructResult {
     /// Joint withheld-view + screen-consistency validation digest (None for single-screen).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub withheld: Option<WithheldSummaryDto>,
+    /// `--intrinsics auto` master-lens archival outcome (None otherwise).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub master_lens: Option<MasterLensSummaryDto>,
 }
 
 /// Durable visual-BA solve digest for the「重建记录」UI (timestamped, not overwritten).
@@ -708,6 +732,9 @@ pub struct VisualSolveDigest {
     pub intrinsics_source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub withheld: Option<WithheldSummaryDto>,
+    /// `--intrinsics auto` master-lens archival outcome (None otherwise).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub master_lens: Option<MasterLensSummaryDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1056,6 +1083,7 @@ shape_mode: rectangle
             photos_used: 42,
             photos_total: 45,
             withheld: None,
+            master_lens: None,
         };
         let json = serde_json::to_string(&vr).unwrap();
         assert!(json.contains("\"screen_id\":\"MAIN\""));

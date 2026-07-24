@@ -113,6 +113,21 @@ def _grouped_standoff_ratio(tvecs, groups) -> float | None:
     return best
 
 
+def grouped_diversity_strict_ok(rvecs, tvecs, groups) -> tuple[bool, float, float | None]:
+    """(ok, view_axis_deg, standoff_ratio). ok = same-board view-axis span
+    >= POSE_ROT_DIVERSITY_STRICT_DEG AND standoff is not None AND
+    >= STANDOFF_RATIO_MIN.
+
+    NOTE: a None standoff means "sample too small to judge" on the WARNING path
+    (_grouped_standoff_ratio skips <2-pose boards), but as an UNLOCK / archive
+    gate it must be fail-closed — treat None as not-ok."""
+    view_axis = _grouped_view_axis_deg(rvecs, groups)
+    standoff = _grouped_standoff_ratio(tvecs, groups)
+    ok = (view_axis >= POSE_ROT_DIVERSITY_STRICT_DEG
+          and standoff is not None and standoff >= STANDOFF_RATIO_MIN)
+    return ok, view_axis, standoff
+
+
 def _coverage_frac(image_points, image_size) -> float:
     allpts = np.concatenate([np.asarray(p).reshape(-1, 2) for p in image_points], axis=0)
     w = (allpts[:, 0].max() - allpts[:, 0].min()) / image_size[0]
@@ -122,6 +137,7 @@ def _coverage_frac(image_points, image_size) -> float:
 
 def solve_sl_intrinsics(object_points, image_points, image_size, *, max_rms_px: float,
                         allow_full_distortion: bool = False,
+                        full_probe_groups: list | None = None,
                         max_pp_std_px: float | None = None,
                         max_focal_std_frac: float | None = None,
                         try_zero_distortion: bool = False) -> IntrinsicsResult:
@@ -183,7 +199,16 @@ def solve_sl_intrinsics(object_points, image_points, image_size, *, max_rms_px: 
 
         if model != "zero_dist":
             rms, K, dist, rvecs, tvecs, std_int, _std_ext, _pv = _solve(full=False)
-        if allow_full_distortion:
+        # Distortion unlock (decision A): when no anchor validates the extra
+        # coeffs, only probe the full model if the capture is strict-diverse per
+        # board (using the already-solved radial2/zero_dist poses — zero extra
+        # solve cost). full_probe_groups=None => probe unconditionally (anchored
+        # path / callers that opt out). A length mismatch is fail-closed.
+        probe_full = allow_full_distortion
+        if probe_full and full_probe_groups is not None:
+            probe_full = (len(full_probe_groups) == len(rvecs)
+                          and grouped_diversity_strict_ok(rvecs, tvecs, full_probe_groups)[0])
+        if probe_full:
             r2, K2, d2, rv2, t2, si2, _se2, _pv2 = _solve(full=True)
             s2 = np.asarray(si2).flatten()
             # Accept full if it did not worsen RMS and AT LEAST ONE extra coeff is

@@ -1190,6 +1190,16 @@ export interface WithheldSummaryDto {
   max_delta_rot_deg?: number | null;
 }
 
+export interface MasterLensSummaryDto {
+  archived: boolean;
+  path?: string | null;
+  reason?: string | null;
+  distortion_model?: string | null;
+  rms?: number | null;
+  num_images?: number | null;
+  num_points?: number | null;
+}
+
 export interface VisualReconstructResult {
   screen_id: string;
   pose_report_path: string;
@@ -1209,6 +1219,7 @@ export interface VisualReconstructResult {
   photos_used?: number;
   photos_total?: number;
   withheld?: WithheldSummaryDto | null;
+  master_lens?: MasterLensSummaryDto | null;
 }
 
 export interface VisualSolveCabinetDigest {
@@ -1247,6 +1258,7 @@ export interface VisualSolveDigest {
   warnings?: WarningDto[];
   intrinsics_source?: string;
   withheld?: WithheldSummaryDto | null;
+  master_lens?: MasterLensSummaryDto | null;
 }
 
 export interface CalibrateResult {

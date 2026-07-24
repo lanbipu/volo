@@ -41,6 +41,10 @@ pub struct ReconstructArgs {
     /// Optional independent intrinsics anchor for the `--intrinsics auto`
     /// anti-absorption cross-check (vpqsp self-cal only).
     pub crosscheck_intrinsics_path: Option<String>,
+    /// Where the sidecar archives the `--intrinsics auto` self-cal lens as a vpcal
+    /// master lens. Three-state (decided in mesh-app): `None` = do not archive;
+    /// `Some(path)` = archive there when the solve qualifies.
+    pub master_lens_out_path: Option<String>,
     /// Where the sidecar writes `cabinet_pose_report.json` (spec §9). The
     /// adapter reads it back to build `cabinet_summaries`. For joint mode this
     /// is the first screen's report path (per-screen paths live on each
@@ -90,6 +94,9 @@ pub struct ReconstructOut {
     /// Joint withheld-view + screen-consistency validation digest (None for
     /// single-screen / SL paths and older sidecars).
     pub withheld: Option<crate::ipc::WithheldSummary>,
+    /// `--intrinsics auto` master-lens archival outcome (None for file
+    /// intrinsics / SL / charuco / older sidecars).
+    pub master_lens: Option<crate::ipc::MasterLensSummary>,
 }
 
 fn ipc_to_ir_coord(c: &IpcCoordinateFrame) -> VbaResult<mesh_core::coordinate::CoordinateFrame> {
@@ -221,6 +228,9 @@ pub async fn reconstruct(args: ReconstructArgs) -> VbaResult<ReconstructOut> {
     if let Some(p) = &args.crosscheck_intrinsics_path {
         payload["crosscheck_intrinsics_path"] = json!(p);
     }
+    if let Some(p) = &args.master_lens_out_path {
+        payload["master_lens_out_path"] = json!(p);
+    }
     if let Some(p) = &args.screen_transforms_path {
         payload["screen_transforms_path"] = json!(p);
     }
@@ -318,6 +328,7 @@ pub async fn reconstruct(args: ReconstructArgs) -> VbaResult<ReconstructOut> {
         photos_used: result.photos_used,
         photos_total: result.photos_total,
         withheld: result.withheld,
+        master_lens: result.master_lens,
     })
 }
 
@@ -412,6 +423,7 @@ pub async fn reconstruct_structured_light(
         photos_used: result.photos_used,
         photos_total: result.photos_total,
         withheld: None,
+        master_lens: None,
     })
 }
 
