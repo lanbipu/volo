@@ -101,6 +101,65 @@ def test_radial2_fallback_K_matches_pure_radial_solve():
     assert np.allclose(fallback.dist, radial.dist)
 
 
+# --- distortion unlock: full_probe_groups gate (decision A) ---
+from lmt_vba_sidecar.intrinsics_solve import grouped_diversity_strict_ok
+
+
+def test_full_probe_groups_none_matches_unconditional_probe():
+    # full_probe_groups=None must be byte-identical to the old allow_full_distortion
+    # behavior (probe unconditionally): real distortion -> "full".
+    obj, img = _well_object_image_points_distorted(DIST_TRUE)
+    a = solve_sl_intrinsics(obj, img, IMG, max_rms_px=1.5, allow_full_distortion=True)
+    b = solve_sl_intrinsics(obj, img, IMG, max_rms_px=1.5, allow_full_distortion=True,
+                            full_probe_groups=None)
+    assert a.distortion_model == b.distortion_model == "full"
+    assert np.allclose(a.dist, b.dist)
+
+
+def test_full_probe_groups_strict_diverse_unlocks_full():
+    # A single group whose poses ARE strict-diverse (the well-conditioned envelope)
+    # clears the gate -> the full model is probed and accepted.
+    obj, img = _well_object_image_points_distorted(DIST_TRUE)
+    groups = [0] * len(obj)
+    radial = solve_sl_intrinsics(obj, img, IMG, max_rms_px=1.5, allow_full_distortion=False)
+    ok, _va, _so = grouped_diversity_strict_ok(radial.rvecs, radial.tvecs, groups)
+    assert ok  # the well-conditioned builder is strict-diverse per board
+    res = solve_sl_intrinsics(obj, img, IMG, max_rms_px=1.5, allow_full_distortion=True,
+                              full_probe_groups=groups)
+    assert res.distortion_model == "full"
+
+
+def test_full_probe_groups_weak_diversity_stays_radial2():
+    # Putting each pose in its own group means NO group has >=2 poses: view-axis span
+    # is 0 and standoff is None -> gate fails -> the full probe is skipped -> radial2,
+    # even though the distortion is real.
+    obj, img = _well_object_image_points_distorted(DIST_TRUE)
+    groups = list(range(len(obj)))  # each pose alone -> not strict-diverse
+    res = solve_sl_intrinsics(obj, img, IMG, max_rms_px=1.5, allow_full_distortion=True,
+                              full_probe_groups=groups)
+    assert res.distortion_model == "radial2"
+
+
+def test_full_probe_groups_length_mismatch_is_fail_closed():
+    obj, img = _well_object_image_points_distorted(DIST_TRUE)
+    res = solve_sl_intrinsics(obj, img, IMG, max_rms_px=1.5, allow_full_distortion=True,
+                              full_probe_groups=[0])  # len != len(poses)
+    assert res.distortion_model == "radial2"
+
+
+def test_grouped_diversity_strict_ok_none_standoff_is_fail_closed():
+    # A single 2-pose group whose two poses are at the SAME standoff -> standoff ratio
+    # is ~1.0 (< 1.30). And when no group has >=2 poses, standoff is None -> not ok.
+    obj, img = _well_object_image_points_distorted(DIST_TRUE)
+    radial = solve_sl_intrinsics(obj, img, IMG, max_rms_px=1.5, allow_full_distortion=False)
+    # Each pose alone: no group has >=2 -> standoff None, view_axis 0 -> fail-closed.
+    ok, view_axis, standoff = grouped_diversity_strict_ok(
+        radial.rvecs, radial.tvecs, list(range(len(radial.rvecs))))
+    assert standoff is None
+    assert view_axis == 0.0
+    assert ok is False
+
+
 # --- Task 3: anti-absorption cross-check ---
 from lmt_vba_sidecar.intrinsics_solve import crosscheck_intrinsics, IntrinsicsResult, intrinsics_K_problem
 

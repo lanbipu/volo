@@ -22,7 +22,9 @@ import lmt_vba_sidecar.vpqsp_detect as vpqsp_detect
 from lmt_vba_sidecar.intrinsics_solve import IntrinsicsRefused
 from lmt_vba_sidecar.ipc import ReconstructInput, VpqspPatternMeta
 from lmt_vba_sidecar.nominal import nominal_marker_positions_world
-from lmt_vba_sidecar.reconstruct import _self_calibrate_vpqsp, pattern_hash, run_reconstruct
+from lmt_vba_sidecar.reconstruct import (
+    _self_calibrate_vpqsp, _solve_intrinsics_robust, pattern_hash, run_reconstruct,
+)
 from lmt_vba_sidecar.vpqsp_layout import choose_marker_grid
 
 _RES = (630, 630)
@@ -168,7 +170,7 @@ def test_selfcal_recovers_focal_flat_no_anchor(capsys):
     meta = _meta(2, 1)
     world = nominal_marker_positions_world(meta, cmd.project.cabinet_array, cmd.project.shape_prior)
     dets, view_images = _detections(world, _poses(_center(world)))
-    K, dist = _self_calibrate_vpqsp(meta, dets, view_images, _IMG, cmd)
+    K, dist, _ = _self_calibrate_vpqsp(meta, dets, view_images, _IMG, cmd)
     assert abs(K[0, 0] - 2400.0) / 2400.0 < 0.01   # fx within 1%
     assert abs(K[1, 1] - 2400.0) / 2400.0 < 0.01   # fy within 1%
     assert abs(K[0, 2] - _IMG[0] / 2) < 5.0        # cx locked near image center
@@ -182,7 +184,7 @@ def test_selfcal_curved_no_anchor_admitted_with_warning(capsys):
     cmd = _cmd(3, 3, shape="curved")
     meta = _meta(3, 3)
     world = nominal_marker_positions_world(meta, cmd.project.cabinet_array, cmd.project.shape_prior)
-    K, _ = _self_calibrate_vpqsp(meta, *_detections(world, _poses(_center(world))), _IMG, cmd)
+    K, _, _ = _self_calibrate_vpqsp(meta, *_detections(world, _poses(_center(world))), _IMG, cmd)
     assert abs(K[0, 0] - 2400.0) / 2400.0 < 0.01
     assert "no_intrinsics_anchor" in _warnings(capsys.readouterr().out)
 
@@ -193,7 +195,7 @@ def test_selfcal_with_anchor_passes_crosscheck(tmp_path, capsys):
     cmd = _cmd(2, 1, crosscheck=str(anchor))
     meta = _meta(2, 1)
     world = nominal_marker_positions_world(meta, cmd.project.cabinet_array, cmd.project.shape_prior)
-    K, _ = _self_calibrate_vpqsp(meta, *_detections(world, _poses(_center(world))), _IMG, cmd)
+    K, _, _ = _self_calibrate_vpqsp(meta, *_detections(world, _poses(_center(world))), _IMG, cmd)
     assert abs(K[0, 0] - 2400.0) / 2400.0 < 0.01
     # An anchor was supplied -> no no_intrinsics_anchor warning.
     assert "no_intrinsics_anchor" not in _warnings(capsys.readouterr().out)
@@ -243,7 +245,7 @@ def test_selfcal_single_standoff_flags_weak_observability(capsys):
     cmd = _cmd(2, 1)
     meta = _meta(2, 1)
     world = nominal_marker_positions_world(meta, cmd.project.cabinet_array, cmd.project.shape_prior)
-    K, _ = _self_calibrate_vpqsp(meta, *_detections(world, _poses(_center(world))), _IMG, cmd)
+    K, _, _ = _self_calibrate_vpqsp(meta, *_detections(world, _poses(_center(world))), _IMG, cmd)
     assert abs(K[0, 0] - 2400.0) / 2400.0 < 0.01   # still solves accurately
     assert "intrinsics_weak_observability" in _warnings(capsys.readouterr().out)
 
@@ -253,7 +255,7 @@ def test_selfcal_multi_standoff_not_weak(capsys):
     cmd = _cmd(2, 1)
     meta = _meta(2, 1)
     world = nominal_marker_positions_world(meta, cmd.project.cabinet_array, cmd.project.shape_prior)
-    K, _ = _self_calibrate_vpqsp(meta, *_detections(world, _multi_standoff_poses(_center(world))), _IMG, cmd)
+    K, _, _ = _self_calibrate_vpqsp(meta, *_detections(world, _multi_standoff_poses(_center(world))), _IMG, cmd)
     assert abs(K[0, 0] - 2400.0) / 2400.0 < 0.01
     assert "intrinsics_weak_observability" not in _warnings(capsys.readouterr().out)
 
@@ -268,7 +270,7 @@ def test_selfcal_anchor_size_mismatch_ignored_with_warning(tmp_path, capsys):
     cmd = _cmd(2, 1, crosscheck=str(anchor))
     meta = _meta(2, 1)
     world = nominal_marker_positions_world(meta, cmd.project.cabinet_array, cmd.project.shape_prior)
-    K, _ = _self_calibrate_vpqsp(meta, *_detections(world, _multi_standoff_poses(_center(world))), _IMG, cmd)
+    K, _, _ = _self_calibrate_vpqsp(meta, *_detections(world, _multi_standoff_poses(_center(world))), _IMG, cmd)
     assert abs(K[0, 0] - 2400.0) / 2400.0 < 0.01
     codes = _warnings(capsys.readouterr().out)
     assert "intrinsics_anchor_size_mismatch" in codes
@@ -286,7 +288,7 @@ def test_selfcal_board_trim_keeps_groups_aligned(capsys):
     bad = view_images[0][0]
     for o in dets[bad]:
         o["corner_px"][0] += 0.02 * o["corner_px"][1]
-    K, _ = _self_calibrate_vpqsp(meta, dets, view_images, _IMG, cmd)
+    K, _, _ = _self_calibrate_vpqsp(meta, dets, view_images, _IMG, cmd)
     assert abs(K[0, 0] - 2400.0) / 2400.0 < 0.03  # solves despite the trimmed view
 
 
@@ -382,6 +384,114 @@ def test_run_reconstruct_auto_recovers_geometry(tmp_path, capsys, monkeypatch):
     assert abs(np.linalg.norm(pos["V001_R000"] - pos["V000_R000"]) - 600.0) < 10.0
     ang = np.degrees(np.arccos(np.clip(nrm["V000_R000"] @ nrm["V001_R000"], -1, 1)))
     assert ang < 1.0
+
+
+def test_run_reconstruct_auto_archives_master_lens(tmp_path, capsys, monkeypatch):
+    # Strict-diverse capture (two standoffs) + master_lens_out_path ⇒ the self-cal
+    # lens is archived as a vpcal master lens and ResultData.master_lens reports it.
+    meta = _meta(2, 1)
+    cmd0 = _cmd(2, 1)
+    world = nominal_marker_positions_world(meta, cmd0.project.cabinet_array, cmd0.project.shape_prior)
+    dets, view_images = _detections(world, _multi_standoff_poses(_center(world)), noise=0.2, seed=5)
+    cap, abs_dets = _write_auto_capture(tmp_path, cmd0, meta, dets, view_images)
+    _patch_detector(monkeypatch, abs_dets)
+
+    out_lens = str(tmp_path / "lenses" / "recon-auto.master-lens.json")
+    cmd = ReconstructInput.model_validate({
+        "command": "reconstruct", "version": 1, "project": cmd0.project.model_dump(),
+        "capture_manifest_path": cap, "pose_report_path": str(tmp_path / "pose.json"),
+        "intrinsics_path": "auto", "master_lens_out_path": out_lens,
+    })
+    assert run_reconstruct(cmd) == 0
+    ml = _result(capsys.readouterr().out)["data"]["master_lens"]
+    assert ml is not None
+    assert ml["archived"] is True
+    assert ml["path"] == out_lens
+    data = json.loads((tmp_path / "lenses" / "recon-auto.master-lens.json").read_text())
+    assert data["is_master"] is True
+    assert data["source"] == "reconstruction_self_calibration"
+    assert data["num_images"] >= 8 and data["num_points"] >= 60
+
+
+def test_run_reconstruct_auto_weak_diversity_declines_archive(tmp_path, capsys, monkeypatch):
+    # Single standoff ⇒ not strict-diverse ⇒ archive declined (no file), reason present.
+    meta = _meta(2, 1)
+    cmd0 = _cmd(2, 1)
+    world = nominal_marker_positions_world(meta, cmd0.project.cabinet_array, cmd0.project.shape_prior)
+    dets, view_images = _detections(world, _poses(_center(world)), noise=0.2, seed=6)
+    cap, abs_dets = _write_auto_capture(tmp_path, cmd0, meta, dets, view_images)
+    _patch_detector(monkeypatch, abs_dets)
+
+    out_lens = str(tmp_path / "lenses" / "recon-auto.master-lens.json")
+    cmd = ReconstructInput.model_validate({
+        "command": "reconstruct", "version": 1, "project": cmd0.project.model_dump(),
+        "capture_manifest_path": cap, "pose_report_path": str(tmp_path / "pose.json"),
+        "intrinsics_path": "auto", "master_lens_out_path": out_lens,
+    })
+    assert run_reconstruct(cmd) == 0
+    ml = _result(capsys.readouterr().out)["data"]["master_lens"]
+    assert ml is not None and ml["archived"] is False
+    assert "diversity" in (ml["reason"] or "")
+    import os
+    assert not os.path.exists(out_lens)
+
+
+def test_run_reconstruct_auto_no_out_path_no_master_lens(tmp_path, capsys, monkeypatch):
+    # No master_lens_out_path ⇒ master_lens stays None even on a qualifying capture.
+    meta = _meta(2, 1)
+    cmd0 = _cmd(2, 1)
+    world = nominal_marker_positions_world(meta, cmd0.project.cabinet_array, cmd0.project.shape_prior)
+    dets, view_images = _detections(world, _multi_standoff_poses(_center(world)), noise=0.2, seed=7)
+    cap, abs_dets = _write_auto_capture(tmp_path, cmd0, meta, dets, view_images)
+    _patch_detector(monkeypatch, abs_dets)
+    cmd = ReconstructInput.model_validate({
+        "command": "reconstruct", "version": 1, "project": cmd0.project.model_dump(),
+        "capture_manifest_path": cap, "pose_report_path": str(tmp_path / "pose.json"),
+        "intrinsics_path": "auto",
+    })
+    assert run_reconstruct(cmd) == 0
+    assert _result(capsys.readouterr().out)["data"].get("master_lens") is None
+
+
+def test_solve_intrinsics_robust_kept_drops_bad_board():
+    # A sheared board is trimmed; kept must omit its index (and keep the rest).
+    meta = _meta(2, 1)
+    cmd = _cmd(2, 1)
+    world = nominal_marker_positions_world(meta, cmd.project.cabinet_array, cmd.project.shape_prior)
+    dets, view_images = _detections(world, _multi_standoff_poses(_center(world)), noise=0.1, seed=8)
+    # Rebuild the per-(view,cabinet) pose lists the way _self_calibrate_vpqsp does.
+    from lmt_vba_sidecar.vpqsp_layout import marker_local_mm
+    grid = {(c.col, c.row): (c.markers_x, c.markers_y, c.marker_px,
+                             (c.resolution_px[0], c.resolution_px[1]),
+                             (c.pixel_pitch_mm[0], c.pixel_pitch_mm[1]))
+            for c in meta.cabinets}
+    object_points, image_points, pose_groups = [], [], []
+    for imgs in view_images:
+        per_cab = {}
+        for path in imgs:
+            for det in dets[path]:
+                cab = (det["cabinet"][0], det["cabinet"][1])
+                mx, my, mpx, res_px, pitch = grid[cab]
+                pl = marker_local_mm(det["local_id"], markers_x=mx, markers_y=my,
+                                     marker_px=mpx, resolution_px=res_px, pixel_pitch_mm=pitch)
+                per_cab.setdefault(cab, ([], []))
+                per_cab[cab][0].append(pl)
+                per_cab[cab][1].append([det["corner_px"][0], det["corner_px"][1]])
+        for cab, (op, ip) in per_cab.items():
+            if len(op) >= 8:
+                object_points.append(np.asarray(op, np.float32))
+                image_points.append(np.asarray(ip, np.float32))
+                pose_groups.append(cab)
+    # Shear the FIRST pose hard so it fails PnP under the shared K and is trimmed.
+    bad = 0
+    image_points[bad] = image_points[bad] + np.stack(
+        [0.05 * image_points[bad][:, 1], np.zeros(len(image_points[bad]))], axis=1
+    ).astype(np.float32)
+    res, kept = _solve_intrinsics_robust(object_points, image_points, _IMG,
+                                         has_anchor=False, pp_gate=5.0,
+                                         pose_group_ids=pose_groups)
+    assert bad not in kept
+    assert len(kept) == len(res.rvecs)
 
 
 def test_run_reconstruct_auto_via_manifest_sentinel(tmp_path, capsys, monkeypatch):

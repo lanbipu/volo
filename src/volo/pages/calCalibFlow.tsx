@@ -5,7 +5,7 @@
    偏离旧 Q3 / spec§4 的独立 MethodSelect / LensSetup 页——已删除死代码。
    采集主页接真：useMonitor MJPEG + useCaptureSession + list_lens_sessions。 */
 import * as React from "react";
-import { lensWorkspacePaths } from "../api/lensWorkspace";
+import { lensWorkspacePaths, scanMasterLenses } from "../api/lensWorkspace";
 import {
   listLensSessions, deleteLensSession, readLensQaReport, readImageAsDataUrl,
   startCaptureStills, stillsFinish,
@@ -637,6 +637,30 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
       s.pushLog({ lv: 'ok', cat: 'lens', msg: 'Master lens 已绑定 · RMS <b>'
         + Number(info.rms).toFixed(3) + '</b> px · <b>' + info.num_images + '</b> poses' });
     };
+    /* 固定机位 · 单相机项目自动发现并绑定唯一合格 master lens（含重建自动归档产物）。
+       不复用 installMasterLens（它会 throw/err 日志/setPurpose）：自动路径必须静默失败
+       且不动 purpose。多相机跳过（防装错档案）。绑定后 masterLensPath guard 短路。 */
+    const autoLensTriedRef = useRef(new Set());
+    useEffect(() => {
+      const cams = camSnap.cameras || [];
+      const c = cams.find((x) => x.id === camId);
+      if (!projectPath || !c || c.masterLensPath || cams.length !== 1) return;
+      const key = projectPath + ':' + camId;
+      if (autoLensTriedRef.current.has(key)) return;
+      autoLensTriedRef.current.add(key);
+      void (async () => {
+        try {
+          const qualified = (await scanMasterLenses(projectPath)).filter((e) => e.qualified);
+          if (qualified.length !== 1) return;          /* 0 或 >=2 → 维持手动 */
+          const info = await trackerFreeLensInfo(qualified[0].path);
+          if (!info.qualified_master || !window.camStore) return;
+          window.camStore.setMasterLens(camId, qualified[0].path, info);
+          s.pushLog({ lv: 'ok', cat: 'lens',
+            msg: 'Master lens 自动发现并绑定 · RMS <b>' + Number(info.rms).toFixed(3)
+              + '</b> px · <b>' + info.num_images + '</b> poses' });
+        } catch (e) { /* 静默走手动路径 */ }
+      })();
+    }, [projectPath, camId, camSnap.cameras]);
     const importMasterLens = async () => {
       setMasterLensBusy(true);
       try {

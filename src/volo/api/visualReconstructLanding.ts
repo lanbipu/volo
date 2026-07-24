@@ -248,6 +248,28 @@ export async function applyReconstructDone(opts: ReconstructLandingOpts): Promis
     });
   });
 
+  // `--intrinsics auto` master-lens archival outcome (log only; no visual/layout
+  // change). ml null (file intrinsics / human anchor present / >=2 hits) stays silent.
+  const ml = result.master_lens;
+  if (ml) {
+    if (ml.archived && ml.path) {
+      const fileName = ml.path.split(/[\\/]/).pop() || ml.path;
+      const rms = ml.rms != null ? `${Number(ml.rms).toFixed(3)} px` : "—";
+      pushLog({
+        lv: "ok",
+        cat: "lens",
+        msg: `Master lens 已自动归档 · <b>${fileName}</b> · ${ml.distortion_model || "—"}`
+          + ` · RMS ${rms} · <b>${ml.num_images ?? "—"}</b> views`,
+      });
+    } else {
+      pushLog({
+        lv: "info",
+        cat: "lens",
+        msg: `Master lens 未归档 · ${ml.reason || "不合格"}`,
+      });
+    }
+  }
+
   let rmsText: string;
   if (richSummary) {
     const rmsParts = summaries.map(

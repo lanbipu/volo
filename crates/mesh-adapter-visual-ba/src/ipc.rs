@@ -217,6 +217,27 @@ pub struct WithheldSummary {
     pub max_delta_rot_deg: Option<f64>,
 }
 
+/// Outcome of archiving the `--intrinsics auto` self-cal lens as a vpcal master
+/// lens (mirrors the sidecar `MasterLensSummary`). All fields optional for
+/// forward/backward compat.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MasterLensSummary {
+    #[serde(default)]
+    pub archived: bool,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub distortion_model: Option<String>,
+    #[serde(default)]
+    pub rms: Option<f64>,
+    #[serde(default)]
+    pub num_images: Option<u32>,
+    #[serde(default)]
+    pub num_points: Option<u32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResultData {
     pub measured_points: Vec<MeasuredPointDto>,
@@ -243,6 +264,8 @@ pub struct ResultData {
     pub photos_total: u32,
     #[serde(default)]
     pub withheld: Option<WithheldSummary>,
+    #[serde(default)]
+    pub master_lens: Option<MasterLensSummary>,
 }
 
 fn default_intrinsics_source() -> String {
@@ -494,6 +517,28 @@ mod rejection_fields_tests {
         }))
         .unwrap();
         assert_eq!(old.n_rejected, 0);
+    }
+
+    #[test]
+    fn result_data_master_lens_optional() {
+        let base = serde_json::json!({
+            "measured_points": [],
+            "ba_stats": {"rms_reprojection_px": 0.4, "iterations": 1, "converged": true},
+            "frame_strategy_used": "nominal_anchoring"
+        });
+        // Old sidecar without master_lens -> None.
+        let old: ResultData = serde_json::from_value(base.clone()).unwrap();
+        assert!(old.master_lens.is_none());
+        // New sidecar with master_lens -> decoded.
+        let mut with = base;
+        with["master_lens"] = serde_json::json!({
+            "archived": true, "path": "/p/recon-auto.master-lens.json",
+            "distortion_model": "full", "rms": 0.5, "num_images": 12, "num_points": 300
+        });
+        let got: ResultData = serde_json::from_value(with).unwrap();
+        let ml = got.master_lens.expect("master_lens decoded");
+        assert!(ml.archived);
+        assert_eq!(ml.num_images, Some(12));
     }
 }
 

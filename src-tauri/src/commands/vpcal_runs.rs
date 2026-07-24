@@ -198,6 +198,58 @@ fn qualified_master_lens(path: &Path) -> bool {
         && image_size_ok
 }
 
+/// One `*.master-lens.json` in a project's `vpcal/lenses`, with its strict-gate
+/// verdict and透传ed `source` (used by the fixed-camera auto-discovery to bind a
+/// qualifying master lens without a manual import).
+#[derive(Debug, Clone, Serialize)]
+pub struct MasterLensScanEntry {
+    pub path: String,
+    /// Passes the authoritative master-lens qualification gate.
+    pub qualified: bool,
+    /// The file's `source` field, verbatim (does NOT affect `qualified`).
+    pub source: Option<String>,
+}
+
+/// List `<project>/vpcal/lenses/*.master-lens.json` (sorted by filename) with the
+/// strict qualification verdict. Missing dir → empty. Used by fixed-camera
+/// single-project auto-binding.
+#[tauri::command]
+pub fn lens_scan_master_lenses(project_path: String) -> VoloResult<Vec<MasterLensScanEntry>> {
+    let dir = vpcal_dir(&project_path).join("lenses");
+    let read = match fs::read_dir(&dir) {
+        Ok(r) => r,
+        Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(VoloError::Io(format!(
+                "failed to read {}: {e}",
+                dir.display()
+            )))
+        }
+    };
+    let mut entries: Vec<MasterLensScanEntry> = Vec::new();
+    for entry in read.flatten() {
+        let path = entry.path();
+        let is_master_lens = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(".master-lens.json"));
+        if !is_master_lens {
+            continue;
+        }
+        let source = fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|v| v.get("source").and_then(Value::as_str).map(str::to_string));
+        entries.push(MasterLensScanEntry {
+            path: path.display().to_string(),
+            qualified: qualified_master_lens(&path),
+            source,
+        });
+    }
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(entries)
+}
+
 fn formal_stage_pose(value: &Value) -> bool {
     let image_size_ok = value
         .get("image_size")
@@ -998,6 +1050,51 @@ mod qa_report_tests {
             joint.stage_pose.as_ref().unwrap()["solve_kind"],
             "joint_single_observation"
         );
+    }
+
+    fn write_scan_lens(dir: &Path, name: &str, qualified: bool, source: Option<&str>) {
+        fs::create_dir_all(dir).unwrap();
+        let mut v = serde_json::json!({
+            "fx": 3000.0, "fy": 3000.0, "cx": 2000.0, "cy": 1500.0,
+            "dist_coeffs": [0.0, 0.0, 0.0, 0.0, 0.0],
+            "image_size": [4000, 3000], "is_master": true,
+            "session_coupled": false, "calibration_kind": "multi_view_intrinsics",
+            "num_images": 10, "num_points": 120, "rms": 0.5,
+        });
+        if !qualified {
+            v["num_images"] = serde_json::json!(3); // trips the >= 8 gate
+        }
+        if let Some(s) = source {
+            v["source"] = serde_json::json!(s);
+        }
+        fs::write(dir.join(name), v.to_string()).unwrap();
+    }
+
+    #[test]
+    fn lens_scan_missing_dir_is_empty() {
+        let proj = tempdir().unwrap();
+        let out = lens_scan_master_lenses(proj.path().display().to_string()).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn lens_scan_reports_qualified_and_source_sorted() {
+        let proj = tempdir().unwrap();
+        let lenses = proj.path().join("vpcal").join("lenses");
+        write_scan_lens(&lenses, "b_bad.master-lens.json", false, None);
+        write_scan_lens(&lenses, "a_self.master-lens.json", true,
+                        Some("reconstruction_self_calibration"));
+        // A non-master-lens file is ignored.
+        fs::write(lenses.join("notes.json"), b"{}").unwrap();
+        let out = lens_scan_master_lenses(proj.path().display().to_string()).unwrap();
+        assert_eq!(out.len(), 2);
+        // Sorted by path -> a_self before b_bad.
+        assert!(out[0].path.ends_with("a_self.master-lens.json"));
+        assert!(out[0].qualified);
+        assert_eq!(out[0].source.as_deref(), Some("reconstruction_self_calibration"));
+        assert!(out[1].path.ends_with("b_bad.master-lens.json"));
+        assert!(!out[1].qualified);
+        assert!(out[1].source.is_none());
     }
 
     #[cfg(unix)]

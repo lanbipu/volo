@@ -515,10 +515,13 @@ pub fn normalize_reconstruct_intrinsics(
 /// *.master-lens.json`, requiring `is_master == true` and finite-positive
 /// fx/fy/cx/cy. Returns the path ONLY when exactly one qualifies; 0 or >=2 hits →
 /// None (a warn on the >=2 case), leaving self-cal anchorless.
-fn default_master_lens_anchor(project_path: &Path) -> Option<PathBuf> {
-    let dir = project_path.join("vpcal").join("lenses");
-    let entries = std::fs::read_dir(&dir).ok()?;
-    let mut hits: Vec<PathBuf> = Vec::new();
+/// Scan `<dir>/*.master-lens.json`, weak-validating each (is_master + finite-
+/// positive fx/fy/cx/cy). Returns `(path, self_source)` per surviving file, where
+/// `self_source` = the file was auto-produced by reconstruction self-cal
+/// (`source == "reconstruction_self_calibration"`).
+fn scan_master_lenses(dir: &Path) -> Vec<(PathBuf, bool)> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut hits: Vec<(PathBuf, bool)> = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         let is_master_lens = path
@@ -540,9 +543,25 @@ fn default_master_lens_anchor(project_path: &Path) -> Option<PathBuf> {
                 .is_some_and(|v| v.is_finite() && v > 0.0)
         };
         if finite_pos("fx") && finite_pos("fy") && finite_pos("cx") && finite_pos("cy") {
-            hits.push(path);
+            let self_source = value.get("source").and_then(serde_json::Value::as_str)
+                == Some("reconstruction_self_calibration");
+            hits.push((path, self_source));
         }
     }
+    hits
+}
+
+fn default_master_lens_anchor(project_path: &Path) -> Option<PathBuf> {
+    let dir = project_path.join("vpcal").join("lenses");
+    // 裁决 B: skip self-produced lenses entirely (count AND select) — anchoring
+    // the next reconstruct to our OWN prior output would let a self-cal error
+    // self-validate via crosscheck and fatally reject a legitimate lens swap
+    // (a反馈回路 that locks the project). Only human/offline anchors qualify.
+    let mut hits: Vec<PathBuf> = scan_master_lenses(&dir)
+        .into_iter()
+        .filter(|(_, self_source)| !self_source)
+        .map(|(p, _)| p)
+        .collect();
     match hits.len() {
         1 => hits.pop(),
         0 => None,
@@ -553,6 +572,21 @@ fn default_master_lens_anchor(project_path: &Path) -> Option<PathBuf> {
             );
             None
         }
+    }
+}
+
+/// Three-state archive destination for the `--intrinsics auto` self-cal lens
+/// (single-camera auto-loop). 0 hits (incl. missing dir) → a fresh recon-auto
+/// path; exactly one self-produced hit → that path (update in place); a single
+/// human hit or >=2 hits → None (never overwrite a human lens; never guess among
+/// several). Called only when the caller resolved `--intrinsics auto`.
+fn master_lens_archive_out_path(project_path: &Path) -> Option<PathBuf> {
+    let dir = project_path.join("vpcal").join("lenses");
+    let hits = scan_master_lenses(&dir);
+    match hits.as_slice() {
+        [] => Some(dir.join("recon-auto.master-lens.json")),
+        [(p, true)] => Some(p.clone()),
+        _ => None,
     }
 }
 
@@ -579,6 +613,13 @@ fn build_reconstruct_args(
         _ => intrinsics_crosscheck.map(str::to_string),
     };
 
+    // Archive destination for the self-cal lens (--intrinsics auto only). Shared
+    // by the single-screen and joint arms below, so sync + streaming both inject.
+    let master_lens_out: Option<String> = match intrinsics {
+        Some("auto") => master_lens_archive_out_path(project_path).map(|p| p.display().to_string()),
+        _ => None,
+    };
+
     let cfg = load_project_yaml_from_path(project_path)?;
     let all_ids = sorted_project_screen_ids(&cfg);
     let primary_id = &screen_ids[0];
@@ -597,6 +638,7 @@ fn build_reconstruct_args(
             screen_mapping_path: None,
             intrinsics_path: intrinsics.map(str::to_string),
             crosscheck_intrinsics_path: crosscheck_owned,
+            master_lens_out_path: master_lens_out,
             pose_report_path: pose_report_path.display().to_string(),
             screen_transforms_path: None,
             progress_tx: None,
@@ -669,6 +711,7 @@ fn build_reconstruct_args(
         screen_mapping_path: None,
         intrinsics_path: intrinsics.map(str::to_string),
         crosscheck_intrinsics_path: crosscheck_owned,
+        master_lens_out_path: master_lens_out,
         pose_report_path: pose_report_path.display().to_string(),
         screen_transforms_path: Some(screen_transforms_path.display().to_string()),
         progress_tx: None,
@@ -761,6 +804,18 @@ fn map_withheld(w: ipc::WithheldSummary) -> volo_shared::dto::WithheldSummaryDto
     }
 }
 
+fn map_master_lens(m: ipc::MasterLensSummary) -> volo_shared::dto::MasterLensSummaryDto {
+    volo_shared::dto::MasterLensSummaryDto {
+        archived: m.archived,
+        path: m.path,
+        reason: m.reason,
+        distortion_model: m.distortion_model,
+        rms: m.rms,
+        num_images: m.num_images,
+        num_points: m.num_points,
+    }
+}
+
 fn build_reconstruct_result(
     screen_ids: &[String],
     out: ReconstructOut,
@@ -807,6 +862,7 @@ fn build_reconstruct_result(
         photos_used: out.photos_used,
         photos_total: out.photos_total,
         withheld: out.withheld.map(map_withheld),
+        master_lens: out.master_lens.map(map_master_lens),
     }
 }
 
@@ -883,6 +939,7 @@ pub fn persist_visual_solve_digest(
         warnings: result.warnings.clone(),
         intrinsics_source: result.intrinsics_source.clone(),
         withheld: result.withheld.clone(),
+        master_lens: result.master_lens.clone(),
     };
 
     std::fs::write(&path, serde_json::to_vec_pretty(&digest)?)?;
@@ -1949,6 +2006,55 @@ mod tests {
         let lenses = tmp.path().join("vpcal").join("lenses");
         write_lens(&lenses, "bad.master-lens.json", true, -3000.0);
         assert!(default_master_lens_anchor(tmp.path()).is_none());
+    }
+
+    fn write_self_lens(dir: &Path, name: &str, fx: f64) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join(name),
+            serde_json::json!({
+                "fx": fx, "fy": fx, "cx": 2000.0, "cy": 1500.0,
+                "dist_coeffs": [0.0, 0.0, 0.0, 0.0, 0.0],
+                "image_size": [4000, 3000], "is_master": true,
+                "source": "reconstruction_self_calibration",
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn default_master_lens_anchor_excludes_self_produced() {
+        let tmp = tempdir().unwrap();
+        let lenses = tmp.path().join("vpcal").join("lenses");
+        // A lone self-produced lens is NOT an anchor (裁决 B: no feedback loop).
+        write_self_lens(&lenses, "recon-auto.master-lens.json", 3000.0);
+        assert!(default_master_lens_anchor(tmp.path()).is_none());
+        // 1 human + 1 self-produced -> the human lens anchors.
+        write_lens(&lenses, "human.master-lens.json", true, 3100.0);
+        let hit = default_master_lens_anchor(tmp.path()).expect("human anchor");
+        assert!(hit.ends_with("human.master-lens.json"));
+    }
+
+    #[test]
+    fn master_lens_archive_out_path_four_states() {
+        let tmp = tempdir().unwrap();
+        let proj = tmp.path();
+        let lenses = proj.join("vpcal").join("lenses");
+        // Empty (dir missing) -> fresh recon-auto path.
+        let p = master_lens_archive_out_path(proj).expect("empty -> recon-auto");
+        assert!(p.ends_with("recon-auto.master-lens.json"));
+        // Exactly one self-produced -> that path (update in place).
+        write_self_lens(&lenses, "recon-auto.master-lens.json", 3000.0);
+        let p = master_lens_archive_out_path(proj).expect("self -> its path");
+        assert!(p.ends_with("recon-auto.master-lens.json"));
+        // One human hit -> None (never overwrite a human lens).
+        std::fs::remove_file(lenses.join("recon-auto.master-lens.json")).unwrap();
+        write_lens(&lenses, "human.master-lens.json", true, 3100.0);
+        assert!(master_lens_archive_out_path(proj).is_none());
+        // Two hits -> None.
+        write_self_lens(&lenses, "recon-auto.master-lens.json", 3000.0);
+        assert!(master_lens_archive_out_path(proj).is_none());
     }
 
     #[test]

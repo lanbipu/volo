@@ -175,6 +175,10 @@ class ReconstructInput(BaseModel):
     # Optional independent intrinsics anchor for the --intrinsics auto anti-
     # absorption cross-check (vpqsp self-cal only).
     crosscheck_intrinsics_path: str | None = None
+    # Where to archive the self-calibrated lens as a vpcal master-lens file
+    # (--intrinsics auto only). Decided three-state by Rust: None = do not
+    # archive; a path = archive there when the solve qualifies.
+    master_lens_out_path: str | None = None
 
     @model_validator(mode="after")
     def _require_project_or_screens(self) -> "ReconstructInput":
@@ -428,6 +432,20 @@ class WithheldSummary(BaseModel):
     max_delta_rot_deg: float | None = None
 
 
+class MasterLensSummary(BaseModel):
+    """Outcome of archiving the self-calibrated lens as a vpcal master lens
+    (--intrinsics auto only). ``archived`` false + ``reason`` when it did not
+    qualify or the write failed; None throughout for non-auto / older sidecars."""
+
+    archived: bool = False
+    path: str | None = None
+    reason: str | None = None
+    distortion_model: str | None = None
+    rms: float | None = None
+    num_images: int | None = None
+    num_points: int | None = None
+
+
 class ResultData(BaseModel):
     measured_points: list[MeasuredPoint]
     ba_stats: BaStats
@@ -449,6 +467,9 @@ class ResultData(BaseModel):
     # Joint multi-screen: withheld-view + screen-consistency validation digest
     # (None for single-screen / SL paths and older sidecars).
     withheld: WithheldSummary | None = None
+    # --intrinsics auto: outcome of archiving the self-cal lens as a vpcal master
+    # lens (None for file intrinsics / SL / charuco / older sidecars).
+    master_lens: MasterLensSummary | None = None
 
 
 class ScreenTransformEntry(BaseModel):
