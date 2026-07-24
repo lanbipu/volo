@@ -52,7 +52,13 @@ def load_intrinsics_file(path) -> LoadedIntrinsics:
         raise ValueError("dist_coeffs must be finite")
     image_size: tuple[int, int] | None = None
     if raw.get("image_size") is not None:
-        size = [int(v) for v in raw["image_size"]]
+        raw_size = raw["image_size"]
+        if not isinstance(raw_size, (list, tuple)):
+            raise ValueError("image_size must be a two-entry array")
+        try:
+            size = [int(v) for v in raw_size]
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"image_size entries must be integers: {e}")
         if len(size) != 2:
             raise ValueError("image_size must have exactly two entries")
         image_size = (size[0], size[1])
