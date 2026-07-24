@@ -1691,12 +1691,17 @@ export interface OutputStatusResult {
   nodes: OutputNodeStatus[];
 }
 
+/** Per-node deploy substep for the node×step deploy matrix. */
+export type OutputDeployStep = "artifacts" | "project" | "session" | "verify";
+
 export interface NDisplayOutputEvent {
   session_id: string;
   operation: OutputOperation;
   node_id: string;
   host: string;
   state: OutputEventState;
+  /** Present on per-substep progress events; absent on node-level (final ok/error) events. */
+  step?: OutputDeployStep | null;
   message: string;
   revision?: number | null;
   timestamp_ms: number;

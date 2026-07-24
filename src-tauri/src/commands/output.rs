@@ -181,6 +181,10 @@ struct NodeEventPayload {
     node_id: String,
     host: String,
     state: String,
+    /// Per-substep label for the deploy matrix (`artifacts`/`project`/`session`/`verify`).
+    /// `None` for node-level events (final `ok`/`error`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    step: Option<String>,
     message: String,
     revision: Option<u64>,
     timestamp_ms: u128,
@@ -417,6 +421,33 @@ fn emit_runner(
     );
 }
 
+/// Build a `Sync` per-substep progress reporter for `output::deploy`/`start`.
+/// Emits a `NODE_EVENT` carrying `step` so the UI's node×step deploy matrix
+/// fills from real progress. `host`/`message` are left empty — the authoritative
+/// per-node event with full detail is still emitted by `finish_operation`.
+fn node_step_emitter(
+    app: AppHandle,
+    session_id: String,
+    operation: &'static str,
+) -> impl Fn(&str, &str, &str) + Sync {
+    move |node_id: &str, step: &str, state: &str| {
+        let _ = app.emit(
+            NODE_EVENT,
+            NodeEventPayload {
+                session_id: session_id.clone(),
+                operation: operation.into(),
+                node_id: node_id.into(),
+                host: String::new(),
+                state: state.into(),
+                step: Some(step.into()),
+                message: String::new(),
+                revision: None,
+                timestamp_ms: timestamp_ms(),
+            },
+        );
+    }
+}
+
 fn finish_operation(
     app: &AppHandle,
     session_id: String,
@@ -437,6 +468,7 @@ fn finish_operation(
                         node_id: node.node_id.clone(),
                         host: node.host.clone(),
                         state: "ok".into(),
+                        step: None,
                         message: node.message.clone(),
                         revision,
                         timestamp_ms: timestamp_ms(),
@@ -557,13 +589,17 @@ pub async fn output_deploy(
     );
     let root = template_root(&app)?;
     let session_id = request.session_id.clone();
+    let progress_app = app.clone();
+    let progress_session = request.session_id.clone();
     let result = tokio::task::spawn_blocking(move || {
+        let progress = node_step_emitter(progress_app, progress_session, "deploy");
         output::deploy(
             &transport(request.ssh_user)?,
             &request.screen,
             &request.paths,
             &root,
             &request.ue_version,
+            &progress,
         )
     })
     .await
@@ -592,13 +628,17 @@ pub async fn output_start(
     // 会把它当新指令立即上屏旧图。clear 合入 launch（同一次 SSH），保证起始为黑场。
     let clear_revision = sessions.reserve_revision(&request.session_id)?;
     let session_id = request.session_id.clone();
+    let progress_app = app.clone();
+    let progress_session = request.session_id.clone();
     let result = tokio::task::spawn_blocking(move || {
         let transport = transport(request.ssh_user)?;
+        let progress = node_step_emitter(progress_app, progress_session, "start");
         output::start(
             &transport,
             &request.screen,
             &request.paths,
             Some(clear_revision),
+            &progress,
         )
     })
     .await
@@ -865,6 +905,7 @@ pub async fn output_play_sequence(
                         node_id: node.node_id.clone(),
                         host: node.host.clone(),
                         state: "ok".into(),
+                        step: None,
                         message: node.message.clone(),
                         revision: Some(revision),
                         timestamp_ms: timestamp_ms(),

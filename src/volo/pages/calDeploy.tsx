@@ -195,18 +195,25 @@ import { generatedPatternImagePath } from "../api/meshVisualCommands";
     const topology = useMemo(() => window.resolveProjectTopology && window.resolveProjectTopology(proj.config), [proj.config]);
     const topo = useMemo(() => normalizeTopo(topology, (proj.config && proj.config.screens) || {}), [topology, proj.config]);
     const [phase, setPhase] = useState(s.deployState !== 'idle' && s.calOutTarget === 'cluster' ? 'deployed' : 'idle');
-    const [dep, setDep] = useState({ done: 0 });
+    /* 逐节点逐步真实进度：{ [node_id]: { [step]: 'running'|'ok'|'error' } }，驱动部署矩阵格子 */
+    const [stepStates, setStepStates] = useState({});
     const [busy, setBusy] = useState(false);
     const [nodeStates, setNodeStates] = useState({});
     const [runtimePaths, setRuntimePaths] = useState(OUTPUT_PATHS);
-    const timer = useRef(null);
     const sessionId = (proj.path || 'local') + '::stage';
-    useEffect(() => () => clearInterval(timer.current), []);
     useEffect(() => {
       let alive = true; const cleanups = [];
       listenNDisplayOutputEvent((payload) => {
         if (!alive || payload.session_id !== sessionId) return;
-        setNodeStates((cur) => Object.assign({}, cur, { [payload.node_id]: payload }));
+        if (payload.step) {
+          /* 逐子步进度事件（artifacts/project/session/verify）→ 点亮对应格子 */
+          setStepStates((cur) => Object.assign({}, cur, {
+            [payload.node_id]: Object.assign({}, cur[payload.node_id], { [payload.step]: payload.state }),
+          }));
+        } else {
+          /* 节点级事件（最终 ok / error）→ 节点圆点 / 阶段徽标 */
+          setNodeStates((cur) => Object.assign({}, cur, { [payload.node_id]: payload }));
+        }
       }).then((fn) => alive ? cleanups.push(fn) : fn()).catch(() => {});
       return () => { alive = false; cleanups.forEach((fn) => fn()); };
     }, [sessionId]);
@@ -254,6 +261,10 @@ import { generatedPatternImagePath } from "../api/meshVisualCommands";
     const total = topo.nodes.length * DSTEPS.length;
     const deploying = phase === 'deploying';
     const deployed = phase === 'deployed';
+    /* 矩阵格子真实状态：从逐子步事件读取（缺省 null=未开始） */
+    const cellStep = (nodeId, stepId) => (stepStates[nodeId] || {})[stepId] || null;
+    const doneCells = topo.nodes.reduce((acc, n) =>
+      acc + DSTEPS.reduce((a, st) => a + (cellStep(n.id, st.id) === 'ok' ? 1 : 0), 0), 0);
     const screen = window.stageScreenForOutput(proj.config, topology);
     const runtimeRequest = (paths) => ({ session_id: sessionId, screen, paths: paths || runtimePaths, ssh_user: null });
 
@@ -294,26 +305,19 @@ import { generatedPatternImagePath } from "../api/meshVisualCommands";
        只靠 state 会让 deploy/start 拿到默认 editor_path（预检过、启动挂）。 */
     const startDeploy = async (paths) => {
       if (busy) return;
-      setPhase('deploying'); setDep({ done: 0 }); setBusy(true);
-      clearInterval(timer.current);
-      /* UI 进度矩阵与真实 outputDeploy 并行：假步进只做视觉，完成以 API 为准 */
-      timer.current = setInterval(() => setDep((d) => {
-        const nd = Math.min(total, d.done + 1);
-        return { done: nd };
-      }), 180);
+      /* 矩阵格子由 ndisplay-output-event 的逐子步事件真实驱动（见上方 listener）；
+         清空上一轮 stepStates 即可，不再用假步进 setInterval。 */
+      setPhase('deploying'); setStepStates({}); setBusy(true);
       s.pushLog({ lv: 'info', cat: 'deploy', msg: '开始部署到 <b>' + topo.nodes.length + '</b> 个渲染节点' });
       try {
         await outputDeploy(Object.assign(runtimeRequest(paths), { ue_version: '5.8' }));
         await outputStart(runtimeRequest(paths));
-        clearInterval(timer.current);
-        setDep({ done: total });
         setPhase('deployed');
         s.setDeployState('standby');
         s.setDeployMeta && s.setDeployMeta({ channel: 'WinRM', target: 'nDisplay 集群', nodeCount: topo.nodes.length });
         s.pushLog({ lv: 'ok', cat: 'deploy', msg: '<b>部署完成</b> · ' + topo.nodes.length + ' 节点进入黑场待机' });
         s.setCalReceipt && s.setCalReceipt({ tone: 'ok', text: 'nDisplay 部署完成 · 黑场待机' });
       } catch (e) {
-        clearInterval(timer.current);
         setPhase('idle');
         const msg = e && e.message ? e.message : String(e);
         s.pushLog({ lv: 'err', cat: 'deploy', msg: 'nDisplay 部署失败 · ' + msg });
@@ -342,10 +346,19 @@ import { generatedPatternImagePath } from "../api/meshVisualCommands";
       await startDeploy(paths);
     };
 
-    const nodeStatus = (nd, i) => {
+    const nodeStatus = (nd) => {
       const ev = nodeStates[nd.id];
       if (ev && ev.state === 'error') return 'error';
-      if (deploying) return dep.done >= (i + 1) * DSTEPS.length ? 'ready' : dep.done > i * DSTEPS.length ? 'deploying' : 'offline';
+      const steps = stepStates[nd.id] || {};
+      /* 逐子步 error 事件 → 节点标红；部署中与失败回到 idle 后都保留（stepStates 到下次
+         startDeploy 才清空），保证「哪台/哪步挂了」在节点列可见，即便进度矩阵已卸载。 */
+      if (DSTEPS.some((st) => steps[st.id] === 'error')) return 'error';
+      if (deploying) {
+        const okCount = DSTEPS.reduce((a, st) => a + (steps[st.id] === 'ok' ? 1 : 0), 0);
+        if (okCount >= DSTEPS.length) return 'ready';
+        if (okCount > 0 || DSTEPS.some((st) => steps[st.id] === 'running')) return 'deploying';
+        return 'offline';
+      }
       if (deployed) return s.deployState === 'showing' ? 'running' : 'ready';
       const mc = (window.RENDER_NODES || []).find((m) =>
         (m.ip && nd.host && m.ip === nd.host) || (m.hostname && nd.host && m.hostname === nd.host));
@@ -402,8 +415,8 @@ import { generatedPatternImagePath } from "../api/meshVisualCommands";
             h('div', { className: 'dep-topo-sum-t' }, topo.nodes.length + ' 节点 · ' + topo.screenCount + ' 屏 · 复合画布 ' + topo.canvas.w + '×' + topo.canvas.h),
             h('div', { className: 'dep-topo-sum-s' }, '点击编辑输出拓扑')),
           h('span', { className: 'spill spill--informative' }, h(Icon, { name: 'settings', size: 12 }), '编辑拓扑')),
-        h('div', { className: 'dep-topo-nodes' }, topo.nodes.map((nd, i) => {
-          const st = nodeStatus(nd, i), meta = NST[st] || NST.ready;
+        h('div', { className: 'dep-topo-nodes' }, topo.nodes.map((nd) => {
+          const st = nodeStatus(nd), meta = NST[st] || NST.ready;
           return h('div', { key: nd.id, className: 'dep-node' },
             h('span', { className: 'dep-node-dot', style: { background: toneVar(meta.tone) } }),
             h('span', { className: 'dep-node-n' }, nd.name, nd.master ? h('span', { className: 'dep-node-master' }, '主') : null),
@@ -416,14 +429,14 @@ import { generatedPatternImagePath } from "../api/meshVisualCommands";
           h('span', { className: 'n' }, st.done ? h(Icon, { name: 'check', size: 11 }) : (i + 1)), st.label),
       ])),
       deploying ? h('div', { className: 'nd-deploy', style: { marginTop: 2 } },
-        h('div', { className: 'nd-deploy-h' }, '部署进度 ', h('b', null, Math.round(dep.done / total * 100) + '%'), h('span', { className: 'nd-deploy-sub' }, dep.done + ' / ' + total + ' 步')),
+        h('div', { className: 'nd-deploy-h' }, '部署进度 ', h('b', null, Math.round(doneCells / total * 100) + '%'), h('span', { className: 'nd-deploy-sub' }, doneCells + ' / ' + total + ' 步')),
         h('div', { className: 'nd-deploy-grid', style: { gridTemplateColumns: '78px repeat(' + DSTEPS.length + ',1fr)' } },
           h('div', { className: 'nd-dg-corner' }),
           DSTEPS.map((st) => h('div', { key: st.id, className: 'nd-dg-col' }, st.short)),
-          topo.nodes.map((n, ni) => [
+          topo.nodes.map((n) => [
             h('div', { key: n.id + '_n', className: 'nd-dg-row' }, n.name),
-            DSTEPS.map((st, si) => {
-              const idx = ni * DSTEPS.length + si; const done = dep.done > idx; const active = dep.done === idx;
+            DSTEPS.map((st) => {
+              const cs = cellStep(n.id, st.id); const done = cs === 'ok'; const active = cs === 'running';
               return h('div', { key: n.id + st.id, className: 'nd-dg-cell' + (done ? ' done' : active ? ' active' : '') }, done ? h(Icon, { name: 'check', size: 12 }) : active ? h(Icon, { name: 'sync', size: 12 }) : null);
             }),
           ]))) : null,
