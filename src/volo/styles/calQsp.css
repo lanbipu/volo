@@ -249,6 +249,10 @@
 .qsp-arbtn.on { border-color: var(--volo-600); color: var(--volo-500); background: var(--highlight-selected); }
 .qsp-arbtn[disabled] { cursor: default; opacity: .5; }
 .qsp-arbtn svg { color: currentColor; }
+.qsp-arbtn > svg:last-child { color: var(--chrome-faint); transition: transform .14s; }
+.qsp-arbtn.open > svg:last-child { transform: rotate(180deg); }
+.qsp-arbtn.open { border-color: var(--volo-600); color: var(--chrome-text); background: var(--highlight-selected); }
+.qsp-arpanel { min-width: 244px; }
 
 /* 底栏就绪 / 待补提示（随 lensPhase 变） */
 .qsp-ready { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--positive-visual); font-weight: 600; }

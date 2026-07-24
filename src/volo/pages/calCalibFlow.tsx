@@ -477,6 +477,10 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
     const [arLiveUrl, setArLiveUrl] = useState(null);
     const [arErr, setArErr] = useState(null);
     const arBtnRef = useRef(null);
+    /* 固定机位 · QSP AR 叠加验证二级浮层（透明度可调 · 独立于 tracked 路径 arOpacity） */
+    const [qspArOpacity, setQspArOpacity] = useState(72);
+    const [qspArPanelOpen, setQspArPanelOpen] = useState(false);
+    const qspArBtnRef = useRef(null);
     const arLiveTaskRef = useRef(null);
     const qspCtxRef = useRef(null); /* 供 QspOverlays 在渲染期取 qctx（函数体尾部装配） */
     const rootRef = useRef(null);
@@ -812,6 +816,13 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
       document.addEventListener('mousedown', d);
       return () => document.removeEventListener('mousedown', d);
     }, [arPanelOpen]);
+
+    useEffect(() => {
+      if (!qspArPanelOpen) return undefined;
+      const d = (e) => { if (qspArBtnRef.current && !qspArBtnRef.current.contains(e.target)) setQspArPanelOpen(false); };
+      document.addEventListener('mousedown', d);
+      return () => document.removeEventListener('mousedown', d);
+    }, [qspArPanelOpen]);
 
     /* 当前机位 AR 可用性：固定=本机位 stage_pose；追踪=result.json + session */
     const fixedRunsForCam = (liveRuns || []).filter((r) => (
@@ -1923,7 +1934,7 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
                     h('div', { className: 'lc-nosig-ic' }, h(Icon, { name: 'camera', size: 30, stroke: 1.3 })),
                     h('div', { className: 'lc-nosig-t' }, '监看重连中…'),
                     h('div', { className: 'lc-nosig-d' }, '设备释放后自动恢复实时监看')),
-            arActive ? h(AROverlay, { grid: arGrid, lost: trackLostUi, opacity: arOpacity / 100 }) : null,
+            arActive ? h(AROverlay, { grid: arGrid, lost: trackLostUi, opacity: (isQspFixed ? qspArOpacity : arOpacity) / 100 }) : null,
             h('div', { className: 'lc-vig' }),
             h('div', { className: 'lc-hud lc-hud--tl' },
               h('span', { className: 'lc-sigchip' }, capturing ? h('span', { className: 'lc-rec' }) : null,
@@ -2175,6 +2186,7 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
       createMaster: () => void createMasterLens(),
       run: qspRun, failInfo: qspFail,
       arStage, arError: arErr,
+      qspArOpacity, setQspArOpacity, qspArPanelOpen, setQspArPanelOpen, qspArBtnRef,
       startArVerify, confirmAttest, recapture: qspRecapture,
       tracked, open, tgl,
       generalBody, camChips, trackField, cameraParams: cameraParamsNode,

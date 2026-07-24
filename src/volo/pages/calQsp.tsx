@@ -490,12 +490,45 @@ import * as React from "react";
     const solved = st === 'formal_ok' || st === 'warn';
     const failed = st === 'fail_closed' || st === 'unobservable' || st === 'stale';
 
-    /* AR 入口：仅求解可用（formal_ok/warn）时启用；否则锁定说明 */
+    /* AR 入口：下拉式二级浮层（透明度可调）。求解可用（formal_ok/warn）才解锁验收 + 滑块。 */
     const arEnabled = solved;
-    const arBtn = h('button', { className: 'qsp-arbtn' + (q.arStage !== 'idle' && arEnabled ? ' on' : ''), disabled: !arEnabled,
-      onClick: () => arEnabled && q.startArVerify(),
-      title: arEnabled ? '' : '无可用求解 · AR 静帧验收锁定' },
-      h(Icon, { name: 'layers', size: 15 }), 'AR 叠加验证');
+    const op = q.qspArOpacity == null ? 72 : q.qspArOpacity;
+    const panelOpen = !!q.qspArPanelOpen;
+    const arFailed = q.arStage === 'failed';
+    const pillCls = q.arStage === 'passed' ? 'cap-pill--positive'
+      : arFailed ? 'cap-pill--negative'
+        : arEnabled ? 'cap-pill--informative' : 'cap-pill--neutral';
+    const pillIcon = q.arStage === 'passed' ? 'check' : q.arStage === 'verifying' ? 'sync' : arFailed ? 'x' : 'layers';
+    const pillText = q.arStage === 'passed' ? '已通过' : q.arStage === 'verifying' ? '验收中'
+      : arFailed ? '未通过' : arEnabled ? '未开始' : '锁定';
+    const arPanel = h('div', { className: 'lc-arpanel qsp-arpanel' },
+      h('div', { className: 'lc-arpanel-row' },
+        h('span', { className: 'lc-arpanel-lb' }, '静帧叠加验证'),
+        h('span', { className: 'cap-pill ' + pillCls }, h(Icon, { name: pillIcon, size: 12 }), pillText)),
+      !arEnabled
+        ? h('div', { className: 'lc-arhud-locked' }, h(Icon, { name: 'info', size: 12 }),
+            h('span', null, '无可用求解 · 请先完成固定机位单次校正求解，再叠加静帧验证'))
+        : h(React.Fragment, null,
+            arFailed
+              ? h('div', { className: 'lc-arhud-locked' }, h(Icon, { name: 'alert', size: 12 }),
+                  h('span', null, '静帧 perimeter/grid 投影未过' + (q.arError ? ' · ' + q.arError : '') + '。请按 Geometry / Detection 建议补采后重新求解。'))
+              : q.arStage === 'idle'
+                ? h('button', { className: 'qsp-arbtn on', style: { width: '100%', justifyContent: 'center', padding: '7px 12px' }, onClick: () => q.startArVerify() },
+                    h(Icon, { name: 'layers', size: 14 }), '运行静帧验收')
+                : null,
+            h('div', { className: 'lc-arhud-op' + (q.arStage === 'idle' || arFailed ? ' is-off' : '') },
+              h('span', { className: 'lc-arhud-op-k' }, '透明度'),
+              h('input', { className: 'lc-ar-range', type: 'range', min: 0, max: 100, value: op, disabled: q.arStage === 'idle' || arFailed,
+                style: { '--pct': op + '%' }, onChange: (e) => q.setQspArOpacity && q.setQspArOpacity(+e.target.value) }),
+              h('span', { className: 'lc-arhud-op-v mono' }, op + '%')),
+            arFailed ? null : h('div', { className: 'lc-arhud-locked', style: { color: 'var(--chrome-faint)' } }, h(Icon, { name: 'info', size: 12 }),
+              h('span', null, '在同一静帧上叠加 perimeter / grid 投影 · 拖动可调整叠加透明度复核对齐'))));
+    const arBtn = h('div', { className: 'lc-arwrap', ref: q.qspArBtnRef },
+      h('button', { className: 'qsp-arbtn' + (q.arStage !== 'idle' && arEnabled ? ' on' : '') + (panelOpen ? ' open' : ''),
+        onClick: () => q.setQspArPanelOpen && q.setQspArPanelOpen((v) => !v) },
+        h(Icon, { name: 'layers', size: 15 }), 'AR 叠加验证',
+        h(Icon, { name: 'chevu', size: 12 })),
+      panelOpen ? arPanel : null);
 
     /* 主动作 */
     let main;
