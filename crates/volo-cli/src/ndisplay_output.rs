@@ -382,6 +382,7 @@ fn run(cli: Cli) -> VoloResult<String> {
                 &screen,
                 &paths,
                 Some(clear_revision),
+                &output::no_progress,
             )?;
             Ok(serde_json::json!({
                 "session_id": common.session_id,
@@ -494,6 +495,7 @@ fn run(cli: Cli) -> VoloResult<String> {
                 &paths,
                 &template_root,
                 &ue_version,
+                &output::no_progress,
             )?;
             Ok(serde_json::json!({
                 "session_id": common.session_id,

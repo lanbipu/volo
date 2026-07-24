@@ -58,6 +58,16 @@ pub struct PublishResult {
     pub nodes: Vec<NodeResult>,
 }
 
+/// Per-node deploy/verify progress reporter: `(node_id, step, state)`.
+/// `step` ∈ {`"artifacts"`, `"project"`, `"session"`, `"verify"`};
+/// `state` ∈ {`"running"`, `"ok"`, `"error"`}. Invoked at each per-node substep
+/// boundary so the UI can drive its node×step deploy matrix from real progress
+/// instead of a cosmetic timer. Must be `Sync` — nodes run on parallel threads.
+pub type DeployProgress<'a> = dyn Fn(&str, &str, &str) + Sync + 'a;
+
+/// No-op progress reporter for callers that don't surface a matrix (CLI / tests).
+pub fn no_progress(_node_id: &str, _step: &str, _state: &str) {}
+
 pub trait OutputTransport: Sync {
     fn preflight(&self, node: &OutputNode, paths: &RuntimePaths) -> Result<String, String>;
     /// `clear_manifest_json`: when set, the node writes this clear manifest
@@ -168,6 +178,7 @@ pub fn deploy<T: OutputTransport>(
     paths: &RuntimePaths,
     template_root: &Path,
     ue_version: &str,
+    progress: &DeployProgress,
 ) -> VoloResult<Vec<NodeResult>> {
     let nodes = ordered_nodes(screen)?;
     let project_root = win_parent(&paths.project_path)
@@ -261,23 +272,39 @@ pub fn deploy<T: OutputTransport>(
     )?)?;
 
     map_nodes_parallel(&nodes, |node| {
-        transport
-            .prepare_deploy(node, paths)
-            .map_err(|error| VoloError::Other(format!("prepare {}: {error}", node.node_id)))?;
+        let nid = node.node_id.as_str();
+        // 产物 (artifacts): 远端准备目录 + mkdir Binaries/Win64
+        progress(nid, "artifacts", "running");
+        transport.prepare_deploy(node, paths).map_err(|error| {
+            progress(nid, "artifacts", "error");
+            VoloError::Other(format!("prepare {}: {error}", node.node_id))
+        })?;
         // Ensure Binaries/Win64 exists before scp (fresh nodes lack it).
         let binaries_keep = win_join(project_root, "Binaries\\Win64\\.keep");
         transport
             .publish_text(node, &binaries_keep, "ok")
-            .map_err(|error| VoloError::Other(format!("mkdir binaries {}: {error}", node.node_id)))?;
+            .map_err(|error| {
+                progress(nid, "artifacts", "error");
+                VoloError::Other(format!("mkdir binaries {}: {error}", node.node_id))
+            })?;
+        progress(nid, "artifacts", "ok");
+        // 工程 (project): 推 uproject / Config / DLL / Source
+        progress(nid, "project", "running");
         for (local, remote) in &files {
-            transport
-                .push_file(node, local, remote)
-                .map_err(|error| VoloError::Other(format!("deploy {}: {error}", node.node_id)))?;
+            transport.push_file(node, local, remote).map_err(|error| {
+                progress(nid, "project", "error");
+                VoloError::Other(format!("deploy {}: {error}", node.node_id))
+            })?;
         }
-        map_node(
+        progress(nid, "project", "ok");
+        // 会话 (session): 写 nDisplay 会话 config JSON
+        progress(nid, "session", "running");
+        let result = map_node(
             node,
             transport.publish_text(node, &paths.config_path, &config),
-        )
+        );
+        progress(nid, "session", if result.is_ok() { "ok" } else { "error" });
+        result
     })
 }
 
@@ -288,6 +315,7 @@ pub fn start<T: OutputTransport>(
     screen: &ScreenConfig,
     paths: &RuntimePaths,
     clear_revision: Option<u64>,
+    progress: &DeployProgress,
 ) -> VoloResult<Vec<NodeResult>> {
     let nodes = ordered_nodes(screen)?;
     // Clear payloads are identical across nodes; serialize once for every launch.
@@ -296,28 +324,38 @@ pub fn start<T: OutputTransport>(
         None => None,
     };
 
+    // 校验 (verify) 列：launch 只在失败时标 error，"running" 留到 wait_evidence 循环发。
+    // 若在 launch 循环发 running，一旦某节点 launch 失败 `?` 提前返回，第二个循环不再
+    // 执行，其它已发 running 的节点 verify 格会永久转圈——故 running 与终态同循环成对发出。
     let launch_messages = map_nodes_parallel(&nodes, |node| {
+        let nid = node.node_id.as_str();
         transport
             .launch(node, paths, clear_json.as_deref())
             .map(|message| (node.node_id.clone(), message))
             .map_err(|error| {
+                progress(nid, "verify", "error");
                 VoloError::Other(format!("{} ({}): {error}", node.node_id, node_host(node)))
             })
     })?;
     let launch_messages: BTreeMap<_, _> = launch_messages.into_iter().collect();
 
     map_nodes_parallel(&nodes, |node| {
+        let nid = node.node_id.as_str();
+        progress(nid, "verify", "running");
         let (cluster_connected, evidence) =
             transport.wait_evidence(node, paths).map_err(|error| {
+                progress(nid, "verify", "error");
                 VoloError::Other(format!("{} ({}): {error}", node.node_id, node_host(node)))
             })?;
         if !cluster_connected {
+            progress(nid, "verify", "error");
             return Err(VoloError::Other(format!(
                 "{} ({}) started without cluster render evidence: {evidence}",
                 node.node_id,
                 node_host(node)
             )));
         }
+        progress(nid, "verify", "ok");
         Ok(NodeResult {
             node_id: node.node_id.clone(),
             host: node_host(node),
