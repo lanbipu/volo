@@ -165,7 +165,7 @@ import { loadProjectYaml, listRuns, removeRecentProject } from "../api/meshComma
             h('span', null, CX.statusPill(CAL_LENS_STATUS, 'unknown')),
             h('span', { className: 'cal2-ov-step' }, h(Icon, { name: 'arrowr', size: 12 }), p.done ? '已重建 · ' + timeAgo(p.last_opened_at) : (p.gridStatus === 'measured' ? '已导入测量 · 待重建' : '进行中') + ' · ' + timeAgo(p.last_opened_at)))))),
         h('div', { style: { fontSize: 11.5, color: 'var(--chrome-faint)', display: 'flex', alignItems: 'center', gap: 6, marginTop: 10 } },
-          h(Icon, { name: 'info', size: 13 }), '单击任意行即切换到该项目并进入工作区'));
+          h(Icon, { name: 'info', size: 13 }), '单击行 · 切换项目并进入工作区'));
   }
 
   function Overview({ s }) {

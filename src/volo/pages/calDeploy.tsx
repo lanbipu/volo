@@ -514,8 +514,8 @@ import { generatedPatternImagePath } from "../api/meshVisualCommands";
         h('span', { className: 'v' }, h('span', { className: 'spill spill--' + st.tone }, st.icon === 'minus' ? h('span', { style: { fontWeight: 800 } }, '—') : h(Icon, { name: st.icon, size: 12 }), st.label))),
       row('目标', target),
       s.deployState !== 'idle'
-        ? h('div', { className: 'dep-sumnote ok' }, h(Icon, { name: 'check', size: 12 }), '通道已部署 · 可供测试图与校正采集引用')
-        : h('div', { className: 'dep-sumnote' }, h(Icon, { name: 'info', size: 12 }), '未部署 · 镜头校正采集将被阻止'));
+        ? h('div', { className: 'dep-sumnote ok' }, h(Icon, { name: 'check', size: 12 }), '已部署 · 可供测试图与采集引用')
+        : h('div', { className: 'dep-sumnote' }, h(Icon, { name: 'info', size: 12 }), '未部署 · 采集被阻止'));
   }
 
   function DeploySummary({ s }) {

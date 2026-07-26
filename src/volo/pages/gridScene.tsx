@@ -249,6 +249,23 @@ const _raycaster = new THREE.Raycaster();
 /* 拾取网格专用材质：Mesh.raycast 尊重 material.side，必须 DoubleSide 才能从墙两侧命中 */
 const PICK_MAT = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
 
+const _groundPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+const _groundHit = new THREE.Vector3();
+
+/** 视口 client 坐标 → 光标下的世界坐标（米）。
+    先打屏幕箱体，落空再落到地面 z=0；两者都不中（相机平行于地面）返回 null。
+    供视口左上角坐标读数用 —— 与 DCC 视口一样显示光标处的空间位置，而不是屏幕像素。 */
+export function worldPointAt(rig: CameraRig, store: SceneStore, rect: DOMRect, clientX: number, clientY: number): THREE.Vector3 | null {
+  const ndc = {
+    x: ((clientX - rect.left) / rect.width) * 2 - 1,
+    y: -(((clientY - rect.top) / rect.height) * 2 - 1),
+  };
+  _raycaster.setFromCamera(ndc as THREE.Vector2, rig.camera);
+  const hits = _raycaster.intersectObjects(store.pickMeshes, false);
+  if (hits.length) return hits[0].point.clone();
+  return _raycaster.ray.intersectPlane(_groundPlane, _groundHit) ? _groundHit.clone() : null;
+}
+
 /** 视口 client 坐标 → 命中的箱体（不可见 pick mesh 全量拾取，含镂空块）。 */
 export function pickBoxAt(rig: CameraRig, store: SceneStore, rect: DOMRect, clientX: number, clientY: number): PickHit | null {
   const ndc = {

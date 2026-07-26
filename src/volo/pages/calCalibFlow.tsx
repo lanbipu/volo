@@ -2644,7 +2644,7 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
       h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '镜头校正'),
         h('div', { style: { display: 'grid', gap: 8 } },
           h(Button, { variant: 'accent', size: 'M', icon: h(Icon, { name: 'camera', size: 15 }), onPress: () => { if (s.setCapTrack) s.setCapTrack('fixed'); openLensWindow(s); s.pushLog({ lv: 'info', cat: 'lens', msg: '打开镜头校正采集窗口 · 固定机位（VP-QSP 单次校正）' }); } }, '镜头校正')),
-        h('div', { style: { fontSize: 11.5, color: 'var(--chrome-faint)', marginTop: 9, lineHeight: 1.5 } }, '打开镜头校正采集窗口：左侧实时画面，右侧选择方式、设置参数并开始采集。')),
+        h('div', { style: { fontSize: 11.5, color: 'var(--chrome-faint)', marginTop: 9, lineHeight: 1.5 } }, '采集窗 · 左侧实时画面 / 右侧方式与参数')),
       h('div', { className: 'insp-sect' }, h('div', { className: 'lh' }, '功能入口'),
         h('div', { className: 'lens-entry-list' },
           lensEntry('doc', '从已有 session 求解', () => CX().openSolveFromSession ? CX().openSolveFromSession(s) : s.pushLog({ lv: 'info', cat: 'lens', msg: '打开：从已有 session 求解' })),

@@ -236,7 +236,7 @@ import { listen } from "@tauri-apps/api/event";
   }
 
   /* ================= 屏幕建模参数表单 ================= */
-  function ScreenForm({ s, noHead }) {
+  function ScreenForm({ s }) {
     const proj = CX.useProj();
     const screenId = s.calActiveScreen;
     const real = proj.config && proj.config.screens[screenId];
@@ -301,9 +301,11 @@ import { listen } from "@tauri-apps/api/event";
     const pxW = m.pixels_per_cabinet ? m.pixels_per_cabinet[0] : 0, pxH = m.pixels_per_cabinet ? m.pixels_per_cabinet[1] : 0;
 
     return h(React.Fragment, null,
-      noHead ? null : head('panel', screenId, cols + '×' + rows, h('span', { className: 'spill spill--informative' }, h(Icon, { name: 'check', size: 12 }), '对象')),
-      h(PresetPanel, { s, proj, editingId, setEditingId }),
-      h(Fold, { n: '①', label: '箱体' },
+      /* 设计稿去掉了顶部「屏幕名 · 箱体数 · 对象」抬头 —— 屏幕名看场景树 / 预设列表，
+         检查器直接从①屏幕配置起。 */
+      h(Fold, { n: '①', label: '屏幕配置' },
+        h(PresetPanel, { s, proj, editingId, setEditingId })),
+      h(Fold, { n: '②', label: '箱体' },
         Field('预设', h(Sel, {
           value: m.__cabPreset || 'custom',
           options: GRID_CAB_PRESETS.map((p) => ({ id: p.id, label: p.label })),
@@ -312,11 +314,11 @@ import { listen } from "@tauri-apps/api/event";
         })),
         Field('尺寸', h(Dual, { a: m.cabinet_size_mm[0], b: m.cabinet_size_mm[1], oa: (v) => set({ cabinet_size_mm: [v, m.cabinet_size_mm[1]] }), ob: (v) => set({ cabinet_size_mm: [m.cabinet_size_mm[0], v] }), unit: 'mm' })),
         Field('像素', h(Dual, { a: pxW, b: pxH, oa: (v) => set({ pixels_per_cabinet: [v, pxH] }), ob: (v) => set({ pixels_per_cabinet: [pxW, v] }), unit: 'px' }))),
-      h(Fold, { n: '②', label: '布局' },
+      h(Fold, { n: '③', label: '布局' },
         Field('列数', h(NumInput, { value: cols, onChange: (v) => set({ cabinet_count: [Math.max(1, v), rows] }), min: 1, max: 200 })),
         Field('行数', h(NumInput, { value: rows, onChange: (v) => set({ cabinet_count: [cols, Math.max(1, v)] }), min: 1, max: 100 })),
         Field('离地高度', h('span', { className: 'gw-dual' }, h(NumInput, { value: m.height_offset_mm || 0, onChange: (v) => set({ height_offset_mm: v }), min: 0, max: 5000, step: 10 }), h('span', { className: 'gw-unit' }, 'mm')))),
-      h(Fold, { n: '③', label: '形状' },
+      h(Fold, { n: '④', label: '形状' },
         /* 设计稿形状档为 5 档（平直/对称弧/L 形/U 形/自定义分段）；curved/folded 是
            后端 shape_prior 的历史变体，仅当当前屏幕已是该形状时才显示（否则隐藏）。 */
         /* 形状：文本过滤胶囊行（去掉大图标，一行排得下） */
@@ -325,18 +327,18 @@ import { listen } from "@tauri-apps/api/event";
         shapeFields.length ? h('div', { style: { marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 } }, shapeFields) : null,
         derivedNote,
         shapeId === 'custom_segments' ? h(SegEditor, { s, m, set, totalCols }) : null),
-      h(Fold, { n: '④', label: '变换' },
+      h(Fold, { n: '⑤', label: '变换' },
         Field('位置 X', h('span', { className: 'gw-dual' }, h(NumInput, { value: m.position_m[0], onChange: (v) => set({ position_m: [v, m.position_m[1], m.position_m[2]] }), step: 0.1 }), h('span', { className: 'gw-unit' }, 'm'))),
         Field('位置 Y', h('span', { className: 'gw-dual' }, h(NumInput, { value: m.position_m[1], onChange: (v) => set({ position_m: [m.position_m[0], v, m.position_m[2]] }), step: 0.1 }), h('span', { className: 'gw-unit' }, 'm'))),
         Field('位置 Z', h('span', { className: 'gw-dual' }, h(NumInput, { value: m.position_m[2], onChange: (v) => set({ position_m: [m.position_m[0], m.position_m[1], v] }), step: 0.1 }), h('span', { className: 'gw-unit' }, 'm'))),
         Field('朝向角', h('span', { className: 'gw-dual' }, h(NumInput, { value: m.yaw_deg, onChange: (v) => set({ yaw_deg: v }), min: -180, max: 180 }), h('span', { className: 'gw-unit' }, '°')))),
-      h(Fold, { n: '⑤', label: '派生信息 · 只读', defOpen: false },
+      h(Fold, { n: '⑥', label: '派生信息 · 只读', defOpen: false },
         h('div', { className: 'gw-derived' },
           h('div', { className: 'gw-dcell' }, h('div', { className: 'k' }, '整屏尺寸'), h('div', { className: 'v' }, wM.toFixed(2) + ' × ' + hM.toFixed(2), h('span', { className: 'u' }, 'm'))),
           h('div', { className: 'gw-dcell' }, h('div', { className: 'k' }, '像素画布'), h('div', { className: 'v', style: { fontSize: 12.5 } }, (cols * pxW) + ' × ' + (rows * pxH))),
           h('div', { className: 'gw-dcell' }, h('div', { className: 'k' }, '箱体总数'), h('div', { className: 'v' }, cabTotal, maskedN ? h('span', { className: 'u' }, '（遮罩 ' + maskedN + '）') : null)),
           h('div', { className: 'gw-dcell' }, h('div', { className: 'k' }, '顶点网格规模'), h('div', { className: 'v', style: { fontSize: 13 } }, (cols + 1) + ' × ' + (rows + 1))))),
-      h(Fold, { n: '⑥', label: '高级', defOpen: false },
+      h(Fold, { n: '⑦', label: '高级', defOpen: false },
         /* 弯折缝列：schema 上是逐列多值（fold_seams_at_columns），仅曲面/折叠形状支持。 */
         h('div', { className: 'gw-field stack' },
           h('span', { className: 'lb' }, '弯折缝列', h('span', { className: 'hint' }, '在指定列插入弯折缝')),
@@ -1049,7 +1051,7 @@ import { listen } from "@tauri-apps/api/event";
         h('div', { className: 'gw-method-seg gw-method-seg--slim' },
           GRID_MEAS_TYPES.map((t) => h('button', { key: t.id, className: 'gw-shape' + (method === t.id ? ' on' : ''), disabled: t.id === 'visual' && newShapeVisualBlocked, title: t.id === 'visual' && newShapeVisualBlocked ? t.disabledMsg : '', onClick: () => setMethod(t.id) },
             h('span', { className: 't' }, t.label)))),
-        h('div', { className: 'gw-method-note' }, isTS ? t_isTsNote() : (newShapeVisualBlocked ? GRID_MEAS_TYPES.find((x) => x.id === 'visual').disabledMsg : '屏幕显示测试图 + 摄影机多角度拍摄，自动稠密重建。')),
+        h('div', { className: 'gw-method-note' }, isTS ? t_isTsNote() : (newShapeVisualBlocked ? GRID_MEAS_TYPES.find((x) => x.id === 'visual').disabledMsg : '测试图上墙 + 多角度拍摄 · 自动稠密重建')),
       ),
       h('div', { className: 'gw-stages-h' }, h(Icon, { name: 'bolt', size: 13 }), '阶段动作'),
       /* 屏幕设计 / 测试图已抽到各自侧栏页检查器，重建页不再包含这两块 */
@@ -1112,7 +1114,7 @@ import { listen } from "@tauri-apps/api/event";
                 h(Button, { variant: 'accent', size: 'S', isDisabled: !built || !curRun, icon: h(Icon, { name: 'download', size: 13 }), onPress: doExport }, '导出 OBJ'),
                 h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'doc', size: 13 }), onPress: () => s.setModal({ render: ({ close }) => window.VOLO_GRID_MODALS.guideCard(s, close) }) }, '指导卡 PDF')))));
   }
-  function t_isTsNote() { return '全站仪实测箱体角点，毫米级绝对精度；无需测试图。'; }
+  function t_isTsNote() { return '全站仪实测角点 · 毫米级 · 无需测试图'; }
 
   function inspector(s) {
     const sel = s.calSel;
