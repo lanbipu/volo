@@ -1,0 +1,139 @@
+/* ============================================================
+   Cursor · Color tokens — Cursor DESKTOP APP palette
+   Neutral graphite monochrome, dual theme: :root is LIGHT,
+   [data-theme="dark"] overrides (nest [data-theme="light"] to
+   re-scope light inside a dark subtree). Every hex was sampled
+   from the app screenshots in uploads/refs/ (2026-07) unless
+   flagged otherwise.
+
+   ACCENT POLICY (revised 2026-07-25):
+   The UI is near-colorless, but it is NOT strictly black-and-
+   white. Three things carry colour:
+     1. ONE ink-inverted primary action per view (near-black pill
+        on light / near-white on dark). Every other button is a
+        dark-on-dark rounded rect with a 1px hairline.
+     2. Switches: the ON state is GREEN (#37985b sampled from the
+        settings window), knob white, OFF track a neutral gray.
+     3. Confirmations, destructive actions and states that need
+        immediate attention may use a mainstream semantic colour.
+   Cursor Orange survives ONLY as logo/wordmark ink.
+
+   NOTE ON ALIASES: alias tokens (--bg-page, --text-body…) are
+   declared on ALL theme scopes, not just :root — custom
+   properties inherit as computed values, so an alias declared
+   only at :root would freeze its light value inside a dark
+   subtree. Keep it that way when editing.
+   ============================================================ */
+:root, [data-theme="light"] {
+  /* ---- Surfaces (light) ----------------------------------- */
+  --bg-app:          #f5f5f5;  /* main content floor */
+  --bg-sidebar:      #ededed;  /* nav rail — darker than main in light */
+  --bg-card:         #fcfbfc;  /* cards, template tiles, stat tiles */
+  --bg-row:          #eeeeee;  /* list rows (installed plugins…) */
+  --bg-input:        #fcfbfc;  /* search fields, composer */
+  --bg-selected:     #e0e0e0;  /* selected nav item */
+  --bg-chip-active:  #e4e4e4;  /* segmented-control active segment */
+  --bg-inverse:      #141414;  /* the one primary action per view */
+  --text-on-inverse: #fcfcfc;
+
+  /* ---- Hairlines (role-based) ----------------------------- */
+  --hairline-soft:   #ececec;  /* card outline */
+  --hairline:        #e0dfe0;  /* input/composer outline, chips */
+  --hairline-strong: #dcdcdc;  /* sidebar / pane divider */
+
+  /* ---- Controls (buttons, chips, segments) ---------------- */
+  --ctrl-edge:       #dcdcdc;  /* default button outline */
+  --ctrl-hover:      #eeeeee;  /* hover wash */
+  --ctrl-on-bg:      #e0e0e0;  /* selected chip / tab fill */
+  --ctrl-on-edge:    #c4c4c4;  /* selected chip / tab outline */
+
+  /* ---- Switch --------------------------------------------- */
+  --switch-on:       #2f8b52;  /* light-theme counterpart of the sampled green */
+  --switch-off:      #c8c7c8;
+  --switch-knob:     #ffffff;
+
+  /* ---- Text ladder ---------------------------------------- */
+  --ink:        #141414;  /* headings, primary emphasis */
+  --body:       #4e4e4e;  /* running text, nav items */
+  --muted:      #8a8a8a;  /* secondary labels (estimated — see readme Known Gaps) */
+  --muted-soft: #a8a7a8;  /* placeholder / disabled */
+}
+
+[data-theme="dark"] {
+  --bg-app:          #191919;
+  --bg-sidebar:      #232323;  /* LIGHTER than main in dark — signature inversion */
+  --bg-card:         #181818;  /* slightly darker than main */
+  --bg-row:          #1f1f1f;
+  --bg-input:        #212121;
+  --bg-selected:     #2e2e2e;
+  --bg-chip-active:  #2a2a2a;
+  --bg-inverse:      #f0f0f0;
+  --text-on-inverse: #141414;
+
+  --hairline-soft:   #292929;
+  --hairline:        #3a3a3a;
+  --hairline-strong: #333333;
+
+  /* Controls — all four sampled from the reference screenshots */
+  --ctrl-edge:       #383838;  /* settings-window button outline */
+  --ctrl-hover:      #232323;
+  --ctrl-on-bg:      #272728;  /* active "Plugins" chip fill */
+  --ctrl-on-edge:    #4f4f4f;  /* active "Plugins" chip outline */
+
+  --switch-on:       #37985b;  /* sampled */
+  --switch-off:      #3b3b3b;  /* sampled */
+  --switch-knob:     #ffffff;
+
+  --ink:        #f0f0f0;
+  --body:       #b9b9b9;
+  --muted:      #9e9e9e;
+  --muted-soft: #6b6b6b;
+}
+
+/* ============================================================
+   Theme-independent tokens + aliases.
+   Declared on every theme scope so var() re-resolves against
+   the local theme's raw tokens (see NOTE ON ALIASES above).
+   ============================================================ */
+:root, [data-theme="light"], [data-theme="dark"] {
+  /* ---- Brand (logo / wordmark only — never UI controls) --- */
+  --accent-brand:        #f54e00;
+  --accent-brand-active: #d04200;
+  --on-accent:           #ffffff;
+
+  /* ---- Status --------------------------------------------- */
+  --status-info:      #699be1;  /* model/status dot */
+  --semantic-success: #1f8a65;
+  --semantic-error:   #cf2d56;
+
+  /* ---- DEPRECATED: marketing-site timeline pastels -------- */
+  --timeline-thinking: #dfa88f;
+  --timeline-grep:     #9fc9a2;
+  --timeline-read:     #9fbbe0;
+  --timeline-edit:     #c0a8dd;
+  --timeline-done:     #c08532;
+
+  /* ---- Semantic aliases — reference THESE in components --- */
+  --bg-page:  var(--bg-app);
+  --bg-pane:  var(--bg-row);
+  --bg-badge: var(--bg-chip-active);
+
+  --text-display:  var(--ink);
+  --text-body:     var(--body);
+  --text-muted:    var(--muted);
+  --text-disabled: var(--muted-soft);
+
+  --border-card:   var(--hairline-soft);
+  --border-soft:   var(--hairline-soft);
+  --border-strong: var(--hairline-strong);
+
+  /* ---- Legacy aliases (old marketing-era names) ----------- */
+  --primary:        var(--accent-brand);
+  --primary-active: var(--accent-brand-active);
+  --on-primary:     var(--on-accent);
+  --canvas:         var(--bg-app);
+  --canvas-soft:    var(--bg-row);
+  --surface-card:   var(--bg-card);
+  --surface-strong: var(--bg-chip-active);
+  --body-strong:    var(--ink);
+}

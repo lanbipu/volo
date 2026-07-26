@@ -1,0 +1,118 @@
+/* ============================================================
+   Volo — CURSOR APP 语言层 · 收尾层（语言口径）
+   加载顺序：排在 cursor_app.css 之后、cursor_audit_fixes.css 之前。
+   它靠「同特异度、更靠后」赢下几条刻意收紧的规则，换了顺序会失效。
+
+   本文件只做五件事，不动任何信息架构：
+   ① 状态用色口径 —— 关键状态（失效 / 严重 / 失败 / 阻塞）留色，其余一律灰阶
+   ② 强调唯一化 —— 面板开关与卡内动作不占用主按钮的黑白反转
+   ③ 药丸控件变宽后被挤坏的行内节奏，就地修复
+   ④ 残留的写死颜色（品牌橙当填充）回到 token
+   ============================================================ */
+
+/* ---------- 1 · 日常状态：图标瓷片回到灰阶 ----------
+   「已入网 / 就绪 / 已完成」这类不需要动作的状态，容器一律中性。
+   Cursor App 里不存在彩色瓷片 —— 集群总览上那一排薄荷绿是全站
+   最扎眼的偏离项。 */
+.desktop [class*="-ico"].s-positive,
+.desktop [class*="-ico"].s-info {
+  background: var(--bg-badge) !important;
+  color: var(--t-muted) !important;
+  border-color: transparent !important;
+}
+
+/* 警告级：容器灰阶，颜色压缩到图标笔画上 —— 看得见，但不抢戏 */
+.desktop [class*="-ico"].s-notice {
+  background: var(--bg-badge) !important;
+  color: var(--status-warn) !important;
+  border-color: transparent !important;
+}
+
+/* ---------- 2 · 关键状态：彩色细描边 + 极淡底 ----------
+   只发给「需要立刻处理」的状态：失效 / 严重告警 / 失败 / 阻塞。
+   仍然是三通道（颜色 + 图标 + 文字），只是颜色这一通道从 10px 的
+   小圆点放大到 1px 描边，让现场扫一眼就能定位到出事的那一行。 */
+.desktop [class*="-ico"].s-negative {
+  background: color-mix(in srgb, var(--status-err) 12%, transparent) !important;
+  color: var(--status-err) !important;
+  border: 1px solid color-mix(in srgb, var(--status-err) 30%, transparent) !important;
+}
+.desktop .s2-alert--negative,
+.desktop .lc-banner--negative,
+.desktop .psL2-node.glc--invalid {
+  background: color-mix(in srgb, var(--status-err) 7%, var(--bg-card)) !important;
+  border-color: color-mix(in srgb, var(--status-err) 30%, transparent) !important;
+}
+
+/* 仪表盘顶层状态 hero：「严重 / 告警」两档原本的描边比常态还弱，
+   整块顶层告警零色彩信号 —— 恢复 1px 彩色描边 + 8% 同色底。 */
+.desktop .hero-critical {
+  border-color: var(--status-err) !important;
+  background: color-mix(in srgb, var(--status-err) 8%, var(--bg-card)) !important;
+}
+.desktop .hero-warning {
+  border-color: var(--status-warn) !important;
+  background: color-mix(in srgb, var(--status-warn) 8%, var(--bg-card)) !important;
+}
+.desktop .hero-critical .ls-badge.s-negative {
+  color: var(--status-err) !important;
+  background: color-mix(in srgb, var(--status-err) 10%, transparent) !important;
+}
+.desktop .hero-warning .ls-badge.s-notice {
+  color: var(--status-warn) !important;
+  background: color-mix(in srgb, var(--status-warn) 10%, transparent) !important;
+}
+
+/* 计量条的「已失效」段：灰阶三档里最重的一档换成语义红，
+   其余（就绪 / 需复验）保持灰阶，对比才有意义。 */
+.desktop .psL-seg.glc--invalid,
+.desktop .psL2-seg.glc--invalid { background: var(--status-err) !important; }
+
+/* 控制台日志：四个级别原本同为正文灰，滚动时分不出轻重。
+   颜色只落在四个字母的文字上（不是底色），仍是「颜色只给标记」。 */
+.desktop .log-body .lv.err  { color: var(--status-err) !important; }
+.desktop .log-body .lv.warn { color: var(--status-warn) !important; }
+.desktop .log-body .lv.ok,
+.desktop .log-body .lv.info { color: var(--t-muted) !important; }
+
+/* ---------- 3 · 一屏只有一处黑白反转 ----------
+   检查器是面板开关，不是主动作 —— 降到「选中灰」那一档；
+   卡内的逐项动作降为次级轮廓按钮，把反转留给分区级主按钮。
+   （参考图里每一屏都只有一枚实心药丸，其余全是轮廓药丸。） */
+.desktop .paneltgl.on {
+  background: var(--bg-selected) !important;
+  color: var(--t-ink) !important;
+  border: 1px solid var(--edge-strong) !important;
+}
+.desktop .paneltgl.on svg { color: var(--t-ink) !important; }
+
+.desktop .mini-btn.psL2-go {
+  background: var(--bg-card) !important;
+  color: var(--t-ink) !important;
+  border: 1px solid var(--edge-strong) !important;
+}
+.desktop .mini-btn.psL2-go svg { color: var(--t-ink) !important; }
+.desktop .mini-btn.psL2-go:hover { background: var(--bg-row) !important; }
+
+/* ---------- 4 · 药丸变宽后的行内节奏修复 ----------
+   药丸按钮比原来的方角按钮宽，两枚并排后把同一行里唯一可压缩的
+   说明文字压到了 4 个字宽。允许整行换行，并给说明留一个下限宽度。 */
+.desktop .pak2-foot { flex-wrap: wrap; row-gap: 8px; }
+.desktop .pak-genbar-info { flex: 1 1 190px; min-width: 150px; }
+
+/* 同一类问题的上游：窗口 ≤ 1300px 且检查器展开时，中栏只剩 ~670px，
+   PSO / DDC PAK 的左右双栏被压到 160px，标题与说明全部竖排。
+   给分栏一个下限宽度并允许折行 —— 窗口窄时上下堆叠，内容与顺序不变。 */
+.desktop .pak2 { flex-wrap: wrap; }
+.desktop .pak2-col { min-width: 300px; }
+.desktop .pak-roots-h { flex-wrap: wrap; }
+.desktop .pak-roots-h > .t { flex: 0 0 auto; white-space: nowrap; }
+
+/* ---------- 5 · 品牌橙只当字标墨色 ----------
+   cal2.css 把选中侧栏项的角标底色写死成 rgba(240,78,42,.16)，
+   回到中性 wash。 */
+.desktop .cal2-nav.on .nav-sub,
+.desktop .nav-i.on .nav-sub {
+  background: var(--wash-2) !important;
+  color: var(--t-ink) !important;
+}

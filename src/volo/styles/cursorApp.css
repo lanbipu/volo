@@ -1,0 +1,278 @@
+/* ============================================================
+   Volo — CURSOR APP 语言层（app-era law layer · 全站最后加载）
+   基准：uploads/refs/ 六张 Cursor 桌面 App 截图（深 3 + 浅 3）。
+   本文件只做四件事，不改任何信息架构：
+   ① 表面分层：地板 / 侧栏 / 卡片 / 行 / 输入 —— 全部走主题 token
+   ② 形状语言：控件药丸、卡片 12、composer 16、输入与侧栏行 8
+   ③ 字号密度：18/600 · 14/500 · 14 · 13 · 12，不用大写标签
+   ④ 强调只有一种：黑白反转（--bg-inverse）；彩色只剩小状态点
+   任何主题下都不出现投影。
+   ============================================================ */
+
+/* ---------- 0 · 全站禁投影（含 Spectrum / 内联 ring） ---------- */
+.desktop *, .desktop *::before, .desktop *::after { box-shadow: none !important; text-shadow: none !important; }
+.desktop { font-family: var(--font-sans); color: var(--t-body); font-size: 14px; }
+.desktop a { color: var(--t-ink); text-decoration: none; }
+.desktop a:hover { color: var(--t-ink); text-decoration: underline; text-underline-offset: 2px; }
+
+/* ---------- 1 · 表面分层 ----------
+   深色下侧栏（#232323）比主区（#191919）更亮 —— App 的签名反转。 */
+.viewport, .desktop .body, .desktop .center { background: var(--bg-floor); }
+.desktop .win-topbar, .desktop .titlebar, .desktop .menubar { background: var(--bg-sidebar); border-bottom: 1px solid var(--edge-card); }
+.desktop .ctxbar { background: var(--bg-floor); border-bottom: 1px solid var(--edge-card); }
+.desktop .pagetabs { background: var(--bg-sidebar); border-top: 1px solid var(--edge-card); }
+.desktop .leftcol, .desktop .inspector { background: var(--bg-sidebar); }
+.desktop .leftcol { border-right: 1px solid var(--edge-card); }
+.desktop .inspector { border-left: 1px solid var(--edge-card); }
+.desktop.page-calibrate .win-topbar, .desktop.page-calibrate .titlebar, .desktop.page-calibrate .menubar { background: var(--bg-sidebar); }
+.desktop.page-calibrate .ctxbar, .desktop.page-calibrate .center, .desktop.page-calibrate .body { background: var(--bg-floor); }
+.desktop.page-calibrate .pagetabs, .desktop.page-calibrate .leftcol, .desktop.page-calibrate .inspector { background: var(--bg-sidebar); }
+
+/* 字标是唯一的橙色 —— 只是墨色，不是底色 */
+.desktop .brand-badge, .desktop .brand-mark { background: transparent !important; color: var(--brand-orange) !important; }
+.desktop .brand-name, .desktop .brand b { color: var(--t-ink); font-weight: 600; font-size: 13px; letter-spacing: 0; }
+.desktop .menu-item { color: var(--t-body); font-size: 13px; font-weight: 400; border-radius: var(--radius-input); }
+.desktop .menu-item:hover { background: var(--bg-selected); color: var(--t-ink); }
+
+/* ---------- 2 · 侧栏行：选中 = 浅浅的灰底 + 8px，不反转 ---------- */
+.desktop .leftcol .nav-i, .desktop .gw-nav .nav-i, .desktop .cache-nav .nav-i,
+.desktop .leftcol [class*="nav-i"], .desktop .leftcol .side-i {
+  border-radius: var(--radius-input); font-size: 13px; font-weight: 400;
+  color: var(--t-body); background: transparent; min-height: 30px;
+}
+.desktop .leftcol .nav-i:hover, .desktop .gw-nav .nav-i:hover { background: var(--bg-row); color: var(--t-ink); }
+.desktop .leftcol .nav-i.on, .desktop .gw-nav .nav-i.on,
+.desktop.page-calibrate .gw-nav .nav-i.on {
+  background: var(--bg-selected) !important; color: var(--t-ink) !important; font-weight: 500;
+}
+.desktop.page-calibrate .gw-nav .nav-i.on::before { color: var(--t-muted); }
+.desktop .leftcol .sect-h .t, .desktop .gw-nav .sect-h .t {
+  font-size: 12px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--t-muted);
+}
+
+/* ---------- 3 · 按钮：药丸 · 主按钮 = 黑白反转 ---------- */
+.desktop .s2-btn, .desktop [class*="-btn"], .desktop [class*="btn-"],
+.desktop .fix-btn, .desktop .paneltgl, .desktop .gw-projbtn, .desktop .gw-icbtn {
+  border-radius: var(--radius-pill); font-size: 13px; font-weight: 500; letter-spacing: 0;
+}
+.desktop .s2-btn--fill.s2-btn--accent, .desktop .s2-btn--accent,
+.desktop .psL2-go, .desktop .fix-btn, .desktop .paneltgl.on,
+.desktop [class*="btn"].is-primary, .desktop [class*="btn"].primary {
+  background: var(--bg-inverse) !important; color: var(--text-on-inverse) !important;
+  border: 1px solid transparent !important; font-weight: 500 !important;
+}
+.desktop .s2-btn--accent svg, .desktop .psL2-go svg, .desktop .paneltgl.on svg,
+.desktop [class*="btn"].is-primary svg { color: var(--text-on-inverse) !important; }
+.desktop .s2-btn--fill.s2-btn--accent:active, .desktop .psL2-go:active { opacity: .82; }
+.desktop .s2-btn--outline, .desktop .s2-btn--secondary {
+  background: var(--bg-card); border: 1px solid var(--edge-strong); color: var(--t-ink);
+}
+.desktop .s2-btn--outline:hover, .desktop .s2-btn--secondary:hover { background: var(--bg-row); }
+/* 图标按钮：圆形轮廓 */
+.desktop .gw-icbtn, .desktop .ic-btn, .desktop [class*="iconbtn"] { border-radius: var(--radius-pill); }
+
+/* ---------- 4 · chip / 分段控件：一律药丸 ---------- */
+.desktop [class*="chip"], .desktop .spill, .desktop [class*="badge"], .desktop [class*="-tag"],
+.desktop [class*="-seg"]:has(> button) > button, .desktop .role-seg button {
+  border-radius: var(--radius-pill);
+}
+/* 筛选 chip：激活 = 黑白反转（硬性规则 ②） */
+.desktop [class*="chip"].on, .desktop [class*="chip"].active, .desktop [class*="chip"].is-on {
+  background: var(--bg-inverse); color: var(--text-on-inverse); border-color: transparent;
+}
+/* 分段控件：容器透明，激活项 = 浅灰药丸（对齐 refs 的 Mine / Team） */
+.desktop [class*="-seg"]:has(> button), .desktop .role-seg, .desktop .gw-viewseg, .desktop .gw-seg2 {
+  background: transparent !important; border: none !important; padding: 0 !important; gap: 4px;
+}
+.desktop [class*="-seg"]:has(> button) > button, .desktop .role-seg button, .desktop .gw-seg2 button {
+  font-size: 13px; font-weight: 400; color: var(--t-body); background: transparent; border: none;
+  padding: 5px 12px; min-height: 28px;
+}
+.desktop [class*="-seg"]:has(> button) > button:hover, .desktop .role-seg button:hover { background: var(--bg-row); color: var(--t-ink); }
+.desktop [class*="-seg"]:has(> button) > button.on, .desktop .role-seg button.on, .desktop .gw-seg2 button.on,
+.desktop [class*="-seg"]:has(> button) > button[aria-selected="true"] {
+  background: var(--bg-selected) !important; color: var(--t-ink) !important; font-weight: 500; border-color: transparent !important;
+}
+.desktop [class*="-seg"]:has(> button) > button.on svg, .desktop .role-seg button.on svg { color: var(--t-ink) !important; }
+
+/* ---------- 5 · 卡片 / 面板：12px + 1px 细线，无投影 ---------- */
+.desktop .dash-card, .desktop .kpi, .desktop [class*="-card"], .desktop .card,
+.desktop [class*="panel"]:not(.leftcol):not(.inspector) {
+  background: var(--bg-card); border: 1px solid var(--edge-card); border-radius: var(--radius-card);
+}
+.desktop .dash-card .dc-h .t, .desktop [class*="-card"] h3, .desktop [class*="-card"] h4 {
+  font-size: 14px; font-weight: 500; color: var(--t-ink); letter-spacing: 0; text-transform: none;
+}
+
+/* ---------- 6 · 列表行：浅浅的圆角底色条，不是表格线 ---------- */
+.desktop .mrow2, .desktop .diag-row, .desktop [class*="-row"]:not([class*="head"]) {
+  border-radius: var(--radius-input);
+}
+.desktop .mrow2, .desktop .diag-row { background: var(--bg-row); border: 1px solid transparent; }
+.desktop .mrow2:hover, .desktop .diag-row:hover { background: var(--bg-selected); }
+.desktop .mrow2.mhead { background: transparent; }
+
+/* ---------- 7 · 数据统计：12px 灰标签 + 18px 数字 ---------- */
+.desktop .kpi-k, .desktop .gw-metric .k, .desktop .gw-dcell .k, .desktop [class*="stat"] .k {
+  font-size: 12px; font-weight: 400; color: var(--t-muted); letter-spacing: 0; text-transform: none;
+}
+.desktop .kpi-v, .desktop .gw-metric .v, .desktop .gw-dcell .v, .desktop [class*="stat"] .v {
+  font-size: 18px; font-weight: 500; color: var(--t-ink); letter-spacing: 0;
+}
+
+/* ---------- 8 · 空状态：大而克制的圆角面板，一行标题 + 一行说明 ---------- */
+.desktop [class*="empty"], .desktop .insp-empty, .desktop .cx-empty {
+  background: var(--bg-card); border: 1px solid var(--edge-card); border-radius: var(--radius-card);
+  text-align: center; color: var(--t-muted);
+}
+.desktop [class*="empty"] h3, .desktop [class*="empty"] .t, .desktop [class*="empty"] b {
+  font-size: 14px; font-weight: 500; color: var(--t-ink); letter-spacing: 0;
+}
+.desktop [class*="empty"] p, .desktop [class*="empty"] .d { font-size: 13px; color: var(--t-muted); }
+
+/* ---------- 9 · 输入 8px / composer 16px ---------- */
+.desktop input, .desktop select, .desktop textarea,
+.desktop .gw-num, .desktop .gw-txt, .desktop [class*="input"], .desktop [class*="field"] {
+  background: var(--bg-input); border: 1px solid var(--edge-input); border-radius: var(--radius-input);
+  color: var(--t-ink); font-size: 13px; font-family: var(--font-sans);
+}
+.desktop input::placeholder, .desktop textarea::placeholder { color: var(--t-placeholder); }
+.desktop input:focus, .desktop textarea:focus, .desktop .gw-num:focus, .desktop .gw-txt:focus {
+  outline: none; border-color: var(--edge-strong);
+}
+.desktop [class*="composer"], .desktop [class*="prompt"] { border-radius: var(--radius-composer); }
+
+/* ---------- 10 · 状态：颜色 + 图标 + 文字三通道 ----------
+   彩色只落在「小点 / 小图标」上；填充一律中性，避免彩色色块。 */
+.desktop .spill, .desktop [class*="badge"]:not([class*="brand"]), .desktop [class*="-tag"] {
+  background: var(--bg-badge); color: var(--t-body); border: 1px solid transparent;
+  font-size: 12px; font-weight: 400;
+}
+.desktop .spill--positive, .desktop [class*="badge"][class*="positive"], .desktop [class*="badge"][class*="success"] { color: var(--t-body); }
+.desktop .sdot, .desktop .pip, .desktop .dot, .desktop [class*="-dot"] { border-radius: 50%; }
+/* 进度 / 计量条：中性灰阶，语义靠旁边的点 + 文字 */
+.desktop .vmeter, .desktop [class*="meter"] { background: var(--bg-segment); border-radius: var(--radius-pill); }
+.desktop .vmeter__fill, .desktop [class*="meter"] [class*="fill"] { background: var(--t-muted); border-radius: var(--radius-pill); }
+
+/* 曾用彩色底的「状态图块 / 步骤节点」→ 中性；完成 = 灰底 + ✓，进行中 = 反转 */
+.desktop .psL2-hero.is-ready .psL2-hero-ico, .desktop .psL2-hero.is-warn .psL2-hero-ico,
+.desktop .step.done .node, .desktop .check-row.ok .ci, .desktop .wz-done .wz-node,
+.desktop .ob-tab.done .ob-n, .desktop .cal2-flowstep.done .cal2-flow-n, .desktop .gw-fstep.done .gw-fstep-n,
+.desktop .dep-step.done .n, .desktop .gw-pipe-st.done .gw-pipe-dot, .desktop .gw-pose-row.ok .n,
+.desktop .cal2-lstage.done .cal2-lstage-n, .desktop .lstage.done .ln, .desktop .ddc-trow.active .ddc-pri,
+.desktop .pakgen-step.active .sn, .desktop .tk-btn.fix {
+  background: var(--bg-selected) !important; border-color: var(--edge-strong) !important; color: var(--t-ink) !important;
+}
+.desktop .step.active .node, .desktop .gw-fstep.active .gw-fstep-n, .desktop .dep-step.active .n,
+.desktop .gw-pipe-st.active .gw-pipe-dot, .desktop .cal2-flowstep.active .cal2-flow-n {
+  background: var(--bg-inverse) !important; border-color: var(--bg-inverse) !important; color: var(--text-on-inverse) !important;
+}
+
+/* ---------- 11 · 底部页签：药丸，激活 = 反转 ---------- */
+.desktop .pagetabs .ptab {
+  border-radius: var(--radius-pill); font-size: 13px; font-weight: 400; color: var(--t-body);
+  border-bottom: none !important; padding: 6px 12px;
+}
+.desktop .pagetabs .ptab:hover { background: var(--bg-row); color: var(--t-ink); }
+.desktop .pagetabs .ptab.on, .desktop.page-calibrate .ptab.on {
+  background: var(--bg-inverse) !important; color: var(--text-on-inverse) !important; font-weight: 500;
+  border-bottom-color: transparent !important;
+}
+.desktop .pagetabs .ptab.on .pico, .desktop.page-calibrate .ptab.on .pico { color: var(--text-on-inverse) !important; }
+.desktop .pagetabs .skl { background: var(--bg-badge); color: var(--t-muted); border-radius: var(--radius-pill); font-size: 12px; }
+.desktop .pagetabs .ptab.on .skl { background: var(--wash-2); color: var(--text-on-inverse); }
+
+/* ---------- 12 · 上下文导航（LED / AR）：药丸，不再下划线 ---------- */
+.desktop .ctxnav-i, .desktop.page-calibrate .cal2-stageseg .ctxnav-i {
+  border-radius: var(--radius-pill) !important; border-bottom: none !important;
+  font-size: 13px; font-weight: 400; color: var(--t-body); padding: 6px 12px !important; margin-right: 4px !important;
+}
+.desktop .ctxnav-i:hover { background: var(--bg-row) !important; color: var(--t-ink); }
+.desktop .ctxnav-i.on, .desktop.page-calibrate .cal2-stageseg .ctxnav-i.on {
+  background: var(--bg-selected) !important; color: var(--t-ink) !important; font-weight: 500;
+  border-bottom-color: transparent !important;
+}
+.desktop .ctxnav-i.on svg, .desktop.page-calibrate .cal2-stageseg .ctxnav-i.on svg { color: var(--t-ink) !important; }
+
+/* ---------- 13 · 滚动条：细，中性 ---------- */
+.desktop ::-webkit-scrollbar { width: 10px; height: 10px; }
+.desktop ::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: var(--radius-pill); border: 3px solid transparent; background-clip: content-box; }
+.desktop ::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-h); background-clip: content-box; }
+.desktop ::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- 14 · 中文排版：行高放宽、不加负字距、绝不落等宽 ---------- */
+.desktop { line-height: 1.55; }
+.desktop :lang(zh) { letter-spacing: 0; }
+.desktop .mono, .desktop code, .desktop kbd, .desktop [class*="code"] { font-family: var(--font-code); font-size: 13px; }
+
+/* ---------- 15 · 语义状态去彩：容器中性，颜色只留给小圆点 ----------
+   三通道（颜色 + 图标 + 文字）里，颜色这一通道压缩到 10px 的点上；
+   容器、横幅、瓷片一律回到灰阶，符合「唯一彩色元素是小状态圆点」。 */
+.desktop .psL2-hero, .desktop .psL2-hero.is-ready, .desktop .psL2-hero.is-warn,
+.desktop .glc--ready, .desktop .glc--stale, .desktop .glc--invalid,
+.desktop .psL2-node.glc--ready, .desktop .psL2-node.glc--stale, .desktop .psL2-node.glc--invalid,
+.desktop .psL2-noconf, .desktop .lc-banner--notice, .desktop .lc-banner--negative, .desktop .lc-banner--positive {
+  background: var(--bg-row) !important; border-color: var(--edge-card) !important; color: var(--t-body) !important;
+}
+.desktop .psL2-hero-tt, .desktop .psL2-hero-frac .big, .desktop .psL2-hero.is-ready .psL2-hero-tt,
+.desktop .psL2-hero.is-warn .psL2-hero-tt, .desktop .psL2-hero.is-ready .psL2-hero-frac .big { color: var(--t-ink) !important; }
+.desktop .psL2-hero-ico { background: var(--bg-selected) !important; color: var(--t-ink) !important; border: 1px solid var(--edge-card); }
+/* 计量条：灰阶三档 —— 越严重越深，语义由图例的点 + 文字承担 */
+.desktop .psL-bar, .desktop .psL2-bar { background: var(--bg-segment); }
+.desktop .psL-seg.glc--ready, .desktop .psL2-seg.glc--ready { background: var(--edge-strong) !important; }
+.desktop .psL-seg.glc--stale, .desktop .psL2-seg.glc--stale { background: var(--t-muted) !important; }
+.desktop .psL-seg.glc--invalid, .desktop .psL2-seg.glc--invalid { background: var(--t-ink) !important; }
+.desktop .psL-seg.glc--never, .desktop .psL2-seg.glc--never { background: var(--bg-selected) !important; }
+/* 图例 / 行内状态点：保留语义色（小点是全站唯一的彩色元素） */
+.desktop .psL-lg-dot.glc--ready, .desktop .psL2-lg-dot.glc--ready, .desktop .psL2-node.glc--ready .psL2-node-dot { background: var(--status-ok) !important; }
+.desktop .psL-lg-dot.glc--stale, .desktop .psL2-lg-dot.glc--stale, .desktop .psL2-node.glc--stale .psL2-node-dot { background: var(--status-warn) !important; }
+.desktop .psL-lg-dot.glc--invalid, .desktop .psL2-lg-dot.glc--invalid, .desktop .psL2-node.glc--invalid .psL2-node-dot { background: var(--status-err) !important; }
+.desktop .psL-lg-dot.glc--never, .desktop .psL2-lg-dot.glc--never { background: var(--t-placeholder) !important; }
+
+/* ---------- 16 · 药丸不换行：小标签一行到底 ---------- */
+.desktop [class*="chip"], .desktop .spill, .desktop [class*="badge"], .desktop [class*="-tag"],
+.desktop [class*="-cur"], .desktop .cur, .desktop [class*="pill"] { white-space: nowrap; }
+
+/* ---------- 17 · Spectrum 组件去彩：与 App 语言对齐 ----------
+   设计系统 bundle 自带 Adobe 的语义色（蓝色 informative、绿色 positive…）。
+   Cursor App 里没有彩色告示条，全部改成 1px 细线 + 灰底 + 图标 + 文字。 */
+.desktop .s2-alert, .desktop .s2-alert--informative, .desktop .s2-alert--negative,
+.desktop .s2-alert--positive, .desktop .s2-alert--notice {
+  background: var(--bg-row) !important; border: 1px solid var(--edge-card) !important;
+  border-radius: var(--radius-card) !important; color: var(--t-body) !important;
+}
+.desktop .s2-alert__heading, .desktop .s2-alert h3, .desktop .s2-alert b { color: var(--t-ink) !important; font-size: 14px; font-weight: 500; }
+.desktop .s2-alert__content { color: var(--t-body) !important; font-size: 13px; }
+/* 告示条的颜色通道压缩到图标上 —— 唯一允许的彩色元素 */
+.desktop .s2-alert--informative > svg, .desktop .s2-alert--informative .s2-alert__icon { color: var(--status-info) !important; }
+.desktop .s2-alert--negative > svg, .desktop .s2-alert--negative .s2-alert__icon { color: var(--status-err) !important; }
+.desktop .s2-alert--positive > svg, .desktop .s2-alert--positive .s2-alert__icon { color: var(--status-ok) !important; }
+.desktop .s2-alert--notice > svg, .desktop .s2-alert--notice .s2-alert__icon { color: var(--status-warn) !important; }
+
+.desktop [class*="s2-badge"] { background: var(--bg-badge) !important; color: var(--t-body) !important; border-radius: var(--radius-pill) !important; font-size: 12px; }
+.desktop .s2-switch__track { background: var(--bg-segment) !important; border-radius: var(--radius-pill) !important; }
+.desktop .s2-switch--on .s2-switch__track { background: var(--bg-inverse) !important; }
+.desktop .s2-switch__handle { background: var(--bg-card) !important; }
+.desktop .s2-switch--on .s2-switch__handle { background: var(--text-on-inverse) !important; }
+.desktop [class*="s2-meter"] [class*="fill"], .desktop [class*="s2-progress"] [class*="fill"],
+.desktop [class*="s2-progressbar"] [class*="fill"] { background: var(--t-muted) !important; }
+.desktop .s2-btn--negative, .desktop .s2-btn--negative:hover {
+  background: var(--bg-card) !important; border: 1px solid var(--edge-strong) !important; color: var(--t-ink) !important;
+}
+.desktop *:focus-visible { outline: 1px solid var(--edge-strong) !important; outline-offset: 1px; }
+
+/* ---------- 18 · 画面（footage）之上的 HUD ----------
+   相机画面是内容，恒深；覆盖其上的 HUD / 角标一律走 film 阶，
+   不随主题翻转，否则浅色下会出现深底深字。 */
+.desktop [class*="-hud"], .desktop [class*="-hud"] *,
+.desktop .capw-stage > *:not(.capw-canvas), .desktop .capw-stage > * *,
+.desktop .lc-signal > *, .desktop .lc-signal > * *,
+.desktop .lens-stage > *, .desktop .lens-stage > * *,
+.desktop .vs-preview > *, .desktop .lc-detail-canvas > *,
+.desktop .qsp-capnote, .desktop .gw-capmain > * {
+  color: var(--film-body);
+}
+.desktop [class*="-hud"] b, .desktop [class*="-hud"] strong,
+.desktop .capw-stage b, .desktop .lc-signal b, .desktop .lens-stage b { color: var(--film-ink); }
+.desktop [class*="-hud"] [class*="chip"], .desktop [class*="-hud"] [class*="badge"],
+.desktop .qsp-capnote { border-color: var(--film-edge); }

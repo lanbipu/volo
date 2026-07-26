@@ -69,15 +69,18 @@ import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
   const RIG = new CameraRig();
   const SCENE_STORE = { pickMeshes: [], setHover: () => {}, invalidate: () => {} };
 
-  /* 世界轴色：地面轴端 / gizmo 共用（显示 Z = 世界 Y） */
-  const WORLD_AXIS = { x: '#e8604e', y: '#6699ec' }; /* 与 gridScene 地面轴线 uniform 同步 */
+  /* 世界轴色：地面轴端 / gizmo 共用（显示 Z = 世界 Y）。
+     取值与 styles/cursorViewport.css 的 --vp-x / --vp-y / --vp-z 暗色档一致；
+     视口是全站唯一靠颜色传空间语义的地方，不跟界面 chrome 一起去色。 */
+  const VP_AXIS = { x: '#ef5350', y: '#4caf6a', z: '#5b8def' };
+  const WORLD_AXIS = { x: VP_AXIS.x, y: VP_AXIS.z }; /* 与 gridScene 地面轴线 uniform 同步 */
   const GIZMO_AXES = [
-    { dir: [1, 0, 0], col: WORLD_AXIS.x, label: 'X' },
-    { dir: [-1, 0, 0], col: WORLD_AXIS.x, label: null },
-    { dir: [0, 0, 1], col: '#3f9c46', label: 'Y' },   /* 显示 Y（向上）= 世界 Z */
-    { dir: [0, 0, -1], col: '#3f9c46', label: null },
-    { dir: [0, 1, 0], col: WORLD_AXIS.y, label: 'Z' },   /* 显示 Z（深度）= 世界 Y */
-    { dir: [0, -1, 0], col: WORLD_AXIS.y, label: null },
+    { dir: [1, 0, 0], col: WORLD_AXIS.x, label: 'X', vp: 'x' },
+    { dir: [-1, 0, 0], col: WORLD_AXIS.x, label: null, vp: 'x' },
+    { dir: [0, 0, 1], col: VP_AXIS.y, label: 'Y', vp: 'y' },   /* 显示 Y（向上）= 世界 Z */
+    { dir: [0, 0, -1], col: VP_AXIS.y, label: null, vp: 'y' },
+    { dir: [0, 1, 0], col: WORLD_AXIS.y, label: 'Z', vp: 'z' },   /* 显示 Z（深度）= 世界 Y */
+    { dir: [0, -1, 0], col: WORLD_AXIS.y, label: null, vp: 'z' },
   ];
 
   /** Overlay / NavGizmo：相机变化经 rAF 节流触发重渲 */
@@ -558,8 +561,9 @@ import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
     const multiKeys = s.calSel && s.calSel.type === 'cabinetMulti' ? new Set(s.calSel.keys || []) : null;
 
     /* three 场景数据（与业务 sbuilt 解耦的纯渲染描述）。必须在 early return 之前（Hooks 顺序）。 */
+    /* 选中轮廓走视口灰（--vp-sel），不是品牌橙、也不是刺眼的白 */
     const [selColor] = useState(() =>
-      getComputedStyle(document.documentElement).getPropertyValue('--volo-500').trim() || 'rgb(224,70,38)');
+      getComputedStyle(document.documentElement).getPropertyValue('--vp-sel').trim() || '#9e9e9e');
     const camSnap = useSyncExternalStore(
       (window.camStore && window.camStore.subscribe) || (() => () => {}),
       () => (window.camStore ? window.camStore.get() : { cameras: [], selectedId: null }),
@@ -878,14 +882,14 @@ import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
           const hl = 7, hw = 0.42;
           const a1 = [P1[0] - hl * Math.cos(ang - hw), P1[1] - hl * Math.sin(ang - hw)];
           const a2 = [P1[0] - hl * Math.cos(ang + hw), P1[1] - hl * Math.sin(ang + hw)];
-          previewAxes.push(h('g', { key: 'pv' + k, className: 'gw-pvaxis' },
+          previewAxes.push(h('g', { key: 'pv' + k, className: 'gw-pvaxis', 'data-vp': k },
             h('line', { x1: P0[0], y1: P0[1], x2: P1[0], y2: P1[1], stroke: col, strokeWidth: 1.7, strokeDasharray: '4 3', strokeLinecap: 'round' }),
             h('polygon', { points: pstr([P1, a1, a2]), fill: col }),
             h('text', { x: P1[0] + 5, y: P1[1] - 4, fill: col, fontSize: 8, fontWeight: 800 }, label)));
         };
-        arrow(dX, '#e0563f', '横向 · OX', 'x');
-        arrow(dY, '#49b257', '高度 · OY', 'y');
-        arrow(dZ, '#4f88e0', '深度 · 推导', 'z');
+        arrow(dX, VP_AXIS.x, '横向 · OX', 'x');
+        arrow(dY, VP_AXIS.y, '高度 · OY', 'y');
+        arrow(dZ, VP_AXIS.z, '深度 · 推导', 'z');
       }
     }
 
@@ -995,7 +999,7 @@ import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
       balls.map((b, i) => {
         const front = b.z >= -0.02;
         const op = front ? 1 : 0.45;
-        return h('g', { key: 'gz' + i, style: { cursor: 'pointer' }, onMouseUp: () => onBallUp(b) },
+        return h('g', { key: 'gz' + i, 'data-vp': b.label ? b.vp : undefined, style: { cursor: 'pointer' }, onMouseUp: () => onBallUp(b) },
           h('line', { x1: c, y1: c, x2: b.sx, y2: b.sy, stroke: b.col, strokeWidth: b.label ? 1.6 : 0, opacity: 0.7 * op }),
           h('circle', {
             cx: b.sx, cy: b.sy, r: b.label ? 8.5 : 6.5,
@@ -1010,12 +1014,18 @@ import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
   }
 
   /* ================= 四角叠加 + 工具条 + 状态栏 ================= */
+  /* 「显示」开关面板：默认收起成一枚标题，展开才铺开整列（原来常驻遮住视口左下角） */
   function DisplayToggles({ s }) {
     const d = s.calDisplay;
+    const [open, setOpen] = useState(false);
     const set = (k, v) => s.setCalDisplay(Object.assign({}, d, { [k]: v }));
-    return h('div', { className: 'gw-glass gw-disp' },
-      h('div', { className: 'gw-disp-h' }, '显示'),
-      GRID_DISPLAY_ITEMS.map((it) => h(React.Fragment, { key: it.k },
+    const onN = GRID_DISPLAY_ITEMS.filter((it) => d[it.k]).length;
+    return h('div', { className: 'gw-glass gw-disp' + (open ? ' is-open' : '') },
+      h('button', { className: 'gw-disp-h', onClick: () => setOpen((v) => !v) },
+        h(Icon, { name: open ? 'chevd' : 'chevr', size: 13 }),
+        h('span', { className: 'lb' }, '显示'),
+        !open && onN ? h('span', { className: 'n' }, onN) : null),
+      !open ? null : GRID_DISPLAY_ITEMS.map((it) => h(React.Fragment, { key: it.k },
         h('div', { className: 'gw-disp-row' + (d[it.k] ? ' on' : ''), onClick: () => set(it.k, !d[it.k]) },
           h('span', { className: 'ic' }, h(Icon, { name: it.icon, size: 15 })),
           h('span', { className: 'lbl' }, it.label),
@@ -1024,7 +1034,7 @@ import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
           h('span', { className: 'ic' }, h(Icon, { name: 'list', size: 13 })),
           h('span', { className: 'lbl' }, it.childLabel),
           h('span', { className: 'gw-sw' + (d[it.child] ? ' on' : '') })) : null)),
-      h('div', { className: 'gw-disp-row', style: { cursor: 'default' } },
+      !open ? null : h('div', { className: 'gw-disp-row', style: { cursor: 'default' } },
         h('span', { className: 'ic' }, h(Icon, { name: 'panel', size: 15 })),
         h('span', { className: 'lbl' }, '遮罩箱体'),
         h('div', { className: 'gw-seg2' },

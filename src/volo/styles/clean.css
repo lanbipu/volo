@@ -22,8 +22,8 @@
   padding: 14px 16px; gap: 14px;
 }
 .desktop.clean .ls-sub { display: none; }
-.desktop.clean .ls-line { font-size: 15px; }
-.desktop.clean .ls-badge { width: 40px; height: 40px; border-radius: 11px; }
+.desktop.clean .ls-line { font-size: 14px; }
+.desktop.clean .ls-badge { width: 40px; height: 40px; border-radius: var(--radius-pill); }
 
 /* ---- 3 · KPI 卡：去进度条 + 副标签，轻容器 ---- */
 .desktop.clean .kpi {
@@ -34,7 +34,7 @@
 .desktop.clean .kpi-sub { display: none; }
 .desktop.clean .kpi-h { margin-bottom: 6px; }
 .desktop.clean .kpi-k { white-space: nowrap; }
-.desktop.clean .kpi-v { margin-bottom: 0; font-size: 22px; }
+.desktop.clean .kpi-v { margin-bottom: 0; font-size: 18px; }
 
 /* ---- 4 · 卡片整体去描边（靠背景区分，减少盒感） ---- */
 .desktop.clean .dash-card { border-color: transparent; }

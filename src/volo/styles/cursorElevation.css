@@ -1,0 +1,17 @@
+/* ============================================================
+   Cursor · Depth tokens
+   HAIRLINE-ONLY depth, both themes. The app is flat: surfaces
+   separate via 1px low-contrast outlines + small luminance
+   steps between surface tiers (sidebar vs main vs card).
+   No drop shadows observed anywhere in uploads/refs/.
+   Declared on every theme scope so the var() inside each edge
+   re-resolves against the local theme (custom properties
+   inherit as computed values — :root-only would freeze light).
+   ============================================================ */
+:root, [data-theme="light"], [data-theme="dark"] {
+  --edge-card:   1px solid var(--hairline-soft);   /* card / tile outline */
+  --edge-soft:   1px solid var(--hairline-soft);   /* lighter divider */
+  --edge-input:  1px solid var(--hairline);        /* inputs, composer, chips */
+  --edge-strong: 1px solid var(--hairline-strong); /* pane / sidebar divider */
+  --shadow-none: none;                             /* the whole shadow scale */
+}

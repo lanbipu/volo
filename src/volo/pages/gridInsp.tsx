@@ -319,8 +319,9 @@ import { listen } from "@tauri-apps/api/event";
       h(Fold, { n: '③', label: '形状' },
         /* 设计稿形状档为 5 档（平直/对称弧/L 形/U 形/自定义分段）；curved/folded 是
            后端 shape_prior 的历史变体，仅当当前屏幕已是该形状时才显示（否则隐藏）。 */
+        /* 形状：文本过滤胶囊行（去掉大图标，一行排得下） */
         h('div', { className: 'gw-shape-grid' }, GRID_SHAPES.filter((sh) => (sh.id !== 'curved' && sh.id !== 'folded') || shapeId === sh.id).map((sh) => h('button', { key: sh.id, className: 'gw-shape' + (shapeId === sh.id ? ' on' : ''), onClick: () => set({ shape_prior: defaultShapeFor(sh.id) }) },
-          h(Icon, { name: sh.icon, size: 18 }), h('span', { className: 't' }, sh.label)))),
+          h('span', { className: 't' }, sh.label)))),
         shapeFields.length ? h('div', { style: { marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 } }, shapeFields) : null,
         derivedNote,
         shapeId === 'custom_segments' ? h(SegEditor, { s, m, set, totalCols }) : null),
@@ -1044,9 +1045,10 @@ import { listen } from "@tauri-apps/api/event";
     return h('div', { className: 'gw-stages' },
       h('div', { className: 'gw-method' },
         h('div', { className: 'gw-method-h' }, h(Icon, { name: 'tools', size: 13 }), '重建方法'),
-        h('div', { className: 'gw-method-seg' },
-          GRID_MEAS_TYPES.map((t) => h('button', { key: t.id, className: method === t.id ? 'on' : '', disabled: t.id === 'visual' && newShapeVisualBlocked, title: t.id === 'visual' && newShapeVisualBlocked ? t.disabledMsg : '', onClick: () => setMethod(t.id) },
-            h(Icon, { name: t.icon, size: 14 }), t.label))),
+        /* 重建方法：两枚紧凑胶囊（原分段控件在窄检查器里挤成两行） */
+        h('div', { className: 'gw-method-seg gw-method-seg--slim' },
+          GRID_MEAS_TYPES.map((t) => h('button', { key: t.id, className: 'gw-shape' + (method === t.id ? ' on' : ''), disabled: t.id === 'visual' && newShapeVisualBlocked, title: t.id === 'visual' && newShapeVisualBlocked ? t.disabledMsg : '', onClick: () => setMethod(t.id) },
+            h('span', { className: 't' }, t.label)))),
         h('div', { className: 'gw-method-note' }, isTS ? t_isTsNote() : (newShapeVisualBlocked ? GRID_MEAS_TYPES.find((x) => x.id === 'visual').disabledMsg : '屏幕显示测试图 + 摄影机多角度拍摄，自动稠密重建。')),
       ),
       h('div', { className: 'gw-stages-h' }, h(Icon, { name: 'bolt', size: 13 }), '阶段动作'),
@@ -1100,8 +1102,10 @@ import { listen } from "@tauri-apps/api/event";
           ? h('div', { className: 'cal2-switch-ok', style: { marginTop: 0 } }, h(Icon, { name: 'check', size: 14 }),
               h('span', null, '已导出 ', h('b', null, String(expDone).split(/[\\/]/).pop()), ' → ', (GRID_EXPORT_TARGETS.find((t) => t.id === target) || {}).label))
           : h(React.Fragment, null,
-              h('div', { className: 'gw-export-targets', style: { opacity: built ? 1 : .5, pointerEvents: built ? 'auto' : 'none' } }, GRID_EXPORT_TARGETS.map((t) => h('button', { key: t.id, className: 'gw-etarget' + (t.id === target ? ' on' : ''), onClick: () => setTarget(t.id) },
-                h('span', { className: 'rd' }), h('div', { className: 'm' }, h('b', null, t.label), h('span', null, t.desc))))),
+              /* 导出目标：卡片改紧凑胶囊行，说明收到下面一行 */
+              h('div', { className: 'gw-export-targets gw-export-targets--slim', style: { opacity: built ? 1 : .5, pointerEvents: built ? 'auto' : 'none' } }, GRID_EXPORT_TARGETS.map((t) => h('button', { key: t.id, className: 'gw-shape' + (t.id === target ? ' on' : ''), onClick: () => setTarget(t.id) },
+                h('span', { className: 't' }, t.label)))),
+              h('div', { className: 'dep-tnote' }, (GRID_EXPORT_TARGETS.find((t) => t.id === target) || {}).desc),
               h('div', { className: 'gw-field stack', style: { marginTop: 8 } }, h('span', { className: 'lb' }, '输出路径', h('span', { className: 'hint' }, '留空 = 项目默认输出位置')),
                 h('input', { className: 'gw-txt', value: expPath, placeholder: '默认输出到项目 output 配置', onChange: (e) => setExpPath(e.target.value) })),
               h('div', { className: 'gw-stage-acts' },

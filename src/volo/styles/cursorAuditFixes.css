@@ -1,0 +1,657 @@
+/* ============================================================
+   Volo — CURSOR APP 语言层 · 全量审计修复
+   加载顺序：排在 cursor_polish.css 之后（全文件最后一张表）。
+
+   来源：对 18 个分区样式表做的全量审计，逐条经过反驳式复核，
+   只收录确证会渲染出来的缺陷。三类问题最多：
+     · 规则层的属性子串选择器（如 [class*="panel"]）误伤不相干的元素
+     · 写死 hex 导致某一个主题下失效（浅底浅字 / 深底深字）
+     · 关键状态被一并压成灰阶，与「关键状态留色」口径冲突
+   ============================================================ */
+
+/* ========== 规则层自身的过度覆盖（cursor_app.css） ========== */
+
+/* [高] [class*="panel"] 把 .logpanel（透明定位壳）当成了卡片，
+   每页右下角多出一个 48px 高的方框，里面再套一个自带描边的触发器。 */
+.desktop .logpanel {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+}
+
+/* [高] 禁投影后 outline 是唯一的焦点通道，而原值 1px --edge-strong
+   对比度只有 1.3:1（非文本元素需 ≥ 3:1）—— 等于全站没有键盘焦点。 */
+.desktop *:focus-visible {
+  outline: 2px solid var(--focus-ring) !important;
+  outline-offset: 2px !important;
+}
+/* 恒深画面层之上，墨色环在浅色主题下会消失 —— 换成 film 阶 */
+.desktop [class*="-hud"] *:focus-visible,
+.desktop .capw-stage *:focus-visible,
+.desktop .lens-stage *:focus-visible,
+.desktop .lc-signal *:focus-visible { outline-color: var(--film-ink) !important; }
+
+/* [高] 第 18 节把 .lens-stage 里所有后代刷成画面 HUD，但「采集完成 /
+   正在求解」的模态卡是浅色卡片，浅色主题下整卡变成浅灰字。 */
+.desktop .lens-stage .lens-ov-card,
+.desktop .lens-stage .lens-ov-card * { color: var(--t-body); }
+.desktop .lens-stage .lens-ov-card h3,
+.desktop .lens-stage .lens-ov-card b,
+.desktop .lens-stage .lens-ov-card .lens-ov-f .v { color: var(--t-ink); }
+.desktop .lens-stage .lens-ov-card .lens-ov-f .k,
+.desktop .lens-stage .lens-ov-card .lens-ov-note { color: var(--t-muted); }
+
+/* [高] .qsp-capnote 实际长在右栏浅色卡片上，不是画面 HUD */
+.desktop .qsp-capnote { color: var(--t-muted); border-color: var(--edge-card); }
+.desktop .qsp-capnote b { color: var(--t-ink); }
+
+/* [中] 页签是 48px 全高 flex 项，align-items:stretch 下垂直 padding 不起作用，
+   激活页签变成上下顶死的 48px 大胶囊，不是参考图里四周留白的紧凑药丸。 */
+.desktop .pagetabs { align-items: center; }
+.desktop .pagetabs .ptab { align-self: center; min-height: 30px; padding: 0 12px; }
+
+/* [中] .paneltgl 类名含 panel，被当成卡片套上 12px 圆角 —— 把控件形状还给它。
+   （.on 的降级在 cursor_polish.css A3 里定，这里不重复声明。） */
+.desktop .paneltgl {
+  background: transparent !important; border: none !important;
+  border-radius: var(--radius-pill) !important;
+}
+.desktop .paneltgl:hover { background: var(--bg-row) !important; }
+
+/* [中] resizer 轨道已经画了分隔线，侧栏再画一条就是双线；
+   而且它同时压掉了收起态的 border:0。 */
+.desktop .body > .leftcol { border-right: none; }
+.desktop .body > .inspector { border-left: none; }
+
+/* ========== styles.css ========== */
+
+/* [高] 模态进度条填充比轨道还浅（深色下反而更深），进度读不出来。 */
+.desktop .mprog { background: var(--bg-segment) !important; border-radius: var(--radius-pill) !important; }
+.desktop .mprog__fill,
+.desktop .mprog__fill.is-done { background: var(--t-muted) !important; border-radius: var(--radius-pill) !important; }
+
+/* [高] 共置告警的主操作按钮把反相文字色放在普通灰底上，两个主题下都看不见（1.05:1）。 */
+.desktop .zcolo-btn:not(.ghost) {
+  background: var(--bg-inverse) !important;
+  color: var(--text-on-inverse) !important;
+  border: 1px solid transparent !important;
+  border-radius: var(--radius-pill) !important;
+  font-size: 13px; font-weight: 500;
+}
+.desktop .zcolo-btn:not(.ghost) svg { color: var(--text-on-inverse) !important; }
+
+/* [中] 浮层菜单项 hover 写死 6% 白，浅色主题下高亮完全消失。 */
+.desktop .pop-i:hover { background: var(--bg-row); }
+.desktop .pop-i.on { background: var(--bg-selected); }
+
+/* [中] 仪表盘状态 hero 的「严重」档描边比常态还弱，顶层告警零色彩信号。 */
+.desktop .ls-hero.s-negative,
+.desktop .lc-tag.s-negative,
+.desktop .diag-cnt.s-negative,
+.desktop .wz-state.s-negative,
+.desktop .tk-state.s-negative {
+  background: color-mix(in srgb, var(--status-err) 8%, transparent) !important;
+  border: 1px solid var(--status-err) !important;
+  color: var(--t-ink) !important;
+}
+
+/* [中] 入网向导完成页的 54px 大圆是 16% 绿底；「已完成」属灰阶档。 */
+.desktop .ob-done-ico {
+  background: var(--bg-selected) !important;
+  color: var(--t-ink) !important;
+  border: 1px solid var(--edge-card) !important;
+}
+
+/* [中] 三通道徽标的失败 / 离线 / 不可达档与正常档逐字节相同。 */
+.desktop .zbadge.zb-negative,
+.desktop .zcli-port-res.zb-negative {
+  background: color-mix(in srgb, var(--status-err) 8%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--status-err) 45%, transparent) !important;
+  color: var(--t-ink) !important;
+}
+.desktop .zbadge.zb-negative svg,
+.desktop .zcli-port-res.zb-negative svg { color: var(--status-err) !important; }
+
+/* [中] zseg 类名没有连字符，[class*="-seg"] 命中不到，补齐分段控件语言。 */
+.desktop .zseg {
+  background: transparent !important; border: none !important; padding: 0 !important; gap: 4px;
+}
+.desktop .zseg button {
+  font-size: 13px; font-weight: 400; color: var(--t-body);
+  padding: 5px 12px; min-height: 28px;
+}
+.desktop .zseg button:hover { background: var(--bg-row); color: var(--t-ink); }
+.desktop .zseg button.on {
+  background: var(--bg-selected) !important; color: var(--t-ink) !important; font-weight: 500;
+}
+
+/* [中] 端口弹窗的结果条：写入失败与成功完全同色。 */
+.desktop .zport-res { font-weight: 400; }
+.desktop .zport-res.zr-fail {
+  background: color-mix(in srgb, var(--status-err) 8%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--status-err) 45%, transparent) !important;
+  color: var(--t-ink) !important;
+}
+.desktop .zport-res.zr-fail svg { color: var(--status-err) !important; }
+.desktop .zport-res.zr-ok svg { color: var(--status-ok) !important; }
+
+/* [低] Windows 外观下关闭键 hover 是写死的 #e81123 红块。 */
+.desktop .winctl button.wc-close:hover {
+  background: var(--bg-inverse) !important;
+  color: var(--text-on-inverse) !important;
+}
+
+/* ========== clean.css（简洁密度，默认档） ========== */
+
+/* [高] 简洁档把卡片描边抹成 transparent，靠背景差区分盒子；
+   换成 Cursor 灰阶后卡片底与地板只差一级，深色下卡片边界完全消失。 */
+.desktop.clean .dash-card,
+.desktop.clean .kpi,
+.desktop.clean .mach-tile {
+  border: 1px solid var(--edge-card) !important;
+}
+
+/* [低] 去色后留下的 600 字重：12px 标签比 14px 卡片标题（500）还重。 */
+.desktop.clean .spill--positive,
+.desktop.clean .chan-tag,
+.desktop.clean .env-ok,
+.desktop.clean .diag-ok { font-weight: 400 !important; }
+
+/* ========== grid.css ========== */
+
+/* [高] 视口流程卡里的「测量类型切换」仍是橙色填充，是全站唯一残留的橙底控件。 */
+.desktop .gw-meastoggle {
+  background: var(--bg-row) !important;
+  border: 1px solid var(--edge-card) !important;
+  color: var(--t-body) !important;
+}
+.desktop .gw-meastoggle:hover { background: var(--bg-selected) !important; color: var(--t-ink) !important; }
+
+/* [高] 「复位对齐」二次确认条硬编码黑面，浅色下是白卡里嵌一块黑；
+   确认按钮在深色下是深底深字，破坏性操作的文字看不见。 */
+.desktop .gw-reset-confirm {
+  background: var(--bg-card) !important;
+  border: 1px solid var(--edge-strong) !important;
+  color: var(--t-body) !important;
+}
+.desktop .gw-reset-confirm .y { background: var(--bg-inverse) !important; color: var(--text-on-inverse) !important; }
+.desktop .gw-reset-confirm .n { color: var(--t-body) !important; }
+.desktop .gw-reset-confirm .n:hover { background: var(--bg-row) !important; }
+
+/* ========== cal2.css ========== */
+
+/* [中] 满铺画布页的整套浮层工具条写死 rgba(0,0,0,.5) 深玻璃，
+   而画布本身跟随主题 —— 浅色下是一排黑玻璃条压在近白画布上。 */
+.desktop .cal2-modeseg, .desktop .cal2-roleseg, .desktop .cal2-leg, .desktop .cal2-axis-chip,
+.desktop .cal2-rothint, .desktop .cal2-savebtn, .desktop .cal2-scrchip-btn, .desktop .cal2-scrchip-pop,
+.desktop .cal2-reason, .desktop .cal2-metriccard,
+.desktop .cal2-float--tr .zoombar, .desktop .cal2-float--tr .iconbtn {
+  background: var(--bg-card); border-color: var(--edge-card); backdrop-filter: none;
+}
+.desktop .cal2-mbtn, .desktop .cal2-roleseg button, .desktop .cal2-leg .leg-i,
+.desktop .cal2-axis-chip, .desktop .cal2-rothint, .desktop .cal2-savebtn,
+.desktop .cal2-float--tr .zb-btn, .desktop .cal2-float--tr .zb-lbl, .desktop .cal2-float--tr .iconbtn { color: var(--t-body); }
+.desktop .cal2-mbtn:hover, .desktop .cal2-roleseg button:hover, .desktop .cal2-savebtn:hover,
+.desktop .cal2-scrchip-btn:hover { background: var(--bg-row); color: var(--t-ink); }
+.desktop .cal2-mbtn.on, .desktop .cal2-roleseg button.on,
+.desktop .cal2-savebtn.dirty, .desktop .cal2-savebtn.dirty:hover {
+  background: var(--bg-inverse); border-color: var(--bg-inverse); color: var(--text-on-inverse);
+}
+.desktop .cal2-dirtydot { background: var(--text-on-inverse); }
+.desktop .cal2-scrchip-btn b, .desktop .cal2-scrchip-m b, .desktop .cal2-metriccard .cal2-q-v { color: var(--t-ink); }
+.desktop .cal2-scrchip-btn .k, .desktop .cal2-scrchip-m span, .desktop .cal2-scrchip-s { color: var(--t-muted); }
+.desktop .cal2-scrchip-i:hover { background: var(--bg-row); }
+
+/* [中] 232px 宽的下拉面板被强制成药丸，渲染成一颗胶囊形弹出层。 */
+.desktop .cal2-scrchip-pop { border-radius: var(--radius-card) !important; }
+.desktop .cal2-scrchip-i { border-radius: var(--radius-input) !important; }
+
+/* ========== cal_cursor.css（校正皮肤） ========== */
+
+/* [高] 校正板块最关键的失败态药丸（求解失败 / 检测失败 / 离线）被压成灰底灰字。 */
+.desktop .spill--negative,
+.desktop.page-calibrate .spill.spill--negative {
+  background: color-mix(in srgb, var(--status-err) 8%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--status-err) 45%, transparent) !important;
+  color: var(--t-ink) !important;
+}
+.desktop .spill--negative svg,
+.desktop.page-calibrate .spill.spill--negative svg { color: var(--status-err) !important; }
+
+/* [中] 右栏检查器的数值 / 文本输入框被做成全药丸，违反「输入框 8px」。 */
+.desktop.page-calibrate .inspector .gw-num,
+.desktop.page-calibrate .inspector .gw-txt,
+.desktop.page-calibrate .inspector input,
+.desktop.page-calibrate .inspector textarea { border-radius: var(--radius-input) !important; }
+
+/* [低] 概览台账的表格行被加上 8px 圆角，分隔线两端翽出小钩子。 */
+.desktop.page-calibrate .cal2-ov-row { border-radius: 0 !important; }
+
+/* [低] 激活工具按钮里键帽的底色写死 20% 奶白，深色下完全消失。 */
+.desktop.page-calibrate .gw-boxbar .tbtn.on kbd {
+  background: color-mix(in srgb, var(--text-on-inverse) 20%, transparent) !important;
+  color: var(--text-on-inverse) !important;
+}
+
+/* [低] 页标题字重停在 400，压不住下面 14/600 的卡片标题。 */
+.desktop.page-calibrate .cal2-projhdr-t,
+.desktop.page-calibrate .ce-t,
+.desktop.page-calibrate .drawer-h h2 { font-size: 18px; font-weight: 600; }
+
+/* ========== cal_flow.css ========== */
+
+/* [高] 黑场待机缩略屏：底色跟随主题但标签写死 32% 白，
+   浅色下「BLACK」两个字彻底消失，而且本该表示黑屏却渲染成白块。 */
+.desktop .dep-standby-scr:not(.showing) { background: var(--film); }
+.desktop .dep-standby-scr { border-color: var(--film-edge); }
+.desktop .dep-standby-scr .lb { color: var(--film-muted); }
+.desktop .dep-standby-scr.showing {
+  background:
+    repeating-linear-gradient(0deg,  color-mix(in srgb, var(--film-ink) 12%, transparent) 0 1px, transparent 1px 9px),
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--film-ink) 12%, transparent) 0 1px, transparent 1px 9px),
+    var(--film);
+}
+
+/* [高] 结构光播放条压在恒深 HUD 上，填充却用了反转墨色，
+   浅色主题下已播放段比未播放段更暗，进度读反。 */
+.desktop .lc-slbar { background: var(--film-2); border-color: var(--film-edge); }
+.desktop .lc-sl-prog { background: color-mix(in srgb, var(--film-ink) 14%, transparent); }
+.desktop .lc-sl-prog i { background: var(--film-ink); }
+.desktop .lc-sl-rhythm .beat { background: color-mix(in srgb, var(--film-ink) 16%, transparent); }
+.desktop .lc-sl-rhythm .beat.on { background: var(--film-ink); }
+.desktop .lc-sl-phase.encode { background: color-mix(in srgb, var(--film-ink) 16%, transparent); color: var(--film-ink); }
+
+/* [中] [class*="badge"] 把徽标「容器」也刷上底与描边，变成药丸包药丸的套娃。 */
+.desktop .lc-run-badges, .desktop .lc-detail-badges, .desktop .lc-sess-badges,
+.desktop .lc-pose-lights {
+  background: transparent !important; border: none !important; border-radius: 0 !important;
+}
+
+/* [中] [class*="field"] 把字段容器误当输入框，变成输入框套输入框。 */
+.desktop .lc-field, .desktop .cal2-flow-fields, .desktop .lc-param, .desktop .lc-param-grid3 {
+  background: transparent !important; border: none !important; border-radius: 0 !important;
+}
+
+/* [中] 路径自动化的两个硬失败态被压成纯灰，跟普通行无法区分。 */
+.desktop .ag-row.is-pending {
+  border-color: color-mix(in srgb, var(--status-err) 45%, transparent);
+  background: color-mix(in srgb, var(--status-err) 8%, transparent);
+}
+.desktop .ag-row-err {
+  color: var(--t-body);
+  background: color-mix(in srgb, var(--status-err) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--status-err) 32%, transparent);
+}
+.desktop .ag-row-err svg { color: var(--status-err); }
+
+/* [中] 采集进行中给整条动作条铺了 6% 红染色；「进行中」属灰阶档。 */
+.desktop .lc-actionbar.capturing { background: var(--bg-row); }
+
+/* [中] 求解报告的命中进度条：填充比轨道还浅，两个主题都看不见。 */
+.desktop .sr-screen-bar { background: var(--bg-segment); }
+.desktop .sr-screen-bar i { background: var(--t-muted); }
+
+/* [中] 结论徽记的 40px 图标块仍是绿 / 琥珀彩色填充；完成与需复验都走灰阶。 */
+.desktop .sr-concl--ok .sr-concl-ic, .desktop .sr-concl--warn .sr-concl-ic {
+  background: var(--bg-selected); border: 1px solid var(--edge-card);
+}
+.desktop .sr-concl--ok .sr-concl-ic { color: var(--status-ok); }
+.desktop .sr-concl--warn .sr-concl-ic { color: var(--status-warn); }
+
+/* [低] 18px 的 RMS 数字仍按 tone 上色；非关键状态的数值走墨色。 */
+.desktop .sr-metric--positive .v, .desktop .sr-metric--notice .v { color: var(--t-ink); }
+
+/* ========== cal_lens.css ========== */
+
+/* [中] 「中止采集 · 不可撤销」的 danger 图标被压成普通 info 图标。 */
+.desktop .drawer.drawer--confirm .drawer-h .di.danger,
+.desktop .di.danger {
+  background: color-mix(in srgb, var(--status-err) 12%, transparent);
+  color: var(--status-err);
+}
+
+/* [中] 「采集完成」浮层的 34px 图标瓷片仍带绿底。 */
+.desktop .lens-stage .lens-ov-ic.ok { background: var(--bg-selected); color: var(--t-ink); }
+
+/* ========== cal_qsp.css ========== */
+
+/* [高] per-screen 覆盖率条的填充比轨道还浅（深色下更深）。 */
+.desktop .qsp-screen-bar { background: var(--bg-segment); }
+.desktop .qsp-screen-bar i,
+.desktop .qsp-screen-bar.notice i { background: var(--t-muted); }
+
+/* [中] 结论卡与 Master Lens 摘要的图标瓷片仍是绿 / 琥珀淡底。 */
+.desktop .qsp-report-concl.ok .ic,
+.desktop .qsp-report-concl.warn .ic,
+.desktop .qsp-master-sum .ic { background: var(--bg-selected); color: var(--t-ink); }
+
+/* [低] 静帧 AR 门控条的 26px 图标块仍是彩色填充（它压在画面上，走 film 阶）。 */
+.desktop .qsp-argate.verifying .ic,
+.desktop .qsp-argate.passed .ic {
+  background: color-mix(in srgb, var(--film-ink) 14%, transparent);
+  color: var(--film-ink);
+}
+
+/* ========== cal_ext.css ========== */
+
+/* [中] 62px 置信度圆环是绿色 conic-gradient 进度环；进度类一律灰阶。
+   做法：局部重定义它引用的语义色变量，弧度逻辑不动。 */
+.desktop .ar-conf-ring {
+  --positive-visual: var(--t-muted);
+  --notice-visual: var(--t-muted);
+  --negative-visual: var(--t-muted);
+  --track: var(--bg-segment);
+}
+
+/* ========== cal_ar2.css ========== */
+
+/* [中] AR 空间求解的「几何退化 / 观测不足」阻塞告警与普通信息条无法区分。 */
+.desktop .ar-degen--negative {
+  background: color-mix(in srgb, var(--status-err) 8%, var(--bg-row));
+  border-color: color-mix(in srgb, var(--status-err) 45%, transparent);
+}
+.desktop .ar-degen--negative > svg { color: var(--status-err); }
+
+/* ========== ndisplay.css ========== */
+
+/* [高] 机器在线灯被一并压成灰阶：在线灯与底色同色完全不可见，
+   反倒是「离线」是唯一看得见的点，语义读反。彩色圆点本就是允许的。 */
+.desktop .nd-onl--on   { background: var(--status-ok) !important; }
+.desktop .nd-onl--warn { background: var(--status-warn) !important; }
+.desktop .nd-onl--off  { background: var(--status-err) !important; }
+
+/* [高] is-err / is-warn 现在是空操作：越界 / 重叠的节点卡与合法节点卡像素级相同。 */
+.desktop .nd-node-row.is-err {
+  border-color: var(--status-err) !important;
+  background: color-mix(in srgb, var(--status-err) 8%, var(--bg-card)) !important;
+}
+
+/* [中] 拓扑对话框底部校验区三组同底，阻塞保存的错误没有视觉分级。 */
+.desktop .nd-valid-grp--err {
+  background: color-mix(in srgb, var(--status-err) 8%, transparent) !important;
+  border: 1px solid var(--status-err) !important;
+}
+.desktop .nd-valid-grp--err .nd-valid-h { color: var(--t-ink) !important; }
+.desktop .nd-valid-grp--err .nd-valid-h svg { color: var(--status-err) !important; }
+
+/* [中] 预检报告的阻塞与警告块三通道只剩文字。 */
+.desktop .nd-pf-iss--negative {
+  border-left-color: var(--status-err) !important;
+  background: color-mix(in srgb, var(--status-err) 8%, transparent) !important;
+}
+.desktop .nd-pf-iss--negative .nd-pf-iss-h > svg { color: var(--status-err) !important; }
+.desktop .nd-pf-iss--notice   .nd-pf-iss-h > svg { color: var(--status-warn) !important; }
+.desktop .nd-pf-iss--negative .nd-pf-tag { color: var(--t-ink) !important; }
+
+/* [中] 预检统计 chip 与结论横幅完全同色，一眼看不出过还是不过。 */
+.desktop .nd-pf-chip--err, .desktop .nd-pf-banner--err {
+  background: color-mix(in srgb, var(--status-err) 8%, transparent) !important;
+  border: 1px solid var(--status-err) !important;
+  color: var(--t-ink) !important;
+}
+.desktop .nd-pf-banner--err > svg { color: var(--status-err) !important; }
+.desktop .nd-pf-banner--ok > svg  { color: var(--status-ok) !important; }
+
+/* [中] 非关键状态仍在用 15–16% 语义色填充 22px 圆块。 */
+.desktop .nd-pill--positive .nd-pill-ic,
+.desktop .nd-pill--informative .nd-pill-ic,
+.desktop .nd-pill--notice .nd-pill-ic { background: var(--bg-badge) !important; }
+.desktop .gw-multi-banner .ic { background: var(--bg-badge) !important; color: var(--t-body) !important; }
+
+/* ========== pso_dash.css ========== */
+
+/* [高] 反转成近白药丸的工程 chip，内部次级标签仍是灰字，深色下只有 2.3:1。 */
+.desktop .pc-chip.on .pc-ue,
+.desktop .pc-chip.on .pc-gpu,
+.desktop .pc-node.on .pc-ue,
+.desktop .pc-node.on .pc-gpu {
+  color: color-mix(in srgb, var(--text-on-inverse) 78%, transparent) !important;
+}
+
+/* [中] 两条收敛曲线是琥珀 / 蓝色描边 + 12% 同色面积填充；进行中走灰阶。 */
+.desktop .pso-spark path { fill: var(--t-ink) !important; }
+.desktop .pso-spark polyline { stroke: var(--t-muted) !important; }
+.desktop .pso-spark circle { fill: var(--t-ink) !important; }
+
+/* [中] 「缺少有效的 nDisplay 配置」做反了：容器变灰、红色却留在正文上（4.3:1）。 */
+.desktop .pset-block {
+  background: color-mix(in srgb, var(--status-err) 8%, var(--bg-card)) !important;
+  border-color: color-mix(in srgb, var(--status-err) 45%, transparent) !important;
+  color: var(--t-ink) !important;
+}
+.desktop .pset-block b { color: var(--t-ink) !important; }
+.desktop .pset-block-d { color: var(--t-body) !important; }
+.desktop .pset-block > svg { color: var(--status-err) !important; }
+
+/* [中] 确认弹窗里第 1 步是药丸反转、第 2 步仍是 8px 方块，同一表单两种选中语言。 */
+.desktop .pc-node { border-radius: var(--radius-pill); }
+.desktop .pc-node.on {
+  background: var(--bg-inverse) !important; color: var(--text-on-inverse) !important; border-color: transparent !important;
+}
+.desktop .pc-chip.on .pc-ck, .desktop .pc-node.on .pc-ck {
+  background: transparent !important;
+  border-color: var(--text-on-inverse) !important;
+  color: var(--text-on-inverse) !important;
+}
+
+/* [低] 左栏工程卡借用了侧栏层的表面；深色下侧栏更亮是侧栏的签名，不能外泄到主区卡片。 */
+.desktop .psL2-proj { background: var(--bg-row); }
+
+/* ========== ddc_pak.css ========== */
+
+/* [高] 生成进度条的填充比轨道更不显眼（约 5% 亮度差），不确定态同理隐形。 */
+.desktop .pakgen-bar { background: var(--bg-segment) !important; }
+.desktop .pakgen-fill, .desktop .pakgen-indet { background: var(--t-muted) !important; }
+.desktop .pakgen-fill.done { background: var(--t-ink) !important; }
+
+/* [高] 这三个输入框写了 all:unset 裸嵌在自绘外壳里，规则层又给它们穿回一层框；
+   顺带把路径的等宽字体也压成了无衬线。 */
+.desktop .pak-search input, .desktop .root-in, .desktop .root-add input {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+}
+.desktop .root-in, .desktop .root-add input { font-family: var(--font-code) !important; }
+
+/* [中] 工程缩略图卡 hover 时底色与栏底相同且描边透明 —— 悬停瞬间整张卡溶进栏底。 */
+.desktop .proj-tile {
+  background: var(--bg-card) !important;
+  border: 1px solid var(--edge-card) !important;
+}
+.desktop .proj-tile:hover {
+  background: var(--bg-row) !important;
+  border-color: var(--edge-strong) !important;
+}
+.desktop .proj-tile.on {
+  background: var(--bg-selected) !important;
+  border-color: var(--edge-strong) !important;
+}
+
+/* [低] 生成对话框里 14px / 13px 小字全用 600，且进行中那行反而比等待行更细。 */
+.desktop .pakgen-stage-name, .desktop .pakgen-done-t {
+  font-size: 14px !important; font-weight: 500 !important;
+}
+.desktop .pakgen-step .slabel { font-size: 13px !important; font-weight: 400 !important; }
+.desktop .pakgen-step.active .slabel, .desktop .pakgen-step.done .slabel { font-weight: 500 !important; }
+
+/* [低] 勾选圈未选态直接引用原始灰阶 rung，不跟主题；同一状态在两个主题里强弱相反。 */
+.desktop .proj-tile-mck {
+  background: color-mix(in srgb, var(--bg-card) 82%, transparent) !important;
+  border-color: var(--edge-strong) !important;
+}
+.desktop .proj-tile.on .proj-tile-mck {
+  background: var(--bg-inverse) !important;
+  border-color: var(--bg-inverse) !important;
+  color: var(--text-on-inverse) !important;
+}
+
+/* ========== ddc_chan.css ========== */
+
+/* [高] [class*="field"] 把字段列容器与 flex 行当成输入控件，
+   四条通道全部变成「框套框套框」，且容器没有内边距。 */
+.desktop .chan-fields, .desktop .chan-field {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  color: inherit !important;
+  font-size: inherit !important;
+}
+
+/* [高] 「路径失效」是关键状态，现在四处全灰，失效机器行与正常行像素级相同。 */
+.desktop .chan-badge.dead, .desktop .cli-badge.dead {
+  background: color-mix(in srgb, var(--status-err) 8%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--status-err) 45%, transparent) !important;
+  color: var(--t-ink) !important;
+}
+.desktop .chan-val.dead {
+  background: color-mix(in srgb, var(--status-err) 8%, transparent) !important;
+  border-color: color-mix(in srgb, var(--status-err) 45%, transparent) !important;
+  color: var(--t-ink) !important;
+}
+.desktop .chan-val.dead .dtag {
+  background: color-mix(in srgb, var(--status-err) 14%, transparent) !important;
+  color: var(--t-ink) !important;
+}
+.desktop .cli-row.join.dead {
+  border-color: color-mix(in srgb, var(--status-err) 45%, transparent) !important;
+}
+.desktop .chan-badge.dead svg, .desktop .cli-badge.dead svg,
+.desktop .chan-val.dead svg { color: var(--status-err) !important; }
+
+/* [中] 展开抽屉本来靠 border-top:none 与上面的机器行拼成一体，
+   被当成独立面板后接缝直接裂开。 */
+.desktop .chan-panel {
+  background: var(--bg-row) !important;
+  border-top: none !important;
+  border-radius: 0 0 var(--radius-card) var(--radius-card) !important;
+}
+
+/* [中] 「一键清空」类按钮 hover 时填 18–20% 语义红，是规则 2 明令不存在的彩色按钮。 */
+.desktop .chan-wipe:hover:not(:disabled),
+.desktop .chan-clearall:hover:not(:disabled) {
+  background: var(--bg-selected) !important;
+  border-color: var(--edge-strong) !important;
+  color: var(--t-ink) !important;
+}
+.desktop .chan-wipe svg, .desktop .chan-clearall svg { color: var(--status-err) !important; }
+
+/* ========== capw.css ========== */
+
+/* [高] 「待补」提示条把恒深画面阶塞进右栏 chrome 面板，浅色下是白卡里的一块黑砖。 */
+.desktop .capw-note--notice {
+  background: var(--bg-row) !important;
+  border: 1px solid var(--edge-card) !important;
+  color: var(--t-body) !important;
+}
+.desktop .capw-note--notice > svg { color: var(--status-info) !important; }
+
+/* [中] 「必填」小标签同样用了画面阶，浅色下是一枚近黑小方块。 */
+.desktop .capw-req {
+  background: var(--bg-badge) !important;
+  color: var(--t-body) !important;
+  border-radius: var(--radius-pill) !important;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+/* [中] 采集汇总卡的完成图标块仍是 18% 绿底。 */
+.desktop .capw-summary .capw-ok-ic {
+  background: var(--bg-selected) !important;
+  color: var(--status-ok) !important;
+}
+
+/* ========== gridcapw.css ========== */
+
+/* [高] 大号手动快门的核心在深色主题下底色与图标同为 #f0f0f0，相机图标彻底看不见。 */
+.desktop .gcapw-shutter-core,
+.desktop .gcapw-shutter:hover .gcapw-shutter-core { color: var(--text-on-inverse) !important; }
+
+/* [高] 「画面持续晃动，无法自动拍摄」是阻塞态，却是黑底灰字。 */
+.desktop .capw-note--negative {
+  background: color-mix(in srgb, var(--status-err) 8%, transparent) !important;
+  border: 1px solid var(--status-err) !important;
+  color: var(--t-body) !important;
+}
+.desktop .capw-note--negative > svg { color: var(--status-err) !important; }
+
+/* [中] 第 16 节的「药丸不换行」把整行 flex 徽章也锁死，拖窄分栏后擑破卡片。 */
+.desktop .gcapw-statusbadge,
+.desktop .gcapw-statusbadge .gcapw-status-h { white-space: normal !important; }
+.desktop .gcapw-statusbadge .gcapw-status-h { min-width: 0; }
+
+/* [中] 「参考画幅」匹配条两态声明完全相同，颜色通道形同虚设。 */
+.desktop .gcapw-guide-match--ok,
+.desktop .gcapw-guide-match--no {
+  background: var(--bg-row) !important;
+  border: 1px solid var(--edge-card) !important;
+  color: var(--t-body) !important;
+}
+.desktop .gcapw-guide-match--ok svg { color: var(--status-ok) !important; }
+.desktop .gcapw-guide-match--no svg { color: var(--status-warn) !important; }
+
+/* [低] 次级按钮 hover 跳到画面阶，浅色下一悬停就闪出一块近黑填充。 */
+.desktop .gcapw-reset:hover,
+.desktop .gcapw-guide-skip:hover {
+  background: var(--bg-selected) !important;
+  border-color: var(--edge-strong) !important;
+  color: var(--t-ink) !important;
+}
+
+/* ========== tsrc.css（遥测面板） ========== */
+
+/* [高] 面板底已改成跟随主题，但面板内几乎所有文字仍写死半透明白 ——
+   浅色主题下整块面板是白底白字。 */
+.desktop .ts-metric .k,
+.desktop .ts-grp-h,
+.desktop .ts-grp-h .unit,
+.desktop .ts-val-k,
+.desktop .ts-cams-k,
+.desktop .ts-nodata .sub,
+.desktop .ts-panel-note { color: var(--t-muted) !important; }
+.desktop .ts-metric .v,
+.desktop .ts-nodata .msg,
+.desktop .ts-nodata .msg.neg { color: var(--t-ink) !important; }
+.desktop .ts-metric .v.dim,
+.desktop .ts-val.dead .ts-val-v,
+.desktop .ts-val-v .raw { color: var(--t-placeholder) !important; }
+.desktop .ts-metric .v.pos { color: var(--status-ok) !important; }
+.desktop .ts-metric .v.neg { color: var(--status-err) !important; }
+.desktop .ts-nodata .ring { border-color: var(--edge-card) !important; border-top-color: var(--t-muted) !important; }
+
+/* [高] 「停止监听」按钮与 Camera ID 芯片的底 / 描边 / 文字全写死白，
+   浅色主题下这两个可点控件整体消失。 */
+.desktop .ts-listen-btn.stop {
+  color: var(--t-ink) !important;
+  background: var(--bg-row) !important;
+  border: 1px solid var(--edge-strong) !important;
+}
+.desktop .ts-listen-btn.stop:hover { background: var(--bg-selected) !important; }
+.desktop .ts-cam {
+  color: var(--t-body) !important;
+  background: var(--bg-row) !important;
+  border: 1px solid var(--edge-card) !important;
+}
+.desktop .ts-cam:hover { background: var(--bg-selected) !important; }
+.desktop .ts-cam.on {
+  background: var(--bg-inverse) !important;
+  border-color: var(--bg-inverse) !important;
+  color: var(--text-on-inverse) !important;
+}
+
+/* [中] 面板内分隔线与底纹写死半透明白，浅色下读数网格糊成一片。 */
+.desktop .ts-grp + .ts-grp,
+.desktop .ts-grp-lens,
+.desktop .ts-grp-lens .ts-val + .ts-val,
+.desktop .ts-cams { border-color: var(--edge-card) !important; }
+.desktop .ts-cams { background: transparent !important; }
+
+/* [中] [class*="panel"] 把面板内部的顶条 / 底条 / 一行注记都当成卡片。 */
+.desktop .ts-panel-top,
+.desktop .ts-panel-foot,
+.desktop .ts-panel-note {
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+}
+.desktop .ts-panel-top { border-bottom: 1px solid var(--edge-card) !important; }
+.desktop .ts-panel-foot { border-top: 1px solid var(--edge-card) !important; }

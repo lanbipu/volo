@@ -1073,7 +1073,9 @@ function App() {
      同步抛错也被捕获）；key 随 page 变 → 切顶层页即 remount 清错误；cacheNav 走 resetKey 只清
      错误态不 remount（否则 Cache keep-alive 失效，见 ErrBoundary 注释）。 */
   const guard = (slot, render) => h(ErrBoundary, { key: 'eb-' + slot + '-' + page, resetKey: cacheNav, slot: slot }, h(Slot, { render: render }));
-  return h('div', { className: 'desktop is-' + platform + (density === 'clean' ? ' clean' : '') },
+  /* page-<id> 是皮肤层的作用域钩子：styles/calCursor.css 等整套规则都挂在
+     .desktop.page-calibrate 下，缺这个类整层皮肤不生效。 */
+  return h('div', { className: 'desktop is-' + platform + ' page-' + page + (density === 'clean' ? ' clean' : '') },
     /* SysBar 隐藏：mac 原生系统菜单栏（src-tauri set_menu）已提供真实功能菜单，
        in-window SysBar 是浏览器原型对系统菜单栏的冗余模拟（SysBar 仍保留定义作设计参照） */
     null,

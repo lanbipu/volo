@@ -1,0 +1,780 @@
+/* ============================================================
+   Volo — 校正板块 · CURSOR APP 皮肤（batch 5 · app-era 重设计）
+   基准：uploads/refs/ 六张 Cursor 桌面 App 截图（深 3 + 浅 3）。
+   五条不可协商：
+   ① 双主题纯灰阶 —— 浅色地板 --g-50 #f5f5f5 / 深色地板 --g-900 #191919；
+      深色下侧栏比主区更亮（#232323 > #191919），这是签名细节。
+   ② 唯一强调 = 黑白反转（--bg-inverse）。橙色只剩字标；界面唯一彩色元素
+      是小状态圆点（--status-info）。本文件的 --or 系列已全部改指反转墨色。
+   ③ 药丸形：按钮 / chip / 分段控件；卡片 12px、composer 16px、输入 8px。
+   ④ 只有 1px 细线做层次 —— 任何主题下都不出现投影。
+   ⑤ 克制小字号：18/600 页标题 · 14/500 卡片标题 · 14 正文 · 13 控件 · 12 说明；
+      不用大写标签。代码面 JetBrains Mono；中文正文永不落等宽。
+   本文件不含任何硬编码颜色 —— 全部走全局语义 token，亮/暗自动跟随。
+   ============================================================ */
+
+.desktop.page-calibrate {
+  /* 本板块曾把亮色底板钉死；app-era 改为完全跟随全局主题，
+     只在这里重述「派生层」别名，把旧 --or / --stage 词汇接到新 token 上。 */
+  --volo-400: var(--bg-inverse); --volo-500: var(--bg-inverse); --volo-600: var(--bg-inverse); --volo-700: var(--bg-inverse);
+  --volo-800: var(--bg-inverse); --volo-900: var(--bg-inverse);
+  --accent-default: var(--bg-inverse); --accent-hover: var(--bg-inverse); --accent-down: var(--bg-inverse);
+  --focus-ring: var(--t-ink);
+  --on-primary: var(--text-on-inverse); --text-on-accent: var(--text-on-inverse);
+
+  --r-ctl: var(--radius-input);   /* 输入 8px */
+  --r-card: var(--radius-card);   /* 卡片 12px */
+
+  /* 旧「唯一品牌电压」词汇 → 黑白反转。一行改完全板块 60 处选中态。 */
+  --or: var(--bg-inverse);
+  --or-soft: var(--bg-selected);
+  --or-line: var(--edge-strong);
+
+  --cap: 12px;       /* 说明字号 —— 不再大写、不再加字距 */
+
+  /* 舞台上的「一档轻微明度变化」：hover / 键帽 / 静音标签的极浅底，跟随主题 */
+  --stage-wash: color-mix(in srgb, var(--stage-ink) 6%, transparent);
+}
+/* chrome 条：直接落在元素上，避免派生 token 链在某些渲染路径下解析回全局主题 */
+.desktop.page-calibrate .win-topbar, .desktop.page-calibrate .titlebar, .desktop.page-calibrate .menubar,
+.desktop.page-calibrate .ctxbar, .desktop.page-calibrate .pagetabs, .desktop.page-calibrate .leftcol,
+.desktop.page-calibrate .inspector, .desktop.page-calibrate .center, .desktop.page-calibrate .body { background: var(--bg-floor); }
+.desktop.page-calibrate .win-topbar { border-bottom: 1px solid var(--hairline); }
+.desktop.page-calibrate .win-topbar .doc b, .desktop.page-calibrate .menu-item, .desktop.page-calibrate .brand-name { color: var(--ink); }
+.desktop.page-calibrate *, .desktop.page-calibrate *::before, .desktop.page-calibrate *::after { box-shadow: none; }
+.desktop.page-calibrate .s2-btn--fill.s2-btn--accent, .desktop.page-calibrate .gw-num:focus,
+.desktop.page-calibrate .gw-txt:focus, .desktop.page-calibrate .gw-selbtn:focus { box-shadow: none; }
+
+/* ---------------- 窗口 chrome ---------------- */
+.desktop.page-calibrate .ctxbar { min-height: 44px; height: 44px; padding: 0 16px; background: var(--canvas);
+  border-bottom: 1px solid var(--hairline); }
+.desktop.page-calibrate .pagetabs { background: var(--canvas); border-top: 1px solid var(--hairline); }
+.desktop.page-calibrate .leftcol, .desktop.page-calibrate .inspector { background: var(--canvas); }
+.desktop.page-calibrate .paneltgl { border-radius: var(--r-ctl); font-size: 14px; font-weight: 500; height: 30px; padding: 0 12px; }
+.desktop.page-calibrate .paneltgl.on { background: var(--ink); color: var(--canvas); }
+.desktop.page-calibrate .paneltgl.on svg { color: var(--canvas); }
+
+/* LED / AR：DS 顶栏链接语法 —— 墨色下划线，不用胶囊，不用橙 */
+.desktop.page-calibrate .cal2-stageseg { gap: 4px; background: none; border: none; padding: 0; }
+.desktop.page-calibrate .cal2-stageseg .ctxnav-i { border-radius: 0; background: none; padding: 12px 4px 10px; margin-right: 12px;
+  font-size: 14px; font-weight: 500; letter-spacing: 0; color: var(--muted); border-bottom: 2px solid transparent; }
+.desktop.page-calibrate .cal2-stageseg .ctxnav-i:hover { color: var(--ink); background: none; }
+.desktop.page-calibrate .cal2-stageseg .ctxnav-i.on { color: var(--ink); background: none; border-bottom-color: var(--ink); }
+.desktop.page-calibrate .cal2-stageseg .ctxnav-i.on svg { color: var(--ink); }
+.desktop.page-calibrate .cal2-stageseg-wip { font-family: var(--font-code); font-size: 12px; letter-spacing: 0; padding: 1px 5px;
+  border: none; border-radius: 9999px; background: var(--surface-strong); color: var(--muted); }
+
+/* ---------------- 左栏：流程清单（01–06 · 选中 = 墨色反转） ---------------- */
+.desktop.page-calibrate .gw-nav { padding: 8px 8px 12px; }
+.desktop.page-calibrate .gw-nav .sect { counter-reset: navstep; }
+.desktop.page-calibrate .gw-nav .sect-h { padding: 8px 8px 10px; margin: 0; }
+.desktop.page-calibrate .gw-nav .sect-h .t { font-size: var(--cap); font-weight: 600; letter-spacing: 0;
+  text-transform: none; color: var(--muted); }
+.desktop.page-calibrate .gw-nav .nav-i { display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 0 10px;
+  margin: 0 0 2px; border-radius: var(--r-ctl); color: var(--body); font-size: 14px; font-weight: 500; }
+.desktop.page-calibrate .gw-nav .nav-i::before { counter-increment: navstep; content: counter(navstep, decimal-leading-zero);
+  font-family: var(--font-code); font-size: 12px; color: var(--muted-soft); flex: 0 0 auto; }
+.desktop.page-calibrate .gw-nav .nav-i .nav-ico { display: none; }
+.desktop.page-calibrate .gw-nav .nav-i:hover { background: var(--surface-card); color: var(--ink); }
+.desktop.page-calibrate .gw-nav .nav-i.on { background: var(--ink); color: var(--canvas); }
+.desktop.page-calibrate .gw-nav .nav-i.on::before { color: rgba(247,247,244,.55); }
+.desktop.page-calibrate .gw-nav .nav-i.on .nav-lbl { font-weight: 500; }
+
+/* ---------------- 顶部工具栏原子 ---------------- */
+.desktop.page-calibrate .gw-tb { gap: 8px; }
+.desktop.page-calibrate .gw-projbtn, .desktop.page-calibrate .cal2-selbtn, .desktop.page-calibrate .cal2-folderbtn,
+.desktop.page-calibrate .cal2-openyaml { border-radius: var(--r-ctl); padding: 4px 11px; background: var(--surface-card);
+  border: 1px solid var(--hairline-strong); }
+.desktop.page-calibrate .gw-projbtn:hover { background: var(--canvas-soft); }
+.desktop.page-calibrate .gw-projbtn .ico svg { width: 15px; height: 15px; color: var(--muted); }
+.desktop.page-calibrate .gw-projbtn .k { font-size: 12px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--muted); }
+.desktop.page-calibrate .gw-projbtn .v { font-size: 13px; font-weight: 500; color: var(--ink); }
+.desktop.page-calibrate .gw-icbtn { width: 30px; height: 30px; border-radius: var(--r-ctl); background: var(--surface-card);
+  border: 1px solid var(--hairline-strong); color: var(--body); }
+.desktop.page-calibrate .gw-icbtn:hover { background: var(--canvas-soft); color: var(--ink); }
+.desktop.page-calibrate .gw-viewseg, .desktop.page-calibrate .gw-stage-actions { background: var(--surface-card);
+  border: 1px solid var(--hairline); border-radius: var(--r-ctl); padding: 3px; }
+.desktop.page-calibrate .gw-viewseg button { border-radius: var(--radius-pill); padding: 4px 10px; font-family: var(--font-code); font-size: 12px; font-weight: 400; }
+.desktop.page-calibrate .gw-viewseg button.on { background: var(--ink); color: var(--canvas); }
+.desktop.page-calibrate .gw-saction { border-radius: var(--radius-pill); padding: 5px 12px; font-size: 13px; font-weight: 500; }
+.desktop.page-calibrate .gw-saction.is-primary { background: var(--bg-inverse); color: var(--on-primary); }
+.desktop.page-calibrate .gw-saction.is-primary svg { color: var(--on-primary); }
+
+/* ---------------- 三维视口：暖近黑反转 pane ---------------- */
+.desktop.page-calibrate .gw-center { padding: 12px; background: var(--canvas); }
+.desktop.page-calibrate .gw-stage { background: var(--stage); border: 1px solid var(--hairline-strong); border-radius: var(--r-card); }
+.desktop.page-calibrate .gw-grid-l { stroke: rgba(242,239,230,.055); }
+.desktop.page-calibrate .gw-grid-l.maj { stroke: rgba(242,239,230,.1); }
+.desktop.page-calibrate .gw-ghost { stroke: rgba(242,239,230,.32); }
+.desktop.page-calibrate .gw-box { stroke: rgba(0,0,0,.3); }
+.desktop.page-calibrate .gw-box--cut { stroke: var(--stage-line-2); }
+.desktop.page-calibrate .gw-box.is-sel { stroke: var(--stage-ink); stroke-width: 1.4; }
+.desktop.page-calibrate .gw-obj-outline { stroke: var(--stage-ink); stroke-width: 1.2; }
+.desktop.page-calibrate .gw-obj-origin { fill: var(--stage-ink); stroke: var(--stage); }
+.desktop.page-calibrate .gw-wall-lb { fill: var(--stage-muted); font-family: var(--font-code); font-size: 12px; font-weight: 400; letter-spacing: 0; opacity: 1; }
+.desktop.page-calibrate .gw-wall-lb.on { fill: var(--stage-ink); }
+.desktop.page-calibrate .gw-pt-lb { fill: var(--stage-muted); font-family: var(--font-code); }
+
+/* 视口浮层 = 反转面上的 hairline 卡片（无投影 / 无模糊玻璃） */
+.desktop.page-calibrate .gw-glass { background: var(--stage-2); border: 1px solid var(--stage-line-2); border-radius: var(--radius-input);
+  backdrop-filter: none; color: var(--stage-body); }
+.desktop.page-calibrate .gw-ctxcard { padding: 9px 11px; }
+.desktop.page-calibrate .gw-ctxcard .scr svg { color: var(--stage-muted); }
+.desktop.page-calibrate .gw-ctxcard .scr b { font-size: 13px; font-weight: 400; letter-spacing: 0; color: var(--stage-ink); }
+.desktop.page-calibrate .gw-ctxcard .row { font-size: 13px; color: var(--stage-muted); }
+.desktop.page-calibrate .gw-ctxcard .row .tag { background: var(--stage-wash); color: var(--stage-body); border-radius: 9999px;
+  font-family: var(--font-code); font-size: 12px; font-weight: 400; padding: 1px 7px; }
+.desktop.page-calibrate .gw-ctxcard .row .ver { color: var(--stage-ink); font-family: var(--font-code); font-weight: 400; }
+.desktop.page-calibrate .gw-meastoggle { border-radius: var(--radius-pill); font-size: 13px; }
+
+.desktop.page-calibrate .gw-disp { padding: 7px; min-width: 196px; }
+.desktop.page-calibrate .gw-disp-h { font-size: 12px; font-weight: 600; letter-spacing: 0; color: var(--stage-muted); padding: 4px 8px; }
+.desktop.page-calibrate .gw-disp.is-open .gw-disp-h { padding-bottom: 7px; }
+.desktop.page-calibrate .gw-disp-row { padding: 5px 8px; border-radius: var(--radius-input); min-height: 26px; }
+.desktop.page-calibrate .gw-disp-row:hover { background: var(--stage-wash); }
+.desktop.page-calibrate .gw-disp-row .ic { color: var(--stage-muted); }
+.desktop.page-calibrate .gw-disp-row .lbl { font-size: 13px; color: var(--stage-body); }
+.desktop.page-calibrate .gw-disp-row.on .lbl { color: var(--stage-ink); }
+.desktop.page-calibrate .gw-disp-row.on .ic { color: var(--stage-ink); }
+.desktop.page-calibrate .gw-disp-child .lbl { font-size: 13px; }
+.desktop.page-calibrate .gw-sw { width: 26px; height: 15px; border-radius: 9999px; background: rgba(242,239,230,.16); }
+.desktop.page-calibrate .gw-sw::after { width: 11px; height: 11px; background: var(--stage-body); }
+.desktop.page-calibrate .gw-sw.on { background: var(--stage-ink); }
+.desktop.page-calibrate .gw-sw.on::after { background: var(--stage); transform: translateX(11px); }
+.desktop.page-calibrate .gw-seg2 { background: var(--stage-wash); border-radius: 9999px; padding: 2px; }
+.desktop.page-calibrate .gw-seg2 button { font-size: 12px; font-weight: 500; color: var(--stage-muted); border-radius: 9999px; padding: 2px 9px; }
+.desktop.page-calibrate .gw-seg2 button.on { background: var(--stage-ink); color: var(--stage); }
+
+.desktop.page-calibrate .gw-ver button, .desktop.page-calibrate .gw-boxbar .tbtn,
+.desktop.page-calibrate .gw-boxbar .gw-alignreset, .desktop.page-calibrate .gw-roleseg button { color: var(--stage-body);
+  border-radius: var(--radius-input); font-size: 13px; font-weight: 500; }
+.desktop.page-calibrate .gw-ver button:hover, .desktop.page-calibrate .gw-boxbar .tbtn:hover { background: var(--stage-wash); color: var(--stage-ink); }
+.desktop.page-calibrate .gw-ver button.on, .desktop.page-calibrate .gw-boxbar .tbtn.on,
+.desktop.page-calibrate .gw-roleseg button.on { background: var(--stage-ink); color: var(--stage); }
+.desktop.page-calibrate .gw-ver button.on svg, .desktop.page-calibrate .gw-boxbar .tbtn.on svg { color: var(--stage); }
+.desktop.page-calibrate .gw-ver .kbd, .desktop.page-calibrate .gw-boxbar .tbtn kbd, .desktop.page-calibrate .gw-hint kbd {
+  font-family: var(--font-code); font-size: 12px; background: var(--stage-wash); border: none; border-radius: var(--radius-card); color: var(--stage-body); }
+.desktop.page-calibrate .gw-boxbar .tbtn.on kbd { background: rgba(26,25,23,.16); color: var(--stage); }
+.desktop.page-calibrate .gw-ver .sep, .desktop.page-calibrate .gw-boxbar .sep { background: var(--stage-line); }
+.desktop.page-calibrate .gw-boxbar .gw-alignbtn { border-radius: var(--radius-pill); font-size: 13px; font-weight: 500; color: var(--stage-body); }
+.desktop.page-calibrate .gw-boxbar .gw-alignbtn.is-ready { background: var(--stage-wash); color: var(--stage-ink); }
+.desktop.page-calibrate .gw-boxbar .gw-alignbtn.is-accent { background: var(--bg-inverse); color: var(--on-primary); }
+.desktop.page-calibrate .gw-boxbar .gw-alignbtn-ck { color: var(--stage-ink); }
+.desktop.page-calibrate .gw-boxbar-note { color: var(--stage-body); }
+.desktop.page-calibrate .gw-hint { color: var(--stage-body); font-size: 13px; }
+.desktop.page-calibrate .gw-hint .sep { color: var(--stage-muted); }
+.desktop.page-calibrate .gw-legend .li, .desktop.page-calibrate .gw-plegend { color: var(--stage-body); font-size: 13px; }
+.desktop.page-calibrate .gw-plegend-h { font-size: 12px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--stage-muted); }
+.desktop.page-calibrate .gw-coords { padding: 6px 10px; color: var(--stage-body); }
+.desktop.page-calibrate .gw-coords .u { font-size: 12px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--stage-muted); }
+.desktop.page-calibrate .gw-coords b, .desktop.page-calibrate .gw-coords .xyz { font-family: var(--font-code); font-size: 12px;
+  font-weight: 400; color: var(--stage-ink); font-variant-numeric: tabular-nums; }
+.desktop.page-calibrate .gw-receipt { border-radius: 9999px; padding: 6px 12px; font-size: 13px; color: var(--stage-ink); }
+.desktop.page-calibrate .gw-solonote, .desktop.page-calibrate .gw-alignstatus { color: var(--stage-body); font-size: 13px; }
+.desktop.page-calibrate .gw-aligned-badge { border-radius: 9999px; font-size: 12px; font-weight: 600; }
+
+/* ---------------- 检查器 · gw-* 家族（奶油底 + hairline 行册） ---------------- */
+.desktop.page-calibrate .gw-insp { padding: 0 0 28px; }
+.desktop.page-calibrate .gw-insp-head { position: sticky; top: 0; z-index: 6; gap: 10px; margin: 0; min-height: 44px; padding: 0 16px;
+  background: var(--canvas); border-bottom: 1px solid var(--hairline); }
+.desktop.page-calibrate .gw-insp-ic { width: 18px; height: 18px; border-radius: 0; background: none; color: var(--muted); }
+.desktop.page-calibrate .gw-insp-ic svg { width: 16px; height: 16px; }
+.desktop.page-calibrate .gw-insp-tt { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.desktop.page-calibrate .gw-insp-tt h2 { font-size: 14px; font-weight: 600; letter-spacing: 0; color: var(--ink); white-space: nowrap; }
+.desktop.page-calibrate .gw-insp-tt .sub { margin-top: 0; font-family: var(--font-code); font-size: 12px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.desktop.page-calibrate .gw-grp { border-top: none; }
+.desktop.page-calibrate .gw-grp-h { position: sticky; top: 44px; z-index: 4; padding: 7px 16px; min-height: 28px; gap: 8px;
+  background: var(--canvas); border-top: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline-soft);
+  font-size: var(--cap); font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--muted); }
+.desktop.page-calibrate .gw-grp-h:hover { color: var(--ink); }
+.desktop.page-calibrate .gw-grp-h .num { width: auto; height: auto; border-radius: 0; background: none; color: var(--muted-soft);
+  font-family: var(--font-code); font-size: 12px; font-weight: 400; }
+.desktop.page-calibrate .gw-grp-h:not(:has(.car.closed)) { color: var(--ink); }
+.desktop.page-calibrate .gw-grp-body { padding: 6px 16px 12px; gap: 0; }
+
+.desktop.page-calibrate .gw-field { margin: 0 -16px; padding: 4px 16px; min-height: 30px; gap: 12px;
+  border-bottom: 1px solid var(--hairline-soft); }
+.desktop.page-calibrate .gw-field:hover { background: var(--canvas-soft); }
+.desktop.page-calibrate .gw-field > .lb { font-size: 13px; color: var(--body); }
+.desktop.page-calibrate .gw-field > .lb .hint { font-size: 12px; color: var(--muted); }
+.desktop.page-calibrate .gw-field.stack { padding-top: 6px; padding-bottom: 8px; gap: 6px; }
+
+.desktop.page-calibrate .gw-num, .desktop.page-calibrate .gw-txt { background: var(--surface-card); border: 1px solid var(--hairline-strong);
+  border-radius: var(--r-ctl); height: 26px; padding: 0 8px; font-family: var(--font-code); font-size: 13px; font-weight: 400;
+  color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; }
+.desktop.page-calibrate .gw-num { width: 60px; }
+.desktop.page-calibrate .gw-num:hover, .desktop.page-calibrate .gw-txt:hover { border-color: var(--muted-soft); }
+.desktop.page-calibrate .gw-num:focus, .desktop.page-calibrate .gw-txt:focus { outline: none; border-color: var(--ink); background: var(--surface-card); }
+.desktop.page-calibrate .gw-num--mixed { color: var(--muted-soft); }
+.desktop.page-calibrate .gw-dual { gap: 5px; }
+.desktop.page-calibrate .gw-dual .x { font-family: var(--font-code); font-size: 12px; color: var(--muted-soft); }
+.desktop.page-calibrate .gw-unit { font-family: var(--font-code); font-size: 12px; color: var(--muted); }
+.desktop.page-calibrate .gw-selbtn { background: var(--surface-card); border: 1px solid var(--hairline-strong); border-radius: var(--r-ctl);
+  height: 26px; padding: 0 8px 0 10px; font-size: 13px; font-weight: 400; color: var(--ink); }
+.desktop.page-calibrate .gw-selbtn:hover { border-color: var(--muted-soft); }
+.desktop.page-calibrate .gw-selbtn svg { width: 14px; height: 14px; color: var(--muted); }
+
+/* 预设 / 屏幕清单 —— 选中 = 墨色反转 */
+.desktop.page-calibrate .gw-parent, .desktop.page-calibrate .gw-parent--compact { background: none; border: none; padding: 4px 16px 10px; margin: 0; }
+.desktop.page-calibrate .gw-psub { padding: 8px 0 6px; font-size: var(--cap); font-weight: 600; letter-spacing: 0;
+  text-transform: none; color: var(--muted); }
+.desktop.page-calibrate .gw-psub .c { font-family: var(--font-code); font-size: 12px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--muted); }
+.desktop.page-calibrate .gw-plist { gap: 2px; }
+.desktop.page-calibrate .gw-prow { min-height: 28px; padding: 0 10px; border-radius: var(--r-ctl); gap: 8px; font-size: 13px; color: var(--body); }
+.desktop.page-calibrate .gw-prow:hover { background: var(--surface-card); color: var(--ink); }
+.desktop.page-calibrate .gw-prow.on { background: var(--ink); color: var(--canvas); }
+.desktop.page-calibrate .gw-prow.on .nm { color: var(--canvas); }
+.desktop.page-calibrate .gw-prow .nm { font-size: 13px; font-weight: 500; }
+.desktop.page-calibrate .gw-padd { min-height: 28px; padding: 0 10px; border-radius: var(--r-ctl); border: 1px dashed var(--hairline-strong);
+  background: none; font-size: 13px; font-weight: 500; color: var(--muted); justify-content: flex-start; gap: 7px; margin-top: 2px; }
+.desktop.page-calibrate .gw-padd:hover { color: var(--ink); border-color: var(--muted-soft); background: var(--surface-card); }
+.desktop.page-calibrate .gw-prow-div { background: var(--hairline); margin: 10px 0; }
+.desktop.page-calibrate .gw-preset-edit { background: var(--surface-card); border: 1px solid var(--ink); border-radius: var(--radius-input); font-size: 13px; height: 22px; }
+
+/* 形状卡 */
+.desktop.page-calibrate .gw-shape-grid { gap: 6px; }
+.desktop.page-calibrate .gw-shape { border-radius: var(--r-ctl); padding: 10px 6px; gap: 6px; background: var(--surface-card);
+  border: 1px solid var(--hairline); color: var(--body); }
+.desktop.page-calibrate .gw-shape .t { font-size: 13px; font-weight: 500; }
+.desktop.page-calibrate .gw-shape:hover { border-color: var(--hairline-strong); }
+.desktop.page-calibrate .gw-shape.on { background: var(--ink); border-color: var(--ink); color: var(--canvas); }
+.desktop.page-calibrate .gw-shape.on svg { color: var(--canvas); }
+
+/* 派生只读 —— 白卡 + mono 数值 */
+.desktop.page-calibrate .gw-derived { gap: 1px; background: var(--hairline); border: 1px solid var(--hairline); border-radius: var(--r-card); overflow: hidden; padding: 0; }
+.desktop.page-calibrate .gw-dcell { background: var(--surface-card); border: none; border-radius: 0; padding: 9px 11px; }
+.desktop.page-calibrate .gw-dcell .k { font-size: var(--cap); font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--muted); }
+.desktop.page-calibrate .gw-dcell .v { font-family: var(--font-code); font-size: 14px; font-weight: 400; letter-spacing: 0;
+  color: var(--ink); font-variant-numeric: tabular-nums; margin-top: 3px; }
+.desktop.page-calibrate .gw-dcell .v .u { font-size: 12px; color: var(--muted); margin-left: 4px; }
+
+/* 微文案 */
+.desktop.page-calibrate .gw-optnote, .desktop.page-calibrate .gw-method-note, .desktop.page-calibrate .gw-runlist-note,
+.desktop.page-calibrate .gw-solve-relnote { background: none; border: none; border-radius: 0; padding: 6px 0; font-size: 13px;
+  line-height: 1.5; color: var(--muted); text-wrap: pretty; }
+.desktop.page-calibrate .gw-stage-warn { background: none; border: none; padding: 6px 0; font-size: 13px; color: var(--t-body); }
+.desktop.page-calibrate .gw-insp-sep { margin: 0; height: 1px; background: var(--hairline); }
+
+/* 阶段动作 / 重建方法 */
+.desktop.page-calibrate .gw-stages { padding: 0; gap: 0; }
+.desktop.page-calibrate .gw-method { background: none; border: none; border-bottom: 1px solid var(--hairline); border-radius: 0; padding: 10px 16px 14px; margin: 0; }
+.desktop.page-calibrate .gw-method-h, .desktop.page-calibrate .gw-stages-h { font-size: var(--cap); font-weight: 600;
+  letter-spacing: 0; text-transform: none; color: var(--muted); padding: 0; margin-bottom: 8px; }
+.desktop.page-calibrate .gw-stages-h { padding: 12px 16px 8px; margin: 0; }
+.desktop.page-calibrate .gw-method-seg { gap: 3px; background: var(--surface-card); border: 1px solid var(--hairline); border-radius: var(--r-ctl); padding: 3px; }
+.desktop.page-calibrate .gw-method-seg button { border-radius: var(--radius-pill); padding: 6px 10px; font-size: 13px; font-weight: 500; }
+.desktop.page-calibrate .gw-method-seg button.on { background: var(--ink); color: var(--canvas); }
+.desktop.page-calibrate .gw-method-seg button.on svg { color: var(--canvas); }
+
+/* 文件引用 / 记录行 */
+.desktop.page-calibrate .gw-fileref { background: var(--surface-card); border: 1px solid var(--hairline); border-radius: var(--r-ctl); padding: 8px 11px; }
+.desktop.page-calibrate .gw-fileref .n { font-family: var(--font-code); font-size: 13px; font-weight: 400; color: var(--ink); }
+.desktop.page-calibrate .gw-fileref .d { font-family: var(--font-code); font-size: 12px; color: var(--muted); }
+.desktop.page-calibrate .gw-runlist { gap: 2px; }
+.desktop.page-calibrate .gw-runrow { border-radius: var(--r-ctl); border: 1px solid transparent; padding: 7px 10px; background: none; gap: 10px; }
+.desktop.page-calibrate .gw-runrow:hover { background: var(--surface-card); border-color: var(--hairline); }
+.desktop.page-calibrate .gw-runrow.is-current { background: var(--surface-card); border-color: var(--hairline-strong); }
+.desktop.page-calibrate .gw-runrow .n { font-size: 13px; font-weight: 500; color: var(--ink); }
+.desktop.page-calibrate .gw-runrow .n .cur { font-size: 12px; font-weight: 600; letter-spacing: 0; text-transform: none;
+  background: var(--surface-strong); color: var(--muted); border-radius: 9999px; padding: 1px 6px; }
+.desktop.page-calibrate .gw-runrow .d { font-family: var(--font-code); font-size: 12px; color: var(--muted); }
+
+/* 求解摘要：DS display 尺度的 mono 数字 */
+.desktop.page-calibrate .gw-metrics { gap: 1px; background: var(--hairline); border-radius: var(--r-card); overflow: hidden; }
+.desktop.page-calibrate .gw-metric { background: var(--surface-card); border: none; border-radius: 0; padding: 13px 14px; }
+.desktop.page-calibrate .gw-metric .k { font-size: var(--cap); font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--muted); }
+.desktop.page-calibrate .gw-metric .v { font-family: var(--font-code); font-size: 18px; font-weight: 400; letter-spacing: 0;
+  color: var(--ink); font-variant-numeric: tabular-nums; }
+.desktop.page-calibrate .gw-metric .exp { font-size: 12px; color: var(--muted); line-height: 1.45; }
+.desktop.page-calibrate .gw-solve-ov .rms { font-family: var(--font-code); font-size: 18px; font-weight: 400; letter-spacing: 0; }
+.desktop.page-calibrate .gw-cabtbl { font-size: 13px; }
+.desktop.page-calibrate .gw-cabtbl th { font-size: var(--cap); font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--muted); }
+.desktop.page-calibrate .gw-cabtbl td.id, .desktop.page-calibrate .gw-cabtbl td.num { font-family: var(--font-code); font-variant-numeric: tabular-nums; }
+
+/* ---------------- 检查器 · insp-* / dep-* / lens-* 家族 ---------------- */
+.desktop.page-calibrate .insp-head { position: sticky; top: 0; z-index: 6; padding: 10px 16px; background: var(--canvas);
+  border-bottom: 1px solid var(--hairline); display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.desktop.page-calibrate .insp-head > div:first-child { margin-bottom: 0 !important; gap: 9px !important; }
+.desktop.page-calibrate .insp-head h2 { font-size: 14px !important; font-weight: 600 !important; color: var(--ink); }
+.desktop.page-calibrate .insp-head .step-ico { width: 18px !important; height: 18px !important; border-radius: 0 !important;
+  background: none !important; color: var(--muted); }
+.desktop.page-calibrate .insp-sect { padding: 12px 16px 14px; border-bottom: 1px solid var(--hairline); }
+.desktop.page-calibrate .insp-sect .lh { font-size: var(--cap); font-weight: 600; letter-spacing: 0; text-transform: none;
+  color: var(--muted); margin-bottom: 8px; }
+.desktop.page-calibrate .kv { margin: 0 -16px; padding: 4px 16px; gap: 12px; min-height: 28px; align-items: center;
+  border-bottom: 1px solid var(--hairline-soft); font-size: 13px; }
+.desktop.page-calibrate .kv .k { font-size: 13px; color: var(--body); }
+.desktop.page-calibrate .kv .v { font-size: 13px; color: var(--ink); text-align: right; }
+.desktop.page-calibrate .mono, .desktop.page-calibrate .kv .v.mono { font-family: var(--font-code); font-variant-numeric: tabular-nums; }
+
+.desktop.page-calibrate .lens-entry-list { gap: 2px; }
+.desktop.page-calibrate .lens-entry-list > button, .desktop.page-calibrate .lens-entry-list > div {
+  border-radius: var(--r-ctl); border: 1px solid var(--hairline); background: var(--surface-card); padding: 8px 11px;
+  min-height: 34px; font-size: 13px; color: var(--ink); }
+.desktop.page-calibrate .lens-entry-list > button:hover { background: var(--canvas-soft); border-color: var(--hairline-strong); }
+.desktop.page-calibrate .dep-lead { font-size: 13px; line-height: 1.55; color: var(--body); }
+.desktop.page-calibrate .dep-sumnote { background: none; border: none; padding: 8px 0 0; font-size: 13px; color: var(--muted); }
+.desktop.page-calibrate .dep-targets { gap: 8px; }
+.desktop.page-calibrate .dep-tcard { border-radius: var(--r-card); padding: 11px 12px; background: var(--surface-card); border: 1px solid var(--hairline); }
+.desktop.page-calibrate .dep-tcard:hover { border-color: var(--hairline-strong); }
+.desktop.page-calibrate .dep-tcard.on { background: var(--ink); border-color: var(--ink); }
+.desktop.page-calibrate .dep-tcard.on .dep-tcard-t, .desktop.page-calibrate .dep-tcard.on .dep-tcard-d,
+.desktop.page-calibrate .dep-tcard.on .dep-tcard-scene, .desktop.page-calibrate .dep-tcard.on .dep-tcard-ic { color: var(--canvas); }
+.desktop.page-calibrate .dep-tcard.on .dep-tcard-d, .desktop.page-calibrate .dep-tcard.on .dep-tcard-scene { opacity: .72; }
+.desktop.page-calibrate .dep-tcard-ic { width: 20px; height: 20px; border-radius: 0; background: none; color: var(--muted); }
+.desktop.page-calibrate .dep-tcard-t { font-size: 14px; font-weight: 600; color: var(--ink); }
+.desktop.page-calibrate .dep-tcard-d { font-size: 13px; line-height: 1.5; color: var(--body); margin-top: 4px; }
+.desktop.page-calibrate .dep-tcard-scene { font-size: 12px; color: var(--muted); margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--hairline); }
+.desktop.page-calibrate .dep-tcard.on .dep-tcard-scene { border-top-color: rgba(247,247,244,.18); }
+.desktop.page-calibrate .dep-tcard-ck { width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--hairline-strong); }
+.desktop.page-calibrate .dep-tcard.on .dep-tcard-ck { background: var(--canvas); border-color: var(--canvas); color: var(--ink); }
+.desktop.page-calibrate .dep-sec-h { font-size: var(--cap); font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--muted); }
+.desktop.page-calibrate .dep-monlist { gap: 2px; }
+.desktop.page-calibrate .dep-mon { border-radius: var(--r-ctl); border: 1px solid var(--hairline); background: var(--surface-card);
+  padding: 7px 10px; min-height: 34px; }
+.desktop.page-calibrate .dep-mon.on { background: var(--ink); border-color: var(--ink); }
+.desktop.page-calibrate .dep-mon.on .dep-mon-n, .desktop.page-calibrate .dep-mon.on .dep-mon-ic { color: var(--canvas); }
+.desktop.page-calibrate .dep-mon.on .dep-mon-s { color: rgba(247,247,244,.7); }
+.desktop.page-calibrate .dep-mon-n { font-size: 13px; font-weight: 500; color: var(--ink); }
+.desktop.page-calibrate .dep-mon-s { font-family: var(--font-code); font-size: 12px; color: var(--muted); }
+.desktop.page-calibrate .dep-mon-ck { width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--hairline-strong); }
+.desktop.page-calibrate .dep-mon.on .dep-mon-ck { background: var(--canvas); border-color: var(--canvas); color: var(--ink); }
+.desktop.page-calibrate .dep-node { padding: 6px 0; font-size: 13px; border-bottom: 1px solid var(--hairline-soft); }
+.desktop.page-calibrate .dep-node-h { font-family: var(--font-code); font-size: 12px; color: var(--muted); }
+.desktop.page-calibrate .dep-step { font-size: 13px; }
+.desktop.page-calibrate .dep-standby, .desktop.page-calibrate .dep-topo, .desktop.page-calibrate .dep-warn {
+  background: var(--surface-card); border: 1px solid var(--hairline); border-radius: var(--r-card); }
+
+/* ---------------- 概览页：编辑部式页头 + 白卡台账 ---------------- */
+.desktop.page-calibrate .dash { padding: 20px 20px 28px; gap: 20px; background: var(--canvas); }
+.desktop.page-calibrate .cal2-projhdr { padding: 0 0 18px; margin: 0; border-bottom: 1px solid var(--hairline); align-items: flex-end; }
+.desktop.page-calibrate .cal2-projhdr-t { font-size: 18px; font-weight: 400; letter-spacing: 0; line-height: 1.1; color: var(--ink); }
+.desktop.page-calibrate .cal2-projhdr-s { font-family: var(--font-code); font-size: 13px; color: var(--muted); margin-top: 8px; }
+.desktop.page-calibrate .cal2-projhdr-acts { gap: 8px; }
+.desktop.page-calibrate .dash > .dash-card { background: var(--surface-card); border: 1px solid var(--hairline);
+  border-radius: var(--r-card); padding: 0; overflow: hidden; }
+.desktop.page-calibrate .dash .dc-h { margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--hairline); }
+.desktop.page-calibrate .dash .dc-h .t { font-size: var(--cap); font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--muted); }
+.desktop.page-calibrate .dash .dc-h .t svg { width: 14px; height: 14px; color: var(--muted); }
+.desktop.page-calibrate .dash .dc-n { font-family: var(--font-code); font-size: 12px; font-weight: 400; color: var(--muted); }
+.desktop.page-calibrate .cal2-ovtable { border: none; border-radius: 0; }
+.desktop.page-calibrate .cal2-ov-head { padding: 8px 16px; background: var(--canvas-soft); border-bottom: 1px solid var(--hairline);
+  font-size: var(--cap); font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--muted); }
+.desktop.page-calibrate .cal2-ov-row { min-height: 40px; padding: 6px 16px; border-radius: 0;
+  border-bottom: 1px solid var(--hairline-soft); font-size: 13px; }
+.desktop.page-calibrate .cal2-ov-row:hover { background: var(--canvas-soft); }
+.desktop.page-calibrate .cal2-ov-row.active { background: var(--canvas-soft); }
+.desktop.page-calibrate .cal2-ov-n b { font-size: 14px; font-weight: 600; color: var(--ink); }
+.desktop.page-calibrate .cal2-cur { font-size: 12px; font-weight: 600; letter-spacing: 0; text-transform: none;
+  background: var(--ink); color: var(--canvas); border-radius: 9999px; padding: 1px 7px; }
+.desktop.page-calibrate .cal2-ov-step { font-size: 13px; color: var(--muted); }
+.desktop.page-calibrate .cal2-ov-row .mono { font-family: var(--font-code); font-variant-numeric: tabular-nums; color: var(--body); }
+.desktop.page-calibrate .cluster-empty { padding: 64px 24px; }
+.desktop.page-calibrate .ce-ico { border-radius: var(--r-card); border: 1px solid var(--hairline); background: var(--surface-card); color: var(--muted); }
+.desktop.page-calibrate .ce-t { font-size: 18px; font-weight: 400; letter-spacing: 0; color: var(--ink); }
+.desktop.page-calibrate .ce-d { font-size: 14px; line-height: 1.6; color: var(--body); text-wrap: pretty; }
+.desktop.page-calibrate .ce-recent { background: var(--surface-card); border: 1px solid var(--hairline); border-radius: var(--r-card); }
+.desktop.page-calibrate .ce-recent-h { font-size: var(--cap); font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--muted); }
+.desktop.page-calibrate .ce-recent-i { border-radius: var(--r-ctl); border: 1px solid transparent; background: none; padding: 10px 12px; }
+.desktop.page-calibrate .ce-recent-i:hover { background: var(--canvas-soft); border-color: var(--hairline); }
+.desktop.page-calibrate .ce-recent-name { font-size: 14px; font-weight: 500; color: var(--ink); }
+.desktop.page-calibrate .ce-recent-path, .desktop.page-calibrate .ce-recent-meta { font-family: var(--font-code); font-size: 12px; color: var(--muted); }
+
+/* ---------------- 通用件 ---------------- */
+.desktop.page-calibrate .s2-btn { height: 32px; min-height: 32px; padding: 0 14px; border-radius: var(--r-ctl); font-size: 14px; font-weight: 500; }
+.desktop.page-calibrate .s2-btn--fill.s2-btn--accent { background: var(--bg-inverse); color: var(--on-primary) !important; }
+.desktop.page-calibrate .s2-btn--fill.s2-btn--accent:hover { background: var(--bg-inverse); filter: brightness(1.04); }
+.desktop.page-calibrate .s2-btn--fill.s2-btn--accent:active { background: var(--bg-inverse); }
+.desktop.page-calibrate .s2-btn--fill.s2-btn--accent svg { color: var(--on-primary); }
+.desktop.page-calibrate .s2-btn--outline, .desktop.page-calibrate .s2-btn--secondary { background: var(--surface-card);
+  border: 1px solid var(--hairline-strong); color: var(--ink); }
+.desktop.page-calibrate .s2-switch--on .s2-switch__track { background: var(--ink) !important; }
+.desktop.page-calibrate .s2-switch--on:hover .s2-switch__track { background: var(--volo-800) !important; }
+
+.desktop.page-calibrate .spill { border-radius: 9999px; padding: 2px 9px; gap: 5px; font-size: var(--cap); font-weight: 600;
+  letter-spacing: 0; background: var(--surface-strong); color: var(--body); line-height: 1.6; }
+.desktop.page-calibrate .spill svg { width: 12px; height: 12px; }
+.desktop.page-calibrate .spill.spill--positive { background: var(--surface-strong); color: var(--t-body); }
+.desktop.page-calibrate .spill.spill--notice { background: var(--surface-strong); color: var(--t-body); }
+.desktop.page-calibrate .spill.spill--negative { background: var(--surface-strong); color: var(--t-body); }
+.desktop.page-calibrate .spill.spill--neutral, .desktop.page-calibrate .spill.spill--informative { background: var(--surface-strong); color: var(--muted); }
+.desktop.page-calibrate .gw-glass .spill { background: var(--stage-wash); color: var(--stage-body); }
+
+.desktop.page-calibrate .popover { border-radius: var(--r-card); border: 1px solid var(--hairline-strong);
+  background: var(--surface-card); padding: 5px; }
+.desktop.page-calibrate .pop-i { border-radius: var(--r-ctl); padding: 7px 10px; min-height: 32px; font-size: 13px; }
+.desktop.page-calibrate .pop-i:hover { background: var(--canvas-soft); }
+.desktop.page-calibrate .pop-i.on { background: var(--canvas-soft); }
+.desktop.page-calibrate .pop-l { font-size: 13px; font-weight: 500; color: var(--ink); }
+.desktop.page-calibrate .pop-s { font-family: var(--font-code); font-size: 12px; color: var(--muted); }
+.desktop.page-calibrate .cpp-h { font-size: var(--cap); font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--muted); }
+.desktop.page-calibrate .vmeter { height: 4px; border-radius: 9999px; background: var(--surface-strong); }
+.desktop.page-calibrate .vmeter__fill { border-radius: 9999px; background: var(--ink); }
+.desktop.page-calibrate .drawer { border-radius: 0; background: var(--canvas); }
+.desktop.page-calibrate .drawer-h { background: var(--canvas); border-bottom: 1px solid var(--hairline); }
+.desktop.page-calibrate .drawer-h h2 { font-size: 18px; font-weight: 400; letter-spacing: 0; color: var(--ink); }
+.desktop.page-calibrate .drawer-h .sub { font-family: var(--font-code); font-size: 12px; color: var(--muted); }
+.desktop.page-calibrate .drawer-f { background: var(--canvas); border-top: 1px solid var(--hairline); }
+.desktop.page-calibrate .gw-drop { border-radius: var(--r-card); border: 1px dashed var(--hairline-strong); background: var(--surface-card);
+  color: var(--muted); font-size: 13px; }
+.desktop.page-calibrate .gw-drop:hover { border-color: var(--muted-soft); color: var(--ink); }
+
+
+/* ============================================================
+   batch 5 · 视口也走奶油底 + 橙色更大胆
+   —— 视口 = DS canvas-soft pane（技术制图观感）；
+   —— 橙从「唯一 CTA」扩张为「唯一强调」：所有选中 / 激活 / 当前
+      态都由它承担（墨色反转退回给 tooltip 之类的反转面）。
+   ============================================================ */
+
+/* ---- 三维视口：奶油 pane ---- */
+.desktop.page-calibrate .gw-stage { background: var(--canvas-soft); }
+.desktop.page-calibrate .gw-grid-l { stroke: color-mix(in srgb, var(--ink) 8%, transparent); }
+.desktop.page-calibrate .gw-grid-l.maj { stroke: color-mix(in srgb, var(--ink) 15%, transparent); }
+.desktop.page-calibrate .gw-ghost { stroke: color-mix(in srgb, var(--ink) 28%, transparent); }
+.desktop.page-calibrate .gw-box { stroke: color-mix(in srgb, var(--ink) 22%, transparent); stroke-width: .5; }
+.desktop.page-calibrate .gw-box--cut { stroke: var(--hairline-strong); }
+.desktop.page-calibrate .gw-box.is-sel { stroke: var(--or); stroke-width: 1.6; }
+.desktop.page-calibrate .gw-box-pat { opacity: .65; }
+.desktop.page-calibrate .gw-obj-outline { stroke: var(--or); stroke-width: 1.6; }
+.desktop.page-calibrate .gw-obj-origin { fill: var(--or); stroke: var(--canvas-soft); }
+.desktop.page-calibrate .gw-wall-lb { fill: var(--muted); }
+.desktop.page-calibrate .gw-wall-lb.on { fill: var(--or); font-weight: 600; }
+.desktop.page-calibrate .gw-pt-lb { fill: var(--muted); }
+.desktop.page-calibrate .gw-svp .gw-cursor line { stroke: color-mix(in srgb, var(--ink) 30%, transparent); }
+
+/* 浮层 = 奶油面上的白卡 */
+.desktop.page-calibrate .gw-glass { background: var(--surface-card); border-color: var(--hairline-strong); color: var(--body); }
+.desktop.page-calibrate .gw-glass svg { color: var(--muted); }
+.desktop.page-calibrate .gw-disp-row.on .ic svg, .desktop.page-calibrate .gw-ctxcard .scr svg { color: var(--or); }
+.desktop.page-calibrate .gw-sw { background: var(--surface-strong); }
+.desktop.page-calibrate .gw-sw::after { background: var(--surface-card); box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 12%, transparent); }
+.desktop.page-calibrate .gw-sw.on { background: var(--or); }
+.desktop.page-calibrate .gw-sw.on::after { background: var(--text-on-inverse); box-shadow: none; }
+.desktop.page-calibrate .gw-seg2 { background: var(--canvas); }
+.desktop.page-calibrate .gw-seg2 button.on { background: var(--or); color: var(--on-primary); }
+.desktop.page-calibrate .gw-tip { background: var(--ink); color: var(--canvas); border-color: var(--ink); }
+.desktop.page-calibrate .gw-tip::before { border-bottom-color: var(--ink); }
+
+/* 视口条控件：激活 = 橙 */
+.desktop.page-calibrate .gw-ver button.on, .desktop.page-calibrate .gw-boxbar .tbtn.on,
+.desktop.page-calibrate .gw-roleseg button.on { background: var(--or); color: var(--on-primary); }
+.desktop.page-calibrate .gw-ver button.on svg, .desktop.page-calibrate .gw-boxbar .tbtn.on svg { color: var(--on-primary); }
+.desktop.page-calibrate .gw-boxbar .tbtn.on kbd { background: var(--wash-2); color: var(--text-on-inverse); }
+.desktop.page-calibrate .gw-boxbar .gw-alignbtn.is-ready { background: var(--or-soft); color: var(--or); }
+.desktop.page-calibrate .gw-boxbar .gw-alignbtn-ck { color: var(--or); }
+.desktop.page-calibrate .gw-receipt { background: var(--or); border-color: var(--or); color: var(--on-primary); }
+.desktop.page-calibrate .gw-receipt svg { color: var(--on-primary); }
+.desktop.page-calibrate .gw-aligned-badge { background: var(--or-soft); color: var(--or); }
+.desktop.page-calibrate .gw-glass .spill { background: var(--surface-strong); color: var(--body); }
+.desktop.page-calibrate .gw-coords b, .desktop.page-calibrate .gw-coords .xyz { color: var(--ink); }
+
+/* ---- 左栏 / 清单 / 段控：选中态全部换成橙 ---- */
+.desktop.page-calibrate .gw-nav .nav-i.on { background: var(--or); color: var(--on-primary); }
+.desktop.page-calibrate .gw-nav .nav-i.on::before { color: rgba(255,255,255,.7); }
+.desktop.page-calibrate .gw-nav .nav-i:hover { background: var(--or-soft); color: var(--or); }
+.desktop.page-calibrate .gw-nav .nav-i.on:hover { background: var(--or); color: var(--on-primary); }
+.desktop.page-calibrate .gw-prow.on { background: var(--or); color: var(--on-primary); }
+.desktop.page-calibrate .gw-prow.on .nm { color: var(--on-primary); }
+.desktop.page-calibrate .gw-prow:hover { background: var(--or-soft); color: var(--or); }
+.desktop.page-calibrate .gw-prow.on:hover { background: var(--or); color: var(--on-primary); }
+.desktop.page-calibrate .gw-padd:hover { color: var(--or); border-color: var(--or-line); background: var(--or-soft); }
+.desktop.page-calibrate .gw-viewseg button.on { background: var(--or); color: var(--on-primary); }
+.desktop.page-calibrate .gw-method-seg button.on { background: var(--or); color: var(--on-primary); }
+.desktop.page-calibrate .gw-method-seg button.on svg { color: var(--on-primary); }
+.desktop.page-calibrate .gw-shape.on { background: var(--or); border-color: var(--or); color: var(--on-primary); }
+.desktop.page-calibrate .gw-shape.on svg { color: var(--on-primary); }
+.desktop.page-calibrate .gw-shape:hover { border-color: var(--or-line); color: var(--or); }
+.desktop.page-calibrate .paneltgl.on { background: var(--or); color: var(--on-primary); }
+.desktop.page-calibrate .paneltgl.on svg { color: var(--on-primary); }
+
+/* LED / AR + 底部页签：橙下划线 */
+.desktop.page-calibrate .cal2-stageseg .ctxnav-i.on { color: var(--or); border-bottom-color: var(--or); }
+.desktop.page-calibrate .cal2-stageseg .ctxnav-i.on svg { color: var(--or); }
+.desktop.page-calibrate .ptab.on { color: var(--or); border-bottom-color: var(--or); }
+.desktop.page-calibrate .ptab.on .pico { color: var(--or); }
+
+/* 分组头 / 检查器头：橙齿 + 橙图标 */
+.desktop.page-calibrate .gw-grp-h:not(:has(.car.closed)) { color: var(--ink); box-shadow: inset 2px 0 0 var(--or); }
+.desktop.page-calibrate .gw-grp-h:not(:has(.car.closed)) .num { color: var(--or); }
+.desktop.page-calibrate .gw-insp-ic, .desktop.page-calibrate .insp-head .step-ico { color: var(--or); }
+
+/* 输入：focus = 橙线 + 橙微光；计量条 = 橙 */
+.desktop.page-calibrate .gw-num:focus, .desktop.page-calibrate .gw-txt:focus { border-color: var(--or);
+  box-shadow: 0 0 0 3px var(--or-soft); }
+.desktop.page-calibrate .vmeter__fill { background: var(--or); }
+.desktop.page-calibrate .s2-switch--on .s2-switch__track { background: var(--or) !important; }
+.desktop.page-calibrate .s2-switch--on:hover .s2-switch__track { background: var(--bg-inverse) !important; }
+
+/* 台账 / 卡片：当前与选中 = 橙 */
+.desktop.page-calibrate .cal2-ov-row.active { position: relative; background: var(--or-soft); }
+.desktop.page-calibrate .cal2-ov-row.active::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--or); }
+.desktop.page-calibrate .cal2-ov-row.active .cal2-ov-n b { color: var(--or); }
+.desktop.page-calibrate .cal2-cur { background: var(--or); color: var(--on-primary); }
+.desktop.page-calibrate .cal2-ov-row.active .sdot { background: var(--or); }
+.desktop.page-calibrate .dep-tcard.on { background: var(--or-soft); border-color: var(--or); }
+.desktop.page-calibrate .dep-tcard.on .dep-tcard-t, .desktop.page-calibrate .dep-tcard.on .dep-tcard-ic { color: var(--or); }
+.desktop.page-calibrate .dep-tcard.on .dep-tcard-d { color: var(--body); opacity: 1; }
+.desktop.page-calibrate .dep-tcard.on .dep-tcard-scene { color: var(--muted); opacity: 1; border-top-color: var(--or-line); }
+.desktop.page-calibrate .dep-tcard.on .dep-tcard-ck { background: var(--or); border-color: var(--or); color: var(--on-primary); }
+.desktop.page-calibrate .dep-mon.on { background: var(--or-soft); border-color: var(--or); }
+.desktop.page-calibrate .dep-mon.on .dep-mon-n { color: var(--or); }
+.desktop.page-calibrate .dep-mon.on .dep-mon-ic { color: var(--or); }
+.desktop.page-calibrate .dep-mon.on .dep-mon-s { color: var(--muted); }
+.desktop.page-calibrate .dep-mon.on .dep-mon-ck { background: var(--or); border-color: var(--or); color: var(--on-primary); }
+.desktop.page-calibrate .gw-runrow.is-current { background: var(--or-soft); border-color: var(--or-line); }
+.desktop.page-calibrate .gw-runrow.is-current .n .cur { background: var(--or); color: var(--on-primary); }
+.desktop.page-calibrate .pop-i.on { background: var(--or-soft); }
+.desktop.page-calibrate .pop-i.on .pop-l { color: var(--or); }
+.desktop.page-calibrate .pop-i.on svg { color: var(--or) !important; }
+.desktop.page-calibrate .resizer--col:hover::after, .desktop.page-calibrate .resizer--col:active::after { background: var(--or); }
+
+
+/* ============================================================
+   batch 6 · 右侧检查器密度重排
+   目标：信息更密集；过大的模块（部署方式卡 / 形状卡 / 派生格 /
+   指标格 / 功能入口 / 按钮）整体收小，不再占大面积。
+   只作用于 .inspector 内，视口浮层与工具栏不受影响。
+   ============================================================ */
+.desktop.page-calibrate .inspector { font-size: 13px; }
+
+/* 头部 44 → 32 */
+.desktop.page-calibrate .inspector .gw-insp-head { min-height: 32px; padding: 0 14px; gap: 8px; }
+.desktop.page-calibrate .inspector .gw-insp-tt { gap: 8px; }
+.desktop.page-calibrate .inspector .gw-insp-tt h2 { font-size: 14px; }
+.desktop.page-calibrate .inspector .gw-insp-tt .sub { font-size: 12px; }
+.desktop.page-calibrate .inspector .gw-insp-ic { width: 15px; height: 15px; }
+.desktop.page-calibrate .inspector .gw-insp-ic svg { width: 14px; height: 14px; }
+.desktop.page-calibrate .inspector .insp-head { padding: 6px 14px; min-height: 32px; }
+.desktop.page-calibrate .inspector .insp-head h2 { font-size: 14px !important; }
+.desktop.page-calibrate .inspector .insp-head .step-ico { width: 15px !important; height: 15px !important; }
+.desktop.page-calibrate .inspector .insp-head .step-ico svg { width: 14px; height: 14px; }
+
+/* 分组头 28 → 21，吸顶位置跟着上移 */
+.desktop.page-calibrate .inspector .gw-grp-h { top: 32px; min-height: 21px; padding: 3px 14px; gap: 6px; font-size: 12px; letter-spacing: 0; }
+.desktop.page-calibrate .inspector .gw-grp-h .num { font-size: 12px; }
+.desktop.page-calibrate .inspector .gw-grp-h .car svg { width: 12px; height: 12px; }
+.desktop.page-calibrate .inspector .gw-grp-body { padding: 3px 14px 7px; }
+.desktop.page-calibrate .inspector .insp-sect { padding: 7px 14px 9px; }
+.desktop.page-calibrate .inspector .insp-sect .lh { font-size: 12px; letter-spacing: 0; margin-bottom: 4px; }
+
+/* 字段行 30 → 24，控件 26 → 22 */
+.desktop.page-calibrate .inspector .gw-field { margin: 0 -14px; padding: 2px 14px; min-height: 24px; gap: 10px; }
+.desktop.page-calibrate .inspector .gw-field > .lb { font-size: 13px; }
+.desktop.page-calibrate .inspector .gw-field > .lb .hint { font-size: 12px; }
+.desktop.page-calibrate .inspector .gw-num, .desktop.page-calibrate .inspector .gw-txt,
+.desktop.page-calibrate .inspector .gw-selbtn { height: 22px; font-size: 13px; padding: 0 6px; border-radius: var(--radius-pill); }
+.desktop.page-calibrate .inspector .gw-num { width: 52px; }
+.desktop.page-calibrate .inspector .gw-selbtn { padding: 0 6px 0 8px; }
+.desktop.page-calibrate .inspector .gw-selbtn svg { width: 12px; height: 12px; }
+.desktop.page-calibrate .inspector .gw-unit, .desktop.page-calibrate .inspector .gw-dual .x { font-size: 12px; }
+.desktop.page-calibrate .inspector .kv { margin: 0 -14px; padding: 2px 14px; min-height: 22px; font-size: 13px; }
+.desktop.page-calibrate .inspector .kv .k, .desktop.page-calibrate .inspector .kv .v { font-size: 13px; }
+
+/* 预设 / 屏幕清单 28 → 22 */
+.desktop.page-calibrate .inspector .gw-parent, .desktop.page-calibrate .inspector .gw-parent--compact { padding: 2px 14px 7px; }
+.desktop.page-calibrate .inspector .gw-psub { padding: 6px 0 4px; font-size: 12px; letter-spacing: 0; }
+.desktop.page-calibrate .inspector .gw-psub .c { font-size: 12px; }
+.desktop.page-calibrate .inspector .gw-plist { gap: 1px; }
+.desktop.page-calibrate .inspector .gw-prow { min-height: 22px; padding: 0 8px; border-radius: var(--radius-input); font-size: 13px; }
+.desktop.page-calibrate .inspector .gw-prow .nm { font-size: 13px; }
+.desktop.page-calibrate .inspector .gw-prow .rm svg { width: 11px; height: 11px; }
+.desktop.page-calibrate .inspector .gw-padd { min-height: 21px; padding: 0 8px; border-radius: var(--radius-input); font-size: 12px; margin-top: 1px; }
+.desktop.page-calibrate .inspector .gw-prow-div { margin: 6px 0; }
+
+/* 形状卡：收成小方块 */
+.desktop.page-calibrate .inspector .gw-shape-grid { gap: 4px; }
+.desktop.page-calibrate .inspector .gw-shape { padding: 5px 3px; gap: 3px; border-radius: var(--radius-input); }
+.desktop.page-calibrate .inspector .gw-shape svg { width: 14px; height: 14px; }
+.desktop.page-calibrate .inspector .gw-shape .t { font-size: 12px; }
+
+/* 派生格 / 指标格：数字降一档，内边距减半 */
+.desktop.page-calibrate .inspector .gw-derived { border-radius: var(--radius-input); }
+.desktop.page-calibrate .inspector .gw-dcell { padding: 5px 8px; }
+.desktop.page-calibrate .inspector .gw-dcell .k { font-size: 12px; letter-spacing: 0; }
+.desktop.page-calibrate .inspector .gw-dcell .v { font-size: 14px; margin-top: 1px; }
+.desktop.page-calibrate .inspector .gw-dcell .v .u { font-size: 12px; }
+.desktop.page-calibrate .inspector .gw-metrics { border-radius: var(--radius-card); }
+.desktop.page-calibrate .inspector .gw-metric { padding: 7px 9px; }
+.desktop.page-calibrate .inspector .gw-metric .k { font-size: 12px; }
+.desktop.page-calibrate .inspector .gw-metric .v { font-size: 18px; }
+.desktop.page-calibrate .inspector .gw-metric .exp { font-size: 12px; }
+
+/* 微文案 / 提示：更紧 */
+.desktop.page-calibrate .inspector .gw-optnote, .desktop.page-calibrate .inspector .gw-method-note,
+.desktop.page-calibrate .inspector .gw-runlist-note, .desktop.page-calibrate .inspector .gw-solve-relnote,
+.desktop.page-calibrate .inspector .gw-stage-warn, .desktop.page-calibrate .inspector .dep-lead,
+.desktop.page-calibrate .inspector .dep-sumnote { font-size: 12px; line-height: 1.45; padding: 3px 0; }
+
+/* 阶段动作 / 重建方法 */
+.desktop.page-calibrate .inspector .gw-method { padding: 7px 14px 9px; }
+.desktop.page-calibrate .inspector .gw-method-h, .desktop.page-calibrate .inspector .gw-stages-h,
+.desktop.page-calibrate .inspector .dep-sec-h { font-size: 12px; letter-spacing: 0; margin-bottom: 5px; }
+.desktop.page-calibrate .inspector .gw-stages-h { padding: 8px 14px 5px; }
+.desktop.page-calibrate .inspector .gw-method-seg { padding: 2px; border-radius: var(--radius-pill); }
+.desktop.page-calibrate .inspector .gw-method-seg button { padding: 4px 8px; font-size: 12px; border-radius: var(--radius-pill); }
+.desktop.page-calibrate .inspector .gw-method-seg button svg { width: 13px; height: 13px; }
+
+/* 功能入口 / 文件引用 / 记录行 34 → 26 */
+.desktop.page-calibrate .inspector .lens-entry-list { gap: 1px; }
+.desktop.page-calibrate .inspector .lens-entry-list > button,
+.desktop.page-calibrate .inspector .lens-entry-list > div { min-height: 26px; padding: 4px 8px; font-size: 13px; border-radius: var(--radius-input); }
+.desktop.page-calibrate .inspector .lens-entry-list svg { width: 13px; height: 13px; }
+.desktop.page-calibrate .inspector .gw-fileref { padding: 5px 8px; border-radius: var(--radius-input); }
+.desktop.page-calibrate .inspector .gw-fileref .n { font-size: 12px; }
+.desktop.page-calibrate .inspector .gw-fileref .d { font-size: 12px; }
+.desktop.page-calibrate .inspector .gw-runrow { padding: 4px 8px; border-radius: var(--radius-input); gap: 8px; }
+.desktop.page-calibrate .inspector .gw-runrow .n { font-size: 13px; }
+.desktop.page-calibrate .inspector .gw-runrow .d { font-size: 12px; }
+.desktop.page-calibrate .inspector .gw-runrow .ic svg { width: 13px; height: 13px; }
+
+/* 部署方式卡：从大卡收成紧凑行卡 */
+.desktop.page-calibrate .inspector .dep-targets { gap: 4px; }
+.desktop.page-calibrate .inspector .dep-tcard { padding: 6px 8px; border-radius: var(--radius-card); }
+.desktop.page-calibrate .inspector .dep-tcard-h { gap: 6px; }
+.desktop.page-calibrate .inspector .dep-tcard-ic { width: 16px; height: 16px; }
+.desktop.page-calibrate .inspector .dep-tcard-ic svg { width: 14px; height: 14px; }
+.desktop.page-calibrate .inspector .dep-tcard-t { font-size: 13px; }
+.desktop.page-calibrate .inspector .dep-tcard-d { font-size: 12px; line-height: 1.4; margin-top: 2px; }
+.desktop.page-calibrate .inspector .dep-tcard-scene { font-size: 12px; margin-top: 3px; padding-top: 3px; }
+.desktop.page-calibrate .inspector .dep-tcard-ck { width: 12px; height: 12px; }
+.desktop.page-calibrate .inspector .dep-monlist { gap: 1px; }
+.desktop.page-calibrate .inspector .dep-mon { min-height: 26px; padding: 4px 8px; border-radius: var(--radius-input); }
+.desktop.page-calibrate .inspector .dep-mon.on { padding-left: 8px; }
+.desktop.page-calibrate .inspector .dep-mon-ic svg { width: 13px; height: 13px; }
+.desktop.page-calibrate .inspector .dep-mon-n { font-size: 13px; }
+.desktop.page-calibrate .inspector .dep-mon-s { font-size: 12px; }
+.desktop.page-calibrate .inspector .dep-mon-ck { width: 12px; height: 12px; }
+.desktop.page-calibrate .inspector .dep-node { padding: 3px 0; font-size: 12px; }
+.desktop.page-calibrate .inspector .dep-node-h { font-size: 12px; }
+.desktop.page-calibrate .inspector .dep-step { font-size: 12px; }
+.desktop.page-calibrate .inspector .dep-standby, .desktop.page-calibrate .inspector .dep-topo,
+.desktop.page-calibrate .inspector .dep-warn { border-radius: var(--radius-input); }
+
+/* 按钮 / 徽标 / 开关：全部降一档 */
+.desktop.page-calibrate .inspector .s2-btn { height: 26px; min-height: 26px; padding: 0 10px; font-size: 13px; border-radius: var(--radius-pill); }
+.desktop.page-calibrate .inspector .s2-btn svg { width: 13px; height: 13px; }
+.desktop.page-calibrate .inspector .spill { font-size: 12px; padding: 1px 7px; gap: 4px; }
+.desktop.page-calibrate .inspector .spill svg { width: 11px; height: 11px; }
+.desktop.page-calibrate .inspector .s2-switch { transform: scale(.86); transform-origin: right center; }
+.desktop.page-calibrate .inspector .vmeter { height: 3px; }
+.desktop.page-calibrate .inspector .gw-drop { padding: 10px; font-size: 12px; border-radius: var(--radius-input); }
+.desktop.page-calibrate .inspector .cap-toggle-row { padding-top: 2px !important; }
+.desktop.page-calibrate .inspector .gw-cabtbl { font-size: 12px; }
+.desktop.page-calibrate .inspector .gw-cabtbl th { font-size: 12px; }
+
+
+/* batch 6.1 · 清单选中收敛：整块橙底只留给左栏与 CTA；
+   预设 / 屏幕行改「橙底 12% + 橙字 + 3px 橙齿」，避免两条橙板叠在一起 */
+.desktop.page-calibrate .inspector .gw-prow.on,
+.desktop.page-calibrate .inspector .gw-prow.on:hover { position: relative; background: var(--or-soft); color: var(--or); overflow: hidden; }
+.desktop.page-calibrate .inspector .gw-prow.on .nm { color: var(--or); font-weight: 600; }
+.desktop.page-calibrate .inspector .gw-prow.on::after { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--or); }
+.desktop.page-calibrate .inspector .gw-prow.on .rm { color: var(--or); }
+
+
+/* batch 6.2 · 遗漏的「网格摆放」图例（.gw-plegend 子选择器比皮肤更具体，需点名覆盖） */
+.desktop.page-calibrate .gw-plegend .li { color: var(--body); }
+.desktop.page-calibrate .gw-plegend .note { color: var(--muted); }
+.desktop.page-calibrate .gw-plegend .sw.solid { background: var(--edge-strong); border: 1px solid color-mix(in srgb, var(--ink) 22%, transparent); }
+.desktop.page-calibrate .gw-plegend .sw.ghost { background: transparent; border: 1px dashed color-mix(in srgb, var(--ink) 28%, transparent); }
+.desktop.page-calibrate .gw-plegend .sw { border-radius: var(--radius-input); }
+
+
+/* ============================================================
+   batch 7 · 橙色收回（回到 Cursor 的克制用法）
+   保留橙：主 CTA / 阶段动作主按钮 · 视口选中对象轮廓与原点 ·
+           概览「当前项目」行齿与徽标 · 输入 focus · 计量条。
+   其余激活 / 选中态一律回到墨色反转或中性面。
+   ============================================================ */
+.desktop.page-calibrate .gw-nav .nav-i.on,
+.desktop.page-calibrate .gw-nav .nav-i.on:hover { background: var(--ink); color: var(--canvas); }
+.desktop.page-calibrate .gw-nav .nav-i.on::before { color: rgba(247,247,244,.55); }
+.desktop.page-calibrate .gw-nav .nav-i:hover { background: var(--surface-card); color: var(--ink); }
+
+.desktop.page-calibrate .inspector .gw-prow.on,
+.desktop.page-calibrate .inspector .gw-prow.on:hover { background: var(--surface-strong); color: var(--ink); }
+.desktop.page-calibrate .inspector .gw-prow.on .nm { color: var(--ink); font-weight: 600; }
+.desktop.page-calibrate .inspector .gw-prow.on::after { background: var(--ink); }
+.desktop.page-calibrate .inspector .gw-prow.on .rm { color: var(--muted); }
+.desktop.page-calibrate .gw-prow:hover { background: var(--surface-card); color: var(--ink); }
+.desktop.page-calibrate .gw-padd:hover { color: var(--ink); border-color: var(--muted-soft); background: var(--surface-card); }
+
+.desktop.page-calibrate .gw-viewseg button.on, .desktop.page-calibrate .inspector .gw-method-seg button.on,
+.desktop.page-calibrate .gw-ver button.on, .desktop.page-calibrate .gw-boxbar .tbtn.on,
+.desktop.page-calibrate .gw-roleseg button.on, .desktop.page-calibrate .gw-seg2 button.on { background: var(--ink); color: var(--canvas); }
+.desktop.page-calibrate .gw-viewseg button.on svg, .desktop.page-calibrate .inspector .gw-method-seg button.on svg,
+.desktop.page-calibrate .gw-ver button.on svg, .desktop.page-calibrate .gw-boxbar .tbtn.on svg { color: var(--canvas); }
+.desktop.page-calibrate .gw-boxbar .tbtn.on kbd { background: rgba(247,247,244,.2); color: var(--canvas); }
+.desktop.page-calibrate .gw-boxbar .gw-alignbtn.is-ready { background: var(--wash); color: var(--ink); }
+.desktop.page-calibrate .gw-boxbar .gw-alignbtn-ck { color: var(--positive-visual); }
+.desktop.page-calibrate .gw-aligned-badge { background: var(--surface-strong); color: var(--body); }
+.desktop.page-calibrate .gw-receipt { background: var(--ink); border-color: var(--ink); color: var(--canvas); }
+.desktop.page-calibrate .gw-receipt svg { color: var(--canvas); }
+
+.desktop.page-calibrate .inspector .gw-shape.on { background: var(--ink); border-color: var(--ink); color: var(--canvas); }
+.desktop.page-calibrate .inspector .gw-shape.on svg { color: var(--canvas); }
+.desktop.page-calibrate .inspector .gw-shape:hover { border-color: var(--hairline-strong); color: var(--ink); }
+
+.desktop.page-calibrate .gw-sw.on { background: var(--ink); }
+.desktop.page-calibrate .gw-sw.on::after { background: var(--canvas); }
+.desktop.page-calibrate .s2-switch--on .s2-switch__track { background: var(--ink) !important; }
+.desktop.page-calibrate .s2-switch--on:hover .s2-switch__track { background: var(--volo-800) !important; }
+
+.desktop.page-calibrate .cal2-stageseg .ctxnav-i.on { color: var(--ink); border-bottom-color: var(--ink); }
+.desktop.page-calibrate .cal2-stageseg .ctxnav-i.on svg { color: var(--ink); }
+.desktop.page-calibrate .ptab.on { color: var(--ink); border-bottom-color: var(--ink); }
+.desktop.page-calibrate .ptab.on .pico { color: var(--ink); }
+.desktop.page-calibrate .paneltgl.on { background: var(--ink); color: var(--canvas); }
+.desktop.page-calibrate .paneltgl.on svg { color: var(--canvas); }
+
+.desktop.page-calibrate .inspector .gw-grp-h:not(:has(.car.closed)) { box-shadow: inset 2px 0 0 var(--hairline-strong); }
+.desktop.page-calibrate .inspector .gw-grp-h:not(:has(.car.closed)) .num { color: var(--muted); }
+.desktop.page-calibrate .inspector .gw-insp-ic, .desktop.page-calibrate .inspector .insp-head .step-ico { color: var(--muted); }
+.desktop.page-calibrate .gw-disp-row.on .ic svg, .desktop.page-calibrate .gw-ctxcard .scr svg { color: var(--ink); }
+
+.desktop.page-calibrate .inspector .dep-tcard.on { background: var(--canvas-soft); border-color: var(--ink); }
+.desktop.page-calibrate .inspector .dep-tcard.on .dep-tcard-t { color: var(--ink); }
+.desktop.page-calibrate .inspector .dep-tcard.on .dep-tcard-ic { color: var(--ink); }
+.desktop.page-calibrate .inspector .dep-tcard.on .dep-tcard-scene { border-top-color: var(--hairline); }
+.desktop.page-calibrate .inspector .dep-tcard.on .dep-tcard-ck { background: var(--ink); border-color: var(--ink); color: var(--canvas); }
+.desktop.page-calibrate .inspector .dep-mon.on { background: var(--canvas-soft); border-color: var(--ink); }
+.desktop.page-calibrate .inspector .dep-mon.on .dep-mon-n, .desktop.page-calibrate .inspector .dep-mon.on .dep-mon-ic { color: var(--ink); }
+.desktop.page-calibrate .inspector .dep-mon.on .dep-mon-ck { background: var(--ink); border-color: var(--ink); color: var(--canvas); }
+.desktop.page-calibrate .inspector .gw-runrow.is-current { background: var(--canvas-soft); border-color: var(--hairline-strong); }
+.desktop.page-calibrate .inspector .gw-runrow.is-current .n .cur { background: var(--ink); color: var(--canvas); }
+.desktop.page-calibrate .pop-i.on { background: var(--canvas-soft); }
+.desktop.page-calibrate .pop-i.on .pop-l { color: var(--ink); }
+.desktop.page-calibrate .pop-i.on svg { color: var(--ink) !important; }
+.desktop.page-calibrate .resizer--col:hover::after, .desktop.page-calibrate .resizer--col:active::after { background: var(--ink); }
+.desktop.page-calibrate .gw-wall-lb.on { fill: var(--ink); }
+
+/* 保留的橙（点名重申，避免被上面的中性化规则波及） */
+.desktop.page-calibrate .inspector .s2-btn--fill.s2-btn--accent { background: var(--bg-inverse); color: var(--on-primary) !important; }
+.desktop.page-calibrate .gw-saction.is-primary { background: var(--bg-inverse); color: var(--on-primary); }
+.desktop.page-calibrate .gw-box.is-sel, .desktop.page-calibrate .gw-obj-outline { stroke: var(--stage-ink); }
+.desktop.page-calibrate .gw-obj-origin { fill: var(--stage-ink); }
+.desktop.page-calibrate .cal2-ov-row.active::before { background: var(--bg-inverse); }
+.desktop.page-calibrate .cal2-cur { background: var(--bg-inverse); color: var(--on-primary); }
+.desktop.page-calibrate .inspector .gw-num:focus, .desktop.page-calibrate .inspector .gw-txt:focus { border-color: var(--t-ink); box-shadow: 0 0 0 3px var(--or-soft); }
+.desktop.page-calibrate .vmeter__fill { background: var(--bg-inverse); }
+
+/* 版本切换器：缩小到视口叠加层该有的尺度 */
+.desktop.page-calibrate .gw-ver { padding: 2px; gap: 2px; }
+.desktop.page-calibrate .gw-ver button { padding: 4px 10px; font-size: 12px; gap: 5px; }
+.desktop.page-calibrate .gw-ver button svg { width: 13px; height: 13px; }
+.desktop.page-calibrate .gw-ver .kbd { font-size: 10.5px; }
+.desktop.page-calibrate .gw-ver .sep { height: 14px; }
+
+/* 坐标读数：X / Y / Z 竖排 */
+.desktop.page-calibrate .gw-coords { display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 6px 9px; }
+.desktop.page-calibrate .gw-coords .u { display: flex; gap: 4px; }
+.desktop.page-calibrate .gw-coords .xyz { display: flex; align-items: baseline; gap: 8px; }
+.desktop.page-calibrate .gw-coords .xyz .k { width: 9px; color: var(--stage-muted); }
+.desktop.page-calibrate .gw-coords .xyz .v { flex: 1; text-align: right; color: var(--ink); }
+
+/* 显示面板：折叠时只占标题宽度 */
+.desktop.page-calibrate .gw-disp:not(.is-open) { min-width: 0; width: max-content; padding: 3px; }
+.desktop.page-calibrate .gw-disp:not(.is-open) .gw-disp-h { padding: 3px 7px; }

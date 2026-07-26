@@ -8,6 +8,14 @@ import "./styles/colors.css";
 import "./styles/typography.css";
 import "./styles/spacing.css";
 import "./styles/fonts.css";
+/* Cursor Design System token 层。必须排在 Spectrum token 之后，让它的 :root
+   赢下同名 token；app.css 随后把 Volo 旧词汇（--chrome/--volo/--wash）重指到
+   app-era 的中性灰阶梯上。顺序即契约，换序即失效。 */
+import "./styles/cursorFonts.css";
+import "./styles/cursorColors.css";
+import "./styles/cursorTypography.css";
+import "./styles/cursorSpacing.css";
+import "./styles/cursorElevation.css";
 import "./styles/app.css";
 import "./styles/clean.css";
 import "./styles/zen.css";       // ZenServer 重做版样式（zen-status / zbadge / zsteps / zcli …）
@@ -27,6 +35,24 @@ import "./styles/calCaptureWindow.css"; // 实时采集单窗口（capw-* ——
 import "./styles/gridCaptureWindow.css"; // 网格快拍采集窗增量（gcapw-* —— 稳定度徽章/大号快门/张数计数/重置）
 import "./styles/calFlow.css";   // 镜头校正流程 + 上屏部署（dep-*/lc-*/mth-*/cal-srctag 等）
 import "./styles/calQsp.css";    // 固定机位 · VP-QSP 单次校正采集窗新增 UX（qsp-* —— 采集目的/五分区 report/静帧门控/attest/fail-closed/状态横幅）
+
+/* ============================================================
+   Cursor App 皮肤：五层「规则层」叠加，不改上面任何分区样式表。
+   Volo.html 里的加载顺序即契约，换序即失效：
+     1 calCursor       校正板块皮肤（app-era）
+     2 cursorApp       表面分层 / 控件形状 / 字号密度
+     3 cursorPolish    状态用色口径、行内节奏
+     4 cursorAuditFixes 全量审计修复（选择器误伤 / 写死 hex / 关键状态被压灰）
+     5 cursorLanguageV2 语言修订，推翻前几层的三条设定（药丸→圆角矩形 /
+                       一屏一枚实心主按钮 / 开关绿色）
+     6 cursorViewport  三维视口配色（全站唯一保留语义色的地方）
+   ============================================================ */
+import "./styles/calCursor.css";
+import "./styles/cursorApp.css";
+import "./styles/cursorPolish.css";
+import "./styles/cursorAuditFixes.css";
+import "./styles/cursorLanguageV2.css";
+import "./styles/cursorViewport.css";
 
 import "./ds";          // window.Spectrum2DesignSystem_b6d1b3 (+ React global)
 import "./data";        // window data globals + Icon

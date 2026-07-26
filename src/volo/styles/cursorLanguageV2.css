@@ -1,0 +1,337 @@
+/* ============================================================
+   Volo — Cursor 语言修订 v2（全站最后加载）
+
+   依据：用户补充的三张 Cursor 参考图，逐像素取样。
+   实测值（深色主题，@2x 截图换算回 CSS px）：
+     · 筛选 chip / 分段项  圆角 12px（**不是全圆药丸**），
+       选中 = 底 #272728 + 描边 #4f4f4f
+     · 设置面板按钮      圆角 6px，底色与卡片同色，只靠 1px #383838 描边区分
+     · 卡片 / 模块        圆角 12px
+     · 开关开启          #37985b，滑块白；关闭轨道 #3b3b3b
+     · 白色实心药丸      整屏只有一枚
+
+   本层推翻前三层的三条设定：
+   ① 强调不再靠「黑白反转」铺开 —— 每个分区只留一枚实心主按钮，
+      其余按钮与选中态一律「深底 + 1px 描边」，hover 加一层灰。
+      （改之前光缓存页一屏就有 12 枚白底按钮，其中 9 枚是「修复」。）
+   ② 开关开启态用绿色，不再用反转白；确认 / 破坏性操作允许用主流语义色。
+   ③ 控件形状从全圆药丸收成 8px 圆角矩形；卡片保持 12px。
+      只有开关轨道、滑块、状态圆点、滚动条仍是全圆。
+   ============================================================ */
+
+/* ---------- 0 · 新增 token ----------
+   深色一栏是参考图里直接取样到的值；浅色一栏是对应的镜像推导。
+   --radius-pill 在这里被整体重定义为 8px，上游所有引用它的规则
+   （含各分区样式表）会一次性跟着变成圆角矩形。 */
+:root, [data-theme="light"] {
+  --radius-control: 8px;
+  --radius-pill: 8px;
+  --switch-on:  #2f8b52;
+  --switch-off: #c8c7c8;
+  --ctrl-edge:     var(--edge-strong);
+  --ctrl-hover:    var(--bg-row);
+  --ctrl-on-bg:    var(--bg-selected);
+  --ctrl-on-edge:  #c4c4c4;
+}
+[data-theme="dark"] {
+  --radius-pill: 8px;
+  --switch-on:  #37985b;   /* 取样 */
+  --switch-off: #3b3b3b;   /* 取样 */
+  --ctrl-edge:    #383838; /* 取样：设置面板按钮描边 */
+  --ctrl-hover:   #232323;
+  --ctrl-on-bg:   #272728; /* 取样：选中 chip 底 */
+  --ctrl-on-edge: #4f4f4f; /* 取样：选中 chip 描边 */
+}
+
+/* ---------- 1 · 形状：药丸 → 圆角矩形 ----------
+   先把所有按钮与徽章类元素一律收到 8px（分区样式表里还有一批写死的
+   999px，token 重定义拦不住，靠这条兜底），再把真正该圆的还回去。 */
+.desktop button, .desktop [role="button"],
+.desktop .s2-btn, .desktop [class*="-btn"], .desktop [class*="btn-"],
+.desktop [class*="badge"], .desktop [class*="chip"], .desktop [class*="tag"],
+.desktop [class*="pill"], .desktop [class*="node"], .desktop [class*="spill"],
+.desktop .view-toggle, .desktop .skl, .desktop .cal2-stageseg-wip,
+.desktop .gw-seg2, .desktop .gw-glass button {
+  border-radius: var(--radius-control) !important;
+}
+.desktop button, .desktop .s2-btn, .desktop [class*="-btn"] {
+  transition: background-color .12s ease, border-color .12s ease, color .12s ease;
+}
+
+/* 全圆只留给：开关轨道 / 滑块 / 状态圆点 / 勾选圈 / 滚动条 */
+.desktop .gw-sw, .desktop .s2-switch__track, .desktop .s2-switch__handle,
+.desktop ::-webkit-scrollbar-thumb { border-radius: 9999px !important; }
+.desktop .gw-sw::after { border-radius: 50% !important; }
+.desktop [class*="dot"], .desktop .pip, .desktop .sdot, .desktop [class*="-ck"],
+.desktop .brand-badge, .desktop [class*="avatar"], .desktop input[type="radio"] {
+  border-radius: 50% !important;
+}
+
+/* ---------- 2 · 按钮：默认深底 + 1px 描边，hover 加一层灰 ----------
+   对应参考图二的「Choose Custom Sound… / Preview」：
+   底色跟卡片同色，只靠一条细描边立住。 */
+.desktop .fix-btn, .desktop .s2-btn--S.s2-btn--fill.s2-btn--accent,
+.desktop .s2-btn--outline, .desktop .s2-btn--secondary, .desktop .mini-btn {
+  background: var(--bg-card) !important;
+  border: 1px solid var(--ctrl-edge) !important;
+  color: var(--t-ink) !important;
+}
+.desktop .fix-btn svg, .desktop .s2-btn--S.s2-btn--fill.s2-btn--accent svg { color: var(--t-ink) !important; }
+.desktop .fix-btn:hover, .desktop .s2-btn--S.s2-btn--fill.s2-btn--accent:hover,
+.desktop .s2-btn--outline:hover, .desktop .s2-btn--secondary:hover, .desktop .mini-btn:hover {
+  background: var(--ctrl-hover) !important; border-color: var(--ctrl-on-edge) !important;
+}
+
+/* 分区级主按钮：只留中 / 大号 accent（小号 accent 已在上面降为次级） */
+.desktop .s2-btn--M.s2-btn--fill.s2-btn--accent,
+.desktop .s2-btn--L.s2-btn--fill.s2-btn--accent {
+  background: var(--bg-inverse) !important; color: var(--text-on-inverse) !important;
+  border: 1px solid transparent !important; border-radius: var(--radius-control) !important;
+}
+
+/* ---------- 3 · 选中态：深底 + 描边，不再反转 ----------
+   对应参考图一的「Plugins」与图三的「Mine / Popular」。 */
+.desktop .pagetabs .ptab.on, .desktop.page-calibrate .ptab.on,
+.desktop .ctxnav-i.on, .desktop.page-calibrate .cal2-stageseg .ctxnav-i.on,
+.desktop .leftcol .nav-i.on, .desktop .gw-nav .nav-i.on,
+.desktop [class*="chip"].on, .desktop [class*="chip"].active, .desktop [class*="chip"].is-on,
+.desktop [class*="-seg"]:has(> button) > button.on, .desktop .seg > button.on,
+.desktop .role-seg button.on, .desktop .gw-seg2 button.on,
+.desktop .vt-btn.on, .desktop .paneltgl.on, .desktop .pc-chip.on, .desktop .pc-node.on, .desktop .ts-cam.on,
+.desktop .cal2-mbtn.on, .desktop .cal2-roleseg button.on, .desktop .cal2-savebtn.dirty,
+.desktop .gw-glass button.on {
+  background: var(--ctrl-on-bg) !important;
+  border: 1px solid var(--ctrl-on-edge) !important;
+  color: var(--t-ink) !important;
+  border-radius: var(--radius-control) !important;
+}
+.desktop .pagetabs .ptab.on .pico, .desktop .ctxnav-i.on svg, .desktop .paneltgl.on svg,
+.desktop .pc-chip.on .pc-ue, .desktop .pc-chip.on .pc-gpu { color: var(--t-ink) !important; }
+.desktop .pagetabs .ptab.on .skl { background: var(--bg-badge) !important; color: var(--t-muted) !important; }
+.desktop .gw-glass button:hover:not(.on) { background: var(--ctrl-hover) !important; }
+
+/* 步骤节点：进行中也走深底描边，不再反转 */
+.desktop .step.active .node, .desktop .gw-fstep.active .gw-fstep-n, .desktop .dep-step.active .n,
+.desktop .gw-pipe-st.active .gw-pipe-dot, .desktop .cal2-flowstep.active .cal2-flow-n {
+  background: var(--ctrl-on-bg) !important; border: 1px solid var(--ctrl-on-edge) !important; color: var(--t-ink) !important;
+}
+
+/* ---------- 4 · 开关：开启 = 绿色，滑块恒白 ---------- */
+.desktop .gw-sw { background: var(--switch-off) !important; }
+.desktop .gw-sw.on { background: var(--switch-on) !important; }
+.desktop .gw-sw::after, .desktop .gw-sw.on::after { background: #ffffff !important; }
+.desktop .s2-switch__track { background: var(--switch-off) !important; }
+.desktop .s2-switch--on .s2-switch__track { background: var(--switch-on) !important; }
+.desktop .s2-switch__handle, .desktop .s2-switch--on .s2-switch__handle { background: #ffffff !important; }
+
+/* ---------- 5 · 确认 / 破坏性操作允许用主流语义色 ----------
+   这一条是对「全站只有黑白」的松绑：勾选用绿、不可撤销的确认用红。 */
+.desktop .proj-tile.on .proj-tile-mck {
+  background: var(--switch-on) !important; border-color: var(--switch-on) !important; color: #ffffff !important;
+}
+.desktop .gw-reset-confirm .y {
+  background: var(--status-err) !important; color: #ffffff !important; border-color: transparent !important;
+}
+
+
+/* ③ 形状：改为过滤胶囊行（文本 pill · 换行排布 · 选中 = 浅填 + 强描边） */
+.desktop.page-calibrate .gw-shape-grid,
+.desktop.page-calibrate .inspector .gw-shape-grid { display: flex; flex-wrap: wrap; gap: 6px; grid-template-columns: none; }
+.desktop.page-calibrate .gw-shape,
+.desktop.page-calibrate .inspector .gw-shape { flex-direction: row; align-items: center; justify-content: center; width: auto; min-height: 26px;
+  padding: 4px 12px !important; gap: 0; height: auto !important; border-radius: 9999px !important; background: transparent;
+  border: 1px solid var(--hairline-strong); color: var(--body); }
+.desktop.page-calibrate .gw-shape .t,
+.desktop.page-calibrate .inspector .gw-shape .t { font-size: 13px; font-weight: 400; white-space: nowrap; line-height: 1.4; }
+.desktop.page-calibrate .gw-shape:hover,
+.desktop.page-calibrate .inspector .gw-shape:hover { background: var(--surface-card); border-color: var(--muted-soft); color: var(--ink); }
+.desktop.page-calibrate .gw-shape.on,
+.desktop.page-calibrate .inspector .gw-shape.on { background: var(--surface-strong); border-color: var(--muted-soft); color: var(--ink); }
+.desktop.page-calibrate .gw-shape.on .t,
+.desktop.page-calibrate .inspector .gw-shape.on .t { font-weight: 500; }
+
+
+/* 检查器字段行：撤掉 [class*="field"] 通配误伤的输入框底 —— 折叠组里的子选项回到纯行式 */
+.desktop .gw-field, .desktop .gw-field.stack, .desktop .gw-insp .gw-field {
+  background: none !important; border: 0 !important; border-radius: 0 !important;
+  border-bottom: 1px solid var(--hairline-soft) !important; box-shadow: none !important; }
+.desktop .gw-grp-body > .gw-field:last-child { border-bottom: 0 !important; }
+.desktop .gw-field:hover { background: var(--canvas-soft) !important; }
+
+
+/* 检查器折叠组：组与组之间留出呼吸 */
+.desktop.page-calibrate .inspector .gw-grp + .gw-grp { margin-top: 14px; }
+.desktop.page-calibrate .inspector .gw-grp-body { padding-bottom: 4px; }
+
+
+/* ============================================================
+   破坏性动作统一口径：红描边 + 红字 + 红图标（hover 补 8% 红底）。
+   适用：移除 / 删除 / 清除 / 卸载 / 中止 / 停止输出 等不可撤销或降级操作。
+   ============================================================ */
+.desktop .ce-recent-i .gw-tinline,
+.desktop .mini-btn.danger,
+.desktop .s2-btn--negative,
+.desktop .nd-stop,
+.desktop .nd-node-del,
+.desktop .pathb-rm,
+.desktop .gw-prow .rm,
+.desktop .gw-seg-row .rm,
+.desktop .gw-insp .rm {
+  color: var(--status-err) !important;
+  border: 1px solid color-mix(in srgb, var(--status-err) 42%, transparent) !important;
+  background: transparent !important; box-shadow: none !important; }
+.desktop .ce-recent-i .gw-tinline svg,
+.desktop .mini-btn.danger svg,
+.desktop .s2-btn--negative svg,
+.desktop .nd-stop svg,
+.desktop .nd-node-del svg,
+.desktop .pathb-rm svg,
+.desktop .gw-prow .rm svg,
+.desktop .gw-seg-row .rm svg,
+.desktop .gw-insp .rm svg { color: var(--status-err) !important; }
+.desktop .ce-recent-i .gw-tinline:hover,
+.desktop .mini-btn.danger:hover,
+.desktop .s2-btn--negative:hover,
+.desktop .nd-stop:hover:not(:disabled),
+.desktop .nd-node-del:hover,
+.desktop .pathb-rm:hover,
+.desktop .gw-prow .rm:hover,
+.desktop .gw-seg-row .rm:hover,
+.desktop .gw-insp .rm:hover {
+  color: var(--status-err) !important;
+  border-color: color-mix(in srgb, var(--status-err) 75%, transparent) !important;
+  background: color-mix(in srgb, var(--status-err) 10%, transparent) !important; }
+.desktop .nd-stop:disabled, .desktop .mini-btn.danger:disabled, .desktop .s2-btn--negative:disabled {
+  color: var(--t-muted) !important; border-color: var(--edge-input) !important; opacity: .6; }
+.desktop .nd-stop:disabled svg, .desktop .mini-btn.danger:disabled svg { color: var(--t-muted) !important; }
+
+/* 菜单里的危险项：只染字与图标，不加框 */
+.desktop .pop-i.danger, .desktop .pop-i.danger .pop-l { color: var(--status-err) !important; }
+.desktop .pop-i.danger svg { color: var(--status-err) !important; }
+.desktop .pop-i.danger:hover { background: color-mix(in srgb, var(--status-err) 10%, transparent) !important; }
+
+
+/* ============================================================
+   「当前 / 生效中」标记统一口径：绿描边 + 绿字 + 8% 绿底（与红色危险族同构）。
+   ============================================================ */
+.desktop .cal2-cur,
+.desktop .gw-tcur,
+.desktop .gw-runrow .n .cur,
+.desktop.page-calibrate .cal2-cur,
+.desktop.page-calibrate .gw-runrow .n .cur,
+.desktop.page-calibrate .inspector .gw-runrow.is-current .n .cur,
+.desktop .spill.spill--positive,
+.desktop .cap-pill--positive,
+.desktop .lrp-badge--success {
+  color: var(--status-ok) !important;
+  background: color-mix(in srgb, var(--status-ok) 10%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--status-ok) 42%, transparent) !important;
+  border-radius: 9999px !important; padding: 1px 8px !important;
+  font-size: 12px !important; font-weight: 600 !important; letter-spacing: 0 !important; }
+.desktop .spill.spill--positive svg,
+.desktop .cap-pill--positive svg { color: var(--status-ok) !important; }
+
+
+/* 数字输入：全 App 去掉原生上下步进按钮（键盘 ↑↓ 与拖拽仍可调值） */
+.desktop input[type="number"]::-webkit-inner-spin-button,
+.desktop input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none !important; appearance: none !important; margin: 0 !important; display: none !important; }
+.desktop input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+
+
+/* 数值输入：框内居中（全 App 统一） */
+.desktop input[type="number"], .desktop .gw-num, .desktop .nd-num, .desktop .gc-num,
+.desktop [class*="-num"], .desktop .twk-num input { text-align: center !important; }
+
+
+/* 检查器已无标题条：分组吸顶回到 0，避免顶部留出一段空白 */
+.desktop.page-calibrate .inspector .gw-grp-h { top: 0 !important; }
+.desktop.page-calibrate .inspector .gw-grp:first-child { margin-top: 8px !important; }
+
+
+/* 上屏部署方式：大卡改为两枚紧凑胶囊 + 一行说明 */
+.desktop .dep-targets--compact { display: flex; flex-wrap: wrap; gap: 6px; }
+.desktop .dep-tchip { display: inline-flex; align-items: center; gap: 6px; }
+.desktop .dep-tchip svg { color: currentColor; }
+.desktop .dep-tnote { margin-top: 8px; font-size: 12px; line-height: 1.6; color: var(--t-muted); text-wrap: pretty; }
+
+
+/* 输出显示器：大卡改为紧凑胶囊行 */
+.desktop .dep-monlist--compact { display: flex; flex-wrap: wrap; gap: 6px; }
+
+
+/* nDisplay 拓扑摘要：收紧成一行摘要 + 密排节点表 */
+.desktop.page-calibrate .dep-topo { padding: 8px 10px; gap: 4px; }
+.desktop.page-calibrate .dep-topo-sum--slim { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 4px 0; background: none !important; border: 0 !important; }
+.desktop.page-calibrate .dep-topo-sum--slim .dep-topo-sum-t { font-family: var(--font-code); font-size: 12px; color: var(--t-body); }
+.desktop.page-calibrate .dep-topo-edit { font-size: 12px; color: var(--t-muted); }
+.desktop.page-calibrate .dep-topo-sum--slim:hover .dep-topo-edit { color: var(--t-ink); text-decoration: underline; }
+.desktop.page-calibrate .dep-topo-nodes { gap: 0; }
+.desktop.page-calibrate .dep-node { padding: 4px 0; gap: 8px; background: none; border: 0; border-top: 1px solid var(--hairline-soft); border-radius: 0; }
+.desktop.page-calibrate .dep-node-n { font-size: 12px; }
+.desktop.page-calibrate .dep-node-master { font-size: 11px; padding: 0 4px; }
+.desktop.page-calibrate .dep-node-stage { font-size: 12px; color: var(--t-muted); font-family: var(--font-code); }
+
+
+/* 上屏部署检查器：分区标题可折叠 */
+.desktop .dep-sect-h { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 8px; width: 100%;
+  cursor: pointer; padding: 2px 0 8px; color: var(--t-muted); }
+.desktop .dep-sect-h:hover { color: var(--t-ink); }
+.desktop .dep-sect.is-closed { padding-bottom: 8px; }
+
+
+/* 重建方法：分段控件改两枚紧凑胶囊 */
+.desktop.page-calibrate .gw-method-seg--slim { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 !important;
+  background: none !important; border: 0 !important; }
+.desktop.page-calibrate .gw-method-seg--slim button { padding: 4px 12px !important; }
+
+
+/* 导出目标：卡片改紧凑胶囊行 */
+.desktop.page-calibrate .gw-export-targets--slim { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; }
+.desktop .dep-targets--compact, .desktop .dep-monlist--compact,
+.desktop.page-calibrate .gw-method-seg--slim { flex-direction: row; align-items: center; }
+
+
+/* accent 主按钮：统一墨色反转（浅底 + 深字），此前部分按钮被压成深底却仍用近黑标签 */
+.desktop .s2-btn--fill.s2-btn--accent, .desktop .s2-btn--accent {
+  background: var(--bg-inverse) !important; border-color: var(--bg-inverse) !important; }
+.desktop .s2-btn--fill.s2-btn--accent, .desktop .s2-btn--fill.s2-btn--accent span,
+.desktop .s2-btn--accent, .desktop .s2-btn--accent span,
+.desktop .s2-btn--fill.s2-btn--accent svg, .desktop .s2-btn--accent svg { color: var(--text-on-inverse) !important; }
+.desktop .s2-btn--accent:disabled, .desktop .s2-btn--accent[aria-disabled="true"] { opacity: .45; }
+
+
+/* 采集窗右侧设置列：整体降密度，单块不再占大面积 */
+.desktop .lc-side .lc-grp-h { padding: 6px 12px; gap: 7px; min-height: 0; }
+.desktop .lc-side .lc-grp-h .ic { display: none; }
+.desktop .lc-side .lc-grp-b { padding: 0 12px 8px; gap: 6px; }
+/* 校正方式：紧凑列表行（一行一项 · 选中 = 浅填 + 左侧勾） */
+.desktop .lc-side .lc-mopts { gap: 1px; flex-direction: column; }
+.desktop .lc-side .lc-mopt { display: flex; width: 100%; padding: 5px 9px !important; gap: 8px; min-height: 0;
+  border-radius: var(--radius-input) !important; background: transparent; border: 1px solid transparent !important; }
+.desktop .lc-side .lc-mopt:hover:not(.is-disabled) { background: var(--bg-row); }
+.desktop .lc-side .lc-mopt.on { background: var(--bg-segment, var(--surface-strong)); border-color: var(--edge-strong) !important; }
+.desktop .lc-side .lc-mopt.on .lc-mopt-n { color: var(--t-ink); font-weight: 500; }
+.desktop .lc-side .lc-mopt-m { flex: 1; min-width: 0; }
+.desktop .lc-side .lc-mopt-ck { display: grid; width: 12px; height: 12px; border-width: 1px; }
+.desktop .lc-side .lc-mopt-ic, .desktop .lc-side .lc-mopt-d, .desktop .lc-side .lc-mopt-sub { display: none; }
+.desktop .lc-side .lc-mopt-n { font-size: 12px; font-weight: 400; white-space: nowrap; }
+.desktop .lc-side .lc-mopt-soon { font-size: 11px; padding: 0 4px; }
+.desktop .lc-side .lc-field { gap: 2px; }
+.desktop .lc-side .lc-field > .k { font-size: 12px; font-weight: 500; }
+.desktop .lc-side .lc-selbtn { padding: 3px 9px; min-height: 0; }
+.desktop .lc-side .lc-setup-foot { padding: 8px 12px 10px; }
+
+
+/* 校正方式下拉：弹出列表 */
+.desktop .lc-mpop { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 30; min-width: 0; }
+.desktop .lc-mpop .pop-i { display: flex; align-items: center; gap: 8px; }
+.desktop .lc-mpop .pop-i.is-disabled { opacity: .55; cursor: not-allowed; }
+.desktop .lc-side .lc-selbtn { width: 100%; }
+
+/* 小号 accent 已降级为次级底色（卡片底），标签必须回到墨色前景，
+   否则会被上面 297 行的 text-on-inverse 压成暗色字 → 暗色模式下不可读。 */
+.desktop .s2-btn--S.s2-btn--fill.s2-btn--accent,
+.desktop .s2-btn--S.s2-btn--fill.s2-btn--accent span,
+.desktop .s2-btn--S.s2-btn--fill.s2-btn--accent svg { color: var(--t-ink) !important; }

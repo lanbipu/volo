@@ -20,17 +20,16 @@ import { generatedPatternImagePath } from "../api/meshVisualCommands";
   const toneVar = (t) => t === 'neutral' ? 'var(--chrome-faint)' : t === 'active' ? 'var(--volo-500)' : 'var(--' + t + '-visual)';
   const OUTPUT_PATHS = DEFAULT_NDISPLAY_OUTPUT_PATHS;
 
+  /* 部署方式：两枚紧凑胶囊 + 一行说明（原大卡片在窄检查器里占掉整屏） */
   function TargetCards({ s }) {
-    return h('div', { className: 'dep-targets' }, CAL_DEPLOY_TARGETS.map((t) => {
-      const on = s.calOutTarget === t.id;
-      return h('button', { key: t.id, className: 'dep-tcard' + (on ? ' on' : ''), onClick: () => s.setCalOutTarget(t.id) },
-        h('div', { className: 'dep-tcard-h' },
-          h('span', { className: 'dep-tcard-ic' }, h(Icon, { name: t.icon, size: 18 })),
-          h('span', { className: 'dep-tcard-t' }, t.label),
-          h('span', { className: 'dep-tcard-ck' }, on ? h(Icon, { name: 'check', size: 12 }) : null)),
-        h('div', { className: 'dep-tcard-d' }, t.desc),
-        h('div', { className: 'dep-tcard-scene' }, h(Icon, { name: 'info', size: 12 }), t.scene));
-    }));
+    const cur = CAL_DEPLOY_TARGETS.find((t) => t.id === s.calOutTarget) || CAL_DEPLOY_TARGETS[0];
+    return h(React.Fragment, null,
+      h('div', { className: 'dep-targets dep-targets--compact' }, CAL_DEPLOY_TARGETS.map((t) => {
+        const on = s.calOutTarget === t.id;
+        return h('button', { key: t.id, className: 'gw-shape dep-tchip' + (on ? ' on' : ''), onClick: () => s.setCalOutTarget(t.id) },
+          h('span', { className: 't' }, t.label));
+      })),
+      h('div', { className: 'dep-tnote' }, cur.desc));
   }
 
   function useMonitors() {
@@ -96,12 +95,10 @@ import { generatedPatternImagePath } from "../api/meshVisualCommands";
 
     return h('div', { className: 'dep-sec' },
       h('div', { className: 'dep-sec-h' }, h(Icon, { name: 'panel', size: 14 }), '输出显示器'),
-      h('div', { className: 'dep-monlist' }, mons.map((m) => h('button', { key: m.index, className: 'dep-mon' + (m.index === sel ? ' on' : ''), onClick: () => setSel(m.index) },
-        h('span', { className: 'dep-mon-ck' }, m.index === sel ? h(Icon, { name: 'check', size: 12 }) : null),
-        h('span', { className: 'dep-mon-ic' }, h(Icon, { name: 'panel', size: 15 })),
-        h('div', { className: 'dep-mon-m' },
-          h('div', { className: 'dep-mon-n' }, m.name || ('显示器 ' + m.index), m.is_primary ? h('span', { className: 'dep-mon-primary' }, '主屏') : null),
-          h('div', { className: 'dep-mon-s' }, m.width + '×' + m.height + ' · 缩放 ' + ((m.scale_factor || 1) * 100).toFixed(0) + '%'))))),
+      /* 显示器：紧凑胶囊行 + 一行说明（选中项的分辨率 / 缩放 / 主屏都收进说明里） */
+      h('div', { className: 'dep-monlist dep-monlist--compact' }, mons.map((m) => h('button', { key: m.index, className: 'gw-shape dep-monchip' + (m.index === sel ? ' on' : ''), onClick: () => setSel(m.index) },
+        h('span', { className: 't' }, m.name || ('显示器 ' + m.index))))),
+      h('div', { className: 'dep-tnote' }, mon.width + '×' + mon.height + ' · 缩放 ' + ((mon.scale_factor || 1) * 100).toFixed(0) + '%' + (mon.is_primary ? ' · 主屏' : '')),
       deployed ? h(React.Fragment, null,
         h(StandbyCard, { s, target: mon.name || ('显示器 ' + mon.index), busy, setBusy }),
         mismatch ? h('div', { className: 'dep-warn' }, h(Icon, { name: 'alert', size: 14 }),
@@ -163,7 +160,7 @@ import { generatedPatternImagePath } from "../api/meshVisualCommands";
         h('div', { className: 'dep-standby-t' },
           h('h4', null, showing ? '显示中' : '黑场待机'),
           h('span', { className: 'spill spill--' + st.tone }, h(Icon, { name: st.icon, size: 12 }), st.label)),
-        h('div', { className: 'dep-standby-d' }, target + ' · 通道已部署，可供测试图与校正采集统一使用')),
+        h('div', { className: 'dep-standby-d' }, target + ' · 通道已部署')),
       h('div', { className: 'dep-standby-acts' },
         showing
           ? h(Button, { variant: 'secondary', size: 'S', isDisabled: !!busy, icon: h(Icon, { name: 'minus', size: 13 }), onPress: toBlack }, '回黑场')
@@ -409,19 +406,17 @@ import { generatedPatternImagePath } from "../api/meshVisualCommands";
 
     return h('div', { className: 'dep-sec' },
       h('div', { className: 'dep-topo' },
-        h('button', { className: 'dep-topo-sum', onClick: openTopo },
-          h('span', { className: 'dep-topo-sum-ic' }, h(Icon, { name: 'panel', size: 15 })),
-          h('div', { className: 'dep-topo-sum-m' },
-            h('div', { className: 'dep-topo-sum-t' }, topo.nodes.length + ' 节点 · ' + topo.screenCount + ' 屏 · 复合画布 ' + topo.canvas.w + '×' + topo.canvas.h),
-            h('div', { className: 'dep-topo-sum-s' }, '点击编辑输出拓扑')),
-          h('span', { className: 'spill spill--informative' }, h(Icon, { name: 'settings', size: 12 }), '编辑拓扑')),
+        /* 拓扑摘要收成一行：一行摘要 + 「编辑」文字入口，节点表密排 */
+        h('button', { className: 'dep-topo-sum dep-topo-sum--slim', onClick: openTopo },
+          h('span', { className: 'dep-topo-sum-t' }, topo.nodes.length + ' 节点 · ' + topo.screenCount + ' 屏 · ' + topo.canvas.w + '×' + topo.canvas.h),
+          h('span', { className: 'dep-topo-edit' }, '编辑')),
         h('div', { className: 'dep-topo-nodes' }, topo.nodes.map((nd) => {
           const st = nodeStatus(nd), meta = NST[st] || NST.ready;
           return h('div', { key: nd.id, className: 'dep-node' },
             h('span', { className: 'dep-node-dot', style: { background: toneVar(meta.tone) } }),
             h('span', { className: 'dep-node-n' }, nd.name, nd.master ? h('span', { className: 'dep-node-master' }, '主') : null),
             h('span', { className: 'dep-node-h' }, nd.host + ' · ' + nd.w + '×' + nd.h),
-            h('span', { className: 'dep-node-stage' }, h('span', { className: 'spill spill--' + meta.tone, style: { fontSize: 10.5 } }, h(Icon, { name: meta.icon, size: 11 }), stageLabel(st))));
+            h('span', { className: 'dep-node-stage' }, stageLabel(st)));
         }))),
       h('div', { className: 'dep-flow' }, steps.flatMap((st, i) => [
         i > 0 ? h(Icon, { key: 'a' + i, name: 'chevr', size: 13, className: 'dep-flow-arrow' }) : null,
@@ -456,7 +451,7 @@ import { generatedPatternImagePath } from "../api/meshVisualCommands";
         h('div', { className: 'dep-standby-t' },
           h('h4', null, showing ? '显示中' : '黑场待机'),
           h('span', { className: 'spill spill--' + st.tone }, h(Icon, { name: st.icon, size: 12 }), st.label)),
-        h('div', { className: 'dep-standby-d' }, target + ' · 通道已部署，可供测试图与校正采集统一使用')),
+        h('div', { className: 'dep-standby-d' }, target + ' · 通道已部署')),
       h('div', { className: 'dep-standby-acts' },
         showing
           ? h(Button, { variant: 'secondary', size: 'S', isDisabled: !!busy, icon: h(Icon, { name: 'minus', size: 13 }), onPress: actions.toBlack }, '回黑场')
@@ -538,6 +533,16 @@ import { generatedPatternImagePath } from "../api/meshVisualCommands";
         : h('span', { className: 'spill spill--neutral' }, h('span', { style: { fontWeight: 700 } }, '—'), '采集将被阻止')));
   }
 
+  /* 检查器分区：标题即折叠开关（窄栏里三段全展开会顶到屏外） */
+  function DepSect({ title, cls, defOpen, children }) {
+    const [open, setOpen] = useState(defOpen !== false);
+    return h('div', { className: 'insp-sect dep-sect' + (cls ? ' ' + cls : '') + (open ? '' : ' is-closed') },
+      h('button', { className: 'lh dep-sect-h', onClick: () => setOpen((v) => !v) },
+        h('span', null, title),
+        h(Icon, { name: 'chevd', size: 14, style: { marginLeft: 'auto', transform: open ? 'none' : 'rotate(-90deg)', transition: 'transform .12s' } })),
+      open ? h('div', { className: 'dep-sect-b' }, children) : null);
+  }
+
   function DeployInspectorBody({ s }) {
     /* 订一次项目 store，供子分支读 patternGen / topology（Rules of Hooks：无条件） */
     CX().useProj();
@@ -548,16 +553,10 @@ import { generatedPatternImagePath } from "../api/meshVisualCommands";
           h('span', { className: 'step-ico', style: { width: 30, height: 30, borderRadius: 8 } }, h(Icon, { name: 'external', size: 16 })),
           h('h2', { style: { margin: 0, fontSize: 15, fontWeight: 700 } }, '上屏部署')),
         h('span', { className: 'spill spill--' + st.tone }, st.icon === 'minus' ? h('span', { style: { fontWeight: 700 } }, '—') : h(Icon, { name: st.icon, size: 12 }), st.label)),
-      h('div', { className: 'insp-sect' },
-        h('div', { className: 'dep-lead', style: { marginBottom: 0 } },
-          '将 LED 屏输出通道部署到 ', h('b', null, '黑屏待机'), '，供 ', h('b', null, '测试图上墙'), ' 与 ', h('b', null, '镜头校正采集'), ' 统一复用。')),
-      h('div', { className: 'insp-sect dep-insp' },
-        h('div', { className: 'lh' }, '部署方式'),
+      h(DepSect, { title: '部署方式', cls: 'dep-insp' },
         h(TargetCards, { s }),
         h('div', { style: { marginTop: 12 } }, s.calOutTarget === 'cluster' ? h(ClusterBranch, { s }) : h(MonitorBranch, { s }))),
-      h('div', { className: 'insp-sect' },
-        h('div', { className: 'lh' }, '当前部署状态'),
-        h(DeploySummaryRows, { s })));
+      h(DepSect, { title: '当前部署状态' }, h(DeploySummaryRows, { s })));
   }
 
   function deployInspector(s) {

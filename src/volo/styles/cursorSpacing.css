@@ -1,0 +1,43 @@
+/* ============================================================
+   Cursor · Spacing + radius tokens — APP density
+   4px base unit. App rhythm is compact: 48px between major
+   page sections, 16–24px inside cards, content column caps at
+   ~880px (measured from uploads/refs/ screenshots).
+
+   SHAPE LANGUAGE (revised 2026-07-25 after re-measuring the
+   settings-window + chips-row + automations screenshots):
+   controls are ROUNDED RECTANGLES, not pills. Measured radii,
+   @2x screenshots converted back to CSS px:
+     · settings-window buttons  6px
+     · filter chips / segments  12px on a 30px-tall control
+       (a pill would need 15px — they are visibly not pills)
+     · cards / modules          12px
+   Only the switch track, its knob, status dots and the
+   scrollbar thumb are fully round.
+   ============================================================ */
+:root {
+  --space-xxs:    4px;
+  --space-xs:     8px;
+  --space-sm:     12px;
+  --space-base:   16px;
+  --space-md:     20px;
+  --space-lg:     24px;
+  --space-xl:     32px;
+  --space-xxl:    48px;
+  --space-section: 48px;   /* vertical rhythm between page sections */
+
+  --radius-none: 0px;
+  --radius-xs:   4px;      /* inline tags */
+  --radius-sm:   6px;      /* compact controls (settings-window buttons) */
+  --radius-md:   8px;      /* inputs, selected nav rows, small cards */
+  --radius-control: 8px;   /* buttons, chips, segments, tabs, badges */
+  --radius-lg:   12px;     /* cards, template tiles, empty states */
+  --radius-xl:   16px;     /* composer, large panels */
+  --radius-round: 9999px;  /* switch track + knob, dots, scrollbar ONLY */
+
+  /* DEPRECATED alias — old consumers said "pill"; it now resolves to the
+     rounded-rect control radius so nothing renders as a capsule. */
+  --radius-pill: var(--radius-control);
+
+  --container-max: 880px;  /* centered content column (measured) */
+}

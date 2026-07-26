@@ -1,0 +1,16 @@
+/* ============================================================
+   Cursor · Font tokens
+   Inter carries the whole app UI (the in-app face is an
+   Inter-class neutral grotesk; Inter is the wired-in stand-in).
+   JetBrains Mono on code surfaces only. Noto Sans SC covers
+   CJK fallback (never mono for CJK running text).
+   Desktop apps should bundle these font files with the app
+   instead of relying on this network @import.
+   ============================================================ */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600&display=swap');
+
+:root {
+  --font-sans: 'Inter', system-ui, 'Helvetica Neue', Helvetica,
+               'Noto Sans SC', Arial, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+}

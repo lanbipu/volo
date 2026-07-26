@@ -2602,21 +2602,32 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
   const lensEntry = (icon, label, onClick, disabled) => h('button', { className: 'lens-entry' + (disabled ? ' is-disabled' : ''), onClick: disabled ? undefined : onClick, disabled },
     h('span', { className: 'lens-entry-ic' }, h(Icon, { name: icon, size: 15 })), h('span', null, label), h(Icon, { name: 'chevr', size: 14 }));
 
-  /* 校正方式 · 三个紧凑选项（在二级面板内选，不跳独立页） */
+  /* 校正方式 · 下拉列表选择（弹出 popover；原来的三张卡在窄侧栏里占掉大半屏） */
   function MethodOptions({ s }) {
     const slUnlocked = s.calSlUnlock;
-    return h('div', { className: 'lc-mopts' }, CAL_METHODS.map((m) => {
-      const avail = m.avail || (m.id === 'sl' && slUnlocked);
-      const on = s.lensCalMethod === m.id;
-      return h('button', { key: m.id, className: 'lc-mopt' + (on ? ' on' : '') + (avail ? '' : ' is-disabled'),
-        onClick: () => { if (avail) s.setLensCalMethod(m.id); }, title: avail ? '' : '该方式即将支持' },
-        h('span', { className: 'lc-mopt-ck' }, on ? h(Icon, { name: 'check', size: 11 }) : null),
-        h('span', { className: 'lc-mopt-ic' }, h(Icon, { name: CAL_METHOD_BADGES[m.id].icon, size: 15 })),
-        h('div', { className: 'lc-mopt-m' },
-          h('div', { className: 'lc-mopt-n' }, m.name, m.sub ? h('span', { className: 'lc-mopt-sub' }, m.sub) : null),
-          h('div', { className: 'lc-mopt-d' }, m.tags.join(' · ') + (m.note ? ' · ' + m.note : ''))),
-        avail ? null : h('span', { className: 'lc-mopt-soon' }, '即将支持'));
-    }));
+    const [open, setOpen] = useState(false);
+    const ref = useRef(null);
+    useEffect(() => {
+      if (!open) return undefined;
+      const fn = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+      document.addEventListener('mousedown', fn);
+      return () => document.removeEventListener('mousedown', fn);
+    }, [open]);
+    const cur = CAL_METHODS.find((m) => m.id === s.lensCalMethod) || CAL_METHODS[0];
+    return h('div', { ref, className: 'lc-mselect', style: { position: 'relative' } },
+      h('button', { className: 'lc-selbtn', onClick: () => setOpen((v) => !v) },
+        h('span', { className: 'v' }, cur.name),
+        h(Icon, { name: 'chevd', size: 13, style: { marginLeft: 'auto' } })),
+      open ? h('div', { className: 'popover lc-mpop' }, CAL_METHODS.map((m) => {
+        const avail = m.avail || (m.id === 'sl' && slUnlocked);
+        const on = s.lensCalMethod === m.id;
+        return h('div', { key: m.id, className: 'pop-i' + (on ? ' on' : '') + (avail ? '' : ' is-disabled'),
+          title: avail ? '' : '该方式即将支持',
+          onClick: () => { if (avail) { s.setLensCalMethod(m.id); setOpen(false); } } },
+          h('span', { className: 'pop-l' }, m.name),
+          avail ? (on ? h(Icon, { name: 'check', size: 14, style: { marginLeft: 'auto' } }) : null)
+                : h('span', { className: 'lc-mopt-soon', style: { marginLeft: 'auto' } }, '即将支持'));
+      })) : null);
   }
 
   function lensInspector(s) {

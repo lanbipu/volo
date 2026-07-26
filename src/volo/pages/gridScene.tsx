@@ -333,8 +333,9 @@ function GroundGrid({ rig }: { rig: CameraRig }) {
       uFade: { value: 40 },
       uMinorA: { value: 0.18 },   /* 背景改深灰(#333438 系)后原 0.05/0.09 对比不足,连调两档到现值 */
       uMajorA: { value: 0.32 },
-      uAxisX: { value: new THREE.Color('#e8604e') },
-      uAxisY: { value: new THREE.Color('#6699ec') },
+      /* 与 styles/cursorViewport.css 的 --vp-x / --vp-z 暗色档同步（显示 Z = 世界 Y） */
+      uAxisX: { value: new THREE.Color('#ef5350') },
+      uAxisY: { value: new THREE.Color('#5b8def') },
     },
   }), []);
   React.useEffect(() => () => { mat.dispose(); }, [mat]);
