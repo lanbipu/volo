@@ -114,9 +114,14 @@ export const meshVisualScanPatterns = (projectPath: string) =>
  * Build the generated composite-image path without corrupting Windows verbatim
  * paths (`\\?\C:\...`). Those paths reject a `/` appended by string concatenation.
  */
-export const generatedPatternImagePath = (outputDir: string) => {
+/** Mesh pattern PNG under an output_dir: normal=`full_screen.png`, inverted=`full_screen_inverted.png`. */
+export const generatedPatternImagePath = (
+  outputDir: string,
+  variant: "normal" | "inverted" = "normal",
+) => {
   const separator = outputDir.includes("\\") ? "\\" : "/";
-  return `${outputDir.replace(/[\\/]+$/, "")}${separator}full_screen.png`;
+  const file = variant === "inverted" ? "full_screen_inverted.png" : "full_screen.png";
+  return `${outputDir.replace(/[\\/]+$/, "")}${separator}${file}`;
 };
 
 /** Read the exact generated PNG through the backend's Rust-owned-path allowlist. */

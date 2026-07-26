@@ -42,8 +42,6 @@ import * as React from "react";
         : purpose === 'joint_session' ? 'joint'
           : (hasMaster ? 'known' : 'joint'); /* fixed（默认）：有档案→known，否则→joint（auto） */
 
-  const ctxText = (parts) => parts.map((p, i) => p.indexOf('b:') === 0 ? h('b', { key: i }, p.slice(2)) : h('span', { key: i }, p));
-
   /* ---------- 数据格式化（真实 DTO；缺字段一律显示 —，不造值） ---------- */
   const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
   const fmt = (v, d) => { const n = num(v); return n == null ? '—' : n.toFixed(d == null ? 2 : d); };
@@ -60,28 +58,19 @@ import * as React from "react";
     }
     const cur = PURPOSES.find((p) => p.id === q.purpose) || PURPOSES[0];
     const mi = q.masterInfo || null;
+    /* handoff：下拉 Selector + qty；Master 摘要 / 导入保留真后端 */
     return h('div', { className: 'qsp-purpose' },
-      h('div', { className: 'qsp-purpose-h' }, h(Icon, { name: 'pin', size: 14 }), 'Fixed-camera · 采集目的',
-        h('span', { className: 'code' }, 'observation.purpose')),
-      h('div', { className: 'qsp-purpose-sub' }, '固定机位一次采集动作得到可用 Stage pose。选采集目的决定本次求什么 —— 外参、session lens 还是 Master Lens。'),
-      h('div', { className: 'qsp-modes' }, PURPOSES.map((p) => {
-        const on = q.purpose === p.id;
-        return h('button', { key: p.id, className: 'qsp-mode' + (on ? ' on' : '') + (busy ? ' is-disabled' : ''),
-          onClick: () => { if (!busy) q.setPurpose(p.id); } },
-          h('span', { className: 'qsp-mode-rad' }),
-          h('div', { className: 'qsp-mode-m' },
-            h('div', { className: 'qsp-mode-nrow' }, h('span', { className: 'qsp-mode-name' }, p.name),
-              p.tag ? h('span', { className: 'qsp-mode-tag' + (p.tagAlt ? ' alt' : '') }, p.tag) : null),
-            h('span', { className: 'qsp-mode-qty' }, p.qty)));
-      })),
-      h('div', { className: 'qsp-ctx' }, h(Icon, { name: 'info', size: 13 }), h('span', null, ctxText(cur.ctx))),
-      /* 已有合格 Master Lens：一行摘要（真实档案） */
+      h('div', { className: 'ag-sublbl', style: { marginBottom: 8 } }, '采集目的'),
+      h('div', { className: 'qsp-modesel' + (busy ? ' is-disabled' : '') },
+        h(window.Selector, { kpre: '', value: cur.id, width: 260, variant: 'obj', align: 'left',
+          options: PURPOSES.map((p) => ({ id: p.id, label: p.name + (p.tag ? ' · ' + p.tag : ''), sub: p.qty })),
+          onChange: (id) => { if (!busy) q.setPurpose(id); } }),
+        h('span', { className: 'qsp-modesel-qty' }, cur.qty)),
       q.hasMaster ? h('div', { className: 'qsp-master-sum' },
         h('span', { className: 'ic' }, h(Icon, { name: 'check', size: 14 })),
         h('div', { className: 'm' }, h('b', null, '已有合格 Master Lens'),
           h('span', null, 'Master lens · ' + (mi ? fmt(mi.rms, 2) : '—') + ' px · ' + (mi && mi.num_images != null ? mi.num_images : '—') + ' poses')),
         h('span', { className: 'cap-pill cap-pill--positive' }, 'qualified')) : null,
-      /* 次级动作：导入 / 从 Multi-view 生成（busy 禁用；真实处理器） */
       h('div', { className: 'qsp-sec-actions' },
         h('button', { className: 'qsp-secbtn', disabled: busy || q.masterBusy, onClick: () => { if (!busy && !q.masterBusy) q.importMaster(); } },
           h(Icon, { name: 'download', size: 13 }), '导入 Master Lens'),

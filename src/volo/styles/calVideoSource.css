@@ -2,7 +2,6 @@
    视频源卡片 · 重设计（采集设置 → Profile 新建/编辑表单）
    backend 段选 → 枚举设备选择器 → 信号预览验证 → 高级格式覆盖
    状态一律三通道（颜色 + 图标 + 文字）。沿用 --chrome-* / *-visual 令牌，暗/亮双主题自动适配。
-   1:1 port of the Claude Design handoff `src/vsrc.css`.
    ============================================================ */
 
 /* ---------- backend 段选择（2×2 卡格） ---------- */
@@ -22,7 +21,7 @@
 .vs-be.on::after { content: ''; position: absolute; right: 9px; top: 9px; width: 6px; height: 6px; border-radius: 50%; background: var(--volo-500); }
 .vs-be.off { cursor: default; }
 .vs-be.off .vs-be-ic, .vs-be.off .vs-be-tx b, .vs-be.off .vs-be-tx span { opacity: .52; }
-/* "需 SDK" 徽标 = popover 触发器 */
+/* “需 SDK” 徽标 = popover 触发器 */
 .vs-sdk { margin-left: auto; flex: 0 0 auto; }
 .vs-sdk-btn { all: unset; display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 500; font-family: var(--font-code);
   color: var(--t-body); background: var(--bg-row); padding: 2px 7px; border-radius: 999px; cursor: pointer;
@@ -120,8 +119,6 @@
 .vs-preview { position: relative; aspect-ratio: 16 / 9; border-radius: var(--radius-card); overflow: hidden; background: var(--film);
   border: 1px solid var(--chrome-line-2); margin-top: 8px; }
 .vs-preview svg.vs-frame { display: block; width: 100%; height: 100%; }
-/* 实时监看 <img>：原生分辨率流按完整画幅缩放显示（禁止裁切），非 16:9 信号加黑边 */
-.vs-preview img.vs-frame { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }
 .vs-preview.state-nosignal, .vs-preview.state-waiting { background: var(--film); }
 .vs-badge { position: absolute; left: 10px; top: 10px; z-index: 2; }
 .vs-badge .cap-pill { box-shadow: none; backdrop-filter: blur(3px); }

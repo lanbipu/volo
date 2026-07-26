@@ -417,38 +417,38 @@
 .lc-sess-metric .v { font-size: 14px; font-weight: 600; color: var(--chrome-text); font-variant-numeric: tabular-nums; }
 .lc-sess-sum .sp { flex: 1; }
 
-@media (max-width: 1240px) {
-  .mth-grid { grid-template-columns: 1fr; }
-  .lc-body { grid-template-columns: minmax(0,1fr) 340px; }
-}
-
 /* ============================================================
    路径全自动化：标定屏幕 chips + 三个自动状态行（ag-*）
-   1:1 移植自 Claude Design handoff `cal_flow.css`（演示状态条 .ag-demo* 非产品
-   控件，未移植）。token 全部对齐本仓既有 CSS 变量。
    ============================================================ */
 .ag-block { display: flex; flex-direction: column; gap: 10px; }
 .ag-sublbl { font-size: 12px; color: var(--chrome-dim); font-weight: 600; }
-.ag-chips { }
-.ag-chips-empty { font-size: 11.5px; color: var(--chrome-faint); padding: 2px 0; }
 .ag-chip-ic { display: inline-grid; place-items: center; color: currentColor; opacity: .8; }
+/* 标定屏幕：简易多选列表（前置圆点 = 已选） */
+.ag-list { display: flex; flex-direction: column; border: 1px solid var(--chrome-line-2); border-radius: var(--radius-input); background: var(--wash); overflow: hidden; }
+.ag-list.is-disabled { opacity: .55; pointer-events: none; }
+.ag-lrow { all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: center; gap: 9px; min-height: 30px; padding: 0 10px; font-size: 13px; color: var(--chrome-dim); }
+.ag-lrow + .ag-lrow { border-top: 1px solid var(--chrome-line-2); }
+.ag-lrow:hover { background: var(--wash-2); color: var(--chrome-text); }
+.ag-lrow.on { color: var(--chrome-text); }
+.ag-ldot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; border: 1.5px solid var(--chrome-line); background: transparent; }
+.ag-lrow.on .ag-ldot { border-color: var(--volo-500); background: var(--volo-500); }
+.ag-lname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.ag-lsub { font-size: 11px; color: var(--chrome-faint); font-family: var(--font-code); flex: 0 0 auto; }
 
-.ag-rows { display: flex; flex-direction: column; gap: 8px; }
-.ag-row { display: flex; flex-direction: column; gap: 7px; padding: 9px 11px; border-radius: 9px;
-  background: var(--wash); border: 1px solid var(--chrome-line-2); }
-.ag-row.is-pending { border-color: color-mix(in srgb, var(--negative-visual) 40%, var(--chrome-line-2)); background: color-mix(in srgb, var(--negative-visual) 5%, var(--wash)); }
-.ag-row-top { display: flex; align-items: center; gap: 8px; min-height: 22px; }
-.ag-row-lb { font-size: 12px; font-weight: 600; color: var(--chrome-text); }
-.ag-row-top .ag-sp { flex: 1; }
-.ag-row-top .cap-pill { flex: 0 0 auto; }
-.ag-row-note { font-size: 11px; color: var(--chrome-faint); line-height: 1.5; text-wrap: pretty; }
-.ag-row-err { display: flex; align-items: flex-start; gap: 6px; font-size: 10.5px; font-family: var(--font-code); line-height: 1.55;
-  color: color-mix(in srgb, var(--negative-visual) 76%, var(--chrome-text)); word-break: break-word;
-  background: color-mix(in srgb, var(--negative-visual) 9%, transparent); border-radius: 7px; padding: 7px 9px; }
-.ag-row-err svg { flex: 0 0 auto; margin-top: 1px; color: var(--negative-visual); }
-.ag-path { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--chrome-text); }
-.ag-path svg { color: var(--chrome-faint); flex: 0 0 auto; }
-.ag-path .mono { font-family: var(--font-code); font-weight: 600; }
+/* 自动状态：紧凑单卡 · 每项一行 */
+.ag-mini { display: flex; flex-direction: column; border: 1px solid var(--chrome-line-2); border-radius: var(--radius-input); background: var(--wash); overflow: hidden; }
+.ag-mrow { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 10px; position: relative; }
+.ag-mrow + .ag-mrow { border-top: 1px solid var(--chrome-line-2); }
+.ag-mk { font-size: 12px; color: var(--chrome-dim); flex: 0 0 auto; width: 60px; }
+.ag-mv { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 1; font-size: 12px; color: var(--chrome-text); }
+.ag-mv .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ag-mv.mono .t { font-family: var(--font-code); font-weight: 600; }
+.ag-mdot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; background: var(--chrome-faint); }
+.ag-mrow.t-positive .ag-mdot { background: var(--positive-visual); }
+.ag-mrow.t-notice .ag-mdot { background: var(--notice-visual); }
+.ag-mrow.t-negative .ag-mdot { background: var(--negative-visual); }
+.ag-mrow.t-negative { background: var(--bg-row); }
+.ag-mrow .ag-skel { margin-left: 0; height: 12px; width: 110px; }
 
 .ag-auto-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 500; padding: 2px 8px; border-radius: 9999px;
   color: var(--chrome-dim); background: var(--wash-2); border: 1px solid var(--chrome-line-2); }
@@ -463,25 +463,44 @@
 .ag-skel { margin-left: auto; height: 22px; width: 128px; border-radius: 9999px; background: linear-gradient(90deg, var(--wash-2) 25%, var(--wash-3) 50%, var(--wash-2) 75%); background-size: 200% 100%; }
 @media (prefers-reduced-motion: no-preference) { .ag-skel { animation: agSkel 1.15s ease infinite; } }
 @keyframes agSkel { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
-.ag-indet { height: 6px; border-radius: 3px; background: var(--wash-2); overflow: hidden; position: relative; }
-.ag-indet-bar { position: absolute; top: 0; height: 100%; width: 38%; border-radius: 3px; background: var(--volo-600); }
+.ag-indet { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--wash-2); overflow: hidden; }
+.ag-indet-bar { position: absolute; top: 0; height: 100%; width: 38%; background: var(--volo-600); }
 @media (prefers-reduced-motion: no-preference) { .ag-indet-bar { animation: agIndet 1.3s var(--ease-default, ease) infinite; } }
 @keyframes agIndet { 0% { left: -40%; } 100% { left: 100%; } }
 @media (prefers-reduced-motion: reduce) { .ag-indet-bar { left: 31%; } }
+
+/* 演示状态条 */
+.ag-demo { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 5px 8px; border-radius: var(--radius-input); border: 1px dashed var(--chrome-line-2); background: var(--wash-3); }
+.ag-demo-g { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.ag-demo-g + .ag-demo-g { padding-left: 8px; border-left: 1px solid var(--chrome-line-2); }
+.ag-demo-k { font-size: 11px; font-weight: 500; letter-spacing: .02em; color: var(--chrome-faint); flex: 0 0 auto; }
+.ag-demo-b { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--chrome-dim);
+  padding: 3px 8px; border-radius: var(--radius-input); border: 1px solid transparent; }
+.ag-demo-b:hover { background: var(--wash); color: var(--chrome-text); }
+.ag-demo-b.on { background: var(--wash); color: var(--chrome-text); border-color: var(--chrome-line-2); }
+.ag-demo-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+.ag-demo-dot.bg-positive { background: var(--positive-visual); }
+.ag-demo-dot.bg-notice { background: var(--notice-visual); }
+.ag-demo-dot.bg-negative { background: var(--negative-visual); }
 
 /* 折面屏不支持提示（禁用原因附注） */
 .lc-cli-note { display: flex; align-items: flex-start; gap: 7px; font-size: 12px; color: var(--chrome-faint); line-height: 1.5; width: 100%; margin-top: 2px; }
 .lc-cli-note svg { flex: 0 0 auto; margin-top: 1px; color: var(--chrome-dim); }
 .lc-cli-note code { font-family: var(--font-code); font-size: 12px; background: var(--wash-2); border-radius: var(--radius-input); padding: 1px 5px; color: var(--chrome-dim); }
 
+@media (max-width: 1240px) {
+  .mth-grid { grid-template-columns: 1fr; }
+  .lc-body { grid-template-columns: minmax(0,1fr) 340px; }
+}
+
 /* ============================================================
    AR 网格叠加验证（信号区叠加层 + 悬浮 HUD 控件组）
-   1:1 移植自 Claude Design handoff `cal_flow.css`
    ============================================================ */
 .lc-ar-svg { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 3; pointer-events: none; }
 .lc-ar-g * { vector-effect: non-scaling-stroke; }
 .lc-ar-g.lost { opacity: .6; }
 
+/* AR 叠加验证按钮 · 底部「开始采集」栏内 · 默认收起，点击弹出面板 */
 .lc-arwrap { position: relative; flex: 0 0 auto; }
 .lc-arbtn { all: unset; box-sizing: border-box; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 9999px;
   border: 1px solid var(--chrome-line-2); background: var(--wash); color: var(--chrome-dim); font-size: 13px; font-weight: 500; }
@@ -552,3 +571,13 @@
 .sr-screen-bar { height: 6px; border-radius: var(--radius-input); background: var(--track); overflow: hidden; }
 .sr-screen-bar i { display: block; height: 100%; border-radius: var(--radius-input); background: var(--bg-row); }
 .sr-foot-meta { font-size: 12px; color: var(--chrome-faint); }
+
+/* 摄影机参数：极简密排（键 值 · 同组一行） */
+.lc-params { display: flex; flex-direction: column; gap: 4px; }
+.lc-pline { display: flex; align-items: center; gap: 8px; min-height: 22px; }
+.lc-plk { font-size: 11px; color: var(--chrome-faint); flex: 0 0 auto; width: 66px; white-space: nowrap; }
+.lc-pvals { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.lc-pv { display: inline-flex; align-items: baseline; gap: 4px; font-family: var(--font-code); font-size: 12px; font-weight: 600; color: var(--chrome-text);
+  background: var(--wash); border: 1px solid var(--chrome-line-2); border-radius: var(--radius-input); padding: 1px 6px; }
+.lc-pv i { font-style: normal; font-weight: 500; font-size: 11px; color: var(--chrome-faint); }
+.lc-pv.ro { background: var(--wash-2); }

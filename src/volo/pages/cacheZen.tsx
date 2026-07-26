@@ -808,7 +808,9 @@ import {
           h('span', { className: 'zstep-ico' }, stepIco(r.st, i)),
           h('div', { className: 'zstep-main' },
             h('div', { className: 'zstep-top' },
-              h('span', { className: 'zstep-label' }, st.label, st.auto ? h('span', { className: 'zstep-auto' }, '自动') : null),
+              h('span', { className: 'zstep-label' }, st.auto
+                ? h('span', { className: 'stp-auto' }, h('span', { className: 'stp-auto-badge zstep-auto' }, '自动'), st.label)
+                : st.label),
               h('span', { className: 'zstep-cli mono' }, st.cli)),
             h('div', { className: 'zstep-desc' }, st.desc(formObj, srvNode.host)),
             r.st === 'fail' && r.err ? h('div', { className: 'zstep-err' }, h(Icon, { name: 'alert', size: 13 }), r.err) : null,
@@ -1262,10 +1264,14 @@ import {
       const overridden = rec.configured != null;
       const configured = overridden ? rec.configured : ZEN_LOCAL_DEFAULT_PORT;
       const pr = zpres[n.id];
+      /* handoff：configured → actual/running（zcli-port-arr）；缺实际端口时右侧为 — */
+      const actual = !blocked && !rec.loading && !rec.fail && rec.actual != null ? rec.actual : null;
       return h('div', { className: 'zcli-port' },
         h('span', { className: 'zcli-port-lbl' }, '本地端口'),
         h('span', { className: 'zcli-port-io mono' + (overridden ? ' ov' : '') },
-          blocked ? '—' : rec.loading ? '…' : String(configured)),
+          blocked ? '—' : rec.loading ? '…' : rec.fail ? '—' : String(configured),
+          h('span', { className: 'zcli-port-arr' }, '→'),
+          blocked || rec.loading || rec.fail ? '—' : (actual != null ? String(actual) : (rec.running ? String(configured) : '—'))),
         overridden ? h('span', { className: 'zport-tag' }, '已改端口') : null,
         pr ? h('span', { className: 'zcli-port-res zb-' + (pr.st === 'ok' ? 'positive' : 'negative'), title: pr.msg || '' },
           h(Icon, { name: pr.st === 'ok' ? 'check' : 'alert', size: 11 }),
@@ -1940,9 +1946,9 @@ import {
                 h('div', { className: 'zcl-list' },
                   pointedClientRows.length === 0
                     ? h('div', { className: 'zcl-empty' }, h(Icon, { name: 'link', size: 18 }), '暂无客户端指向此服务器')
-                    : pointedClientRows.map(({ n, isProject, scope, isServer }) => {
-                        /* 逐行明细：本地缓存 + 本地端口 + 共享缓存（ZenServer data-dir）；
-                           工程级/用户全局徽标由 pointedScope 真实回读判定。 */
+                    : pointedClientRows.map(({ n, isProject, scope, isServer, projs }) => {
+                        /* handoff 结构：共享缓存 / 本地端口 / 本地缓存(工程列表 zcl-proj*) 或用户全局配置。
+                           路径与端口均为真回读；工程行用 locByMachine。 */
                         const zr = zenRecOf(zdirs, n.id);
                         const zrBlocked = n.status === 'offline' || !runtimeUser(n);
                         const cacheDir = zrBlocked ? '不可读 · 离线或未设 UE 运行用户'
@@ -1950,6 +1956,10 @@ import {
                           : zr.readFail ? '读取失败'
                           : (zr.cfg || (zr.found && zr.eff) || ZEN_DEF_HINT + '（默认）');
                         const projectCachePath = (status && status.dataDir) ? status.dataDir : '—';
+                        const pRec = zportRecOf(zports, n.id);
+                        const pOv = pRec.configured != null;
+                        const pConf = pOv ? pRec.configured : ZEN_LOCAL_DEFAULT_PORT;
+                        const pActual = !zrBlocked && !pRec.loading && !pRec.fail && pRec.actual != null ? pRec.actual : null;
                         return h('div', { className: 'zcl-row', key: n.id },
                           CX.dot(NODE_STATUS[n.status].visual),
                           h('div', { className: 'zcl-row-main' },
@@ -1960,24 +1970,33 @@ import {
                               scope ? h('span', { className: 'zcl-row-badge' + (isProject ? ' proj' : ' user') }, isProject ? '工程级' : '用户全局') : null),
                             h('div', { className: 'zcl-meta' },
                               h('div', { className: 'zcl-meta-row' },
-                                h('span', { className: 'zcl-meta-k' }, '本地缓存'),
-                                pathBtn(cacheDir, n.ip || n.host, '在文件资源管理器中打开该本地缓存目录')),
-                              (function () {
-                                /* 仅显示生效配置端口（INI DesiredPort，无覆盖则默认 8558）——
-                                   按 Claude Design 定稿不再展示「→ 实际运行」half。 */
-                                const pRec = zportRecOf(zports, n.id);
-                                const pOv = pRec.configured != null;
-                                const pConf = pOv ? pRec.configured : ZEN_LOCAL_DEFAULT_PORT;
-                                return h('div', { className: 'zcl-meta-row' },
-                                  h('span', { className: 'zcl-meta-k' }, '本地端口'),
-                                  h('span', { className: 'zcl-meta-v mono' },
-                                    zrBlocked ? '不可读' : pRec.loading ? '读取中…' : pRec.fail ? '读取失败'
-                                      : String(pConf)),
-                                  pOv ? h('span', { className: 'zport-tag' }, '已改端口') : null);
-                              })(),
-                              h('div', { className: 'zcl-meta-row' },
                                 h('span', { className: 'zcl-meta-k' }, '共享缓存'),
-                                pathBtn(projectCachePath, status.ip || status.host, '在文件资源管理器中打开该共享缓存目录')))));
+                                pathBtn(projectCachePath, status.ip || status.host, '在文件资源管理器中打开该共享缓存目录')),
+                              h('div', { className: 'zcl-meta-row' },
+                                h('span', { className: 'zcl-meta-k' }, '本地端口'),
+                                h('span', { className: 'zcl-meta-v mono' },
+                                  zrBlocked ? '不可读' : pRec.loading ? '读取中…' : pRec.fail ? '读取失败'
+                                    : h(React.Fragment, null, String(pConf), h('span', { className: 'zcli-port-arr' }, '→'), pActual != null ? String(pActual) : (pRec.running ? String(pConf) : '—'))),
+                                pOv ? h('span', { className: 'zport-tag' }, '已改端口') : null),
+                              h('div', { className: 'zcl-meta-row' },
+                                h('span', { className: 'zcl-meta-k' }, 'Zen 本地目录'),
+                                pathBtn(cacheDir, n.ip || n.host, '在文件资源管理器中打开该本地缓存目录')),
+                              isProject && projs && projs.length
+                                ? h('div', { className: 'zcl-meta-row top' },
+                                    h('span', { className: 'zcl-meta-k' }, '本地缓存'),
+                                    h('div', { className: 'zcl-meta-projs' },
+                                      projs.map((p) => {
+                                        const root = (p.locByMachine && p.locByMachine[String(n.machineId)]) || p.path || p.root || '—';
+                                        return h('div', { className: 'zcl-projline', key: p.id },
+                                          h('span', { className: 'zcl-proj-name' }, p.name),
+                                          isRealPath(root)
+                                            ? h('button', { type: 'button', className: 'zcl-proj-path mono zcl-open', title: '在文件资源管理器中打开该工程缓存目录',
+                                                onClick: () => openPath(root, n.ip || n.host) }, root, h(Icon, { name: 'external', size: 11 }))
+                                            : h('span', { className: 'zcl-proj-path mono' }, root));
+                                      })))
+                                : h('div', { className: 'zcl-meta-row' },
+                                    h('span', { className: 'zcl-meta-k' }, '配置'),
+                                    h('span', { className: 'zcl-meta-v mono' }, scope === 'user' ? '用户全局 · UserEngine.ini' : '—')))));
                       })));
             })()))));
   }

@@ -11,7 +11,9 @@
      shape_grid.rs 的既有约定一致，经 apply_world_transform 的坐标系推导核对）：
      X = 列（横向）· Y = 弯曲/深度（曲面外凸方向）· Z = 行（竖直，随 row 递增）。
    - 渲染/交互底层在 gridScene.tsx：Blender 视口模型（转台轨道、缩放到光标、
-     轴向 gizmo、无限地面网格）+ three.js GPU 管线；本文件持有业务几何与叠加层。 */
+     轴向 gizmo、无限地面网格）+ three.js GPU 管线；本文件持有业务几何与叠加层。
+   - handoff SVG `.gw-box` / `.gw-ghost` / `.gw-ground` / `.gw-box-pat` 在 Three 场景里
+     以 object.name / userData.kind 对齐（见 gridScene ScreenObjects / GroundGrid）。 */
 import * as React from "react";
 import * as THREE from "three";
 import { computeRebuiltAlignment, saveProjectYaml } from "../api/meshCommands";
@@ -1074,6 +1076,48 @@ import { CameraRig, SceneCanvas, pickBoxAt, worldPointAt } from "./gridScene";
       h('button', { className: v === 'overlay' ? 'on' : '', onClick: () => set('overlay'), title: '当前版实体 + 另一版线框幽灵同显' }, '叠加', h('span', { className: 'kbd' }, '\\')));
   }
 
+  /* handoff cal2_preview MetricCard → 新 IA 挂在视口右上（真 quality_metrics） */
+  function MetricCard({ s }) {
+    const { Badge } = window.Spectrum2DesignSystem_b6d1b3;
+    const proj_ = CX.useProj();
+    const built = s.calScreenReports && s.calScreenReports[s.calActiveScreen];
+    if (!built || s.calMeshVersion === 'original') return null;
+    const qm = (built && built.quality_metrics)
+      || (proj_.reconstruction && proj_.reconstruction.quality_metrics)
+      || null;
+    if (!qm) return null;
+    const run = (proj_.runs || []).find((r) => r.is_current) || (proj_.runs || [])[0];
+    const Q = (k, v, u, vis) => h('div', { className: 'cal2-q' }, h('div', { className: 'cal2-q-k' }, k), h('div', { className: 'cal2-q-v' + (vis ? ' s-' + vis : '') }, v, u ? h('span', { className: 'cal2-q-u' }, u) : null));
+    const Qn = (k, val, u) => h('div', { className: 'cal2-q' }, h('div', { className: 'cal2-q-k' }, k),
+      val == null ? h('div', { className: 'cal2-q-v', style: { fontSize: 13 } }, h(Badge, { variant: 'neutral', size: 'S' }, '无 holdout 残差'))
+        : h('div', { className: 'cal2-q-v s-' + (val < 3 ? 'positive' : val < 8 ? 'notice' : 'negative') }, Number(val).toFixed(2), h('span', { className: 'cal2-q-u' }, u)));
+    const expected = Math.max(1, (qm.measured_count || 0) + (qm.interpolated_count || 0) + (qm.extrapolated_count || 0));
+    const midMax = qm.middle_max_dev_mm;
+    const midMean = qm.middle_mean_dev_mm;
+    const [foldOpen, setFold] = useState(false);
+    const missing = qm.missing_count != null ? qm.missing_count : (qm.expected_count != null ? Math.max(0, qm.expected_count - (qm.measured_count || 0)) : null);
+    const outliers = qm.outlier_count != null ? qm.outlier_count : null;
+    return h('div', { className: 'cal2-metriccard' },
+      h('div', { className: 'cal2-mc-h' }, h(Icon, { name: 'pulse', size: 14 }), '质量指标',
+        qm.estimated_rms_mm != null && CX.rmsBadge ? CX.rmsBadge(qm.estimated_rms_mm) : null),
+      h('div', { className: 'cal2-mc-grid' },
+        midMax != null ? Q('middle_max_dev_mm', midMax.toFixed(2), 'mm', midMax < 3 ? 'positive' : midMax < 8 ? 'notice' : 'negative') : Q('middle_max_dev_mm', '—', null, ''),
+        midMean != null ? Q('middle_mean_dev_mm', midMean.toFixed(2), 'mm', midMean < 2 ? 'positive' : 'notice') : Q('middle_mean_dev_mm', '—', null, ''),
+        Q('measured/expected', (qm.measured_count != null ? qm.measured_count.toLocaleString() : '—') + '/' + (qm.expected_count != null ? qm.expected_count.toLocaleString() : expected.toLocaleString()), '', ''),
+        Qn('estimated_rms_mm', qm.estimated_rms_mm, 'mm'),
+        Qn('estimated_p95_mm', qm.estimated_p95_mm, 'mm'),
+        Q('extrapolated_count', qm.extrapolated_count != null ? String(qm.extrapolated_count) : '—', '', (qm.extrapolated_count || 0) > 0 ? 'notice' : 'positive')),
+      (missing != null || outliers != null)
+        ? h('button', { type: 'button', className: 'cal2-mc-fold', onClick: () => setFold((v) => !v) },
+            h(Icon, { name: 'chevr', size: 12, style: { transform: foldOpen ? 'rotate(90deg)' : 'none' } }),
+            'missing ' + (missing != null ? missing : '—') + ' · outliers ' + (outliers != null ? outliers : '—'))
+        : null,
+      foldOpen ? h('div', { className: 'cal2-mc-fold-b' },
+        h('div', { className: 'cal2-ff' }, h('span', { className: 'k' }, 'missing'), h('span', { className: 'v mono s-notice' }, missing != null ? String(missing) : '—')),
+        h('div', { className: 'cal2-ff' }, h('span', { className: 'k' }, 'outliers'), h('span', { className: 'v mono s-negative' }, outliers != null ? String(outliers) : '—'))) : null,
+      (qm.warnings || (run && run.warnings) || []).map((w, i) => h('div', { key: i, className: 'cal2-mc-warn' }, h(Icon, { name: 'alert', size: 13 }), typeof w === 'string' ? w : (w.msg || String(w)))));
+  }
+
   function HintBar({ s }) {
     const proj_ = CX.useProj();
     const cabinet = s.calMode === 'cabinet';
@@ -1392,7 +1436,7 @@ import { CameraRig, SceneCanvas, pickBoxAt, worldPointAt } from "./gridScene";
            CtxCard（屏幕名 / 箱体模式 / 当前版本）设计稿已从视口移除 —— 屏幕名看场景树，
            版本看底部中央的版本切换器；仅测量导入流程中保留它承载「测量类型」入口。 */
         h('div', { className: 'gw-ov gw-ov--tl' }, h(NavGizmo), h(Coords), s.calFlow ? h(CtxCard, { s }) : null),
-        h('div', { className: 'gw-ov gw-ov--tr' }, h(DisplayToggles, { s })),
+        h('div', { className: 'gw-ov gw-ov--tr' }, h(MetricCard, { s }), h(DisplayToggles, { s })),
         h('div', { className: 'gw-ov gw-ov--bc' }, h(HintBar, { s }), h(VersionSwitcher, { s })),
         h('div', { className: 'gw-ov gw-ov--bl', style: { display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' } }, h(PlacementLegend, { s }), h(Legend, { s })),
         h('div', { className: 'gw-ov gw-ov--br' }, h(Receipt, { s }))));

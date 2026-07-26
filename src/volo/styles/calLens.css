@@ -1,5 +1,4 @@
-/* Volo — 校正 · 镜头校正（相机画面为主体）样式
-   1:1 port of the Claude Design handoff `src/cal_lens.css`. */
+/* Volo — 校正 · 镜头校正（相机画面为主体）样式 */
 
 /* ===== 布局：顶部薄工具条 / 画面区 / 底部动作条 ===== */
 .lens-wrap { display: flex; flex-direction: column; min-height: 0; }

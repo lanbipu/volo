@@ -182,8 +182,10 @@ import { lensWorkspacePaths } from "../api/lensWorkspace";
     return h('div', { className: 'capw-canvas' }, h('img', { src: url, alt: '现场画面', className: 'capw-img' }));
   }
 
-  /* ---------- 采集反馈（真实 coverage_update / detect_feedback 字段，不臆造 sensor_grid） ---------- */
-  function CoverageCard({ cov, posesCaptured, target }) {
+  /* ---------- 采集反馈（coverage_update / detect_feedback；九宫格由覆盖率近似，不编造后端未给的格子） ---------- */
+  function CoverageCard({ cov, posesCaptured, target, poseRows }) {
+    const lit = Math.max(0, Math.min(9, Math.round((cov.sensorPct || 0) / 100 * 9)));
+    const grid = Array.from({ length: 9 }, (_, i) => i < lit);
     return h('div', { className: 'cap-card capw-cov' },
       h('div', { className: 'cap-card-h' }, h(Icon, { name: 'pulse', size: 15 }), '采集反馈',
         h('span', { className: 'spill spill--notice', style: { marginLeft: 'auto' } }, h(Icon, { name: 'camera', size: 12 }), '采集中')),
@@ -191,6 +193,21 @@ import { lensWorkspacePaths } from "../api/lensWorkspace";
         h('div', { className: 'capw-cov-m' }, h('div', { className: 'k' }, '画面覆盖'), h('div', { className: 'v', style: { color: cov.sensorPct >= 85 ? 'var(--positive-visual)' : 'var(--notice-visual)' } }, cov.sensorPct, h('span', { className: 'u' }, '%'))),
         h('div', { className: 'capw-cov-m' }, h('div', { className: 'k' }, '屏幕 marker'), h('div', { className: 'v' }, cov.markersSeen, h('span', { className: 'u' }, '/' + cov.markersTotal))),
         h('div', { className: 'capw-cov-m' }, h('div', { className: 'k' }, '已采姿位'), h('div', { className: 'v' }, posesCaptured, h('span', { className: 'u' }, '/' + target)))),
+      h('div', { className: 'capw-cov-sub' },
+        h('div', { className: 'capw-cov-lbl' }, '传感器覆盖 · 九宫格'),
+        h('div', { className: 'gw-covgrid', style: { width: '100%', gridTemplateColumns: 'repeat(3,1fr)' } },
+          grid.map((on, i) => h('div', { key: i, className: 'gw-covcell' + (on ? ' on' : '') })))),
+      poseRows && poseRows.length ? h('div', { className: 'capw-cov-sub' },
+        h('div', { className: 'capw-cov-lbl' }, '检测反馈流水'),
+        h('div', { className: 'lens-feed-list' },
+          h('div', { className: 'lens-feed-head' }, h('span', null, 'pose'), h('span', null, 'hits'), h('span', null, 'conf'), h('span', null, 'diff')),
+          poseRows.map((p) => h('div', { key: p.pose_index, className: 'lens-feed-row' + (p.differenced ? '' : ' bad') },
+            h('span', { className: 'mono' }, '#' + p.pose_index),
+            h('span', { className: 'mono' }, p.marker_hits != null ? p.marker_hits : '—'),
+            h('span', { className: 'mono' }, p.mean_confidence == null ? '—' : Number(p.mean_confidence).toFixed(2)),
+            h('span', null, p.differenced
+              ? h('span', { className: 'lens-diff ok' }, h(Icon, { name: 'check', size: 11 }))
+              : h('span', { className: 'lens-diff no' }, h(Icon, { name: 'x', size: 11 }))))))) : null,
       cov.missingRegions.length ? h('div', { className: 'capw-cov-sub' },
         h('div', { className: 'capw-cov-lbl' }, '缺失区域'),
         h('div', { className: 'lens-missing' }, cov.missingRegions.map((r, i) => h('span', { key: i, className: 'lens-miss-chip' }, h(Icon, { name: 'target', size: 11 }), r)))) : null,
@@ -205,8 +222,18 @@ import { lensWorkspacePaths } from "../api/lensWorkspace";
     const cov = session.latest('coverage_update');
     const progress = session.latest('progress') || {};
     let lastDetect = null;
-    for (let i = session.events.length - 1; i >= 0; i -= 1) {
-      if (session.events[i].type === 'detect_feedback') { lastDetect = session.events[i]; break; }
+    const byPose = new Map();
+    for (let i = 0; i < session.events.length; i += 1) {
+      const ev = session.events[i];
+      if (ev.type !== 'detect_feedback') continue;
+      lastDetect = ev;
+      const idx = ev.pose_index != null ? ev.pose_index : byPose.size;
+      byPose.set(idx, {
+        pose_index: idx,
+        marker_hits: ev.marker_hits != null ? ev.marker_hits : ev.hits,
+        mean_confidence: ev.mean_confidence != null ? ev.mean_confidence : ev.confidence,
+        differenced: ev.differenced !== false && ev.diff !== false,
+      });
     }
     return {
       poseCount: progress.poses_captured != null ? progress.poses_captured : 0,
@@ -216,6 +243,7 @@ import { lensWorkspacePaths } from "../api/lensWorkspace";
       missingRegions: cov ? cov.sensor_missing_regions || [] : [],
       suggestions: cov ? (cov.suggestions || []).map((m) => ({ tone: 'notice', msg: m })) : [],
       lastDetect,
+      poseRows: Array.from(byPose.values()),
     };
   }
 
@@ -547,7 +575,7 @@ import { lensWorkspacePaths } from "../api/lensWorkspace";
       side = h(React.Fragment, null,
         h('div', { className: 'capw-side-scroll' },
           sourceSection,
-          locked ? h(CoverageCard, { cov, posesCaptured: cov ? cov.poseCount : 0, target }) : paramsSection),
+          locked ? h(CoverageCard, { cov, posesCaptured: cov ? cov.poseCount : 0, target, poseRows: cov ? cov.poseRows : [] }) : paramsSection),
         h('div', { className: 'capw-foot' + (locked ? ' is-capture' : '') },
           locked
             ? h(React.Fragment, null,

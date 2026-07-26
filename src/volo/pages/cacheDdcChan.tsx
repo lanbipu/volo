@@ -132,8 +132,18 @@ import {
     return Promise.reject(new Error('通道 ' + key + ' 不可写'));
   };
 
+  /* 面板底部「一键清除所有配置」栏（共享 / 本地两个面板共用样式） */
+  function clearAllBar(ch, loading, onClearAll, count) {
+    const n = count != null ? count : clearableLocalEntries(ch).length;
+    const any = !loading && n > 0;
+    return h('div', { className: 'chan-foot' },
+      h('button', { className: 'chan-clearall', disabled: !any, onClick: onClearAll },
+        h(Icon, { name: 'trash', size: 12 }), '一键清除所有配置'),
+      h('span', { className: 'chan-foot-ct' }, any ? (n + ' 项可清除') : '无可清除配置'));
+  }
+
   /* =================== ChanPanel — 展开后的四通道区 =================== */
-  function ChanPanel({ node, ch, loading, onSet, onClear }) {
+  function ChanPanel({ node, ch, loading, onSet, onClear, onClearAll }) {
     const [edit, setEdit] = useState(null);    /* 'ini.local' | 'reg' | 'env' … */
     const [draft, setDraft] = useState('');
     const [committing, setCommitting] = useState(null); /* ek 正在提交（保存/清除中）*/
@@ -253,9 +263,10 @@ import {
 
     return h('div', { className: 'chan-panel' },
       CHAN_DEFS.map(chanRow),
+      onClearAll ? clearAllBar(safeCh, loading, onClearAll) : null,
       h('div', { className: 'chan-note' }, h(Icon, { name: 'info', size: 13 }),
         '按优先级顺序解析，高优先级通道非空时覆盖低优先级；实际生效以引擎启动日志为准。'));
   }
 
-  window.VOLO_DDC_CHAN = { CHAN_DEFS, channelsFor, effectiveKey, writeChannel, clearableLocalEntries, hasAnyLocalConfig, ChanPanel };
+  window.VOLO_DDC_CHAN = { CHAN_DEFS, channelsFor, effectiveKey, writeChannel, clearableLocalEntries, hasAnyLocalConfig, clearAllBar, ChanPanel };
 })();

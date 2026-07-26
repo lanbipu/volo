@@ -278,10 +278,15 @@ import { deleteMachine, scanNetwork, addDiscoveredMachine, refreshMachine } from
         .then(() => s.reloadCache(), () => s.reloadCache());
     };
 
-    /* 行 / 图标内的复选框（自带 stopPropagation，避免触发打开详情） */
-    const checkbox = (n, cls) => h('span', { className: (cls ? cls + ' ' : '') + 'mck' + (isSel(n) ? ' on' : ''),
-      title: '选择', onClick: (e) => { e.stopPropagation(); toggleOne(n.id); } },
-      isSel(n) ? h(Icon, { name: 'check', size: 12 }) : null);
+    /* handoff：.mchk 复选框（自带 stopPropagation，避免触发打开详情） */
+    const Chk = ({ on, onToggle, label, cls }) => h('button', {
+      type: 'button',
+      className: (cls ? cls + ' ' : '') + 'mchk' + (on ? ' on' : ''),
+      role: 'checkbox', 'aria-checked': on, title: label || '选择',
+      onClick: (e) => { e.stopPropagation(); onToggle(); },
+    }, on ? h(Icon, { name: 'check', size: 12 }) : null);
+    const checkbox = (n, cls) => h(Chk, { on: isSel(n), onToggle: () => toggleOne(n.id), cls });
+    const someSel = selected.length > 0;
 
     /* 获取入网脚本 = get_winrm_bootstrap_script（SSH key 现场入网，不再远程推送），打开脚本面板 */
     const getScript = (n) => { s.setDrawer({ kind: 'script', id: n.id }); };
@@ -300,12 +305,6 @@ import { deleteMachine, scanNetwork, addDiscoveredMachine, refreshMachine } from
         h('span', { className: 't' }, h(Icon, { name: 'node', size: 14 }), '机器管理',
           h('span', { className: 'dc-count' }, visible.length + ' 台 · ' + online + ' 在线')),
         h('div', { className: 'mach-acts' },
-          h('div', { className: 'mach-selall' + (allSel ? ' on' : ''), onClick: toggleAll, title: '全选 / 取消全选' },
-            h('span', { className: 'mck' + (allSel ? ' on' : '') }, allSel ? h(Icon, { name: 'check', size: 12 }) : null), '全选'),
-          selected.length
-            ? h('button', { className: 'mach-del', onClick: delSelected, title: '批量删除所选机器' },
-                h(Icon, { name: 'trash', size: 14 }), '删除所选 (' + selected.length + ')')
-            : null,
           h('div', { className: 'view-toggle' },
             h('button', { className: 'vt-btn' + (machView === 'grid' ? ' on' : ''), title: '图标视图', onClick: () => setMachView('grid') }, h(Icon, { name: 'grid', size: 14 })),
             h('button', { className: 'vt-btn' + (machView === 'list' ? ' on' : ''), title: '列表视图', onClick: () => setMachView('list') }, h(Icon, { name: 'list', size: 14 }))),
@@ -315,22 +314,27 @@ import { deleteMachine, scanNetwork, addDiscoveredMachine, refreshMachine } from
           h('span', { title: s.platform === 'win' ? '生成全局通用的 SSH 入网 U 盘包' : '该功能仅 Windows 可用（打包依赖 PowerShell）', style: { display: 'inline-flex' } },
             h(Button, { variant: 'secondary', size: 'S', isDisabled: s.platform !== 'win', icon: h(Icon, { name: 'usb', size: 14 }), onPress: () => { s.setDrawer({ kind: 'usb' }); } }, '制作入网 U 盘')),
           h(Button, { variant: 'accent', size: 'S', icon: h(Icon, { name: 'search', size: 14 }), onPress: onScan }, '扫描网段…'))),
+      /* handoff：独立多选条 msel-bar（真删除仍走 openPreview → delete_machine） */
+      h('div', { className: 'msel-bar' },
+        h(Chk, { on: allSel, onToggle: toggleAll, label: '全选' }),
+        h('span', { className: 'msel-l', onClick: toggleAll }, someSel ? ('已选 ' + selected.length + ' 台') : '全选'),
+        someSel ? h('div', { className: 'msel-r' },
+          h('button', { type: 'button', className: 'msel-clear', onClick: () => setSelected([]) }, '取消'),
+          h('button', { type: 'button', className: 'msel-del', onClick: delSelected }, h(Icon, { name: 'trash', size: 13 }), '删除所选（' + selected.length + '）')) : null),
       h('div', { className: 'mlist' },
         machView === 'list'
           ? h(React.Fragment, null,
               h('div', { className: 'mrow2 mhead' },
-                h('span', null, ''),
                 h('span', null, '机器 / IP'), h('span', null, 'UE 版本'), h('span', null, 'last-seen'), h('span', null, '环境'), h('span', { style: { textAlign: 'right' } }, '健康')),
-              visible.map((n) => h('div', { key: n.id, className: 'mrow2' + (n.status === 'offline' ? ' off' : '') + (isSel(n) ? ' picked' : ''), onClick: () => open(n.id) },
-                checkbox(n),
-                h('span', { className: 'mname' }, dot(NODE_STATUS[n.status].visual), h('span', { className: 'h' }, n.host), h('span', { className: 'ip' }, n.ip)),
+              visible.map((n) => h('div', { key: n.id, className: 'mrow2' + (n.status === 'offline' ? ' off' : '') + (isSel(n) ? ' sel' : ''), onClick: () => open(n.id) },
+                h('span', { className: 'mname' }, checkbox(n), dot(NODE_STATUS[n.status].visual), h('span', { className: 'h' }, n.host), h('span', { className: 'ip' }, n.ip)),
                 h('span', { className: 'mue' }, n.ue === '—' ? '—' : 'UE ' + n.ue),
                 h('span', { className: 'mseen' }, n.last),
                 envCell(n),
                 h('span', { style: { display: 'flex', justifyContent: 'flex-end' } }, h(CX.StatusPill, { status: n.status })))))
           : h('div', { className: 'mach-grid' },
-              visible.map((n) => h('div', { key: n.id, className: 'mach-tile' + (n.status === 'offline' ? ' off' : '') + (isSel(n) ? ' picked' : ''), onClick: () => open(n.id) },
-                checkbox(n, 'mt-check'),
+              visible.map((n) => h('div', { key: n.id, className: 'mach-tile' + (n.status === 'offline' ? ' off' : '') + (isSel(n) ? ' sel' : ''), onClick: () => open(n.id) },
+                checkbox(n),
                 h('div', { className: 'mt-ico ' + (n.status !== 'offline' ? 's-positive' : 's-neutral') }, h(Icon, { name: 'node', size: 28, stroke: 1.4 })),
                 h('div', { className: 'mt-host' }, n.host),
                 n.status === 'offline'

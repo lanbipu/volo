@@ -852,7 +852,11 @@ import { listen } from "@tauri-apps/api/event";
           h('div', { className: 'm' },
             h('div', { className: 'n' }, p.res.output_dir.split(/[\\/]/).pop() + '/'),
             h('div', { className: 'd' }, p.res.output_dir))) : null) : null,
-      h(Fold, { label: '上屏' }, h(PatternDeployShow, { s, p })));
+      /* handoff：折叠标题「上屏与输出」；投放壳用 OutputDelivery（nd-target），真后端在 VOLO_DEPLOY */
+      h(Fold, { label: '上屏与输出' },
+        window.VOLO_NDISPLAY && window.VOLO_NDISPLAY.OutputDelivery
+          ? h(window.VOLO_NDISPLAY.OutputDelivery, { s, bare: true })
+          : h(PatternDeployShow, { s, p })));
   }
 
   /* 测试图页收编：不再自管部署配置；按 deployStore / shell.deployState 走既有通道上屏 */
@@ -1117,6 +1121,11 @@ import { listen } from "@tauri-apps/api/event";
   function t_isTsNote() { return '全站仪实测角点 · 毫米级 · 无需测试图'; }
 
   function inspector(s) {
+    if (s.calSel && s.calSel.type === 'ndisplay') {
+      return h('div', { className: 'gw-insp' },
+        window.VOLO_NDISPLAY && window.VOLO_NDISPLAY.StageOutputInspector
+          ? h(window.VOLO_NDISPLAY.StageOutputInspector, { s }) : null);
+    }
     const sel = s.calSel;
     const t = sel && sel.type;
     if (t === 'screenMulti') {
@@ -1131,6 +1140,7 @@ import { listen } from "@tauri-apps/api/event";
     const body = t === 'cabinet' ? h(BoxSingle, { s })
       : t === 'cabinetMulti' ? h(BoxMulti, { s })
       : t === 'run' ? h(RunListInsp, { s })
+      : t === 'pattern' ? h(PatternPanel, { s })
       : null;
     /* handoff：选中重建 run 时不画顶部分隔线（列表紧贴阶段动作） */
     return h('div', { className: 'gw-insp' }, h(StagePanel, { s }), (body && t !== 'run') ? h('div', { className: 'gw-insp-sep' }) : null, body);
@@ -1264,7 +1274,43 @@ import { listen } from "@tauri-apps/api/event";
         h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 } },
           dirty ? h('span', { style: { fontSize: 11, color: 'var(--notice-visual)' } }, '未应用') : null,
           h('div', { style: { flex: 1 } }),
-          h(Button, { variant: dirty ? 'accent' : 'secondary', size: 'S', isDisabled: !dirty || saving, icon: h(Icon, { name: saving ? 'sync' : 'check', size: 13 }), onPress: flush }, saving ? '保存中…' : '应用'))));
+          h(Button, { variant: dirty ? 'accent' : 'secondary', size: 'S', isDisabled: !dirty || saving, icon: h(Icon, { name: saving ? 'sync' : 'check', size: 13 }), onPress: flush }, saving ? '保存中…' : '应用'))),
+      /* handoff：各屏 · 输出节点映射（真拓扑来自 project.output_topology） */
+      h(Fold, { label: '各屏 · 输出节点映射' }, (() => {
+        const topology = window.resolveProjectTopology && window.resolveProjectTopology(proj.config);
+        const comp = window.buildStageComposite ? window.buildStageComposite(screensMap) : { screens: [] };
+        const screensById = new Map((comp.screens || []).map((x) => [x.id, x]));
+        const coverByScreen = new Map();
+        if (topology && topology.nodes) {
+          ids.forEach((screenId) => {
+            const r = screensById.get(screenId);
+            if (!r) { coverByScreen.set(screenId, []); return; }
+            coverByScreen.set(screenId, topology.nodes.filter((n) => {
+              const vp = n.viewport_rect_px || [0, 0, 0, 0];
+              return vp[0] < r.x + r.w && r.x < vp[0] + vp[2] && vp[1] < r.y + r.h && r.y < vp[1] + vp[3];
+            }).map((n) => ({
+              node: { name: n.node_id, master: !!n.primary },
+              host: (n.machine && (n.machine.hostname || n.machine.ip)) || '—',
+              ip: (n.machine && n.machine.ip) || '',
+            })));
+          });
+        }
+        if (!topology || !topology.nodes || !topology.nodes.length) {
+          return h('div', { className: 'nd-empty-guide' }, h(Icon, { name: 'alert', size: 14 }),
+            h('div', null, h('b', null, 'Stage 尚未配置输出拓扑'), h('div', { className: 'd' }, '配置后按屏列出覆盖节点与机器'),
+              h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'net', size: 13 }), onPress: () => { s.setCalSel({ type: 'ndisplay' }); } }, '前往 nDisplay 输出')));
+        }
+        return h('div', { className: 'gw-msel-maps' }, ids.map((id) => {
+          const cov = coverByScreen.get(id) || [];
+          return h('div', { key: id, className: 'gw-msel-map' },
+            h('div', { className: 'gw-msel-map-h' }, h(Icon, { name: 'panel', size: 13 }), h('b', null, id), h('span', { className: 'k' }, id)),
+            cov.length
+              ? cov.map((c, i) => h('div', { key: i, className: 'gw-msel-map-r' },
+                  h('span', { className: 'nd' }, c.node.name), c.node.master ? h('span', { className: 'nd-pill-master' }, '主') : null,
+                  h('span', { className: 'host' }, c.host + (c.ip ? ' · ' + c.ip : ''))))
+              : h('div', { className: 'gw-msel-map-r is-none' }, h(Icon, { name: 'alert', size: 12 }), '无节点覆盖此屏'));
+        }));
+      })()));
   }
 
   function screenInspector(s) {

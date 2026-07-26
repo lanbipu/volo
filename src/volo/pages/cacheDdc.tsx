@@ -762,7 +762,7 @@ import {
             'aria-expanded': open, onClick: () => toggleSchan(n) }, h(Icon, { name: 'chevd', size: 16 }))));
       return h('div', { key: n.id, className: 'lcli' + (open ? ' open' : '') },
         row,
-        open ? h(SCHAN.ChanPanelShared, { node: n, ch: sc, loading: chanRefreshing || schanLoadingIds.has(n.id), onSet: onSetSchan, onClear: onClearSchan }) : null);
+        open ? h(SCHAN.ChanPanelShared, { node: n, ch: sc, loading: chanRefreshing || schanLoadingIds.has(n.id), onSet: onSetSchan, onClear: onClearSchan, onClearAll: () => clearAllShared(n) }) : null);
     };
 
     /* ===== ③ 本地 DDC（直接执行，真实 create_local_cache + 设 UE-LocalDataCachePath）===== */
@@ -992,6 +992,36 @@ import {
           }),
       });
     };
+    /* ③ 本地 DDC · 一键清除该机全部可写配置通道（展开面板底部 · 含确认弹层） */
+    const clearAllLocalChan = (n) => {
+      const entries = CHAN.clearableLocalEntries(chanData[n.id] || {});
+      if (entries.length === 0) return;
+      CX.openModalPreview(s, {
+        title: '一键清除本地 DDC 配置 · ' + n.host, icon: 'trash', cli: 'ddc.clear_local_channels', destructive: true, channel: 'ssh', confirmLabel: '清除这些配置',
+        doneTitle: '已清除配置', doneMsg: n.host + ' 的 ' + entries.length + ' 项本地 DDC 配置已清除（命令行只读项与本地缓存文件保留）',
+        steps: ['清空 ' + n.host + ' 上全部可写的本地 DDC 配置通道 —— EditorSettings ini（本地 + 共享上游）+ 注册表 + 环境变量 UE-LocalDataCachePath',
+          '命令行参数为只读扫描项，不在清理范围；不删除本地缓存文件夹与已有缓存',
+          '清除后自动回读校验，该机本地 DDC 路径回到未设置状态'],
+        simpleScope: entries.map((e) => ({ host: e.chan, ip: '', msg: e.val })),
+        run: () => s.runCmd({ domain: 'local-cache', action: 'clear', target: n.host + ' · ' + entries.length + ' 项', chan: 'ssh', note: n.host + ' · 一键清除全部本地 DDC 配置（' + entries.length + ' 项）' },
+          () => Promise.allSettled(entries.map((e) => CHAN.writeChannel(n, e.key, e.sub, ''))).then((rs) => {
+            const fail = rs.filter((r) => r.status === 'rejected').length;
+            const ok = rs.length - fail;
+            /* 无论成败都回读通道；部分/全部失败则抛错，不走下方摘「已部署」 */
+            return fetchChanOne(n).catch(() => {}).then(() => {
+              if (rs.length > 0 && fail === rs.length) throw new Error('全部清除失败');
+              if (fail) throw new Error(n.host + ' 部分清除失败（成功 ' + ok + ' / 失败 ' + fail + '）· 已部署标记已保留');
+              return { ok, fail: 0 };
+            });
+          }),
+          { okMsg: (r) => n.host + ' 已清除 ' + r.ok + ' 项' })
+          .then((r) => {
+            /* 走到此处即全部成功，可安全摘除「已部署」 */
+            setLocalDeployed((d) => d.filter((x) => x !== n.id));
+            return r;
+          }),
+      });
+    };
     /* ③ 模块级「一键清空所有配置」：清空当前列表全部（有配置）机器的可写本地 DDC 配置
        通道，确认弹层列出全部机器 + 条目；成功后逐台重新拉取通道详情做真实回读校验。 */
     const clearAllLocalMany = (nodes) => {
@@ -1066,7 +1096,7 @@ import {
             'aria-expanded': open, onClick: () => toggleChan(n) }, h(Icon, { name: 'chevd', size: 16 }))));
       return h('div', { key: n.id, className: 'lcli' + (open ? ' open' : '') },
         row,
-        open ? h(CHAN.ChanPanel, { node: n, ch: chanData[n.id], loading: chanRefreshing || chanLoadingIds.has(n.id), onSet: onSetChan, onClear: onClearChan }) : null);
+        open ? h(CHAN.ChanPanel, { node: n, ch: chanData[n.id], loading: chanRefreshing || chanLoadingIds.has(n.id), onSet: onSetChan, onClear: onClearChan, onClearAll: () => clearAllLocalChan(n) }) : null);
     };
     /* ③ 模块头部「一键清空所有配置」按钮的范围/disabled 态：同②一样只算已核对
        （chanData 懒加载，未展开/未刷新过的机器不计入）且确有可清理配置的机器。 */

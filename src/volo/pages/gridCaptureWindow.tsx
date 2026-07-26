@@ -114,8 +114,15 @@ import {
       body = h('img', { src: url, alt: '现场画面', className: 'capw-img' });
     }
     const m = MOTION[motion] || MOTION.ready;
+    /* handoff：对焦框 gcapw-af（色随稳定度）；真画面上叠 SVG，不替代 live feed */
+    const afOverlay = (phase === 'capturing' && signal === 'ok')
+      ? h('svg', { className: 'gcapw-af-layer', viewBox: '0 0 400 240', preserveAspectRatio: 'xMidYMid slice',
+          style: { position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' } },
+          h('rect', { className: 'gcapw-af gcapw-af--' + m.tone, x: 168, y: 88, width: 64, height: 64, rx: 4, fill: 'none', strokeWidth: 1.6, strokeDasharray: '10 6' }))
+      : null;
     return h('div', { className: 'capw-canvas' },
       body,
+      afOverlay,
       (phase === 'capturing' && signal === 'ok')
         ? h('div', { className: 'gcapw-motionchip gcapw-motionchip--' + m.tone },
             motion === 'ready' ? h(Icon, { name: 'check', size: 12 }) : h('span', { className: 'gcapw-mdot' }),

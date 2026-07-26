@@ -12,7 +12,7 @@
      custom_segments）按 GRID_MEAS_TYPES.visual.disabledForShapes 在选择器里禁用
      （M2 sidecar 尚不支持，见 CALIBRATE-UX.md 附录 A G14）。 */
 import * as React from "react";
-import { pickFile } from "../api/commands";
+import { pickFile, revealPath } from "../api/commands";
 import { isTauri } from "../api/invoke";
 import { importTotalStationCsv, loadMeasurementsYaml, saveProjectYaml } from "../api/meshCommands";
 import {
@@ -142,7 +142,12 @@ import { listen } from "@tauri-apps/api/event";
       ? h('div', { key: 'ts', className: 'gw-tnode' + (selType === 'survey' && sel.kind === 'ts' ? ' on' : ''), onClick: () => { s.setCalSel({ type: 'survey', kind: 'ts' }); s.setCalFlow('totalstation'); } },
           caret(false, null, true), h('span', { className: 'gw-tico' }, h(Icon, { name: 'target', size: 14 })),
           h('span', { className: 'gw-tlabel' }, '全站仪数据集'),
-          h('span', { className: 'gw-tmeta' }, (proj.measured && proj.measured.points ? proj.measured.points.length : 0) + ' 点'))
+          h('span', { className: 'gw-tmeta' }, (proj.measured && proj.measured.points ? proj.measured.points.length : 0) + ' 点'),
+          h('span', { className: 'gw-tacts' }, h(NodeMenu, { items: [
+            { icon: 'eye', label: '视口查看', onClick: () => { s.setCalSel({ type: 'survey', kind: 'ts' }); s.setCalFlow(null); s.setCalMeshVersion('rebuilt'); } },
+            { icon: 'sync', label: '重新导入', onClick: () => s.setCalFlow('totalstation') },
+            { icon: 'external', label: '打开文件夹', onClick: () => { if (proj.measurementsAbsPath) revealPath(proj.measurementsAbsPath).catch(() => {}); } },
+          ] })))
       : h('div', { key: 'ts', className: 'gw-tnode is-muted' },
           caret(false, null, true), h('span', { className: 'gw-tico' }, h(Icon, { name: 'target', size: 14 })),
           h('span', { className: 'gw-tlabel gw-tempty' }, '全站仪数据集'),
@@ -207,16 +212,37 @@ import { listen } from "@tauri-apps/api/event";
           h('span', { className: 'gw-tsolve-dot', title: '求解：' + d.label, style: { background: col, color: col } }));
       })) : null;
     const topo = window.resolveProjectTopology && window.resolveProjectTopology(proj.config);
+    const topoConfigured = !!(topo && topo.nodes && topo.nodes.length);
     const ndisplayNode = h('div', { className: 'gw-tnode' + (selType === 'ndisplay' ? ' on' : ''),
       onClick: () => { s.setCalSel({ type: 'ndisplay' }); s.setModal({ xwide: true, render: ({ close }) => window.VOLO_GRID_MODALS.topology(s, close) }); } },
       caret(false, null, true), h('span', { className: 'gw-tico' }, h(Icon, { name: 'net', size: 14 })),
       h('span', { className: 'gw-tlabel' }, 'nDisplay 输出'),
-      h('span', { className: 'gw-tmeta' }, topo && topo.nodes ? topo.nodes.length + ' 节点' : '未配置'));
+      topoConfigured
+        ? h('span', { className: 'gw-tmeta' }, topo.nodes.length + ' 节点')
+        : h('span', { className: 'gw-tstale' }, h(Icon, { name: 'alert', size: 10 }), '未配置'),
+      h('span', { className: 'gw-tacts' }, h('button', {
+        className: 'gw-tinline', title: '配置输出拓扑',
+        onClick: (e) => { e.stopPropagation(); s.setModal({ xwide: true, render: ({ close }) => window.VOLO_GRID_MODALS.topology(s, close) }); },
+      }, h(Icon, { name: 'settings', size: 12 }), '拓扑…')));
 
+    const patternRes = hasPattern ? proj.patternGenByScreen[screenId] : null;
+    const patternStale = !!(proj.patternStaleByScreen && proj.patternStaleByScreen[screenId]);
     const patternNode = hasPattern
       ? h('div', { className: 'gw-tnode' + (selType === 'pattern' ? ' on' : ''), onClick: () => s.setCalSel({ type: 'pattern' }) },
           caret(false, null, true), h('span', { className: 'gw-tico' }, h(Icon, { name: 'grid', size: 14 })),
-          h('span', { className: 'gw-tlabel' }, '测试图'), h('span', { className: 'gw-tmeta' }, 'ChArUco'))
+          h('span', { className: 'gw-tlabel' }, '测试图'),
+          patternStale
+            ? h('span', { className: 'gw-tstale' }, h(Icon, { name: 'alert', size: 10 }), '已过期')
+            : h('span', { className: 'gw-tmeta' }, 'ChArUco'),
+          h('span', { className: 'gw-tacts' }, h(NodeMenu, { items: [
+            { icon: 'eye', label: '在视口中预览', onClick: () => s.setCalDisplay(Object.assign({}, s.calDisplay, { pattern: true })) },
+            { icon: 'sync', label: '重新生成', onClick: () => s.setCalSel({ type: 'pattern' }) },
+            { icon: 'external', label: '打开输出文件夹', onClick: () => {
+              const dir = patternRes && (patternRes.output_dir || patternRes.dir);
+              if (dir) revealPath(dir).catch(() => {});
+              else s.setCalSel({ type: 'pattern' });
+            } },
+          ] })))
       : h('div', { className: 'gw-tnode is-muted' },
           caret(false, null, true), h('span', { className: 'gw-tico' }, h(Icon, { name: 'grid', size: 14 })),
           h('span', { className: 'gw-tlabel gw-tempty' }, '测试图'),

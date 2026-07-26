@@ -721,3 +721,35 @@
 .gw-disp-h:hover { color: var(--chrome-text); }
 .gw-disp-h .lb { flex: 1; }
 .gw-disp-h .n { font-family: var(--font-code); font-size: 11px; opacity: .8; }
+
+/* Handoff grid.css 规则补齐 */
+
+.gw-parent-h { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--chrome-faint); }
+
+.gw-parent-h svg { color: var(--volo-500); }
+
+.gw-presets { display: flex; flex-direction: column; gap: 5px; }
+
+.gw-preset { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: var(--radius-input); border: 1px solid var(--chrome-line); background: var(--wash); cursor: pointer; }
+
+.gw-preset:hover { border-color: var(--chrome-line-2); }
+
+.gw-preset.on { border-color: color-mix(in srgb, var(--volo-700) 50%, transparent); background: var(--highlight-selected); }
+
+.gw-preset .ic { color: var(--chrome-dim); display: grid; place-items: center; flex: 0 0 auto; }
+
+.gw-preset.on .ic { color: var(--volo-500); }
+
+.gw-preset .nm { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; color: var(--chrome-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.gw-preset .mt { font-size: 12px; font-family: var(--font-code); color: var(--chrome-faint); flex: 0 0 auto; }
+
+.gw-preset .rm { all: unset; cursor: pointer; color: var(--chrome-faint); display: grid; place-items: center; width: 20px; height: 20px; border-radius: var(--radius-input); flex: 0 0 auto; }
+
+.gw-preset .rm:hover { color: var(--t-body); background: var(--wash-2); }
+
+.gw-obj-origin { fill: var(--t-body); stroke: var(--film-2); stroke-width: .7; pointer-events: none; }
+
+.gw-cursor { pointer-events: none; }
+
+.gw-solve-empty-acts { display: flex; gap: 8px; flex-wrap: wrap; }

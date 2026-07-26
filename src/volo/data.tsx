@@ -423,6 +423,74 @@ function resolveProjectTopology(config) {
   return null;
 }
 
+/* 预检分类 —— 与 handoff data.jsx NDISPLAY_PREFLIGHT_KINDS 对齐（三类阻塞 + 一类警告） */
+const NDISPLAY_PREFLIGHT_KINDS = {
+  offline:      { label: '机器离线',            blocking: true,  tone: 'negative', icon: 'power',
+    fix: '确认机器已开机并接入网络，或在输出拓扑中改指其它机器。' },
+  unregistered: { label: '机器未登记',          blocking: true,  tone: 'negative', icon: 'alert',
+    fix: '该机器不在纳管清单中。前往「工具 · 缓存」扫描并添加后重试。', goCache: true },
+  ue_missing:   { label: 'UE 版本缺失',          blocking: true,  tone: 'negative', icon: 'alert',
+    fix: '目标机未检出与工程匹配的 UE 安装。请在缓存板块 deep-scan 或安装 UE 5.8。' },
+  ue_running:   { label: '检测到运行中的 UE 进程', blocking: false, tone: 'notice',   icon: 'alert',
+    fix: '可能占用输出口，请现场确认后继续 —— 不阻止部署。' },
+};
+
+/** 是否具备工程所需 UE 5.8。返回 true/false；无探测数据时返回 null（避免 NodeVM 占位误阻塞）。 */
+function hasMatchingUeInstall(mc) {
+  if (!mc) return false;
+  if (Array.isArray(mc.ue_installs)) {
+    return mc.ue_installs.some((u) => /^5\.8(?:\.|$)/.test(String((u && u.version) || '')));
+  }
+  if (mc.uePath && mc.uePath !== '—') return true;
+  if (mc.ue && mc.ue !== '—') return /5\.8/.test(String(mc.ue));
+  return null;
+}
+
+/** 拓扑节点 ↔ 纳管机器（id / ip / hostname）。预检与部署检查共用。 */
+function matchRenderNode(m, nd) {
+  if (!m || !nd) return false;
+  const host = (nd.machine && (nd.machine.ip || nd.machine.hostname)) || nd.machineId || nd.host || '';
+  return m.id === nd.machineId || m.id === host
+    || (nd.machine && ((m.ip && m.ip === nd.machine.ip) || (m.hostname && m.hostname === nd.machine.hostname)))
+    || !!(host && (m.ip === host || m.hostname === host));
+}
+
+function findMachineForTopoNode(machines, nd) {
+  const RN = machines || [];
+  for (let i = 0; i < RN.length; i++) if (matchRenderNode(RN[i], nd)) return RN[i];
+  return null;
+}
+
+/** 依拓扑与机器清单派生预检报告（handoff buildNdisplayPreflight；生产拓扑用 hostname/ip 匹配）。
+ *  machines 可选：传入已附带 ue_installs 的清单时才能可靠判定 ue_missing（与 resolveEditorPaths 对齐）。 */
+function buildNdisplayPreflight(topo, mode, machines) {
+  const nodes = (topo && topo.nodes) || [];
+  const RN = machines || window.RENDER_NODES || [];
+  return nodes.map((nd, i) => {
+    const host = (nd.machine && (nd.machine.ip || nd.machine.hostname)) || nd.machineId || nd.host || '';
+    const mc = findMachineForTopoNode(RN, nd);
+    const issues = [];
+    if (mode === 'blocked') {
+      if (i === 0) issues.push({ kind: 'offline', detail: (mc ? (mc.ip || mc.hostname) : host) + ' · 最近离线' });
+      else if (i === 1) issues.push({ kind: 'unregistered', detail: '拓扑引用的机器已不在纳管清单' });
+      else if (i === 2) issues.push({ kind: 'ue_missing', detail: '未发现匹配的 UE 安装 · uePath 为空' });
+      else issues.push({ kind: 'ue_running', detail: 'UnrealEditor.exe · 检测到运行中进程' });
+    } else {
+      if (!mc) issues.push({ kind: 'unregistered', detail: host ? ('未登记 · ' + host) : '拓扑未绑定机器' });
+      else if (mc.status === 'offline') issues.push({ kind: 'offline', detail: (mc.ip || mc.hostname || host) + ' · 离线' });
+      else {
+        const ueOk = hasMatchingUeInstall(mc);
+        if (ueOk === false) {
+          issues.push({ kind: 'ue_missing', detail: '未发现匹配的 UE 安装 · 需要 UE 5.8' });
+        } else if (nd.master || nd.primary) {
+          issues.push({ kind: 'ue_running', detail: '主控机可能仍有 UE 进程占用输出口' });
+        }
+      }
+    }
+    return { node: Object.assign({ name: nd.name || nd.node_id || ('node_' + i), machineId: host }, nd), machine: mc ? { host: mc.ip || mc.hostname, status: mc.status } : null, issues };
+  });
+}
+
 function stageScreenForOutput(config, topology) {
   const comp = buildStageComposite(config && config.screens);
   const topo = topology || resolveProjectTopology(config);
@@ -450,6 +518,7 @@ Object.assign(window, {
   GRID_VIEWS, GRID_STAGE_ACTIONS, GRID_MEAS_TYPES, GRID_RECON_STAGES, GRID_EXPORT_TARGETS,
   GRID_CAB_QUALITY, GRID_SOLVE_STATUS,
   buildStageComposite, stageScreenOriginPx, buildStageNdisplayTopo, resolveProjectTopology, stageScreenForOutput,
+  NDISPLAY_PREFLIGHT_KINDS, buildNdisplayPreflight, matchRenderNode, findMachineForTopoNode, hasMatchingUeInstall,
   Icon, STAGES, PAGES,
   /* machines / creds / shares / projects are loaded from the backend by the
      shell and mirrored onto window.{RENDER_NODES,CREDS,SHARES,UE_PROJECTS};

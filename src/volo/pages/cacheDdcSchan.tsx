@@ -227,8 +227,15 @@ import {
     return perGroup.flat();
   }
 
+  /* 面板底部栏复用本地通道 clearAllBar（count 显式传入共享可清除项数） */
+  const clearAllBar = (ch, loading, onClearAll) => {
+    const bar = window.VOLO_DDC_CHAN && window.VOLO_DDC_CHAN.clearAllBar;
+    if (!bar) return null;
+    return bar(ch, loading, onClearAll, clearableEntries(ch).length);
+  };
+
   /* =================== ChanPanelShared — 展开后的四通道区 =================== */
-  function ChanPanelShared({ node, ch, loading, onSet, onClear }) {
+  function ChanPanelShared({ node, ch, loading, onSet, onClear, onClearAll }) {
     const [edit, setEdit] = useState(null);    /* 'ini.<projId>#path' | 'reg' | 'env' … */
     const [draft, setDraft] = useState('');
     const [committing, setCommitting] = useState(null); /* ek 正在提交（保存/清除中）*/
@@ -344,13 +351,14 @@ import {
 
     return h('div', { className: 'chan-panel' },
       SCHAN_DEFS.map(chanRow),
+      onClearAll ? clearAllBar(safeCh, loading, onClearAll) : null,
       h('div', { className: 'chan-note' }, h(Icon, { name: 'info', size: 13 }),
         '按优先级顺序解析，高优先级通道非空时覆盖低优先级；标「路径失效」表示配置的 UNC 共享当前不可达，多为历史部署 / 手工残留的死配置，建议清理。'));
   }
 
   window.VOLO_DDC_SCHAN = {
     ENV_KEY, SCHAN_DEFS, channelsForShared, effectiveKeyShared, hasAnySharedConfig, hasDeadShared,
-    clearableEntries, isPresent, writeChannel, writeEntriesSafely, ChanPanelShared,
+    clearableEntries, isPresent, writeChannel, writeEntriesSafely, clearAllBar, ChanPanelShared,
   };
 })();
 

@@ -1,6 +1,5 @@
 /* Volo — 校正板块重构（新 IA）样式 · cal2
-   复用 styles/app.css / styles/calExt.css 的 token 与原子；仅补新结构。暗/亮自适应。
-   1:1 port of the Claude Design handoff `src/cal2.css`. */
+   复用 styles.css / cal_ext.css 的 token 与原子；仅补新结构。暗/亮自适应。 */
 
 /* ============================================================
    ctx 栏 · 只读摘要 + 采集设置
@@ -52,13 +51,15 @@
 /* ============================================================
    概览 · LED 项目管理
    ============================================================ */
+/* Editorial page header — no card box; the title carries the weight,
+   a hairline separates it from the table card below. */
 .cal2-projhdr { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; background: none;
   border: 0; border-bottom: 1px solid var(--hairline); border-radius: 0; padding: 2px 2px 16px; }
 .cal2-projhdr-l { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
 .cal2-projhdr-ic { width: 38px; height: 38px; border-radius: var(--radius-input); display: grid; place-items: center; flex: 0 0 auto;
   background: var(--surface-strong); color: var(--ink); }
-.cal2-projhdr-t { font-size: 15px; font-weight: 800; color: var(--ink); }
-.cal2-projhdr-s { font-size: 13px; color: var(--muted); margin-top: 2px; }
+.cal2-projhdr-t { font: 400 26px/1.15 var(--font-sans); letter-spacing: var(--track-display-md); color: var(--ink); }
+.cal2-projhdr-s { font-family: var(--font-code); font-size: 13px; color: var(--muted); margin-top: 5px; }
 .cal2-projhdr-acts { display: flex; gap: 10px; flex: 0 0 auto; }
 .cal2-sec-h { display: flex; align-items: center; gap: 8px; margin: 4px 2px -2px; font-size: 13px; font-weight: 500;
   letter-spacing: 0; text-transform: none; color: var(--chrome-faint); }
@@ -69,8 +70,7 @@
 .cal2-projcard { background: var(--chrome-card); border: 1px solid var(--chrome-line); border-radius: var(--radius-card); padding: 14px;
   cursor: pointer; transition: border-color .12s, background .12s; display: flex; flex-direction: column; }
 .cal2-projcard:hover { border-color: var(--chrome-line-2); background: var(--chrome-card-hover); }
-.cal2-projcard.active { border-color: var(--ink);
-  box-shadow: none; }
+.cal2-projcard.active { border-color: var(--ink); box-shadow: none; }
 .cal2-projcard-h { display: flex; align-items: flex-start; gap: 11px; margin-bottom: 12px; }
 .cal2-projcard-ic { width: 32px; height: 32px; border-radius: var(--radius-card); display: grid; place-items: center; flex: 0 0 auto;
   background: var(--wash); color: var(--chrome-dim); }

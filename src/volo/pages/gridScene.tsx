@@ -372,8 +372,9 @@ function GroundGrid({ rig }: { rig: CameraRig }) {
     update();
     return rig.onChange(update);
   }, [rig, mat, invalidate]);
+  /* name/userData = handoff SVG `.gw-ground`（Three 无 className，用场景图命名对齐） */
   return (
-    <mesh ref={mesh} renderOrder={50} material={mat} frustumCulled={false}>
+    <mesh ref={mesh} name="gw-ground" userData={{ kind: 'gw-ground' }} renderOrder={50} material={mat} frustumCulled={false}>
       <planeGeometry args={[1, 1]} />
     </mesh>
   );
@@ -575,25 +576,31 @@ function ScreenObjects({ e, store, selColor }: { e: SceneEntry; store: SceneStor
   const dashSegs = React.useMemo(() => {
     if (!geo.dashed) return null;
     const ls = new THREE.LineSegments(geo.dashed, dashMat);
+    ls.name = 'gw-box--cut';
+    ls.userData = { kind: 'gw-box', cut: true };
     ls.computeLineDistances();
     return ls;
   }, [geo.dashed, dashMat]);
   const ghostSegs = React.useMemo(() => {
     if (!ghostGeo) return null;
     const ls = new THREE.LineSegments(ghostGeo, ghostMat);
+    ls.name = 'gw-ghost';
+    ls.userData = { kind: 'gw-ghost' };
     ls.computeLineDistances();
     return ls;
   }, [ghostGeo, ghostMat]);
 
+  /* name/userData = handoff SVG `.gw-box` / `.gw-box-pat` / `.gw-ghost`（材质/opacity 已对齐 --dim/--cut） */
+  const boxCls = 'gw-box' + (e.isActive ? '' : ' gw-box--dim');
   return (
-    <group>
-      <mesh geometry={geo.solid} material={solidMat} />
-      {geo.edges ? <lineSegments geometry={geo.edges} material={edgeMat} /> : null}
+    <group name={boxCls} userData={{ kind: 'gw-box', dim: !e.isActive, entryId: e.id }}>
+      <mesh name="gw-box" userData={{ kind: 'gw-box', role: 'solid' }} geometry={geo.solid} material={solidMat} />
+      {geo.edges ? <lineSegments name="gw-box" userData={{ kind: 'gw-box', role: 'edges' }} geometry={geo.edges} material={edgeMat} /> : null}
       {dashSegs ? <primitive object={dashSegs} /> : null}
       {ghostSegs ? <primitive object={ghostSegs} /> : null}
-      {geo.pattern && patMat ? <mesh geometry={geo.pattern} material={patMat} /> : null}
-      {geo.sel ? <lineSegments geometry={geo.sel} material={selMat} renderOrder={5} /> : null}
-      <mesh ref={pickRef} geometry={geo.pick} material={PICK_MAT} visible={false} />
+      {geo.pattern && patMat ? <mesh name="gw-box-pat" userData={{ kind: 'gw-box-pat' }} geometry={geo.pattern} material={patMat} /> : null}
+      {geo.sel ? <lineSegments name="gw-box is-sel" userData={{ kind: 'gw-box', sel: true }} geometry={geo.sel} material={selMat} renderOrder={5} /> : null}
+      <mesh ref={pickRef} name="gw-box-pick" geometry={geo.pick} material={PICK_MAT} visible={false} />
     </group>
   );
 }

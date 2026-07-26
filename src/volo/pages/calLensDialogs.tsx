@@ -5,9 +5,8 @@
 
    真实接线要点：
    - ①/② 复用 calLens.tsx 的 useLensSolve（同一份 `vpcal quick run` 发起/解析逻辑）。
-   - ③ spawnSidecar('vpcal',['export','opentrackio',...]) 一次性阻塞调用（非流式，
-     导出通常是秒级操作）；延迟档案只提供「不应用」这一项——AR 延迟校准本批未实现
-     （calibrate.tsx arCenter() 仍是 WIP 占位），没有真实产物可复用，不臆造第二项。
+   - ③ spawnSidecar('vpcal',['export','opentrackio',...])；延迟档案用 handoff lens-dp*
+     列表：不应用 / AR 最近一次（arStore.lastDelay → --apply-delay）/ 自选文件（--delay-profile）。
    - ④ list_monitors + open_pattern_player 都是真命令；「分辨率校验」比较的是
      player 窗口物理尺寸 vs 该显示器自身列出的尺寸（两个独立真实来源），不是设计稿
      里的「pattern 分辨率 vs 窗口」——本页没有真实 pattern 图片可比对（vpcal pattern
@@ -248,28 +247,47 @@ import { listMonitors, openPatternPlayer, closePatternPlayer } from "../api/play
     const [busy, setBusy] = useState(false);
     const [done, setDone] = useState(null); /* {samples, applied_delay_ms, output} */
     const [error, setError] = useState(null);
-    const [delayProfile, setDelayProfile] = useState(null);
+    const [dp, setDp] = useState('none'); /* none | ar_last | file:<path> */
+    const [filePath, setFilePath] = useState(null);
+    const arWs = window.VOLO_CAL_AR && window.VOLO_CAL_AR.arStore ? window.VOLO_CAL_AR.arStore.get() : null;
+    const arCam = arWs && arWs.lastDelay && arWs.lastDelay.cameras && arWs.lastDelay.cameras[0];
+    const delayProfiles = [
+      { id: 'none', label: '不应用延迟档案', ms: null, note: '导出原始外参 · 延迟由合成引擎另行补偿' },
+      arCam ? { id: 'ar_last', label: 'AR 延迟校准 · 最近一次', ms: arCam.delay_ms, note: 'vpcal 已扣除该延迟，避免与合成引擎二次补偿' } : null,
+      filePath ? { id: 'file:' + filePath, label: CX.baseName(filePath), ms: null, note: '自选 delay profile JSON（capture delay-cal 输出）' } : null,
+    ].filter(Boolean);
     if (!R) return h('div', { className: 'drawer drawer--lens' }, head('download', 'info', '导出 OpenTrackIO', 'export opentrackio', close),
       h('div', { className: 'drawer-b' }, h('div', { style: { fontSize: 12.5, color: 'var(--chrome-faint)' } }, '尚无可导出的求解结果')),
       h('div', { className: 'drawer-f' }, h(Button, { variant: 'secondary', size: 'M', onPress: close }, '关闭')));
     const outPath = CX.joinPath(R.output_dir, 'opentrackio_lens.json');
+    /* AR lastDelay 在内存：用 --apply-delay；自选文件用 --delay-profile（与 vpcal CLI 一致） */
+    const delayCliArgs = () => {
+      if (dp === 'none') return [];
+      if (dp.indexOf('file:') === 0) return ['--delay-profile', dp.slice(5)];
+      if (dp === 'ar_last' && arCam && arCam.delay_ms != null) return ['--apply-delay', String(arCam.delay_ms)];
+      return [];
+    };
     const run = async () => {
       setBusy(true); setError(null);
       try {
-        const args = ['export', 'opentrackio', '--result', R.result_path, '--session', R.session_path, '--out', outPath, '--frame', 'ue'];
-        if (delayProfile) args.push('--delay-profile', delayProfile);
-        args.push('--output', 'json');
+        const dArgs = delayCliArgs();
+        const args = ['export', 'opentrackio', '--result', R.result_path, '--session', R.session_path, '--out', outPath, '--frame', 'ue', ...dArgs, '--output', 'json'];
         const out = await spawnSidecar('vpcal', args);
         if (out.exit_code !== 0) throw new Error(out.stderr || ('exit ' + out.exit_code));
         let env = null;
         try { env = JSON.parse(out.stdout.trim()); } catch (e) { /* 非 JSON 输出兜底显示原文 */ }
         const data = (env && env.data) || {};
-        setDone({ samples: data.samples ?? null, applied_delay_ms: data.applied_delay_ms ?? null, output: data.output || outPath });
-        s.pushLog({ lv: 'ok', cat: 'lens', msg: '导出 OpenTrackIO · <b>' + CX.baseName(outPath) + '</b> · frame ue' });
+        const applied = data.applied_delay_ms != null ? data.applied_delay_ms : (dp === 'ar_last' && arCam ? arCam.delay_ms : null);
+        setDone({ samples: data.samples ?? null, applied_delay_ms: applied, output: data.output || outPath });
+        s.pushLog({ lv: 'ok', cat: 'lens', msg: '导出 OpenTrackIO · <b>' + CX.baseName(outPath) + '</b> · frame ue' + (dArgs.length ? ' · applied_delay' : '') });
       } catch (e) {
         setError(e && e.message ? e.message : String(e));
         s.pushLog({ lv: 'err', cat: 'lens', msg: `导出 OpenTrackIO 失败 · ${e && e.message ? e.message : e}` });
       } finally { setBusy(false); }
+    };
+    const pickDelayFile = async () => {
+      const p = await pickFile('delay profile JSON（capture delay-cal 输出）', ['json']).catch(() => null);
+      if (p) { setFilePath(p); setDp('file:' + p); setDone(null); }
     };
     return h('div', { className: 'drawer drawer--lens' }, head('download', 'info', '导出 OpenTrackIO', 'export opentrackio --frame ue', close),
       h('div', { className: 'drawer-b' },
@@ -277,17 +295,18 @@ import { listMonitors, openPatternPlayer, closePatternPlayer } from "../api/play
           h('div', { className: 'lens-exp-path mono' }, outPath)),
         h('div', { className: 'lens-exp-field' }, h('span', { className: 'lens-exp-k' }, '坐标系'),
           h('div', { className: 'lens-exp-ro' }, h('span', { className: 'mono' }, '--frame ue'), h(Badge, { variant: 'neutral', size: 'S' }, '固定 · 只读'))),
-        h('div', { className: 'lens-exp-field' }, h('span', { className: 'lens-exp-k' }, '延迟档案'),
-          h('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
-            h('span', { className: 'lens-exp-path mono', style: { flex: 1 } }, delayProfile ? CX.baseName(delayProfile) : '不应用（导出原始时间戳）'),
-            h('button', { className: 'lens-browse', onClick: async () => { const p = await pickFile('delay profile JSON（capture delay-cal 输出）', ['json']).catch(() => null); if (p) setDelayProfile(p); } }, h(Icon, { name: 'folder', size: 13 }), '选择…'),
-            delayProfile ? h('button', { className: 'vs-manual-x', onClick: () => setDelayProfile(null), title: '不应用延迟' }, h(Icon, { name: 'x', size: 13 })) : null),
-          h('div', { className: 'lens-nanote', style: { marginBottom: 0 } }, h(Icon, { name: 'info', size: 13 }), delayProfile ? '将传入 --delay-profile；vpcal 重定时并在 tracker.notes 标记。' : '不传延迟参数；由下游系统另行补偿。')),
+        h('div', { className: 'lens-exp-field' }, h('span', { className: 'lens-exp-k' }, '延迟档案（可选）'),
+          h('div', { className: 'lens-dp-list' }, delayProfiles.map((p) => h('button', { key: p.id, type: 'button', className: 'lens-dp' + (p.id === dp ? ' on' : ''), onClick: () => { setDp(p.id); setDone(null); } },
+            h('span', { className: 'lens-sess-rd' }, p.id === dp ? h('span', { className: 'dot' }) : null),
+            h('div', { className: 'lens-dp-meta' }, h('div', { className: 'lens-dp-n' }, p.label, p.ms != null ? h('span', { className: 'lens-dp-ms mono' }, '+' + Number(p.ms).toFixed(1) + ' ms') : null),
+              h('div', { className: 'lens-dp-s' }, p.note))))),
+          h('button', { className: 'lens-browse', style: { marginTop: 8 }, onClick: pickDelayFile }, h(Icon, { name: 'folder', size: 14 }), '浏览文件…'),
+          h('div', { className: 'lens-nanote', style: { marginTop: 2 } }, h(Icon, { name: 'info', size: 13 }), '延迟档案来自 AR 延迟校准；vpcal 已在导出样本中扣除该延迟，避免与合成引擎二次补偿。')),
         error ? h('div', { style: { marginTop: 10 } }, h(InlineAlert, { variant: 'negative', title: '导出失败' }, error)) : null,
         done ? h('div', { className: 'lens-exp-result' },
           h('div', { className: 'lens-exp-rh' }, h(Icon, { name: 'check', size: 14 }), '导出成功'),
           KV('samples', done.samples == null ? 'n/a' : String(done.samples), true),
-          KV('applied_delay_ms', done.applied_delay_ms == null ? 'not applied' : done.applied_delay_ms.toFixed(1), true),
+          KV('applied_delay_ms', done.applied_delay_ms == null ? 'not applied' : Number(done.applied_delay_ms).toFixed(1), true),
           h('div', { className: 'lens-outrow', style: { marginTop: 4 } },
             h('div', { style: { minWidth: 0 } }, h('div', { className: 'mono', style: { fontSize: 12, color: 'var(--chrome-dim)', wordBreak: 'break-all' } }, done.output)),
             h('button', { className: 'cal2-folderbtn', onClick: () => openFolder(s, R.output_dir) }, h(Icon, { name: 'external', size: 13 }), '打开文件夹'))) : null),

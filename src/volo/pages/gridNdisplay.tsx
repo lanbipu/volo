@@ -162,7 +162,7 @@ import { listMachines } from "../api/commands";
           output_topology: Object.assign(
             {},
             latest.output_topology || {},
-            { nodes: windowed },
+            { nodes: windowed, canvas: { w: cw, h: ch } },
           ),
         });
         await saveProjectYaml(proj.path, next);
@@ -271,9 +271,55 @@ import { listMachines } from "../api/commands";
           h(Button, { variant: 'accent', size: 'M', isDisabled: errs.length > 0 || saving, icon: h(Icon, { name: 'check', size: 15 }), onPress: save }, saving ? '保存中…' : '保存拓扑'))));
   }
 
+  /* ================= 输出投放（检查器段 · handoff OutputDelivery） =================
+     目标切换用 nd-tbtn 视觉；本机 / 集群分支委托 VOLO_DEPLOY 真后端实现。 */
+  function Fold({ label, defOpen, right, children }) {
+    const [open, setOpen] = useState(defOpen !== false);
+    return h('div', { className: 'gw-grp' },
+      h('button', { className: 'gw-grp-h', type: 'button', onClick: () => setOpen((v) => !v) },
+        h('span', null, label), right ? h('span', { style: { marginLeft: 8 } }, right) : null,
+        h('span', { className: 'car' + (open ? '' : ' closed'), style: { marginLeft: 'auto' } }, h(Icon, { name: 'chevd', size: 14 }))),
+      open ? h('div', { className: 'gw-grp-body' }, children) : null);
+  }
+
+  function OutputDelivery({ s, bare, hideTarget, hideEmptyGuide, onlyPlayback }) {
+    const target = s.calOutTarget;
+    const Dep = window.VOLO_DEPLOY || {};
+    const spill = (tone, icon, txt) => h('span', { className: 'spill spill--' + tone }, h(Icon, { name: icon, size: 12 }), txt);
+    /* handoff：OutputDelivery 内嵌 nd-* ClusterBranch/MonitorBranch（非部署页 dep-* 壳） */
+    const body = h(React.Fragment, null,
+      hideTarget ? null : h('div', { className: 'nd-target' },
+        h('button', { type: 'button', className: 'nd-tbtn' + (target === 'monitor' ? ' on' : ''), onClick: () => s.setCalOutTarget('monitor') },
+          h(Icon, { name: 'panel', size: 15 }), h('div', { className: 'm' }, h('b', null, '本机显示器'), h('span', null, '投到本机 HDMI'))),
+        h('button', { type: 'button', className: 'nd-tbtn' + (target === 'cluster' ? ' on' : ''), onClick: () => s.setCalOutTarget('cluster') },
+          h(Icon, { name: 'net', size: 15 }), h('div', { className: 'm' }, h('b', null, 'nDisplay 集群'), h('span', null, '渲染服务器上墙')))),
+      target === 'monitor'
+        ? (Dep.MonitorBranch ? h(Dep.MonitorBranch, { s, shell: 'nd' }) : null)
+        : (Dep.ClusterBranch ? h(Dep.ClusterBranch, { s, shell: 'nd', hideEmptyGuide, onlyPlayback }) : null));
+    if (bare) return h('div', { className: 'nd-deliver' }, body);
+    return h(Fold, {
+      label: '输出投放',
+      right: target === 'cluster' ? spill('informative', 'panel', 'nDisplay') : null,
+    }, body);
+  }
+
+  function StageOutputInspector({ s }) {
+    const proj = CX.useProj();
+    const n = Object.keys((proj.config && proj.config.screens) || {}).length;
+    return h(React.Fragment, null,
+      h('div', { className: 'gw-insp-head' },
+        h('span', { className: 'gw-insp-ic' }, h(Icon, { name: 'net', size: 16 })),
+        h('div', { className: 'gw-insp-tt' }, h('h2', null, 'nDisplay 输出'),
+          h('div', { className: 'sub' }, 'Stage 级 · 全局输出投放 · ' + n + ' 屏')),
+        h('span', { className: 'spill spill--informative' }, h(Icon, { name: 'panel', size: 12 }), 'Stage')),
+      h('div', { className: 'gw-insp-body' }, h(OutputDelivery, { s, bare: true })));
+  }
+
   window.VOLO_NDISPLAY = {
     TopologyDialog,
     validateStageTopo,
     openTopology: (s, close) => h(TopologyDialog, { s, close }),
+    OutputDelivery,
+    StageOutputInspector,
   };
 })();

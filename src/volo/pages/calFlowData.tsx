@@ -117,13 +117,14 @@
     duration: '约 2 分 10 秒', fps: 24,
   };
 
+  /* 顺序与 handoff cal_flow_data.jsx 一致：nDisplay 在前（默认首选） */
   const CAL_DEPLOY_TARGETS = [
-    { id: 'monitor', label: '显示器直连', icon: 'panel',
-      desc: '把图案播放器输出到本机直连的 LED 处理器显示器。',
-      scene: '单机、单屏或处理器 HDMI 直连的现场，最快上手。' },
     { id: 'cluster', label: 'nDisplay', icon: 'net',
       desc: '经 nDisplay 集群把画面分发到多台渲染服务器上墙。',
       scene: '多节点、大画布、需渲染集群驱动的现场。' },
+    { id: 'monitor', label: '显示器直连', icon: 'panel',
+      desc: '把图案播放器输出到本机直连的 LED 处理器显示器。',
+      scene: '单机、单屏或处理器 HDMI 直连的现场，最快上手。' },
   ];
   const CAL_DEPLOY_STATE = {
     idle:    { label: '未部署', tone: 'neutral',  icon: 'minus' },

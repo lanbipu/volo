@@ -614,8 +614,11 @@ function App() {
   const [logPaused, setLogPaused] = useState(false);
   /* calibrate：概览 / 屏幕设计 / 测试图 / 上屏部署 / 重建 / 校正；后五页共用同一三维主视图。
      「网格已重建」派生自 projStore.proj.reconstruction。 */
-  const CAL_SECTIONS = ['overview', 'screen', 'pattern', 'deploy', 'rebuild', 'lens'];
-  const [calSection, setCalSection] = useState(CAL_SECTIONS.includes(persisted.calSection) ? persisted.calSection : 'overview');
+  /* 与 handoff grid_pages NAV 对齐：无独立 pattern section（测试图走 calSel） */
+  const CAL_SECTIONS = ['overview', 'screen', 'deploy', 'rebuild', 'lens'];
+  const persistedSection = persisted.calSection === 'pattern' ? 'screen'
+    : (CAL_SECTIONS.includes(persisted.calSection) ? persisted.calSection : 'overview');
+  const [calSection, setCalSection] = useState(persistedSection);
   /* 当前激活屏幕（工作区视口高亮项 · 检查器/流程面板作用目标）。真实屏幕列表来自
      proj.config.screens（见 pages/calibrate.tsx 的 projStore），此处只存 id。 */
   const [calActiveScreen, setCalActiveScreen] = useState(persisted.calActiveScreen || 'main');
@@ -661,7 +664,8 @@ function App() {
   const [calArToolsOpen, setCalArToolsOpen] = useState(persisted.calArToolsOpen != null ? persisted.calArToolsOpen : true);
   const [calLensState, setCalLensState] = useState(persisted.calLensState || 'idle');
   /* ---- 上屏部署 + 镜头校正二级流程（handoff cal_flow）---- */
-  const [calOutTarget, setCalOutTarget] = useState(persisted.calOutTarget === 'cluster' ? 'cluster' : 'monitor');
+  /* handoff：cluster 为默认首选；仅当持久化明确为 monitor 时才切本机 */
+  const [calOutTarget, setCalOutTarget] = useState(persisted.calOutTarget === 'monitor' ? 'monitor' : 'cluster');
   const [deployState, setDeployState] = useState('idle'); /* idle | standby | showing */
   const [deployMeta, setDeployMeta] = useState(null); /* { channel, target, monitorIndex?, nodeCount? } */
   const [lensFlow, setLensFlow] = useState(null); /* null | 'capture'：嵌套流程标记；主 UI 走 VOLO_CALFLOW 大窗 */
@@ -996,7 +1000,7 @@ function App() {
       inspectorHasTargetRef.current = true;
       return;
     }
-    const calPinned = page === 'calibrate' && (calSection === 'rebuild' || calSection === 'pattern' || calSection === 'screen' || calSection === 'deploy');
+    const calPinned = page === 'calibrate' && (calSection === 'rebuild' || calSection === 'screen' || calSection === 'deploy');
     const hasTarget = !!drawer || !!psoSel || !!calSel || calPinned;
     if (!hasTarget && inspectorHasTargetRef.current) setRightCollapsed(true);
     /* 进入常显页时若检查器仍收起则展开一次（上升沿）。 */

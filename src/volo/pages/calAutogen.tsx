@@ -5,8 +5,8 @@
                           后端调用（export_vpcal_screen + ensureScreenPatterns），
                           **不是** CD 原型里的演示 mock。CD 的「演示状态切换条」
                           DemoStrip 是设计稿评审控件，按任务纪律不移植。
-     · ScreenChips    —— 标定屏幕横向多选 chip（至少保留一屏）。
-     · AutoStatusRows —— 三个自动状态行（状态三通道：色 + 图标 + 文字）。
+     · ScreenChips    —— 标定屏幕多选列表（前置圆点 = 已选；至少保留一屏）。
+     · AutoStatusRows —— 三个自动状态紧凑单卡行（色点 + 文字；失败态 title 带原文）。
    屏幕来源 = VOLO_CAL2.useProj() 的 project.config.screens；路径推导走
    api/lensWorkspace（唯一入口）。 */
 import * as React from "react";
@@ -34,13 +34,6 @@ import { ensureScreenPatterns, lensWorkspacePaths } from "../api/lensWorkspace";
     const t = (sc && sc.shape_prior && sc.shape_prior.type) || "flat";
     return t !== "flat" && t !== "folded";
   };
-
-  /* 三通道徽章 */
-  function pill(tone, icon, text, spin) {
-    return h("span", { className: "cap-pill cap-pill--" + tone },
-      spin ? h("span", { className: "ag-spin" }, h(Icon, { name: "sync", size: 12 })) : h(Icon, { name: icon, size: 12 }),
-      text);
-  }
 
   /* ---------- 状态机（真实后端） ---------- */
   function useAutoGen(s) {
@@ -232,98 +225,85 @@ import { ensureScreenPatterns, lensWorkspacePaths } from "../api/lensWorkspace";
     };
   }
 
-  /* ---------- 标定屏幕 chips（多选 · 至少保留一屏） ---------- */
+  /* ---------- 标定屏幕列表（多选 · 圆点表示已选 · 至少保留一屏） ---------- */
   function ScreenChips({ ag, disabled }) {
     if (!ag.screens.length) {
-      return h("div", { className: "ag-chips ag-chips-empty" }, ag.hasProject ? "项目内没有屏幕设计" : "未打开项目");
+      return h("div", { className: "ag-list" },
+        h("div", { className: "ag-lrow ag-lrow--empty" },
+          h("span", { className: "ag-lname" }, ag.hasProject ? "项目内没有屏幕设计" : "未打开项目")));
     }
-    return h("div", { className: "lc-camchips ag-chips" }, ag.screens.map((sc) =>
-      h("button", {
-        key: sc.id, className: "lc-camchip" + (ag.selectedIds.includes(sc.id) ? " on" : ""),
-        disabled: disabled || (ag.selectedIds.length === 1 && ag.selectedIds[0] === sc.id),
-        "aria-pressed": ag.selectedIds.includes(sc.id),
+    return h("div", { className: "ag-list" + (disabled ? " is-disabled" : "") }, ag.screens.map((sc) => {
+      const on = ag.selectedIds.includes(sc.id);
+      return h("button", {
+        key: sc.id, className: "ag-lrow" + (on ? " on" : ""),
+        disabled: disabled || (ag.selectedIds.length === 1 && on),
+        "aria-pressed": on,
         onClick: () => !disabled && ag.toggleScreen(sc.id),
         title: sc.multiSection ? "折面屏 / 异形（多 section）" : sc.sub,
       },
-        h("span", { className: "ag-chip-ic" }, h(Icon, { name: ag.selectedIds.includes(sc.id) ? "check" : "panel", size: 13 })),
-        sc.name)));
+        h("span", { className: "ag-ldot" }),
+        h("span", { className: "ag-lname" }, sc.name),
+        h("span", { className: "ag-lsub" }, sc.multiSection ? "异形" : (sc.columns ? sc.columns + " 柜" : "平面")));
+    }));
   }
 
-  /* ---------- 单个自动状态行 ---------- */
-  function row(label, opts) {
-    opts = opts || {};
-    return h("div", { className: "ag-row" + (opts.pending ? " is-pending" : "") },
-      h("div", { className: "ag-row-top" },
-        h("span", { className: "ag-row-lb" }, label),
-        h("span", { className: "ag-sp" }),
-        opts.skeleton ? h("span", { className: "ag-skel" }) : opts.badge,
-        opts.action || null),
-      opts.bar || null,
-      opts.note ? h("div", { className: "ag-row-note" }, opts.note) : null,
-      opts.error ? h("div", { className: "ag-row-err" }, h(Icon, { name: "alert", size: 12 }), h("span", null, opts.error)) : null,
-      opts.pathNode || null);
-  }
-
+  /* ---------- 紧凑状态行：标签 · 一行状态 · 可选操作 ---------- */
   const iconBtn = (icon, title, onClick) =>
-    h("button", { className: "ag-iconbtn", title: title, onClick: onClick }, h(Icon, { name: icon, size: 14 }));
+    h("button", { className: "ag-iconbtn", title: title, onClick: onClick }, h(Icon, { name: icon, size: 13 }));
 
-  /* ---------- 三个自动状态行 ---------- */
+  function mrow(label, opts) {
+    opts = opts || {};
+    return h("div", { className: "ag-mrow" + (opts.tone ? " t-" + opts.tone : ""), title: opts.title || undefined },
+      h("span", { className: "ag-mk" }, label),
+      opts.skeleton
+        ? h("span", { className: "ag-skel" })
+        : h("span", { className: "ag-mv" + (opts.mono ? " mono" : "") },
+            opts.tone ? h("span", { className: "ag-mdot" }) : null,
+            opts.spin ? h("span", { className: "ag-spin" }, h(Icon, { name: "sync", size: 11 })) : null,
+            h("span", { className: "t" }, opts.text)),
+      opts.action || null,
+      opts.bar ? h("span", { className: "ag-indet" }, h("span", { className: "ag-indet-bar" })) : null);
+  }
+
+  /* ---------- 三个自动状态行（紧凑单卡） ---------- */
   function AutoStatusRows({ ag }) {
     /* ① 屏幕定义 */
     const defRow = ag.syncing
-      ? row("屏幕定义", { skeleton: true })
+      ? mrow("屏幕定义", { skeleton: true })
       : ag.screenDef === "exportFail"
-        ? row("屏幕定义", {
-            badge: pill("negative", "x", "导出失败"),
-            action: iconBtn("sync", "重试导出", ag.retryScreenDef), error: ag.screenDefErr, pending: true,
-          })
-        : row("屏幕定义", { badge: pill("positive", "check", "已同步 · " + ag.screenName) });
+        ? mrow("屏幕定义", { tone: "negative", text: "导出失败", title: ag.screenDefErr || "导出 screen.json 失败",
+            action: iconBtn("sync", "重试导出", ag.retryScreenDef) })
+        : mrow("屏幕定义", { tone: "positive", text: "已同步 · " + ag.screenName });
 
     /* ② 校正图案 */
     let patRow;
     if (ag.syncing) {
-      patRow = row("校正图案", { skeleton: true });
+      patRow = mrow("校正图案", { skeleton: true });
     } else if (ag.screenDef === "exportFail") {
-      /* 导出失败时生成链路被卡在前置，不能显示「已自动触发重新生成」 */
-      patRow = row("校正图案", {
-        badge: pill("neutral", "minus", "等待屏幕定义"),
-        note: "屏幕定义导出失败，修复后将自动生成图案。",
-      });
+      patRow = mrow("校正图案", { tone: "notice", text: "等待屏幕定义",
+        title: "屏幕定义导出失败，修复后将自动生成图案。" });
     } else if (ag.pattern === "unsupported") {
-      patRow = row("校正图案", {
-        badge: pill("notice", "alert", "折面屏不支持"),
-        note: "折面屏（多 section）图案上屏 P0 暂不支持，需 CLI 手动生成 / 上屏。",
-      });
+      patRow = mrow("校正图案", { tone: "notice", text: "折面屏不支持",
+        title: "折面屏（多 section）图案上屏 P0 暂不支持，需 CLI 手动生成 / 上屏。" });
     } else if (ag.pattern === "generating") {
-      patRow = row("校正图案", {
-        badge: pill("notice", "sync", ag.preparing ? "补生成中" : "生成中", true),
-        bar: h("div", { className: "ag-indet" }, h("span", { className: "ag-indet-bar" })),
-      });
+      patRow = mrow("校正图案", { tone: "notice", spin: true, bar: true,
+        text: ag.preparing ? "补生成中…" : "生成中…" });
     } else if (ag.pattern === "needRegen") {
-      patRow = row("校正图案", {
-        badge: pill("notice", "alert", "需重新生成"),
-        note: "系统检测到屏幕设计已变更，已自动触发重新生成，无需手动操作。",
-      });
+      patRow = mrow("校正图案", { tone: "notice", text: "需重新生成 · 已自动触发",
+        title: "系统检测到屏幕设计已变更，已自动触发重新生成，无需手动操作。" });
     } else if (ag.pattern === "genFail") {
-      patRow = row("校正图案", {
-        badge: pill("negative", "x", "生成失败"),
-        action: iconBtn("sync", "重试生成", ag.retryPattern), error: ag.patternErr, pending: true,
-      });
+      patRow = mrow("校正图案", { tone: "negative", text: "生成失败", title: ag.patternErr || "校正图案生成失败",
+        action: iconBtn("sync", "重试生成", ag.retryPattern) });
     } else {
-      patRow = row("校正图案", {
-        badge: pill("positive", "check", "已生成"),
-        note: "灰码角标已内置于图案，无需手动准备 normal / inverted 文件。",
-      });
+      patRow = mrow("校正图案", { tone: "positive", text: "已生成 · 含灰码角标",
+        title: "灰码角标已内置于图案，无需手动准备 normal / inverted 文件。" });
     }
 
     /* ③ 输出位置（只读 · 无失败态） */
-    const outRow = row("输出位置", {
-      badge: h("span", { className: "ag-auto-tag" }, h(Icon, { name: "check", size: 11 }), "自动"),
-      action: iconBtn("folder", "打开目录", ag.openOutput),
-      pathNode: h("div", { className: "ag-path" }, h(Icon, { name: "folder", size: 13 }), h("span", { className: "mono" }, ag.outputPath)),
-    });
+    const outRow = mrow("输出位置", { mono: true, text: ag.outputPath, title: ag.outputPath,
+      action: iconBtn("folder", "打开目录", ag.openOutput) });
 
-    return h("div", { className: "ag-rows" }, defRow, patRow, outRow);
+    return h("div", { className: "ag-rows ag-mini" }, defRow, patRow, outRow);
   }
 
   window.VoloAutoGen = { useAutoGen, ScreenChips, AutoStatusRows };

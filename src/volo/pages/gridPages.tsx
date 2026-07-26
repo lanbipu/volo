@@ -9,11 +9,11 @@ import * as React from "react";
   const G = window.VOLO_GRID;
   const CX = window.VOLO_CAL2;
 
-  /* 扁平页面导航（无层级）。上屏部署位于测试图与重建之间（handoff）。 */
+  /* 扁平页面导航（无层级）—— 与 handoff grid_pages.jsx NAV 1:1。
+     测试图不是独立导航项：经场景树/选择器 setCalSel({type:'pattern'}) 进入检查器。 */
   const NAV = [
     { id: 'overview', label: '概览', icon: 'grid' },
     { id: 'screen',   label: '屏幕设计', icon: 'panel' },
-    { id: 'pattern',  label: '测试图', icon: 'grid' },
     { id: 'deploy',   label: '上屏部署', icon: 'external' },
     { id: 'rebuild',  label: '重建', icon: 'cube3' },
     { id: 'lens',     label: '校正', icon: 'camera' },
@@ -29,10 +29,9 @@ import * as React from "react";
       if (s.setCapState) s.setCapState('idle');
     }
     if (id === 'overview') { s.setCalSel(null); }
-    else if (id === 'deploy') { s.setCalSel({ type: 'screen' }); }
-    else if (id === 'rebuild' || id === 'screen') { s.setCalSel({ type: 'screen' }); }
-    else if (id === 'pattern') { s.setCalSel({ type: 'pattern' }); }
-    else { s.setCalSel(null); }
+    else if (id === 'deploy') { s.setCalSel({ type: 'screen' }); s.setLeftCollapsed(false); }
+    else if (id === 'rebuild' || id === 'screen') { s.setCalSel({ type: 'screen' }); s.setLeftCollapsed(false); }
+    else { s.setCalSel(null); s.setLeftCollapsed(false); }
   }
   function NavList({ s }) {
     const sec = s.calSection;
@@ -65,8 +64,9 @@ import * as React from "react";
     const seg = h(StageSeg, { s });
     if (s.calStageType === 'ar') return h('div', { className: 'gw-tb' }, seg, h('div', { className: 'gw-tb-group is-fill' }));
     if (s.calSection === 'overview') return h('div', { className: 'gw-tb' }, seg);
-    if (s.calSection === 'lens' || s.calSection === 'screen' || s.calSection === 'pattern' || s.calSection === 'deploy')
+    if (s.calSection === 'deploy' || s.calSection === 'lens' || s.calSection === 'screen')
       return h('div', { className: 'gw-tb' }, seg);
+    /* 重建页：追踪源 + 采集设置（与 handoff ctx 一致） */
     return h('div', { className: 'gw-tb' },
       seg,
       h('div', { className: 'gw-tb-group is-fill' }),
@@ -108,8 +108,8 @@ import * as React from "react";
     if (s.calSection === 'deploy') return (window.VOLO_DEPLOY && window.VOLO_DEPLOY.deployInspector) ? window.VOLO_DEPLOY.deployInspector(s) : null;
     if (s.calSection === 'lens') return (window.VOLO_CALFLOW && window.VOLO_CALFLOW.lensInspector) ? window.VOLO_CALFLOW.lensInspector(s) : CX.lensPageInspector(s, lensLive);
     if (s.calSection === 'overview') return CX.inspEmpty ? CX.inspEmpty('概览页无检查器') : null;
-    if (s.calSection === 'screen') return G.screenInspector(s);
-    if (s.calSection === 'pattern') return G.patternInspector(s);
+    if (s.calSection === 'screen') return G.screenInspector ? G.screenInspector(s) : G.inspector(s);
+    /* pattern 经 calSel.type，由 G.inspector 分发（非独立 section） */
     return G.inspector(s);
   }
 

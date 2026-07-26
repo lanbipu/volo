@@ -1,4 +1,84 @@
 /* ============================================================
+   Volo — 三维视口配色（与 src/vp_palette.js 成对使用，全站最后加载）
+
+   背景：换肤时把视口里的取色全指向了灰阶 token，结果坐标轴、导航
+   gizmo、参考点徽标、法线、来源着色全变成一片灰 —— 而三维视口是
+   全站唯一靠颜色传递空间语义的地方，不能跟界面 chrome 一起去色。
+   grid_view.jsx 的原注释就写着「红 X / 蓝 Z / 绿 Y，仿 Blender」。
+
+   注：--mark-* 这一组 token 只被视口 JSX 通过 TOK() 读取，没有任何
+   CSS 规则消费它们，所以在这里重定义不会溢出到界面其他部分。
+   TOK() 会缓存首次读到的值，改了要刷新页面才生效。
+   ============================================================ */
+
+:root, [data-theme="light"] {
+  --vp-x: #d32f2f;   /* 横向 X */
+  --vp-y: #2e7d46;   /* 向上 Y */
+  --vp-z: #2f5fd0;   /* 深度 Z */
+  --vp-o: #a8760a;   /* 原点 O */
+  --vp-sel: #8a8a8a; /* 选中轮廓 —— 灰，不用刺眼的白 */
+  --vp-ghost: #5b8def;
+  /* 来源着色：实测 = 蓝、插值 = 琥珀、外推 = 灰（--mark-fill 保持中性，
+     它同时是箱体的默认填充） */
+  --mark-3: #3f6fd8;
+  --mark-edge: #c08a2a;
+}
+[data-theme="dark"] {
+  --vp-x: #ef5350;
+  --vp-y: #4caf6a;
+  --vp-z: #5b8def;
+  --vp-o: #e8b53a;
+  --vp-sel: #9e9e9e;
+  --vp-ghost: #6f9cf0;
+  --mark-3: #5b8def;
+  --mark-edge: #d9a441;
+}
+
+/* ---------- 1 · 坐标轴：地面 X 红 / Z 蓝，竖直 Y 绿 ---------- */
+.desktop svg.gw-svp > g > line[data-vp="x"] { stroke: var(--vp-x) !important; opacity: .85 !important; }
+.desktop svg.gw-svp > g > line[data-vp="z"] { stroke: var(--vp-z) !important; opacity: .85 !important; }
+.desktop svg.gw-svp > g > line[data-vp="y"] { stroke: var(--vp-y) !important; opacity: .9 !important; }
+.desktop svg.gw-svp > text[data-vp="x"] { fill: var(--vp-x) !important; }
+.desktop svg.gw-svp > text[data-vp="z"] { fill: var(--vp-z) !important; }
+
+/* ---------- 2 · 导航 gizmo 轴向球 ---------- */
+.desktop svg.gw-gizmo g[data-vp="x"] circle { fill: var(--vp-x) !important; }
+.desktop svg.gw-gizmo g[data-vp="y"] circle { fill: var(--vp-y) !important; }
+.desktop svg.gw-gizmo g[data-vp="z"] circle { fill: var(--vp-z) !important; }
+.desktop svg.gw-gizmo g[data-vp="x"] line { stroke: var(--vp-x) !important; }
+.desktop svg.gw-gizmo g[data-vp="y"] line { stroke: var(--vp-y) !important; }
+.desktop svg.gw-gizmo g[data-vp="z"] line { stroke: var(--vp-z) !important; }
+.desktop svg.gw-gizmo g[data-vp] text { fill: #ffffff !important; }
+
+/* ---------- 3 · 参考点徽标 O / X / Y ---------- */
+.desktop svg.gw-svp g[data-vp="o"] circle { fill: var(--vp-o) !important; }
+.desktop svg.gw-svp g[data-vp="x"] circle { fill: var(--vp-x) !important; }
+.desktop svg.gw-svp g[data-vp="y"] circle { fill: var(--vp-y) !important; }
+
+/* ---------- 4 · 轴向预览箭头（O/X/Y 齐备后推导的三轴） ---------- */
+.desktop .gw-pvaxis[data-vp="x"] line, .desktop .gw-pvaxis[data-vp="x"] polygon { stroke: var(--vp-x) !important; fill: var(--vp-x) !important; }
+.desktop .gw-pvaxis[data-vp="y"] line, .desktop .gw-pvaxis[data-vp="y"] polygon { stroke: var(--vp-y) !important; fill: var(--vp-y) !important; }
+.desktop .gw-pvaxis[data-vp="z"] line, .desktop .gw-pvaxis[data-vp="z"] polygon { stroke: var(--vp-z) !important; fill: var(--vp-z) !important; }
+.desktop .gw-pvaxis[data-vp="x"] text { fill: var(--vp-x) !important; }
+.desktop .gw-pvaxis[data-vp="y"] text { fill: var(--vp-y) !important; }
+.desktop .gw-pvaxis[data-vp="z"] text { fill: var(--vp-z) !important; }
+
+/* ---------- 5 · 选中轮廓：改灰，不再是刺眼的白 ---------- */
+.desktop.page-calibrate .gw-obj-outline { stroke: var(--vp-sel) !important; stroke-width: 1.4 !important; }
+.desktop.page-calibrate .gw-box.is-sel { stroke: var(--vp-sel) !important; stroke-width: 1.4 !important; }
+
+/* ---------- 6 · 恢复被压掉的语义色 ----------
+   幽灵线框（原始位置）蓝 · 法线蓝 · 可拾取点绿 · 离群点琥珀 */
+.desktop.page-calibrate .gw-ghost { stroke: color-mix(in srgb, var(--vp-ghost) 62%, transparent) !important; }
+.desktop.page-calibrate .gw-normal line { stroke: var(--status-info) !important; }
+.desktop.page-calibrate .gw-normal .gw-normal-h { fill: var(--status-info) !important; }
+.desktop.page-calibrate .gw-pt--pick { fill: var(--status-ok) !important; }
+.desktop.page-calibrate .gw-pt--out { fill: var(--status-warn) !important; }
+
+/* ============================================================
+   Repo production extras (not in Claude Design handoff)
+   ============================================================ */
+/* ============================================================
    Volo — 三维视口配色（移植自 Claude Design 的 src/cursor_viewport.css）
 
    背景：换肤时把视口里的取色全指向了灰阶 token，结果坐标轴、导航
@@ -22,6 +102,10 @@
   --vp-o: #a8760a;   /* 原点 O */
   --vp-sel: #8a8a8a; /* 选中轮廓 —— 灰，不用刺眼的白 */
   --vp-ghost: #5b8def;
+  /* 来源着色：实测 = 蓝、插值 = 琥珀、外推 = 灰（--mark-fill 保持中性，
+     它同时是箱体的默认填充） */
+  --mark-3: #3f6fd8;
+  --mark-edge: #c08a2a;
 }
 [data-theme="dark"] {
   --vp-x: #ef5350;
@@ -30,9 +114,18 @@
   --vp-o: #e8b53a;
   --vp-sel: #9e9e9e;
   --vp-ghost: #6f9cf0;
+  --mark-3: #5b8def;
+  --mark-edge: #d9a441;
 }
 
-/* ---------- 1 · 导航 gizmo 轴向球（SVG · data-vp 由 JSX 写出） ---------- */
+/* ---------- 1 · 坐标轴：地面 X 红 / Z 蓝，竖直 Y 绿（SVG 叠加层兜底） ---------- */
+.desktop svg.gw-svp > g > line[data-vp="x"] { stroke: var(--vp-x) !important; opacity: .85 !important; }
+.desktop svg.gw-svp > g > line[data-vp="z"] { stroke: var(--vp-z) !important; opacity: .85 !important; }
+.desktop svg.gw-svp > g > line[data-vp="y"] { stroke: var(--vp-y) !important; opacity: .9 !important; }
+.desktop svg.gw-svp > text[data-vp="x"] { fill: var(--vp-x) !important; }
+.desktop svg.gw-svp > text[data-vp="z"] { fill: var(--vp-z) !important; }
+
+/* ---------- 2 · 导航 gizmo 轴向球（SVG · data-vp 由 JSX 写出） ---------- */
 .desktop svg.gw-gizmo g[data-vp="x"] circle { fill: var(--vp-x) !important; }
 .desktop svg.gw-gizmo g[data-vp="y"] circle { fill: var(--vp-y) !important; }
 .desktop svg.gw-gizmo g[data-vp="z"] circle { fill: var(--vp-z) !important; }
@@ -41,7 +134,12 @@
 .desktop svg.gw-gizmo g[data-vp="z"] line { stroke: var(--vp-z) !important; }
 .desktop svg.gw-gizmo g[data-vp] text { fill: #ffffff !important; }
 
-/* ---------- 2 · 轴向预览箭头（O/X/Y 齐备后推导的三轴） ---------- */
+/* ---------- 3 · 参考点徽标 O / X / Y ---------- */
+.desktop svg.gw-svp g[data-vp="o"] circle { fill: var(--vp-o) !important; }
+.desktop svg.gw-svp g[data-vp="x"] circle { fill: var(--vp-x) !important; }
+.desktop svg.gw-svp g[data-vp="y"] circle { fill: var(--vp-y) !important; }
+
+/* ---------- 4 · 轴向预览箭头（O/X/Y 齐备后推导的三轴） ---------- */
 .desktop .gw-pvaxis[data-vp="x"] line, .desktop .gw-pvaxis[data-vp="x"] polygon { stroke: var(--vp-x) !important; fill: var(--vp-x) !important; }
 .desktop .gw-pvaxis[data-vp="y"] line, .desktop .gw-pvaxis[data-vp="y"] polygon { stroke: var(--vp-y) !important; fill: var(--vp-y) !important; }
 .desktop .gw-pvaxis[data-vp="z"] line, .desktop .gw-pvaxis[data-vp="z"] polygon { stroke: var(--vp-z) !important; fill: var(--vp-z) !important; }
@@ -49,14 +147,15 @@
 .desktop .gw-pvaxis[data-vp="y"] text { fill: var(--vp-y) !important; }
 .desktop .gw-pvaxis[data-vp="z"] text { fill: var(--vp-z) !important; }
 
-/* ---------- 3 · 选中轮廓：改灰，不再是刺眼的白 ---------- */
+/* ---------- 5 · 选中轮廓：改灰，不再是刺眼的白 ---------- */
 .desktop.page-calibrate .gw-obj-outline { stroke: var(--vp-sel) !important; stroke-width: 1.4 !important; }
 .desktop.page-calibrate .gw-box.is-sel { stroke: var(--vp-sel) !important; stroke-width: 1.4 !important; }
 
-/* ---------- 4 · 恢复被压掉的语义色 ----------
+/* ---------- 6 · 恢复被压掉的语义色 ----------
    幽灵线框（原始位置）蓝 · 法线蓝 · 可拾取点绿 · 离群点琥珀 */
 .desktop.page-calibrate .gw-ghost { stroke: color-mix(in srgb, var(--vp-ghost) 62%, transparent) !important; }
 .desktop.page-calibrate .gw-normal line { stroke: var(--status-info) !important; }
 .desktop.page-calibrate .gw-normal .gw-normal-h { fill: var(--status-info) !important; }
 .desktop.page-calibrate .gw-pt--pick { fill: var(--status-ok) !important; }
 .desktop.page-calibrate .gw-pt--out { fill: var(--status-warn) !important; }
+

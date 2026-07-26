@@ -1,5 +1,4 @@
 /* Volo — 固定机位 · 单次校正（VP-QSP）采集窗新增 UX
-   1:1 移植自 Claude Design handoff `cal_qsp.css`（演示态 .qsp-demo 已按 handoff 要求删除）。
    复用镜头采集窗骨架（drawer--lcwin / lc-body / lc-signal / lc-side / lc-actionbar）与既有
    cap-* / spill / lc-* token。本文件只承载本次迭代新增件：
      采集目的（Fixed-camera）· 结果五分区 report · AR 静帧门控 · attest 条 · fail-closed 指引 · 状态横幅。
@@ -14,6 +13,9 @@
 .qsp-purpose-sub { font-size: 12px; color: var(--chrome-faint); line-height: 1.5; margin-bottom: 10px; }
 
 .qsp-modes { display: flex; flex-direction: column; gap: 7px; }
+.qsp-modesel { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.qsp-modesel.is-disabled { opacity: .55; pointer-events: none; }
+.qsp-modesel-qty { font-size: 12px; color: var(--chrome-faint); }
 .qsp-mode { all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: flex-start; gap: 10px; padding: 9px 11px; border-radius: var(--radius-input);
   border: 1.5px solid var(--chrome-line-2); background: var(--wash); transition: border-color .13s, background .13s; }
 .qsp-mode:hover { border-color: color-mix(in srgb, var(--volo-600) 40%, var(--chrome-line-2)); }
@@ -258,6 +260,14 @@
 .qsp-ready { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--t-body); font-weight: 600; }
 .qsp-ready svg { flex: 0 0 auto; }
 .qsp-ready .phase { color: var(--chrome-faint); font-weight: 500; }
+
+/* 演示状态切换（移植时移除） */
+.qsp-demo { position: absolute; left: 12px; bottom: 12px; z-index: 7; display: flex; align-items: center; gap: 5px; flex-wrap: wrap; max-width: calc(100% - 24px);
+  padding: 6px 8px; border-radius: var(--radius-pill); background: rgba(0,0,0,.5); border: 1px solid rgba(255,255,255,.12); backdrop-filter: blur(6px); }
+.qsp-demo-k { font-size: 12px; letter-spacing: 0; text-transform: none; color: rgba(255,255,255,.5); font-weight: 600; margin-right: 2px; }
+.qsp-demo-b { all: unset; cursor: pointer; font-size: 12px; font-weight: 600; color: rgba(255,255,255,.66); padding: 3px 7px; border-radius: var(--radius-input); border: 1px solid rgba(255,255,255,.12); }
+.qsp-demo-b:hover { background: rgba(255,255,255,.08); }
+.qsp-demo-b.on { color: var(--t-ink); background: rgba(255,255,255,.14); border-color: rgba(255,255,255,.3); }
 
 /* 采集态：单帧提示 */
 .qsp-capnote { font-size: 12px; color: var(--chrome-faint); line-height: 1.5; text-wrap: pretty; }

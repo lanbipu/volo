@@ -336,6 +336,13 @@ import { useProjectThumbs } from "./cacheProjectThumbs";
     const [toolsOpen, setToolsOpen] = useState(false); /* 工具组是否展开 */
     const [openMenu, setOpenMenu] = useState(null);    /* 当前展开的二级菜单：view | sort | filter | null */
     const [filters, setFilters] = useState({ machine: null, pak: null, warnOnly: false }); /* 筛选策略 */
+    /* 用户保存的常用筛选策略 · 持久化到 localStorage（与 pakFavRoots 同模式） */
+    const [savedFilters, setSavedFilters] = useState(() => {
+      try { return JSON.parse(localStorage.getItem('volo.pakFilterStrategies') || '[]'); } catch (e) { return []; }
+    });
+    useEffect(() => {
+      try { localStorage.setItem('volo.pakFilterStrategies', JSON.stringify(savedFilters)); } catch (e) { /* ignore */ }
+    }, [savedFilters]);
     const toolsRef = useRef(null);
     /* 点击工具组以外区域：收起工具组与二级菜单 */
     useEffect(() => {
@@ -756,6 +763,42 @@ import { useProjectThumbs } from "./cacheProjectThumbs";
         h('span', { className: 'ptm-l' }, o.label),
         sort === o.id ? h(Icon, { name: 'check', size: 14, style: { marginLeft: 'auto', color: 'var(--volo-400)' } }) : null)));
     const setPak = (v) => setFilters((f) => Object.assign({}, f, { pak: f.pak === v ? null : v }));
+    const filterSnapKey = (f) => JSON.stringify({ machine: f.machine || null, pak: f.pak || null, warnOnly: !!f.warnOnly });
+    const filterLabel = (f) => {
+      const parts = [];
+      if (f.machine) {
+        const n = projMachines.find((m) => m.id === f.machine) || RENDER_NODES.find((m) => m.id === f.machine);
+        parts.push(n ? n.host : ('机器 ' + f.machine));
+      }
+      if (f.pak === 'has') parts.push('已生成 PAK');
+      if (f.pak === 'none') parts.push('未生成 PAK');
+      if (f.warnOnly) parts.push('版本不一致');
+      return parts.join(' · ') || '当前筛选';
+    };
+    const addFilterStrategy = () => {
+      if (!activeFilterCount) {
+        s.pushLog && s.pushLog({ lv: 'warn', cat: 'pak', msg: '请先选择筛选条件再添加策略' });
+        return;
+      }
+      const snap = { machine: filters.machine || null, pak: filters.pak || null, warnOnly: !!filters.warnOnly };
+      const key = filterSnapKey(snap);
+      setSavedFilters((list) => {
+        if (list.some((x) => filterSnapKey(x.filters) === key)) return list;
+        return list.concat([{ id: Date.now().toString(36), label: filterLabel(snap), filters: snap }]);
+      });
+      setOpenMenu(null);
+    };
+    const applySavedFilter = (item) => {
+      setFilters({
+        machine: item.filters.machine || null,
+        pak: item.filters.pak || null,
+        warnOnly: !!item.filters.warnOnly,
+      });
+    };
+    const removeSavedFilter = (id, e) => {
+      e.stopPropagation();
+      setSavedFilters((list) => list.filter((x) => x.id !== id));
+    };
     const filterMenu = h('div', { className: 'pak-tool-menu pak-filter-menu' },
       h('div', { className: 'ptm-h' }, '筛选策略',
         activeFilterCount ? h('button', { type: 'button', className: 'ptm-clear', onClick: clearFilters }, '清除 ' + activeFilterCount) : null),
@@ -774,7 +817,18 @@ import { useProjectThumbs } from "./cacheProjectThumbs";
         h('button', { type: 'button', className: 'ptm-i' + (filters.pak === 'none' ? ' on' : ''), onClick: () => setPak('none') },
           h('span', { className: 'ptm-l' }, '仅未生成 PAK'), filters.pak === 'none' ? h(Icon, { name: 'check', size: 14, style: { marginLeft: 'auto', color: 'var(--volo-400)' } }) : null),
         h('button', { type: 'button', className: 'ptm-i' + (filters.warnOnly ? ' on' : ''), onClick: () => setFilters((f) => Object.assign({}, f, { warnOnly: !f.warnOnly })) },
-          h('span', { className: 'ptm-l' }, '仅版本不一致'), filters.warnOnly ? h(Icon, { name: 'check', size: 14, style: { marginLeft: 'auto', color: 'var(--volo-400)' } }) : null)));
+          h('span', { className: 'ptm-l' }, '仅版本不一致'), filters.warnOnly ? h(Icon, { name: 'check', size: 14, style: { marginLeft: 'auto', color: 'var(--volo-400)' } }) : null),
+        savedFilters.map((item) => h('button', { key: item.id, type: 'button',
+            className: 'ptm-i' + (filterSnapKey(filters) === filterSnapKey(item.filters) ? ' on' : ''),
+            onClick: () => applySavedFilter(item) },
+          h('div', { className: 'ptm-mm' }, h('span', { className: 'ptm-l' }, item.label)),
+          filterSnapKey(filters) === filterSnapKey(item.filters)
+            ? h(Icon, { name: 'check', size: 14, style: { marginLeft: 'auto', color: 'var(--volo-400)' } })
+            : h('span', { role: 'button', className: 'ptm-s', style: { marginLeft: 'auto' },
+                onClick: (e) => removeSavedFilter(item.id, e), title: '删除策略' }, '删除')))),
+      h('button', { type: 'button', className: 'ptm-add', title: '保存当前筛选为常用策略',
+          onClick: addFilterStrategy, disabled: !activeFilterCount },
+        h(Icon, { name: 'plus', size: 13 }), '添加筛选策略'));
 
     const toolBtn = (id, label, iconName, menu, badge) => h('div', { className: 'pak-tool', key: id },
       h('button', { type: 'button', className: 'pak-tool-ic' + (openMenu === id ? ' on' : ''), 'data-tip': label, 'aria-label': label,
@@ -796,18 +850,19 @@ import { useProjectThumbs } from "./cacheProjectThumbs";
             h('span', { className: 'pak-selall-tx' }, allSelected ? '取消全选' : '全选'),
             h('span', { className: 'pak-selall-ct' }, visibleSelectedCount ? (visibleSelectedCount + ' / ' + sorted.length) : (sorted.length + ' 个工程'))),
           h('div', { className: 'pak-list-actions' },
-            h('div', { className: 'pak-search-wrap', ref: searchRef },
-              h('button', { type: 'button', className: 'pak-search-btn' + (q ? ' has-query' : ''),
+            h('div', { className: 'pak-search-wrap' + (searchOpen ? ' open' : ''), ref: searchRef },
+              h('button', { type: 'button', className: 'pak-tools-toggle pak-search-btn' + (searchOpen ? ' on' : '') + (q ? ' has-query' : ''),
                   'data-tip': '按工程名 / 路径过滤', 'aria-label': '搜索工程',
                   onClick: () => setSearchOpen((v) => !v) },
                 h(Icon, { name: 'search', size: 15 }),
                 q ? h('span', { className: 'pak-search-badge' }, matched.length) : null),
               searchOpen ? h('div', { className: 'pak-search-pop' },
-                h(Icon, { name: 'search', size: 14 }),
-                h('input', { ref: searchInRef, value: query, placeholder: '按工程名 / 路径过滤…', spellCheck: false,
-                    onChange: (e) => setQuery(e.target.value) }),
-                q ? h('span', { className: 'pak-search-ct' }, '匹配 ' + matched.length + ' / ' + UE_PROJECTS.length) : null,
-                q ? h('button', { className: 'pak-search-clear', title: '清除搜索', onClick: () => setQuery('') }, h(Icon, { name: 'x', size: 13 })) : null)
+                h('div', { className: 'pak-search' },
+                  h(Icon, { name: 'search', size: 14 }),
+                  h('input', { ref: searchInRef, value: query, placeholder: '按工程名 / 路径过滤…', spellCheck: false,
+                      onChange: (e) => setQuery(e.target.value) }),
+                  q ? h('span', { className: 'pak-search-ct' }, '匹配 ' + matched.length + ' / ' + UE_PROJECTS.length) : null,
+                  q ? h('button', { className: 'pak-search-clear', title: '清除搜索', onClick: () => setQuery('') }, h(Icon, { name: 'x', size: 13 })) : null))
                 : null),
             h('div', { className: 'pak-list-tools' + (toolsOpen ? ' open' : ''), ref: toolsRef },
               toolsOpen ? h(React.Fragment, null,

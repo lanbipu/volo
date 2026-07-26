@@ -1,5 +1,5 @@
 /* ============================================================
-   Volo — PSO 缓存 · 上场就绪保障（Claude Design handoff src/pso.css 1:1）
+   Volo — PSO 缓存 · 上场就绪保障
    节点就绪矩阵 / 预热验证 / 运行历史 / 配置合规折叠卡 / 长任务取消
    ============================================================ */
 
@@ -69,7 +69,6 @@
 .cvar-ct { flex: 0 0 auto; font-size: 12px; font-weight: 500; display: inline-flex; gap: 4px; align-items: center; padding: 1.5px 8px; border-radius: 999px; }
 .cvar-ct.ok { color: var(--t-body); background: var(--bg-row); }
 .cvar-ct.warn { color: var(--t-body); background: var(--bg-row); }
-.cvar-ct.dim { color: var(--chrome-faint); background: var(--wash-2); }
 .cvar-b { padding: 2px 11px 10px; display: flex; flex-direction: column; gap: 6px; }
 .cvar-rule { display: flex; align-items: flex-start; gap: 8px; padding: 7px 9px; border-radius: var(--radius-input); background: var(--sunken); border: 1px solid var(--chrome-line); }
 .cvar-rule .rid { font-size: 12px; font-weight: 500; color: var(--chrome-faint); background: var(--wash-2); padding: 1px 6px; border-radius: var(--radius-input); flex: 0 0 auto; margin-top: 1px; }
@@ -88,3 +87,69 @@
 /* ---- 任务抽屉 · 进行中长任务的〔取消〕 ---- */
 .lrp-cancel { all: unset; display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 500; color: var(--t-body); padding: 2px 8px; border-radius: 999px; border: 1px solid var(--edge-card); cursor: pointer; flex: 0 0 auto; margin-left: 4px; }
 .lrp-cancel:hover { background: var(--bg-row); }
+
+/* ============================================================
+   ZenServer · 客户端本地 Zen 缓存目录（UE-ZenDataPath）
+   行内次级 chip + 展开配置面板 + 批量弹层
+   ============================================================ */
+.zcli-wrap { display: flex; flex-direction: column; gap: 4px; }
+/* 次级状态 chip（指向徽标是主状态，chip 更小更弱） */
+.zdir-chip { all: unset; display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 500; padding: 2px 8px; border-radius: 999px; border: 1px solid transparent; white-space: nowrap; flex: 0 0 auto; }
+.zdir-chip.soft { opacity: .75; }
+/* 二级列表的 Zen 目录状态：降为「小圆点 + 文字」的安静次级信息，不再用填充胶囊，避免与主徽标抢视觉 */
+.zdir-stat { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; white-space: nowrap; background: transparent !important; border: 0; padding: 0; }
+.zdir-stat.soft { opacity: .7; }
+.zdir-stat .zdir-stat-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
+.zdir-stat .spin { color: var(--informative-visual); }
+/* 重新读取：图标幽灵按钮，紧贴目录状态，弱化存在感 */
+.zdir-reread { all: unset; box-sizing: border-box; display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: var(--radius-input); color: var(--chrome-faint); cursor: pointer; flex: 0 0 auto; transition: background .12s, color .12s; }
+.zdir-reread:hover { background: var(--wash-2); color: var(--chrome-dim); }
+.zdir-reread:disabled { opacity: .35; cursor: default; background: transparent; color: var(--chrome-faint); }
+.zd-neutral { color: var(--chrome-faint); background: var(--wash-2); }
+.zd-positive { color: var(--t-body); background: var(--bg-row); }
+.zd-notice { color: var(--t-body); background: var(--bg-row); }
+.zd-negative { color: var(--t-body); background: var(--bg-row); }
+.zd-informative { color: var(--t-body); background: var(--bg-row); }
+/* 行内展开面板 */
+.zdir-panel { border: 1px solid var(--chrome-line); border-radius: var(--radius-card); background: var(--wash); padding: 11px 12px; display: flex; flex-direction: column; gap: 8px; margin-left: 26px; }
+.zdir-h { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 500; color: var(--chrome-text); flex-wrap: wrap; }
+.zdir-h > svg { color: var(--chrome-faint); flex: 0 0 auto; }
+.zdir-env { font-size: 12px; color: var(--chrome-dim); background: var(--wash-2); padding: 1px 6px; border-radius: var(--radius-input); font-family: var(--font-code); }
+.zdir-h .zbadge { margin-left: auto; }
+.zdir-intro { font-size: 12px; color: var(--chrome-faint); line-height: 1.55; text-wrap: pretty; }
+.zdir-kv { display: grid; grid-template-columns: 146px minmax(0, 1fr) auto; gap: 8px; align-items: center; font-size: 12px; }
+.zdir-kv .k { color: var(--chrome-faint); font-weight: 500; }
+.zdir-kv .v { color: var(--chrome-text); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zdir-kv .v.none { color: var(--chrome-faint); font-weight: 500; }
+.zdir-kv .v.loading { display: inline-flex; align-items: center; gap: 6px; color: var(--t-body); font-weight: 600; overflow: visible; }
+.zdir-kv .mini-btn { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.zdir-why { display: flex; align-items: flex-start; gap: 7px; font-size: 12px; line-height: 1.5; color: var(--t-body); background: var(--bg-row); border: 1px solid var(--edge-card); border-radius: var(--radius-input); padding: 7px 10px; text-wrap: pretty; }
+.zdir-why svg { flex: 0 0 auto; margin-top: 1px; }
+.zdir-form { display: flex; align-items: center; gap: 7px; }
+.zdir-form .dp-input { flex: 1; min-width: 0; }
+.zdir-form .mini-btn { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; flex: 0 0 auto; }
+.zdir-err { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--t-body); }
+.zdir-err svg { flex: 0 0 auto; }
+.zdir-res { display: flex; align-items: flex-start; gap: 7px; font-size: 12px; }
+.zdir-res .zbadge { flex: 0 0 auto; }
+.zdir-res-msg { line-height: 1.5; text-wrap: pretty; min-width: 0; }
+.zdir-res .mini-btn { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+/* 批量弹层机器列表 */
+.zdm-list { display: flex; flex-direction: column; gap: 5px; }
+.zdm-row { display: grid; grid-template-columns: minmax(110px, auto) minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 7px 10px; border-radius: var(--radius-input); background: var(--sunken); border: 1px solid var(--chrome-line); font-size: 12px; }
+.zdm-host { font-family: var(--font-code); font-weight: 500; color: var(--chrome-text); display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+.zdm-cur { color: var(--chrome-faint); font-family: var(--font-code); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zdm-cur.none { font-family: inherit; }
+.zdm-arrow { display: inline-flex; align-items: center; gap: 5px; color: var(--volo-400); font-family: var(--font-code); font-size: 12px; white-space: nowrap; }
+
+/* 三级弹层：可选机器行 + 全选 + 清除区块 */
+.zdm-selall { all: unset; cursor: pointer; margin-left: auto; display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 500; color: var(--volo-500); padding: 3px 9px; border-radius: var(--radius-input); border: 1px solid var(--chrome-line-2); }
+.zdm-selall:hover { background: var(--wash); }
+.zdm-selct { font-family: var(--font-code); font-weight: 500; color: var(--chrome-faint); }
+.zdm-row.pick { grid-template-columns: auto minmax(110px, auto) minmax(0, 1fr); cursor: pointer; }
+.zdm-row.pick:hover { border-color: var(--chrome-line-2); }
+.zdm-row.pick.on { border-color: var(--volo-500); background: var(--highlight-selected); }
+.zdm-row .zck { flex: 0 0 auto; }
+.zdm-clear-row { display: flex; align-items: center; gap: 12px; justify-content: space-between; }
+.zdm-clear-tx { font-size: 12px; color: var(--chrome-faint); line-height: 1.5; text-wrap: pretty; min-width: 0; }
+.zdm-clear-row .mini-btn { flex: 0 0 auto; }
