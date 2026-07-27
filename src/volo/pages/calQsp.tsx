@@ -32,7 +32,7 @@ import * as React from "react";
   const COPY = {
     measureBound: '1 observation ≠ 1 marker ≠ 8 lens poses',
     sessionLens: '当前焦距/对焦/分辨率有效 · 非 Master Lens',
-    staticPass: 'Static validation · perimeter/grid 投影通过 · 可查看静帧 AR',
+    staticPass: 'Static validation · perimeter/grid 投影通过 · 可查看静帧 AR（live preview 需另行开启）',
     unobsOrder: ['增加非共面 screen coverage', '改用 Structured Light', '导入 / 建立 Master Lens'],
   };
 
@@ -581,8 +581,10 @@ import * as React from "react";
     const st = q.qspState;
     const b = BANNERS[st] || BANNERS.idle;
     const solved = st === 'formal_ok' || st === 'warn';
+    const AROverlay = CF().AROverlay;
     const banner = st === 'capturing' && q.lensPhase === 'master'
       ? { tone: 'neg', text: 'REC · Master Lens 多姿态采集', dot: true } : b;
+    const livePreview = !!q.livePreview;
     return h(React.Fragment, null,
       /* 状态横幅（顶部居中） */
       h('div', { className: 'qsp-statebanner ' + banner.tone },
@@ -594,13 +596,20 @@ import * as React from "react";
         h('span', { className: 'qsp-solving-spin' }),
         h('div', { className: 'qsp-solving-t' }, '固定机位 · 单次校正 · 求解中…'),
         h('div', { className: 'qsp-solving-d' }, 'mode=' + q.modeRequested + '（请求值）')) : null,
+      /* 静帧 AR 叠加（求解可用 + 已进入验收 / 已开启 live preview） */
+      solved && AROverlay && (q.arStage === 'verifying' || q.arStage === 'passed' || livePreview)
+        ? h(AROverlay, { align: (q.arStage === 'passed' || livePreview) ? 'aligned' : 'off', lost: false, opacity: (q.qspArOpacity == null ? 72 : q.qspArOpacity) / 100, grid: q.arGrid }) : null,
       /* 静帧 AR 门控浮条 */
       solved && q.arStage === 'verifying' ? h('div', { className: 'qsp-argate verifying' },
         h('span', { className: 'ic' }, h(Icon, { name: 'sync', size: 14 })),
-        h('div', { className: 'm' }, h('div', { className: 't' }, '静帧验收中…', h('span', { className: 'qsp-verify-dots' }, h('i'), h('i'), h('i'))), h('div', { className: 'd' }, '在同一静帧验收 perimeter / grid 投影'))) : null,
+        h('div', { className: 'm' }, h('div', { className: 't' }, '静帧验收中…', h('span', { className: 'qsp-verify-dots' }, h('i'), h('i'), h('i'))), h('div', { className: 'd' }, '在同一静帧验收 perimeter / grid 投影')),
+        h('span', { className: 'livechip' }, 'LIVE 未开')) : null,
       solved && q.arStage === 'passed' ? h('div', { className: 'qsp-argate passed' },
         h('span', { className: 'ic' }, h(Icon, { name: 'check', size: 14 })),
-        h('div', { className: 'm' }, h('div', { className: 't' }, '静帧 perimeter 通过'), h('div', { className: 'd' }, 'perimeter / grid 投影通过 · AR 叠加已呈现在实时画面'))) : null);
+        h('div', { className: 'm' }, h('div', { className: 't' }, '静帧 perimeter 通过'), h('div', { className: 'd' }, 'perimeter / grid 投影通过 · 可开启 live preview')),
+        h('button', { className: 'qsp-arbtn on', style: { padding: '6px 11px', fontSize: 11 },
+          onClick: () => { if (q.setLivePreview) q.setLivePreview(true); if (q.s && q.s.pushLog) q.s.pushLog({ lv: 'info', cat: 'lens', msg: '开启 live preview 叠加（静帧已过）' }); } },
+          h(Icon, { name: 'play', size: 13 }), '开启 live preview')) : null);
   }
 
   window.VOLO_QSP = { CapturePurpose, FiveReport, FailPanel, AttestBar, side, actionbar, leftOverlays, lensPhaseOf, PURPOSES, COPY };

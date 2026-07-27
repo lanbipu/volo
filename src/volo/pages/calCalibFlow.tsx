@@ -456,6 +456,7 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
     const attestedRunsRef = useRef(new Set()); /* 本窗口内已 attest 的 run id */
     const sessionSolvedRef = useRef(new Set()); /* 本窗口内新求解的 run id（无需 attest） */
     const [arStage, setArStage] = useState('idle'); /* idle|verifying|passed|failed（静帧门控） */
+    const [livePreview, setLivePreview] = useState(false); /* QSP 静帧通过后 · 开启 live preview */
     const lastDetectRef = useRef(null); /* stills detect_state 最新非 stale 帧（framing 用） */
     const [patternMons, setPatternMons] = useState([]);
     const [patternMonBusy, setPatternMonBusy] = useState(false);
@@ -998,7 +999,8 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
     /* 静帧 AR 门控：verifying（trackerFreeGrid 进行中）→ passed / failed（真实投影结果） */
     const startArVerify = () => {
       if (!qspSolved) return;
-      setArPanelOpen(false);
+      setLivePreview(false);
+      setQspArPanelOpen(false);
       setArStage(arStaticOk && arOn ? 'passed' : 'verifying');
       if (!arOn) setArOn(true);
     };
@@ -1008,14 +1010,15 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
       else if (arStaticOk) setArStage('passed');
     }, [isQspFixed, arStage, arStaticOk, arErr]);
     /* run 变化 / 关叠加：门控回 idle */
-    useEffect(() => { setArStage('idle'); }, [qspRun && qspRun.id]);
-    useEffect(() => { if (!arOn && arStage !== 'idle') setArStage('idle'); }, [arOn]);
+    useEffect(() => { setArStage('idle'); setLivePreview(false); }, [qspRun && qspRun.id]);
+    useEffect(() => { if (!arOn && arStage !== 'idle') { setArStage('idle'); setLivePreview(false); } }, [arOn]);
     /* 换机位：QSP 瞬态全部复位（报告选中 / 驳回 / 失败态） */
     useEffect(() => {
       setQspRunId(null);
       setQspDismissed(false);
       setQspFail(null);
       setArStage('idle');
+      setLivePreview(false);
     }, [camId]);
     const confirmAttest = () => {
       if (!qspRun) return;
@@ -1027,6 +1030,7 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
       setQspFail(null);
       setQspDismissed(true);
       setArStage('idle');
+      setLivePreview(false);
       setArOn(false);
     };
     /* 追踪机位：verify live --grid，订阅 overlay_grid + tracking 状态 */
@@ -1914,7 +1918,8 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
     /* --------- 左：实时信号 --------- */
     const displayUrl = (wantArLive && arLiveUrl) ? arLiveUrl : previewUrl;
     const hasFeed = !!displayUrl || backend === 'synthetic';
-    const arActive = signalReady && arOn && arAvail && !isSl && !!arGrid;
+    /* QSP 固定机位：AR 走 leftOverlays（handoff）；追踪 / 结构光走本处常驻叠加 */
+    const arActive = signalReady && arOn && arAvail && !isSl && !isQspFixed && !!arGrid;
     const trackLostUi = tracked && (arLost || s.capTrack === 'lost');
     const arPanel = h('div', { className: 'lc-arpanel' },
       h('div', { className: 'lc-arpanel-row' },
@@ -2209,7 +2214,8 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
       importMaster: () => void importMasterLens(),
       createMaster: () => void createMasterLens(),
       run: qspRun, failInfo: qspFail,
-      arStage, arError: arErr,
+      arStage, arError: arErr, arGrid,
+      livePreview, setLivePreview,
       qspArOpacity, setQspArOpacity, qspArPanelOpen, setQspArPanelOpen, qspArBtnRef,
       startArVerify, confirmAttest, recapture: qspRecapture,
       tracked, open, tgl,
@@ -2258,7 +2264,7 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
     return h('div', { className: 'lc-pcell' }, h('span', { className: 'pk' }, k), h('span', { className: 'pv' }, v, u ? h('span', { style: { fontSize: 10, color: 'var(--chrome-faint)', marginLeft: 2 } }, u) : null));
   }
 
-  /* 摄影机参数面板（位置/旋转/镜头 + 来源徽标）；手动模式可编辑写回 camStore */
+  /* 摄影机参数面板（位置/旋转/镜头）· handoff lc-params 紧凑行；手动模式可编辑写回 camStore */
   function CameraParams({ cam, tracked, camId, editable }) {
     const ro = tracked != null ? tracked : cam.mode === 'tracked';
     const P = cam.pos, R = cam.rot, L = cam.lens;
@@ -2275,29 +2281,27 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
       else if (axis === 'pan') e[0] = val; else if (axis === 'tilt') e[1] = val; else if (axis === 'roll') e[2] = val;
       window.camStore.setManualPose(camId, t, e);
     };
-    const cell = (k, o, u, axis) => h('div', { className: 'lc-pcell' + ((o.src === 'tracking' || o.src === 'solve' || !canEdit) ? ' readonly' : '') },
-      h('span', { className: 'pk' }, k, sourceTag(o.src)),
-      canEdit && axis
-        ? h('input', {
-            className: 'pv', type: 'number', step: 'any', value: typeof o.v === 'number' ? o.v : 0,
-            onChange: (ev) => commitValue(axis, Number(ev.target.value)),
-            style: { width: '100%', border: 'none', background: 'transparent', font: 'inherit', color: 'inherit' },
-          })
-        : h('span', { className: 'pv' }, (typeof o.v === 'number' ? o.v.toFixed(o.v % 1 === 0 ? 0 : 2) : o.v), u ? h('span', { style: { fontSize: 10, color: 'var(--chrome-faint)', marginLeft: 2 } }, u) : null));
-    return h(React.Fragment, null,
-      h('div', { className: 'lc-cam-sub' }, '位置 (mm)' + (ro ? ' · 追踪实时 · 只读' : (canEdit ? ' · 手动可编辑' : ''))),
-      h('div', { className: 'lc-param-grid3' }, cell('X', P.x, '', 'x'), cell('Y', P.y, '', 'y'), cell('Z', P.z, '', 'z')),
-      h('div', { className: 'lc-cam-sub' }, '旋转 (°) · Pan / Tilt / Roll'),
-      h('div', { className: 'lc-param-grid3' }, cell('Pan', R.pan, '', 'pan'), cell('Tilt', R.tilt, '', 'tilt'), cell('Roll', R.roll, '', 'roll')),
-      h('div', { className: 'lc-cam-sub' }, '镜头组'),
-      h('div', { className: 'lc-param-grid3' },
-        cell('Sensor 宽', L.sensorW, 'mm', 'sensorW'), cell('Sensor 高', L.sensorH, 'mm', 'sensorH'), cell('焦距', L.focal, 'mm', 'focal')),
-      h('div', { className: 'lc-param-grid3' },
-        cell('FOV K3', L.fovK3, '', 'k3'), cell('主点 Δx', L.ppx, '', 'ppx'), cell('主点 Δy', L.ppy, '', 'ppy')),
-      cam.protocol === 'freed' ? h(React.Fragment, null,
-        h('div', { className: 'lc-cam-sub' }, 'FreeD 编码器原始值'),
-        h('div', { className: 'lc-enc' }, h('span', { className: 'k' }, 'zoom'), h('span', { className: 'v' }, L.zoomEnc), h('span', { style: { width: 10 } }), h('span', { className: 'k' }, 'focus'), h('span', { className: 'v' }, L.focusEnc)),
-        h('div', { className: 'lc-enc-note' }, 'FreeD 接入：zoom / focus 为编码器整数原始值，未映射为物理量。')) : null);
+    /* 极简：只显示「键 值」，不带来源徽标；同组挤在一行（handoff cal2_calib_flow） */
+    const v = (k, o, axis) => {
+      const isRo = o.src === 'tracking' || o.src === 'solve' || !canEdit || !axis;
+      const num = typeof o.v === 'number' ? o.v.toFixed(o.v % 1 === 0 ? 0 : 2) : o.v;
+      return h('span', { key: k, className: 'lc-pv' + (isRo ? ' ro' : '') },
+        h('i', null, k),
+        canEdit && axis && !isRo
+          ? h('input', {
+              type: 'number', step: 'any', value: typeof o.v === 'number' ? o.v : 0,
+              onChange: (ev) => commitValue(axis, Number(ev.target.value)),
+              style: { width: 52, border: 'none', background: 'transparent', font: 'inherit', color: 'inherit', padding: 0 },
+            })
+          : num);
+    };
+    const line = (label, cells) => h('div', { className: 'lc-pline' }, h('span', { className: 'lc-plk' }, label), h('div', { className: 'lc-pvals' }, cells));
+    return h('div', { className: 'lc-params', title: ro ? '追踪实时 · 只读' : undefined },
+      line('位置 mm', [v('X', P.x, 'x'), v('Y', P.y, 'y'), v('Z', P.z, 'z')]),
+      line('旋转 °', [v('P', R.pan, 'pan'), v('T', R.tilt, 'tilt'), v('R', R.roll, 'roll')]),
+      line('传感器 mm', [v('W', L.sensorW, 'sensorW'), v('H', L.sensorH, 'sensorH'), v('f', L.focal, 'focal')]),
+      line('畸变 / 主点', [v('K3', L.fovK3, 'k3'), v('Δx', L.ppx, 'ppx'), v('Δy', L.ppy, 'ppy')]),
+      cam.protocol === 'freed' ? line('FreeD', [v('zoom', { v: L.zoomEnc, src: 'tracking' }), v('focus', { v: L.focusEnc, src: 'tracking' })]) : null);
   }
 
   /* 追踪状态条：probe_tracking_source 三态（fixed / connected / lost） */

@@ -162,7 +162,12 @@
 
 /* TR 显示开关 */
 .gw-disp { padding: 8px; min-width: 210px; display: flex; flex-direction: column; gap: 1px; }
-.gw-disp-h { font-size: 12px; font-weight: 500; letter-spacing: .05em; text-transform: uppercase; color: var(--g-400); padding: 3px 8px 6px; }
+.gw-disp-h { all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; color: var(--g-400); padding: 4px 8px; border-radius: var(--radius-input); }
+.gw-disp:not(.is-open) { min-width: 0; }
+.gw-disp.is-open .gw-disp-h { padding-bottom: 6px; }
+.gw-disp-h:hover { color: var(--chrome-text); }
+.gw-disp-h .lb { flex: 1; }
+.gw-disp-h .n { font-family: var(--font-code); font-size: 11px; opacity: .8; }
 .gw-disp-row { display: flex; align-items: center; gap: 9px; padding: 6px 8px; border-radius: var(--radius-input); cursor: pointer; }
 .gw-disp-row:hover { background: rgba(255,255,255,.06); }
 .gw-disp-row .ic { color: var(--g-250); display: grid; place-items: center; flex: 0 0 auto; }
@@ -716,12 +721,6 @@
 /* ============================================================
    Claude Design 补齐：本仓已渲染但样式此前未移植的规则（1:1 取自设计稿）
    ============================================================ */
-.gw-disp:not(.is-open) { min-width: 0; }
-.gw-disp.is-open .gw-disp-h { padding-bottom: 6px; }
-.gw-disp-h:hover { color: var(--chrome-text); }
-.gw-disp-h .lb { flex: 1; }
-.gw-disp-h .n { font-family: var(--font-code); font-size: 11px; opacity: .8; }
-
 /* Handoff grid.css 规则补齐 */
 
 .gw-parent-h { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--chrome-faint); }

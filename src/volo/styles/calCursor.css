@@ -128,7 +128,7 @@
 .desktop.page-calibrate .gw-meastoggle { border-radius: var(--radius-pill); font-size: 13px; }
 
 .desktop.page-calibrate .gw-disp { padding: 7px; min-width: 196px; }
-.desktop.page-calibrate .gw-disp-h { font-size: 12px; font-weight: 600; letter-spacing: 0; color: var(--stage-muted); padding: 4px 8px; }
+.desktop.page-calibrate .gw-disp-h { all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--stage-muted); padding: 4px 8px; border-radius: var(--radius-input); }
 .desktop.page-calibrate .gw-disp.is-open .gw-disp-h { padding-bottom: 7px; }
 .desktop.page-calibrate .gw-disp-row { padding: 5px 8px; border-radius: var(--radius-input); min-height: 26px; }
 .desktop.page-calibrate .gw-disp-row:hover { background: var(--stage-wash); }
