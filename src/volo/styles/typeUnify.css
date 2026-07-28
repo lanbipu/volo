@@ -1,0 +1,39 @@
+/* ============================================================
+   排版收敛层（最后加载）
+   · 全站单一字体：Inter / Noto Sans SC
+   · 只保留两级字号：正文 13px、标题 18px
+   · 字重收敛到 400 / 500
+   选择器刻意加长（html body …），用于压过各皮肤层里的 !important 字号。
+   ============================================================ */
+:root { --font-sans: Inter, "Noto Sans SC", system-ui, sans-serif; --font-code: var(--font-sans); --cap: 13px; }
+html body .viewport, html body .viewport *, html body .desktop, html body .desktop * {
+  font-family: var(--font-sans) !important;
+}
+/* 正文：唯一的常规字号 */
+html body .desktop, html body .desktop *:not(svg):not(svg *) { font-size: 13px !important; }
+/* 标题：唯一的放大档 */
+html body .desktop h1, html body .desktop h2, html body .desktop h3,
+html body .desktop .drawer-h h2, html body .desktop .insp-head h2, html body .desktop .ce-t,
+html body .desktop .cal2-projhdr-t, html body .desktop .dc-h h3, html body .desktop .page-h h1,
+html body .desktop .gw-metric .v, html body .desktop .stat-v, html body .desktop .cx-stat-number,
+html body .desktop .pakgen-done-t,
+html body .desktop .gw-solve-ov .rms,
+html body .desktop .pakgen-pct:not(.indet),
+html body .desktop .cal2-ov-stat .n {
+  font-size: 18px !important;
+}
+/* 字重：只留常规与中等 */
+html body .desktop *:not(svg):not(svg *) { font-weight: 400 !important; }
+html body .desktop h1, html body .desktop h2, html body .desktop h3,
+html body .desktop b, html body .desktop strong, html body .desktop .brand-name,
+html body .desktop .nm, html body .desktop .is-current,
+html body .desktop .drawer-h h2, html body .desktop .insp-head h2 { font-weight: 500 !important; }
+/* 数字保持等宽对齐 */
+html body .desktop .mono, html body .desktop code, html body .desktop .v, html body .desktop .xyz,
+html body .desktop [class*="-num"], html body .desktop [class*="metric"] .v, html body .desktop .gw-num {
+  font-variant-numeric: tabular-nums;
+}
+/* 左栏导航：选中与悬停一律常规字重（含 01–06 编号） */
+html body .desktop .gw-nav .nav-i, html body .desktop .gw-nav .nav-i.on,
+html body .desktop .gw-nav .nav-i .nav-lbl, html body .desktop .gw-nav .nav-i.on .nav-lbl,
+html body .desktop .leftcol .nav-i.on, html body .desktop .leftcol .nav-i.on .nav-lbl { font-weight: 400 !important; }

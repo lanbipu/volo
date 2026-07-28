@@ -122,7 +122,7 @@ import { loadProjectYaml, listRuns, removeRecentProject } from "../api/meshComma
           h(Button, { variant: 'accent', size: 'L', icon: h(Icon, { name: 'folder', size: 16 }), onPress: () => CX.pickAndOpenProject(s) }, '打开项目'),
           h(Button, { variant: 'secondary', size: 'L', icon: h(Icon, { name: 'plus', size: 16 }), onPress: () => CX.pickAndSeedExample(s, 'stage-triple') }, '新建项目')),
         h('div', { className: 'ce-recent' },
-          h('div', { className: 'ce-recent-h' }, h(Icon, { name: 'folder', size: 13 }), '最近的项目'),
+          h('div', { className: 'ce-recent-h' }, '最近的项目'),
           !proj.recent || !proj.recent.length
             ? h('div', { style: { fontSize: 12.5, color: 'var(--chrome-faint)', padding: '18px 0' } }, '暂无最近项目 · 打开或新建一个项目即可开始')
             : h('div', { className: 'ce-recent-list' }, rows.map((p) => h('div', { key: p.id, className: 'ce-recent-i', onClick: () => enterWorkspace(s, p.path) },
@@ -146,7 +146,6 @@ import { loadProjectYaml, listRuns, removeRecentProject } from "../api/meshComma
     return h('div', { className: 'dash' },
       h('div', { className: 'cal2-projhdr' },
         h('div', { className: 'cal2-projhdr-l' },
-          h('span', { className: 'cal2-projhdr-ic' }, h(Icon, { name: 'folder', size: 18 })),
           h('div', null,
             h('div', { className: 'cal2-projhdr-t' }, name),
             h('div', { className: 'cal2-projhdr-s' }, proj.path))),
@@ -163,9 +162,7 @@ import { loadProjectYaml, listRuns, removeRecentProject } from "../api/meshComma
             h('span', { className: 'mono' }, p.screenCount || '—'),
             h('span', null, gridStatePill(p.gridStatus)),
             h('span', null, CX.statusPill(CAL_LENS_STATUS, 'unknown')),
-            h('span', { className: 'cal2-ov-step' }, h(Icon, { name: 'arrowr', size: 12 }), p.done ? '已重建 · ' + timeAgo(p.last_opened_at) : (p.gridStatus === 'measured' ? '已导入测量 · 待重建' : '进行中') + ' · ' + timeAgo(p.last_opened_at)))))),
-        h('div', { style: { fontSize: 11.5, color: 'var(--chrome-faint)', display: 'flex', alignItems: 'center', gap: 6, marginTop: 10 } },
-          h(Icon, { name: 'info', size: 13 }), '单击行 · 切换项目并进入工作区'));
+            h('span', { className: 'cal2-ov-step' }, h(Icon, { name: 'arrowr', size: 12 }), p.done ? '已重建 · ' + timeAgo(p.last_opened_at) : (p.gridStatus === 'measured' ? '已导入测量 · 待重建' : '进行中') + ' · ' + timeAgo(p.last_opened_at)))))));
   }
 
   function Overview({ s }) {

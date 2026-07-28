@@ -18,7 +18,7 @@ import * as React from "react";
 import * as THREE from "three";
 import { computeRebuiltAlignment, saveProjectYaml } from "../api/meshCommands";
 import { generatedPatternImagePath, readGeneratedPatternAsDataUrl } from "../api/meshVisualCommands";
-import { CameraRig, SceneCanvas, pickBoxAt, worldPointAt } from "./gridScene";
+import { CameraRig, SceneCanvas, pickBoxAt } from "./gridScene";
 
 (function () {
   const { useState, useRef, useEffect, useMemo, useCallback, useSyncExternalStore } = React;
@@ -1361,32 +1361,6 @@ import { CameraRig, SceneCanvas, pickBoxAt, worldPointAt } from "./gridScene";
           h('button', { className: 'n', onClick: () => setResetArm(false) }, '取消')) : null) : null);
   }
 
-  /* 光标世界坐标读数（米）：竖排 X / Y / Z 三行。
-     世界是 Z 向上，视口按 Blender 约定显示为 X 横向 / Y 向上 / Z 深度，
-     所以显示 Y 取世界 z、显示 Z 取世界 y —— 与导航 gizmo 的字母一致。
-     取值先打屏幕箱体、落空落地面（见 gridScene.worldPointAt）。 */
-  function Coords() {
-    const [c, setC] = useState(null);
-    useEffect(() => {
-      const host = document.querySelector('.gw-svp'); if (!host) return undefined;
-      let raf = 0, pending = null;
-      const flush = () => {
-        raf = 0;
-        const p = worldPointAt(RIG, SCENE_STORE, host.getBoundingClientRect(), pending.x, pending.y);
-        setC(p ? [p.x, p.z, p.y] : null);
-      };
-      const onMove = (e) => { pending = { x: e.clientX, y: e.clientY }; if (!raf) raf = requestAnimationFrame(flush); };
-      const onLeave = () => setC(null);
-      host.addEventListener('mousemove', onMove);
-      host.addEventListener('mouseleave', onLeave);
-      return () => { cancelAnimationFrame(raf); host.removeEventListener('mousemove', onMove); host.removeEventListener('mouseleave', onLeave); };
-    }, []);
-    return h('div', { className: 'gw-glass gw-coords' },
-      h('div', { className: 'u' }, '单位 ', h('b', null, 'm')),
-      ['X', 'Y', 'Z'].map((k, i) => h('div', { key: k, className: 'xyz' },
-        h('span', { className: 'k' }, k),
-        h('span', { className: 'v' }, c ? c[i].toFixed(3) : '—'))));
-  }
   function Receipt({ s }) {
     useEffect(() => { if (!s.calReceipt) return undefined; const t = setTimeout(() => s.setCalReceipt(null), s.calReceipt.tone === 'err' ? 8000 : 4200); return () => clearTimeout(t); }, [s.calReceipt]);
     if (!s.calReceipt) return null;
@@ -1432,10 +1406,10 @@ import { CameraRig, SceneCanvas, pickBoxAt, worldPointAt } from "./gridScene";
         /* 已对齐时 gw-alignstatus 占同带，隐藏 solonote 避免叠层 */
         cabinet && s.calBoxTool === 'refs' && isSolo && !alignedNow
           ? h('div', { className: 'gw-glass gw-solonote' }, h(Icon, { name: 'info', size: 13 }), '当前屏为单独重建 · 多屏联动需联合重建') : null,
-        /* 四角叠加：左上 = 导航 gizmo + 坐标读数；右上 = 显示开关（折叠态）。
+        /* 四角叠加：左上 = 导航罗盘（坐标读数浮层已按设计移除）；右上 = 显示开关（折叠态）。
            CtxCard（屏幕名 / 箱体模式 / 当前版本）设计稿已从视口移除 —— 屏幕名看场景树，
            版本看底部中央的版本切换器；仅测量导入流程中保留它承载「测量类型」入口。 */
-        h('div', { className: 'gw-ov gw-ov--tl' }, h(NavGizmo), h(Coords), s.calFlow ? h(CtxCard, { s }) : null),
+        h('div', { className: 'gw-ov gw-ov--tl' }, h(NavGizmo), s.calFlow ? h(CtxCard, { s }) : null),
         h('div', { className: 'gw-ov gw-ov--tr' }, h(MetricCard, { s }), h(DisplayToggles, { s })),
         h('div', { className: 'gw-ov gw-ov--bc' }, h(HintBar, { s }), h(VersionSwitcher, { s })),
         h('div', { className: 'gw-ov gw-ov--bl', style: { display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' } }, h(PlacementLegend, { s }), h(Legend, { s })),

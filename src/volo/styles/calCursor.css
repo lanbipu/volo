@@ -297,7 +297,7 @@
 .desktop.page-calibrate .insp-head { position: sticky; top: 0; z-index: 6; padding: 10px 16px; background: var(--canvas);
   border-bottom: 1px solid var(--hairline); display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .desktop.page-calibrate .insp-head > div:first-child { margin-bottom: 0 !important; gap: 9px !important; }
-.desktop.page-calibrate .insp-head h2 { font-size: 14px !important; font-weight: 600 !important; color: var(--ink); }
+.desktop.page-calibrate .insp-head h2 { color: var(--ink); }
 .desktop.page-calibrate .insp-head .step-ico { width: 18px !important; height: 18px !important; border-radius: 0 !important;
   background: none !important; color: var(--muted); }
 .desktop.page-calibrate .insp-sect { padding: 12px 16px 14px; border-bottom: 1px solid var(--hairline); }
@@ -548,7 +548,6 @@
 .desktop.page-calibrate .inspector .gw-insp-ic { width: 15px; height: 15px; }
 .desktop.page-calibrate .inspector .gw-insp-ic svg { width: 14px; height: 14px; }
 .desktop.page-calibrate .inspector .insp-head { padding: 6px 14px; min-height: 32px; }
-.desktop.page-calibrate .inspector .insp-head h2 { font-size: 14px !important; }
 .desktop.page-calibrate .inspector .insp-head .step-ico { width: 15px !important; height: 15px !important; }
 .desktop.page-calibrate .inspector .insp-head .step-ico svg { width: 14px; height: 14px; }
 
@@ -667,11 +666,10 @@
 
 
 /* batch 6.1 · 清单选中收敛：整块橙底只留给左栏与 CTA；
-   预设 / 屏幕行改「橙底 12% + 橙字 + 3px 橙齿」，避免两条橙板叠在一起 */
+   预设 / 屏幕行改「橙底 12% + 橙字」（左侧齿改由 languageV2 ::before 墨条承担） */
 .desktop.page-calibrate .inspector .gw-prow.on,
 .desktop.page-calibrate .inspector .gw-prow.on:hover { position: relative; background: var(--or-soft); color: var(--or); overflow: hidden; }
 .desktop.page-calibrate .inspector .gw-prow.on .nm { color: var(--or); font-weight: 600; }
-.desktop.page-calibrate .inspector .gw-prow.on::after { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--or); }
 .desktop.page-calibrate .inspector .gw-prow.on .rm { color: var(--or); }
 
 
@@ -697,7 +695,6 @@
 .desktop.page-calibrate .inspector .gw-prow.on,
 .desktop.page-calibrate .inspector .gw-prow.on:hover { background: var(--surface-strong); color: var(--ink); }
 .desktop.page-calibrate .inspector .gw-prow.on .nm { color: var(--ink); font-weight: 600; }
-.desktop.page-calibrate .inspector .gw-prow.on::after { background: var(--ink); }
 .desktop.page-calibrate .inspector .gw-prow.on .rm { color: var(--muted); }
 .desktop.page-calibrate .gw-prow:hover { background: var(--surface-card); color: var(--ink); }
 .desktop.page-calibrate .gw-padd:hover { color: var(--ink); border-color: var(--muted-soft); background: var(--surface-card); }

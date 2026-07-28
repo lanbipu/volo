@@ -468,10 +468,8 @@
 }
 
 /* [低] 生成对话框里 14px / 13px 小字全用 600，且进行中那行反而比等待行更细。 */
-.desktop .pakgen-stage-name, .desktop .pakgen-done-t {
-  font-size: 14px !important; font-weight: 500 !important;
-}
-.desktop .pakgen-step .slabel { font-size: 13px !important; font-weight: 400 !important; }
+.desktop .pakgen-stage-name, .desktop .pakgen-done-t { font-weight: 500 !important; }
+.desktop .pakgen-step .slabel { font-weight: 400 !important; }
 .desktop .pakgen-step.active .slabel, .desktop .pakgen-step.done .slabel { font-weight: 500 !important; }
 
 /* [低] 勾选圈未选态直接引用原始灰阶 rung，不跟主题；同一状态在两个主题里强弱相反。 */

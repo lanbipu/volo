@@ -85,7 +85,7 @@
 
 [data-theme="dark"] {
   color-scheme: dark;
-  --bg-floor:var(--g-900); --bg-sidebar:var(--g-800); --bg-card:var(--g-950);
+  --bg-floor:var(--g-1000); --bg-sidebar:var(--g-950); --bg-card:var(--g-950);
   --bg-row:var(--g-870);   --bg-input:var(--g-850);   --bg-selected:var(--g-700);
   --bg-segment:var(--g-730); --bg-badge:var(--g-730);
   --bg-inverse:var(--g-100); --text-on-inverse:var(--g-1000);

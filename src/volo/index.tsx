@@ -53,6 +53,8 @@ import "./styles/cursorPolish.css";
 import "./styles/cursorAuditFixes.css";
 import "./styles/cursorLanguageV2.css";
 import "./styles/cursorViewport.css";
+/* 排版收敛：单一字体 + 两级字号，必须最后加载（对应 handoff type_unify.css） */
+import "./styles/typeUnify.css";
 
 import "./ds";          // window.Spectrum2DesignSystem_b6d1b3 (+ React global)
 import "./data";        // window data globals + Icon
