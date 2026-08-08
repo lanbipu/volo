@@ -1,0 +1,99 @@
+/* ============================================================
+   强调色：主操作按钮改为橙色（Cursor Orange #f54e00）
+   只作用于「高亮／主操作按钮」，不动 chip / 分段控件 / 标签页 /
+   开关 / 流程节点 / 选中行——那些仍保持黑白反转。
+   最后加载；选择器加长以压过各皮肤层的 !important。
+   ============================================================ */
+:root { --acc-orange: #f54e00; --acc-orange-hover: #ff5c0d; --acc-orange-ink: #ffffff; }
+/* 暗色模式：橙调深一档，白字对比度 5.2:1（达 AA） */
+[data-theme="dark"] { --acc-orange: #c43f00; --acc-orange-hover: #d94700; --acc-orange-ink: #ffffff; }
+
+/* :not(.s2-btn--S) 兼作特异性提升（需压过皮肤层 M/L 反转规则的 0,4,0）与小号豁免：
+   全局小号 accent 维持次级灰；calibrate 页由下方 page-calibrate 选择器单独提为主橙 */
+html body .desktop .s2-btn--fill.s2-btn--accent:not(.s2-btn--S),
+html body .desktop .s2-btn--accent:not(.s2-btn--S),
+html body .desktop.page-calibrate .s2-btn--fill.s2-btn--accent,
+html body .desktop.page-calibrate .inspector .s2-btn--fill.s2-btn--accent,
+html body .desktop .mini-btn.psL2-go:not(.ghost),
+html body .desktop .fix-btn,
+html body .desktop [class*="btn"].is-primary,
+html body .desktop [class*="btn"].primary,
+html body .desktop .gw-saction.is-primary,
+html body .desktop .gw-boxbar .gw-alignbtn.is-accent,
+html body .desktop .zcolo-btn:not(.ghost),
+html body .desktop .gw-reset-confirm .y,
+html body .desktop .cal2-savebtn.dirty {
+  background: var(--acc-orange) !important;
+  border-color: transparent !important;
+  color: var(--acc-orange-ink) !important;
+  filter: none !important;
+}
+html body .desktop .s2-btn--fill.s2-btn--accent:not(.s2-btn--S) span,
+html body .desktop .s2-btn--accent:not(.s2-btn--S) span,
+html body .desktop.page-calibrate .s2-btn--fill.s2-btn--accent span,
+html body .desktop .mini-btn.psL2-go:not(.ghost) span, html body .desktop .fix-btn span,
+html body .desktop [class*="btn"].is-primary span,
+html body .desktop .gw-saction.is-primary span,
+html body .desktop .gw-boxbar .gw-alignbtn.is-accent span,
+html body .desktop .zcolo-btn:not(.ghost) span,
+html body .desktop .cal2-savebtn.dirty span,
+html body .desktop .s2-btn--fill.s2-btn--accent:not(.s2-btn--S) svg,
+html body .desktop .s2-btn--accent:not(.s2-btn--S) svg,
+html body .desktop.page-calibrate .s2-btn--fill.s2-btn--accent svg,
+html body .desktop .mini-btn.psL2-go:not(.ghost) svg,
+html body .desktop .fix-btn svg,
+html body .desktop [class*="btn"].is-primary svg,
+html body .desktop .gw-saction.is-primary svg,
+html body .desktop .gw-boxbar .gw-alignbtn.is-accent svg,
+html body .desktop .zcolo-btn:not(.ghost) svg,
+html body .desktop .gw-reset-confirm .y svg,
+html body .desktop .cal2-savebtn.dirty svg { color: var(--acc-orange-ink) !important; }
+html body .desktop .cal2-savebtn.dirty .cal2-dirtydot { background: var(--acc-orange-ink) !important; }
+
+html body .desktop .s2-btn--fill.s2-btn--accent:not(.s2-btn--S):hover,
+html body .desktop .s2-btn--accent:not(.s2-btn--S):hover,
+html body .desktop.page-calibrate .s2-btn--fill.s2-btn--accent:hover,
+html body .desktop .mini-btn.psL2-go:not(.ghost):hover,
+html body .desktop .fix-btn:hover,
+html body .desktop [class*="btn"].is-primary:hover,
+html body .desktop [class*="btn"].primary:hover,
+html body .desktop .gw-saction.is-primary:hover,
+html body .desktop .gw-boxbar .gw-alignbtn.is-accent:hover,
+html body .desktop .zcolo-btn:not(.ghost):hover,
+html body .desktop .gw-reset-confirm .y:hover,
+html body .desktop .cal2-savebtn.dirty:hover {
+  background: var(--acc-orange-hover) !important;
+  border-color: transparent !important;
+  color: var(--acc-orange-ink) !important;
+}
+/* ---------- 底部页签：选中态改为下划线，不再是填色方块 ---------- */
+html body .desktop .pagetabs .ptab.on,
+html body .desktop.page-calibrate .ptab.on {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  color: var(--acc-orange) !important;
+  box-shadow: none !important;
+}
+html body .desktop .pagetabs .ptab { position: relative; padding-top: 6px !important; padding-bottom: 9px !important; }
+html body .desktop .pagetabs .ptab.on::after,
+html body .desktop.page-calibrate .pagetabs .ptab.on::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px;
+  border-radius: 2px; background: var(--acc-orange);
+}
+html body .desktop .pagetabs .ptab .pico { display: none !important; }
+html body .desktop .pagetabs .ptab.on .skl { background: var(--bg-badge) !important; color: var(--t-muted) !important; }
+/* 选中页签是透明底 + 下划线；hover 不回填底色（.on 的直角会与其他页签的胶囊 hover 冲突） */
+html body .desktop .pagetabs .ptab.on:hover { background: transparent !important; }
+
+html body .desktop .s2-btn--fill.s2-btn--accent:active,
+html body .desktop .s2-btn--accent:active,
+html body .desktop .mini-btn.psL2-go:not(.ghost):active,
+html body .desktop .fix-btn:active,
+html body .desktop [class*="btn"].is-primary:active,
+html body .desktop [class*="btn"].primary:active,
+html body .desktop .gw-saction.is-primary:active,
+html body .desktop .gw-boxbar .gw-alignbtn.is-accent:active,
+html body .desktop .zcolo-btn:not(.ghost):active,
+html body .desktop .gw-reset-confirm .y:active,
+html body .desktop .cal2-savebtn.dirty:active { opacity: .86; }

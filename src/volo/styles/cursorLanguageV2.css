@@ -227,7 +227,7 @@
   background: color-mix(in srgb, var(--status-ok) 10%, transparent) !important;
   border: 1px solid color-mix(in srgb, var(--status-ok) 42%, transparent) !important;
   border-radius: 9999px !important; padding: 1px 8px !important;
-  font-weight: 500 !important; letter-spacing: 0 !important; }
+  letter-spacing: 0 !important; }
 .desktop .spill.spill--positive svg,
 .desktop .cap-pill--positive svg { color: var(--status-ok) !important; }
 
@@ -337,12 +337,12 @@
 .desktop .s2-btn--S.s2-btn--fill.s2-btn--accent svg { color: var(--t-ink) !important; }
 
 /* 左栏导航：选中只留深底；hover 与选中同高亮底 / 圆角（字重由 typeUnify 收敛） */
-.desktop .leftcol .nav-i, .desktop .gw-nav .nav-i,
-.desktop.page-calibrate .gw-nav .nav-i { border-radius: 10px !important; }
 .desktop .leftcol .nav-i.on, .desktop .gw-nav .nav-i.on,
-.desktop.page-calibrate .gw-nav .nav-i.on {
-  border-color: transparent !important; box-shadow: none !important; outline: none !important;
-}
+.desktop.page-calibrate .gw-nav .nav-i.on { border-color: transparent !important; box-shadow: none !important; outline: none !important; }
+.desktop .leftcol .nav-i, .desktop .gw-nav .nav-i,
+.desktop.page-calibrate .gw-nav .nav-i,
+.desktop .leftcol .nav-i.on, .desktop .gw-nav .nav-i.on,
+.desktop.page-calibrate .gw-nav .nav-i.on { border-radius: 10px !important; }
 .desktop .leftcol .nav-i:hover:not(.on), .desktop .gw-nav .nav-i:hover:not(.on),
 .desktop.page-calibrate .gw-nav .nav-i:hover:not(.on) {
   background: var(--ctrl-on-bg) !important; color: var(--t-ink) !important;
@@ -355,24 +355,23 @@
 .desktop .gw-nav .nav-i:hover .nav-lbl, .desktop.page-calibrate .gw-nav .nav-i:hover .nav-lbl { color: var(--t-ink) !important; }
 .desktop .gw-nav .nav-i:hover .nav-sub, .desktop.page-calibrate .gw-nav .nav-i:hover .nav-sub { color: var(--t-muted) !important; }
 
-/* 检查器 · 预设 / 屏幕清单：安静分组 + 选中左侧墨条（尺寸已压到最终值） */
-.desktop .inspector .gw-psub { padding: 0 2px 4px !important; font-weight: 400 !important;
+/* 检查器 · 预设 / 屏幕清单：安静分组 + 选中左侧墨条 */
+.desktop .inspector .gw-psub { padding: 0 2px 4px !important;
   color: var(--t-muted) !important; align-items: center; }
 .desktop .inspector .gw-psub .c { color: var(--t-placeholder) !important; }
 .desktop .inspector .gw-prow-div { background: var(--edge-card) !important; margin: 9px 0 7px !important; }
 .desktop .inspector .gw-plist { gap: 1px !important; }
 .desktop .inspector .gw-prow { min-height: 24px !important; padding: 0 8px !important; border-radius: 8px !important;
   border: 1px solid transparent !important; color: var(--t-body) !important; box-shadow: none !important; }
-.desktop .inspector .gw-prow .nm { font-weight: 400 !important; }
 .desktop .inspector .gw-prow:hover { background: var(--bg-row) !important; color: var(--t-ink) !important; }
 .desktop .inspector .gw-prow.on, .desktop .inspector .gw-prow.on:hover {
   position: relative; background: var(--bg-selected) !important; color: var(--t-ink) !important; border-color: transparent !important; }
-.desktop .inspector .gw-prow.on .nm { color: var(--t-ink) !important; font-weight: 500 !important; }
+.desktop .inspector .gw-prow.on .nm { color: var(--t-ink) !important; }
 .desktop .inspector .gw-prow.on::before { content: ''; position: absolute; left: 2px; top: 50%; transform: translateY(-50%);
   width: 2px; height: 12px; border-radius: 1px; background: var(--t-ink); }
 .desktop .inspector .gw-padd { min-height: 22px !important; padding: 0 8px !important; margin-top: 2px !important;
   border: none !important; background: none !important; border-radius: 8px !important;
-  font-weight: 400 !important; color: var(--t-muted) !important; }
+  color: var(--t-muted) !important; }
 .desktop .inspector .gw-padd:hover { background: var(--bg-row) !important; color: var(--t-ink) !important; border: none !important; }
 .desktop .inspector .gw-parent--compact { gap: 0 !important; }
 

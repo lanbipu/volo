@@ -1,0 +1,136 @@
+/* ============================================================
+   检查器排版 v3（最后加载）· 校正板块（LED）
+   诉求：分组更清晰 / 密度更低留白更多 / 统一「标签左 · 控件右」行式。
+   有意放松 cal_cursor.css「batch 6 密度重排」的紧凑取值（同特异度覆写），
+   并把 batch 6 误改的药丸输入框收回圆角矩形（DS 规则 3）。
+   ============================================================ */
+
+/* ---------- 1 · 分组节奏 ---------- */
+.desktop.page-calibrate .inspector .gw-grp-h { top: 32px; min-height: 32px; padding: 9px 14px 7px; gap: 7px; }
+.desktop.page-calibrate .inspector .gw-grp-body { padding: 4px 14px 16px; }
+.desktop.page-calibrate .inspector .gw-grp + .gw-grp { margin-top: 8px !important; }
+
+/* ---------- 2 · 字段行：统一 32px「标签左 · 控件右」 ---------- */
+.desktop.page-calibrate .inspector .gw-field { margin: 0 -14px; padding: 4px 14px; min-height: 32px; gap: 12px; }
+.desktop.page-calibrate .inspector .gw-field > .lb { color: var(--body); }
+.desktop.page-calibrate .inspector .gw-field > .lb .hint { color: var(--muted); margin-top: 2px; }
+.desktop.page-calibrate .inspector .gw-grp-body > .gw-field:last-child { border-bottom-color: transparent; }
+.desktop.page-calibrate .inspector .kv { margin: 0 -14px; padding: 5px 14px; min-height: 30px; }
+
+/* 只读值（汇总 / 位置等）：mono 右对齐 */
+.desktop.page-calibrate .gw-ro { font-family: var(--font-code); font-variant-numeric: tabular-nums; color: var(--ink); text-align: right; }
+
+/* ---------- 3 · 控件：26px 圆角矩形（收回 batch 6 的药丸） ---------- */
+.desktop.page-calibrate .gw-num::-webkit-inner-spin-button, .desktop.page-calibrate .gw-num::-webkit-outer-spin-button { display: none; -webkit-appearance: none; margin: 0; }
+.desktop.page-calibrate .gw-num { -moz-appearance: textfield; appearance: textfield; }
+.desktop.page-calibrate .inspector .gw-num, .desktop.page-calibrate .inspector .gw-txt,
+.desktop.page-calibrate .inspector .gw-selbtn { height: 26px; padding: 0 8px; border-radius: var(--r-ctl, 8px); }
+.desktop.page-calibrate .inspector .gw-num { width: 60px; }
+.desktop.page-calibrate .inspector .gw-selbtn { padding: 0 7px 0 9px; }
+.desktop.page-calibrate .inspector .gw-dual { gap: 5px; }
+.desktop.page-calibrate .inspector .gw-dual .gw-num { width: 58px; }
+.desktop.page-calibrate .inspector .s2-btn { height: 28px; min-height: 28px; padding: 0 12px; border-radius: var(--r-ctl, 8px); }
+
+/* ---------- 4 · 预设 / 屏幕清单 ---------- */
+.desktop.page-calibrate .inspector .gw-parent, .desktop.page-calibrate .inspector .gw-parent--compact { padding: 2px 14px 10px; }
+.desktop.page-calibrate .inspector .gw-psub { padding: 8px 0 6px; }
+.desktop.page-calibrate .inspector .gw-plist { gap: 2px; }
+.desktop.page-calibrate .inspector .gw-prow { min-height: 26px; padding: 0 9px; border-radius: var(--r-ctl, 8px); }
+.desktop.page-calibrate .inspector .gw-padd { min-height: 26px; padding: 0 9px; border-radius: var(--r-ctl, 8px); margin-top: 3px; }
+.desktop.page-calibrate .inspector .gw-prow-div { margin: 9px 0; }
+
+/* ---------- 5 · 形状卡 / 分段控件 ---------- */
+.desktop.page-calibrate .inspector .gw-shape { padding: 8px 4px; gap: 4px; border-radius: var(--r-ctl, 8px); }
+.desktop.page-calibrate .inspector .gw-shape-grid { gap: 5px; margin: 2px 0 2px; }
+.desktop.page-calibrate .inspector .gw-method-seg { border-radius: var(--r-ctl, 8px); }
+.desktop.page-calibrate .inspector .gw-method-seg button { border-radius: calc(var(--r-ctl, 8px) - 2px); padding: 5px 9px; }
+
+/* ---------- 6 · 分区 / 微文案 / 入口行 ---------- */
+.desktop.page-calibrate .inspector .insp-sect { padding: 12px 14px 14px; }
+.desktop.page-calibrate .inspector .insp-sect .lh { margin-bottom: 8px; }
+.desktop.page-calibrate .inspector .gw-method { padding: 10px 14px 13px; }
+.desktop.page-calibrate .inspector .gw-method-h, .desktop.page-calibrate .inspector .gw-stages-h,
+.desktop.page-calibrate .inspector .dep-sec-h { margin-bottom: 7px; }
+.desktop.page-calibrate .inspector .gw-stages-h { padding: 12px 14px 5px; }
+.desktop.page-calibrate .inspector .gw-optnote, .desktop.page-calibrate .inspector .gw-method-note,
+.desktop.page-calibrate .inspector .gw-runlist-note, .desktop.page-calibrate .inspector .gw-solve-relnote,
+.desktop.page-calibrate .inspector .gw-stage-warn, .desktop.page-calibrate .inspector .dep-lead,
+.desktop.page-calibrate .inspector .dep-sumnote { line-height: 1.5; padding: 4px 0; }
+.desktop.page-calibrate .inspector .lens-entry-list { gap: 3px; }
+.desktop.page-calibrate .inspector .lens-entry-list > button,
+.desktop.page-calibrate .inspector .lens-entry-list > div { min-height: 32px; padding: 7px 10px; border-radius: var(--r-ctl, 8px); }
+.desktop.page-calibrate .inspector .gw-fileref { padding: 8px 10px; border-radius: var(--r-ctl, 8px); }
+.desktop.page-calibrate .inspector .gw-runlist { gap: 3px; }
+.desktop.page-calibrate .inspector .gw-runrow { padding: 7px 10px; border-radius: var(--r-ctl, 8px); }
+
+/* ---------- 7 · 上屏部署 ---------- */
+/* 待机屏预览：显示中扫描线，黑场呼吸标签 */
+.desktop.page-calibrate .dep-standby-scr { position: relative; overflow: hidden; }
+.desktop.page-calibrate .dep-standby-scr::after { content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(180deg, transparent 0 44%, rgba(255,255,255,.06) 50%, transparent 56%); transform: translateY(-100%); }
+.desktop.page-calibrate .dep-standby-scr.showing::after { animation: depscan 2.6s linear infinite; }
+@keyframes depscan { to { transform: translateY(100%); } }
+.desktop.page-calibrate .dep-standby-scr:not(.showing) .lb { animation: depbreathe 2.8s ease-in-out infinite; }
+@keyframes depbreathe { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+.desktop.page-calibrate .inspector .dep-tcard { padding: 9px 11px; }
+.desktop.page-calibrate .inspector .dep-mon { min-height: 30px; padding: 6px 10px; border-radius: var(--r-ctl, 8px); }
+.desktop.page-calibrate .inspector .dep-monlist { gap: 3px; }
+.desktop.page-calibrate .inspector .dep-node { padding: 5px 0; }
+.desktop.page-calibrate .inspector .dep-targets { gap: 5px; }
+.desktop.page-calibrate .dep-sumrows .kv:last-of-type { border-bottom: none; }
+.desktop.page-calibrate .dep-sect-b > * + * { margin-top: 10px; }
+
+/* ---------- 8 · 采集窗右栏（三级页）：标签左 · 控件右 ---------- */
+.desktop .lc-grp-h { padding: 13px 15px 10px; }
+.desktop .lc-grp-b { padding: 2px 15px 16px; gap: 10px; }
+.desktop .lc-field { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 12px; min-height: 30px; }
+.desktop .lc-field > .k { font-weight: 400; color: var(--chrome-dim); white-space: nowrap; }
+.desktop .lc-field > .lc-selbtn, .desktop .lc-field > div, .desktop .lc-field > button { justify-self: end; }
+.desktop .lc-selbtn { max-width: 230px; border-radius: var(--r-ctl, 8px); }
+.desktop .lc-toggle { min-height: 30px; }
+.desktop .lc-toggle .t { font-weight: 400; }
+
+/* ---------- 8b · 统一标准外推：AR 板块（同属 page-calibrate，gw-/insp- 规则已覆盖）
+   与工具板块缓存系统（page-tools 检查器：insp-sect / kv / 控件同一行式） ---------- */
+.desktop.page-tools .inspector .insp-sect { padding: 14px 16px 16px; }
+.desktop.page-tools .inspector .insp-sect .lh { letter-spacing: 0; text-transform: none; margin-bottom: 10px; }
+.desktop.page-tools .inspector .kv { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  min-height: 30px; padding: 5px 0; }
+.desktop.page-tools .inspector .kv .k { color: var(--chrome-dim); white-space: nowrap; }
+.desktop.page-tools .inspector .kv .v { color: var(--chrome-text); text-align: right; }
+.desktop.page-tools .inspector .s2-btn { height: 28px; min-height: 28px; padding: 0 12px; border-radius: var(--r-ctl, 8px); }
+.desktop.page-tools .inspector input[type="text"], .desktop.page-tools .inspector input[type="number"],
+.desktop.page-tools .inspector select { height: 26px; border-radius: var(--r-ctl, 8px); }
+.desktop.page-tools .inspector .spill { border-radius: 9999px; }
+.desktop.page-tools .inspector .insp-head { min-height: 40px; padding: 10px 16px; }
+/* 缓存检查器内的分区头（ddc-sec-h 等）与校正侧同一声量 */
+.desktop.page-tools .inspector .ddc-sec-h, .desktop.page-tools .inspector .cal2-subh {
+  letter-spacing: 0; text-transform: none; color: var(--t-muted, var(--chrome-faint)); margin-bottom: 8px; }
+
+/* ---------- 11 · AR 板块（page-calibrate 内）：指标行统一「标签左 · 值右」 ---------- */
+.desktop.page-calibrate .ar-gm { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 28px; }
+.desktop.page-calibrate .ar-gm .k { color: var(--chrome-dim); white-space: nowrap; }
+.desktop.page-calibrate .ar-gm .v { text-align: right; font-variant-numeric: tabular-nums; }
+.desktop.page-calibrate .ar-card { border-radius: var(--r-ctl, 8px); }
+.desktop.page-calibrate .ar-card-h { gap: 7px; }
+.desktop.page-calibrate .ar-ws-row { min-height: 40px; }
+
+/* 机器详情抽屉（工具页）：drawer 内 insp-sect 同步 */
+.desktop.page-tools .drawer-b .insp-sect { padding: 14px 16px 16px; }
+.desktop.page-tools .drawer-b .insp-sect .lh { letter-spacing: 0; text-transform: none; margin-bottom: 8px; }
+.desktop.page-tools .drawer-b .kv { min-height: 30px; padding: 4px 0; }
+
+/* ---------- 9 · solid 二级页（采集窗）：点空白不关闭 ---------- */
+.modal-scrim.is-solid { background: rgba(0,0,0,.55); }
+.modal-host.deny { animation: modaldeny .28s var(--ease-default); }
+@keyframes modaldeny { 0%, 100% { transform: none; } 30% { transform: scale(.994); } 60% { transform: scale(1.004); } }
+
+/* ---------- 10 · 采集窗演示控制收进弹出菜单 ---------- */
+.capw-demomenu { position: relative; margin-left: 8px; flex: 0 0 auto; }
+.capw-demomenu-btn { all: unset; box-sizing: border-box; cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
+  height: 24px; padding: 0 8px; border-radius: var(--r-ctl, 8px); border: 1px dashed var(--chrome-line-2); color: var(--chrome-faint); }
+.capw-demomenu-btn:hover, .capw-demomenu-btn.on { color: var(--chrome-text); border-style: solid; background: var(--wash-3); }
+.capw-demomenu-pop { position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 30; min-width: 280px;
+  display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 10px;
+  background: var(--chrome-panel); border: 1px solid var(--chrome-line-2); box-shadow: 0 10px 28px rgba(0,0,0,.28); }
+.capw-demomenu-pop .capw-demo { flex-wrap: wrap; }

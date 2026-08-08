@@ -37,15 +37,17 @@ import "./styles/calFlow.css";   // 镜头校正流程 + 上屏部署（dep-*/lc
 import "./styles/calQsp.css";    // 固定机位 · VP-QSP 单次校正采集窗新增 UX（qsp-* —— 采集目的/五分区 report/静帧门控/attest/fail-closed/状态横幅）
 
 /* ============================================================
-   Cursor App 皮肤：五层「规则层」叠加，不改上面任何分区样式表。
-   Volo.html 里的加载顺序即契约，换序即失效：
-     1 calCursor       校正板块皮肤（app-era）
-     2 cursorApp       表面分层 / 控件形状 / 字号密度
-     3 cursorPolish    状态用色口径、行内节奏
-     4 cursorAuditFixes 全量审计修复（选择器误伤 / 写死 hex / 关键状态被压灰）
-     5 cursorLanguageV2 语言修订，推翻前几层的三条设定（药丸→圆角矩形 /
-                       一屏一枚实心主按钮 / 开关绿色）
-     6 cursorViewport  三维视口配色（全站唯一保留语义色的地方）
+   Cursor App 皮肤：规则层叠加，不改上面任何分区样式表。
+   Volo.html 加载顺序即契约，换序即失效：
+     1 calCursor         校正板块皮肤（app-era）
+     2 cursorApp         表面分层 / 控件形状 / 字号密度
+     3 cursorPolish      状态用色口径、行内节奏
+     4 cursorAuditFixes  全量审计修复
+     5 cursorLanguageV2  语言修订（药丸→圆角矩形 / 一屏一枚主按钮 / 开关绿）
+     6 cursorViewport    三维视口配色（全站唯一保留语义色）
+     7 typeUnify         排版收敛（单一字体 / 字号 / 字重）
+     8 accentOrange      主操作强调色
+     9 inspV3            检查器排版 v3（分组间距 / 字段行式；最后加载）
    ============================================================ */
 import "./styles/calCursor.css";
 import "./styles/cursorApp.css";
@@ -53,8 +55,9 @@ import "./styles/cursorPolish.css";
 import "./styles/cursorAuditFixes.css";
 import "./styles/cursorLanguageV2.css";
 import "./styles/cursorViewport.css";
-/* 排版收敛：单一字体 + 两级字号，必须最后加载（对应 handoff type_unify.css） */
 import "./styles/typeUnify.css";
+import "./styles/accentOrange.css";
+import "./styles/inspV3.css";
 
 import "./ds";          // window.Spectrum2DesignSystem_b6d1b3 (+ React global)
 import "./data";        // window data globals + Icon

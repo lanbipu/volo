@@ -59,7 +59,7 @@
 .desktop .psL2-go, .desktop .fix-btn, .desktop .paneltgl.on,
 .desktop [class*="btn"].is-primary, .desktop [class*="btn"].primary {
   background: var(--bg-inverse) !important; color: var(--text-on-inverse) !important;
-  border: 1px solid transparent !important; font-weight: 500 !important;
+  border: 1px solid transparent !important;
 }
 .desktop .s2-btn--accent svg, .desktop .psL2-go svg, .desktop .paneltgl.on svg,
 .desktop [class*="btn"].is-primary svg { color: var(--text-on-inverse) !important; }
