@@ -83,6 +83,56 @@ def test_finish_stops_before_duration_elapses(tmp_path):
     assert len(png_files) == data["frames"]
 
 
+def test_first_frame_written_event_and_status_probe(tmp_path):
+    """The SL capture flow gates playback start on recording being verifiably
+    rolling: ``first_frame_written`` fires once after frame 0 lands on disk,
+    and a ``{"cmd":"status"}`` control line replies with the current frame
+    count (race-free probe for hosts that attach their listener after spawn)."""
+    out_dir = tmp_path / "video"
+    proc = _spawn(
+        "capture", "video", "--backend", "synthetic",
+        "--duration", "30", "--out", str(out_dir), "--output", "ndjson",
+    )
+    try:
+        deadline = time.monotonic() + 5.0
+        first = None
+        while time.monotonic() < deadline:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            evt = json.loads(line)
+            if evt.get("type") == "first_frame_written":
+                first = evt
+                break
+        assert first, "capture video never emitted first_frame_written"
+        # The event fires AFTER the write: the file must already exist.
+        assert Path(first["path"]).exists()
+
+        proc.stdin.write(json.dumps({"cmd": "status"}) + "\n")
+        proc.stdin.flush()
+        status = None
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            evt = json.loads(line)
+            if evt.get("type") == "status":
+                status = evt
+                break
+        assert status is not None, "status control line got no status event reply"
+        assert status["frames"] >= 1
+
+        proc.stdin.write(json.dumps({"cmd": "finish"}) + "\n")
+        proc.stdin.flush()
+        proc.stdin.close()
+        assert proc.wait(timeout=5.0) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5.0)
+
+
 def test_non_object_control_line_does_not_kill_the_control_thread(tmp_path):
     """A stray valid-JSON-but-non-dict control line (a bare scalar/list) must
     not crash the stdin-pump thread — a subsequent legitimate finish command

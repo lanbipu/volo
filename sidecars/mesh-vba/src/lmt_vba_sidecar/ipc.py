@@ -278,6 +278,12 @@ class GenerateStructuredLightInput(BaseModel):
     dot_spacing_px: int | None = Field(default=None, gt=0)
     dot_radius_px: int = Field(gt=0, default=6)
     margin_px: int | None = Field(default=None, ge=0)
+    # Camera-aware layout planning: the screen's projected bounding box in
+    # CAMERA pixels (live-preview estimate). When set, plan_dot_layout()
+    # derives radius/spacing/margin from it; explicit dot_spacing_px /
+    # margin_px still win per-field, and the planned radius replaces
+    # dot_radius_px (whose default is indistinguishable from an explicit 6).
+    projected_screen_px: Annotated[list[float], Field(min_length=2, max_length=2)] | None = None
     hold_ms: int = Field(gt=0, default=500)
     fps: int = Field(gt=0, default=30)
     # Also emit a disguise-ready image sequence: <screen_id>.seq/ of uncompressed
@@ -345,10 +351,34 @@ class CorrespondencePoint(BaseModel):
     v: float
     x: float   # camera pixel (sub-pixel centroid)
     y: float
+    # Per-dot localization quality (corr schema v2; all optional so v1 files
+    # still validate). sigma_px = centroid temporal jitter across the anchor
+    # plateau (video captures only; None when a single anchor frame exists).
+    sigma_px: float | None = None
+    confidence: float = Field(default=1.0, gt=0.0, le=1.0)
+    plateau_margin: float | None = None   # worst per-bit decision margin, 0..1
+    saturation: float | None = None       # clipped-pixel fraction at the dot
+    neighbor_overlap: float | None = None  # (r_i+r_nn)/nn_dist; >1 = touching
+
+
+class CorrRejectedCounts(BaseModel):
+    parity: int = 0        # bit read failed parity/CRC
+    unknown_id: int = 0    # decoded id absent from sl_meta
+    duplicate_id: int = 0  # ≥2 seeds decoded to one id (unresolved merge) — all dropped
+    jitter: int = 0        # centroid temporal jitter above the hard ceiling
+
+
+class CorrQualitySummary(BaseModel):
+    n_seeds: int
+    n_decoded: int
+    rejected: CorrRejectedCounts
+    sigma_source: str | None = None
+    sigma_median_px: float | None = None
+    sigma_p95_px: float | None = None
 
 
 class CorrespondenceFile(BaseModel):
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     screen_id: str
     sl_meta_sha256: str        # provenance: which pattern/meta produced this
     screen_resolution: PositiveIntPair
@@ -357,6 +387,8 @@ class CorrespondenceFile(BaseModel):
     # Detection provenance: the screen ROI actually used (auto-derived or manual).
     # Optional so old corr.json still validate; reconstruct ignores it.
     screen_roi: tuple[int, int, int, int] | None = None
+    # v2 decode-quality summary; None on v1 files.
+    quality: CorrQualitySummary | None = None
     points: list[CorrespondencePoint]
 
 

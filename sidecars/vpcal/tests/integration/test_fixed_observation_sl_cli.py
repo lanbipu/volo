@@ -85,7 +85,7 @@ def _run_ok(*args) -> dict:
 class _TwoScreenScene:
     """A ~50deg dihedral two-screen fixed observation with known ground truth."""
 
-    def __init__(self, seed: int = 0, noise_px: float = 0.1):
+    def __init__(self, seed: int = 0, noise_px: float = 0.1, grid: tuple[int, int] = (8, 8)):
         self.screen_a = _plane_screen("A", 3400.0, 2200.0, [0, 0, 0], [0, 0, 1], 0.0)
         self.screen_b = _plane_screen("B", 3400.0, 2200.0, [1400, 900, 0], [0, 0, 1], 50.0)
 
@@ -95,7 +95,7 @@ class _TwoScreenScene:
         self.rvec, _ = cv2.Rodrigues(self.R_cw)
         self.gt_fx = float(K[0, 0])
 
-        uv = _dot_grid(8, 8)
+        uv = _dot_grid(*grid)
         self.uv_by_screen = {"A": uv, "B": uv}
         self.world_by_screen = {
             "A": [self.screen_a.sections[0].uv_to_world(u, v) for (u, v) in uv],
@@ -108,7 +108,9 @@ class _TwoScreenScene:
         }
 
     def write_screen_target(self, tmp_path: Path, label: str, screen: ScreenDefinition, *,
-                             corrupt_sha: bool = False, wrong_screen_id: bool = False):
+                             corrupt_sha: bool = False, wrong_screen_id: bool = False,
+                             point_overrides: dict | None = None,
+                             default_point_fields: dict | None = None):
         scr_path = tmp_path / f"{label}.screen.json"
         scr_path.write_text(screen.model_dump_json(indent=2))
 
@@ -137,8 +139,20 @@ class _TwoScreenScene:
             sha = "0" * 64
 
         px = self.pixel_by_screen[label]
-        points = [{"id": i, "u": dots[i]["u"], "v": dots[i]["v"],
-                   "x": float(px[i, 0]), "y": float(px[i, 1])} for i in range(len(uv_pts))]
+        points = []
+        for i in range(len(uv_pts)):
+            pt = {"id": i, "u": dots[i]["u"], "v": dots[i]["v"],
+                  "x": float(px[i, 0]), "y": float(px[i, 1])}
+            if default_point_fields:
+                pt.update(default_point_fields)
+            ov = (point_overrides or {}).get(i)
+            if ov:
+                pt["x"] += float(ov.get("dx", 0.0))
+                pt["y"] += float(ov.get("dy", 0.0))
+                for k in ("confidence", "sigma_px"):
+                    if k in ov:
+                        pt[k] = ov[k]
+            points.append(pt)
         corr = {
             "schema_version": 1,
             "screen_id": "WRONG" if wrong_screen_id else label,
@@ -188,6 +202,129 @@ class TestFixedObservationSlCLI:
         assert out_path.exists()
         on_disk = json.loads(out_path.read_text())
         assert on_disk["schema_version"] == "fixed_observation_result.v1"
+
+        # SL spec §7.3 bars, recorded and passing on this dense fixture.
+        sl_gates = result["qualification"]["sl_gates"]
+        assert sl_gates["passed"] is True
+        g = sl_gates["gates"]
+        assert g["decoded_total"]["value"] == 128
+        assert g["withheld_rms_per_screen"]["pass"] is True
+        assert set(g["withheld_rms_per_screen"]["value"]) == {"A", "B"}
+        assert g["homography_rms_undistorted"]["pass"] is True
+
+    def test_static_overlay_written_with_black_canvas_fallback(self, tmp_path):
+        """--static-overlay-out renders the validation overlay; a missing
+        --overlay-image background degrades softly to a black canvas."""
+        scene = _TwoScreenScene()
+        a = scene.write_screen_target(tmp_path, "A", scene.screen_a)
+        b = scene.write_screen_target(tmp_path, "B", scene.screen_b)
+        out_path = tmp_path / "fixed_observation_result.json"
+        overlay_path = tmp_path / "static_overlay.png"
+
+        result = _run_ok(
+            "--output", "json",
+            "tracker-free", "fixed-observation-sl",
+            "--screen-target", str(a[0]), str(a[1]), str(a[2]),
+            "--screen-target", str(b[0]), str(b[1]), str(b[2]),
+            "--camera-id", "test-cam",
+            "--out", str(out_path),
+            "--static-overlay-out", str(overlay_path),
+            "--overlay-image", str(tmp_path / "missing_frame.png"),
+        )["data"]
+
+        assert overlay_path.exists()
+        img = cv2.imread(str(overlay_path))
+        assert img is not None
+        assert (img.shape[1], img.shape[0]) == (CAMERA_W, CAMERA_H)
+
+        summary = result["validation"]["static_overlay"]
+        assert summary["path"] == str(overlay_path)
+        assert summary["count"] == 128
+        assert summary["rms_px"] < 0.5
+        assert summary["background"].startswith("black")
+
+    def test_sparse_decode_downgrades_to_informal(self, tmp_path):
+        """SL §7.3 count bars miss (6x6 = 36/screen, 72 total) while the
+        kernel's looser fail-closed gates still pass: the solve must succeed
+        and persist, but downgraded to informal with the failing gates named."""
+        scene = _TwoScreenScene(grid=(6, 6))
+        a = scene.write_screen_target(tmp_path, "A", scene.screen_a)
+        b = scene.write_screen_target(tmp_path, "B", scene.screen_b)
+        out_path = tmp_path / "fixed_observation_result.json"
+
+        result = _run_ok(
+            "--output", "json",
+            "tracker-free", "fixed-observation-sl",
+            "--screen-target", str(a[0]), str(a[1]), str(a[2]),
+            "--screen-target", str(b[0]), str(b[1]), str(b[2]),
+            "--camera-id", "test-cam",
+            "--out", str(out_path),
+        )["data"]
+
+        assert result["formal"] is False
+        assert result["qualification"]["passed"] is False
+        sl_gates = result["qualification"]["sl_gates"]
+        assert sl_gates["passed"] is False
+        for name in ("decoded_total", "decoded_per_screen", "trustworthy_total"):
+            assert name in sl_gates["failed"]
+        # The informal artifact IS persisted (diagnosis, never promoted).
+        assert out_path.exists()
+        assert json.loads(out_path.read_text())["qualification"]["passed"] is False
+
+    def test_wrong_relative_screen_geometry_fails_closed(self, tmp_path):
+        """Spec §12.2 case 4: each screen's data is self-consistent but the
+        relative placement is wrong (B shifted 40mm) — the solve must fail
+        closed (withheld / observability / consistency), and write nothing."""
+        scene = _TwoScreenScene()
+        bad_b = _plane_screen("B", 3400.0, 2200.0, [1440, 900, 0], [0, 0, 1], 50.0)
+        a = scene.write_screen_target(tmp_path, "A", scene.screen_a)
+        b = scene.write_screen_target(tmp_path, "B", bad_b)
+        out_path = tmp_path / "fixed_observation_result.json"
+
+        r = _run(
+            "--output", "json",
+            "tracker-free", "fixed-observation-sl",
+            "--screen-target", str(a[0]), str(a[1]), str(a[2]),
+            "--screen-target", str(b[0]), str(b[1]), str(b[2]),
+            "--camera-id", "test-cam",
+            "--out", str(out_path),
+        )
+        assert r.returncode != 0
+        assert not out_path.exists()
+
+    def test_known_lens_extrinsics_records_withheld_and_downgrades_small_sets(self, tmp_path):
+        """Known-lens (extrinsics-only) path: the SL layer must run its own
+        spatial-block holdout (the kernel path has none) and record it; a
+        single 64-dot screen misses the §7.3 total bars → informal, exit 0."""
+        scene = _TwoScreenScene()
+        a = scene.write_screen_target(tmp_path, "A", scene.screen_a)
+        lens_path = tmp_path / "master.lens.json"
+        lens_path.write_text(json.dumps({
+            "fx": 1600.0, "fy": 1600.0, "cx": 960.0, "cy": 540.0,
+            "dist_coeffs": [0, 0, 0, 0, 0], "image_size": [CAMERA_W, CAMERA_H],
+            "is_master": True, "calibration_kind": "multi_view_intrinsics",
+            "num_images": 12, "num_points": 500, "rms": 0.3,
+        }))
+        out_path = tmp_path / "fixed_observation_result.json"
+
+        result = _run_ok(
+            "--output", "json",
+            "tracker-free", "fixed-observation-sl",
+            "--screen-target", str(a[0]), str(a[1]), str(a[2]),
+            "--mode", "known-lens", "--lens", str(lens_path),
+            "--camera-id", "test-cam",
+            "--out", str(out_path),
+        )["data"]
+
+        assert result["solve_kind"] == "fixed_extrinsics_only"
+        sl_gates = result["qualification"]["sl_gates"]
+        wh = sl_gates["gates"]["withheld_rms_px"]
+        assert wh["value"] is not None and wh["value"] < 1.5
+        assert sl_gates["gates"]["homography_rms_undistorted"]["pass"] is True
+        assert "decoded_total" in sl_gates["failed"]
+        assert result["formal"] is False
+        assert result["qualification"]["passed"] is False
+        assert out_path.exists()
 
     def test_dry_run_reports_per_screen_correspondence_counts(self, tmp_path):
         scene = _TwoScreenScene()
@@ -278,3 +415,74 @@ class TestFixedObservationSlCLI:
         assert r.returncode != 0
         envelope = json.loads(r.stdout)
         assert "camera_image_size" in envelope["error"]["message"]
+
+    def test_low_confidence_outliers_do_not_degrade_weighted_solve(self, tmp_path):
+        """corr v2 confidence feeds the solve as per-point weights: a handful
+        of badly-localized dots flagged with confidence 0.1 must not drag the
+        recovered focal off ground truth."""
+        scene = _TwoScreenScene()
+        bad = {i: {"dx": 8.0, "dy": -6.0, "confidence": 0.1} for i in (5, 20, 41)}
+        a = scene.write_screen_target(tmp_path, "A", scene.screen_a, point_overrides=bad)
+        b = scene.write_screen_target(tmp_path, "B", scene.screen_b)
+        out_path = tmp_path / "fixed_observation_result.json"
+
+        result = _run_ok(
+            "--output", "json",
+            "tracker-free", "fixed-observation-sl",
+            "--screen-target", str(a[0]), str(a[1]), str(a[2]),
+            "--screen-target", str(b[0]), str(b[1]), str(b[2]),
+            "--camera-id", "test-cam",
+            "--out", str(out_path),
+        )["data"]
+
+        fx = result["session_lens"]["K"][0][0]
+        assert fx == pytest.approx(scene.gt_fx, rel=0.01)
+        # Corrupt points sit below the trustworthy confidence floor.
+        g = result["qualification"]["sl_gates"]["gates"]
+        assert g["trustworthy_total"]["value"] == 128 - 3
+
+    def test_sigma_double_gate_fails_closed_on_jittery_decode(self, tmp_path):
+        """§7.3 sigma gates: a decode whose measured centroid jitter has median
+        above 0.25px must be downgraded to informal, with the gate named."""
+        scene = _TwoScreenScene()
+        a = scene.write_screen_target(
+            tmp_path, "A", scene.screen_a, default_point_fields={"sigma_px": 0.3})
+        b = scene.write_screen_target(
+            tmp_path, "B", scene.screen_b, default_point_fields={"sigma_px": 0.3})
+        out_path = tmp_path / "fixed_observation_result.json"
+
+        result = _run_ok(
+            "--output", "json",
+            "tracker-free", "fixed-observation-sl",
+            "--screen-target", str(a[0]), str(a[1]), str(a[2]),
+            "--screen-target", str(b[0]), str(b[1]), str(b[2]),
+            "--camera-id", "test-cam",
+            "--out", str(out_path),
+        )["data"]
+
+        sl_gates = result["qualification"]["sl_gates"]
+        assert "sigma_median_px" in sl_gates["failed"]
+        assert "sigma_p95_px" not in sl_gates["failed"]   # 0.3 < 0.5
+        assert result["formal"] is False
+        assert result["qualification"]["passed"] is False
+
+    def test_sigma_gates_not_applicable_without_measurement(self, tmp_path):
+        """v1 corr files (no sigma) record the sigma gates as value=None and
+        pass — not-applicable, with the reason discoverable upstream in
+        corr.quality.sigma_source."""
+        scene = _TwoScreenScene()
+        a = scene.write_screen_target(tmp_path, "A", scene.screen_a)
+        b = scene.write_screen_target(tmp_path, "B", scene.screen_b)
+
+        result = _run_ok(
+            "--output", "json",
+            "tracker-free", "fixed-observation-sl",
+            "--screen-target", str(a[0]), str(a[1]), str(a[2]),
+            "--screen-target", str(b[0]), str(b[1]), str(b[2]),
+            "--camera-id", "test-cam",
+            "--out", str(tmp_path / "out.json"),
+        )["data"]
+
+        g = result["qualification"]["sl_gates"]["gates"]
+        assert g["sigma_median_px"]["value"] is None and g["sigma_median_px"]["pass"]
+        assert g["sigma_p95_px"]["value"] is None and g["sigma_p95_px"]["pass"]

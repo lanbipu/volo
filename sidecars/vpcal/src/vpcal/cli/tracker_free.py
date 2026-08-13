@@ -769,6 +769,11 @@ def fixed_observation_cmd(
               help="Output fixed_observation_result.v1 JSON.")
 @click.option("--stage-pose-out", "stage_pose_out", type=click.Path(), default=None,
               help="Optional volo_stage_pose.v2-compatible mirror for AR/export consumers.")
+@click.option("--static-overlay-out", "static_overlay_out", type=click.Path(), default=None,
+              help="Optional static-validation overlay PNG (measured vs reprojected dots).")
+@click.option("--overlay-image", "overlay_image", type=click.Path(), default=None,
+              help="Optional capture frame as the overlay background; missing or "
+                   "size-mismatched files fall back to a black canvas (soft).")
 @common_options
 @click.pass_context
 def fixed_observation_sl_cmd(
@@ -783,6 +788,8 @@ def fixed_observation_sl_cmd(
     weak_focal_px,
     out_path,
     stage_pose_out,
+    static_overlay_out,
+    overlay_image,
     **flags,
 ) -> None:
     """Structured-light fixed single-observation solve: known-lens extrinsics or
@@ -809,12 +816,15 @@ def fixed_observation_sl_cmd(
             make_attest_timestamp,
             solve_fixed_observation,
         )
+        from vpcal.core.sl_gates import evaluate_sl_gates
         from vpcal.io.screen_io import load_screen
 
         correspondences: list[Correspondence] = []
+        sigma_by_point: list[float | None] = []   # aligns 1:1 with correspondences
         screen_normals: dict[str, tuple[float, float, float]] = {}
         image_sizes: set[tuple[int, int]] = set()
         decoded_total = 0
+        decoded_per_screen: dict[str, int] = {}
 
         for screen_path, sl_meta_path, corr_path in screen_targets:
             screen = load_screen(screen_path)
@@ -858,6 +868,7 @@ def fixed_observation_sl_cmd(
 
             image_sizes.add(tuple(int(v) for v in corr["camera_image_size"]))
             decoded_total += len(corr["points"])
+            decoded_per_screen[label] = decoded_per_screen.get(label, 0) + len(corr["points"])
             for pt in corr["points"]:
                 dot_id = int(pt["id"])
                 px = dot_px.get(dot_id)
@@ -871,15 +882,20 @@ def fixed_observation_sl_cmd(
                 u_frac = (u_px + 0.5) / width_px
                 v_frac = 1.0 - (v_px + 0.5) / height_px
                 world = section.uv_to_world(u_frac, v_frac)
+                # corr schema v2 carries per-dot decoder confidence + temporal
+                # sigma; v1 files default to neutral (confidence 1, sigma None).
+                confidence = float(pt.get("confidence", 1.0) or 1.0)
+                raw_sigma = pt.get("sigma_px")
                 correspondences.append(
                     Correspondence(
                         world_mm=(float(world[0]), float(world[1]), float(world[2])),
                         pixel_uv=(float(pt["x"]), float(pt["y"])),
                         screen_label=label,
-                        quality=1.0,
+                        quality=confidence,
                         point_id=f"{label}:{dot_id}",
                     )
                 )
+                sigma_by_point.append(None if raw_sigma is None else float(raw_sigma))
 
         if not correspondences:
             raise ArgumentError("no usable structured-light correspondences across any screen target")
@@ -908,6 +924,7 @@ def fixed_observation_sl_cmd(
             known_lens=known if use_known else None,
             weak_focal_guess_px=weak_focal_px,
             formal=True,
+            weight_by_quality=True,
         )
         if flags.get("dry_run"):
             per_screen = {
@@ -935,6 +952,33 @@ def fixed_observation_sl_cmd(
         # unlike VP-QSP's detection funnel. Report what is actually known.
         result.detection["decoded"] = decoded_total
         result.detection["matched"] = len(correspondences)
+        # SL spec §7.3 bars are stricter than the kernel's fail-closed gates:
+        # a miss downgrades the artifact to informal (persisted for diagnosis,
+        # never promoted) instead of refusing the write outright.
+        sl_gates = evaluate_sl_gates(
+            result,
+            correspondences,
+            (width, height),
+            decoded_total=decoded_total,
+            decoded_per_screen=decoded_per_screen,
+            sigma_px=sigma_by_point,
+        )
+        result.qualification["sl_gates"] = sl_gates
+        if not sl_gates["passed"]:
+            result.qualification["passed"] = False
+            result.qualification["failed"] = sl_gates["failed"]
+            result.qualification["formal"] = False
+            result.formal = False
+        if static_overlay_out:
+            from vpcal.core.sl_overlay import render_sl_static_overlay
+
+            result.validation["static_overlay"] = render_sl_static_overlay(
+                result,
+                correspondences,
+                (width, height),
+                static_overlay_out,
+                background_image=overlay_image,
+            )
         return _finalize_fixed_observation_result(
             result, command_label="fixed-observation-sl", out_path=out_path,
             stage_pose_out=stage_pose_out, fallback_image_size=inp.image_size,

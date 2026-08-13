@@ -93,3 +93,59 @@ def test_absent_cabinet_gets_no_dots(tmp_path):
     meta = json.loads((tmp_path / "sl" / "sl_meta.json").read_text())
     # no dot lands in the absent right-half cabinet (u >= 480)
     assert all(d["u"] < 480 for d in meta["dots"])
+
+
+# ---- camera-aware dot layout planner (SL spec §4.2) ----
+
+from lmt_vba_sidecar.structured_light import plan_dot_layout
+
+
+def test_planner_hits_target_count_when_unconstrained():
+    plan = plan_dot_layout(screen_resolution=(3400, 2200),
+                           projected_screen_px=(3400.0, 2200.0))
+    assert 60 <= plan["expected_dots"] <= 160          # ~target 100
+    assert plan["dot_spacing_px"] >= 4 * plan["dot_radius_px"] + 2
+    assert plan["camera_dot_radius_px"] >= 2.0
+
+
+def test_planner_grows_dots_for_distant_screen_and_yields_count():
+    """A screen tiny in frame (scale 0.1 cam px per screen px) needs bigger
+    dots to stay resolvable; the merge floor (4r+2) then binds and the count
+    target yields — the dark-gap rule never does."""
+    plan = plan_dot_layout(screen_resolution=(200, 200),
+                           projected_screen_px=(20.0, 20.0))
+    assert plan["dot_radius_px"] == 5                  # capped at min(W,H)//40
+    assert plan["dot_spacing_px"] == 4 * plan["dot_radius_px"] + 2
+    assert plan["expected_dots"] < 100                 # count yielded to the floor
+
+
+def test_planner_radius_floor_is_three_screen_px():
+    plan = plan_dot_layout(screen_resolution=(4000, 4000),
+                           projected_screen_px=(8000.0, 8000.0))   # magnified
+    assert plan["dot_radius_px"] == 3
+
+
+def test_generate_uses_plan_and_explicit_fields_still_win(tmp_path):
+    base = {
+        "command": "generate_structured_light", "version": 1,
+        "project": {"screen_id": "P",
+                    "cabinet_array": {"cols": 1, "rows": 1, "absent_cells": [],
+                                      "cabinet_size_mm": [500, 500]}},
+        "screen_resolution": [960, 540],
+    }
+    planned = GenerateStructuredLightInput.model_validate(
+        {**base, "output_dir": str(tmp_path / "a"),
+         "projected_screen_px": [96.0, 54.0]})         # far: scale 0.1
+    assert run_generate_structured_light(planned) == 0
+    meta = json.loads((tmp_path / "a" / "sl_meta.json").read_text())
+    expect = plan_dot_layout(screen_resolution=(960, 540),
+                             projected_screen_px=(96.0, 54.0))
+    assert meta["dot_radius_px"] == expect["dot_radius_px"] != 6
+
+    overridden = GenerateStructuredLightInput.model_validate(
+        {**base, "output_dir": str(tmp_path / "b"),
+         "projected_screen_px": [96.0, 54.0], "dot_spacing_px": 200})
+    assert run_generate_structured_light(overridden) == 0
+    meta_b = json.loads((tmp_path / "b" / "sl_meta.json").read_text())
+    us = sorted({d["u"] for d in meta_b["dots"]})
+    assert us[1] - us[0] == 200                        # explicit spacing wins

@@ -465,6 +465,7 @@ fn generate_structured_light(
                 margin,
                 emit_tiff_seq,
                 screen_mapping.map(Path::new),
+                None, // projected_screen_px: CLI 无 live preview，无估计来源
             ) {
                 Ok(r) => output::ok(mode, r, |p| {
                     let _ = writeln!(

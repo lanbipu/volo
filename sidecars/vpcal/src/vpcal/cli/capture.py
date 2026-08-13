@@ -260,12 +260,15 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
           allow_hx, duration_s, max_frames, out_dir, **flags) -> None:
     """[C1.2] Capture a video stream (synthetic / uvc / ndi / decklink).
 
-    Accepts one JSON control line on stdin: ``{"cmd": "finish"}`` — closes the
+    Accepts JSON control lines on stdin: ``{"cmd": "finish"}`` — closes the
     device, flushes ``frames.jsonl``, and returns the normal ``result`` event
     (exit 0) instead of relying on the bridge's cancel-then-kill fallback
     (``sidecar_stream.rs`` DEFAULT_CANCEL_GRACE), which cannot guarantee the
     last frame/manifest write landed before the process is killed. stdin EOF
     is equivalent to finish (same convention as ``capture stills``).
+    ``{"cmd": "status"}`` replies with a ``status`` event carrying the current
+    frame count — a race-free probe for hosts that attach their event listener
+    after spawn and may have missed ``first_frame_written``.
     """
 
     def body(emitter: StreamEmitter) -> OperationOutput:
@@ -297,6 +300,9 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
         # its requested duration/frame count, not exit after the first EOF.
         finish = threading.Event()
         implicit_finish_on_eof = duration_s == 0 and preview_port is not None
+        # Initialized before the control thread starts: _stdin_pump's status
+        # handler reads it, and a status probe can arrive arbitrarily early.
+        n = 0
 
         def _stdin_pump() -> None:
             try:
@@ -314,6 +320,9 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
                     if isinstance(msg, dict) and msg.get("cmd") == "finish":
                         finish.set()
                         return
+                    if isinstance(msg, dict) and msg.get("cmd") == "status":
+                        emitter.emit("status", {"frames": n})
+                        continue
                     emitter.emit("warning", {"message": f"unknown control cmd: {msg}"})
             except Exception:
                 pass
@@ -327,7 +336,6 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
         if out:
             out.mkdir(parents=True, exist_ok=True)
             manifest_fh = (out / "frames.jsonl").open("w", encoding="utf-8")
-        n = 0
         source_info = None
         t0 = time.monotonic()
         last_report = t0
@@ -353,6 +361,12 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
                         "fps_nominal": fps or frame.meta.get("frame_rate"),
                     }, ensure_ascii=False) + "\n")
                     manifest_fh.flush()
+                    if n == 0:
+                        # Recording is verifiably rolling: hosts gate playback
+                        # start on this (SL sentinel soft-sync needs the first
+                        # sentinel frame captured, not merely the device open).
+                        emitter.emit("first_frame_written",
+                                     {"path": str(out / f"{n:06d}.png")})
                 n += 1
                 now = time.monotonic()
                 if now - last_report >= 1.0:

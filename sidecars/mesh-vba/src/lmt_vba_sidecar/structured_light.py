@@ -30,6 +30,56 @@ from lmt_vba_sidecar.sl_codec import build_dots_in_rect, data_bits_for, encode_i
 ATOMIC_BACKUP_SUFFIX = ".lmt-sl-old"
 
 
+def plan_dot_layout(
+    *,
+    screen_resolution: tuple[int, int],
+    projected_screen_px: tuple[float, float],
+    target_dots: int = 100,
+    min_camera_dot_radius_px: float = 2.0,
+    decode_yield: float = 0.75,
+) -> dict:
+    """Camera-aware dot layout (SL spec §4.2, sequential per-screen capture).
+
+    Given how large the screen appears in the CAMERA (``projected_screen_px``,
+    its bounding box in camera pixels — a live-preview estimate), choose
+    dot_radius / spacing / margin in SCREEN pixels such that:
+      - each dot subtends >= ``min_camera_dot_radius_px`` in the camera (the
+        sub-pixel weighted centroid needs a resolvable blob);
+      - anchor neighbours keep a dark gap >= one dot diameter
+        (spacing >= 4*r+2 — the decoder's blob-merge floor, see the per-cabinet
+        auto-derive note in run_generate_structured_light);
+      - the grid PLANS for ``target_dots / decode_yield`` placed dots so that
+        ``target_dots`` survive real-world decode losses (defocus, oblique
+        far sides, occlusion — the spec targets >= 100 DECODED per screen;
+        the formal floor is 40). When the merge floor binds, count yields,
+        never the gap.
+
+    ``expected_dots`` is a single-rect estimate; multi-cabinet layouts tile
+    per cabinet, so the realized count can differ slightly.
+    """
+    W, H = int(screen_resolution[0]), int(screen_resolution[1])
+    pw, ph = float(projected_screen_px[0]), float(projected_screen_px[1])
+    # Camera px per screen px, isotropic estimate from the tighter axis.
+    scale = max(min(pw / max(W, 1), ph / max(H, 1)), 1e-6)
+    r = int(np.ceil(min_camera_dot_radius_px / scale))
+    r = int(np.clip(r, 3, max(3, min(W, H) // 40)))
+    margin = max(r + 1, int(round(min(W, H) / 16)))
+    usable_w, usable_h = max(W - 2 * margin, 1), max(H - 2 * margin, 1)
+    planned = max(target_dots, 1) / min(max(decode_yield, 0.1), 1.0)
+    s_target = int(np.floor(np.sqrt(usable_w * usable_h / planned)))
+    spacing = max(4 * r + 2, s_target)
+    nu = usable_w // spacing + 1
+    nv = usable_h // spacing + 1
+    return {
+        "dot_radius_px": int(r),
+        "dot_spacing_px": int(spacing),
+        "margin_px": int(margin),
+        "expected_dots": int(nu * nv),
+        "camera_px_per_screen_px": float(scale),
+        "camera_dot_radius_px": float(r * scale),
+    }
+
+
 def _draw_dots(w: int, h: int, dots, lit_ids: set[int], radius: int) -> np.ndarray:
     img = np.zeros((h, w), dtype=np.uint8)
     for (did, u, v) in dots:
@@ -76,13 +126,35 @@ def run_generate_structured_light(cmd: GenerateStructuredLightInput) -> int:
     # spacing/margin auto-derive PER CABINET from its own pixel rect when not given
     # explicitly, so heterogeneous / any-resolution cabinets each fill correctly
     # (~8x8 grid) with zero tuning. dot_radius floors keep dots from clipping/merging.
+    # Camera-aware plan (when the caller supplied a projection estimate): its
+    # radius replaces the request default and its spacing (a screen-global
+    # density) becomes the fallback; margin stays per-cabinet (see below).
+    # Explicit per-field overrides still beat both.
+    plan = None
+    if cmd.projected_screen_px is not None:
+        plan = plan_dot_layout(
+            screen_resolution=(w, h),
+            projected_screen_px=(cmd.projected_screen_px[0], cmd.projected_screen_px[1]),
+        )
+    eff_radius = plan["dot_radius_px"] if plan else cmd.dot_radius_px
+
     dots: list[tuple[int, int, int]] = []
     dot_cabinet: dict[int, tuple[int, int]] = {}
     for s in specs:
         rect = tuple(int(v) for v in s["input_rect_px"])
         rmin = min(rect[2], rect[3])
+        # Margin is a PER-RECT inset. The camera-aware plan sizes its margin
+        # for the WHOLE screen canvas (min(W,H)/16), so applying it to every
+        # cabinet rect carves most (or all) of a small cabinet away — a dense
+        # cabinet array then yields ~0 dots and generation aborts. Under a
+        # plan, derive the margin per cabinet from the PLANNED radius (same
+        # formula as the auto path), clamped so the rect keeps a nonempty dot
+        # lattice even when the planned radius rivals the cabinet size. For a
+        # single-rect screen this equals the plan's own margin.
         eff_margin = (cmd.margin_px if cmd.margin_px is not None
-                      else max(cmd.dot_radius_px + 1, round(rmin / 16)))
+                      else (min(max(eff_radius + 1, round(rmin / 16)),
+                                max(0, (rmin - 1) // 2)) if plan
+                            else max(eff_radius + 1, round(rmin / 16))))
         # Spacing floor = 2x dot diameter (4*r+2), i.e. a dark gap of at least one
         # dot diameter between neighbours. Pure non-overlap (2*r+2) is NOT enough:
         # adjacent dots that merely touch on the pristine frame fuse into one blob
@@ -90,7 +162,8 @@ def run_generate_structured_light(cmd: GenerateStructuredLightInput) -> int:
         # the all-on anchor with a fixed binarize + connectedComponents (no blob
         # splitting), so merged dots silently drop from the correspondence set.
         eff_spacing = (cmd.dot_spacing_px if cmd.dot_spacing_px is not None
-                       else max(4 * cmd.dot_radius_px + 2, round(rmin / 8)))
+                       else (plan["dot_spacing_px"] if plan
+                             else max(4 * eff_radius + 2, round(rmin / 8))))
         cab_dots = build_dots_in_rect(rect=rect, spacing_px=eff_spacing,
                                       margin_px=eff_margin, id_start=len(dots))
         for (did, u, v) in cab_dots:
@@ -121,8 +194,8 @@ def run_generate_structured_light(cmd: GenerateStructuredLightInput) -> int:
 
     try:
         white = np.full((h, w), 255, dtype=np.uint8)
-        anchor = _draw_dots(w, h, dots, all_ids, cmd.dot_radius_px)
-        logical = [white, anchor] + [_draw_dots(w, h, dots, lit_by_bit[b], cmd.dot_radius_px)
+        anchor = _draw_dots(w, h, dots, all_ids, eff_radius)
+        logical = [white, anchor] + [_draw_dots(w, h, dots, lit_by_bit[b], eff_radius)
                                      for b in range(total_bits)] + [white]
         for i, img in enumerate(logical):
             cv2.imwrite(str(frames_dir / f"frame_{i:04d}.png"), img)
@@ -153,7 +226,7 @@ def run_generate_structured_light(cmd: GenerateStructuredLightInput) -> int:
             "schema_version": 1,
             "screen_id": cmd.project.screen_id,
             "screen_resolution": [w, h],
-            "dot_radius_px": cmd.dot_radius_px,
+            "dot_radius_px": eff_radius,
             "code": {"data_bits": db, "total_bits": total_bits, "parity": "even", "encoding": "binary"},
             "sequence": {"sentinel": "white_full", "anchor": "all_on",
                          "n_code_frames": total_bits, "hold_ms": cmd.hold_ms, "fps": cmd.fps},

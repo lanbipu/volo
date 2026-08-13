@@ -152,18 +152,38 @@ def segment_code_region(frames: list[np.ndarray], *, sentinel_threshold: float,
         x, y, w, h = roi
         return f[y:y + h, x:x + w]
     mb = np.array([float(_crop(f).mean()) for f in frames])
-    bright = mb > sentinel_threshold * frames_full_scale(frames)
-    runs: list[tuple[int, int]] = []          # contiguous bright runs = sentinels
-    i, n = 0, len(frames)
-    while i < n:
-        if bright[i]:
-            j = i
-            while j < n and bright[j]:
-                j += 1
-            runs.append((i, j))
-            i = j
-        else:
-            i += 1
+
+    def _bright_runs(cut: float) -> list[tuple[int, int]]:
+        bright = mb > cut
+        found: list[tuple[int, int]] = []     # contiguous bright runs = sentinels
+        i, n = 0, len(frames)
+        while i < n:
+            if bright[i]:
+                j = i
+                while j < n and bright[j]:
+                    j += 1
+                found.append((i, j))
+                i = j
+            else:
+                i += 1
+        return found
+
+    full_scale = frames_full_scale(frames)
+    runs = _bright_runs(sentinel_threshold * full_scale)
+    if len(runs) < 2:
+        # Oblique screens: the ROI is the projected quad's BOUNDING BOX, whose
+        # corners are off-screen black — a white sentinel then fills only the
+        # quad (ROI mean ≈ fill_ratio × full scale) and can miss the absolute
+        # cut. Retry relative to the clip's brightest frame (the sentinel
+        # itself): anchor/code frames are sparse dots, far dimmer.
+        # Absolute floor on the brightest frame: a real sentinel filling even a
+        # modest fraction of the bbox clears 0.3×full scale, while a clip with
+        # NO sentinel at all (recording started late / clipped) has only sparse
+        # dot frames — without the floor, 0.75×max would then latch onto anchor
+        # plateaus or AE pumping and silently mis-segment instead of raising.
+        rel_cut = 0.75 * float(mb.max())
+        if rel_cut > 0.0 and float(mb.max()) >= 0.3 * full_scale:
+            runs = _bright_runs(rel_cut)
     if len(runs) < 2:
         raise ValueError("could not find two white sentinel frames")
     s = runs[0][1]      # first frame after the first sentinel run
@@ -173,21 +193,23 @@ def segment_code_region(frames: list[np.ndarray], *, sentinel_threshold: float,
     return s, e
 
 
-def index_plateaus(region: list[np.ndarray], *, expected: int,
-                   roi: tuple[int, int, int, int] | None = None) -> list[int]:
-    """Split into `expected` plateaus; return the middle index of each. Raises if
-    the count != expected. `expected` == total_bits + 1 (anchor + code frames).
+def index_plateau_segments(region: list[np.ndarray], *, expected: int,
+                           roi: tuple[int, int, int, int] | None = None,
+                           ) -> list[tuple[int, int]]:
+    """Split into `expected` plateaus; return each plateau's (start, end) span
+    (end exclusive) within `region`. Raises if the count != expected.
+    `expected` == total_bits + 1 (anchor + code frames).
 
     Two input shapes:
       - canonical frames dir (1:1, no playback holds): len(region) == expected,
-        so each frame is its own plateau.
+        so each frame is its own one-frame plateau.
       - recorded video (each logical frame held over many camera frames): group
         by CHANGED-PIXEL COUNT, not global mean — a sparse dot pattern barely
         moves the global mean, but a transition flips many dot pixels at once."""
     if not region:
         raise ValueError("empty code region")
     if len(region) == expected:
-        return list(range(len(region)))
+        return [(i, i + 1) for i in range(len(region))]
     def _crop(f: np.ndarray) -> np.ndarray:
         if roi is None:
             return f
@@ -202,7 +224,14 @@ def index_plateaus(region: list[np.ndarray], *, expected: int,
     segs = [(bounds[k], bounds[k + 1]) for k in range(len(bounds) - 1) if bounds[k + 1] > bounds[k]]
     if len(segs) != expected:
         raise ValueError(f"expected {expected} plateaus (anchor + code), found {len(segs)}")
-    return [(a + b) // 2 for (a, b) in segs]
+    return segs
+
+
+def index_plateaus(region: list[np.ndarray], *, expected: int,
+                   roi: tuple[int, int, int, int] | None = None) -> list[int]:
+    """Middle frame index of each plateau (see index_plateau_segments)."""
+    return [(a + b) // 2
+            for (a, b) in index_plateau_segments(region, expected=expected, roi=roi)]
 
 
 def _weighted_dot_center(crop: np.ndarray, labels: np.ndarray, label_id: int,
@@ -253,11 +282,15 @@ def _weighted_dot_center(crop: np.ndarray, labels: np.ndarray, label_id: int,
             float((weight * ys).sum() / total))
 
 
-def _seed_dots(anchor: np.ndarray, *, roi: tuple[int, int, int, int],
-               dot_radius_px: int) -> list[tuple[float, float]]:
+def _seed_dots_meta(anchor: np.ndarray, *, roi: tuple[int, int, int, int],
+                    dot_radius_px: int,
+                    screen_resolution: tuple[int, int] | None = None) -> list[dict]:
     """Pass 3.1-3.2: Otsu-threshold the all-on anchor WITHIN the ROI (so id=0 is
     seeded too), keep round components sized like a dot. Returns frame-coords
-    sub-pixel centers. Adaptive threshold (not global 128) catches dim/oblique
+    sub-pixel centers with per-seed metadata records
+    ``{"x", "y", "r_obs", "roi_clipped"}`` (observed blob radius from its area;
+    whether the blob sat against the ROI boundary and used the binary-centroid
+    fallback). Adaptive threshold (not global 128) catches dim/oblique
     dots; the ROI excludes off-screen bright clutter.
 
     Detection (threshold + components + shape filters) decides WHICH dots and HOW
@@ -268,6 +301,18 @@ def _seed_dots(anchor: np.ndarray, *, roi: tuple[int, int, int, int],
     unchanged (and _read_bits_relative rounds the seed to a whole pixel anyway)."""
     x, y, w, h = roi
     crop = anchor[y:y + h, x:x + w]
+    # Scale-aware expected blob size: the pattern's dot radius is in SCREEN
+    # pixels, but the blobs being filtered live in CAMERA pixels. The ROI is
+    # the screen's camera-space bounding box, so roi/screen_resolution gives a
+    # scale estimate (the min of the two axes leans toward the foreshortened
+    # far side of an oblique screen; the 9x area ceiling absorbs the near
+    # side). screen_resolution=None keeps the historical scale=1 behavior for
+    # captures whose camera frame IS the pattern canvas (unit fixtures).
+    if screen_resolution is not None:
+        dot_radius_cam = max(1.5, float(dot_radius_px)
+                             * _screen_scale_estimate(roi, screen_resolution))
+    else:
+        dot_radius_cam = float(dot_radius_px)
     # Otsu (cv2) only takes 8-bit input: build the DETECTION mask from an 8-bit
     # rescale, but keep the weighted-centroid crop at native depth — that is
     # where the 10-bit precision pays (FIX-14). Detection only decides WHICH
@@ -280,7 +325,7 @@ def _seed_dots(anchor: np.ndarray, *, roi: tuple[int, int, int, int],
     _t, bw = cv2.threshold(crop8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     n, labels, stats, cent = cv2.connectedComponentsWithStats(bw, connectivity=8)
     cropf = crop.astype(np.float64)
-    r = float(dot_radius_px)
+    r = dot_radius_cam
     area_lo, area_hi = 0.25 * np.pi * r * r, 9.0 * np.pi * r * r
     side_hi = 6.0 * r
     pad = max(1, int(round(r)))
@@ -296,7 +341,7 @@ def _seed_dots(anchor: np.ndarray, *, roi: tuple[int, int, int, int],
     sd = max(1, min(int(round(r / 2)), 3))
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * sd + 1, 2 * sd + 1))
     crop_h, crop_w = crop.shape
-    out: list[tuple[float, float]] = []
+    out: list[dict] = []
     for i in range(1, n):
         bx, by = int(stats[i][0]), int(stats[i][1])
         cw, ch, area = int(stats[i][2]), int(stats[i][3]), int(stats[i][4])
@@ -304,6 +349,7 @@ def _seed_dots(anchor: np.ndarray, *, roi: tuple[int, int, int, int],
             continue
         if cw > side_hi or ch > side_hi:        # reject big/elongated blobs
             continue
+        r_obs = float(np.sqrt(area / np.pi))
         binary_center = (float(cent[i][0]), float(cent[i][1]))
         if bx < sd or by < sd or bx + cw + sd > crop_w or by + ch + sd > crop_h:
             # Core within the support radius of the ROI/crop edge: the weighting
@@ -311,16 +357,34 @@ def _seed_dots(anchor: np.ndarray, *, roi: tuple[int, int, int, int],
             # clipped side only, which biases the weighted centroid inward (it can
             # fall BELOW the binary baseline on the ROI-boundary ring). The binary
             # centroid is unbiased there, so use it for the perimeter dots.
-            out.append((binary_center[0] + x, binary_center[1] + y))
+            # NOT a hard reject: perimeter dots carry the edge coverage the
+            # formal gates need; the slight quality discount lives in confidence.
+            out.append({"x": binary_center[0] + x, "y": binary_center[1] + y,
+                        "r_obs": r_obs, "roi_clipped": True})
             continue
         cx, cy = _weighted_dot_center(
             cropf, labels, i, bx, by, cw, ch, pad, kernel, fallback=binary_center)
-        out.append((cx + x, cy + y))
+        out.append({"x": cx + x, "y": cy + y, "r_obs": r_obs, "roi_clipped": False})
     return out
 
 
-def _read_bits_relative(code_frames: list[np.ndarray], x: float, y: float,
-                        anchor: np.ndarray) -> list[int]:
+def _seed_dots(anchor: np.ndarray, *, roi: tuple[int, int, int, int],
+               dot_radius_px: int) -> list[tuple[float, float]]:
+    """Positions-only view of _seed_dots_meta (kept for tests/back-compat)."""
+    return [(sd["x"], sd["y"])
+            for sd in _seed_dots_meta(anchor, roi=roi, dot_radius_px=dot_radius_px)]
+
+
+def _screen_scale_estimate(roi: tuple[int, int, int, int],
+                           screen_resolution: tuple[int, int]) -> float:
+    """Camera px per screen px, from the ROI vs the pattern canvas."""
+    _x, _y, w, h = roi
+    sw, sh = int(screen_resolution[0]), int(screen_resolution[1])
+    return min(w / max(sw, 1), h / max(sh, 1))
+
+
+def _read_bits_with_margin(code_frames: list[np.ndarray], x: float, y: float,
+                           anchor: np.ndarray) -> tuple[list[int], float]:
     """Pass 3.3: read each code frame's on/off for the dot at (x,y) RELATIVE to
     that dot's own min/max across the code frames (not a global 128). Robustly
     handles dim/oblique dots whose lit level sits below the background.
@@ -344,9 +408,82 @@ def _read_bits_relative(code_frames: list[np.ndarray], x: float, y: float,
     lo, hi = min(samples), max(samples)
     if hi - lo < 1e-6:
         on_level = _patch(anchor)
-        return [1 if lo > on_level * 0.5 else 0] * len(samples)
+        # Margin of the constant-level decision: how far the constant sits
+        # from the half-anchor threshold, relative to that threshold.
+        denom = max(on_level * 0.5, 1e-6)
+        margin = min(1.0, abs(lo - on_level * 0.5) / denom)
+        return [1 if lo > on_level * 0.5 else 0] * len(samples), margin
     mid = (lo + hi) / 2.0
-    return [1 if s > mid else 0 for s in samples]
+    half = (hi - lo) / 2.0
+    # Worst per-bit decision margin: the sample closest to the threshold,
+    # normalized by the dot's own modulation half-range (1.0 = clean rail).
+    margin = min(abs(s - mid) for s in samples) / half
+    return [1 if s > mid else 0 for s in samples], margin
+
+
+def _read_bits_relative(code_frames: list[np.ndarray], x: float, y: float,
+                        anchor: np.ndarray) -> list[int]:
+    """Bits-only view of _read_bits_with_margin (kept for tests/back-compat)."""
+    return _read_bits_with_margin(code_frames, x, y, anchor)[0]
+
+
+#: Hard ceiling for centroid temporal jitter (px): a dot whose anchor-plateau
+#: centroid wanders beyond this is unusable for sub-pixel calibration.
+_SIGMA_REJECT_PX = 1.0
+
+
+def _local_weighted_centroid(frame: np.ndarray, x: float, y: float,
+                             r: float) -> tuple[float, float] | None:
+    """Lightweight per-frame centroid around a KNOWN seed (no component
+    labelling): window = seed ± max(3, 2r), border-median background
+    subtraction, negatives clamped, intensity-weighted mean. Used only for the
+    TEMPORAL STABILITY measurement (sigma_px) — the canonical dot position
+    stays _seed_dots_meta's support-masked centroid. A consistent neighbour
+    bias inside the window cancels in the frame-to-frame deviation."""
+    half = max(3, int(round(2 * r)))
+    ix, iy = int(round(x)), int(round(y))
+    y0, y1 = max(0, iy - half), min(frame.shape[0], iy + half + 1)
+    x0, x1 = max(0, ix - half), min(frame.shape[1], ix + half + 1)
+    win = frame[y0:y1, x0:x1].astype(np.float64)
+    if win.size < 9:
+        return None
+    border = np.concatenate([win[0, :], win[-1, :], win[:, 0], win[:, -1]])
+    weight = win - float(np.median(border))
+    np.clip(weight, 0.0, None, out=weight)
+    total = float(weight.sum())
+    if total <= 1e-6:
+        return None
+    ys, xs = np.mgrid[y0:y1, x0:x1]
+    return (float((weight * xs).sum() / total), float((weight * ys).sum() / total))
+
+
+def _anchor_sigma_px(anchor_frames: list[np.ndarray], seeds: list[dict],
+                     dot_radius_px: float) -> list[float | None] | None:
+    """Per-seed centroid temporal jitter across the anchor plateau.
+
+    ``dot_radius_px`` must be in CAMERA pixels (the seeds' space) — it sizes
+    the per-frame measurement window.
+
+    RMS deviation of the per-frame local centroid from its mean position, in
+    px. Needs >= 2 sampled anchor frames (a video capture holding the anchor);
+    the canonical 1-frame-per-plateau frames-dir path returns None (unknown,
+    NOT zero — the solver must treat missing sigma as neutral, not perfect)."""
+    if len(anchor_frames) < 2:
+        return None
+    r = float(dot_radius_px)
+    per_frame = [
+        [_local_weighted_centroid(f, sd["x"], sd["y"], r) for sd in seeds]
+        for f in anchor_frames
+    ]
+    out: list[float | None] = []
+    for j in range(len(seeds)):
+        pts = np.asarray([pf[j] for pf in per_frame if pf[j] is not None])
+        if len(pts) < 2:
+            out.append(None)
+            continue
+        dev = pts - pts.mean(axis=0)
+        out.append(float(np.sqrt(np.mean(np.sum(dev * dev, axis=1)))))
+    return out
 
 
 def run_decode_structured_light(cmd: DecodeStructuredLightInput) -> int:
@@ -392,44 +529,144 @@ def run_decode_structured_light(cmd: DecodeStructuredLightInput) -> int:
     # Pass 2: sentinel segmentation + plateau indexing, restricted to the ROI.
     try:
         s, e = segment_code_region(frames, sentinel_threshold=cmd.sentinel_threshold, roi=roi)
-        reps = index_plateaus(frames[s:e], expected=total_bits + 1, roi=roi)
+        segments = index_plateau_segments(frames[s:e], expected=total_bits + 1, roi=roi)
     except ValueError as exc:
         write_event(ErrorEvent(event="error", code="decode_failed", message=str(exc), fatal=True))
         return 1
 
+    reps = [(a + b) // 2 for (a, b) in segments]
     anchor = frames[s + reps[0]]
     code_frames = [frames[s + r] for r in reps[1:]]      # total_bits frames
 
     # Pass 3: seed in ROI (Otsu), filter by shape, read per-dot relative, decode.
-    seeds = _seed_dots(anchor, roi=roi, dot_radius_px=dot_radius_px)
+    seeds = _seed_dots_meta(anchor, roi=roi, dot_radius_px=dot_radius_px,
+                            screen_resolution=tuple(meta["screen_resolution"]))
+    # meta["dot_radius_px"] is in SCREEN pixels; everything downstream of the
+    # seeds (sigma window, debug circles) lives in CAMERA pixels — convert via
+    # the same ROI/canvas scale _seed_dots_meta uses, or a distant screen with
+    # a planner-grown radius (e.g. 8-20 screen px at scale 0.1) would get a
+    # jitter window spanning several neighbouring dots, making sigma measure a
+    # stable multi-dot blend and silently defeating the §7.3 sigma gates.
+    dot_radius_cam = max(1.5, float(dot_radius_px)
+                         * _screen_scale_estimate(roi, tuple(meta["screen_resolution"])))
     if cmd.emit_debug_image:
         dbg = np.zeros((cam_h, cam_w), dtype=np.uint8)
-        for (sx, sy) in seeds:
-            cv2.circle(dbg, (int(round(sx)), int(round(sy))), dot_radius_px, 255, -1)
+        for sd in seeds:
+            cv2.circle(dbg, (int(round(sd["x"])), int(round(sd["y"]))),
+                       max(1, int(round(dot_radius_cam))), 255, -1)
         cv2.imwrite(f"{cmd.output_path}.debug.png", dbg)
 
-    points = []
-    for (x, y) in seeds:
-        bits = _read_bits_relative(code_frames, x, y, anchor)
+    # Temporal jitter (sigma) from the anchor plateau's interior frames: a
+    # recorded video holds the anchor over several camera frames, so the
+    # centroid's frame-to-frame wander IS measurable; the canonical 1:1
+    # frames-dir path has one anchor frame -> sigma stays None (unknown).
+    a0, b0 = segments[0]
+    span = list(range(s + a0, s + b0))
+    if len(span) >= 4:
+        span = span[1:-1]        # drop transition-adjacent frames
+    if len(span) > 5:
+        pick = np.linspace(0, len(span) - 1, 5).round().astype(int)
+        span = [span[int(i)] for i in pick]
+    sigma_list = _anchor_sigma_px([frames[i] for i in span], seeds, dot_radius_cam)
+
+    # Nearest-neighbour overlap risk per seed: (r_i + r_nn) / distance —
+    # approaches 1 as the lit blobs touch (PSF skirts collide well before).
+    positions = np.asarray([[sd["x"], sd["y"]] for sd in seeds], dtype=np.float64)
+    overlaps: list[float | None] = [None] * len(seeds)
+    if len(seeds) >= 2:
+        diff = positions[:, None, :] - positions[None, :, :]
+        dist = np.sqrt(np.sum(diff * diff, axis=2))
+        np.fill_diagonal(dist, np.inf)
+        nn = dist.argmin(axis=1)
+        for j, sd in enumerate(seeds):
+            d = float(dist[j, nn[j]])
+            overlaps[j] = float((sd["r_obs"] + seeds[int(nn[j])]["r_obs"]) / max(d, 1e-6))
+
+    full_scale = frames_full_scale(frames)
+
+    def _saturation(x: float, y: float) -> float:
+        ix, iy = int(round(x)), int(round(y))
+        y0, y1 = max(0, iy - 1), min(anchor.shape[0], iy + 2)
+        x0, x1 = max(0, ix - 1), min(anchor.shape[1], ix + 2)
+        patch = anchor[y0:y1, x0:x1].astype(np.float64)
+        if patch.size == 0:
+            return 0.0
+        return float(np.mean(patch >= 0.98 * full_scale))
+
+    decoded: list[dict] = []
+    rejected = {"parity": 0, "unknown_id": 0, "duplicate_id": 0, "jitter": 0}
+    for j, sd in enumerate(seeds):
+        x, y = sd["x"], sd["y"]
+        bits, margin = _read_bits_with_margin(code_frames, x, y, anchor)
         dot_id = decode_bits(bits, data_bits)
-        if dot_id is None or dot_id not in uv_by_id:
+        if dot_id is None:
+            rejected["parity"] += 1
             continue
+        if dot_id not in uv_by_id:
+            rejected["unknown_id"] += 1
+            continue
+        sigma = sigma_list[j] if sigma_list is not None else None
+        if sigma is not None and sigma > _SIGMA_REJECT_PX:
+            rejected["jitter"] += 1
+            continue
+        sat = _saturation(x, y)
+        overlap = overlaps[j]
+        # Heuristic quality discounts (documented, not learned): each flags a
+        # localization risk the solver should down-weight, none alone kills.
+        conf = 1.0
+        if margin < 0.25:
+            conf *= 0.6
+        if sat > 0.3:
+            conf *= 0.8
+        if overlap is not None and overlap > 0.6:
+            conf *= 0.8
+        if sd["roi_clipped"]:
+            conf *= 0.8
+        if sigma is not None and sigma > 0.5:
+            conf *= 0.6
+        conf = max(conf, 0.1)
         u, v = uv_by_id[dot_id]
-        points.append({"id": dot_id, "u": u, "v": v, "x": x, "y": y})
+        decoded.append({
+            "id": dot_id, "u": u, "v": v, "x": x, "y": y,
+            "sigma_px": None if sigma is None else round(sigma, 4),
+            "confidence": round(conf, 3),
+            "plateau_margin": round(float(margin), 3),
+            "saturation": round(sat, 3),
+            "neighbor_overlap": None if overlap is None else round(overlap, 3),
+        })
+
+    # Duplicate ids = an unresolved blob merge / identity ambiguity: keeping
+    # either copy risks pairing one world point with the wrong camera pixel,
+    # so ALL instances are dropped (hard reject).
+    counts: dict[int, int] = {}
+    for p in decoded:
+        counts[p["id"]] = counts.get(p["id"], 0) + 1
+    dup_ids = {i for i, c in counts.items() if c > 1}
+    rejected["duplicate_id"] = sum(c for i, c in counts.items() if i in dup_ids)
+    points = [p for p in decoded if p["id"] not in dup_ids]
 
     if len(points) < max(4, len(uv_by_id) // 10):
         write_event(ErrorEvent(event="error", code="detection_failed",
             message=f"decoded only {len(points)} of {len(uv_by_id)} dots", fatal=True))
         return 1
 
+    sig_vals = [p["sigma_px"] for p in points if p["sigma_px"] is not None]
     corr = {
-        "schema_version": 1,
+        "schema_version": 2,
         "screen_id": meta["screen_id"],
         "sl_meta_sha256": sl_meta_sha256,
         "screen_resolution": meta["screen_resolution"],
         "camera_image_size": [int(cam_w), int(cam_h)],
         "source_input": cmd.input_path,
         "screen_roi": [int(v) for v in roi],
+        "quality": {
+            "n_seeds": len(seeds),
+            "n_decoded": len(points),
+            "rejected": rejected,
+            "sigma_source": "anchor_plateau_temporal" if sigma_list is not None else None,
+            "sigma_median_px": float(np.median(sig_vals)) if sig_vals else None,
+            "sigma_p95_px": float(np.percentile(sig_vals, 95)) if sig_vals else None,
+        },
         "points": points,
     }
     pathlib.Path(cmd.output_path).write_text(json.dumps(corr, indent=2))

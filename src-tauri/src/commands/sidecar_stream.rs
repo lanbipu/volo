@@ -152,7 +152,7 @@ pub(crate) fn approve_image_path(app: &AppHandle, path: &Path) -> VoloResult<()>
     Ok(())
 }
 
-fn register_approved_images(app: &AppHandle, envelope: &serde_json::Value) {
+pub(crate) fn register_approved_images(app: &AppHandle, envelope: &serde_json::Value) {
     let registry = app.state::<ApprovedImagePaths>();
     let Ok(mut approved) = registry.0.lock() else {
         return;
@@ -180,6 +180,18 @@ fn register_approved_images(app: &AppHandle, envelope: &serde_json::Value) {
         .or_else(|| envelope.get("data").and_then(|d| d.get("path")))
         .and_then(|v| v.as_str());
     if let Some(raw) = path {
+        if is_preview_image_path(Path::new(raw)) {
+            insert(raw);
+        }
+    }
+    /* fixed-observation-sl 静帧验证叠加图：data.validation.static_overlay.path */
+    if let Some(raw) = envelope
+        .get("data")
+        .and_then(|d| d.get("validation"))
+        .and_then(|v| v.get("static_overlay"))
+        .and_then(|s| s.get("path"))
+        .and_then(|v| v.as_str())
+    {
         if is_preview_image_path(Path::new(raw)) {
             insert(raw);
         }

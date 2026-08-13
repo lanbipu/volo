@@ -237,6 +237,7 @@ pub fn mesh_visual_generate_structured_light(
     margin_px: Option<u32>,
     emit_tiff_seq: Option<bool>,
     screen_mapping_path: Option<String>,
+    projected_screen_px: Option<[f64; 2]>,
 ) -> VoloResult<GenerateStructuredLightResult> {
     mesh_app::visual::run_generate_structured_light(
         Path::new(&project_path),
@@ -246,6 +247,7 @@ pub fn mesh_visual_generate_structured_light(
         margin_px,
         emit_tiff_seq,
         screen_mapping_path.as_deref().map(Path::new),
+        projected_screen_px.map(|p| (p[0], p[1])),
     )
 }
 

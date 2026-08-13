@@ -697,6 +697,10 @@ pub struct GenerateStructuredLightArgs {
     pub dot_radius_px: u32,
     /// None = auto-derive per-cabinet from the cabinet pixel resolution (sidecar).
     pub margin_px: Option<u32>,
+    /// Screen's projected bounding box in CAMERA pixels (live-preview estimate).
+    /// When set the sidecar's camera-aware planner derives radius/spacing/margin;
+    /// explicit spacing/margin above still win per-field.
+    pub projected_screen_px: Option<(f64, f64)>,
     /// Also emit a disguise-ready `<screen_id>.seq/` of uncompressed 24-bit TIFFs.
     pub emit_tiff_seq: bool,
     pub progress_tx: Option<mpsc::Sender<Event>>,
@@ -708,6 +712,7 @@ pub struct GenerateStructuredLightOut {
     pub output_dir: String,
     pub n_dots: u32,
     pub n_frames: u32,
+    pub hold_ms: u32,
 }
 
 pub async fn generate_structured_light(
@@ -731,6 +736,9 @@ pub async fn generate_structured_light(
     }
     if let Some(m) = args.margin_px {
         payload["margin_px"] = json!(m);
+    }
+    if let Some((pw, ph)) = args.projected_screen_px {
+        payload["projected_screen_px"] = json!([pw, ph]);
     }
     // Omit screen_mapping_path when None so the sidecar uses uniform generation.
     if let Some(p) = &args.screen_mapping_path {
@@ -762,10 +770,18 @@ pub async fn generate_structured_light(
         .get("n_code_frames")
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
+    // hold_ms drives the logical-frame playback rate (1000/hold_ms fps);
+    // sequence.fps is the preview-video rate, NOT the playback rate.
+    let hold_ms = meta
+        .sequence
+        .get("hold_ms")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(500) as u32;
     Ok(GenerateStructuredLightOut {
         output_dir: args.output_dir,
         n_dots: meta.dots.len() as u32,
         n_frames: total_bits.saturating_add(3),
+        hold_ms,
     })
 }
 

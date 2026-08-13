@@ -1385,6 +1385,9 @@ pub fn run_generate_structured_light(
     // None = auto: emit the TIFF `.seq` iff the project's output.target == "disguise".
     emit_tiff_seq: Option<bool>,
     screen_mapping_path: Option<&Path>,
+    // Screen's projected size in CAMERA px (live-preview estimate); None = the
+    // sidecar's per-cabinet auto layout, Some = its camera-aware planner.
+    projected_screen_px: Option<(f64, f64)>,
 ) -> VoloResult<GenerateStructuredLightResult> {
     let cfg = load_project_yaml_from_path(project_path)?;
     let emit_tiff_seq = emit_tiff_seq.unwrap_or_else(|| cfg.output.target == "disguise");
@@ -1407,6 +1410,7 @@ pub fn run_generate_structured_light(
         dot_spacing_px,
         dot_radius_px,
         margin_px,
+        projected_screen_px,
         emit_tiff_seq,
         progress_tx: None,
         cancel: None,
@@ -1418,6 +1422,8 @@ pub fn run_generate_structured_light(
         output_dir: out.output_dir,
         n_dots: out.n_dots as usize,
         n_frames: out.n_frames as usize,
+        hold_ms: out.hold_ms as u64,
+        playback_fps: 1000.0 / out.hold_ms.max(1) as f64,
     })
 }
 

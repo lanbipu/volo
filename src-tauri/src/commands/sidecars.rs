@@ -204,7 +204,11 @@ pub struct SidecarOutput {
 /// minimal backend通路 so the Tauri host can reach both sidecars; richer
 /// streaming/UX is added once the feature designs land.
 #[tauri::command]
-pub fn spawn_sidecar(name: String, args: Vec<String>) -> VoloResult<SidecarOutput> {
+pub fn spawn_sidecar(
+    app: tauri::AppHandle,
+    name: String,
+    args: Vec<String>,
+) -> VoloResult<SidecarOutput> {
     let sidecar = Sidecar::parse(&name)?;
     let exe = locate(sidecar)?;
 
@@ -213,11 +217,19 @@ pub fn spawn_sidecar(name: String, args: Vec<String>) -> VoloResult<SidecarOutpu
         .output()
         .map_err(|e| VoloError::Io(format!("failed to spawn {}: {e}", exe.display())))?;
 
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    // Rust observed this subprocess output: register any image artifacts the
+    // JSON envelope reports (same allowlist discipline as the streaming
+    // bridge), so read_image_as_data_url can serve them later.
+    if let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&stdout) {
+        crate::commands::sidecar_stream::register_approved_images(&app, &envelope);
+    }
+
     Ok(SidecarOutput {
         // 128 stands in for "killed by signal, no code" — keeps the field a
         // plain i32 for the frontend rather than an Option.
         exit_code: output.status.code().unwrap_or(128),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stdout,
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     })
 }

@@ -499,3 +499,246 @@ def test_load_frames_skips_debug_files(tmp_path):
     cv2.imwrite(str(d / "activity.debug.png"), _white())
     frames = load_frames(str(d))
     assert len(frames) == 2
+
+
+# ---- corr schema v2 per-dot quality (decoder confidence layer) ----
+
+import hashlib as _hashlib
+
+import cv2 as _cv2
+import numpy as _np
+
+from lmt_vba_sidecar.sl_codec import encode_id as _encode_id
+
+
+def test_v2_schema_quality_fields_on_frames_dir(tmp_path):
+    """Frames-dir (1:1) path: schema v2 with a quality summary; sigma stays
+    None (single anchor frame — unknown, not zero), confidence in (0, 1]."""
+    sl = _gen(tmp_path)
+    dec = DecodeStructuredLightInput.model_validate({
+        "command": "decode_structured_light", "version": 1,
+        "input_path": str(sl / "frames"), "sl_meta_path": str(sl / "sl_meta.json"),
+        "output_path": str(tmp_path / "corr.json")})
+    assert run_decode_structured_light(dec) == 0
+    corr = json.loads((tmp_path / "corr.json").read_text())
+    assert corr["schema_version"] == 2
+    q = corr["quality"]
+    assert q["n_decoded"] == len(corr["points"])
+    assert q["sigma_source"] is None and q["sigma_median_px"] is None
+    assert all(v == 0 for v in q["rejected"].values())
+    for p in corr["points"]:
+        assert p["sigma_px"] is None
+        assert 0.0 < p["confidence"] <= 1.0
+        assert 0.0 <= p["plateau_margin"] <= 1.0
+
+
+def test_video_path_measures_anchor_plateau_sigma(tmp_path):
+    """Held-video path: the anchor plateau spans many camera frames, so the
+    centroid temporal jitter IS measured — sigma_px present and small on a
+    clean synthetic sequence."""
+    sl = _gen(tmp_path)
+    dec = DecodeStructuredLightInput.model_validate({
+        "command": "decode_structured_light", "version": 1,
+        "input_path": str(sl / "sequence.mp4"), "sl_meta_path": str(sl / "sl_meta.json"),
+        "output_path": str(tmp_path / "corr.json")})
+    assert run_decode_structured_light(dec) == 0
+    corr = json.loads((tmp_path / "corr.json").read_text())
+    q = corr["quality"]
+    assert q["sigma_source"] == "anchor_plateau_temporal"
+    assert q["sigma_median_px"] is not None and q["sigma_median_px"] < 0.5
+    assert all(p["sigma_px"] is not None and p["sigma_px"] < 1.0 for p in corr["points"])
+
+
+def _write_custom_sequence(tmp_path, *, jitter_dot=False, impostor_on=True):
+    """Hand-built 200x200 sequence: 5 listed dots + one IMPOSTOR blinking dot
+    1's codeword. data_bits=3, total_bits=4. With jitter_dot, dot id=2 wanders
+    ±2px across the (held) anchor plateau copies."""
+    db, tb, r = 3, 4, 8
+    listed = [(1, 40, 40), (2, 150, 40), (3, 40, 150), (4, 150, 150), (5, 100, 100)]
+    impostor = (60, 100)
+    sl_meta = {
+        "schema_version": 1, "screen_id": "T", "screen_resolution": [200, 200],
+        "dot_radius_px": r,
+        "code": {"data_bits": db, "total_bits": tb, "parity": "even", "encoding": "binary"},
+        "sequence": {"sentinel": "white_full", "anchor": "all_on",
+                     "n_code_frames": tb, "hold_ms": 500, "fps": 30},
+        "cabinets": [], "dots": [{"id": i, "u": u, "v": v, "cabinet": [0, 0]}
+                                 for (i, u, v) in listed],
+    }
+    meta_path = tmp_path / "sl_meta.json"
+    meta_path.write_text(json.dumps(sl_meta))
+
+    code = {i: _encode_id(i, db) for (i, _u, _v) in listed}
+
+    def _frame(lit, anchor_shift=0):
+        img = _np.zeros((200, 200), dtype=_np.uint8)
+        for (i, u, v) in listed:
+            if i in lit:
+                du = anchor_shift if (jitter_dot and i == 2) else 0
+                _cv2.circle(img, (u + du, v), r, 255, -1)
+        if "imp" in lit:
+            _cv2.circle(img, impostor, r, 255, -1)
+        return img
+
+    white = _np.full((200, 200), 255, dtype=_np.uint8)
+    all_ids = {i for (i, _u, _v) in listed} | ({"imp"} if impostor_on else set())
+    hold = 5
+    logical = [("white", None)]
+    logical.append(("anchor", all_ids))
+    for b in range(tb):
+        lit = {i for (i, _u, _v) in listed if code[i][b]}
+        if impostor_on and code[1][b]:
+            lit = lit | {"imp"}          # impostor mimics dot 1's codeword
+        logical.append(("code", lit))
+    logical.append(("white", None))
+
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir()
+    n = 0
+    shifts = [0, 2, -2, 2, 0]            # anchor-plateau wander for the jitter dot
+    for kind, lit in logical:
+        for k in range(hold):
+            if kind == "white":
+                img = white
+            elif kind == "anchor":
+                img = _frame(lit, anchor_shift=shifts[k])
+            else:
+                img = _frame(lit)
+            _cv2.imwrite(str(frames_dir / f"{n:06d}.png"), img)
+            n += 1
+    return frames_dir, meta_path
+
+
+def test_duplicate_decoded_ids_all_dropped(tmp_path):
+    """Two blobs decoding to one id = unresolved identity ambiguity: BOTH are
+    rejected (keeping either risks a wrong world↔pixel pairing)."""
+    frames_dir, meta_path = _write_custom_sequence(tmp_path)
+    dec = DecodeStructuredLightInput.model_validate({
+        "command": "decode_structured_light", "version": 1,
+        "input_path": str(frames_dir), "sl_meta_path": str(meta_path),
+        "output_path": str(tmp_path / "corr.json")})
+    assert run_decode_structured_light(dec) == 0
+    corr = json.loads((tmp_path / "corr.json").read_text())
+    ids = {p["id"] for p in corr["points"]}
+    assert 1 not in ids                     # both copies of id 1 dropped
+    assert ids == {2, 3, 4, 5}
+    assert corr["quality"]["rejected"]["duplicate_id"] == 2
+
+
+def test_jittering_dot_hard_rejected(tmp_path):
+    """A dot whose anchor-plateau centroid wanders ~2px must be rejected on
+    the temporal-jitter ceiling; steady dots keep small sigma."""
+    frames_dir, meta_path = _write_custom_sequence(tmp_path, jitter_dot=True, impostor_on=False)
+    dec = DecodeStructuredLightInput.model_validate({
+        "command": "decode_structured_light", "version": 1,
+        "input_path": str(frames_dir), "sl_meta_path": str(meta_path),
+        "output_path": str(tmp_path / "corr.json")})
+    assert run_decode_structured_light(dec) == 0
+    corr = json.loads((tmp_path / "corr.json").read_text())
+    ids = {p["id"] for p in corr["points"]}
+    assert ids == {1, 3, 4, 5}              # the wanderer (id 2) is out
+    assert corr["quality"]["rejected"]["jitter"] >= 1
+    for p in corr["points"]:
+        assert p["sigma_px"] is not None and p["sigma_px"] < 1.0
+
+
+# ---- §12.1 rejection/robustness matrix gap-fill ----
+
+def _renumber_into(dst_dir, frame_paths):
+    dst_dir.mkdir()
+    for n, src in enumerate(frame_paths):
+        (dst_dir / f"{n:06d}.png").write_bytes(src.read_bytes())
+
+
+def test_looped_capture_uses_first_complete_cycle(tmp_path):
+    """A looped playback recording ([sentinel, cycle, sentinel, cycle, ...])
+    must decode from the FIRST complete inter-sentinel cycle, not choke on the
+    doubled loop-boundary whites or see N× plateaus."""
+    sl = _gen(tmp_path)
+    meta = json.loads((sl / "sl_meta.json").read_text())
+    seq = sorted((sl / "frames").iterdir())
+    looped = tmp_path / "looped"
+    _renumber_into(looped, seq + seq)          # two playthroughs back to back
+    dec = DecodeStructuredLightInput.model_validate({
+        "command": "decode_structured_light", "version": 1,
+        "input_path": str(looped), "sl_meta_path": str(sl / "sl_meta.json"),
+        "output_path": str(tmp_path / "corr.json")})
+    assert run_decode_structured_light(dec) == 0
+    corr = json.loads((tmp_path / "corr.json").read_text())
+    assert len(corr["points"]) == len(meta["dots"])
+
+
+def test_missed_first_sentinel_recovers_from_next_cycle(tmp_path):
+    """A recording that starts mid-cycle (opening sentinel missed) still
+    decodes as long as one complete inter-sentinel cycle exists later."""
+    sl = _gen(tmp_path)
+    meta = json.loads((sl / "sl_meta.json").read_text())
+    seq = sorted((sl / "frames").iterdir())
+    clipped = tmp_path / "clipped"
+    # Start at the anchor (missed the opening white), then a full second pass.
+    _renumber_into(clipped, seq[1:] + seq)
+    dec = DecodeStructuredLightInput.model_validate({
+        "command": "decode_structured_light", "version": 1,
+        "input_path": str(clipped), "sl_meta_path": str(sl / "sl_meta.json"),
+        "output_path": str(tmp_path / "corr.json")})
+    assert run_decode_structured_light(dec) == 0
+    corr = json.loads((tmp_path / "corr.json").read_text())
+    assert len(corr["points"]) == len(meta["dots"])
+
+
+def test_mixed_bit_depth_frame_set_rejected():
+    """8-bit and 10-bit frames in one set would silently skew every absolute
+    threshold — frames_full_scale must refuse, not guess. (At the CLI surface
+    this cannot even arise: mixed extensions are rejected before reading, PNG
+    loads normalize to 8-bit, and the DPX dir path is uniformly 10-bit — this
+    guards the internal seam those invariants rest on.)"""
+    from lmt_vba_sidecar.sl_decode import frames_full_scale
+    import pytest as _pytest
+    eight = _np.zeros((4, 4), dtype=_np.uint8)
+    ten = _np.zeros((4, 4), dtype=_np.uint16)
+    assert frames_full_scale([eight, eight]) == 255.0
+    assert frames_full_scale([ten, ten]) == 1023.0
+    with _pytest.raises(ValueError, match="mixed frame bit depths"):
+        frames_full_scale([eight, ten])
+
+
+def test_partial_occlusion_loses_only_covered_dots(tmp_path):
+    """A static occluder over part of the screen must cost exactly the covered
+    dots — the rest decode normally (no global failure)."""
+    sl = _gen(tmp_path)
+    meta = json.loads((sl / "sl_meta.json").read_text())
+    occluded = tmp_path / "occluded"
+    occluded.mkdir()
+    # Cover the top-left dot (min u,v) with a black rectangle in EVERY frame.
+    target = min(meta["dots"], key=lambda d: (d["v"], d["u"]))
+    u, v = int(target["u"]), int(target["v"])
+    for src in sorted((sl / "frames").iterdir()):
+        img = _cv2.imread(str(src), _cv2.IMREAD_GRAYSCALE)
+        _cv2.rectangle(img, (u - 30, v - 30), (u + 30, v + 30), 0, -1)
+        _cv2.imwrite(str(occluded / src.name), img)
+    dec = DecodeStructuredLightInput.model_validate({
+        "command": "decode_structured_light", "version": 1,
+        "input_path": str(occluded), "sl_meta_path": str(sl / "sl_meta.json"),
+        "output_path": str(tmp_path / "corr.json")})
+    assert run_decode_structured_light(dec) == 0
+    corr = json.loads((tmp_path / "corr.json").read_text())
+    ids = {p["id"] for p in corr["points"]}
+    assert target["id"] not in ids
+    assert len(ids) == len(meta["dots"]) - 1
+
+
+def test_sentinel_found_on_oblique_partial_fill_roi():
+    """Oblique screen: the ROI (projected quad's bbox) is only ~55% screen, so
+    the white sentinel's ROI mean misses the absolute 0.85 cut — the relative
+    fallback (vs the clip's brightest frame) must still segment the cycle."""
+    def frame(mean_level):
+        img = _np.zeros((100, 100), dtype=_np.uint8)
+        # left 55% of the ROI is "screen" at full white scaled to the level
+        img[:, :55] = int(round(mean_level / 0.55))
+        return img
+    sentinel = frame(140)                  # ROI mean ≈ 0.55*255 ≈ 140 < 0.85*255
+    dark = _np.zeros((100, 100), dtype=_np.uint8)
+    dark[40:44, 20:24] = 255               # sparse "dots"
+    frames = [sentinel, dark, dark, sentinel]
+    s, e = segment_code_region(frames, sentinel_threshold=0.85)
+    assert (s, e) == (1, 3)

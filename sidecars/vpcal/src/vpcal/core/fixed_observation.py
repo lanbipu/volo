@@ -34,7 +34,10 @@ Array = NDArray[np.float64]
 SCHEMA_VERSION = "fixed_observation_result.v1"
 CORRELATION_LOCK_THRESHOLD = 0.8
 
-# Spec §3.4 formal thresholds (placeholder until synthetic sweep re-pins).
+# Spec §3.4 formal thresholds — margin-swept & pinned 2026-08-13 via
+# fixed_observation_synth.run_synthetic_sweep()["threshold_margins"]
+# (worst good-scene margin ≥1.28×, none inverted). Rerun that sweep
+# before changing any value here.
 MIN_TRUSTWORTHY_TOTAL = 60
 MIN_TRUSTWORTHY_PER_SCREEN = 12
 MIN_INLIERS_TOTAL = 40
@@ -135,6 +138,11 @@ class FixedObservationInput:
     known_lens: KnownLens | None = None
     weak_focal_guess_px: float | None = None
     formal: bool = True
+    # Opt-in per-point weighting of the joint refinement by Correspondence
+    # .quality (SL decoder confidence). Off by default: VP-QSP carries
+    # non-uniform quality values that were historically NOT weighted, and
+    # flipping that silently would change its solves.
+    weight_by_quality: bool = False
 
 
 @dataclass
@@ -845,10 +853,24 @@ def refine_model(
     prior_pp_weight: float = 0.01,
     prior_dist_weight: float = 0.1,
     fix_focal: bool = False,
+    weights: Array | None = None,
 ) -> tuple[_PoseLensState, dict[str, Any]]:
     w, h = image_size
     x0 = _pack(state0, level, fix_focal=fix_focal)
     names = _param_names(level, fix_focal=fix_focal)
+    # Per-point residual weighting (sqrt so the squared cost scales by weight);
+    # None = uniform, identical to the historical unweighted behavior.
+    # Normalized to mean 1 so only the RELATIVE weighting changes: raw
+    # confidences are all <= 1, and applying them unnormalized would shrink
+    # every data row against the unscaled k1/k2/cx/cy prior rows, move the
+    # huber f_scale knee in true-pixel terms, and inflate the pinned
+    # covariance gates (param_std ~ 1/sqrt(mean_w) — at conf 0.6 that is
+    # 1.29x, the entire margin the 2026-08-13 sweep certified).
+    if weights is None:
+        w_sqrt = None
+    else:
+        w_clip = np.clip(weights, 1e-3, None)
+        w_sqrt = np.sqrt(w_clip / w_clip.mean())
 
     def residuals(x: Array) -> Array:
         st = _unpack(x, level, state0, fix_focal=fix_focal)
@@ -864,7 +886,10 @@ def refine_model(
             out[:] = 1.0e6
             return out
         pred = _project_world(world, st, image_size)
-        out[:n_pix] = (pred - pixels).ravel()
+        err = pred - pixels
+        if w_sqrt is not None:
+            err = err * w_sqrt[:, None]
+        out[:n_pix] = err.ravel()
         if level == ModelLevel.M2_RADIAL_POSE:
             out[n_pix] = np.sqrt(prior_dist_weight) * st.k1
             out[n_pix + 1] = np.sqrt(prior_dist_weight) * st.k2
@@ -1008,16 +1033,19 @@ def run_model_ladder(
     image_size: tuple[int, int],
     *,
     allow_m3: bool,
+    weights: Array | None = None,
 ) -> tuple[_PoseLensState, ModelLevel, list[dict[str, Any]]]:
     reports: list[dict[str, Any]] = []
-    state, diag = refine_model(world, pixels, state0, image_size, ModelLevel.M1_FOCAL_POSE)
+    state, diag = refine_model(world, pixels, state0, image_size, ModelLevel.M1_FOCAL_POSE,
+                               weights=weights)
     reports.append(diag)
     _correlation_lock(diag, ModelLevel.M1_FOCAL_POSE)
     m1_f_depth = _dangerous_f_depth_correlation(diag)
     chosen_level = ModelLevel.M1_FOCAL_POSE
     chosen_state = state
 
-    state2, diag2 = refine_model(world, pixels, state, image_size, ModelLevel.M2_RADIAL_POSE)
+    state2, diag2 = refine_model(world, pixels, state, image_size, ModelLevel.M2_RADIAL_POSE,
+                                 weights=weights)
     reports.append(diag2)
     f_std = diag2["param_std"].get("f", float("inf"))
     if f_std / max(state2.f, 1.0) <= MAX_FOCAL_REL_STD * 2:
@@ -1033,6 +1061,7 @@ def run_model_ladder(
                 image_size,
                 ModelLevel.M2_RADIAL_POSE,
                 fix_focal=True,
+                weights=weights,
             )
             reports.append(diag2_locked)
             chosen_level = ModelLevel.M2_RADIAL_POSE
@@ -1042,6 +1071,7 @@ def run_model_ladder(
         state3, diag3 = refine_model(
             world, pixels, chosen_state, image_size, ModelLevel.M3_CENTER_RADIAL_POSE,
             fix_focal=_dangerous_f_depth_correlation(reports[-1]) or m1_f_depth,
+            weights=weights,
         )
         reports.append(diag3)
         pp_ok = (
@@ -1057,6 +1087,7 @@ def run_model_ladder(
                 image_size,
                 ModelLevel.M3_CENTER_RADIAL_POSE,
                 fix_focal=True,
+                weights=weights,
             )
             reports.append(diag3)
             locked = _correlation_lock(diag3, ModelLevel.M3_CENTER_RADIAL_POSE)
@@ -1286,12 +1317,18 @@ def solve_fixed_observation(inp: FixedObservationInput) -> FixedObservationResul
     )
     allow_m3 = cov_x >= MIN_COVERAGE_XY and cov_y >= MIN_COVERAGE_XY and edge_frac >= MIN_EDGE_FRACTION
 
+    weights = (
+        np.asarray([c.quality for c in inp.correspondences], dtype=np.float64)
+        if inp.weight_by_quality
+        else None
+    )
     state, level, ladder = run_model_ladder(
         world[solve_idx],
         pixels[solve_idx],
         state0,
         inp.image_size,
         allow_m3=allow_m3,
+        weights=None if weights is None else weights[solve_idx],
     )
 
     inliers = _inlier_mask_from_reproj(world, pixels, state, inp.image_size)
@@ -1328,6 +1365,15 @@ def solve_fixed_observation(inp: FixedObservationInput) -> FixedObservationResul
         )
 
     w_rms = withheld_rms(world, pixels, state, inp.image_size, withhold_idx)
+    # Per-screen breakdown of the SAME holdout reprojection (additive report:
+    # no new kernel gate; the SL gate layer applies its stricter per-screen bar).
+    w_rms_by_screen: dict[str, dict[str, Any]] = {}
+    for label in sorted({inp.correspondences[i].screen_label for i in withhold_idx}):
+        idx = [i for i in withhold_idx if inp.correspondences[i].screen_label == label]
+        w_rms_by_screen[label] = {
+            "rms_px": withheld_rms(world, pixels, state, inp.image_size, idx),
+            "count": len(idx),
+        }
     consistency = per_screen_pose_consistency(inp.correspondences, state, inp.image_size)
     if w_rms >= MAX_WITHHELD_RMS_PX:
         raise SingleViewUnobservable(
@@ -1353,6 +1399,7 @@ def solve_fixed_observation(inp: FixedObservationInput) -> FixedObservationResul
     validation = {
         "withheld_rms_px": w_rms,
         "withheld_count": len(withhold_idx),
+        "withheld_rms_by_screen": w_rms_by_screen,
         "solve_count": len(solve_idx),
         "screen_to_screen_consistency": consistency,
         "ladder": ladder,

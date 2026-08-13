@@ -855,6 +855,11 @@ pub struct GenerateStructuredLightResult {
     pub output_dir: String,
     pub n_dots: usize,
     pub n_frames: usize,
+    /// 每逻辑帧持帧时长（sl_meta.json `sequence.hold_ms` 回读）。
+    pub hold_ms: u64,
+    /// 逻辑帧播放速率 = 1000 / hold_ms。注意 sl_meta 的 `sequence.fps`
+    /// 是 sequence.mp4 预览视频帧率，不是播放速率，勿混用。
+    pub playback_fps: f64,
 }
 
 /// `lmt visual decode-structured-light` 结果：解码出的屏幕↔相机对应文件路径
