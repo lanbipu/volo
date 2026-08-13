@@ -127,7 +127,7 @@ export const generatedPatternImagePath = (
 /** Read the exact generated PNG through the backend's Rust-owned-path allowlist. */
 export const readGeneratedPatternAsDataUrl = (path: string) =>
   call<string>("read_image_as_data_url", { path });
-// 📝 no-ui: 结构光点阵序列生成
+// 结构光点阵序列生成（采集页 SL 流程消费：calCalibFlow isSl 分支）
 export const meshVisualGenerateStructuredLight = (
   projectPath: string,
   screenId: string,
@@ -136,12 +136,15 @@ export const meshVisualGenerateStructuredLight = (
   marginPx: number | null,
   emitTiffSeq: boolean | null,
   screenMappingPath?: string | null,
+  /** 屏幕在相机画面中的投影包围盒（像素）；给出时后端按取景自动定点径/点距/边距。 */
+  projectedScreenPx?: [number, number] | null,
 ) =>
   call<GenerateStructuredLightResult>("mesh_visual_generate_structured_light", {
     projectPath, screenId, dotSpacingPx, dotRadiusPx, marginPx, emitTiffSeq,
     screenMappingPath: screenMappingPath ?? null,
+    projectedScreenPx: projectedScreenPx ?? null,
   });
-// 📝 no-ui: 结构光录像/帧目录解码为屏幕↔相机对应文件
+// 结构光录像/帧目录解码（采集页 SL 流程消费：calCalibFlow isSl 分支）
 export const meshVisualDecodeStructuredLight = (
   inputPath: string,
   slMetaPath: string,

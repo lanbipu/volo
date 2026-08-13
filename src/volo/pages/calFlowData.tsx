@@ -44,8 +44,8 @@
       scenes: '与既有 OpenCV / 通用标定工作流对接。',
       tracking: '固定机位', time: '约 5–8 分钟',
       tags: ['通用生态标准'] },
-    { id: 'sl', name: '结构光点阵', sub: '小白点', avail: false, comingSoon: true, pattern: 'whitedots',
-      note: '需显示器直连部署',
+    { id: 'sl', name: '结构光点阵', sub: '小白点', avail: true, pattern: 'whitedots',
+      note: '需 nDisplay 上屏部署',
       principle: '播放结构光白点序列，逐帧亚像素解码点位，精度最高。',
       scenes: '追求最高精度、机位可长时间静止的离线标定。',
       tracking: '采集期间机位必须静止', time: '约 8–15 分钟',
@@ -112,9 +112,24 @@
     { id: 318, residual_px: 1.96, uv: [640, 1088] },
   ];
 
-  const CAL_SL_SEQ = {
-    spacing_mm: 12, frames: 128, anchorFrames: 8, encodeFrames: 120,
-    duration: '约 2 分 10 秒', fps: 24,
+  /* 结构光采集相位（后端链路顺序，勿改 id · handoff cal_flow_data.jsx 0813）
+     gen/decode/solve 由采集编排自身推进；push/preload/playing 来自 nDisplay
+     runner 事件（pushing/preloading/playing）。 */
+  const CAL_SL_PHASES: Record<string, { label: string; icon: string; spin?: boolean }> = {
+    gen:        { label: '生成序列',        icon: 'sync',   spin: true },
+    push:       { label: '推送帧到渲染节点', icon: 'net',    spin: true },
+    preload:    { label: '预载',            icon: 'sync',   spin: true },
+    playing:    { label: '播放中',          icon: 'play' },
+    screenDone: { label: '本屏完成',        icon: 'check' },
+    decode:     { label: '解码中',          icon: 'sync',   spin: true },
+    solve:      { label: '求解中',          icon: 'target', spin: true },
+  };
+  const CAL_SL_PHASE_ORDER = ['gen', 'push', 'preload', 'playing', 'screenDone', 'decode', 'solve'];
+  /* 播放失败 / 已中止（异常态文案） */
+  const CAL_SL_FAIL = {
+    label: '播放失败 / 已中止',
+    detail: '序列播放中断 · 渲染节点未按时返回帧确认',
+    retry: '检查 nDisplay 节点与上屏部署后重试序列。',
   };
 
   /* 顺序与 handoff cal_flow_data.jsx 一致：nDisplay 在前（默认首选） */
@@ -482,7 +497,8 @@
 
   Object.assign(window, {
     CAL_SOURCE_BADGES, CAL_MODE_BADGES, CAL_METHOD_BADGES, CAL_QUALITY_LIGHT, CAL_SOLVE_STATE,
-    CAL_METHODS, CAL_CAMERAS, CAL_TRACK_SOURCE, CAL_CAP_RUNS, CAL_POSE_OUTLIERS, CAL_SL_SEQ,
+    CAL_METHODS, CAL_CAMERAS, CAL_TRACK_SOURCE, CAL_CAP_RUNS, CAL_POSE_OUTLIERS,
+    CAL_SL_PHASES, CAL_SL_PHASE_ORDER, CAL_SL_FAIL,
     CAL_DEPLOY_TARGETS, CAL_DEPLOY_STATE, NDISPLAY_NODE_STATUS, NDISPLAY_DEPLOY_STEPS,
     deployStore, camStore,
   });

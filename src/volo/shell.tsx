@@ -682,7 +682,6 @@ function App() {
   const [capProfileId, setCapProfileId] = useState(null);
   const [capProfileLabel, setCapProfileLabel] = useState('');
   const [capOutDir, setCapOutDir] = useState('');
-  const [calSlUnlock, setCalSlUnlock] = useState(false);
 
   /* deployStore 会话态镜像（测试图 / 采集前置共用） */
   useEffect(() => {
@@ -1059,7 +1058,7 @@ function App() {
     capTrack, setCapTrack, capArReq, setCapArReq,
     capSignalReady, setCapSignalReady, capScreenFile, setCapScreenFile,
     capProfileId, setCapProfileId, capProfileLabel, setCapProfileLabel,
-    capOutDir, setCapOutDir, calSlUnlock, setCalSlUnlock,
+    capOutDir, setCapOutDir,
     leftCollapsed, setLeftCollapsed, rightCollapsed, setRightCollapsed, maximized,
     machines, setMachines, shares, setShares, projects, setProjects, gpuMatrix, cluster, cacheLoading, cacheError, reloadCache };
 
@@ -1118,7 +1117,6 @@ function App() {
       TweakToggle ? h(TweakToggle, { label: '已选屏幕文件', value: !!capScreenFile, onChange: (v) => setCapScreenFile(v ? '<demo>' : null) }) : null,
       h(TweakRadio, { label: '追踪状态', value: capTrack,
         options: [{ value: 'connected', label: '已接入' }, { value: 'lost', label: '断流' }, { value: 'fixed', label: '固定机位' }], onChange: setCapTrack }),
-      TweakToggle ? h(TweakToggle, { label: '结构光方式可选（演示播放采集态）', value: calSlUnlock, onChange: setCalSlUnlock }) : null,
       h(TweakRadio, { label: '输出目标', value: calOutTarget,
         options: [{ value: 'monitor', label: '本机显示器' }, { value: 'cluster', label: 'nDisplay 集群' }], onChange: setCalOutTarget }),
       h(TweakSection, { label: '外观 · Appearance' }),

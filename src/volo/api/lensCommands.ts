@@ -439,6 +439,10 @@ export async function trackerFreeFixedObservationSl(opts: {
   lensPath?: string | null;
   outPath: string;
   stagePoseOut?: string | null;
+  /** 静帧验证叠加图 PNG 输出路径（实测点位 vs 重投影）。 */
+  staticOverlayOut?: string | null;
+  /** 叠加图背景采集帧；尺寸须等于 camera_image_size，不符自动退黑底。 */
+  overlayImage?: string | null;
   cameraId?: string;
   transferPath?: string;
   attestFocusZoom?: boolean;
@@ -463,6 +467,8 @@ export async function trackerFreeFixedObservationSl(opts: {
   }
   if (opts.lensPath) args.push("--lens", forSidecarFsPath(opts.lensPath));
   if (opts.stagePoseOut) args.push("--stage-pose-out", forSidecarFsPath(opts.stagePoseOut));
+  if (opts.staticOverlayOut) args.push("--static-overlay-out", forSidecarFsPath(opts.staticOverlayOut));
+  if (opts.overlayImage) args.push("--overlay-image", forSidecarFsPath(opts.overlayImage));
   if (opts.cameraId) args.push("--camera-id", opts.cameraId);
   if (opts.transferPath) args.push("--transfer-path", opts.transferPath);
   if (opts.attestFocusZoom) args.push("--attest-focus-zoom");

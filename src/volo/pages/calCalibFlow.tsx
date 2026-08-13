@@ -17,7 +17,7 @@ import { pickDirectory, pickFile } from "../api/commands";
 import { probeTrackingSource } from "../api/captureProfiles";
 import {
   spawnSidecarStreaming, cancelSidecarTask, cancelSidecarTaskAwaitExit, finishSidecarTaskAwaitExit,
-  useSidecarStream, listenSidecarStream,
+  useSidecarStream, listenSidecarStream, sidecarStdinWrite,
 } from "../api/sidecarStream";
 import { useCaptureSession } from "./devCapture";
 import {
@@ -28,6 +28,7 @@ import {
   outputShow,
   outputPlaySequence,
   outputSequenceAbort,
+  listenNDisplayOutputRunner,
 } from "../api/ndisplayOutput";
 import {
   meshVisualGenerateStructuredLight,
@@ -359,7 +360,7 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
   /* ============================================================
      摄影机实时信号（LED 墙 + 检测叠加）· 复用镜头页几何思路
      ============================================================ */
-  function CameraSignal({ method, capturing, detect, sl, slFrame }) {
+  function CameraSignal({ method, capturing, detect }) {
     const TL = [232, 120], TR = [726, 108], BR = [762, 452], BL = [196, 464];
     const lerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
     const bilerp = (u, v) => { const top = lerp(TL, TR, u), bot = lerp(BL, BR, u); return lerp(top, bot, v); };
@@ -367,15 +368,7 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
     for (let j = 1; j < 8; j++) { const l = bilerp(0, j / 8), rr = bilerp(1, j / 8); rows.push(h('line', { key: 'r' + j, x1: l[0], y1: l[1], x2: rr[0], y2: rr[1], stroke: 'rgba(120,150,190,.13)', strokeWidth: .8 })); }
     for (let i = 1; i < 12; i++) { const t = bilerp(i / 12, 0), b = bilerp(i / 12, 1); rows.push(h('line', { key: 'c' + i, x1: t[0], y1: t[1], x2: b[0], y2: b[1], stroke: 'rgba(120,150,190,.13)', strokeWidth: .8 })); }
     const pts = [];
-    if (sl) {
-      /* 结构光白点阵，按帧推进逐列点亮 */
-      const N = 14, M = 8, lit = Math.floor(((slFrame || 0) % N) );
-      for (let r = 0; r < M; r++) for (let c = 0; c < N; c++) {
-        const p = bilerp((c + 0.5) / N, (r + 0.5) / M);
-        const on = c <= lit;
-        pts.push(h('circle', { key: 'w' + r + c, cx: p[0], cy: p[1], r: on ? 2.6 : 1.1, fill: on ? '#fff' : 'rgba(255,255,255,.16)' }));
-      }
-    } else {
+    {
       /* 编码点阵 + 检测十字（capturing 时脉动） */
       const N = 12, M = 6;
       for (let r = 0; r < M; r++) for (let c = 0; c < N; c++) {
@@ -461,7 +454,11 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
     const [patternMons, setPatternMons] = useState([]);
     const [patternMonBusy, setPatternMonBusy] = useState(false);
     const [banner, setBanner] = useState(0);
-    const [slFrame, setSlFrame] = useState(0);
+    /* 结构光真实采集相位（CD 设计 0813：gen/push/preload/playing/screenDone/decode/solve）
+       由 start() 的 SL 分支推进 gen/decode/solve；push/preload/playing 来自 nDisplay
+       runner 事件；playing 帧号按 fps 本地推进（后端按设计只发 ready/start/done 里程碑，
+       UE 侧同为时间基步进）。failed 时段落保留在画面上直到重试或重新开始。 */
+    const [slRun, setSlRun] = useState(null);
     const [params, setParams] = useState(loadCapParams);
     const setP = (k, v) => setParams((f) => Object.assign({}, f, { [k]: v }));
     const gsync = !!params.graycodeSync;
@@ -1314,9 +1311,44 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
 
     useEffect(() => {
       if (!capturing || !isSl) { clearInterval(timer.current); return undefined; }
-      timer.current = setInterval(() => setSlFrame((f) => (f + 1) % CAL_SL_SEQ.frames), 260);
+      timer.current = setInterval(() => setSlRun((r) => {
+        if (!r || r.phase !== 'playing' || !r.playT0) return r;
+        const cur = r.screens[r.si];
+        if (!cur || !cur.frames) return r;
+        const f = Math.min(Math.floor((Date.now() - r.playT0) / 1000 * (cur.fps || 2)), cur.frames - 1);
+        return f === r.frame ? r : Object.assign({}, r, { frame: f });
+      }), 250);
       return () => clearInterval(timer.current);
     }, [capturing, isSl]);
+    /* nDisplay 序列播放 runner 相位 → 播放状态段（pushing/preloading/playing；
+       done/failed 由 start() 流程 await 结果自身推进） */
+    useEffect(() => {
+      if (!capturing || !isSl) return undefined;
+      let un = null;
+      listenNDisplayOutputRunner((ev) => {
+        if (!ev || ev.operation !== 'play_sequence') return;
+        if (ev.state === 'pushing') setSlRun((r) => (r ? Object.assign({}, r, { phase: 'push' }) : r));
+        else if (ev.state === 'preloading') setSlRun((r) => (r ? Object.assign({}, r, { phase: 'preload' }) : r));
+        else if (ev.state === 'playing') setSlRun((r) => (r ? Object.assign({}, r, { phase: 'playing', frame: 0, playT0: Date.now() }) : r));
+      }).then((fn) => {
+        /* effect 可能在 listen promise 落定前已清理：此时立即退订而不是滞留 */
+        if (un === false) fn(); else un = fn;
+      }).catch(() => {});
+      return () => { if (un) un(); un = false; };
+    }, [capturing, isSl]);
+    /* 方式参数三格：本轮（或上一轮）生成序列的真实值；未生成过显示 — */
+    const slSeqTotals = (() => {
+      const scr = (slRun && slRun.screens) || [];
+      const dots = scr.reduce((n, x) => n + (x.dots || 0), 0);
+      const frames = scr.reduce((n, x) => n + (x.frames || 0), 0);
+      const secs = scr.reduce((n, x) => n + (x.frames || 0) / (x.fps || 2), 0);
+      /* 先整体取整再拆分秒，避免 59.5s 四舍五入成 「1:60」 */
+      const t = Math.round(secs);
+      const duration = frames
+        ? Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0')
+        : null;
+      return { dots, frames, duration };
+    })();
     useEffect(() => {
       if (!capturing || isSl) return undefined;
       timer.current = setInterval(() => setBanner((b) => (b + 1) % CAP_BANNERS.length), 1200);
@@ -1378,6 +1410,34 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
       slPlayReqRef.current = null;
       try { await outputSequenceAbort(abortReq); } catch (e) { /* ignore */ }
     };
+    /* 等录像首帧真实落盘再放行（替换旧 800ms 盲等）：监听 first_frame_written；
+       监听挂上后补发一条 status 探询，兜底「事件在监听挂上前已飞过」的竞态。 */
+    const waitCaptureFirstFrame = async (taskId, timeoutMs) => {
+      let unlisten = null;
+      let done = false;
+      try {
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error(
+            '信号源 ' + Math.round(timeoutMs / 1000) + ' 秒内未产出首帧，采集未就绪')), timeoutMs);
+          const settle = (fn) => { done = true; clearTimeout(timer); fn(); };
+          listenSidecarStream(taskId, (ev) => {
+            if (ev.kind === 'exit') { settle(() => reject(new Error('录像进程提前退出'))); return; }
+            const p = ev.kind === 'line' ? ev.parsed : null;
+            if (!p || typeof p.type !== 'string') return;
+            if (p.type === 'first_frame_written' || (p.type === 'status' && Number(p.frames) > 0)) {
+              settle(resolve);
+            }
+          }).then((fn) => {
+            /* 事件可能在 .then 赋值前已 settle（finally 已跑过）：立即退订防泄漏 */
+            if (done) { fn(); return undefined; }
+            unlisten = fn;
+            return sidecarStdinWrite(taskId, JSON.stringify({ cmd: 'status' }));
+          }).catch((e) => settle(() => reject(e)));
+        });
+      } finally {
+        if (unlisten) unlisten();
+      }
+    };
     const start = async () => {
       if (!ready) return;
       /* 公共入口护栏（fixed / tracked / SL 三分支共用）：从点击到 capState 落定之间
@@ -1414,6 +1474,10 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
           s.pushLog({ lv: 'err', cat: 'lens', msg: '未选标定屏幕' });
           return;
         }
+        setSlRun({
+          phase: 'gen', si: 0, frame: 0, failed: false,
+          screens: slTargets.map((t) => ({ id: t.id, name: t.id, frames: 0, fps: 2, dots: 0, holdMs: 500 })),
+        });
         const topology = window.resolveProjectTopology && window.resolveProjectTopology(proj.config);
         const outputScreen = topology
           ? window.stageScreenForOutput(proj.config, topology)
@@ -1430,23 +1494,38 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
         let videoTaskId = null;
         try {
           const solveTargets = [];
+          let lastVideoOut = null; /* 最后一屏的录像目录 → 叠加图背景帧 */
           for (let i = 0; i < slTargets.length; i++) {
             const target = slTargets[i];
             const screenId = target.id;
             const tag = '[' + (i + 1) + '/' + slTargets.length + '] ' + screenId;
+            setSlRun((r) => (r ? Object.assign({}, r, { phase: 'gen', si: i, frame: 0 }) : r));
             s.pushLog({ lv: 'info', cat: 'lens', msg: '结构光 · 生成序列 · ' + tag + '…' });
             const gen = await meshVisualGenerateStructuredLight(
               proj.path, screenId, null, 6, null, false, null);
             const framesDir = joinPath(gen.output_dir, 'frames');
             const slMeta = joinPath(gen.output_dir, 'sl_meta.json');
-            /* sidecar 默认 hold_ms=500 → 播放 fps=2（与 sl_meta.sequence.hold_ms 一致） */
-            const fps = 2.0;
-            const durationS = Math.max(12, (Number(gen.n_frames) || 12) / fps + 8);
+            /* 播放速率取生成结果回读的真值（1000/hold_ms）；缺失时退回历史默认 2fps */
+            const fps = Number(gen.playback_fps) > 0 ? Number(gen.playback_fps) : 2.0;
+            setSlRun((r) => {
+              if (!r) return r;
+              const screens = r.screens.slice();
+              screens[i] = { id: screenId, name: screenId, frames: Number(gen.n_frames) || 0,
+                fps, dots: Number(gen.n_dots) || 0, holdMs: Number(gen.hold_ms) || 500 };
+              return Object.assign({}, r, { screens });
+            });
+            /* --duration 只是失控保险（正常路径由 finish 命令提前优雅收尾），但它
+               的时钟从首帧就开始跑：nDisplay push（逐帧 scp）+ 预载都发生在录像滚动
+               之后、播放之前，后端自身给预载留 180s（SEQUENCE_PRELOAD_TIMEOUT_SECS），
+               旧的 +8s 余量会让录像在预载期间到点退出、丢掉哨兵帧且解码前毫无征兆。 */
+            const durationS = Math.max(60, (Number(gen.n_frames) || 12) / fps + 240);
             const videoOut = joinPath(sessionOut, 'video_' + screenId);
+            lastVideoOut = videoOut;
             s.pushLog({ lv: 'info', cat: 'lens', msg: '结构光 · 开始录像 · ' + tag + ' · <b>' + (profile.name || 'Profile') + '</b>' });
             const vArgs = ['capture', 'video',
               '--backend', profile.videoBackend, '--device', String(profile.device),
-              '--duration', String(durationS), '--out', videoOut, '--output', 'json'];
+              '--duration', String(durationS), '--out', videoOut, '--output', 'json',
+              '--preview-port', '0'];
             if (profile.fmtMode === 'manual') {
               if (profile.width) vArgs.push('--width', String(profile.width));
               if (profile.height) vArgs.push('--height', String(profile.height));
@@ -1456,8 +1535,8 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
             const vResp = await spawnSidecarStreaming('vpcal', vArgs);
             videoTaskId = vResp.task_id;
             setStillsTask(vResp.task_id);
-            /* 略等录像落盘，再起播（哨兵软同步，起点偏差无影响） */
-            await new Promise((r) => setTimeout(r, 800));
+            /* 等首帧确认落盘再起播（哨兵软同步，起点偏差无影响） */
+            await waitCaptureFirstFrame(videoTaskId, 15000);
             s.pushLog({ lv: 'info', cat: 'lens', msg: '结构光 · nDisplay 播放序列 · ' + tag + ' · ' + gen.n_frames + ' 帧 @ ' + fps + ' fps' });
             const screenOrigin = window.stageScreenOriginPx
               ? window.stageScreenOriginPx(proj.config.screens, screenId)
@@ -1474,6 +1553,9 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
             slPlayReqRef.current = playReq;
             await outputPlaySequence(playReq);
             slPlayReqRef.current = null;
+            setSlRun((r) => (r ? Object.assign({}, r, {
+              phase: 'screenDone', frame: (r.screens[i] || {}).frames || r.frame,
+            }) : r));
             if (s.setDeployState) s.setDeployState('showing');
             /* finish（非 cancel）：等录像进程优雅落盘 frames.jsonl + 最后一帧再退出，
                避免 cancel 的「关 stdin 无效 → 3s grace → SIGKILL」在写入中途打断，
@@ -1482,6 +1564,7 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
             videoTaskId = null;
             setStillsTask(null);
             const corrOut = joinPath(sessionOut, 'corr_' + screenId + '.json');
+            setSlRun((r) => (r ? Object.assign({}, r, { phase: 'decode' }) : r));
             s.pushLog({ lv: 'info', cat: 'lens', msg: '结构光 · 解码 · ' + tag + '…' });
             const dec = await meshVisualDecodeStructuredLight(
               videoOut, slMeta, corrOut, null, null, true);
@@ -1492,6 +1575,7 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
             solveTargets.push({ screenJson: target.screenJson, slMeta, corr: corrOut });
           }
 
+          setSlRun((r) => (r ? Object.assign({}, r, { phase: 'solve' }) : r));
           s.pushLog({ lv: 'info', cat: 'lens', msg: '结构光 · fixed-observation-sl 求解 Stage pose…' });
           const fixedObsJson = joinPath(sessionOut, 'fixed_observation_result.json');
           const poseJson = joinPath(sessionOut, 'stage_pose.json');
@@ -1504,6 +1588,8 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
             lensPath: cam.masterLensPath || null,
             outPath: fixedObsJson,
             stagePoseOut: poseJson,
+            staticOverlayOut: joinPath(sessionOut, 'static_overlay.png'),
+            overlayImage: lastVideoOut ? joinPath(lastVideoOut, '000000.png') : null,
             cameraId: camId,
             transferPath: 'volo-stills',
             attestFocusZoom: true,
@@ -1561,6 +1647,7 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
               + slTargets.map((t) => t.id).join('、') + '</b>',
           });
           void refreshSessions();
+          setSlRun((r) => (r ? Object.assign({}, r, { phase: 'done' }) : r));
         } catch (e) {
           await abortSlPlayback();
           if (videoTaskId) {
@@ -1568,6 +1655,7 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
             setStillsTask(null);
           }
           s.setCapState('idle');
+          setSlRun((r) => (r ? Object.assign({}, r, { failed: true, failPhase: r.phase }) : r));
           s.pushLog({ lv: 'err', cat: 'lens', msg: '结构光采集失败 · ' + (e && e.message ? e.message : e) });
         }
         return;
@@ -1681,6 +1769,9 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
         setStarting(false);
       }
     };
+    /* 结构光失败态「重试」：整轮重跑（逐屏轮播从头生成即幂等，失败屏的
+       会话目录被新一轮覆盖）；start() 自身会重置 slRun。 */
+    const retrySl = () => { if (!capturing && !startingRef.current) void start(); };
     const stop = async () => {
       await abortSlPlayback();
       if (!tracked && stillsTaskId) {
@@ -1958,7 +2049,7 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
             displayUrl
               ? h('img', { className: 'lc-feed', src: displayUrl, alt: '现场画面', style: { width: '100%', height: '100%', objectFit: 'contain', display: 'block' } })
               : backend === 'synthetic'
-                ? h(CameraSignal, { method, capturing, detect: !isSl && capturing, sl: isSl, slFrame })
+                ? h(CameraSignal, { method, capturing, detect: !isSl && capturing })
                 : h('div', { className: 'lc-nosig' },
                     h('div', { className: 'lc-nosig-ic' }, h(Icon, { name: 'camera', size: 30, stroke: 1.3 })),
                     h('div', { className: 'lc-nosig-t' }, '监看重连中…'),
@@ -1978,7 +2069,7 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
                 h('span', { className: 'lc-sigchip' }, '已采 ', h('b', { style: { color: '#fff', margin: '0 2px' } }, capN), ' / 目标 ' + targetM))) : null,
             capturing && isQspFixed && collectingMasterLens ? h('div', { className: 'lc-hud lc-hud--tr' },
               h('span', { className: 'lc-sigchip' }, '已采 ', h('b', { style: { color: '#fff', margin: '0 2px' } }, capN), ' / 目标 ' + targetM)) : null,
-            capturing && isSl ? h(SlPlaybackBar, { slFrame }) : null)
+            isSl && slRun && (capturing || slRun.failed) ? h(SlPlaybackBar, { run: slRun, onRetry: retrySl }) : null)
         : h('div', { className: 'lc-nosig' },
             h('div', { className: 'lc-nosig-ic' }, h(Icon, { name: 'camera', size: 30, stroke: 1.3 })),
             h('div', { className: 'lc-nosig-t' }, monitor.sig === 'lost' ? '信号丢失' : '无信号'),
@@ -2061,9 +2152,9 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
         h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 } }, methodBadge(method)),
         isSl
           ? h('div', { className: 'lc-param-grid3' },
-              slCell('点间距', CAL_SL_SEQ.spacing_mm, 'mm'),
-              slCell('总帧数', CAL_SL_SEQ.frames, ''),
-              slCell('预计时长', '2:10', ''))
+              slCell('点位数', slSeqTotals.dots || '—', ''),
+              slCell('总帧数', slSeqTotals.frames || '—', ''),
+              slCell('预计时长', slSeqTotals.duration || '—', ''))
           : h(React.Fragment, null,
               h('div', { className: 'lc-toggle' }, h('div', { className: 'm' }, h('div', { className: 't' }, '目标点灰码同步'), h('div', { className: 's' }, '播放器与采集帧格雷码对齐')),
                 h(Switch, { isSelected: gsync, onChange: setGsync })),
@@ -2166,7 +2257,12 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
         ? h(React.Fragment, null,
             h(Button, { variant: 'negative', size: 'M', icon: h(Icon, { name: 'x', size: 15 }), onPress: stop }, '停止采集'),
             h('div', { className: 'lc-prog' },
-              isSl ? h('span', { className: 'lc-prog-n' }, '帧 ', slFrame + 1, h('span', { className: 'm' }, ' / ' + CAL_SL_SEQ.frames))
+              isSl ? h('span', { className: 'lc-prog-n' },
+                  (slRun && slRun.phase === 'playing' && slRun.screens[slRun.si])
+                    ? ['帧 ', Math.min(slRun.frame + 1, slRun.screens[slRun.si].frames),
+                       h('span', { className: 'm', key: 'm' }, ' / ' + slRun.screens[slRun.si].frames)]
+                    : (slRun && slRun.failed) ? CAL_SL_FAIL.label
+                      : (CAL_SL_PHASES[(slRun && slRun.phase) || 'gen'] || CAL_SL_PHASES.gen).label)
                    : h('span', { className: 'lc-prog-n' }, '已采点位 ', capN, h('span', { className: 'm' }, ' / ' + targetM))),
             arButton)
         : h(React.Fragment, null,
@@ -2371,20 +2467,54 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
   }
 
   /* 结构光播放状态段（叠加在信号区顶部） */
-  function SlPlaybackBar({ slFrame }) {
-    const seq = CAL_SL_SEQ;
-    const inAnchor = slFrame < seq.anchorFrames;
-    const pct = (slFrame + 1) / seq.frames * 100;
-    const beats = 6, active = slFrame % beats;
-    const mm = Math.floor((slFrame / seq.fps) / 60), ss = Math.floor((slFrame / seq.fps) % 60);
+  /* 结构光播放状态段（叠加在信号区顶部）· 绑定真实采集相位（CD 0813） */
+  function SlPlaybackBar({ run, onRetry }) {
+    const scr = run.screens || [];
+    const cur = scr[run.si] || scr[0] || { frames: 0, fps: 2, name: '' };
+    const pad = (n) => String(n).padStart(2, '0');
+    const screenChip = scr.length > 1
+      ? h('span', { className: 'lc-sl-phase anchor' }, h(Icon, { name: 'panel', size: 12 }),
+          '屏 ' + (run.si + 1) + '/' + scr.length + ' · ' + cur.name)
+      : null;
+    if (run.failed) {
+      return h('div', { className: 'lc-slbar' },
+        h('div', { className: 'lc-sl-top' },
+          h('span', { className: 'lc-sl-phase anchor' }, h(Icon, { name: 'alert', size: 12 }), CAL_SL_FAIL.label),
+          screenChip,
+          h('span', { className: 'lc-sl-rec' }, run.failPhase === 'playing'
+            ? '中断于帧 ' + Math.min(run.frame + 1, cur.frames || 1) + ' / ' + (cur.frames || '—')
+            : '中断于' + (CAL_SL_PHASES[run.failPhase] || CAL_SL_PHASES.push).label)),
+        h('div', { className: 'lc-sl-still' }, h(Icon, { name: 'alert', size: 12 }),
+          h('span', null, CAL_SL_FAIL.detail + ' · ' + CAL_SL_FAIL.retry),
+          h('span', { style: { flex: 1 } }),
+          h(Button, { variant: 'secondary', size: 'S', icon: h(Icon, { name: 'sync', size: 13 }), onPress: onRetry }, '重试')));
+    }
+    const ph = CAL_SL_PHASES[run.phase] || CAL_SL_PHASES.gen;
+    const playing = run.phase === 'playing';
+    /* 已完成帧（跨屏累计）与序列总帧；REC 为序列时间码（帧 ÷ 各屏 fps 折算） */
+    let done = 0, total = 0, seconds = 0;
+    scr.forEach((sc, i) => {
+      total += sc.frames || 0; seconds += (sc.frames || 0) / (sc.fps || 2);
+      if (i < run.si) done += sc.frames || 0;
+    });
+    if (playing) done += Math.min(run.frame, cur.frames || 0);
+    else if (run.phase === 'screenDone' || run.phase === 'decode' || run.phase === 'solve' || run.phase === 'done') done += cur.frames || 0;
+    const elapsed = Math.round(total ? done * (seconds / total) : 0);
+    const pct = (run.phase === 'solve' || run.phase === 'done') ? 100 : total ? done / total * 100 : 0;
+    const stepIdx = CAL_SL_PHASE_ORDER.indexOf(run.phase === 'done' ? 'solve' : run.phase);
     return h('div', { className: 'lc-slbar' },
       h('div', { className: 'lc-sl-top' },
-        h('span', { className: 'lc-sl-phase ' + (inAnchor ? 'anchor' : 'encode') }, h(Icon, { name: inAnchor ? 'pin' : 'grid', size: 12 }), inAnchor ? '锚帧' : '编码帧'),
-        h('span', { className: 'lc-sl-frames' }, '帧 ' + (slFrame + 1), h('span', { className: 'm' }, ' / ' + seq.frames)),
-        h('span', { className: 'lc-sl-rec' }, h('span', { className: 'lc-rec' }), 'REC ' + String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0'))),
+        h('span', { className: 'lc-sl-phase ' + (playing ? 'encode' : 'anchor') },
+          ph.spin ? h('span', { className: 'ag-spin' }, h(Icon, { name: ph.icon, size: 12 })) : h(Icon, { name: ph.icon, size: 12 }), ph.label),
+        screenChip,
+        playing ? h('span', { className: 'lc-sl-frames' }, '帧 ' + Math.min(run.frame + 1, cur.frames || 1),
+          h('span', { className: 'm' }, ' / ' + (cur.frames || '—') + ' · ' + (cur.fps || 2) + ' fps')) : null,
+        h('span', { className: 'lc-sl-rec' }, h('span', { className: 'lc-rec' }), 'REC ' + pad(Math.floor(elapsed / 60)) + ':' + pad(elapsed % 60))),
       h('div', { className: 'lc-sl-prog' }, h('i', { style: { width: pct + '%' } })),
-      h('div', { className: 'lc-sl-rhythm' }, Array.from({ length: beats }).map((_, i) => h('span', { key: i, className: 'beat' + (i === active ? ' on' : '') }))),
-      h('div', { className: 'lc-sl-still' }, h(Icon, { name: 'alert', size: 12 }), '播放期间机位必须保持静止'));
+      h('div', { className: 'lc-sl-rhythm' }, CAL_SL_PHASE_ORDER.map((p, i) =>
+        h('span', { key: p, className: 'beat' + (i <= stepIdx ? ' on' : ''), title: CAL_SL_PHASES[p].label }))),
+      (run.phase === 'preload' || playing)
+        ? h('div', { className: 'lc-sl-still' }, h(Icon, { name: 'alert', size: 12 }), '播放期间机位必须保持静止') : null);
   }
 
   /* ============================================================
@@ -2608,7 +2738,6 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
 
   /* 校正方式 · 下拉列表选择（弹出 popover；原来的三张卡在窄侧栏里占掉大半屏） */
   function MethodOptions({ s }) {
-    const slUnlocked = s.calSlUnlock;
     const [open, setOpen] = useState(false);
     const ref = useRef(null);
     useEffect(() => {
@@ -2623,7 +2752,7 @@ import { computeFramingScore, cabinetsNormBBox } from "../lib/framingMatch";
         h('span', { className: 'v' }, cur.name),
         h(Icon, { name: 'chevd', size: 13, style: { marginLeft: 'auto' } })),
       open ? h('div', { className: 'popover lc-mpop' }, CAL_METHODS.map((m) => {
-        const avail = m.avail || (m.id === 'sl' && slUnlocked);
+        const avail = m.avail;
         const on = s.lensCalMethod === m.id;
         return h('div', { key: m.id, className: 'pop-i' + (on ? ' on' : '') + (avail ? '' : ' is-disabled'),
           title: avail ? '' : '该方式即将支持',

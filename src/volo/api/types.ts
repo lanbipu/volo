@@ -1283,6 +1283,10 @@ export interface GenerateStructuredLightResult {
   output_dir: string;
   n_dots: number;
   n_frames: number;
+  /** 每逻辑帧持帧时长（sl_meta.json sequence.hold_ms 回读）。 */
+  hold_ms: number;
+  /** 逻辑帧播放速率 = 1000 / hold_ms（非 sequence.mp4 的预览视频帧率）。 */
+  playback_fps: number;
 }
 
 export interface DecodeStructuredLightResult {
