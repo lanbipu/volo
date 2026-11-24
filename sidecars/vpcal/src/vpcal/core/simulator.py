@@ -102,26 +102,84 @@ def screen_center_rh(screen: ScreenDefinition) -> Array:
     return pts.mean(axis=0)
 
 
+def _canonical_sign(v: Array, tol: float = 1e-9) -> Array:
+    """Flip ``v`` so its largest-magnitude component is positive.
+
+    SVD singular vectors are only defined up to sign, and the sign LAPACK
+    returns depends on the kernel (e.g. AVX-512 vs. AVX2 OpenBLAS paths), so a
+    fixed seed could otherwise yield mirrored poses on different hosts.  Ties
+    within ``tol`` (far above float noise) resolve to the lowest axis index so
+    a 45° direction cannot flip on noise either.
+    """
+    a = np.abs(v)
+    i = int(np.flatnonzero(a >= a.max() - tol)[0])
+    return -v if v[i] < 0 else v
+
+
+def _screen_markers_and_facing(screen: ScreenDefinition) -> tuple[Array, Array]:
+    """RH marker points plus the screen's summed outward (viewer-side) normal.
+
+    Per marker the outward normal is ``∂P/∂u × ∂P/∂v`` in the right-hand frame
+    (u → pattern right, v → pattern up), i.e. the side the VP-QSP pattern reads
+    unmirrored from — the same right × up convention as :func:`_quad_normal`.
+    """
+    M = _M_UE[:3, :3]
+    sections = {sec.name: sec for sec in screen.sections}
+    pts, facing, e = [], np.zeros(3), 1e-4
+    for m in enumerate_markers(screen, markers_per_cabinet=screen.markers_per_cabinet):
+        pts.append(M @ np.asarray(m.world))
+        sec = sections[m.section_name]
+        du = M @ (np.asarray(sec.uv_to_world(m.u + e, m.v)) - np.asarray(sec.uv_to_world(m.u - e, m.v)))
+        dv = M @ (np.asarray(sec.uv_to_world(m.u, m.v + e)) - np.asarray(sec.uv_to_world(m.u, m.v - e)))
+        n = np.cross(du, dv)
+        nn = np.linalg.norm(n)
+        if nn > 0:
+            facing += n / nn
+    return np.array(pts), facing
+
+
+def _standoff_frame(
+    points: Array, facing: Array | None = None
+) -> tuple[Array, float, float, Array, Array, Array]:
+    """Host-independent PCA standoff frame of a marker point cloud.
+
+    Returns ``(center, in_plane_extent, radius, tangent_u, tangent_v, normal)``:
+    ``tangent_u``/``tangent_v`` span the cloud, ``normal`` is the camera
+    standoff direction and ``(u, v, n)`` is right-handed (``u × v = n``).
+
+    SVD singular vectors are sign-ambiguous and the sign differs between LAPACK
+    kernels, so every axis is pinned here rather than taken from ``vt``:
+    ``tangent_u`` by :func:`_canonical_sign`; ``normal`` toward ``facing`` (the
+    side the markers face) when given, else toward the side with more markers
+    in front, with ties kept at the canonical sign; ``tangent_v = n × u``.
+    full_matrices=True guarantees a complete 3D basis even when the cloud is
+    rank-deficient (e.g. a single planar cabinet).
+    """
+    center = points.mean(axis=0)
+    _u, s, vt = np.linalg.svd(points - center, full_matrices=True)
+    tangent_u = _canonical_sign(vt[0])
+    normal = _canonical_sign(vt[2])
+    in_plane_extent = float(2.0 * s[0] / np.sqrt(max(len(points) - 1, 1)))
+    radius = max(in_plane_extent * 0.9, 1500.0)
+    f = 0.0 if facing is None else float(np.asarray(facing) @ normal)
+    if facing is not None and abs(f) > 1e-6 * (np.linalg.norm(facing) or 1.0):
+        if f < 0:
+            normal = -normal
+    elif _front_count(points, center + radius * normal, center) < _front_count(
+        points, center - radius * normal, center
+    ):
+        normal = -normal
+    tangent_v = np.cross(normal, tangent_u)
+    return center, in_plane_extent, radius, tangent_u, tangent_v, normal
+
+
 def generate_camera_poses(
     screen: ScreenDefinition, num_poses: int, rng: np.random.Generator
 ) -> list[Array]:
     """Generate ``num_poses`` camera-in-stage poses looking at the screen."""
-    markers = np.array(
-        [_M_UE[:3, :3] @ np.asarray(m.world) for m in enumerate_markers(screen, markers_per_cabinet=screen.markers_per_cabinet)]
-    )
-    center = markers.mean(axis=0)
-    # PCA (full 3x3 basis): tangent_u/_v span the screen, normal is the standoff
-    # direction.  full_matrices=True guarantees a complete 3D basis even when the
-    # marker cloud is rank-deficient (e.g. a single planar cabinet).
-    _u, s, vt = np.linalg.svd(markers - center, full_matrices=True)
-    tangent_u, tangent_v, normal = vt[0], vt[1], vt[2]
-    in_plane_extent = float(2.0 * s[0] / np.sqrt(max(len(markers) - 1, 1)))
-    radius = max(in_plane_extent * 0.9, 1500.0)
-    # Orient the normal toward the side most markers face (more in front of camera).
-    if _front_count(markers, center + radius * normal, center) < _front_count(
-        markers, center - radius * normal, center
-    ):
-        normal = -normal
+    markers, facing = _screen_markers_and_facing(screen)
+    # PCA: tangent_u/_v span the screen, normal is the standoff direction.
+    center, in_plane_extent, radius, tangent_u, tangent_v, normal = _standoff_frame(markers, facing)
 
     poses = []
     for _ in range(num_poses):
@@ -151,18 +209,8 @@ def generate_trajectory_poses(
     image and tracking can be interpolated meaningfully — the basis for the
     moving-capture timing study (error-budget B3).
     """
-    markers = np.array(
-        [_M_UE[:3, :3] @ np.asarray(m.world) for m in enumerate_markers(screen, markers_per_cabinet=screen.markers_per_cabinet)]
-    )
-    center = markers.mean(axis=0)
-    _u, s, vt = np.linalg.svd(markers - center, full_matrices=True)
-    tangent_u, tangent_v, normal = vt[0], vt[1], vt[2]
-    in_plane_extent = float(2.0 * s[0] / np.sqrt(max(len(markers) - 1, 1)))
-    radius = max(in_plane_extent * 0.9, 1500.0)
-    if _front_count(markers, center + radius * normal, center) < _front_count(
-        markers, center - radius * normal, center
-    ):
-        normal = -normal
+    markers, facing = _screen_markers_and_facing(screen)
+    center, in_plane_extent, radius, tangent_u, tangent_v, normal = _standoff_frame(markers, facing)
 
     phase0 = float(rng.uniform(0.0, 2.0 * np.pi))
     poses = []
@@ -678,18 +726,9 @@ def generate_poses_for_points(
     ``preferred_normal`` picks the standoff side (e.g. the mean marker facing
     direction); otherwise the side facing more points is chosen.
     """
-    center = points.mean(axis=0)
-    _u, s, vt = np.linalg.svd(points - center, full_matrices=True)
-    tangent_u, tangent_v, normal = vt[0], vt[1], vt[2]
-    in_plane_extent = float(2.0 * s[0] / np.sqrt(max(len(points) - 1, 1)))
-    radius = max(in_plane_extent * 0.9, 1500.0)
-    if preferred_normal is not None and float(preferred_normal @ normal) < 0:
-        normal = -normal
-    elif preferred_normal is None and _front_count(points, center + radius * normal, center) < _front_count(
-        points, center - radius * normal, center
-    ):
-        normal = -normal
-
+    center, in_plane_extent, radius, tangent_u, tangent_v, normal = _standoff_frame(
+        points, preferred_normal
+    )
     poses = []
     if trajectory:
         phase0 = float(rng.uniform(0.0, 2.0 * np.pi))
