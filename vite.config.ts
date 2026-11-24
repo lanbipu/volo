@@ -1,6 +1,6 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import macros from "unplugin-parcel-macros";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
@@ -16,25 +16,25 @@ export default defineConfig(async () => ({
     __KEYER_TESTSET_FS__: JSON.stringify(`${root}/testdata/keyer/testset`),
     __KEYER_VIDEO_FS__: JSON.stringify(`${root}/testdata/keyer/greenscreen_1080p60_h264.mp4`),
   },
-  // macros.vite() 必须在 react() 前：处理 @react-spectrum/s2 的 style() 宏
-  plugins: [macros.vite(), react()],
+  plugins: [react()],
 
-  // S2 style-macro 生成的 CSS 合并为单 chunk + lightningcss 压缩
+  resolve: {
+    // 新结构的路径别名（docs/architecture/frontend-structure.md §2）。
+    // `@/api` 暂指旧址 src/volo/api；旧壳删除后整体移到 src/api，只改这一行。
+    alias: [
+      { find: /^@\/api(\/|$)/, replacement: `${root}/src/volo/api$1` },
+      { find: /^@\//, replacement: `${root}/src/` },
+    ],
+  },
+
   build: {
     target: ["es2022"],
     cssMinify: "lightningcss",
-    rollupOptions: {
-      output: {
-        manualChunks(id: string) {
-          if (
-            /macro-(.*)\.css$/.test(id) ||
-            /@react-spectrum\/s2\/.*\.css$/.test(id)
-          ) {
-            return "s2-styles";
-          }
-        },
-      },
-    },
+  },
+
+  test: {
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx", "scripts/**/*.test.mjs"],
+    environment: "node",
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

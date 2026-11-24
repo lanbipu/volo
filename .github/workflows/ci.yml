@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   frontend:
-    name: Frontend (tsc + vite build)
+    name: Frontend (tsc + lint + test + vite build)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +24,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec tsc --noEmit
+      # 新结构守卫：ESLint / stylelint / 旧壳冻结 / tokens.css 与 tokens.json 一致（frontend-structure.md §8 P0）
+      - run: pnpm lint
+      - run: pnpm test
       - run: pnpm exec vite build
 
   rust:

@@ -9,6 +9,8 @@ Volo —— LanX 出品的虚拟制作桌面工具（**Tauri 2 + React**，UI �
 - **UI 流程**：先在 Claude Design（claude.ai/design，底层基于 RS 的 design system）设计 / 迭代 → handoff（HTML/JSX 原型 + 它自带的 design token CSS），本仓照确认后的设计稿用**全自定义 CSS 1:1 移植**实现，不接 `@react-spectrum/s2` 组件库。
 - **全部模块都走这条路**，不只 Cache 页——Cache 页是这套做法最早落地的范例，不是例外。RS2 只作**视觉参考**（间距/字阶/状态色这类设计直觉可以借鉴），代码里不实际引入其组件；需要参考时查 repo 自带 **S2 MCP server**：`../../person/design/react-spectrum/packages/dev/mcp/s2`。
 - 暗 / 亮双主题走 Claude Design 原型自带的 `data-theme` attribute + CSS 变量机制（不是 RS2 的 `colorScheme` Provider）；中文 fallback 思源黑体；状态三通道（色 + 图标 + 文字）。
+- **新 UI 的 design system 基准**：Claude artifact「Linear」https://claude.ai/artifact/E8kZ3vwPMmDc9EjiSa3Kuh （内部名 Runyard，`ry-` 类前缀，`data-theme` + `data-ry-density`）。仓库里 `src/ui/tokens.json` 是它的拷贝，`pnpm tokens` 生成 `src/ui/tokens.css`（不手改）。
+- **「1:1」= 渲染结果与设计稿一致**，不是照搬原型源码；原型 JSX 拆成 `ui/` 组件 + 页面组件 + 本页 `*.module.css` 后移植。
 
 
 
@@ -44,11 +46,17 @@ Volo —— LanX 出品的虚拟制作桌面工具（**Tauri 2 + React**，UI �
 
 ## 代码结构
 
-前端 `src/volo/`（shell + pages/ 按页面平铺）、Rust `crates/`（cache-core、mesh-* 等）+ `src-tauri`（约 210 个 Tauri command，见 `lib.rs` invoke_handler）、Python/C++ sidecar 在 `sidecars/`。
+前端正从旧壳迁到新结构（LAN-20，方案见 `docs/architecture/frontend-structure.md`，已用 `git add -f` 入库）：
+
+- **新结构** `src/{app,ui,features,lib}`：`app/` 外壳 + 页面表、`ui/` design system 组件（无业务）、`features/<域>/{model,ui}`（Zustand store + TanStack Query + 页面）、`lib/` 通用工具与 Tauri 事件桥。规则由 `pnpm lint` 强制：不写 `@ts-nocheck` / `window.*` 全局；`invoke` / `listen` 只在 `api/`（及 `lib/events.ts`）；跨 feature 只 import 对方 `index`；页面样式只用 `*.module.css`，禁 `!important` 与字面色值；**新 handoff 不再叠皮肤层**。
+- **旧壳** `src/volo/`（shell + pages/ 平铺 + 9 层皮肤 CSS）**已冻结**：只改不增（`scripts/frontend/legacy-volo-files.txt` 基线），逐页被新结构替换后删除。`src/volo/api/` 保留，新代码经别名 `@/api` 引用。
+- 新 / 旧壳切换：URL `?shell=next|legacy`、localStorage `volo-shell`，或原生 App 里 ⌘/Ctrl+⌥/Alt+⇧+S；默认旧壳。
+
+Rust `crates/`（cache-core、mesh-* 等）+ `src-tauri`（约 210 个 Tauri command，见 `lib.rs` invoke_handler）、Python/C++ sidecar 在 `sidecars/`。
 
 ## 开发 / 构建（实测）
 
-- 前端验证：`pnpm exec tsc --noEmit` + `pnpm exec vite build`；后端快验：`cargo check --manifest-path src-tauri/Cargo.toml`。
+- 前端验证：`pnpm exec tsc --noEmit` + `pnpm lint` + `pnpm test` + `pnpm exec vite build`；后端快验：`cargo check --manifest-path src-tauri/Cargo.toml`。
 - 跑原生 App：`pnpm tauri dev`（devUrl :1420）。在 `.claude/worktrees/*` 里 target/ 是空的会从头编 → 把 `CARGO_TARGET_DIR` 指到主仓的 `target/`（如 `CARGO_TARGET_DIR=<主仓路径>/target`）复用热缓存，增量编译数秒。
 - `tauri dev` 后台 detached 启动时**不会**自动重编 Rust 改动 → 改了 `src-tauri` 要手动重启，跑 `./scripts/restart-dev.sh`（kill 旧进程 + 重新后台启动，日志写到仓库根目录 `volo-dev.log`，已 gitignore）。
 
