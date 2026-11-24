@@ -472,6 +472,9 @@ def stills(ctx, backend, device, width, height, fps, transfer_function, preview_
         )
 
         def _detect(gray):
+            # Gate counting only: summarize_detections counts every decoded
+            # marker regardless of confidence, so the missing screen-layout mpc
+            # (topology down-weights, never drops) cannot change the gate.
             dets = detect_markers(gray_to_uint8(gray))
             return summarize_detections(dets, gray.shape)
 

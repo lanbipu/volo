@@ -99,3 +99,23 @@ def test_generate_rejects_non_positive_dimensions(tmp_path):
 def test_reserved_screen_id_is_out_of_normal_range():
     # 4-bit VP-QSP screen_id space is 0-15; MAPPING_SCREEN_ID must stay in range.
     assert 0 <= MAPPING_SCREEN_ID <= 15
+
+
+def test_detection_independent_of_screen_layout(tmp_path):
+    # LAN-10: verify_mapping_image calls detect_markers without the screen's
+    # markers_per_cabinet. That is safe only while the pattern stays below the
+    # topology filter's minimum and every fiducial decodes at full confidence.
+    from vpcal.core.detector import DetectorConfig, detect_markers
+
+    assert NUM_FIDUCIALS < DetectorConfig().topology_neighbors + 1
+    out, _ = _generate(tmp_path)
+    img = cv2.imread(str(out), cv2.IMREAD_GRAYSCALE)
+    dets = [d for d in detect_markers(img) if d.marker_id.screen_id == MAPPING_SCREEN_ID]
+    assert len(dets) == NUM_FIDUCIALS
+    assert all(d.marker_id.local_id == 0 for d in dets)
+    assert all(d.confidence >= 1.0 for d in dets)
+    for mpc in (1, 4):
+        cfg = DetectorConfig(markers_per_cabinet=mpc)
+        assert {(d.marker_id.cab_col, d.pixel_u, d.pixel_v) for d in detect_markers(img, config=cfg)} == {
+            (d.marker_id.cab_col, d.pixel_u, d.pixel_v) for d in dets
+        }
