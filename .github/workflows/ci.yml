@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend (tsc + vite build)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec tsc --noEmit
+      - run: pnpm exec vite build
+
+  rust:
+    # 只测 crates/*。src-tauri（包名 volo）需要系统 WebView 依赖和
+    # target/sidecar-vendor 资源目录，待本地核实后再加入。
+    name: Rust crates (cargo test)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --exclude volo
+
+  sidecars:
+    name: Sidecar ${{ matrix.sidecar }} (pytest)
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sidecar: mesh-vba
+            install: -e . pytest pytest-cov
+          - sidecar: tracksim
+            install: -e . pytest jsonschema
+          # vpcal：跳过 Ceres 原生求解器的编译，运行时回退到 scipy。
+          - sidecar: vpcal
+            install: . -C cmake.define.VPCAL_SKIP_SOLVER=ON pytest pytest-cov jsonschema
+    defaults:
+      run:
+        working-directory: sidecars/${{ matrix.sidecar }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: System libraries for OpenCV
+        run: sudo apt-get update && sudo apt-get install -y libgl1
+      - run: uv venv --python 3.12 .venv
+      - run: uv pip install --python .venv ${{ matrix.install }}
+      - run: .venv/bin/python -m pytest -q
