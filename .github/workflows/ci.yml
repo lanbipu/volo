@@ -83,7 +83,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libgl1
       - run: uv venv --python 3.12 .venv
       - run: uv pip install --python .venv ${{ matrix.install }}
-      # 编译失败时 solver 会静默回退 scipy，这里显式断言原生模块已加载。
+      # tests/conftest.py 把 src/ 插到 sys.path 最前，pytest 实际导入的是源码树而非
+      # site-packages，所以把编译产物拷进 src/vpcal；再按同一导入路径断言原生模块
+      # 可用（否则 C++ 用例会静默 skip、solver 回退 scipy）。
       - if: matrix.require_cpp
-        run: .venv/bin/python -c "from vpcal.core.solver import cpp_available; assert cpp_available(), 'native solver not built'"
+        run: |
+          cp .venv/lib/python3.12/site-packages/vpcal/_vpcal_solver*.so src/vpcal/
+          PYTHONPATH=src .venv/bin/python -c "import vpcal; from vpcal.core.solver import cpp_available; assert vpcal.__file__.startswith('$PWD/src/'), vpcal.__file__; assert cpp_available(), 'native solver not built'"
       - run: .venv/bin/python -m pytest -q -rs
