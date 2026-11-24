@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend (tsc + vite build)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec tsc --noEmit
+      - run: pnpm exec vite build
+
+  rust:
+    name: Rust crates (cargo test)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --exclude volo
+
+  src-tauri:
+    # target/sidecar-vendor 由 src-tauri/build.rs 自建；pdf_render 有 Linux 回退。
+    # 不带 custom-protocol feature 即 dev 模式（走 devUrl），不嵌入 dist。
+    name: src-tauri (cargo test -p volo)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p volo
+
+  sidecars:
+    name: Sidecar ${{ matrix.name }} (pytest)
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: mesh-vba
+            sidecar: mesh-vba
+            install: -e . pytest pytest-cov
+          - name: tracksim
+            sidecar: tracksim
+            install: -e . pytest jsonschema
+          # vpcal：跳过 Ceres 原生求解器的编译，运行时回退到 scipy。
+          - name: vpcal (scipy)
+            sidecar: vpcal
+            install: . -C cmake.define.VPCAL_SKIP_SOLVER=ON pytest pytest-cov jsonschema
+          # vpcal：FetchContent 源码编译 Eigen + Ceres + _vpcal_solver，覆盖原生求解器路径。
+          - name: vpcal (ceres)
+            sidecar: vpcal
+            install: . pytest pytest-cov jsonschema
+            require_cpp: true
+    defaults:
+      run:
+        working-directory: sidecars/${{ matrix.sidecar }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: System libraries for OpenCV
+        run: sudo apt-get update && sudo apt-get install -y libgl1
+      # 记录运行器 CPU：vpcal 手眼 PnP 用例在不同运行器上结果不一致，留作排查依据。
+      - name: Runner CPU
+        run: lscpu | grep -E '^(Model name|CPU\(s\))' ; grep -o -w -E 'avx512f|avx2' /proc/cpuinfo | sort -u
+      - run: uv venv --python 3.12 .venv
+      - run: uv pip install --python .venv ${{ matrix.install }}
+      # tests/conftest.py 把 src/ 插到 sys.path 最前，pytest 实际导入的是源码树而非
+      # site-packages，所以把编译产物拷进 src/vpcal；再按同一导入路径断言原生模块
+      # 可用（否则 C++ 用例会静默 skip、solver 回退 scipy）。
+      - if: matrix.require_cpp
+        run: |
+          cp .venv/lib/python3.12/site-packages/vpcal/_vpcal_solver*.so src/vpcal/
+          PYTHONPATH=src .venv/bin/python -c "import vpcal; from vpcal.core.solver import cpp_available; assert vpcal.__file__.startswith('$PWD/src/'), vpcal.__file__; assert cpp_available(), 'native solver not built'"
+      - run: .venv/bin/python -m pytest -q -rs

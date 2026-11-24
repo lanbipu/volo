@@ -149,6 +149,10 @@ def verify_mapping_image(
     margin = _margin_px(marker_px)
     expected = _expected_points(expected_width, expected_height, margin)
 
+    # No screen-layout config needed here: the pattern encodes every fiducial
+    # with local_id=0 (cabinet-centred, matches the default mpc=1), and with only
+    # NUM_FIDUCIALS markers the topology filter never runs (it needs
+    # topology_neighbors + 1 detections). Confidence is not filtered either.
     matched: dict[int, tuple[float, float]] = {}
     for d in detect_markers(img):
         marker_id = d.marker_id
