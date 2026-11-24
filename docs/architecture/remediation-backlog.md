@@ -34,12 +34,15 @@
 - **现象**：`README.md`、`PRODUCT.md`、`AGENTS.md` 仍写"用 React Spectrum 2 实现""各 crate 为占位 stub""约 96 个 command"，路径仍是 `src/features/...`。`AGENTS.md` 要求"用 `@react-spectrum/s2` 现成组件、不写自定义视觉"，与 `CLAUDE.md` 直接矛盾，按它干活的 agent 会做错。
 - **改法**：三份文档按 `CLAUDE.md` 和实际代码重写。
 
-### P0-2 文档入库策略 ⛔ 等决策
+### P0-2 文档入库策略 🟡
 
 - **现象**：`.gitignore` 第 43 行忽略整个 `docs/`（2026-06-29 的 `c412160` 起），仅 8 份被强制跟踪。`CLAUDE.md` 要求"涉及共享访问问题先读" `docs/architecture/ddc-credentials.md`，该文件不在仓里；`CLAUDE.md` 还引用了多条本机 auto-memory（`volo-razer-app-deployment`、`volo-native-ui-verification`），换机器后同样不存在。
 - **影响**：新 clone 或云端 agent 拿不到被标为"必读"的资料。
 - **待决策**：把承重文档强制入库（至少 `ddc-credentials.md`），还是从 `CLAUDE.md` 删掉对未入库文档的硬依赖。
 - **顺带**：`CLAUDE.md` 里的 `/Users/bip.lan/AIWorkspace/vp/volo/target` 是另一台机器的绝对路径。
+- **决策**（2026-11-24）：先删硬依赖，以后再入库。`ddc-credentials.md` 与两份 memory 只存在于另一台机器，内容到手后再强制入库。
+- **已做**（2026-11-24）：`CLAUDE.md` 三处引用改为「本机有则读、没有就向用户索要或以脚本为准」；`CARGO_TARGET_DIR` 的绝对路径换成主仓 `target/` 的写法。
+- **剩余**：拿到 `ddc-credentials.md` 后 `git add -f` 入库，并把两份 memory 整理成 `docs/guides/` 下的文档，再恢复 `CLAUDE.md` 的硬引用。
 
 ### P0-3 最小 CI 🟡
 
