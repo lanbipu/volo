@@ -9,7 +9,7 @@
      · 右栏「工程扫描与生成」—— 工程发现走中立模块 cacheProjectScan（与 PSO 各自独立入口），
        generate_ddc_pak 归约仍经 window.VOLO_CACHE_DDC 共享；只是把选工程 + 生成收进本页，不再借道检查器。
 
-   与 mock 设计稿的关键差异（见 auto-memory volo-cache-design-sync）：
+   与 mock 设计稿的关键差异：
      · 已部署列表来自真实扫描，不种 DEPLOYED_PAKS 假数据；PAK 文件名固定是
        DerivedDataCache\DDC.ddp（后端唯一命名，非按工程各自命名）。
      · 生成进度对话框由真实 runStreamingCmd 的 pct 驱动分桶阶段标签，不是 mock 的 setTimeout
