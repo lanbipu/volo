@@ -633,7 +633,9 @@ function App() {
   /* calSel 不持久化：检查器初始必收起（见上方 rightCollapsed 注释），若挂载时恢复选中，
      详情会卡在 0 宽列里不可见，且重点同一对象不产生上升沿、弹不开。 */
   const [calSel, setCalSel] = useState(null);
-  const [calStageType, setCalStageType] = useState(persisted.calStageType === 'ar' ? 'ar' : 'led');
+  /* 舞台类型不落 localStorage：真相在 project.yaml 的 stage_type，打开项目时由
+     calibrate.tsx openProjectPath 同步进来（LAN-9）。未打开项目前按 LED。 */
+  const [calStageType, setCalStageType] = useState('led');
   /* 视口交互态：object/cabinet 两级拾取模式（Tab 切换）；箱体模式子工具
      select/mask/refs（V/M/R 快捷键）；refs 工具当前指派角色。 */
   const [calMode, setCalMode] = useState(persisted.calMode === 'cabinet' ? 'cabinet' : 'object');
@@ -730,10 +732,10 @@ function App() {
   useEffect(() => {
     clearTimeout(persistTimer.current);
     persistTimer.current = setTimeout(() => {
-      try { localStorage.setItem('volo2', JSON.stringify({ page, selNode, cacheNav, ddcOpen, calSection, calActiveScreen, calPresets, calActivePreset, calStageType, calMode, calMeshVersion, calView, calArNav, calArToolsOpen, calLensState, calOutTarget, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed })); } catch (e) {}
+      try { localStorage.setItem('volo2', JSON.stringify({ page, selNode, cacheNav, ddcOpen, calSection, calActiveScreen, calPresets, calActivePreset, calMode, calMeshVersion, calView, calArNav, calArToolsOpen, calLensState, calOutTarget, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed })); } catch (e) {}
     }, 150);
     return () => clearTimeout(persistTimer.current);
-  }, [page, selNode, cacheNav, ddcOpen, calSection, calActiveScreen, calPresets, calActivePreset, calStageType, calMode, calMeshVersion, calView, calArNav, calArToolsOpen, calLensState, calOutTarget, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed]);
+  }, [page, selNode, cacheNav, ddcOpen, calSection, calActiveScreen, calPresets, calActivePreset, calMode, calMeshVersion, calView, calArNav, calArToolsOpen, calLensState, calOutTarget, platform, density, toolsNav, leftW, rightW, logH, freshSetup, leftCollapsed]);
 
   /* 禁掉桌面 WebView 的右键菜单（reload / 检查）；calibrate 画布另有本地 preventDefault */
   useEffect(() => {
@@ -1110,7 +1112,13 @@ function App() {
       h(TweakSection, { label: '校正 · Calibrate' }),
       h(TweakRadio, { label: '舞台类型', value: calStageType,
         options: [{ value: 'led', label: 'LED' }, { value: 'ar', label: 'AR' }],
-        onChange: setCalStageType }),
+        /* 写回当前项目的 project.yaml（LAN-9）；无项目时只切内存态 */
+        onChange: (v) => {
+          const C = window.VOLO_CAL2;
+          if (!C || !C.setProjectStageType) { setCalStageType(v); return; }
+          C.setProjectStageType(v, { setCalStageType }).catch((e) =>
+            pushLog({ lv: 'err', cat: 'calibrate', msg: '舞台类型保存失败 · ' + (e && e.message ? e.message : e) }));
+        } }),
       h(TweakSection, { label: '镜头校正流程 · Lens flow' }),
       TweakToggle ? h(TweakToggle, { label: '上屏已部署（黑场待机）', value: deployState !== 'idle', onChange: (v) => setDeployState(v ? 'standby' : 'idle') }) : null,
       TweakToggle ? h(TweakToggle, { label: '信号源就绪', value: capSignalReady, onChange: setCapSignalReady }) : null,

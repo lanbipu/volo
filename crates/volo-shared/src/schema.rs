@@ -51,6 +51,10 @@ pub fn dump_all() -> Value {
     add!("RecentProject", dto::RecentProject);
     add!("ProjectConfig", dto::ProjectConfig);
     add!("ProjectMeta", dto::ProjectMeta);
+    add!("StageType", dto::StageType);
+    add!("OutputTopology", dto::OutputTopology);
+    add!("OutputNode", dto::OutputNode);
+    add!("MachineRef", dto::MachineRef);
     add!("SurveyMethod", dto::SurveyMethod);
     add!("ScreenConfig", dto::ScreenConfig);
     add!("ShapePriorConfig", dto::ShapePriorConfig);

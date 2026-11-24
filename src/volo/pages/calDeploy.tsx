@@ -240,6 +240,7 @@ function firstPatternOutputDir() {
         name: nd.node_id || ('Node' + i),
         machineId: (nd.machine && (nd.machine.ip || nd.machine.hostname)) || '',
         host: (nd.machine && (nd.machine.ip || nd.machine.hostname)) || '—',
+        machine: nd.machine, /* 带上 machine_uid，供 matchRenderNode 优先按稳定 ID 匹配 */
         w: vp[2] || 1920, h: vp[3] || 1080,
         master: !!nd.primary,
         raw: nd,
@@ -351,7 +352,8 @@ function firstPatternOutputDir() {
         const raw = node.raw;
         const hostname = (raw.machine.hostname || '').trim().toLowerCase();
         const ip = (raw.machine.ip || '').trim().toLowerCase();
-        const machine = machines.find((c) =>
+        const uid = raw.machine.machine_uid;
+        const machine = (uid && machines.find((c) => c.uid === uid)) || machines.find((c) =>
           (hostname && (c.hostname || '').trim().toLowerCase() === hostname) ||
           (ip && (c.ip || '').trim().toLowerCase() === ip));
         if (!machine || machine.id == null) throw new Error(node.name + '：机器库中找不到 ' + (raw.machine.ip || raw.machine.hostname || '目标'));
@@ -554,7 +556,7 @@ function firstPatternOutputDir() {
             });
           /* 只对拓扑用到的机器拉 detail；失败时保留原机（勿写空 ue_installs，否则三态 null 变假阻塞） */
           const enriched = await Promise.all(RN.map(async (m) => {
-            const used = topo.nodes.some((nd) => matchNode(m, nd));
+            const used = topo.nodes.some((nd) => matchNode(m, nd, RN));
             const mid = m.id != null ? m.id : m.machineId;
             if (!used || mid == null) return m;
             try {

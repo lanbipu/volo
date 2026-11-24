@@ -12,7 +12,7 @@
      '--output','json'])；结果 envelope 形状核实自 sidecars/vpcal/src/vpcal/cli/quick.py
      （data.result = CalibrationResult, data.confidence/data.solver_backend 顶层镜像）。
    - screen.json：vpcal ScreenDefinition 与 Volo 自己的 project.yaml screens{} 是两套
-     不相关 schema（无转换代码，见调研），本批按 src/stage/model.ts 的既有假设——
+     不相关 schema（无转换代码，见调研），本批沿用（已删除的）src/stage/model.ts 的既有假设——
      screen.json 是运营者线下生成好、手选路径——每工程一份，localStorage 持久化，
      不臆造「屏幕名/cabinets/来自网格」等无数据来源的字段。
    - 跨 fiber 共享（Lens 画面 与 lensInspector 是外壳里两棵独立 Slot fiber，互不共享

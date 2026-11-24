@@ -13,6 +13,16 @@ pub struct RecentProject {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ProjectConfig {
+    /// Stable Stage identity (UUID). `project.yaml` *is* the Stage document;
+    /// this id is what Cache-side ownership rows (`stage_machines` /
+    /// `stage_projects` in the cache DB) reference. Absent on legacy projects
+    /// until first assigned via `mesh_app::projects::ensure_stage_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_id: Option<String>,
+    /// Stage kind — drives Calibrate's flow branch. Absent on legacy projects
+    /// → `led` (behaviour unchanged).
+    #[serde(default)]
+    pub stage_type: StageType,
     pub project: ProjectMeta,
     pub screens: BTreeMap<String, ScreenConfig>,
     pub coordinate_system: CoordinateSystemConfig,
@@ -29,6 +39,20 @@ pub struct ProjectConfig {
     /// legacy projects; see `docs/calibrate/lens-calibration-redesign-spec.md` §8.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cameras: Vec<ProjectCamera>,
+}
+
+/// Stage kind persisted in `project.yaml` (`stage_type:`).
+///
+/// - `led`    — LED volume: the wall is both marker carrier and imaging surface.
+/// - `ar`     — no-wall set: ground truth from a surveyed marker map.
+/// - `hybrid` — reserved (data-model placeholder; no joint solve yet).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum StageType {
+    #[default]
+    Led,
+    Ar,
+    Hybrid,
 }
 
 /// One stage camera persisted in `project.yaml` (`cameras:` list).
@@ -325,6 +349,11 @@ fn default_window_origin_px() -> [i32; 2] {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct MachineRef {
+    /// Stable machine id (`machines.uid` in the cache DB, a UUID). Survives
+    /// renames / IP changes; `hostname` / `ip` stay as the fallback match for
+    /// legacy topologies and for machines not yet registered on this host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_uid: Option<String>,
     pub hostname: String,
     pub ip: String,
 }
@@ -1286,6 +1315,43 @@ output:
     fn method_invalid_value_errors() {
         let result: Result<ProjectConfig, _> = serde_yaml::from_str(&build("  method: m3"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn stage_type_missing_defaults_to_led() {
+        let cfg = parse(&build(""));
+        assert_eq!(cfg.stage_type, StageType::Led);
+        assert!(cfg.stage_id.is_none());
+        let s = serde_yaml::to_string(&cfg).unwrap();
+        assert!(!s.contains("stage_id"), "absent stage_id must stay absent: {s}");
+    }
+
+    #[test]
+    fn stage_type_and_id_roundtrip() {
+        let yaml = format!("stage_id: 3f2a\nstage_type: ar\n{}", build(""));
+        let cfg = parse(&yaml);
+        assert_eq!(cfg.stage_type, StageType::Ar);
+        assert_eq!(cfg.stage_id.as_deref(), Some("3f2a"));
+        let s = serde_yaml::to_string(&cfg).unwrap();
+        assert!(s.contains("stage_type: ar"), "{s}");
+        assert!(s.contains("stage_id: 3f2a"), "{s}");
+        assert_eq!(parse(&s).stage_type, StageType::Ar);
+    }
+
+    #[test]
+    fn stage_type_invalid_value_errors() {
+        let yaml = format!("stage_type: dome\n{}", build(""));
+        assert!(serde_yaml::from_str::<ProjectConfig>(&yaml).is_err());
+    }
+
+    #[test]
+    fn machine_ref_uid_optional() {
+        let legacy: MachineRef = serde_yaml::from_str("hostname: rn01\nip: 10.0.0.1").unwrap();
+        assert!(legacy.machine_uid.is_none());
+        assert!(!serde_yaml::to_string(&legacy).unwrap().contains("machine_uid"));
+        let m: MachineRef =
+            serde_yaml::from_str("machine_uid: abc\nhostname: rn01\nip: 10.0.0.1").unwrap();
+        assert_eq!(m.machine_uid.as_deref(), Some("abc"));
     }
 
     #[test]

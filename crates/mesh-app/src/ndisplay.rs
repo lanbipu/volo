@@ -813,6 +813,7 @@ mod tests {
         OutputNode {
             node_id: id.to_string(),
             machine: MachineRef {
+                machine_uid: None,
                 hostname: hostname.to_string(),
                 ip: String::new(),
             },

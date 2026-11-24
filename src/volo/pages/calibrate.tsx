@@ -96,6 +96,8 @@ import { RMS_PX_THRESHOLDS } from "../api/lensCommands";
        否则每次保存屏幕设计都会丢测试图状态；只有真正切换项目才全量重置。 */
     const samePath = projStore.get().path === absPath;
     projStore.patch({ path: absPath, config, error: null, ...(samePath ? {} : derivedResetFields()) });
+    /* 舞台类型以 project.yaml 为准（LAN-9）：换机打开同一项目走同一流程分支。 */
+    if (s && s.setCalStageType) s.setCalStageType(normStageType(config.stage_type));
     if (window.camStore) window.camStore.loadFromProject(absPath, config);
     /* 测试图文件持久在 <project>/patterns/，App 重启后扫盘恢复「已生成」状态
        （UI 即显示重新生成 / 预览，而非强制再生成）。会话内新结果优先。 */
@@ -121,6 +123,22 @@ import { RMS_PX_THRESHOLDS } from "../api/lensCommands";
       if (s && s.pushLog) s.pushLog({ lv: 'warn', cat: 'lens', msg: '镜头分配表同步跳过 · ' + (e && e.message ? e.message : e) });
     });
     return config;
+  }
+
+  /** project.yaml 的 stage_type → Calibrate 分支。hybrid 首期无独立流程，按 LED 走。 */
+  function normStageType(t) { return t === 'ar' ? 'ar' : 'led'; }
+
+  /** 改舞台类型：读改写 project.yaml 的 stage_type，成功后再切 Calibrate 分支。
+   *  未打开项目（或非 Tauri 预览）时只切内存态，不落盘。 */
+  async function setProjectStageType(stageType, s) {
+    const absPath = projStore.get().path;
+    if (!absPath || !isTauri()) { if (s && s.setCalStageType) s.setCalStageType(normStageType(stageType)); return null; }
+    const latest = await loadProjectYaml(absPath);
+    const next = Object.assign({}, latest, { stage_type: stageType });
+    await saveProjectYaml(absPath, next);
+    if (projStore.get().path === absPath) projStore.patch({ config: next });
+    if (s && s.setCalStageType) s.setCalStageType(normStageType(stageType));
+    return next;
   }
 
   /** 读改写 project.yaml 的 cameras 列表（camStore 防抖落盘）。 */
@@ -387,6 +405,6 @@ import { RMS_PX_THRESHOLDS } from "../api/lensCommands";
     Pill, RMS_THRESHOLDS, rmsTone, rmsBadge, confBadge, statusPill, inspEmpty, CalController,
     useProj, projStore, openProjectPath, closeProject, reloadRuns, reloadScreenReports,
     pickAndOpenProject, pickAndSeedExample, rebuildMesh, viewRunInPreview, setRunCurrentAction, PROJ_LS_KEY,
-    saveProjectCameras,
+    saveProjectCameras, setProjectStageType,
   });
 })();

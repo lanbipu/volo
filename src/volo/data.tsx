@@ -446,9 +446,21 @@ function hasMatchingUeInstall(mc) {
   return null;
 }
 
-/** 拓扑节点 ↔ 纳管机器（id / ip / hostname）。预检与部署检查共用。 */
-function matchRenderNode(m, nd) {
+/** 拓扑节点 ↔ 纳管机器。预检与部署检查共用。
+ *  优先按稳定 ID（nd.machine.machine_uid ↔ m.uid，LAN-9）：改名 / 换 IP 不断链。
+ *  传入 machines 且清单里有该 uid 时只认 uid；否则（旧拓扑无 uid、或换了台电脑
+ *  打开项目、本机库里没有这个 uid）回退 id / ip / hostname 字符串匹配。 */
+function matchRenderNode(m, nd, machines) {
   if (!m || !nd) return false;
+  const uid = nd.machine && nd.machine.machine_uid;
+  if (uid) {
+    if (m.uid && m.uid === uid) return true;
+    if (machines && machines.some((x) => x && x.uid === uid)) return false;
+  }
+  return matchRenderNodeLegacy(m, nd);
+}
+
+function matchRenderNodeLegacy(m, nd) {
   const host = (nd.machine && (nd.machine.ip || nd.machine.hostname)) || nd.machineId || nd.host || '';
   return m.id === nd.machineId || m.id === host
     || (nd.machine && ((m.ip && m.ip === nd.machine.ip) || (m.hostname && m.hostname === nd.machine.hostname)))
@@ -457,7 +469,7 @@ function matchRenderNode(m, nd) {
 
 function findMachineForTopoNode(machines, nd) {
   const RN = machines || [];
-  for (let i = 0; i < RN.length; i++) if (matchRenderNode(RN[i], nd)) return RN[i];
+  for (let i = 0; i < RN.length; i++) if (matchRenderNode(RN[i], nd, RN)) return RN[i];
   return null;
 }
 

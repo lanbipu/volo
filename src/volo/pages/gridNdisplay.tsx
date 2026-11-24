@@ -29,7 +29,7 @@ import { listMachines } from "../api/commands";
       document.addEventListener('mousedown', fn);
       return () => document.removeEventListener('mousedown', fn);
     }, [open]);
-    const cur = machines.find((m) =>
+    const cur = (value.machine_uid && machines.find((m) => m.uid === value.machine_uid)) || machines.find((m) =>
       (value.hostname && (m.hostname || '').toLowerCase() === value.hostname.toLowerCase()) ||
       (value.ip && (m.ip || '') === value.ip));
     const label = value.hostname || value.ip || '选择机器…';
@@ -44,7 +44,7 @@ import { listMachines } from "../api/commands";
         machines.length === 0
           ? h('div', { className: 'nd-msel-empty' }, h(Icon, { name: 'alert', size: 14 }), '暂无纳管机器，请去「工具 · 缓存」扫描添加')
           : machines.map((m) => h('div', { key: m.id || m.hostname || m.ip, className: 'pop-i' + ((cur && cur.id === m.id) ? ' on' : ''),
-              onClick: () => { onChange({ hostname: m.hostname || '', ip: m.ip || '' }); setOpen(false); } },
+              onClick: () => { onChange({ machine_uid: m.uid || null, hostname: m.hostname || '', ip: m.ip || '' }); setOpen(false); } },
               dot(m.status),
               h('div', { style: { display: 'flex', flexDirection: 'column', lineHeight: 1.25, minWidth: 0 } },
                 h('span', { className: 'pop-l' }, m.hostname || m.ip),

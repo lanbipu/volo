@@ -1012,6 +1012,7 @@ mod tests {
         OutputNode {
             node_id: id.into(),
             machine: MachineRef {
+                machine_uid: None,
                 hostname: id.into(),
                 ip: format!("10.0.0.{x}"),
             },

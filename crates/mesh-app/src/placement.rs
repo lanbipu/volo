@@ -119,6 +119,8 @@ mod tests {
 
     fn project_with(screens: BTreeMap<String, ScreenConfig>, align: Option<RebuiltAlignment>) -> ProjectConfig {
         ProjectConfig {
+            stage_id: None,
+            stage_type: Default::default(),
             project: ProjectMeta {
                 name: "t".into(),
                 unit: "m".into(),

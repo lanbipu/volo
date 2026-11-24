@@ -32,6 +32,15 @@ export interface Machine {
   role: string;
   status: string;
   last_seen_at: string | null;
+  /** 稳定机器 ID（UUID，migration 036）。改名 / 换 IP 不变；拓扑节点据此引用。 */
+  uid: string | null;
+}
+
+/** Cache 库里某个 Stage 名下的机器 / UE 工程（LAN-9；多对多，一机可属多个 Stage）。 */
+export interface StageMembership {
+  stage_id: string;
+  machine_ids: number[];
+  project_ids: number[];
 }
 
 export interface UeRuntimeUserRow {
@@ -1467,7 +1476,15 @@ export interface RecentProject {
 }
 
 /** `project.yaml` 顶层结构。`method`/`pixels_per_cabinet`/`bottom_completion` 省略时为 null。 */
+/** 舞台类型 —— 决定 Calibrate 流程分支（Rust `dto::StageType`）。
+ *  led = LED 墙棚；ar = 无屏实景棚（实测 marker map）；hybrid = 预留。 */
+export type StageType = "led" | "ar" | "hybrid";
+
 export interface ProjectConfig {
+  /** Stage 稳定 ID（UUID）。旧项目缺省，首次需要时由 ensure_project_stage_id 分配并写回。 */
+  stage_id?: string | null;
+  /** 缺省 "led"（旧项目向后兼容）。Rust 反序列化总会补上，写回时总会带出。 */
+  stage_type?: StageType;
   project: ProjectMeta;
   /** Keyed by screen_id, e.g. "MAIN". */
   screens: Record<string, ScreenConfig>;
@@ -1611,6 +1628,8 @@ export interface OutputNode {
 }
 
 export interface MachineRef {
+  /** Cache 机器稳定 ID（`Machine.uid`）。优先按它匹配；缺省 / 未命中时回退 hostname / IP。 */
+  machine_uid?: string | null;
   hostname: string;
   ip: string;
 }

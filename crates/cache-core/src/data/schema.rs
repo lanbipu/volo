@@ -557,6 +557,49 @@ const MIGRATIONS: &[(&str, &str)] = &[
         ALTER TABLE pso_project_settings ADD COLUMN dc_node TEXT;
         "#,
     ),
+    (
+        // LAN-9: stable machine identity. `id` is a per-DB autoincrement and
+        // hostname / IP change, so nDisplay topology nodes (which live in the
+        // portable project.yaml) reference this UUID instead. Backfilled for
+        // existing rows; the trigger fills it for every insert that leaves it
+        // NULL, so no insert path can forget it.
+        "036_machines_uid",
+        r#"
+        ALTER TABLE machines ADD COLUMN uid TEXT;
+        UPDATE machines SET uid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)), 2) || '-' || substr('89ab', 1 + (abs(random()) % 4), 1) || substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6))) WHERE uid IS NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_machines_uid ON machines(uid);
+        CREATE TRIGGER IF NOT EXISTS trg_machines_uid_default
+        AFTER INSERT ON machines FOR EACH ROW WHEN NEW.uid IS NULL
+        BEGIN
+            UPDATE machines SET uid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)), 2) || '-' || substr('89ab', 1 + (abs(random()) % 4), 1) || substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6))) WHERE id = NEW.id;
+        END;
+        "#,
+    ),
+    (
+        // LAN-9: Stage ownership. The Stage document itself is project.yaml
+        // (`stage_id` UUID); these rows only record which Cache machines / UE
+        // projects belong to which Stage. Many-to-many: a shared server (e.g.
+        // the DDC host) may serve several Stages.
+        "037_stage_membership",
+        r#"
+        CREATE TABLE IF NOT EXISTS stage_machines (
+            stage_id TEXT NOT NULL,
+            machine_id INTEGER NOT NULL,
+            added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (stage_id, machine_id),
+            FOREIGN KEY (machine_id) REFERENCES machines(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_stage_machines_machine ON stage_machines(machine_id);
+        CREATE TABLE IF NOT EXISTS stage_projects (
+            stage_id TEXT NOT NULL,
+            project_id INTEGER NOT NULL,
+            added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (stage_id, project_id),
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_stage_projects_project ON stage_projects(project_id);
+        "#,
+    ),
 ];
 
 pub fn migrate(conn: &mut Connection) -> VoloResult<()> {
@@ -624,6 +667,36 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> VoloResult<bool> 
 mod tests {
     use super::*;
     use crate::data::open_in_memory;
+
+    #[test]
+    fn migration_036_backfills_uid_for_existing_rows() {
+        let db = open_in_memory().unwrap();
+        let mut conn = db.lock().unwrap();
+        // Simulate a pre-036 DB: apply everything before 036, insert rows, then migrate.
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+        )
+        .unwrap();
+        for (name, sql) in MIGRATIONS.iter().take_while(|(n, _)| *n != "036_machines_uid") {
+            conn.execute_batch(sql).unwrap();
+            conn.execute("INSERT INTO schema_migrations (name) VALUES (?)", [name]).unwrap();
+        }
+        conn.execute_batch(
+            "INSERT INTO machines (hostname, ip) VALUES ('a', '10.0.0.1'), ('b', '10.0.0.2')",
+        )
+        .unwrap();
+        migrate(&mut conn).unwrap();
+        let uids: Vec<String> = conn
+            .prepare("SELECT uid FROM machines ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(uids.len(), 2);
+        assert!(uids.iter().all(|u| u.len() == 36 && u.as_bytes()[14] == b'4'), "{uids:?}");
+        assert_ne!(uids[0], uids[1]);
+    }
 
     #[test]
     fn migrate_creates_machines_table() {

@@ -166,6 +166,22 @@ pub fn save_project_yaml_to_path(abs_path: &Path, config: &ProjectConfig) -> Vol
     Ok(())
 }
 
+/// Return the project's stable Stage id, assigning (and persisting) a fresh
+/// UUID v4 on first call for legacy projects that predate `stage_id`.
+///
+/// `project.yaml` is the Stage document; Cache-side ownership rows reference
+/// this id, so it must be written to disk before it is handed out.
+pub fn ensure_stage_id(abs_path: &Path) -> VoloResult<String> {
+    let mut config = load_project_yaml_from_path(abs_path)?;
+    if let Some(id) = config.stage_id.as_deref().filter(|s| !s.trim().is_empty()) {
+        return Ok(id.to_string());
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    config.stage_id = Some(id.clone());
+    save_project_yaml_to_path(abs_path, &config)?;
+    Ok(id)
+}
+
 #[cfg(test)]
 mod project_yaml_method_tests {
     use super::*;
@@ -198,6 +214,8 @@ mod project_yaml_method_tests {
             },
         );
         ProjectConfig {
+            stage_id: None,
+            stage_type: Default::default(),
             project: ProjectMeta {
                 name: "X".into(),
                 unit: "mm".into(),
@@ -219,6 +237,22 @@ mod project_yaml_method_tests {
             rebuilt_alignment: None,
             cameras: vec![],
         }
+    }
+
+    #[test]
+    fn ensure_stage_id_assigns_once_and_persists() {
+        use volo_shared::dto::StageType;
+        let dir = tempdir().unwrap();
+        let mut cfg = minimal_config(None);
+        cfg.stage_type = StageType::Ar;
+        save_project_yaml_to_path(dir.path(), &cfg).unwrap();
+
+        let id = ensure_stage_id(dir.path()).unwrap();
+        assert_eq!(id.len(), 36, "uuid v4 string: {id}");
+        let reloaded = load_project_yaml_from_path(dir.path()).unwrap();
+        assert_eq!(reloaded.stage_id.as_deref(), Some(id.as_str()));
+        assert_eq!(reloaded.stage_type, StageType::Ar, "other fields preserved");
+        assert_eq!(ensure_stage_id(dir.path()).unwrap(), id, "idempotent");
     }
 
     #[test]

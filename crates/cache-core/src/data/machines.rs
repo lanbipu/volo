@@ -13,6 +13,35 @@ pub struct Machine {
     pub role: String,        // "host" | "render" | "dev" | "editor" | "unknown"
     pub status: String,      // "online" | "offline" | "unknown"
     pub last_seen_at: Option<String>,
+    /// Stable machine id (UUID, migration 036). Assigned by the DB on insert
+    /// when `None`; referenced by nDisplay topology nodes (`MachineRef.machine_uid`)
+    /// so renames / IP changes don't silently break the node ↔ machine link.
+    #[serde(default)]
+    pub uid: Option<String>,
+}
+
+const SELECT_COLS: &str = "SELECT id, hostname, ip, role, status, last_seen_at, uid FROM machines";
+
+fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Machine> {
+    Ok(Machine {
+        id: Some(row.get(0)?),
+        hostname: row.get(1)?,
+        ip: row.get(2)?,
+        role: row.get(3)?,
+        status: row.get(4)?,
+        last_seen_at: row.get(5)?,
+        uid: row.get(6)?,
+    })
+}
+
+fn find_one(db: &Db, where_clause: &str, arg: &dyn rusqlite::ToSql) -> VoloResult<Option<Machine>> {
+    let conn = db.lock().unwrap();
+    let mut stmt = conn.prepare(&format!("{SELECT_COLS} WHERE {where_clause}"))?;
+    let mut rows = stmt.query([arg])?;
+    match rows.next()? {
+        Some(row) => Ok(Some(from_row(row)?)),
+        None => Ok(None),
+    }
 }
 
 impl Machine {
@@ -24,6 +53,7 @@ impl Machine {
             role: "unknown".to_string(),
             status: "unknown".to_string(),
             last_seen_at: None,
+            uid: None,
         }
     }
 }
@@ -31,93 +61,40 @@ impl Machine {
 pub fn insert(db: &Db, machine: &Machine) -> VoloResult<i64> {
     let conn = db.lock().unwrap();
     conn.execute(
-        "INSERT INTO machines (hostname, ip, role, status, last_seen_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO machines (hostname, ip, role, status, last_seen_at, uid) VALUES (?, ?, ?, ?, ?, ?)",
         params![
             machine.hostname,
             machine.ip,
             machine.role,
             machine.status,
             machine.last_seen_at,
+            machine.uid,
         ],
     )?;
     Ok(conn.last_insert_rowid())
 }
 
 pub fn find_by_id(db: &Db, id: i64) -> VoloResult<Option<Machine>> {
-    let conn = db.lock().unwrap();
-    let mut stmt = conn.prepare(
-        "SELECT id, hostname, ip, role, status, last_seen_at FROM machines WHERE id = ?",
-    )?;
-    let mut rows = stmt.query(params![id])?;
-    if let Some(row) = rows.next()? {
-        Ok(Some(Machine {
-            id: Some(row.get(0)?),
-            hostname: row.get(1)?,
-            ip: row.get(2)?,
-            role: row.get(3)?,
-            status: row.get(4)?,
-            last_seen_at: row.get(5)?,
-        }))
-    } else {
-        Ok(None)
-    }
+    find_one(db, "id = ?", &id)
 }
 
 pub fn find_by_ip(db: &Db, ip: &str) -> VoloResult<Option<Machine>> {
-    let conn = db.lock().unwrap();
-    let mut stmt = conn.prepare(
-        "SELECT id, hostname, ip, role, status, last_seen_at FROM machines WHERE ip = ?",
-    )?;
-    let mut rows = stmt.query(params![ip])?;
-    if let Some(row) = rows.next()? {
-        Ok(Some(Machine {
-            id: Some(row.get(0)?),
-            hostname: row.get(1)?,
-            ip: row.get(2)?,
-            role: row.get(3)?,
-            status: row.get(4)?,
-            last_seen_at: row.get(5)?,
-        }))
-    } else {
-        Ok(None)
-    }
+    find_one(db, "ip = ?", &ip)
 }
 
 pub fn find_by_hostname(db: &Db, hostname: &str) -> VoloResult<Option<Machine>> {
-    let conn = db.lock().unwrap();
-    let mut stmt = conn.prepare(
-        "SELECT id, hostname, ip, role, status, last_seen_at FROM machines WHERE hostname = ?",
-    )?;
-    let mut rows = stmt.query(params![hostname])?;
-    if let Some(row) = rows.next()? {
-        Ok(Some(Machine {
-            id: Some(row.get(0)?),
-            hostname: row.get(1)?,
-            ip: row.get(2)?,
-            role: row.get(3)?,
-            status: row.get(4)?,
-            last_seen_at: row.get(5)?,
-        }))
-    } else {
-        Ok(None)
-    }
+    find_one(db, "hostname = ?", &hostname)
+}
+
+/// Look up a machine by its stable uid (see migration 036).
+pub fn find_by_uid(db: &Db, uid: &str) -> VoloResult<Option<Machine>> {
+    find_one(db, "uid = ?", &uid)
 }
 
 pub fn list_all(db: &Db) -> VoloResult<Vec<Machine>> {
     let conn = db.lock().unwrap();
-    let mut stmt = conn.prepare(
-        "SELECT id, hostname, ip, role, status, last_seen_at FROM machines ORDER BY hostname",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok(Machine {
-            id: Some(row.get(0)?),
-            hostname: row.get(1)?,
-            ip: row.get(2)?,
-            role: row.get(3)?,
-            status: row.get(4)?,
-            last_seen_at: row.get(5)?,
-        })
-    })?;
+    let mut stmt = conn.prepare(&format!("{SELECT_COLS} ORDER BY hostname"))?;
+    let rows = stmt.query_map([], from_row)?;
     let mut result = Vec::new();
     for r in rows {
         result.push(r?);
@@ -244,6 +221,31 @@ mod tests {
         let m = Machine::new("RENDER-01", "192.168.10.21");
         let id = insert(&db, &m).unwrap();
         assert!(id > 0);
+    }
+
+    #[test]
+    fn insert_assigns_unique_stable_uid() {
+        let db = setup();
+        let a = insert(&db, &Machine::new("RENDER-01", "192.168.10.21")).unwrap();
+        let b = insert(&db, &Machine::new("RENDER-02", "192.168.10.22")).unwrap();
+        let ua = find_by_id(&db, a).unwrap().unwrap().uid.expect("uid assigned on insert");
+        let ub = find_by_id(&db, b).unwrap().unwrap().uid.expect("uid assigned on insert");
+        assert_eq!(ua.len(), 36, "uuid-shaped: {ua}");
+        assert_ne!(ua, ub);
+        // Rename keeps the uid — that's the whole point.
+        rename(&db, a, "RENDER-01-NEW").unwrap();
+        let found = find_by_uid(&db, &ua).unwrap().unwrap();
+        assert_eq!(found.id, Some(a));
+        assert_eq!(found.hostname, "RENDER-01-NEW");
+    }
+
+    #[test]
+    fn insert_keeps_explicit_uid() {
+        let db = setup();
+        let mut m = Machine::new("RENDER-03", "192.168.10.23");
+        m.uid = Some("11111111-2222-4333-8444-555555555555".into());
+        let id = insert(&db, &m).unwrap();
+        assert_eq!(find_by_id(&db, id).unwrap().unwrap().uid, m.uid);
     }
 
     #[test]

@@ -222,6 +222,8 @@ mod tests {
         let mut screens = BTreeMap::new();
         screens.insert("MAIN".into(), screen);
         dto::ProjectConfig {
+            stage_id: None,
+            stage_type: Default::default(),
             project: dto::ProjectMeta {
                 name: "T".into(),
                 unit: "mm".into(),
