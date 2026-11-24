@@ -83,6 +83,7 @@ class LiveOverlay:
             self._world_map = physical_world_map(self._marker_map)
             self._grid_screens: list[tuple[str, object]] = []
             self._grid_world_transform = None
+            self._markers_per_cabinet: int | None = None
         else:
             from vpcal.core.session_targets import combined_world_map, load_screen_targets
 
@@ -94,6 +95,11 @@ class LiveOverlay:
             )
             self._grid_screens = [(t.label, t.screen) for t in targets]
             self._grid_world_transform = m_ue
+            from vpcal.core.detector import common_markers_per_cabinet
+
+            self._markers_per_cabinet = common_markers_per_cabinet(
+                t.screen.markers_per_cabinet for t in targets
+            )
 
     def stage_to_camera(self, tracking: TrackingFrame) -> NDArray[np.float64]:
         """OpenCV ``T_C_from_S`` for one tracking sample."""
@@ -133,7 +139,8 @@ class LiveOverlay:
         ]
         errors: list[float] = []
         for det in _detections_for_image(
-            self.session, self._marker_map, gray, captured.frame_index
+            self.session, self._marker_map, gray, captured.frame_index,
+            markers_per_cabinet=self._markers_per_cabinet,
         ):
             world = self._world_map.get(det.marker_id)
             if world is None:
