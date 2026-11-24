@@ -57,12 +57,19 @@ fn machine_list_on_fresh_db_returns_empty_array() {
 
 #[test]
 fn invalid_cidr_returns_invalid_input_exit_code() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
     let out = cache_cmd()
+        .env("VOLO_DB_PATH", tmp.path())
         .args(["--json", "machine", "scan", "not-a-cidr"])
         .output()
         .expect("spawn");
     assert!(!out.status.success());
-    assert_eq!(out.status.code(), Some(2), "expected exit code 2 (invalid_input)");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "expected exit code 2 (invalid_input); stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -86,14 +93,24 @@ fn cred_list_on_fresh_db_returns_empty_array() {
 
 #[test]
 fn env_set_without_target_returns_invalid_input() {
+    // Hermetic DB: without VOLO_DB_PATH the CLI opens (and on a fresh machine
+    // first-time migrates) the shared default DB, which races with the other
+    // tests doing the same and surfaces as a Database error (exit 3).
+    let tmp = tempfile::NamedTempFile::new().unwrap();
     let out = cache_cmd()
+        .env("VOLO_DB_PATH", tmp.path())
         .args(["--json", "env", "set", "--name", "X", "--value", "Y"])
         .output()
         .expect("spawn");
     assert!(!out.status.success());
     // host_args.require_one() runs in-handler (clap group doesn't mark either
     // as required), so this is an InvalidInput (exit 2) not a clap usage error.
-    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stderr = String::from_utf8(out.stderr).unwrap();
     let v: serde_json::Value =
         serde_json::from_str(stderr.trim_end()).expect("stderr should be JSON envelope");
@@ -105,7 +122,9 @@ fn env_set_without_target_returns_invalid_input() {
 fn env_set_does_not_leak_value_to_stderr() {
     // macOS will fail at PowerShell layer, but redaction must hold.
     let secret = "MY-VERY-SECRET-VALUE-DEF-456-NEVER-LEAK";
+    let tmp = tempfile::NamedTempFile::new().unwrap();
     let out = cache_cmd()
+        .env("VOLO_DB_PATH", tmp.path())
         .args([
             "--json",
             "env",
@@ -926,8 +945,9 @@ fn ddc_verify_with_backend_zen_no_longer_short_circuits() {
 #[test]
 fn ddc_distribute_with_backend_zen_no_longer_short_circuits() {
     // P1 rework: forced `--backend zen` must no longer no-op; distribute now
-    // runs the same source-share resolution as any other backend and fails
-    // because no share is registered on the source host.
+    // runs the same planning as any other backend. Since the SSH-push
+    // transport became the default (50559e7) that planning resolves each
+    // target's project location first, so it fails on target machine 2.
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
     let (project_id, machine_id) = seed_machine_project_location(&path);
@@ -957,8 +977,8 @@ fn ddc_distribute_with_backend_zen_no_longer_short_circuits() {
         serde_json::from_str(stderr.trim_end()).expect("stderr should be JSON envelope");
     assert_eq!(v["error"]["code"], "invalid_input");
     assert!(
-        v["error"]["message"].as_str().unwrap().contains("no registered share"),
-        "forced zen must fall through to the same source-share validation as any other backend; stderr: {stderr}"
+        v["error"]["message"].as_str().unwrap().contains("has no location on machine 2"),
+        "forced zen must fall through to the same distribute planning as any other backend; stderr: {stderr}"
     );
 }
 
