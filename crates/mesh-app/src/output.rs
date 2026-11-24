@@ -1060,7 +1060,7 @@ mod tests {
             connected: true,
             log_match: true,
         };
-        start(&fake, &screen(), &paths(), Some(1)).unwrap();
+        start(&fake, &screen(), &paths(), Some(1), &no_progress).unwrap();
         let calls = fake.calls.lock().unwrap().clone();
         let first_wait = calls
             .iter()
@@ -1089,7 +1089,7 @@ mod tests {
             connected: false,
             log_match: true,
         };
-        assert!(start(&bad, &screen(), &paths(), None).is_err());
+        assert!(start(&bad, &screen(), &paths(), None, &no_progress).is_err());
     }
     #[test]
     fn show_pushes_all_images_before_any_manifest() {
@@ -1239,7 +1239,7 @@ mod tests {
         let mut runtime_paths = paths();
         runtime_paths.project_path = r"C:\Volo\VoloOutput.uproject".into();
         runtime_paths.config_path = r"C:\Volo\Config\VoloOutput.ndisplay".into();
-        deploy(&fake, &screen(), &runtime_paths, dir.path(), "5.8").unwrap();
+        deploy(&fake, &screen(), &runtime_paths, dir.path(), "5.8", &no_progress).unwrap();
         let calls = fake.calls.lock().unwrap();
         assert_eq!(
             calls

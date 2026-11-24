@@ -87,16 +87,30 @@ _LEGEND_CJK = "绿十字 = 检测位置 · 红圈 = 重投影位置 · 连线标
 _LEGEND_ASCII = "green cross = detected, red circle = reprojected, line = px error"
 
 
-def _detections_for_image(session: SessionConfig, marker_map, img: NDArray[np.uint8], frame_id: int):
-    """Detect markers in one grayscale frame (marker-map or VP-QSP path)."""
+def _detections_for_image(
+    session: SessionConfig,
+    marker_map,
+    img: NDArray[np.uint8],
+    frame_id: int,
+    *,
+    markers_per_cabinet: int | None = None,
+):
+    """Detect markers in one grayscale frame (marker-map or VP-QSP path).
+
+    ``markers_per_cabinet`` is the configured screen layout (VP-QSP path only);
+    the topology check rejects every detection of a multi-marker layout without it.
+    """
     if marker_map is not None:
         from vpcal.core.detector_physical import detect_physical_markers
 
         dets, _counters = detect_physical_markers(img, marker_map, frame_id=frame_id)
         return dets
-    from vpcal.core.detector import detect_markers
+    from vpcal.core.detector import detect_markers, detector_config_for_mpc
 
-    return [d for d in detect_markers(img, frame_id=frame_id) if d.confidence >= 1.0]
+    dets = detect_markers(
+        img, frame_id=frame_id, config=detector_config_for_mpc(markers_per_cabinet)
+    )
+    return [d for d in dets if d.confidence >= 1.0]
 
 
 def overlay_session(
@@ -130,6 +144,7 @@ def overlay_session(
     intr = CameraIntrinsics.from_lens(lens)
 
     marker_map = None
+    markers_per_cabinet = None
     if session.marker_map is not None:
         from vpcal.core.marker_map import physical_world_map
         from vpcal.io.marker_map_io import load_marker_map
@@ -142,6 +157,11 @@ def overlay_session(
 
         targets = load_screen_targets(session, session_dir)
         world_map, _ = combined_world_map(targets, transform=lambda point: _M_UE @ point)
+        from vpcal.core.detector import common_markers_per_cabinet
+
+        markers_per_cabinet = common_markers_per_cabinet(
+            t.screen.markers_per_cabinet for t in targets
+        )
 
     from vpcal.core.validator import list_images
 
@@ -180,7 +200,10 @@ def overlay_session(
             (_LEGEND_CJK, (12, 8), (235, 235, 235))
         ]
         frame_errors: list[float] = []
-        for det in _detections_for_image(session, marker_map, gray, frame.frame_id):
+        for det in _detections_for_image(
+            session, marker_map, gray, frame.frame_id,
+            markers_per_cabinet=markers_per_cabinet,
+        ):
             world = world_map.get(det.marker_id)
             if world is None:
                 continue

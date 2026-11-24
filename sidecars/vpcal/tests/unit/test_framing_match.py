@@ -64,3 +64,17 @@ def test_summarize_detections():
     assert s["count"] == 3
     assert s["cabinets"] == [[1, 2, 0], [1, 3, 1]]
     assert s["bbox_frac"] == [100 / 400, 50 / 400, 300 / 400, 200 / 400]
+
+
+def test_summarize_counts_topology_downweighted_detections():
+    # LAN-10: the stills capture gate calls detect_markers without the screen's
+    # markers_per_cabinet. Topology then only halves confidence on multi-marker
+    # layouts; the gate count must not depend on confidence.
+    dets = [
+        Detection(0, MarkerId(1, 2, 0, 0), 100.0, 50.0, confidence=0.5),
+        Detection(0, MarkerId(1, 2, 0, 1), 120.0, 60.0, confidence=0.5),
+        Detection(0, MarkerId(1, 3, 1, 0), 300.0, 200.0),
+    ]
+    s = summarize_detections(dets, (400, 400))
+    assert s["count"] == 3
+    assert s["cabinets"] == [[1, 2, 0], [1, 3, 1]]

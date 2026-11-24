@@ -38,19 +38,22 @@ def _resolve(session_dir: Path, p: str) -> Path:
 
 
 def _world_map(session: SessionConfig, session_dir: Path):
-    """(world_map, marker_map|None) — same truth routing as the pipeline."""
+    """(world_map, marker_map|None, markers_per_cabinet|None) — same truth routing as the pipeline."""
     if session.marker_map is not None:
         from vpcal.core.marker_map import physical_world_map
         from vpcal.io.marker_map_io import load_marker_map
 
         marker_map = load_marker_map(_resolve(session_dir, session.marker_map.path))
-        return physical_world_map(marker_map), marker_map
+        return physical_world_map(marker_map), marker_map, None
     from vpcal.core.pipeline import _M_UE
     from vpcal.core.session_targets import combined_world_map, load_screen_targets
 
     targets = load_screen_targets(session, session_dir)
     world, _ = combined_world_map(targets, transform=lambda point: _M_UE @ point)
-    return world, None
+    from vpcal.core.detector import common_markers_per_cabinet
+
+    mpc = common_markers_per_cabinet(t.screen.markers_per_cabinet for t in targets)
+    return world, None, mpc
 
 
 def run_delay_cal(
@@ -82,7 +85,7 @@ def run_delay_cal(
             "continuous frame sequence",
             details={"video_dir": str(video_dir), "frames": len(images)},
         )
-    world_map, marker_map = _world_map(session, session_dir)
+    world_map, marker_map, markers_per_cabinet = _world_map(session, session_dir)
     # A QLE result was solved with result.quality.lens_estimate, not the
     # nominal session lens — predicting trajectories through the nominal lens
     # lets the τ scan absorb the lens mismatch into a biased delay_ms.
@@ -156,9 +159,13 @@ def run_delay_cal(
 
             dets, _counters = detect_physical_markers(img, marker_map, frame_id=frame_id)
         else:
-            from vpcal.core.detector import detect_markers
+            from vpcal.core.detector import detect_markers, detector_config_for_mpc
 
-            dets = [d for d in detect_markers(img, frame_id=frame_id) if d.confidence >= 1.0]
+            det_cfg = detector_config_for_mpc(markers_per_cabinet)
+            dets = [
+                d for d in detect_markers(img, frame_id=frame_id, config=det_cfg)
+                if d.confidence >= 1.0
+            ]
         detections_by_frame[frame_id] = dets
         frame_times[frame_id] = _frame_time(frame_id)
 

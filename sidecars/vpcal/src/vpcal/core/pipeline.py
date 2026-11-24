@@ -18,7 +18,11 @@ import numpy as np
 from numpy.typing import NDArray
 
 from vpcal.core.coordinates import m_rh_from_source
-from vpcal.core.detector import detect_markers
+from vpcal.core.detector import (
+    common_markers_per_cabinet,
+    detect_markers,
+    detector_config_for_mpc,
+)
 from vpcal.core.errors import PreconditionError
 from vpcal.core.observations import Observation, PhysicalMarkerId, marker_id_from_dict
 from vpcal.core.projection import CameraIntrinsics
@@ -122,8 +126,15 @@ def _detect_observations(
     images: list[str],
     world_map: dict,
     frames,
+    *,
+    markers_per_cabinet: int | None = None,
 ) -> tuple[list[Observation], dict]:
     """Detect markers in the matched images.
+
+    ``markers_per_cabinet`` is the configured screen layout; the detector's
+    topology check needs it to place sub-cabinet markers on the grid. Without
+    it every marker is treated as cabinet-centred and a layout with more than
+    one marker per cabinet has all of its detections rejected.
 
     Returns ``(observations, detection_report)``.  The report carries the QA
     counters: topology-rejected detections (A2.3) and whether normal−inverted
@@ -150,6 +161,7 @@ def _detect_observations(
     images_processed = 0
     images_differenced = 0
     report_warnings: list[str] = []
+    det_cfg = detector_config_for_mpc(markers_per_cabinet)
     for fm in match.matched:
         frame = frames[fm.tracking_index]
         img = cv2.imread(fm.image, cv2.IMREAD_GRAYSCALE)
@@ -171,7 +183,9 @@ def _detect_observations(
         q, t = to_internal_pose(
             frame, session.tracking.coordinate_system, session.tracking.custom_transform
         )
-        for det in detect_markers(img, frame_id=frame.frame_id, inverted=inv):
+        for det in detect_markers(
+            img, frame_id=frame.frame_id, inverted=inv, config=det_cfg
+        ):
             saturated_detections += int(det.saturated)
             if det.confidence < 1.0:
                 # Topology-inconsistent detection: hard-reject (A2.3) — decode
@@ -747,7 +761,12 @@ def run_quick(
                 session, images, world_map, marker_map, frames
             )
         else:
-            observations, detection_report = _detect_observations(session, session_dir, images, world_map, frames)
+            observations, detection_report = _detect_observations(
+                session, session_dir, images, world_map, frames,
+                markers_per_cabinet=common_markers_per_cabinet(
+                    t.screen.markers_per_cabinet for t in screen_targets
+                ),
+            )
         detection_source = "detector"
     detection_report["detection_source"] = detection_source
 

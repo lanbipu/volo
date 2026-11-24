@@ -39,14 +39,14 @@ Volo —— LanX 出品的虚拟制作桌面工具（**Tauri 2 + React**，UI �
 ## 机器拓扑 / DDC 凭据
 
 - **lanPC**（192.168.10.20，DDC 共享服务器，Mode B）/ **RazerPC**（192.168.10.173，客户端，交互用户 lanbp）/ NAS 与 DDC 无关。两机是 workgroup，本地账户互不信任——整套凭据注入机制因此存在。
-- DDC 凭据机制（三路注入、Mode A/B 同服务器互斥、svc 账户生命周期）与历史 bug 结论：`docs/architecture/ddc-credentials.md`。涉及共享访问问题先读它；真机取证一键跑 `scripts/diag-ddc-creds.sh`。
+- DDC 凭据机制（三路注入、Mode A/B 同服务器互斥、svc 账户生命周期）与历史 bug 结论记在 `docs/architecture/ddc-credentials.md`，**该文件未入库**（`docs/` 被整体忽略）：本机有就先读；没有就先向用户索要，不要凭猜测改凭据逻辑。真机取证一键跑 `scripts/diag-ddc-creds.sh`（已入库）。
 - Bootstrap（USB 包）只建立 SSH 管理能力，不含凭据注入。
 
 
 
 ## 代码结构
 
-前端正从旧壳迁到新结构（LAN-20，方案见 `docs/architecture/frontend-structure.md`）：
+前端正从旧壳迁到新结构（LAN-20，方案见 `docs/architecture/frontend-structure.md`，已用 `git add -f` 入库）：
 
 - **新结构** `src/{app,ui,features,lib}`：`app/` 外壳 + 页面表、`ui/` design system 组件（无业务）、`features/<域>/{model,ui}`（Zustand store + TanStack Query + 页面）、`lib/` 通用工具与 Tauri 事件桥。规则由 `pnpm lint` 强制：不写 `@ts-nocheck` / `window.*` 全局；`invoke` / `listen` 只在 `api/`（及 `lib/events.ts`）；跨 feature 只 import 对方 `index`；页面样式只用 `*.module.css`，禁 `!important` 与字面色值；**新 handoff 不再叠皮肤层**。
 - **旧壳** `src/volo/`（shell + pages/ 平铺 + 9 层皮肤 CSS）**已冻结**：只改不增（`scripts/frontend/legacy-volo-files.txt` 基线），逐页被新结构替换后删除。`src/volo/api/` 保留，新代码经别名 `@/api` 引用。
@@ -57,20 +57,20 @@ Rust `crates/`（cache-core、mesh-* 等）+ `src-tauri`（约 210 个 Tauri com
 ## 开发 / 构建（实测）
 
 - 前端验证：`pnpm exec tsc --noEmit` + `pnpm lint` + `pnpm test` + `pnpm exec vite build`；后端快验：`cargo check --manifest-path src-tauri/Cargo.toml`。
-- 跑原生 App：`pnpm tauri dev`（devUrl :1420）。在 `.claude/worktrees/*` 里 target/ 是空的会从头编 → 用 `CARGO_TARGET_DIR=/Users/bip.lan/AIWorkspace/vp/volo/target` 复用主仓热缓存，增量编译数秒。
+- 跑原生 App：`pnpm tauri dev`（devUrl :1420）。在 `.claude/worktrees/*` 里 target/ 是空的会从头编 → 把 `CARGO_TARGET_DIR` 指到主仓的 `target/`（如 `CARGO_TARGET_DIR=<主仓路径>/target`）复用热缓存，增量编译数秒。
 - `tauri dev` 后台 detached 启动时**不会**自动重编 Rust 改动 → 改了 `src-tauri` 要手动重启，跑 `./scripts/restart-dev.sh`（kill 旧进程 + 重新后台启动，日志写到仓库根目录 `volo-dev.log`，已 gitignore）。
 
 
 
 ## Razer 部署测试
 
-- 一键同步并拉起：Mac 上 `./scripts/sync-razer-dev.sh`（bundle → scp → Razer `git reset --hard` → `schtasks /run /tn VoloDev`）。只同步不重启加 `--no-restart`；同步非 main 传 ref（如 `HEAD`）。前端/vpcal Python 改动即时生效；Rust 改动需重启（脚本默认会重启）；vpcal C++ 用 `C:\vpdeploy\build.cmd` 重编。细节见 auto-memory `volo-razer-app-deployment`。
+- 一键同步并拉起：Mac 上 `./scripts/sync-razer-dev.sh`（bundle → scp → Razer `git reset --hard` → `schtasks /run /tn VoloDev`）。只同步不重启加 `--no-restart`；同步非 main 传 ref（如 `HEAD`）。前端/vpcal Python 改动即时生效；Rust 改动需重启（脚本默认会重启）；vpcal C++ 用 `C:\vpdeploy\build.cmd` 重编。更多细节在部分机器的本机 auto-memory（`volo-razer-app-deployment`，未入库），本机没有就以脚本源码为准。
 
 
 
 ## 运行时 UI 验证
 
-- UI 改动必须在**原生 app** 里实测（浏览器/claude-in-chrome 被 `isTauri()` 拦在 gate 外）：交互用 CGEvent 合成点击 + 置顶键入（System Events `click at` 对 WKWebView 无效，后台 `postToPid` 已证伪），截图用 `screencapture -l <CGWindowID>`（可后台/遮挡）。操作细节见 auto-memory `volo-native-ui-verification`。
+- UI 改动必须在**原生 app** 里实测（浏览器/claude-in-chrome 被 `isTauri()` 拦在 gate 外）：交互用 CGEvent 合成点击 + 置顶键入（System Events `click at` 对 WKWebView 无效，后台 `postToPid` 已证伪），截图用 `screencapture -l <CGWindowID>`（可后台/遮挡）。更多操作细节在部分机器的本机 auto-memory（`volo-native-ui-verification`，未入库），本机没有就按本条自行摸索或向用户确认。
 
 
 

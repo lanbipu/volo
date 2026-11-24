@@ -166,7 +166,10 @@ mod tests {
         ScreenConfig {
             cabinet_count: [cols, rows],
             cabinet_size_mm: [500.0, 500.0],
-            pixels_per_cabinet: Some([250, 250]),
+            // No pixel size → cabinet-count grid, so the assignment tests below
+            // can assert offsets in plain cabinet columns. The virtual-grid path
+            // is covered by the dedicated tests at the end of this module.
+            pixels_per_cabinet: None,
             output_topology: None,
             shape_prior: ShapePriorConfig::Flat,
             shape_mode: ShapeMode::Rectangle,
@@ -245,5 +248,17 @@ mod tests {
         assert_eq!(grid.columns * grid.rows, 66);
         assert!((grid.cell_size_mm[0] * 11.0 - 1209.0).abs() < 1.0e-9);
         assert!((grid.cell_size_mm[1] * 6.0 - 678.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn offsets_follow_virtual_grid_columns_when_pixels_known() {
+        // 4×2 cabinets @250px = 1000×500px → 6 rows of 83.3px cells → 12 columns.
+        let mut m = screens(&[("A", 4), ("B", 3)]);
+        for sc in m.values_mut() {
+            sc.pixels_per_cabinet = Some([250, 250]);
+        }
+        let a = assignment_from_screens(&m).unwrap();
+        assert_eq!(a.screens["A"].columns, 12);
+        assert_eq!(a.screens["B"].offset, 12 + COL_OFFSET_GAP);
     }
 }
