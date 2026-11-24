@@ -24,6 +24,7 @@ from vpcal.core.detector import (
     detector_config_for_mpc,
 )
 from vpcal.core.observations import MarkerId
+from vpcal.core.pnp import ransac_pnp
 from vpcal.core.screen_geometry import enumerate_markers, ScreenMarker
 from vpcal.core.transforms import matrix_to_quat, quat_to_matrix
 from vpcal.models.screen import ScreenDefinition
@@ -804,15 +805,15 @@ def solve_stage_pose(
                 },
             )
 
-    ok, rvec, tvec, inliers = cv2.solvePnPRansac(
+    # Planar-safe RANSAC (a single flat screen is coplanar; see core/pnp.py).
+    ok, rvec, tvec, inliers = ransac_pnp(
         obj_pts.astype(np.float64),
         img_pts.astype(np.float64),
         camera_matrix,
         dist,
-        iterationsCount=200,
-        reprojectionError=STAGE_POSE_RANSAC_REPROJECTION_PX,
+        iterations=200,
+        reprojection_error=STAGE_POSE_RANSAC_REPROJECTION_PX,
         confidence=0.999,
-        flags=cv2.SOLVEPNP_ITERATIVE,
     )
     if not ok or inliers is None or len(inliers) < 4:
         raise ValueError(

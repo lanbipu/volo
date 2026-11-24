@@ -27,6 +27,7 @@ from vpcal.core.errors import (
     ScreenGeometryInconsistent,
     SingleViewUnobservable,
 )
+from vpcal.core.pnp import ransac_pnp
 from vpcal.core.projection import CameraIntrinsics, project_points
 
 Array = NDArray[np.float64]
@@ -1206,13 +1207,8 @@ def per_screen_pose_consistency(
     for label, idxs in by_label.items():
         if len(idxs) < 4:
             continue
-        ok, rvec, tvec, _ = cv2.solvePnPRansac(
-            world_all[idxs],
-            pixels_all[idxs],
-            K,
-            dist,
-            flags=cv2.SOLVEPNP_ITERATIVE,
-        )
+        # Per-screen points are coplanar → planar-safe RANSAC (core/pnp.py).
+        ok, rvec, tvec, _ = ransac_pnp(world_all[idxs], pixels_all[idxs], K, dist)
         if not ok:
             deltas[label] = {"rotation_deg": float("inf"), "translation_mm": float("inf")}
             continue
@@ -1459,15 +1455,14 @@ def _solve_known_lens(
         [[lens.fx, 0, lens.cx], [0, lens.fy, lens.cy], [0, 0, 1]], dtype=np.float64
     )
     dist = np.asarray(lens.dist_coeffs, dtype=np.float64)
-    ok, rvec, tvec, inliers = cv2.solvePnPRansac(
+    ok, rvec, tvec, inliers = ransac_pnp(
         world,
         pixels,
         K,
         dist,
-        iterationsCount=200,
-        reprojectionError=4.0,
+        iterations=200,
+        reprojection_error=4.0,
         confidence=0.999,
-        flags=cv2.SOLVEPNP_ITERATIVE,
     )
     if not ok or inliers is None:
         raise DetectionQualityFailed(
