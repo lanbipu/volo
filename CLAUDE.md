@@ -37,7 +37,7 @@ Volo —— LanX 出品的虚拟制作桌面工具（**Tauri 2 + React**，UI �
 ## 机器拓扑 / DDC 凭据
 
 - **lanPC**（192.168.10.20，DDC 共享服务器，Mode B）/ **RazerPC**（192.168.10.173，客户端，交互用户 lanbp）/ NAS 与 DDC 无关。两机是 workgroup，本地账户互不信任——整套凭据注入机制因此存在。
-- DDC 凭据机制（三路注入、Mode A/B 同服务器互斥、svc 账户生命周期）与历史 bug 结论记在 `docs/architecture/ddc-credentials.md`，**该文件未入库**（`docs/` 被整体忽略）：本机有就先读；没有就先向用户索要，不要凭猜测改凭据逻辑。真机取证一键跑 `scripts/diag-ddc-creds.sh`（已入库）。
+- DDC 凭据机制（三路注入、Mode A/B 同服务器互斥、svc 账户生命周期）改动前先向用户确认，不要凭猜测改凭据逻辑；真机取证一键跑 `scripts/diag-ddc-creds.sh`。
 - Bootstrap（USB 包）只建立 SSH 管理能力，不含凭据注入。
 
 
@@ -56,13 +56,13 @@ Volo —— LanX 出品的虚拟制作桌面工具（**Tauri 2 + React**，UI �
 
 ## Razer 部署测试
 
-- 一键同步并拉起：Mac 上 `./scripts/sync-razer-dev.sh`（bundle → scp → Razer `git reset --hard` → `schtasks /run /tn VoloDev`）。只同步不重启加 `--no-restart`；同步非 main 传 ref（如 `HEAD`）。前端/vpcal Python 改动即时生效；Rust 改动需重启（脚本默认会重启）；vpcal C++ 用 `C:\vpdeploy\build.cmd` 重编。更多细节在部分机器的本机 auto-memory（`volo-razer-app-deployment`，未入库），本机没有就以脚本源码为准。
+- 一键同步并拉起：Mac 上 `./scripts/sync-razer-dev.sh`（bundle → scp → Razer `git reset --hard` → `schtasks /run /tn VoloDev`）。只同步不重启加 `--no-restart`；同步非 main 传 ref（如 `HEAD`）。前端/vpcal Python 改动即时生效；Rust 改动需重启（脚本默认会重启）；vpcal C++ 用 `C:\vpdeploy\build.cmd` 重编。细节以脚本源码为准。
 
 
 
 ## 运行时 UI 验证
 
-- UI 改动必须在**原生 app** 里实测（浏览器/claude-in-chrome 被 `isTauri()` 拦在 gate 外）：交互用 CGEvent 合成点击 + 置顶键入（System Events `click at` 对 WKWebView 无效，后台 `postToPid` 已证伪），截图用 `screencapture -l <CGWindowID>`（可后台/遮挡）。更多操作细节在部分机器的本机 auto-memory（`volo-native-ui-verification`，未入库），本机没有就按本条自行摸索或向用户确认。
+- UI 改动必须在**原生 app** 里实测（浏览器/claude-in-chrome 被 `isTauri()` 拦在 gate 外）：交互用 CGEvent 合成点击 + 置顶键入（System Events `click at` 对 WKWebView 无效，后台 `postToPid` 已证伪），截图用 `screencapture -l <CGWindowID>`（可后台/遮挡）。
 
 
 
