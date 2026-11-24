@@ -53,7 +53,6 @@ Volo —— LanX 出品的虚拟制作桌面工具（**Tauri 2 + React**，界�
 ## 机器拓扑 / DDC 凭据
 
 - 两台测试机是 workgroup，本地账户互不信任，整套 DDC 凭据注入机制因此存在。细节见 `CLAUDE.md` 同名一节。
-- 该节引用的 `docs/architecture/ddc-credentials.md` 目前未入库（`docs/` 被整体忽略），新 clone 的环境里读不到；涉及共享访问问题时先向用户索要。
 
 ## Cursor Cloud specific instructions
 
