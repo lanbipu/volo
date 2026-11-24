@@ -31,6 +31,7 @@ from numpy.typing import NDArray
 
 from vpcal.core.errors import PreconditionError
 from vpcal.core.observations import Observation
+from vpcal.core.pnp import ransac_pnp
 from vpcal.core.projection import CameraIntrinsics
 from vpcal.core.transforms import invert_transform, make_transform, matrix_to_quat
 
@@ -84,9 +85,8 @@ def per_frame_camera_poses(
             continue
         obj = np.array([o.world_rh for o in lst], dtype=np.float64).reshape(-1, 1, 3)
         img = np.array([[o.pixel_u, o.pixel_v] for o in lst], dtype=np.float64).reshape(-1, 1, 2)
-        ok, rvec, tvec, _inl = cv2.solvePnPRansac(
-            obj, img, K, dist, reprojectionError=3.0, flags=cv2.SOLVEPNP_ITERATIVE
-        )
+        # Planar-safe RANSAC (LED wall points are coplanar; see core/pnp.py).
+        ok, rvec, tvec, _inl = ransac_pnp(obj, img, K, dist, reprojection_error=3.0)
         if not ok:
             continue
         R, _ = cv2.Rodrigues(rvec)

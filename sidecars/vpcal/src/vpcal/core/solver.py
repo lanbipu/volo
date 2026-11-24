@@ -20,6 +20,7 @@ from numpy.typing import NDArray
 from vpcal.core import solver_scipy
 from vpcal.core.errors import PreconditionError, SolverTimeoutError
 from vpcal.core.observations import Observation
+from vpcal.core.pnp import fit_pose, ransac_pnp
 from vpcal.core.projection import CameraIntrinsics
 from vpcal.core.solver_scipy import LensFreedom, SolverResult
 from vpcal.core.transforms import invert_transform, make_transform, matrix_to_quat
@@ -85,13 +86,13 @@ def pnp_initial_tracker_to_stage(
     K = np.array([[intr.fx, 0, intr.cx], [0, intr.fy, intr.cy], [0, 0, 1]], dtype=np.float64)
     dist = np.array([intr.k1, intr.k2, intr.p1, intr.p2, intr.k3], dtype=np.float64)
     # RANSAC PnP so outliers in the seed frame don't corrupt the initial guess.
-    ok, rvec, tvec, _inliers = cv2.solvePnPRansac(
-        obj, img, K, dist, reprojectionError=3.0, flags=cv2.SOLVEPNP_ITERATIVE
-    )
+    # Planar-safe (seed frame is usually one flat wall; see core/pnp.py).
+    ok, rvec, tvec, _inliers = ransac_pnp(obj, img, K, dist, reprojection_error=3.0)
     if not ok:
-        ok, rvec, tvec = cv2.solvePnP(obj, img, K, dist, flags=cv2.SOLVEPNP_EPNP)
-        if not ok:
+        pose = fit_pose(obj, img, K, dist)
+        if pose is None:
             return np.array([1.0, 0.0, 0.0, 0.0]), np.zeros(3)
+        rvec, tvec = pose
     R, _ = cv2.Rodrigues(rvec)
     M = np.eye(4)
     M[:3, :3] = R
