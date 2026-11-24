@@ -81,6 +81,9 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - name: System libraries for OpenCV
         run: sudo apt-get update && sudo apt-get install -y libgl1
+      # 记录运行器 CPU：vpcal 手眼 PnP 用例在不同运行器上结果不一致，留作排查依据。
+      - name: Runner CPU
+        run: lscpu | grep -E '^(Model name|CPU\(s\))' ; grep -o -w -E 'avx512f|avx2' /proc/cpuinfo | sort -u
       - run: uv venv --python 3.12 .venv
       - run: uv pip install --python .venv ${{ matrix.install }}
       # tests/conftest.py 把 src/ 插到 sys.path 最前，pytest 实际导入的是源码树而非
