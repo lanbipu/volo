@@ -1,6 +1,6 @@
 # 前端代码结构（LAN-20 · P2-1）
 
-> 状态：**已确认**（2026-11-24）。新 UI（LAN-11）按此结构落地。进度：P0 止血、P1 骨架已完成；P2 起见 §8。
+> 状态：**已确认**（2026-11-24）。新 UI 按此结构落地。进度：P0 止血、P1 骨架已完成；P2 起见 §8（P2 = LAN-34，P4 = LAN-35）。
 > 已拍板的选型：Zustand（前端状态）· TanStack Query（后端数据）· token + `ry-` 组件 + CSS Modules（样式）· 新壳并行、逐页替换（过渡）。
 > Design system 基准：Claude artifact「Linear」https://claude.ai/artifact/E8kZ3vwPMmDc9EjiSa3Kuh （内部名 **Runyard**：`tokens.json` + `ry-` 前缀组件 + `data-theme` / `data-ry-density`）。
 
@@ -131,9 +131,9 @@ app  ──►  features/*/ui  ──►  features/*/model  ──►  api  ─�
 |---|---|---|
 | **P0 止血** ✅ | ESLint（`@typescript-eslint/ban-ts-comment`、`no-restricted-syntax` 禁 `window.VOLO_*` 赋值、`no-restricted-imports` 落实 §3）+ stylelint（`declaration-no-important`、token 规则），**只对新目录生效**；旧 `src/volo` 加入忽略但禁止新增文件。根 CLAUDE.md 补约定。 | 否 |
 | **P1 骨架** ✅ | 建 `app/ ui/ features/ windows/ lib/`；加 `zustand`、`@tanstack/react-query`；删 `@react-spectrum/s2`、`unplugin-parcel-macros` 及 vite 里相关配置；`@/` 路径别名；`main.tsx` 开关（默认旧壳，`localStorage['volo-shell']='next'` 或 dev 菜单切新壳），旧壳及其 CSS 改为动态 import，只在旧壳时加载；加 Vitest。 | 否（新壳先是空框架） |
-| **P2 抽 model** | 把旧页面里的业务逻辑抽到 `features/*/model`（有类型 + 单测），旧页面改为 import 新 model，渲染不变。顺序：calibrate `project` / `camera` / `deploy`（被引用最多）→ cache 数据加载改 query → keyer store。 | 否（只换数据来源，旧页面渲染结果不变） |
-| **P3 逐页重写**（= LAN-11） | DS 定稿 → `ui/` 组件；每页 handoff 落到新壳；新页验收后从旧壳删掉对应页面和它的 CSS。 | 是，全部经 Claude Design |
-| **P4 收尾** | 新壳设为默认 → 删 `src/volo`（`api/` 移到 `src/api`）、`ds_bundle.js`、`tweaks`、旧 CSS；关闭开关。 | — |
+| **P2 抽 model**（LAN-34） | 把旧页面里的业务逻辑抽到 `features/*/model`（有类型 + 单测），旧页面改为 import 新 model，渲染不变。顺序：calibrate `project` / `camera` / `deploy`（被引用最多）→ cache 数据加载改 query → keyer store。 | 否（只换数据来源，旧页面渲染结果不变） |
+| **P3 逐页重写** | DS 定稿 → `ui/` 组件；每页 handoff 落到新壳；新页验收后从旧壳删掉对应页面和它的 CSS。 | 是，全部经 Claude Design |
+| **P4 收尾**（LAN-35） | 新壳设为默认 → 删 `src/volo`（`api/` 移到 `src/api`）、`ds_bundle.js`、`tweaks`、旧 CSS；关闭开关。 | — |
 
 ## 9. 旧 → 新对照
 
