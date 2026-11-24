@@ -361,13 +361,15 @@ def video(ctx, backend, device, width, height, fps, transfer_function, preview_p
                         "fps_nominal": fps or frame.meta.get("frame_rate"),
                     }, ensure_ascii=False) + "\n")
                     manifest_fh.flush()
-                    if n == 0:
-                        # Recording is verifiably rolling: hosts gate playback
-                        # start on this (SL sentinel soft-sync needs the first
-                        # sentinel frame captured, not merely the device open).
-                        emitter.emit("first_frame_written",
-                                     {"path": str(out / f"{n:06d}.png")})
                 n += 1
+                if out and n == 1:
+                    # Recording is verifiably rolling: hosts gate playback
+                    # start on this (SL sentinel soft-sync needs the first
+                    # sentinel frame captured, not merely the device open).
+                    # Emitted AFTER `n += 1` so a {"cmd":"status"} probe sent
+                    # in reaction to this event never reports frames=0.
+                    emitter.emit("first_frame_written",
+                                 {"path": str(out / f"{0:06d}.png")})
                 now = time.monotonic()
                 if now - last_report >= 1.0:
                     emitter.emit("progress", {
