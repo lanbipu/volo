@@ -5,7 +5,7 @@
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "skipLibCheck": true,
-    "types": ["@webgpu/types", "vite/client"],
+    "types": ["@webgpu/types", "vite/client", "vitest/globals"],
 
     /* Bundler mode */
     "moduleResolution": "bundler",
@@ -14,6 +14,14 @@
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "react-jsx",
+
+    /* 新结构路径别名（与 vite.config.ts resolve.alias 保持一致） */
+    "baseUrl": ".",
+    "paths": {
+      "@/api": ["src/volo/api"],
+      "@/api/*": ["src/volo/api/*"],
+      "@/*": ["src/*"]
+    },
 
     /* Linting */
     "strict": true,

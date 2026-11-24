@@ -1,0 +1,19 @@
+/* 全局基础：只做 reset 与把 token 接到文档根上。组件样式放 ui/components/*.css（ry- 前缀）。
+   Runyard 的字体 @import 与组件规则待 P3 随 handoff 移植（字体需本地打包，不走 Google Fonts）。 */
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body, #root { height: 100%; margin: 0; }
+
+body {
+  background: var(--canvas);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -webkit-user-select: none;
+}
+
+input, textarea, [contenteditable="true"] { -webkit-user-select: text; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms; transition-duration: 0.01ms; }
+}

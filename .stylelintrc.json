@@ -1,0 +1,25 @@
+{
+  "//": "stylelint：只管新结构的 CSS（docs/architecture/frontend-structure.md §6）。旧壳 src/volo 不纳入。",
+  "ignoreFiles": ["src/volo/**", "dist/**", "src-tauri/**", "target/**", "src/ui/tokens.css"],
+  "rules": {
+    "declaration-no-important": true,
+    "color-no-hex": true,
+    "color-named": "never",
+    "function-disallowed-list": ["rgb", "rgba", "hsl", "hsla", "oklch", "lab", "lch"],
+    "selector-class-pattern": null
+  },
+  "overrides": [
+    {
+      "files": ["src/features/**/*.css", "src/app/**/*.css", "src/windows/**/*.css"],
+      "rules": {
+        "selector-disallowed-list": [["/\\.ry-/"], { "message": "页面样式不得覆盖 ry- 组件类；改组件或 token。" }]
+      }
+    },
+    {
+      "files": ["src/features/**/*.css", "src/app/**/*.css", "src/windows/**/*.css"],
+      "rules": {
+        "selector-max-type": [0, { "ignore": ["child", "compounded", "descendant"] }]
+      }
+    }
+  ]
+}
