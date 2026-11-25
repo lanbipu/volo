@@ -13,4 +13,4 @@ export { cameraLabel, useCaptureProfiles, profileFor } from "./model/camera";
 export { useRuns, currentRun, runSource } from "./model/screens";
 export { resolveTopology, validateTopology, useOutputSession, sessionIdFor } from "./model/output";
 export { useLensSessions, useCapture, RMS_ADOPT_PX, baseName, camTab } from "./model/camera";
-export { useRebuildJobs, runTab as rebuildRunTab, type RebuildJob } from "./model/rebuild";
+export { useRebuildJobs, useStageRebuildJobs, runTab as rebuildRunTab, type RebuildJob } from "./model/rebuild";

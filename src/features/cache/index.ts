@@ -5,6 +5,7 @@ export { projectTab } from "./model/projects";
 export { useMachineList } from "./model/machines";
 export { CachePage } from "./ui/CachePage";
 export { PsoPage } from "./ui/PsoPage";
+export { usePsoLiveSync } from "./model/pso";
 export { useAutoPatrol, fmtTime, fmtFull } from "./model/machines";
 export { useMachines, useRunInspection, parseTs, STATE_LABEL, type MachineView, type MachineState } from "./model/machines";
 export { useShares } from "./model/cache";

@@ -55,12 +55,12 @@ import {
   shortTime,
   signed,
   startSpatialSolve,
-  useArJobs,
   useArLog,
   useArRun,
   useArRuns,
   useArUi,
   useArWorkspace,
+  useStageSpatialJobs,
   type ArRunSummary,
   type SpatialFilter,
 } from "../model/ar";
@@ -74,7 +74,7 @@ export function SpatialPage() {
   const path = stage?.path ?? null;
   const ws = useArWorkspace(path);
   const runsQ = useArRuns(path);
-  const jobs = useArJobs((s) => s.spatial);
+  const jobs = useStageSpatialJobs(path);
   const go = useNav((s) => s.go);
   const [inspOpen, setInsp] = useInspector("spatial");
   const inspW = useNav((s) => s.inspectorWidth);

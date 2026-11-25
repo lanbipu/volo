@@ -4,7 +4,7 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { listMachines, listProjects } from "@/api/commands";
 import { isTauri } from "@/api/invoke";
-import { machineTab, projectTab, useAutoPatrol } from "@/features/cache";
+import { machineTab, projectTab, useAutoPatrol, usePsoLiveSync } from "@/features/cache";
 import { useGeneralSettings } from "@/features/settings";
 import { CommandPalette, OVERLAY_ID, Toast, TooltipLayer, type PaletteItem } from "@/ui";
 import { useNav } from "@/lib/nav";
@@ -42,6 +42,19 @@ export function AppShell() {
   /* 设置 › 巡检：启动时 / 定时巡检全部在线机器。 */
   const patrol = useGeneralSettings();
   useAutoPatrol({ onStart: patrol.patrolOnStart, everyMin: patrol.patrolTimed ? Number(patrol.patrolMinutes) || null : null });
+  usePsoLiveSync();
+
+  /* 禁掉 WebView 自带的右键菜单（里面有“重新载入”：一重载，会话里的任务状态全丢，sidecar 却还在跑）。
+     输入框里保留，方便粘贴；三维视口另有自己的右键处理。 */
+  useEffect(() => {
+    const block = (e: MouseEvent) => {
+      const t = e.target;
+      if (t instanceof HTMLElement && t.closest("input, textarea, [contenteditable='true']")) return;
+      e.preventDefault();
+    };
+    document.addEventListener("contextmenu", block);
+    return () => document.removeEventListener("contextmenu", block);
+  }, []);
 
   useEffect(() => {
     const root = document.documentElement;

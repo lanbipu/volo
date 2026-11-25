@@ -342,6 +342,8 @@ export type CapturePhase = "idle" | "preparing" | "capturing" | "solving" | "don
 
 interface CaptureState {
   camId: string | null;
+  /** 发起时的 Stage（任务列表按它过滤）。 */
+  stagePath: string | null;
   phase: CapturePhase;
   task: string | null;
   outDir: string | null;
@@ -359,7 +361,7 @@ interface CaptureState {
   done: { lensJson: string; info: TrackerFreeLensInfo; adopted: boolean } | null;
 }
 
-const idleCapture = (): CaptureState => ({ camId: null, phase: "idle", task: null, outDir: null, startedAt: null, target: 0, snaps: [], cells: Array(GRID_CELLS).fill(false), preview: null, source: null, markers: null, warning: null, error: null, done: null });
+const idleCapture = (): CaptureState => ({ camId: null, stagePath: null, phase: "idle", task: null, outDir: null, startedAt: null, target: 0, snaps: [], cells: Array(GRID_CELLS).fill(false), preview: null, source: null, markers: null, warning: null, error: null, done: null });
 export const useCapture = create<CaptureState>()(() => idleCapture());
 const cap = (p: Partial<CaptureState>) => useCapture.setState(p);
 
@@ -416,7 +418,7 @@ export async function startLensCapture(o: StartLensOpts) {
   const topo = resolveTopology(o.cfg);
   if (!topo) throw new Error("还没有输出拓扑，先在「上屏」里配置。");
   if (useOutputSession.getState().phase === "idle") throw new Error("上屏还没开始输出。先到「上屏」开始输出。");
-  useCapture.setState({ ...idleCapture(), camId: o.cam.id, phase: "preparing", target: o.target });
+  useCapture.setState({ ...idleCapture(), camId: o.cam.id, stagePath: o.path, phase: "preparing", target: o.target });
   let t: EnsureResult;
   try {
     t = await ensureScreenPatterns(o.path, o.screen);
