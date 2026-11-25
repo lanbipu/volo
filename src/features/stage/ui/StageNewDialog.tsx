@@ -1,5 +1,5 @@
 /* 新建 Stage（设计：StageNew.dc.html）。一个 Stage = 一个文件夹里的 project.yaml；类型创建后不能改。 */
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { listMachines, pickDirectory } from "@/api/commands";
 import { isTauri } from "@/api/invoke";
@@ -28,6 +28,8 @@ export function StageNewDialog({ recentPath, onClose }: { recentPath: string | n
   const [picked, setPicked] = useState<Record<number, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [touched, setTouched] = useState(false);
+  /** 连按回车时 busy 还没生效，用 ref 挡住第二次提交。 */
+  const inFlight = useRef(false);
 
   const base = recentPath ? parentOf(recentPath) : null;
   const sep = recentPath?.includes("\\") ? "\\" : "/";
@@ -51,7 +53,8 @@ export function StageNewDialog({ recentPath, onClose }: { recentPath: string | n
 
   const submit = async () => {
     setTouched(true);
-    if (nameErr || dirErr) return;
+    if (nameErr || dirErr || inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     try {
       const ids = list.filter((m) => m.id != null && checked(m.id, m.status)).map((m) => m.id as number);
@@ -60,6 +63,7 @@ export function StageNewDialog({ recentPath, onClose }: { recentPath: string | n
       onClose();
     } catch (e) {
       toast(`新建失败：${errText(e)}`);
+      inFlight.current = false;
       setBusy(false);
     }
   };

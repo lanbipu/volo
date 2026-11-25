@@ -37,6 +37,8 @@ export interface Issue {
   /** 主操作（例如“重新巡检”）；没有就只给“打开”。 */
   action?: "inspect";
   machineId?: number;
+  /** 舞台范围的条目属于哪个 Stage（换了 Stage 就看不到它的现状，不能当成“已恢复”）。 */
+  stagePath?: string;
 }
 
 export interface DoneIssue {
@@ -48,6 +50,7 @@ export interface DoneIssue {
   sub: string;
   doneAt: number;
   auto: boolean;
+  stagePath?: string;
 }
 
 /* ------------------------------ 本机状态 ------------------------------ */
@@ -59,10 +62,11 @@ interface InboxStore {
   seen: Record<string, DoneIssue>;
   markRead: (ids: string[]) => void;
   markDone: (issue: Issue) => void;
-  sync: (active: Issue[]) => void;
+  /** stagePath = 当前 Stage；别的 Stage 的条目不在列表里不代表恢复了，原样留在 seen 里。 */
+  sync: (active: Issue[], stagePath: string | null) => void;
 }
 
-const snap = (i: Issue, auto: boolean): DoneIssue => ({ id: i.id, icon: i.icon, area: i.area, scope: i.scope, title: i.title, sub: i.sub, doneAt: Date.now(), auto });
+const snap = (i: Issue, auto: boolean): DoneIssue => ({ id: i.id, icon: i.icon, area: i.area, scope: i.scope, title: i.title, sub: i.sub, doneAt: Date.now(), auto, stagePath: i.stagePath });
 
 export const useInboxStore = create<InboxStore>()(
   persist(
@@ -72,16 +76,20 @@ export const useInboxStore = create<InboxStore>()(
       seen: {},
       markRead: (ids) => set((s) => ({ read: { ...s.read, ...Object.fromEntries(ids.map((id) => [id, true as const])) } })),
       markDone: (issue) => set((s) => ({ done: { ...s.done, [issue.id]: snap(issue, false) }, read: { ...s.read, [issue.id]: true } })),
-      sync: (active) =>
+      sync: (active, stagePath) =>
         set((s) => {
           const ids = new Set(active.map((i) => i.id));
           const done = { ...s.done };
+          const carried: Record<string, DoneIssue> = {};
           let changed = false;
           for (const [id, prev] of Object.entries(s.seen)) {
-            if (!ids.has(id) && !done[id]) {
-              done[id] = { ...prev, doneAt: Date.now(), auto: true };
-              changed = true;
+            if (ids.has(id) || done[id]) continue;
+            if (prev.stagePath && prev.stagePath !== stagePath) {
+              carried[id] = prev;
+              continue;
             }
+            done[id] = { ...prev, doneAt: Date.now(), auto: true };
+            changed = true;
           }
           /* 又出现了的条目：从“已处理”里拿掉（手动标的除外），重新算未读。 */
           const read = { ...s.read };
@@ -92,12 +100,14 @@ export const useInboxStore = create<InboxStore>()(
               changed = true;
             }
           }
-          const seen = Object.fromEntries(active.map((i) => [i.id, snap(i, true)]));
+          const seen: Record<string, DoneIssue> = { ...carried, ...Object.fromEntries(active.map((i) => [i.id, snap(i, true)])) };
           const sameSeen = Object.keys(seen).length === Object.keys(s.seen).length && Object.keys(seen).every((k) => s.seen[k]?.title === seen[k].title);
           if (!changed && sameSeen) return s;
-          /* “已处理”只留最近 50 条。 */
-          const trimmed = Object.fromEntries(Object.entries(done).sort((a, b) => b[1].doneAt - a[1].doneAt).slice(0, 50));
-          return { done: trimmed, read, seen };
+          /* “已处理”只留最近 50 条；手动标的、现状还在的条目必须留着，否则它会以未读重新冒出来。 */
+          const entries = Object.entries(done).sort((a, b) => b[1].doneAt - a[1].doneAt);
+          const pinned = entries.filter(([id, d]) => !d.auto && seen[id]);
+          const rest = entries.filter(([id, d]) => d.auto || !seen[id]).slice(0, Math.max(0, 50 - pinned.length));
+          return { done: Object.fromEntries([...pinned, ...rest]), read, seen };
         }),
     }),
     persistOptions<InboxStore, Pick<InboxStore, "read" | "done" | "seen">>("tasks.inbox", 1, ({ read, done, seen }) => ({ read, done, seen })),
@@ -157,18 +167,28 @@ function machineIssues(views: MachineView[], healthAt: string | null): Issue[] {
   return out;
 }
 
-/** 失败的任务（PSO 预热、会话里的重建 / 空间求解 / 标定）。 */
-function taskIssues(tasks: TaskRow[]): Issue[] {
-  const latestPso = new Map<string, TaskRow>();
-  const out: Issue[] = [];
+/** 同一件事的任务归成一组：同一工程 + 机器的 PSO 预热、同一摄影机的标定、同一块屏的重建、空间求解。 */
+function taskGroup(t: TaskRow): string | null {
+  if (t.id.startsWith("pso:")) return `pso|${t.title}`;
+  if (t.tag === "摄影机" || t.tag === "重建") return `${t.tag}|${t.short}`;
+  if (t.tag === "空间求解") return "spatial";
+  return null;
+}
+
+/** 失败的任务：每组只看最近一次结束（成功 / 失败）的任务，最近一次是失败才算待处理。
+    之后重新跑成功了，这一条就不再出现，自动记到“已处理”。 */
+function taskIssues(tasks: TaskRow[], stagePath: string | null): Issue[] {
+  const latest = new Map<string, TaskRow>();
   for (const t of tasks) {
-    if (t.state !== "failed") continue;
-    if (t.id.startsWith("pso:")) {
-      const key = t.title;
-      if (!latestPso.has(key)) latestPso.set(key, t);
-      continue;
-    }
-    if (!t.id.startsWith("job:") && !t.id.startsWith("lens:")) continue;
+    if (t.state !== "failed" && t.state !== "success") continue;
+    const g = taskGroup(t);
+    if (!g) continue;
+    const prev = latest.get(g);
+    if (!prev || (t.startedAt ?? 0) > (prev.startedAt ?? 0)) latest.set(g, t);
+  }
+  const out: Issue[] = [];
+  for (const t of latest.values()) {
+    if (t.state !== "failed" || t.stateLabel === "已取消" || t.id.startsWith("pso:")) continue;
     out.push({
       id: `task:${t.id}`,
       icon: t.tag === "重建" ? "rebuild" : t.tag === "空间求解" ? "spatial" : "camera",
@@ -184,10 +204,11 @@ function taskIssues(tasks: TaskRow[]): Issue[] {
       from: `任务 ${t.no ?? ""} ${t.short}`.replace(/\s+/g, " ").trim(),
       until: "重新跑一次成功后，这一条自动移到“已处理”",
       target: t.target ?? { page: "tasks", label: "任务" },
+      stagePath: t.scope === "stage" && stagePath ? stagePath : undefined,
     });
   }
-  for (const t of latestPso.values()) {
-    if (t.stateLabel === "已取消") continue;
+  for (const t of latest.values()) {
+    if (t.state !== "failed" || t.stateLabel === "已取消" || !t.id.startsWith("pso:")) continue;
     out.push({
       id: `task:${t.id}`,
       icon: "pso",
@@ -209,7 +230,7 @@ function taskIssues(tasks: TaskRow[]): Issue[] {
 }
 
 export function useIssues(tasks: TaskRow[]) {
-  const { stage } = useCurrentStage();
+  const { stage, loading: stageLoading } = useCurrentStage();
   const machines = useMachines();
   const creds = useCredRows();
   const out: Issue[] = [...machineIssues(machines.views, machines.healthAt)];
@@ -236,6 +257,7 @@ export function useIssues(tasks: TaskRow[]) {
         from: "镜头标定",
         until: "重新求解后 RMS 低于阈值，这一条自动移到“已处理”",
         target: { page: "camera", tab: camTab(c), label: "摄影机" },
+        stagePath: stage.path,
       });
     }
     const topo = resolveTopology(cfg);
@@ -257,6 +279,7 @@ export function useIssues(tasks: TaskRow[]) {
           from: "上屏拓扑检查",
           until: "改好拓扑后，这一条自动移到“已处理”",
           target: { page: "output", label: "上屏" },
+          stagePath: stage.path,
         });
       }
     }
@@ -282,30 +305,31 @@ export function useIssues(tasks: TaskRow[]) {
     });
   }
 
-  out.push(...taskIssues(tasks));
+  out.push(...taskIssues(tasks, stage?.path ?? null));
   const order: Record<string, number> = { failed: 0, attention: 1, offline: 2 };
   out.sort((a, b) => (order[a.kind] ?? 3) - (order[b.kind] ?? 3) || (b.at ?? 0) - (a.at ?? 0));
-  return { issues: out, loading: machines.loading, healthAt: machines.healthAt };
+  /* 每个来源都读到了才算 loaded：缺一个来源时它的条目会“消失”，同步时会被误记成已恢复。 */
+  return { issues: out, loading: machines.loading || stageLoading || creds.loading, healthAt: machines.healthAt, stagePath: stage?.path ?? null };
 }
 
 /** 跟踪“消失”的条目（外壳常驻调用一次）。只在后端数据都读到之后同步，免得启动瞬间把全部条目记成已处理。 */
-export function useInboxSync(issues: Issue[], ready: boolean) {
+export function useInboxSync(issues: Issue[], ready: boolean, stagePath: string | null) {
   const sync = useInboxStore((s) => s.sync);
   const key = issues.map((i) => `${i.id}|${i.title}`).join("\n");
   useEffect(() => {
-    if (ready) sync(issues);
+    if (ready) sync(issues, stagePath);
     // 以 key 代表 issues 的内容
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, ready, sync]);
+  }, [key, ready, stagePath, sync]);
 }
 
 /** 待处理的当前视图：活动条目（去掉手动标为已处理的）、未读、已处理。 */
 export function useInbox(tasks: TaskRow[], tasksReady: boolean) {
-  const { issues, loading, healthAt } = useIssues(tasks);
+  const { issues, loading, healthAt, stagePath } = useIssues(tasks);
   const read = useInboxStore((s) => s.read);
   const done = useInboxStore((s) => s.done);
   const active = issues.filter((i) => !done[i.id] || done[i.id].auto);
   const unread = active.filter((i) => !read[i.id]).length;
   const doneList = Object.values(done).sort((a, b) => b.doneAt - a.doneAt);
-  return { issues: active, unread, read, done: doneList, loading, ready: !loading && tasksReady, all: issues, healthAt };
+  return { issues: active, unread, read, done: doneList, loading, ready: !loading && tasksReady, all: issues, healthAt, stagePath };
 }

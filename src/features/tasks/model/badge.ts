@@ -5,6 +5,6 @@ import { useInbox, useInboxSync } from "./inbox";
 export function useInboxBadge() {
   const tasks = useTasks();
   const inbox = useInbox(tasks.rows, !tasks.loading);
-  useInboxSync(inbox.all, inbox.ready);
+  useInboxSync(inbox.all, inbox.ready, inbox.stagePath);
   return { inbox: inbox.unread, tasks: tasks.rows.filter((t) => t.state === "running").length };
 }

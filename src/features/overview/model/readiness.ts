@@ -5,7 +5,7 @@ import type { ProjectConfig } from "@/api/types";
 import type { PageId } from "@/lib/nav";
 import { adoptedRun, isLowConf, runLabel, useArRuns, useArWorkspace, VERIFY_LIMIT_PX } from "@/features/ar";
 import { useMachines, type MachineView } from "@/features/cache";
-import { currentRun, resolveTopology, RMS_ADOPT_PX, useOutputSession, useRuns, validateTopology } from "@/features/led";
+import { currentRun, resolveTopology, RMS_ADOPT_PX, sessionIdFor, useOutputSession, useRuns, validateTopology } from "@/features/led";
 import type { CurrentStage } from "@/features/stage";
 
 export type StepKind = "success" | "failed" | "queued";
@@ -85,7 +85,7 @@ export function useReadiness(stage: CurrentStage | null) {
   const cfg = stage?.config;
   const machines = useMachines();
   const runs = useRuns(path);
-  const phase = useOutputSession((s) => (path && s.session?.startsWith(path) ? s.phase : "idle"));
+  const phase = useOutputSession((s) => (path && s.session === sessionIdFor(path) ? s.phase : "idle"));
   const ws = useArWorkspace(path);
   const arRuns = useArRuns(path);
   const cluster = clusterStep(machines.views, machines.loading);

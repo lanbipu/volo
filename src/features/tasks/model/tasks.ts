@@ -478,7 +478,8 @@ export function useTasks() {
     return out.sort((a, b) => TASK_STATE_ORDER.indexOf(a.state) - TASK_STATE_ORDER.indexOf(b.state) || (b.startedAt ?? 0) - (a.startedAt ?? 0));
   }
 
-  const loading = on && (health.isLoading || projects.isLoading);
+  /* 待处理靠它判断“各来源都读到了”，所以舞台相关的记录和每个工程的 PSO 也要算进来。 */
+  const loading = on && (health.isLoading || projects.isLoading || pso.some((q) => q.isLoading) || runs.isLoading || lens.isLoading || ar.isLoading);
   const fetching = health.isFetching || pso.some((q) => q.isFetching) || runs.isFetching || lens.isFetching || ar.isFetching;
   const refetch = () => {
     void health.refetch();

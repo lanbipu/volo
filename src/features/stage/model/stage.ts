@@ -6,7 +6,8 @@ import { persist } from "zustand/middleware";
 import { addRecentProject, listRecentProjects, loadProjectYaml, saveProjectYaml } from "@/api/meshCommands";
 import { assignMachineToStage, ensureProjectStageId } from "@/api/stageCommands";
 import { pickDirectory } from "@/api/commands";
-import { isTauri } from "@/api/invoke";
+import { isTauri, VoloInvokeError } from "@/api/invoke";
+import { errText } from "@/lib/toast";
 import type { ProjectConfig, RecentProject, StageType } from "@/api/types";
 import { persistOptions } from "@/lib/persist";
 
@@ -103,11 +104,13 @@ export function useCreateStage() {
   const qc = useQueryClient();
   const setPath = useStageSel((s) => s.setPath);
   return async (v: NewStageInput): Promise<{ failedMachines: number }> => {
-    const exists = await loadProjectYaml(v.dir).then(
-      () => true,
-      () => false,
+    /* 只有“没有 project.yaml”才能新建；读得出来或读不出来（格式坏了、没权限）都不能覆盖。 */
+    const probe = await loadProjectYaml(v.dir).then(
+      () => "exists" as const,
+      (e: unknown) => (e instanceof VoloInvokeError && e.kind === "not_found" ? ("absent" as const) : e),
     );
-    if (exists) throw new Error("这个文件夹里已经有 Stage 了，换一个，或用“打开文件夹里的 Stage…”");
+    if (probe === "exists") throw new Error("这个文件夹里已经有 Stage 了，换一个，或用“打开文件夹里的 Stage…”");
+    if (probe !== "absent") throw new Error(`这个文件夹里已有的 project.yaml 读不出来，不会覆盖它：${errText(probe)}`);
     await saveProjectYaml(v.dir, blankConfig(v.name, v.type));
     const id = await ensureProjectStageId(v.dir);
     const res = await Promise.allSettled(v.machineIds.map((m) => assignMachineToStage(id, m)));

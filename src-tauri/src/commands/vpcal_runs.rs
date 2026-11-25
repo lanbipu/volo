@@ -127,7 +127,9 @@ pub fn read_ar_run(result_path: String) -> VoloResult<Value> {
         if !f.is_file() {
             continue;
         }
-        let canon = f.canonicalize()?;
+        // A report that vanished or can't be resolved is treated as missing,
+        // like a read failure below — it must not fail the whole run.
+        let Ok(canon) = f.canonicalize() else { continue };
         if !canon.starts_with(&dir) {
             continue;
         }

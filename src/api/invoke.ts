@@ -16,11 +16,20 @@ import { invoke } from "@tauri-apps/api/core";
 /** Normalized failure of a Tauri command (all handlers return `Result<_, String>`). */
 export class VoloInvokeError extends Error {
   readonly command: string;
-  constructor(command: string, message: string) {
+  /** VoloError 的种类（`not_found`、`invalid_input` …）；后端没给就是 null。 */
+  readonly kind: string | null;
+  constructor(command: string, message: string, kind: string | null = null) {
     super(message);
     this.name = "VoloInvokeError";
     this.command = command;
+    this.kind = kind;
   }
+}
+
+function errKind(e: unknown): string | null {
+  if (!e || typeof e !== "object") return null;
+  const o = e as { kind?: unknown; code?: unknown };
+  return typeof o.kind === "string" ? o.kind : typeof o.code === "string" ? o.code : null;
 }
 
 /** True only inside the Tauri runtime. In the vite browser preview (:1420) there
@@ -54,6 +63,6 @@ export async function call<T>(command: string, args?: Record<string, unknown>): 
   try {
     return await invoke<T>(command, args);
   } catch (e) {
-    throw new VoloInvokeError(command, normalize(e));
+    throw new VoloInvokeError(command, normalize(e), errKind(e));
   }
 }
