@@ -43,6 +43,8 @@ pub mod sidecar_stream;
 // review #15: spawn bridge for the argv-based vpcal / tracksim sidecars.
 pub mod sidecars;
 pub mod stages;
+pub mod app_info;
 pub mod system;
+pub mod tools;
 pub mod vpcal_runs;
 pub mod zen;

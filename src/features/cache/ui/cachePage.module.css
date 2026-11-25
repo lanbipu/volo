@@ -1,0 +1,211 @@
+/* 集群 › 缓存（设计：Cache / CachePak / CacheLegacy / CacheZenSettings）。值取自设计稿内联样式。 */
+
+/* Zen 页四个指标 */
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 24px;
+  padding: 8px 0 4px;
+}
+
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.metricValue {
+  font: 500 20px/28px var(--font-sans);
+  color: var(--text-primary);
+}
+
+.metricUnit {
+  font: 400 13px/20px var(--font-sans);
+  color: var(--text-tertiary);
+}
+
+.meter {
+  margin-top: 6px;
+  max-width: 160px;
+}
+
+/* Inspector：配置通道（Zen） */
+.chanTitle {
+  margin: 0 0 10px;
+  font: 500 12px/16px var(--font-sans);
+  color: var(--text-tertiary);
+}
+
+.chanList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chan {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) max-content;
+  gap: 2px 8px;
+  padding: 8px;
+  border-radius: var(--radius-md);
+}
+
+.chanOn {
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-subtle);
+}
+
+.chanNum {
+  color: var(--text-tertiary);
+}
+
+.chanName {
+  color: var(--text-secondary);
+}
+
+.chanOn .chanName {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.chanValue {
+  grid-column: 2 / 4;
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.chanOn .chanValue {
+  color: var(--text-secondary);
+}
+
+.noteGap {
+  margin-top: 16px;
+}
+
+.propsGap {
+  margin-top: 20px;
+}
+
+/* Inspector：四处配置（共享目录） */
+.legacyTitle {
+  margin: 20px 0 10px;
+}
+
+.legacyList {
+  list-style: none;
+  margin: 0 0 20px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.legacyItem {
+  display: grid;
+  grid-template-columns: 16px 84px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
+
+.legacyName {
+  color: var(--text-primary);
+}
+
+.legacyValue {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--text-tertiary);
+}
+
+.pakTitle {
+  margin: 0 0 10px;
+}
+
+.wrapMeta {
+  white-space: normal;
+}
+
+.monoSec {
+  font-weight: 400;
+}
+
+/* Zen 服务器设置（设置页式分节） */
+.settingsScroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.settings {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 8px 32px 40px;
+  color: var(--text-secondary);
+  font: 400 13px/20px var(--font-sans);
+}
+
+.section {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  column-gap: 40px;
+  padding: 24px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.section:last-child {
+  border-bottom: 0;
+}
+
+.sectionHead {
+  margin: 0 0 4px;
+  font: 600 14px/20px var(--font-sans);
+  color: var(--text-primary);
+}
+
+.sectionDesc {
+  margin: 0;
+  font: 400 12px/18px var(--font-sans);
+  color: var(--text-tertiary);
+}
+
+.btnRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ZenPoint 对话框 */
+.radioCol {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.radioDesc {
+  display: block;
+  font: 400 12px/16px var(--font-sans);
+  color: var(--text-tertiary);
+}
+
+.checkCol {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tagRow {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.mt16 {
+  margin-top: 16px;
+}
+
+.push {
+  margin-right: auto;
+}

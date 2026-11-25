@@ -30,10 +30,10 @@ Volo —— LanX 出品的虚拟制作桌面工具（**Tauri 2 + React**，界�
 
 ## 代码结构
 
-- 前端 `src/volo/`：`shell.tsx` 外壳 + `pages/` 按页面平铺 + `api/` 类型化命令封装 + `styles/`。
+- 前端 `src/`：`app/` 外壳 + 页面表、`ui/` design system 组件、`features/<域>/{model,ui}` 页面与状态、`lib/` 通用工具、`windows/` 独立窗口、`api/` 类型化命令封装（方案见 `docs/architecture/frontend-structure.md`）。
 - Rust `crates/`（cache-core、mesh-*、volo-shared、volo-cli）+ `src-tauri`（约 210 个 Tauri command，见 `src-tauri/src/lib.rs` 的 invoke_handler）。
 - Python / C++ sidecar 在 `sidecars/`（mesh-vba、vpcal、tracksim）。
-- 现状说明：页面与外壳文件大多带 `@ts-nocheck`，模块间经 `window.*` 全局与 `src/volo/index.tsx` 的 import 顺序耦合，CSS 的加载顺序同样是契约。改动这些文件时保持顺序。新写的非页面代码（`api/`、`keyer/`、`lib/`）保持严格类型，不加 `@ts-nocheck`。
+- 规则由 `pnpm lint` 强制：不写 `@ts-nocheck` / `window.*` 全局；`invoke` / `listen` 只在 `api/`（及 `lib/events.ts`）；跨 feature 只 import 对方 `index`；页面样式只用 `*.module.css`，禁 `!important` 与字面色值。
 - 整改待办与优先级：`docs/architecture/remediation-backlog.md`。
 
 ## 开发 / 构建（实测）
@@ -46,7 +46,7 @@ Volo —— LanX 出品的虚拟制作桌面工具（**Tauri 2 + React**，界�
 ## Tauri v2 接线 / 窗口（最易踩）
 
 - invoke 参数 key：Rust snake_case 函数参数 → JS **camelCase**（`machine_id` → `machineId`）；struct 入参（request / input / cred / plan）整体一个 key、内部字段保持 snake_case。
-- 返回 DTO 字段 = **snake_case**（crates 全 `#[derive(Serialize)]` 无 rename_all）；例外看各自 `#[serde(rename)]`（如 `ProjectDir.Path` 是 PascalCase）/ enum `rename_all`。前端封装见 `src/volo/api/commands.ts`。
+- 返回 DTO 字段 = **snake_case**（crates 全 `#[derive(Serialize)]` 无 rename_all）；例外看各自 `#[serde(rename)]`（如 `ProjectDir.Path` 是 PascalCase）/ enum `rename_all`。前端封装见 `src/api/commands.ts`。
 - 无边框窗口拖动用 `data-tauri-drag-region` 属性（不是 `-webkit-app-region`），需在 `src-tauri/capabilities/default.json` 开 `core:window:allow-start-dragging`（+ close / minimize / toggle-maximize）。
 - 禁界面文字选中用 `-webkit-user-select`（macOS WKWebView 不认裸 `user-select`）。
 

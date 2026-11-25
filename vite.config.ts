@@ -20,9 +20,7 @@ export default defineConfig(async () => ({
 
   resolve: {
     // 新结构的路径别名（docs/architecture/frontend-structure.md §2）。
-    // `@/api` 暂指旧址 src/volo/api；旧壳删除后整体移到 src/api，只改这一行。
     alias: [
-      { find: /^@\/api(\/|$)/, replacement: `${root}/src/volo/api$1` },
       { find: /^@\//, replacement: `${root}/src/` },
     ],
   },

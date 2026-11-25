@@ -1,5 +1,5 @@
 // ESLint：只管新结构（docs/architecture/frontend-structure.md §3 / §8 P0）。
-// 旧壳 src/volo 冻结、逐页删除，不纳入检查；但禁止在其中新增文件（见 scripts/check-frontend-structure.mjs）。
+// src/api 是后端命令的类型化封装（invoke / listen 只在这里），沿用原有写法，不纳入下面的页面规则。
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 import reactHooks from "eslint-plugin-react-hooks";
@@ -47,7 +47,6 @@ const baseRules = {
         { name: "@tauri-apps/api/event", message: "listen 只能在 api/ 或 lib/events 里用。" },
       ],
       patterns: [
-        { group: ["**/volo/**", "@/volo/**"], message: "新代码不得依赖旧壳 src/volo（api 走 @/api）。" },
         { group: ["@/features/*/*", "@/features/*/*/**"], message: "跨 feature 只能 import 对方的 index（@/features/<域>）。" },
       ],
     },
@@ -55,7 +54,7 @@ const baseRules = {
 };
 
 export default tseslint.config(
-  { ignores: ["dist/**", "src-tauri/**", "target/**", "sidecars/**", "src/volo/**", "src/stage/**", "src/main.tsx"] },
+  { ignores: ["dist/**", "src-tauri/**", "target/**", "sidecars/**", "src/api/**", "src/main.tsx"] },
   {
     files: NEW_CODE.map((g) => `${g}/*.{ts,tsx}`),
     extends: [js.configs.recommended, ...tseslint.configs.recommended],

@@ -1,0 +1,17 @@
+/* 上墙的输出面（不是界面）：底色必须是纯黑、不随主题，设计 token 里没有，只此一处用字面值。 */
+.field {
+  position: fixed;
+  inset: 0;
+  /* stylelint-disable-next-line color-no-hex -- LED 输出面必须是 0 亮度的纯黑 */
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: none;
+  overflow: hidden;
+}
+
+.img {
+  image-rendering: pixelated;
+  -webkit-user-select: none;
+}

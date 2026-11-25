@@ -1,0 +1,242 @@
+/* 工具页（键控实验 / 追踪模拟）的局部样式（颜色只取 token）。 */
+
+.gap12 {
+  height: var(--space-3);
+}
+
+.gap20 {
+  height: var(--space-5);
+}
+
+.errText {
+  margin: var(--space-3) var(--ry-pad) 0;
+  color: var(--status-failed);
+}
+
+.tableTop {
+  padding-top: var(--space-2);
+}
+
+.pathRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.pathRow > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 键控 · 画面 */
+.keyView {
+  margin-bottom: 0;
+}
+
+.keyArea {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.keyFrame {
+  position: relative;
+}
+
+.keyCanvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.keyCanvasPick {
+  cursor: crosshair;
+}
+
+.wipe {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 13px;
+  margin-left: -6px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.wipe::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 6px;
+  width: 1px;
+  background: var(--text-primary);
+}
+
+.keyEmpty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: var(--space-6);
+}
+
+.keyTime {
+  padding: 0 var(--space-2) 0 var(--space-1);
+  font: 400 12px/16px var(--font-mono);
+  color: var(--text-secondary);
+}
+
+.swatch {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+/* 键控 · 预设 */
+.presetList {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.presetRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 36px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.presetRow[aria-current] .presetName {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.presetName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 键控 · 基准测试 */
+.benchView {
+  flex: none;
+  height: 280px;
+  margin-bottom: 0;
+}
+
+.benchCanvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.aggRow {
+  font-weight: 500;
+}
+
+/* 追踪模拟 */
+.ml8 {
+  margin-left: var(--space-2);
+}
+
+.banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-2) var(--ry-pad) 0;
+  color: var(--text-secondary);
+  font: 400 12px/16px var(--font-sans);
+}
+
+.trackView {
+  margin-bottom: 0;
+}
+
+.trackHint {
+  max-width: 360px;
+  color: var(--text-tertiary);
+  font: 400 12px/18px var(--font-sans);
+  text-align: center;
+}
+
+.legend .keySelected,
+.keySelected {
+  border-color: var(--text-primary);
+  background: var(--surface-selected);
+}
+
+.keyDashed {
+  border-style: dashed;
+}
+
+.values {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--ry-pad) var(--space-5);
+}
+
+.valueGrid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  column-gap: var(--space-4);
+}
+
+.valueCell {
+  min-width: 0;
+}
+
+.valueLabel {
+  color: var(--text-tertiary);
+  font: 400 12px/16px var(--font-sans);
+}
+
+.valueNum {
+  color: var(--text-primary);
+  font: 500 15px/24px var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.valueUnit {
+  margin-left: var(--space-1);
+  color: var(--text-tertiary);
+  font: 400 11px/16px var(--font-mono);
+}
+
+.logView {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: var(--space-4) var(--ry-pad);
+  overflow: auto;
+  color: var(--text-secondary);
+  font: 400 12px/20px var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.lead {
+  margin: 0 0 var(--space-4);
+  color: var(--text-secondary);
+}
+
+/* 活动里的长路径 / 报错要能折行，不撑开 Inspector */
+.wrapAny {
+  overflow-wrap: anywhere;
+}

@@ -1,0 +1,231 @@
+/* 集群各页的本页样式（设计稿内联样式的移植）。颜色 / 间距只取 token。 */
+.contents {
+  display: contents;
+}
+
+.inspEmpty {
+  display: flex;
+  flex-direction: column;
+}
+
+.muted {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.mt16 {
+  margin-top: 16px;
+}
+
+/* 详情页头：ry-detail 不撑满（Machines / Projects 详情） */
+.detailTop {
+  flex: none;
+  padding-bottom: 8px;
+  gap: 12px;
+}
+
+.detailHead {
+  padding-top: 20px;
+  gap: 8px;
+}
+
+/* 详情页的非表格内容区（属性 / 活动） */
+.pane {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px var(--ry-pad) 32px;
+  color: var(--text-secondary);
+  font: 400 13px/20px var(--font-sans);
+}
+
+.paneInner {
+  max-width: 640px;
+}
+
+/* 表格里的次要文字列 */
+.sec {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.idPrimary {
+  color: var(--text-primary);
+}
+
+/* Inspector：说明段 + 现在 / 改成 对照框 */
+.lead {
+  margin: 0 0 16px;
+}
+
+.diff {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  margin-bottom: 20px;
+}
+
+.diffRow {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 8px;
+  padding: 6px 10px;
+}
+
+.diffRow > :last-child {
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.diffSep {
+  height: 1px;
+  background: var(--border-subtle);
+}
+
+/* 添加机器：扫描结果清单 */
+.hostList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hostItem {
+  display: grid;
+  grid-template-columns: 20px 96px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.hostCheck {
+  margin-top: 2px;
+}
+
+.hostIp {
+  color: var(--text-primary);
+}
+
+.hostText {
+  min-width: 0;
+}
+
+.hostName {
+  display: block;
+  color: var(--text-primary);
+}
+
+.hostNote {
+  white-space: normal;
+}
+
+.netRow {
+  display: flex;
+  gap: 8px;
+}
+
+.grow {
+  flex: 1;
+}
+
+.push {
+  margin-right: auto;
+}
+
+.mt6 {
+  margin-top: 6px;
+}
+
+.checkCol {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 扫描工程：搜索目录清单 */
+.rootList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rootItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 4px 0 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.rootPath {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-primary);
+}
+
+/* 工程 Inspector：它在哪些机器上 */
+.sectionTitle {
+  margin: 20px 0 10px;
+}
+
+.copyList {
+  list-style: none;
+  margin: 0 0 20px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.copyItem {
+  display: grid;
+  grid-template-columns: 16px 76px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.copyPath {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+}
+
+/* 卡片视图滚动容器 */
+.scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.gap12 {
+  height: 12px;
+}
+
+.pathInTitle {
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+
+.thumbBox {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.thumbHint {
+  margin: 6px 0 12px;
+}
+
+.copyMain {
+  min-width: 0;
+}

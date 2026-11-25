@@ -34,6 +34,8 @@ pub struct ArRunSummary {
     pub validation_rms_px: Option<f64>,
     pub confidence: Option<String>,
     pub num_poses: Option<u64>,
+    /// Poses held out for validation (`qa/validation.json` → `holdout_frames`).
+    pub holdout_poses: Option<u64>,
 }
 
 fn summarize(result_json: &Path) -> Option<ArRunSummary> {
@@ -64,7 +66,92 @@ fn summarize(result_json: &Path) -> Option<ArRunSummary> {
             .and_then(Value::as_str)
             .map(str::to_string),
         num_poses: q.and_then(|q| q.get("num_poses")).and_then(Value::as_u64),
+        holdout_poses: result_json
+            .parent()
+            .map(|d| d.join("qa").join("validation.json"))
+            .and_then(|p| fs::read_to_string(p).ok())
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|v| v.get("holdout_frames").and_then(Value::as_array).map(|a| a.len() as u64)),
     })
+}
+
+/// Read a JSON file with a size cap (canonicalized, regular file only).
+fn read_json_capped(path: &Path, cap: u64) -> VoloResult<Value> {
+    let p = path
+        .canonicalize()
+        .map_err(|e| VoloError::Io(format!("failed to resolve {}: {e}", path.display())))?;
+    let meta = fs::metadata(&p)?;
+    if !meta.is_file() {
+        return Err(VoloError::InvalidInput(format!("{} is not a regular file", p.display())));
+    }
+    if meta.len() > cap {
+        return Err(VoloError::InvalidInput(format!(
+            "{} is {} bytes, exceeds the {cap}-byte cap",
+            p.display(),
+            meta.len()
+        )));
+    }
+    let bytes = fs::read(&p)?;
+    serde_json::from_slice(&bytes)
+        .map_err(|e| VoloError::InvalidInput(format!("invalid JSON in {}: {e}", p.display())))
+}
+
+/// QA artifacts the AR spatial-solve inspector reads, relative to the run dir.
+const AR_RUN_QA: &[&str] = &[
+    "validation",
+    "coverage",
+    "detection",
+    "handeye",
+    "ground_plane",
+    "world_alignment",
+    "reprojection",
+];
+
+/// Read one AR solve run: `result.json` plus the fixed allowlist of
+/// `qa/<name>.json` reports next to it (missing reports are omitted).
+/// Returns `{ "result": …, "qa": { "<name>": … } }`.
+#[tauri::command]
+pub fn read_ar_run(result_path: String) -> VoloResult<Value> {
+    const MAX_BYTES: u64 = 16 * 1024 * 1024;
+    let rp = Path::new(&result_path);
+    if rp.file_name().and_then(|n| n.to_str()) != Some("result.json") {
+        return Err(VoloError::InvalidInput(format!(
+            "expected a result.json path, got {result_path}"
+        )));
+    }
+    let result = read_json_capped(rp, MAX_BYTES)?;
+    let dir = rp.canonicalize()?.parent().map(Path::to_path_buf).unwrap_or_default();
+    let mut qa = serde_json::Map::new();
+    for name in AR_RUN_QA {
+        let f = dir.join("qa").join(format!("{name}.json"));
+        if !f.is_file() {
+            continue;
+        }
+        let canon = f.canonicalize()?;
+        if !canon.starts_with(&dir) {
+            continue;
+        }
+        if let Ok(v) = read_json_capped(&canon, MAX_BYTES) {
+            qa.insert((*name).to_string(), v);
+        }
+    }
+    Ok(serde_json::json!({ "result": result, "qa": Value::Object(qa) }))
+}
+
+/// Read a vpcal marker map JSON (`MarkerMapDefinition`). Only checks that the
+/// top level carries a `markers` array; field semantics stay with vpcal.
+#[tauri::command]
+pub fn read_marker_map(path: String) -> VoloResult<Value> {
+    const MAX_BYTES: u64 = 8 * 1024 * 1024;
+    let p = Path::new(&path);
+    if p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() != Some("json") {
+        return Err(VoloError::InvalidInput(format!("marker map must be a .json file: {path}")));
+    }
+    let v = read_json_capped(p, MAX_BYTES)?;
+    if !v.get("markers").map(Value::is_array).unwrap_or(false) {
+        return Err(VoloError::InvalidInput(format!("{path} has no markers array — not a marker map")));
+    }
+    Ok(v)
 }
 
 /// List AR solve runs under `runs_root` by scanning for `result.json` files

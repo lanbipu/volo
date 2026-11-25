@@ -160,8 +160,8 @@ pub fn run() {
             );
             tracing::info!("volo mesh database at {}", mesh_db_path.display());
 
-            // macOS：把应用菜单装进系统菜单栏（屏幕顶端）。Windows/Linux 菜单画在窗口顶部
-            // （前端 win-topbar），不设原生菜单，故 cfg-gate 到 macOS。
+            // macOS：把应用菜单装进系统菜单栏（屏幕顶端）。Windows/Linux 不设应用菜单
+            // （新壳没有菜单栏），故 cfg-gate 到 macOS。
             #[cfg(target_os = "macos")]
             {
                 let handle = app.handle().clone();
@@ -169,25 +169,9 @@ pub fn run() {
                 app.set_menu(menu)?;
             }
 
-            // Windows：关掉原生标题栏（decorations），让前端自绘的 win-topbar 成为
-            // 唯一标题栏 —— 与 macOS 的 Overlay 交通灯同策略（单一标题栏）。
-            // conf 的 `titleBarStyle: Overlay` 是 macOS 专属、Windows 不认，否则
-            // Windows 会退回默认原生标题栏并与 win-topbar 并排成两条。窗口最小化/
-            // 最大化/关闭由前端 winctl 调 window API（capabilities 已放行）。
-            // Windows：关掉原生标题栏（decorations），让前端自绘的 win-topbar 成为
-            // 唯一标题栏。Snap Layouts 由 tauri-plugin-snap-layout 的 overlay 还原
-            // （见上方 builder）。conf 的 titleBarStyle:Overlay 是 macOS 专属、
-            // Windows 不认，否则会退回原生标题栏与 win-topbar 并排成两条。
-            #[cfg(target_os = "windows")]
-            {
-                if let Some(win) = app.get_webview_window("main") {
-                    if let Err(e) = win.set_decorations(false) {
-                        tracing::warn!("set_decorations(false) failed: {e}");
-                    }
-                } else {
-                    tracing::warn!("main window not found; decorations not disabled");
-                }
-            }
+            // Windows：新壳（src/app）还没有自绘的最小化 / 最大化 / 关闭按钮（设计稿只画了 macOS 交通灯），
+            // 所以保留原生标题栏（decorations 默认开）。旧壳的 win-topbar 已随 src/volo 删除；
+            // 等 Claude Design 出了 Windows 窗口按钮，再在这里 set_decorations(false) 并给最大化按钮 id="snap-btn"。
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -205,6 +189,10 @@ pub fn run() {
             commands::bootstrap::package_ssh_bootstrap,
             commands::bootstrap::pick_directory,
             commands::bootstrap::pick_file,
+            commands::tools::save_file_bytes,
+            commands::tools::write_tracksim_config,
+            commands::tools::read_tracksim_track,
+            commands::app_info::app_info,
             commands::bootstrap::reveal_path,
             commands::bootstrap::is_loopback_machine,
             commands::bootstrap::reveal_remote_path,
@@ -353,6 +341,8 @@ pub fn run() {
             commands::mesh_reconstruct::get_run_report,
             commands::mesh_reconstruct::set_run_current,
             commands::vpcal_runs::list_ar_runs,
+            commands::vpcal_runs::read_ar_run,
+            commands::vpcal_runs::read_marker_map,
             commands::vpcal_runs::list_lens_sessions,
             commands::vpcal_runs::delete_lens_session,
             commands::vpcal_runs::read_image_as_data_url,

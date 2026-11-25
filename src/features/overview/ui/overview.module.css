@@ -1,0 +1,73 @@
+/* 概览（设计：Main.dc.html）。 */
+
+.scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.head {
+  padding: 24px 32px 0;
+}
+
+.ready {
+  padding: 28px 32px 8px;
+}
+
+.h2 {
+  margin: 0 0 14px;
+  font: 500 12px/16px var(--font-sans);
+  color: var(--text-tertiary);
+}
+
+.steps {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 20px;
+}
+
+/* 设计稿里是 <a>：去掉按钮外观，保留键盘可达。 */
+.step {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.stepTitle {
+  font: 500 13px/20px var(--font-sans);
+  color: var(--text-primary);
+}
+
+.stepDesc {
+  font: 400 12px/18px var(--font-sans);
+  color: var(--text-tertiary);
+}
+
+.inbox {
+  padding-top: 20px;
+  flex: none;
+}
+
+.inboxTitle {
+  margin: 0;
+  padding: 0 32px 8px;
+}
+
+.inboxBody {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.none {
+  margin: 0;
+  padding: 8px 24px;
+}

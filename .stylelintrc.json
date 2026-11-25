@@ -1,6 +1,6 @@
 {
-  "//": "stylelint：只管新结构的 CSS（docs/architecture/frontend-structure.md §6）。旧壳 src/volo 不纳入。",
-  "ignoreFiles": ["src/volo/**", "dist/**", "src-tauri/**", "target/**", "src/ui/tokens.css"],
+  "//": "stylelint：前端 CSS 规则（docs/architecture/frontend-structure.md §6）。",
+  "ignoreFiles": ["dist/**", "src-tauri/**", "target/**", "src/ui/tokens.css"],
   "rules": {
     "declaration-no-important": true,
     "color-no-hex": true,

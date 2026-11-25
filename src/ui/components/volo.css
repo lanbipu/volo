@@ -1,0 +1,191 @@
+/* 设计画布 YRCjkya2Hn3Mu2K4KsoygV 内 project/volo.css 的拷贝（Volo 扩展层，volo- 前缀）。
+   原文照搬，只给两个新增色值加了 stylelint 豁免注释。设计变了先改画布，再整份替换。 */
+/* Volo 扩展层 — Runyard（Linear design system）里没有、Volo 需要的部分。
+   规则：只引用 Runyard 的 token；类名前缀 volo-；不覆盖任何 ry- 类。
+   这里新增的颜色只有“需注意”一对，前景直接取 Runyard 的 log-warn。 */
+[data-theme] { --volo-attention: var(--log-warn); }
+/* stylelint-disable color-no-hex -- 扩展层唯一的新颜色对（画布 volo.css 原文） */
+[data-theme="dark"] { --volo-attention-subtle: #33231a; }
+[data-theme="light"] { --volo-attention-subtle: #fbead9; }
+/* stylelint-enable color-no-hex */
+
+/* Status Badge — resource states: objects that are not runs (machines, caches, calibrations) */
+.volo-status--attention { color: var(--volo-attention); }
+.ry-status--pill.volo-status--attention { background: var(--volo-attention-subtle); }
+.volo-status--offline { color: var(--status-queued); }
+
+/* Field — label, one control, hint or error */
+.volo-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.volo-field__label { display: flex; align-items: center; gap: 6px; font: 500 12px/16px var(--font-sans); color: var(--text-secondary); }
+.volo-field__label small { font: inherit; font-weight: 400; color: var(--text-tertiary); }
+.volo-field__hint { margin: 0; font: 400 12px/16px var(--font-sans); color: var(--text-tertiary); }
+.volo-field__error { display: flex; align-items: flex-start; gap: 6px; margin: 0; font: 400 12px/16px var(--font-sans); color: var(--status-failed); }
+.volo-field__error .ry-icon { width: var(--icon-sm); height: var(--icon-sm); margin-top: 1px; }
+.volo-field--inline { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: center; gap: 6px var(--space-4); }
+.volo-field--inline .volo-field__label { font: 400 13px/20px var(--font-sans); color: var(--text-tertiary); }
+.volo-field--inline .volo-field__hint, .volo-field--inline .volo-field__error { grid-column: 2; }
+.volo-fields { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+.volo-fields--row { flex-direction: row; align-items: flex-end; }
+.volo-fields--row > * { flex: 1; }
+.volo-fields__title { margin: var(--space-2) 0 0; font: 500 12px/16px var(--font-sans); color: var(--text-tertiary); }
+
+/* Input — one box for text, number, select and multi-line text */
+.volo-input { display: flex; align-items: center; gap: 8px; height: var(--ry-control); width: 100%; min-width: 0; margin: 0; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--surface-sunken); color: var(--text-tertiary); font: 400 13px/20px var(--font-sans); text-align: left; cursor: default; }
+.volo-input input, .volo-input select, .volo-input textarea { flex: 1; min-width: 0; height: 100%; margin: 0; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text-primary); font: 400 13px/20px var(--font-sans); appearance: none; -webkit-appearance: none; }
+.volo-input input::placeholder, .volo-input textarea::placeholder { color: var(--text-tertiary); opacity: 1; }
+.volo-input__value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+.volo-input__value--placeholder { color: var(--text-tertiary); }
+.volo-input__unit { flex: none; font: 400 12px/16px var(--font-sans); color: var(--text-tertiary); white-space: nowrap; }
+.volo-input:hover, .volo-input.is-hover { border-color: var(--text-secondary); }
+.volo-input:focus-within, .volo-input:focus-visible, .volo-input.is-focus { border-color: var(--focus); outline: 2px solid var(--focus); outline-offset: -1px; }
+.ry .volo-input input:focus-visible, .ry .volo-input select:focus-visible, .ry .volo-input textarea:focus-visible { outline: none; }
+.volo-input[aria-expanded="true"] { border-color: var(--text-secondary); }
+.volo-input--invalid, .volo-input[aria-invalid="true"] { border-color: var(--status-failed); }
+.volo-input--disabled, .volo-input:disabled { border-color: var(--border); background: transparent; color: var(--text-disabled); pointer-events: none; }
+.volo-input--disabled input, .volo-input--disabled select, .volo-input--disabled textarea, .volo-input--disabled .volo-input__value, .volo-input:disabled .volo-input__value { color: var(--text-disabled); }
+.volo-input--num input { font-variant-numeric: tabular-nums; }
+.volo-input--mono input, .volo-input--mono .volo-input__value { font-family: var(--font-mono); font-size: 12px; }
+.volo-input--area { height: auto; padding: 6px 10px; align-items: flex-start; }
+.volo-input--area textarea { height: auto; min-height: 60px; resize: vertical; }
+.volo-stepper { display: flex; flex-direction: column; flex: none; margin-right: -6px; }
+.volo-stepper button { display: grid; place-items: center; width: 18px; height: 12px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--text-tertiary); cursor: default; }
+.volo-stepper button:hover { background: var(--surface-selected); color: var(--text-primary); }
+.volo-stepper .ry-icon { width: 10px; height: 10px; stroke-width: 2; }
+
+/* Switch — an on/off setting that applies immediately */
+.volo-switch { position: relative; display: inline-block; width: 30px; height: 18px; padding: 0; border: 1px solid var(--border-strong); border-radius: var(--radius-full); background: var(--surface-sunken); flex: none; cursor: default; vertical-align: middle; }
+.volo-switch::after { content: ""; position: absolute; left: 2px; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--text-secondary); }
+.volo-switch:hover::after, .volo-switch.is-hover::after { background: var(--text-primary); }
+.volo-switch[aria-checked="true"] { background: var(--text-primary); border-color: var(--text-primary); }
+.volo-switch[aria-checked="true"]::after { left: 14px; background: var(--surface); }
+.volo-switch:disabled { border-color: var(--border); background: transparent; pointer-events: none; }
+.volo-switch:disabled::after { background: var(--text-disabled); }
+.volo-switch[aria-checked="true"]:disabled { background: var(--text-disabled); border-color: var(--text-disabled); }
+.volo-switch[aria-checked="true"]:disabled::after { background: var(--surface); }
+.volo-switchrow { display: flex; align-items: center; gap: var(--space-3); min-height: var(--ry-control); color: var(--text-primary); }
+.volo-switchrow > span:first-child { flex: 1; min-width: 0; }
+.volo-switchrow small { display: block; font: 400 12px/16px var(--font-sans); color: var(--text-tertiary); }
+
+/* Checkbox and Radio */
+.volo-check { position: relative; display: inline-flex; align-items: center; gap: 8px; min-height: 20px; color: var(--text-primary); cursor: default; }
+.volo-check input { position: absolute; left: 0; top: 50%; width: 16px; height: 16px; margin: -8px 0 0; opacity: 0; }
+.volo-check__box { display: grid; place-items: center; width: 16px; height: 16px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-sunken); color: transparent; flex: none; }
+.volo-check__box .ry-icon { width: 12px; height: 12px; stroke-width: 2; }
+.volo-check:hover .volo-check__box, .volo-check.is-hover .volo-check__box { border-color: var(--text-secondary); }
+.volo-check input:checked + .volo-check__box, .volo-check input:indeterminate + .volo-check__box { background: var(--text-primary); border-color: var(--text-primary); color: var(--surface); }
+.volo-check input:focus-visible + .volo-check__box, .volo-check.is-focus .volo-check__box { outline: 2px solid var(--focus); outline-offset: 1px; }
+.volo-check input:disabled + .volo-check__box { border-color: var(--border); background: transparent; }
+.volo-check input:disabled:checked + .volo-check__box { background: var(--text-disabled); border-color: var(--text-disabled); }
+.volo-check input:disabled ~ span:last-child { color: var(--text-disabled); }
+.volo-check--radio .volo-check__box { border-radius: 50%; }
+.volo-check--radio input:checked + .volo-check__box { background: var(--surface-sunken); border-color: var(--text-primary); box-shadow: inset 0 0 0 3px var(--surface-sunken), inset 0 0 0 8px var(--text-primary); }
+
+/* Segmented Control — one value out of two to four */
+.volo-seg { display: inline-flex; align-items: center; gap: 2px; height: var(--ry-control); padding: 2px; border: 1px solid var(--border-subtle); border-radius: var(--radius-full); background: var(--surface-sunken); flex: none; }
+.volo-seg__opt { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 100%; min-width: 28px; padding: 0 10px; border: 0; border-radius: var(--radius-full); background: transparent; color: var(--text-secondary); font: 500 12px/16px var(--font-sans); white-space: nowrap; cursor: default; }
+.volo-seg__opt:hover, .volo-seg__opt.is-hover { color: var(--text-primary); }
+.volo-seg__opt[aria-checked="true"] { background: var(--surface-selected); color: var(--text-primary); box-shadow: inset 0 0 0 1px var(--border); }
+.volo-seg__opt:disabled { color: var(--text-disabled); pointer-events: none; }
+.volo-seg__opt:focus-visible, .volo-seg__opt.is-focus { outline-offset: -1px; }
+.volo-seg--block { display: flex; width: 100%; }
+.volo-seg--block .volo-seg__opt { flex: 1; }
+
+/* Meter — measured progress. Runyard 的 2px ry-progress stays for "refreshing in the background". */
+.volo-meter { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.volo-meter__head { display: flex; align-items: baseline; gap: var(--space-2); font: 400 12px/16px var(--font-sans); color: var(--text-secondary); }
+.volo-meter__head b { font-weight: 500; color: var(--text-primary); }
+.volo-meter__value { margin-left: auto; color: var(--text-tertiary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.volo-meter__track { display: flex; gap: 2px; height: 4px; border-radius: var(--radius-full); background: var(--surface-selected); overflow: hidden; }
+.volo-meter__bar { display: block; height: 100%; min-width: 4px; border-radius: var(--radius-full); background: var(--text-secondary); }
+.volo-meter--running .volo-meter__bar { background: var(--status-running); }
+.volo-meter--success .volo-meter__bar { background: var(--status-success); }
+.volo-meter--failed .volo-meter__bar { background: var(--status-failed); }
+.volo-meter--attention .volo-meter__bar { background: var(--volo-attention); }
+.volo-meter--inline { flex-direction: row; align-items: center; gap: var(--space-2); }
+.volo-meter--inline .volo-meter__track { flex: 1; min-width: 48px; }
+.volo-meter--inline .volo-meter__value { margin-left: 0; font: 400 12px/16px var(--font-sans); }
+.volo-meter--steps .volo-meter__track { background: transparent; overflow: visible; }
+.volo-meter__seg { flex: 1; height: 100%; border-radius: 2px; background: var(--surface-selected); }
+.volo-meter__seg.is-done { background: var(--text-secondary); }
+.volo-meter__seg.is-current { background: var(--status-running); }
+.volo-meter__seg.is-failed { background: var(--status-failed); }
+
+/* Viewport — a 2D / 3D scene inside the content card, with controls floating over it */
+.volo-viewport { position: relative; flex: 1; min-width: 0; min-height: 0; margin: 0 var(--ry-pad) var(--ry-pad); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-sunken); overflow: hidden; color: var(--text-tertiary); }
+.volo-viewport--flush { margin: 0; border: 0; border-radius: 0; }
+.volo-viewport__canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.volo-viewport__hud { position: absolute; z-index: 2; display: flex; align-items: center; gap: 2px; padding: 3px; border: 1px solid var(--border); border-radius: var(--radius-full); background: var(--surface-raised); color: var(--text-secondary); }
+.volo-viewport__hud--col { flex-direction: column; }
+.volo-viewport__hud .ry-iconbtn { width: 26px; height: 26px; }
+.volo-viewport__hud .volo-seg { height: 26px; padding: 0; border: 0; background: transparent; }
+.volo-viewport__sep { width: 1px; height: 14px; margin: 0 2px; background: var(--border); flex: none; }
+.volo-viewport__hud--col .volo-viewport__sep { width: 14px; height: 1px; margin: 2px 0; }
+.volo-viewport__readout { position: absolute; z-index: 2; display: flex; align-items: center; gap: var(--space-3); padding: 2px var(--space-2); border-radius: var(--radius-sm); background: var(--surface-sunken); font: 400 11px/16px var(--font-mono); color: var(--text-tertiary); white-space: nowrap; pointer-events: none; }
+.volo-viewport__legend { position: absolute; z-index: 2; display: flex; align-items: center; gap: var(--space-3); padding: 4px 10px; border: 1px solid var(--border); border-radius: var(--radius-full); background: var(--surface-raised); font: 400 12px/16px var(--font-sans); color: var(--text-secondary); white-space: nowrap; }
+.volo-viewport__key { display: inline-flex; align-items: center; gap: 6px; }
+.volo-viewport__key i { width: 10px; height: 10px; border-radius: 2px; border: 1px solid var(--text-tertiary); flex: none; }
+.volo-viewport [data-at="tl"] { top: var(--space-3); left: var(--space-3); }
+.volo-viewport [data-at="tr"] { top: var(--space-3); right: var(--space-3); }
+.volo-viewport [data-at="bl"] { bottom: var(--space-3); left: var(--space-3); }
+.volo-viewport [data-at="br"] { bottom: var(--space-3); right: var(--space-3); }
+.volo-viewport [data-at="tc"] { top: var(--space-3); left: 50%; transform: translateX(-50%); }
+.volo-viewport [data-at="bc"] { bottom: var(--space-3); left: 50%; transform: translateX(-50%); }
+.volo-viewport__label { position: absolute; z-index: 1; transform: translate(-50%, -100%); padding: 1px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-overlay); font: 500 11px/16px var(--font-sans); color: var(--text-secondary); white-space: nowrap; pointer-events: none; }
+.volo-viewport__label.is-selected { color: var(--text-primary); border-color: var(--text-tertiary); }
+.volo-viewport__label--text { padding: 0; border: 0; background: none; font: 500 10px/1 var(--font-mono); color: var(--text-tertiary); }
+/* Scene strokes: set these classes on SVG shapes so a scene follows the theme */
+.volo-scene-grid { fill: none; stroke: var(--border-subtle); stroke-width: 1; }
+.volo-scene-shape { fill: var(--surface-hover); stroke: var(--text-tertiary); stroke-width: 1; stroke-linejoin: round; }
+.volo-scene-shape.is-selected { fill: var(--surface-selected); stroke: var(--text-primary); stroke-width: 1.5; }
+.volo-scene-shape.is-ghost { fill: none; stroke-dasharray: 3 3; }
+.volo-scene-axis { fill: none; stroke: var(--text-tertiary); stroke-width: 1; stroke-linecap: round; }
+.volo-scene-text { fill: var(--text-tertiary); font: 500 10px/1 var(--font-mono); }
+
+/* Note — an inline explanation with an optional action, inside Inspector or a detail page */
+.volo-note { display: flex; align-items: flex-start; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-sunken); color: var(--text-secondary); }
+.volo-note > .ry-icon { margin-top: 2px; color: var(--text-tertiary); }
+.volo-note > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.volo-note p { margin: 0; }
+.volo-note__actions { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.volo-note--failed > .ry-icon { color: var(--status-failed); }
+.volo-note--failed { color: var(--text-primary); }
+.volo-note--attention > .ry-icon { color: var(--volo-attention); }
+
+/* 行标题后面跟标签时：标题优先显示完整，标签在单元格边缘被裁掉，不把标题挤成竖排 */
+.ry .ry-row__title { overflow: hidden; }
+.ry .ry-row__title > span:first-child:not(:last-child) { flex: 0 0 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- 显示选项弹层：挂在视图栏的“显示”按钮下 ---------- */
+.volo-display { position: absolute; top: calc(100% + 4px); right: 0; z-index: 50; width: 336px; padding: 12px; display: flex; flex-direction: column; gap: 12px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-overlay); box-shadow: var(--shadow-overlay); text-align: left; cursor: default; }
+.volo-display__row { display: grid; grid-template-columns: 68px minmax(0, 1fr); align-items: start; gap: 8px; }
+.volo-display__label { padding-top: 6px; font: 400 12px/16px var(--font-sans); color: var(--text-tertiary); }
+.volo-display__chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.volo-display__sep { height: 1px; margin: 0 -12px; background: var(--border); }
+.volo-display__foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; font: 400 12px/16px var(--font-sans); color: var(--text-tertiary); }
+
+/* ---------- 卡片视图：有截图的对象（工程）可以从列表切到卡片 ----------
+   截图和文字在同一个框里，框比页面底色高一层；文字只留名称、时间和一句状况，其余信息在 Inspector 里。 */
+.volo-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(248px, 1fr)); gap: 16px; padding: 12px var(--ry-pad) 32px; align-items: start; }
+.volo-cards > .ry-group { grid-column: 1 / -1; position: static; height: auto; margin-bottom: -4px; padding: 4px 0 0; background: none; color: var(--text-secondary); font: 500 12px/16px var(--font-sans); }
+.volo-cards > .ry-group:not(:first-child) { padding-top: 12px; }
+.volo-cards > .ry-group .ry-status span { color: var(--text-secondary); font-size: 12px; }
+.volo-card { display: flex; flex-direction: column; min-width: 0; padding: 0; border: 0; border-radius: var(--radius-lg); background: var(--surface-raised); box-shadow: 0 0 0 1px var(--border); color: inherit; font: inherit; text-align: left; overflow: hidden; cursor: default; transition: box-shadow .16s ease, background-color .16s ease; }
+.volo-card:hover, .volo-card.is-hover { box-shadow: 0 0 0 1px var(--border-strong); }
+.volo-card[aria-selected="true"] { background: var(--surface-selected); box-shadow: 0 0 0 2px var(--accent); }
+.volo-card:focus-visible, .volo-card.is-focus { outline: none; box-shadow: 0 0 0 2px var(--focus); }
+.volo-card__thumb { position: relative; display: block; aspect-ratio: 16 / 9; overflow: hidden; background: linear-gradient(135deg, var(--surface-hover), var(--surface-sunken)); }
+.volo-card__thumb::after { content: ""; position: absolute; inset: 0; box-shadow: inset 0 -1px 0 var(--border-subtle); pointer-events: none; }
+.volo-card__img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transition: transform .32s ease; }
+.volo-card:hover .volo-card__img, .volo-card.is-hover .volo-card__img { transform: scale(1.03); }
+.volo-card__mono { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font: 600 40px/1 var(--font-sans); letter-spacing: 0.04em; color: var(--text-disabled); }
+.volo-card__nothumb { position: absolute; left: 12px; bottom: 10px; font: 400 11px/16px var(--font-sans); color: var(--text-tertiary); }
+.volo-card__body { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 10px 12px 12px; }
+.volo-card__head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.volo-card__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 13px/20px var(--font-sans); color: var(--text-primary); }
+.volo-card__time { flex: none; font: 400 12px/16px var(--font-sans); font-variant-numeric: tabular-nums; color: var(--text-tertiary); }
+.volo-card__sub { display: flex; align-items: center; gap: 6px; min-width: 0; font: 400 12px/16px var(--font-sans); color: var(--text-tertiary); }
+.volo-card__sub .ry-status { flex: none; }
+.volo-card__sub .ry-status span { font-size: 12px; }
+.volo-card__reason { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.volo-card__reason::before { content: "·"; margin-right: 6px; }
+@media (prefers-reduced-motion: reduce) { .volo-card, .volo-card__img { transition: none; } .volo-card:hover .volo-card__img { transform: none; } }
