@@ -94,7 +94,8 @@ export function useReadiness(stage: CurrentStage | null) {
   if (cfg && stage?.type === "ar") {
     const mapName = ws.markerMap ? ws.markerMap.split(/[\\/]/).pop() : null;
     const run = adoptedRun(arRuns.data, ws);
-    const verify = ws.verify;
+    /* 只认验证当前采用的那次求解；重新求解后旧的验证不再算数。 */
+    const verify = run && ws.verify?.runId === run.id ? ws.verify : null;
     steps = [
       mapName
         ? { key: "markers", page: "markers", title: "标记", kind: "success", label: "就绪", desc: `标记图 ${mapName}${ws.validate ? " · 已校验" : ""}` }
@@ -106,7 +107,7 @@ export function useReadiness(stage: CurrentStage | null) {
           ? { key: "spatial", page: "spatial", title: "空间求解", kind: "failed", label: "需处理", desc: `采用 ${runLabel(run)}，观测不足` }
           : { key: "spatial", page: "spatial", title: "空间求解", kind: "success", label: "就绪", desc: `采用 ${runLabel(run)}${run.reprojection_rms_px != null ? ` · RMS ${run.reprojection_rms_px.toFixed(2)} px` : ""}` },
       !verify
-        ? { key: "verify", page: "verify", title: "验证", kind: "queued", label: "未开始", desc: "还没有验证" }
+        ? { key: "verify", page: "verify", title: "验证", kind: "queued", label: "未开始", desc: run && ws.verify ? `采用的 ${runLabel(run)} 还没有验证` : "还没有验证" }
         : verify.data.global_rms_px > VERIFY_LIMIT_PX
           ? { key: "verify", page: "verify", title: "验证", kind: "failed", label: "需处理", desc: `残差 ${verify.data.global_rms_px.toFixed(2)} px，高于 ${VERIFY_LIMIT_PX.toFixed(1)} px` }
           : { key: "verify", page: "verify", title: "验证", kind: "success", label: "就绪", desc: `残差 ${verify.data.global_rms_px.toFixed(2)} px · ${verify.data.num_frames} 帧` },

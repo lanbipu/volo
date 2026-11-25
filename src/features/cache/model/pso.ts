@@ -15,6 +15,7 @@ import {
 } from "@/api/commands";
 import { isTauri } from "@/api/invoke";
 import type { PsoProjectSettings } from "@/api/types";
+import { useTauriEvent } from "@/lib/events";
 import { persistOptions } from "@/lib/persist";
 
 export const psoKeys = {
@@ -137,6 +138,21 @@ export function useStartWarmup() {
       };
       return cold ? startPsoColdtest(req) : startPsoWarmup(req);
     },
-    onSettled: () => void qc.invalidateQueries({ queryKey: ["cache"] }),
+    onSettled: () => invalidatePso(qc),
   });
+}
+
+/* 任务页按 ["tasks","pso",工程] 另读一份运行记录，和这里的缓存分开，两边都要失效。 */
+function invalidatePso(qc: ReturnType<typeof useQueryClient>) {
+  void qc.invalidateQueries({ queryKey: ["cache"] });
+  void qc.invalidateQueries({ queryKey: ["tasks", "pso"] });
+}
+
+/** 预跑结束就重读运行记录与工程的 PSO 状态。外壳常驻调用一次。每台机器结束时各发一条：
+    普通预跑发 pso-warmup-finalized，带冷启动验证的发 pso-coldtest-finalized。
+    过程中的 *-progress 是逐行日志，太密，不用它刷新。 */
+export function usePsoLiveSync() {
+  const qc = useQueryClient();
+  useTauriEvent("pso-warmup-finalized", () => invalidatePso(qc));
+  useTauriEvent("pso-coldtest-finalized", () => invalidatePso(qc));
 }

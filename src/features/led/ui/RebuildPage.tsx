@@ -40,7 +40,7 @@ import {
 } from "@/ui";
 import { composite, nodeScreens, resolveTopology, useOutputSession } from "../model/output";
 import { alignmentFor, designBoxes, rebuiltBoxes } from "../model/geometry";
-import { dirOf, dur, EXPORT_TARGETS, fullTime, runTab, shortTime, useExportRun, useRebuildJobs, useSetCurrent } from "../model/rebuild";
+import { dirOf, dur, EXPORT_TARGETS, fullTime, runTab, shortTime, useExportRun, useSetCurrent, useStageRebuildJobs } from "../model/rebuild";
 import { currentRun, runSource, useLedStage, useRunReport, useRuns } from "../model/screens";
 import { CameraRig, frame, Viewport, type SceneEntry } from "../viewport/Viewport";
 import { RebuildNewDialog } from "./RebuildNewDialog";
@@ -61,7 +61,7 @@ function RebuildList() {
   const { stage, config, loading } = useLedStage();
   const path = stage?.path ?? null;
   const runsQ = useRuns(path);
-  const jobs = useRebuildJobs((s) => s.jobs);
+  const jobs = useStageRebuildJobs(path);
   const openObject = useNav((s) => s.openObject);
   const [inspOpen, setInsp] = useInspector("rebuild");
   const inspW = useNav((s) => s.inspectorWidth);

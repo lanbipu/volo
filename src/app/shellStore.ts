@@ -22,6 +22,15 @@ interface ShellState {
 
 type ShellPrefs = Pick<ShellState, "theme" | "followSystem" | "density" | "side" | "collapsed">;
 
+/** 旧壳（已删除）把主题存在 localStorage "volo-theme"；新壳还没存过偏好时沿用它。 */
+function legacyTheme(): string | null {
+  try {
+    return localStorage.getItem("volo-theme");
+  } catch {
+    return null;
+  }
+}
+
 export const useShellStore = create<ShellState>()(
   persist(
     (set) => ({
@@ -44,7 +53,7 @@ export const useShellStore = create<ShellState>()(
         const p = (persisted ?? {}) as Partial<ShellPrefs>;
         return {
           ...current,
-          theme: p.theme === "light" ? "light" : "dark",
+          theme: (p.theme ?? legacyTheme()) === "light" ? "light" : "dark",
           followSystem: p.followSystem === true,
           density: p.density === "compact" ? "compact" : "comfortable",
           side: p.side !== false,

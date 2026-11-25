@@ -3,6 +3,7 @@
    当前采用的求解、最近一次校验 / 延迟 / 验证结果）按 Stage 路径存在本机。
    求解记录不另建注册表：扫 <stage>/vpcal/ar-runs/ 下每个 run-NNN-<时间>/result.json（list_ar_runs）。
    所有 vpcal 命令都走流式子进程：verify overlay 的标注帧只有经流式通道解析出来才进图片白名单。 */
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
@@ -341,10 +342,17 @@ export async function runVpcal<T>(args: string[], onTask?: (taskId: string) => v
       if (env?.status === "ok") return resolve((env.data ?? {}) as T);
       const msg = env?.error?.message || ev.stderr_tail.trim().split("\n").pop() || `vpcal 异常退出（exit ${ev.exit_code}）`;
       reject(new VpcalError(msg, ev.exit_code));
-    }).then((u) => {
-      if (done) u();
-      else off = u;
-    });
+    })
+      .then((u) => {
+        if (done) u();
+        else off = u;
+      })
+      .catch((e: unknown) => {
+        /* 订阅不上就收不到退出事件：停掉进程并报错，免得调用方一直等。 */
+        done = true;
+        void cancelSidecarTask(task_id).catch(() => undefined);
+        reject(new VpcalError(`订阅 vpcal 输出失败：${e instanceof Error ? e.message : String(e)}`, null));
+      });
   });
 }
 
@@ -425,6 +433,8 @@ export function runTitle(r: ArRunSummary) {
 
 export interface SpatialJob {
   key: string;
+  /** 发起时的 Stage；会话内任务是全局的，按它过滤，换 Stage 后不串到别的 Stage。 */
+  stagePath: string;
   no: number;
   state: "running" | "failed";
   startedAt: number;
@@ -442,6 +452,12 @@ interface Jobs {
   delaying: boolean;
 }
 export const useArJobs = create<Jobs>()(() => ({ spatial: [], validating: false, leveling: false, importing: false, verifying: false, exporting: false, delaying: false }));
+
+/** 当前 Stage 的会话内空间求解任务。 */
+export function useStageSpatialJobs(stage: string | null): SpatialJob[] {
+  const jobs = useArJobs((s) => s.spatial);
+  return useMemo(() => jobs.filter((j) => j.stagePath === stage), [jobs, stage]);
+}
 
 /* ------------------------------ 标记几何 ------------------------------ */
 
@@ -612,13 +628,13 @@ export async function generateBoards(outDir: string) {
 
 /** 开始一次空间求解：vpcal quick run，输出到 ar-runs/run-NNN-<时间>/。 */
 export async function startSpatialSolve(stage: string, session: string, runs: ArRunSummary[], onDone: () => void) {
-  const jobs = useArJobs.getState().spatial;
+  const jobs = useArJobs.getState().spatial.filter((j) => j.stagePath === stage);
   const no = Math.max(0, ...runs.map((r) => runNo(r) ?? 0), ...jobs.map((j) => j.no)) + 1;
   const id = `run-${String(no).padStart(3, "0")}-${stamp()}`;
   const outDir = joinPath(arRunsRoot(stage), id);
   const key = id;
   const startedAt = Date.now();
-  const job: SpatialJob = { key, no, state: "running", startedAt, text: `用 ${baseName(dirOf(session))} 求解` };
+  const job: SpatialJob = { key, stagePath: stage, no, state: "running", startedAt, text: `用 ${baseName(dirOf(session))} 求解` };
   useArJobs.setState((s) => ({ spatial: [job, ...s.spatial] }));
   logAr("spatial", "running", `开始空间求解 #${no}`);
   const put = (p: Partial<SpatialJob>) => useArJobs.setState((s) => ({ spatial: s.spatial.map((j) => (j.key === key ? { ...j, ...p } : j)) }));

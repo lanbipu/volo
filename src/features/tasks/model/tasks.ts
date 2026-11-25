@@ -9,9 +9,9 @@ import { listHealthResultsForRun, listMachines, listProjects, listPsoWarmupRuns,
 import { isTauri } from "@/api/invoke";
 import type { Machine, PsoWarmupRun, ScanRun } from "@/api/types";
 import type { ObjectTab, PageId } from "@/lib/nav";
-import { useArJobs, useArRuns, runLabel, runTab as arRunTab, isLowConf, CONF_LABEL, cancelSpatial, type ArRunSummary, type SpatialJob } from "@/features/ar";
+import { useStageSpatialJobs, useArRuns, runLabel, runTab as arRunTab, isLowConf, CONF_LABEL, cancelSpatial, type ArRunSummary, type SpatialJob } from "@/features/ar";
 import { parseTs } from "@/features/cache";
-import { baseName, camTab, rebuildRunTab, runSource, useCapture, useLensSessions, useRebuildJobs, useRuns } from "@/features/led";
+import { baseName, camTab, rebuildRunTab, runSource, useCapture, useLensSessions, useRuns, useStageRebuildJobs } from "@/features/led";
 import { useCurrentStage } from "@/features/stage";
 
 export type TaskState = "running" | "queued" | "failed" | "success";
@@ -326,8 +326,9 @@ export function useTasks() {
   const runs = useRuns(path);
   const lens = useLensSessions(path);
   const ar = useArRuns(path);
-  const rebuildJobs = useRebuildJobs((s) => s.jobs);
-  const spatialJobs = useArJobs((s) => s.spatial);
+  /* 会话内的任务只取当前 Stage 发起的，换 Stage 后不串过来。 */
+  const rebuildJobs = useStageRebuildJobs(path);
+  const spatialJobs = useStageSpatialJobs(path);
   const capture = useCapture();
   const psoData = pso.map((q) => q.data);
 
@@ -441,7 +442,7 @@ export function useTasks() {
         });
       }
       for (const j of spatialJobs) out.push(spatialJobTask(j));
-      if (capture.phase !== "idle" && capture.phase !== "done" && capture.startedAt) {
+      if (capture.phase !== "idle" && capture.phase !== "done" && capture.startedAt && capture.stagePath === path) {
         const cam = cams.find((c) => c.id === capture.camId);
         const camName = cam?.name ?? "摄影机";
         const failed = capture.phase === "failed";

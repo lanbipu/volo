@@ -89,6 +89,39 @@ jobs:
         run: lscpu | grep -E '^(Model name|CPU\(s\))' ; grep -o -w -E 'avx512f|avx2' /proc/cpuinfo | sort -u
       - run: uv venv --python 3.12 .venv
       - run: uv pip install --python .venv ${{ matrix.install }}
+      # tracksim 依赖的 pysdl3 在 import 时若找不到 SDL3 运行库，会匿名调 GitHub API 下载，
+      # 共享运行器的出口 IP 常被限流（API rate limit exceeded）→ SDL 相关用例失败。
+      # ubuntu-24.04 的 apt 没有 SDL3，所以这里带令牌预先下载一次、按 pysdl3 版本缓存，
+      # 之后的 pytest 关掉下载与版本检查，测试本身不联网。
+      - name: SDL3 binaries (tracksim)
+        id: sdl3
+        if: matrix.sidecar == 'tracksim'
+        run: |
+          echo "SDL_BINARY_PATH=$RUNNER_TEMP/sdl3-bin" >> "$GITHUB_ENV"
+          echo "version=$(.venv/bin/python -c "import importlib.metadata as m; print(m.version('pysdl3'))")" >> "$GITHUB_OUTPUT"
+      - if: matrix.sidecar == 'tracksim'
+        id: sdl3-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/sdl3-bin
+          key: pysdl3-${{ runner.os }}-${{ runner.arch }}-${{ steps.sdl3.outputs.version }}
+      - if: matrix.sidecar == 'tracksim' && steps.sdl3-cache.outputs.cache-hit != 'true'
+        env:
+          SDL_GITHUB_TOKEN: ${{ github.token }}
+          SDL_CHECK_VERSION: "0"
+        run: |
+          .venv/bin/python -c "import sdl3"
+          # pysdl3 下载失败只打日志不抛错：这里自己确认库文件到位，免得到 pytest 才变成看不懂的失败。
+          ls "$SDL_BINARY_PATH"/libSDL3*.so* "$SDL_BINARY_PATH"/metadata.json
+      - if: matrix.sidecar == 'tracksim' && steps.sdl3-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/sdl3-bin
+          key: ${{ steps.sdl3-cache.outputs.cache-primary-key }}
+      - if: matrix.sidecar == 'tracksim'
+        run: |
+          echo "SDL_DOWNLOAD_BINARIES=0" >> "$GITHUB_ENV"
+          echo "SDL_CHECK_VERSION=0" >> "$GITHUB_ENV"
       # tests/conftest.py 把 src/ 插到 sys.path 最前，pytest 实际导入的是源码树而非
       # site-packages，所以把编译产物拷进 src/vpcal；再按同一导入路径断言原生模块
       # 可用（否则 C++ 用例会静默 skip、solver 回退 scipy）。

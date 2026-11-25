@@ -4,6 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Volo</title>
+    <script>
+      /* 首帧前先套上保存的主题 / 密度（src/app/shellStore.ts 存在 localStorage "volo:shell"），免得启动时闪一下另一种主题。 */
+      (function () {
+        try {
+          var s = (JSON.parse(localStorage.getItem("volo:shell") || "null") || {}).state || {};
+          var t = s.followSystem ? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light") : s.theme === "light" ? "light" : s.theme ? "dark" : localStorage.getItem("volo-theme") === "light" ? "light" : "dark";
+          document.documentElement.setAttribute("data-theme", t);
+          document.documentElement.setAttribute("data-ry-density", s.density === "compact" ? "compact" : "comfortable");
+        } catch (e) {}
+      })();
+    </script>
   </head>
 
   <body>
