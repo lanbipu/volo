@@ -1040,7 +1040,7 @@ mod tests {
     #[test]
     fn new_shape_prior_variants_match_frontend_wire_format() {
         // { type: "arc"|"l_shape"|"u_shape"|"custom_segments", ... } — must match
-        // src/volo/api/types.ts's discriminated union exactly (tag = "type").
+        // src/api/types.ts's discriminated union exactly (tag = "type").
         let arc = ShapePriorConfig::Arc { center_flat_cols: 2, angle_per_col_deg: 9.0 };
         let json = serde_json::to_string(&arc).unwrap();
         assert_eq!(json, r#"{"type":"arc","center_flat_cols":2,"angle_per_col_deg":9.0}"#);

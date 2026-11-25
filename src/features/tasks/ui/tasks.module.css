@@ -1,0 +1,35 @@
+/* 任务与待处理（设计：TaskList.dc.html / Tasks.dc.html / Inbox.dc.html）。 */
+
+.contents {
+  display: contents;
+}
+
+.inspEmpty {
+  display: flex;
+  flex-direction: column;
+}
+
+.flexNone {
+  flex: none;
+}
+
+/* 列表 Inspector 里的步骤（设计：margin 16px 0 20px）。 */
+.inspSteps {
+  margin: 16px 0 20px;
+}
+
+/* 当前（失败 / 运行中）的一步高亮；没开始的步骤变淡。 */
+.stepCurrent {
+  background: var(--surface-selected);
+}
+.stepCurrent > span:nth-child(2) {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.stepLater {
+  color: var(--text-tertiary);
+}
+
+.params {
+  max-width: 560px;
+}

@@ -1,0 +1,7 @@
+/* 外壳：设计稿 App.dc.html 根节点与侧栏的内联样式移植。 */
+.window { position: relative; width: 100%; height: 100vh; min-height: 640px; border: 0; border-radius: 0; box-shadow: none; }
+.sidebar { width: 248px; height: 100%; box-sizing: border-box; flex: none; }
+.lightsWide { margin-left: 8px; }
+/* 原生 App 里由 macOS 画真正的红绿灯，占位圆点只留位置。 */
+.native [data-native-lights] { visibility: hidden; }
+.overlay { display: contents; }

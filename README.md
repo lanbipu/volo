@@ -24,7 +24,7 @@
 volo/
 ├── Cargo.toml          workspace 根（members = crates/* + src-tauri）
 ├── package.json        前端（React + Vite + Tauri）
-├── src/volo/           前端：shell.tsx 外壳 + pages/ 按页面平铺 + api/ 类型化命令封装 + styles/
+├── src/                前端：app/ 外壳 + ui/ 组件 + features/ 页面 + lib/ + windows/ + api/ 类型化命令封装
 ├── src-tauri/          Tauri host：约 210 个 command（见 src/lib.rs 的 invoke_handler），只做 transport
 │   └── resources/      节点端 PowerShell 脚本、UE 上屏模板
 ├── crates/

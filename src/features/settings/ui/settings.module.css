@@ -1,0 +1,67 @@
+/* 设置与凭据（设计：Settings.dc.html / SettingsCreds.dc.html）。 */
+
+.scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.page {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 8px 32px 40px;
+  color: var(--text-secondary);
+  font: 400 13px/20px var(--font-sans);
+}
+
+.section {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  column-gap: 40px;
+  padding: 24px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.section:last-child {
+  border-bottom: 0;
+}
+
+.sectionTitle {
+  margin: 0 0 4px;
+  font: 600 14px/20px var(--font-sans);
+  color: var(--text-primary);
+}
+
+.sectionDesc {
+  margin: 0;
+  font: 400 12px/18px var(--font-sans);
+  color: var(--text-tertiary);
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.machine {
+  color: var(--text-primary);
+}
+
+.account {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ml8 {
+  margin-left: 8px;
+}
+
+.gap8 {
+  gap: 8px;
+}
+
+.spacer20 {
+  height: 20px;
+}

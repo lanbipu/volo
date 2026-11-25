@@ -1,0 +1,27 @@
+/* Confirm.dc.html 里的内联样式（等效命令条、属性间距、左置的“先试运行”）。 */
+.props {
+  margin-top: 16px;
+  gap: 8px 16px;
+}
+
+.cmd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 8px 8px 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-subtle);
+}
+
+.cmd > :first-child {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.push {
+  margin-right: auto;
+}

@@ -1,0 +1,68 @@
+/* Volo — Cache typed Tauri invoke core.
+   The single transport seam between the Cache page (custom-CSS port) and the
+   ~85 Rust `#[tauri::command]` handlers registered in src-tauri/src/lib.rs.
+
+   Wiring rules (see CLAUDE.md · "Tauri v2 接线"):
+   - JS arg keys are camelCase (Rust `machine_id` → JS `machineId`); a struct
+     input is passed whole under one camelCase key, its inner fields stay
+     snake_case (handled by the callers in ./commands).
+   - Every command returns `Result<T, VoloError>`; `VoloError`'s `Serialize` impl
+     (crates/cache-core/src/error.rs) always emits `{code, message}`, so the
+     `Err(...)` reaches JS as that plain object, never a bare string. We
+     normalize it to `VoloInvokeError` so callers get a stable `.command` +
+     `.message`. */
+import { invoke } from "@tauri-apps/api/core";
+
+/** Normalized failure of a Tauri command (all handlers return `Result<_, String>`). */
+export class VoloInvokeError extends Error {
+  readonly command: string;
+  /** VoloError 的种类（`not_found`、`invalid_input` …）；后端没给就是 null。 */
+  readonly kind: string | null;
+  constructor(command: string, message: string, kind: string | null = null) {
+    super(message);
+    this.name = "VoloInvokeError";
+    this.command = command;
+    this.kind = kind;
+  }
+}
+
+function errKind(e: unknown): string | null {
+  if (!e || typeof e !== "object") return null;
+  const o = e as { kind?: unknown; code?: unknown };
+  return typeof o.kind === "string" ? o.kind : typeof o.code === "string" ? o.code : null;
+}
+
+/** True only inside the Tauri runtime. In the vite browser preview (:1420) there
+ *  is no backend, so callers should surface an error state rather than hang. */
+export function isTauri(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+function normalize(e: unknown): string {
+  if (typeof e === "string") return e;
+  if (e instanceof Error) return e.message;
+  /* Rust 侧 VoloError 序列化成 { code, message }（见上方接线说明），不是裸字符串 ——
+     不认这个形状就会掉进下面的 JSON.stringify 兜底，把原始 JSON 文本直接糊在界面上
+     （例如某些页面把这里的 message 原样渲染成失败提示）。 */
+  if (e && typeof e === "object" && typeof (e as { message?: unknown }).message === "string") {
+    return (e as { message: string }).message;
+  }
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return String(e);
+  }
+}
+
+/** Thin typed wrapper over Tauri `invoke`. Throws `VoloInvokeError` on failure
+ *  (including "not running under Tauri"), never a bare string. */
+export async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (!isTauri()) {
+    throw new VoloInvokeError(command, "未运行在 Tauri 运行时（浏览器预览无后端）");
+  }
+  try {
+    return await invoke<T>(command, args);
+  } catch (e) {
+    throw new VoloInvokeError(command, normalize(e), errKind(e));
+  }
+}

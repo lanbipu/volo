@@ -1,42 +1,54 @@
-/* 外壳自己的状态：当前页、主题、密度。页面状态归各 feature 的 store，不放这里。 */
+/* 外壳自己的偏好：主题、密度、侧栏是否显示、侧栏分组折叠。页面路由在 lib/nav。 */
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { persistOptions } from "@/lib/persist";
-import { DEFAULT_PAGE, isPageId, type PageId } from "./pages";
 
 export type Theme = "dark" | "light";
 export type Density = "comfortable" | "compact";
 
 interface ShellState {
-  page: PageId;
   theme: Theme;
+  /** 主题跟随系统（设置 › 外观）；手动切换主题时关掉。 */
+  followSystem: boolean;
   density: Density;
-  setPage: (page: PageId) => void;
+  side: boolean;
+  collapsed: Record<string, boolean>;
   setTheme: (theme: Theme) => void;
+  setFollowSystem: (on: boolean) => void;
   setDensity: (density: Density) => void;
+  toggleSide: () => void;
+  toggleGroup: (g: string) => void;
 }
 
-type ShellPrefs = Pick<ShellState, "page" | "theme" | "density">;
+type ShellPrefs = Pick<ShellState, "theme" | "followSystem" | "density" | "side" | "collapsed">;
 
 export const useShellStore = create<ShellState>()(
   persist(
     (set) => ({
-      page: DEFAULT_PAGE,
       theme: "dark",
+      followSystem: false,
       density: "comfortable",
-      setPage: (page) => set({ page }),
-      setTheme: (theme) => set({ theme }),
+      side: true,
+      collapsed: {},
+      setTheme: (theme) => set({ theme, followSystem: false }),
+      setFollowSystem: (followSystem) => set({ followSystem }),
       setDensity: (density) => set({ density }),
+      toggleSide: () => set((s) => ({ side: !s.side })),
+      toggleGroup: (g) => set((s) => ({ collapsed: { ...s.collapsed, [g]: !s.collapsed[g] } })),
     }),
     {
-      ...persistOptions<ShellState, ShellPrefs>("shell", 1, ({ page, theme, density }) => ({ page, theme, density })),
+      ...persistOptions<ShellState, ShellPrefs>("shell", 2, ({ theme, followSystem, density, side, collapsed }) => ({ theme, followSystem, density, side, collapsed })),
+      // v1 多存了 page（路由已移到 lib/nav）；字段校验统一在 merge 里做，迁移只需原样交出。
+      migrate: (persisted) => persisted as ShellPrefs,
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<ShellPrefs>;
         return {
           ...current,
-          page: isPageId(p.page) ? p.page : current.page,
           theme: p.theme === "light" ? "light" : "dark",
+          followSystem: p.followSystem === true,
           density: p.density === "compact" ? "compact" : "comfortable",
+          side: p.side !== false,
+          collapsed: p.collapsed && typeof p.collapsed === "object" ? p.collapsed : {},
         };
       },
     },

@@ -46,11 +46,11 @@ Volo —— LanX 出品的虚拟制作桌面工具（**Tauri 2 + React**，UI �
 
 ## 代码结构
 
-前端正从旧壳迁到新结构（LAN-20，方案见 `docs/architecture/frontend-structure.md`，已用 `git add -f` 入库）：
+前端结构（LAN-20，方案见 `docs/architecture/frontend-structure.md`，已用 `git add -f` 入库）：
 
-- **新结构** `src/{app,ui,features,lib}`：`app/` 外壳 + 页面表、`ui/` design system 组件（无业务）、`features/<域>/{model,ui}`（Zustand store + TanStack Query + 页面）、`lib/` 通用工具与 Tauri 事件桥。规则由 `pnpm lint` 强制：不写 `@ts-nocheck` / `window.*` 全局；`invoke` / `listen` 只在 `api/`（及 `lib/events.ts`）；跨 feature 只 import 对方 `index`；页面样式只用 `*.module.css`，禁 `!important` 与字面色值；**新 handoff 不再叠皮肤层**。
-- **旧壳** `src/volo/`（shell + pages/ 平铺 + 9 层皮肤 CSS）**已冻结**：只改不增（`scripts/frontend/legacy-volo-files.txt` 基线），逐页被新结构替换后删除。`src/volo/api/` 保留，新代码经别名 `@/api` 引用。
-- 新 / 旧壳切换：URL `?shell=next|legacy`、localStorage `volo-shell`，或原生 App 里 ⌘/Ctrl+⌥/Alt+⇧+S；默认旧壳。
+- `src/{app,ui,features,lib,windows,api}`：`app/` 外壳 + 页面表、`ui/` design system 组件（无业务）、`features/<域>/{model,ui}`（Zustand store + TanStack Query + 页面）、`lib/` 通用工具与 Tauri 事件桥。规则由 `pnpm lint` 强制：不写 `@ts-nocheck` / `window.*` 全局；`invoke` / `listen` 只在 `api/`（及 `lib/events.ts`）；跨 feature 只 import 对方 `index`；页面样式只用 `*.module.css`，禁 `!important` 与字面色值；**新 handoff 不再叠皮肤层**。
+- `windows/` 是独立窗口（如上屏 pattern player，`#/pattern-player`）；`api/` 是类型化 Tauri 命令封装，经别名 `@/api` 引用。
+- 旧壳 `src/volo/` 已删除（LAN-35），`pnpm lint` 禁止重建。
 
 Rust `crates/`（cache-core、mesh-* 等）+ `src-tauri`（约 210 个 Tauri command，见 `lib.rs` invoke_handler）、Python/C++ sidecar 在 `sidecars/`。
 
@@ -70,14 +70,16 @@ Rust `crates/`（cache-core、mesh-* 等）+ `src-tauri`（约 210 个 Tauri com
 
 ## 运行时 UI 验证
 
-- UI 改动必须在**原生 app** 里实测（浏览器/claude-in-chrome 被 `isTauri()` 拦在 gate 外）：交互用 CGEvent 合成点击 + 置顶键入（System Events `click at` 对 WKWebView 无效，后台 `postToPid` 已证伪），截图用 `screencapture -l <CGWindowID>`（可后台/遮挡）。
+- UI 改动必须在**原生 app** 里实测（浏览器/claude-in-chrome 被 `isTauri()` 拦在 gate 外）。
+- **首选 Computer Use**：`scripts/ui-probe/dev-app.sh [--build]` 把开发版二进制套成 `~/Applications/Volo Dev.app`（bundle id `com.lanbipu.volo.dev`，前端照常走 :1420 热更新），再 `request_access` 它，用 app_* 工具后台点击 / 键入 / 截图，不抢屏幕。坑见脚本头注释（后台不认 cmd+a、`--` 会被换成破折号）。
+- 退路：CGEvent 合成点击 + 置顶键入（`scripts/ui-probe/*.swift`；System Events `click at` 对 WKWebView 无效，后台 `postToPid` 已证伪），截图用 `screencapture -l <CGWindowID>`。
 
 
 
 ## Tauri v2 接线 / 窗口（最易踩）
 
 - invoke 参数 key：Rust snake_case 函数参数 → JS **camelCase**（`machine_id`→`machineId`）；struct 入参（request/input/cred/plan）整体一个 key、内部字段保持 snake_case。
-- 返回 DTO 字段 = **snake_case**（crates 全 `#[derive(Serialize)]` 无 rename_all）；例外看各自 `#[serde(rename)]`（如 `ProjectDir.Path` 是 PascalCase）/ enum `rename_all`。前端封装见 `src/volo/api/commands.ts`。
+- 返回 DTO 字段 = **snake_case**（crates 全 `#[derive(Serialize)]` 无 rename_all）；例外看各自 `#[serde(rename)]`（如 `ProjectDir.Path` 是 PascalCase）/ enum `rename_all`。前端封装见 `src/api/commands.ts`。
 - 无边框窗口拖动用 `data-tauri-drag-region` 属性（不是 `-webkit-app-region`），需在 `src-tauri/capabilities/default.json` 开 `core:window:allow-start-dragging`（+ close/minimize/toggle-maximize）。
 - 禁界面文字选中用 `-webkit-user-select`（macOS WKWebView 不认裸 `user-select`）。
 

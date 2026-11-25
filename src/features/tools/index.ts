@@ -1,3 +1,3 @@
-/* features/tools 对外入口（frontend-structure.md §2/§3）：其他模块只能 import 这里。
-   页面 UI 待 Runyard handoff 后落地；业务逻辑按 §8 P2 从旧壳抽到 ./model。 */
-export { default } from "./ui/ToolsPage";
+/* 工具：键控实验 / 追踪模拟（与 Stage 无关，只在本机运行）。其他模块只能 import 这里。 */
+export { KeyerPage } from "./ui/KeyerPage";
+export { TracksimPage } from "./ui/TracksimPage";
